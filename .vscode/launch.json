@@ -1,0 +1,48 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "启动 Web 服务（浏览器界面）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/api_server.py",
+      "args": ["--port", "8000"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "命令行对话（main.py）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false,
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "初始化知识库",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/knowledge/scripts/import_hardcoded_data.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false
+    },
+    {
+      "name": "运行测试套件",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/examples/test_all.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "justMyCode": false
+    }
+  ]
+}

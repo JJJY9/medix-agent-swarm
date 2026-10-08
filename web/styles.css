@@ -1,0 +1,872 @@
+/* ============================================================
+   MediX · 多智能体医疗助手
+   设计取向：门诊多学科会诊（MDT）工作台。
+   顶部一条心电监护带，节律随系统状态变化；左栏是问诊记录，
+   右栏是会诊科室面板，标明各科室是否已出具意见。
+   ============================================================ */
+
+:root {
+  /* 医院墙面 / 病历纸 */
+  --wall: #e9eff2;
+  --paper: #ffffff;
+  --paper-2: #f4f8fa;
+
+  --ink: #16303a;
+  --ink-soft: #5b7480;
+  --ink-faint: #90a4ad;
+
+  --rule: #d6e0e5;
+  --rule-soft: #e6edf0;
+
+  /* 导视蓝：医院标识系统的底色 */
+  --clinic: #0b6e9e;
+  --clinic-soft: #e3f0f6;
+
+  /* 监护仪心电绿 */
+  --pulse: #0e9f6e;
+
+  /* 科室标识色 */
+  --dept-consult: #1f6fb2;   /* 全科门诊 */
+  --dept-diagnose: #c2452d;  /* 急诊医学科 */
+  --dept-research: #6b4c9a;  /* 循证医学中心 */
+
+  /* 急诊分诊四级色标（用于风险提示配色） */
+  --triage-1: #d92b2b;
+  --triage-2: #e8730c;
+  --triage-3: #c99a00;
+  --triage-4: #2e9e5b;
+
+  --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
+  --sans: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --rail-w: 328px;
+  --gutter: 28px;
+  --radius: 4px;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--wall);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15.5px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--clinic);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  max-width: 1460px;
+  margin: 0 auto;
+}
+
+/* ---------- 顶栏 ---------- */
+
+.topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px var(--gutter);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand { display: flex; align-items: center; gap: 11px; }
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 34px; height: 34px;
+  border-radius: var(--radius);
+  background: var(--clinic);
+  color: #fff;
+}
+.brand-mark svg { width: 19px; height: 19px; fill: currentColor; }
+
+.brand-text { display: flex; align-items: baseline; gap: 9px; }
+.brand-text strong {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.brand-text em {
+  font-style: normal;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.04em;
+}
+
+.btn-quiet {
+  font: inherit;
+  font-size: 13px;
+  color: var(--clinic);
+  background: var(--clinic-soft);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 6px 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-quiet:hover { border-color: var(--clinic); }
+
+/* ---------- 生命体征带 ---------- */
+
+.vitals {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 46px;
+  padding: 0 var(--gutter);
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+
+.vitals-trace {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 两份相同的波形首尾相接，整体左移一半即可无缝循环。
+   --ecg-dur 由 JS 按实际宽度写入，保证不同屏宽下走纸速度一致。 */
+.vitals-track {
+  display: flex;
+  width: 200%;
+  height: 100%;
+  animation: ecg-scroll var(--ecg-dur, 8s) linear infinite;
+  color: var(--pulse);
+  opacity: 0.42;
+  transition: opacity 0.4s, color 0.4s;
+}
+
+.vitals-track svg { width: 50%; height: 100%; flex: none; display: block; }
+
+.vitals-track path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  /* 波形被横向拉伸，fixed 描边宽度才能保持线宽均匀 */
+  vector-effect: non-scaling-stroke;
+}
+
+@keyframes ecg-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* 节律随状态变化：会诊中加快，异常时放慢并变色 */
+.vitals[data-state="pending"] .vitals-track {
+  animation-duration: calc(var(--ecg-dur, 8s) * 1.3);
+  opacity: 0.3;
+}
+.vitals[data-state="active"] .vitals-track {
+  animation-duration: calc(var(--ecg-dur, 8s) / 3.5);
+  opacity: 0.95;
+}
+.vitals[data-state="warn"] .vitals-track {
+  animation-duration: calc(var(--ecg-dur, 8s) * 0.7);
+  opacity: 0.6;
+  color: var(--triage-3);
+}
+.vitals[data-state="bad"] .vitals-track {
+  animation-duration: calc(var(--ecg-dur, 8s) * 0.7);
+  opacity: 0.7;
+  color: var(--triage-1);
+}
+
+.vitals-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.vitals-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  flex: none;
+}
+.vitals[data-state="idle"] .vitals-dot { background: var(--pulse); }
+.vitals[data-state="active"] .vitals-dot { background: var(--pulse); animation: pulse 1.1s ease-in-out infinite; }
+.vitals[data-state="warn"] .vitals-dot { background: var(--triage-3); }
+.vitals[data-state="bad"] .vitals-dot { background: var(--triage-1); }
+.vitals[data-state="pending"] .vitals-dot { animation: pulse 1.6s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* ---------- 配置提示条 ---------- */
+
+.banner {
+  flex: none;
+  margin: 12px var(--gutter) 0;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: #6a4a12;
+  background: #fdf6e6;
+  border: 1px solid #ecdcb6;
+  border-left: 3px solid var(--triage-3);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.banner code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: rgba(106, 74, 18, 0.09);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ---------- 工作区 ---------- */
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rail-w);
+  gap: var(--gutter);
+  padding: 22px var(--gutter) 10px;
+}
+
+.thread-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 26px 30px 8px;
+  scroll-behavior: smooth;
+}
+
+/* ---------- 空状态 ---------- */
+
+.empty { max-width: 62ch; padding: 10px 0 16px; }
+
+.empty h1 {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.45;
+  margin: 0 0 11px;
+  letter-spacing: 0.005em;
+}
+
+.empty-lede {
+  margin: 0 0 15px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.empty-note {
+  display: flex;
+  gap: 10px;
+  padding: 10px 13px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+  background: #fdf3f2;
+  border-left: 3px solid var(--triage-1);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.empty-note-k {
+  flex: none;
+  font-weight: 600;
+  color: var(--triage-1);
+}
+
+.empty-starters-label {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  letter-spacing: 0.05em;
+}
+
+.starters {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.starter {
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 11px 15px;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, padding-left 0.14s;
+}
+.starter:last-child { border-bottom: 0; }
+.starter:hover {
+  background: var(--clinic-soft);
+  color: var(--clinic);
+  padding-left: 19px;
+}
+
+/* ---------- 问诊记录 ---------- */
+
+.turn { margin-bottom: 30px; }
+
+.ask-label {
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  letter-spacing: 0.06em;
+  text-align: right;
+}
+
+.ask {
+  margin-left: auto;
+  max-width: 78%;
+  width: fit-content;
+  padding: 11px 15px;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 会诊意见书 */
+.note {
+  margin-top: 16px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.note-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 16px;
+  background: var(--clinic-soft);
+  border-bottom: 1px solid var(--rule);
+}
+.note[data-mode="single"] .note-head { background: var(--paper-2); }
+
+.note-kind {
+  font-family: var(--serif);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--clinic);
+}
+.note[data-mode="single"] .note-kind { color: var(--ink-soft); }
+
+.note-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+.note-body { padding: 4px 18px 16px; }
+
+/* 结构化段落：LLM 用 【小节】 组织答复 */
+.section { margin-top: 20px; }
+
+.section-title {
+  font-family: var(--serif);
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.section p {
+  margin: 0 0 10px;
+  max-width: 72ch;
+}
+.section p:last-child { margin-bottom: 0; }
+
+.section ol, .section ul {
+  margin: 0 0 10px;
+  padding-left: 22px;
+  max-width: 72ch;
+}
+.section li { margin-bottom: 5px; }
+.section strong { font-weight: 600; }
+
+/* 风险提示（配色对齐急诊分诊四级色标） */
+.risk {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 4px 18px 0;
+  padding: 5px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.risk::before {
+  content: "";
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+  flex: none;
+}
+.risk[data-level="low"] { color: var(--triage-4); background: #eff8f2; }
+.risk[data-level="medium"] { color: var(--triage-3); background: #fdf8e8; }
+.risk[data-level="high"] { color: var(--triage-2); background: #fdf2e9; }
+.risk[data-level="emergency"] { color: var(--triage-1); background: #fdf0ef; }
+
+/* 诊疗建议 */
+.advice {
+  margin: 18px 18px 0;
+  padding: 14px 16px 4px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.advice h3 {
+  font-family: var(--serif);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--ink);
+}
+.advice ol {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14.5px;
+}
+.advice li { margin-bottom: 7px; }
+
+/* 免责声明 */
+.disclaimer {
+  display: flex;
+  gap: 9px;
+  margin: 18px 18px 16px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-soft);
+}
+.disclaimer::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+  margin: 3px 0;
+}
+
+/* 错误 */
+.failure {
+  margin-top: 14px;
+  padding: 12px 15px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #7a2f22;
+  background: #fdf0ee;
+  border: 1px solid #eccfc9;
+  border-left: 3px solid var(--triage-1);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.failure strong { display: block; margin-bottom: 3px; }
+
+/* 等待中 */
+.working {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+.working-bars { display: flex; gap: 3px; flex: none; }
+.working-bars i {
+  display: block;
+  width: 2px; height: 13px;
+  background: var(--clinic);
+  border-radius: 1px;
+  transform-origin: center;
+  animation: bar 1.1s ease-in-out infinite;
+}
+.working-bars i:nth-child(2) { animation-delay: 0.14s; }
+.working-bars i:nth-child(3) { animation-delay: 0.28s; }
+
+@keyframes bar {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.4; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+/* ---------- 输入区 ---------- */
+
+.composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.composer textarea {
+  flex: 1;
+  font: inherit;
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  resize: none;
+  max-height: 180px;
+  overflow-y: auto;
+  transition: border-color 0.15s;
+}
+.composer textarea::placeholder { color: var(--ink-faint); }
+.composer textarea:focus { outline: none; border-color: var(--clinic); }
+
+.send {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--clinic);
+  border: 1px solid var(--clinic);
+  border-radius: var(--radius);
+  padding: 9px 16px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.send:hover:not(:disabled) { background: #095a82; }
+.send:disabled { opacity: 0.4; cursor: not-allowed; }
+.send-icon { width: 15px; height: 15px; }
+
+/* ---------- 会诊科室面板 ---------- */
+
+.rail { min-height: 0; }
+
+.rail-inner {
+  height: 100%;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 16px 0 18px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.rail-head h2 {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+.rail-scan {
+  width: 56px; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--clinic), transparent);
+  border-radius: 1px;
+  animation: scan 1.3s linear infinite;
+}
+@keyframes scan {
+  0% { transform: translateX(-28px); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: translateX(28px); opacity: 0; }
+}
+
+.agents { list-style: none; margin: 0; padding: 0; }
+
+.agent {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--rule-soft);
+  transition: background 0.25s;
+}
+.agent::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 0.25s;
+}
+
+.agent-badge {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px; height: 32px;
+  font-family: var(--serif);
+  font-size: 14px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--ink-faint);
+  background: var(--paper-2);
+  transition: color 0.25s, background 0.25s, border-color 0.25s;
+}
+
+.agent-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.agent-name {
+  font-size: 14px;
+  color: var(--ink-soft);
+  transition: color 0.25s;
+}
+
+.agent-dept {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+.agent-state {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+/* 各科室的标识色 */
+.agent[data-agent="consultation_agent"] { --hue: var(--dept-consult); }
+.agent[data-agent="diagnostic_agent"]   { --hue: var(--dept-diagnose); }
+.agent[data-agent="research_agent"]     { --hue: var(--dept-research); }
+
+.agent[data-state="working"]::before,
+.agent[data-state="done"]::before { background: var(--hue); }
+
+.agent[data-state="working"] { background: color-mix(in srgb, var(--hue) 7%, transparent); }
+.agent[data-state="done"]    { background: color-mix(in srgb, var(--hue) 4%, transparent); }
+
+.agent[data-state="working"] .agent-badge,
+.agent[data-state="done"] .agent-badge {
+  color: #fff;
+  background: var(--hue);
+  border-color: var(--hue);
+}
+
+.agent[data-state="working"] .agent-name,
+.agent[data-state="done"] .agent-name { color: var(--ink); }
+
+.agent[data-state="working"] .agent-state,
+.agent[data-state="done"] .agent-state { color: var(--hue); font-weight: 600; }
+
+/* 监护读数 */
+.readout {
+  margin: 0;
+  padding: 12px 18px 2px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.readout-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.readout-row dt {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  flex: none;
+}
+
+.readout-row dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* 接诊记录 */
+.rail-log { padding: 14px 18px 0; }
+
+.rail-log h3 {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin: 0 0 9px;
+  letter-spacing: 0.05em;
+}
+
+.rail-log ul { list-style: none; margin: 0; padding: 0; }
+
+.rail-log li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.rail-log li::before {
+  content: "";
+  position: absolute;
+  left: 3px; top: 8px;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--rule);
+}
+.rail-log li[data-live="1"]::before { background: var(--clinic); }
+
+/* ---------- 页脚 ---------- */
+
+.footnote {
+  flex: none;
+  padding: 0 var(--gutter) 14px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  text-align: center;
+}
+
+/* ---------- 滚动条 ---------- */
+
+.thread::-webkit-scrollbar,
+.rail-inner::-webkit-scrollbar { width: 9px; }
+.thread::-webkit-scrollbar-thumb,
+.rail-inner::-webkit-scrollbar-thumb {
+  background: #c6d3d9;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 5px;
+}
+.thread::-webkit-scrollbar-thumb:hover,
+.rail-inner::-webkit-scrollbar-thumb:hover { background: #a5b7bf; background-clip: content-box; }
+
+/* ---------- 响应式 ---------- */
+
+@media (max-width: 980px) {
+  /* 窄屏改为整页滚动。
+     若继续沿用桌面端的固定高度 grid，会诊面板所在行的行高会被压到几十像素，
+    .rail-inner 就会溢出并盖住下面的问诊区。 */
+  .shell { height: auto; min-height: 100%; }
+
+  .workspace {
+    /* flex: none 是关键：否则 .workspace 会被父容器压到视口高度，
+       固定高度的 grid 再把会诊面板所在行压缩到几十像素，内容溢出重叠。 */
+    flex: none;
+    min-height: auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: auto;
+    gap: 16px;
+    padding: 16px;
+  }
+
+  .rail { order: -1; min-height: auto; }
+  .rail-inner { height: auto; overflow: visible; }
+  .rail-log { display: none; }
+
+  .thread-col { min-height: auto; overflow: visible; }
+  .thread { overflow: visible; padding: 20px 18px 4px; }
+
+  .composer {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+
+  .footnote { padding-top: 14px; }
+}
+
+@media (max-width: 620px) {
+  :root { --gutter: 14px; }
+  body { font-size: 15px; }
+  .thread { padding: 18px 16px 4px; }
+  .brand-text em { display: none; }
+  .ask { max-width: 92%; }
+  .empty h1 { font-size: 21px; }
+  .vitals { gap: 12px; }
+  .vitals-state { font-size: 12px; }
+  .note-body { padding: 4px 14px 14px; }
+  .advice, .disclaimer { margin-left: 14px; margin-right: 14px; }
+  .risk { margin-left: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

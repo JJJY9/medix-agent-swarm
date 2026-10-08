@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediX · 多智能体医疗助手</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <rect x="9.2" y="2.5" width="5.6" height="19" rx="1.4"/>
+          <rect x="2.5" y="9.2" width="19" height="5.6" rx="1.4"/>
+        </svg>
+      </span>
+      <span class="brand-text">
+        <strong>MediX</strong>
+        <em>多智能体医疗助手</em>
+      </span>
+    </div>
+
+    <button type="button" class="btn-quiet" id="new-session">新建会诊</button>
+  </header>
+
+  <!-- 生命体征条：心电波形随系统状态改变节律 -->
+  <div class="vitals" id="vitals" data-state="pending">
+    <div class="vitals-trace" aria-hidden="true">
+      <div class="vitals-track">
+        <svg viewBox="0 0 1200 44" preserveAspectRatio="none"><path d=""/></svg>
+        <svg viewBox="0 0 1200 44" preserveAspectRatio="none"><path d=""/></svg>
+      </div>
+    </div>
+    <p class="vitals-state">
+      <span class="vitals-dot" aria-hidden="true"></span>
+      <span class="vitals-text" id="vitals-text">连接中</span>
+    </p>
+  </div>
+
+  <div class="banner" id="config-banner" hidden></div>
+
+  <main class="workspace">
+
+    <div class="thread-col">
+      <div class="thread" id="thread" role="log" aria-live="polite" aria-label="问诊记录">
+
+        <div class="empty" id="empty-state">
+          <h1>描述您的症状，由多学科会诊给出综合意见</h1>
+          <p class="empty-lede">
+            系统先做分诊：简单问题由单个科室接诊，复杂问题转多学科会诊，由三个科室分别出具意见后汇总结论。
+          </p>
+          <div class="empty-note">
+            <span class="empty-note-k">急症提示</span>
+            出现剧烈胸痛、呼吸困难、意识模糊、言语不清等表现，请立即拨打 120 或前往急诊科，不要等待系统回复。
+          </div>
+          <p class="empty-starters-label">常见主诉</p>
+          <div class="starters" id="starters">
+            <button type="button" class="starter" data-q="我最近经常头晕乏力，血压有点高，平时应该注意什么？">
+              血压偏高，日常该注意什么
+            </button>
+            <button type="button" class="starter" data-q="最近三天持续发热咳嗽，伴有咽痛，需要去医院吗？">
+              持续发热咳嗽，要就医吗
+            </button>
+            <button type="button" class="starter" data-q="2型糖尿病的ICD-10编码是什么？有哪些临床指南可以参考？">
+              糖尿病编码与临床指南
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="sr-only" for="input">您的主诉</label>
+        <textarea id="input" rows="1" placeholder="请描述症状及持续时间…" maxlength="2000"></textarea>
+        <button type="submit" class="send" id="send">
+          <span class="send-label">提交</span>
+          <svg class="send-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 10h13M11 5l5 5-5 5"/>
+          </svg>
+        </button>
+      </form>
+    </div>
+
+    <aside class="rail" aria-label="会诊科室">
+      <div class="rail-inner">
+
+        <div class="rail-head">
+          <h2>多学科会诊</h2>
+          <span class="rail-scan" id="rail-scan" hidden aria-hidden="true"></span>
+        </div>
+
+        <ol class="agents" id="agents">
+          <li class="agent" data-agent="consultation_agent">
+            <span class="agent-badge" aria-hidden="true">咨</span>
+            <span class="agent-body">
+              <span class="agent-name">健康咨询</span>
+              <span class="agent-dept">全科门诊</span>
+            </span>
+            <span class="agent-state">待命</span>
+          </li>
+          <li class="agent" data-agent="diagnostic_agent">
+            <span class="agent-badge" aria-hidden="true">诊</span>
+            <span class="agent-body">
+              <span class="agent-name">症状诊断</span>
+              <span class="agent-dept">急诊医学科</span>
+            </span>
+            <span class="agent-state">待命</span>
+          </li>
+          <li class="agent" data-agent="research_agent">
+            <span class="agent-badge" aria-hidden="true">研</span>
+            <span class="agent-body">
+              <span class="agent-name">医学研究</span>
+              <span class="agent-dept">循证医学中心</span>
+            </span>
+            <span class="agent-state">待命</span>
+          </li>
+        </ol>
+
+        <dl class="readout" id="readout">
+          <div class="readout-row">
+            <dt>接诊方式</dt>
+            <dd id="r-mode">—</dd>
+          </div>
+          <div class="readout-row">
+            <dt>参与科室</dt>
+            <dd id="r-agents">—</dd>
+          </div>
+          <div class="readout-row">
+            <dt>完成项目</dt>
+            <dd id="r-tasks">—</dd>
+          </div>
+          <div class="readout-row">
+            <dt>会诊用时</dt>
+            <dd id="r-time">—</dd>
+          </div>
+          <div class="readout-row">
+            <dt>知识库</dt>
+            <dd id="r-kb">—</dd>
+          </div>
+          <div class="readout-row">
+            <dt>会诊编号</dt>
+            <dd id="r-session">—</dd>
+          </div>
+        </dl>
+
+        <section class="rail-log" id="rail-log" hidden>
+          <h3>接诊记录</h3>
+          <ul id="rail-log-list"></ul>
+        </section>
+
+      </div>
+    </aside>
+
+  </main>
+
+  <footer class="footnote">
+    本系统为学习研究用途，会诊意见不构成医疗建议，不能替代执业医师的诊断与治疗。
+  </footer>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
