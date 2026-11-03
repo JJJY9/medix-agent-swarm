@@ -41,6 +41,7 @@
 - **💬 会诊操作**: 复制意见、导出 Markdown、再次会诊、停止生成 ✅
 - **⌨️ 键盘与无障碍**: 跳到输入框、Enter 发送 / Shift+Enter 换行、Esc 关闭抽屉、焦点圈定与语义标签 ✅
 - **🌗 深色模式**: 跟随系统偏好，可手动切换并记住选择 ✅
+- **🔒 访问保护**: 可选 `MEDIX_ACCESS_TOKEN`，暴露到局域网时保护模型调用与会诊记录 ✅
 - **💾 Milvus 知识库**: 统一知识管理，语义检索，支持模糊查询（"血压高" → "高血压"）✅
 - **⚡ Claude Code Skills**: 8个预定义技能（7个原子 + 1个复杂），一键调用医疗助手 ✅
 - **🏗️ Harness Engineering**: 约束驱动 + 熵管理，系统自动验证和优化，保证安全、简洁、高质量 ✅
@@ -121,6 +122,8 @@ python api_server.py --port 8080          # 换端口
 python api_server.py --host 0.0.0.0       # 允许局域网访问
 python api_server.py --reload             # 开发模式，改代码自动重载
 ```
+
+> 用 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`。设置后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer` 或 `?token=`）。
 
 ### 界面说明
 
@@ -209,6 +212,8 @@ npm install -D playwright
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库） |
 
 `/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数），每条会话也带有各自的 `usage` 与 `llm_calls`。
+
+设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
