@@ -493,19 +493,48 @@ function buildMarkdown(payload, question) {
   return lines.join('\n');
 }
 
-function downloadMarkdown(payload, question) {
-  const blob = new Blob([buildMarkdown(payload, question)], {
-    type: 'text/markdown;charset=utf-8',
-  });
+function downloadFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const stamp = (sessionId || String(Date.now())).slice(-12);
   a.href = url;
-  a.download = `medix-consult-${stamp}.md`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function downloadMarkdown(payload, question) {
+  const stamp = (sessionId || String(Date.now())).slice(-12);
+  downloadFile(buildMarkdown(payload, question), `medix-consult-${stamp}.md`);
+}
+
+function buildSessionMarkdown(item, messages) {
+  const lines = [`# ${item.title || 'MediX 会诊记录'}`, ''];
+  lines.push(`- 会话编号：${item.id}`);
+  lines.push(`- 更新时间：${formatTime(item.updated_at || item.created_at)}`);
+  lines.push(`- 消息数：${messages.length}`);
+  lines.push('');
+
+  let turn = 0;
+  let question = '';
+  for (const message of messages) {
+    if (message.role === 'user') {
+      question = message.content || '';
+    } else if (message.role === 'assistant' && message.content) {
+      turn += 1;
+      lines.push(`## 第 ${turn} 轮`, '');
+      if (question) {
+        lines.push('### 主诉', '', question, '');
+      }
+      lines.push('### 会诊意见', '', message.content.trim(), '');
+      question = '';
+    }
+  }
+
+  lines.push('---', '', '本文件由 MediX 生成，仅供参考，不能替代执业医师的诊断与治疗。', '');
+  return lines.join('\n');
 }
 
 function renderAnswer(payload, elapsedSeconds, question = '') {
@@ -778,14 +807,32 @@ function renderHistoryItems(sessions) {
     open.append(title, meta, preview);
     open.addEventListener('click', () => openSession(item.id));
 
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'history-action';
+    rename.textContent = '改名';
+    rename.title = '重命名这次会诊';
+    rename.addEventListener('click', () => renameHistory(item));
+
+    const exportBtn = document.createElement('button');
+    exportBtn.type = 'button';
+    exportBtn.className = 'history-action';
+    exportBtn.textContent = '导出';
+    exportBtn.title = '导出整段会诊记录为 Markdown';
+    exportBtn.addEventListener('click', () => exportHistory(item));
+
     const del = document.createElement('button');
     del.type = 'button';
-    del.className = 'history-delete';
+    del.className = 'history-action danger';
     del.textContent = '删除';
     del.title = '删除这次会诊记录';
     del.addEventListener('click', () => deleteHistory(item));
 
-    li.append(open, del);
+    actions.append(rename, exportBtn, del);
+    li.append(open, actions);
     els.historyList.appendChild(li);
   }
 }
@@ -891,6 +938,48 @@ async function deleteHistory(item) {
       els.readout.session.textContent = '—';
     }
     await loadHistory(els.historySearch.value.trim());
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
+}
+
+async function renameHistory(item) {
+  const current = item.title || '未命名会诊';
+  const next = window.prompt('重命名这次会诊', current);
+  if (next === null) return;
+
+  const title = next.trim();
+  if (!title || title === current) return;
+
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(item.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) throw new Error(`重命名失败（${res.status}）`);
+    await loadHistory(els.historySearch.value.trim());
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
+}
+
+async function exportHistory(item) {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(item.id)}/messages?limit=500`
+    );
+    if (!res.ok) throw new Error(`读取会诊记录失败（${res.status}）`);
+    const data = await res.json();
+    const messages = data.messages || [];
+    if (!messages.length) {
+      window.alert('这次会诊还没有可导出的内容。');
+      return;
+    }
+    downloadFile(
+      buildSessionMarkdown(item, messages),
+      `medix-session-${item.id}.md`
+    );
   } catch (err) {
     window.alert(err.message || String(err));
   }
