@@ -66,6 +66,11 @@ class RenameSessionRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=40, description="新的会话标题")
 
 
+class ImportSessionsRequest(BaseModel):
+    version: Optional[int] = None
+    sessions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 # ===== 应用状态 =====
 
 class AppState:
@@ -275,6 +280,25 @@ async def export_sessions():
         logger.exception("导出会话失败")
         raise HTTPException(status_code=500, detail=f"导出会话失败：{e}")
     return data
+
+
+@app.post("/api/sessions/import")
+async def import_sessions(request: ImportSessionsRequest):
+    """导入备份文件；已存在的会话编号会跳过，不覆盖现有记录。"""
+    from memory import get_session_store
+
+    payload = {"version": request.version, "sessions": request.sessions}
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, payload
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("导入会话失败")
+        raise HTTPException(status_code=500, detail=f"导入会话失败：{e}")
+
+    return {"ok": True, **result}
 
 
 @app.get("/api/sessions/{session_id}/messages")

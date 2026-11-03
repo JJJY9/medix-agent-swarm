@@ -32,6 +32,8 @@ const els = {
   historyList: document.getElementById('history-list'),
   historySummary: document.getElementById('history-summary'),
   historyExport: document.getElementById('history-export'),
+  historyImport: document.getElementById('history-import'),
+  historyImportFile: document.getElementById('history-import-file'),
   historyMore: document.getElementById('history-more'),
   usageTrend: document.getElementById('usage-trend'),
   usageTrendTotal: document.getElementById('usage-trend-total'),
@@ -1482,6 +1484,59 @@ async function exportHistoryBackup() {
   }
 }
 
+async function importHistoryBackup() {
+  const file = els.historyImportFile.files && els.historyImportFile.files[0];
+  if (!file) return;
+
+  try {
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      window.alert('备份文件不是有效的 JSON。');
+      return;
+    }
+
+    const count = Array.isArray(data.sessions) ? data.sessions.length : 0;
+    if (!count) {
+      window.alert('备份文件中没有会话。');
+      return;
+    }
+    if (!window.confirm(`导入 ${count} 个会话？已存在的会话编号会跳过。`)) {
+      return;
+    }
+
+    const btn = els.historyImport;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '导入中…';
+
+    try {
+      const res = await fetch('/api/sessions/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: data.version, sessions: data.sessions }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
+
+      btn.textContent = `已导入 ${result.imported || 0} 次`;
+      await loadHistory(els.historySearch.value.trim());
+      await loadUsageTrend();
+    } catch (err) {
+      btn.textContent = '导入失败';
+      window.alert(`导入备份失败：${err.message || err}`);
+    } finally {
+      setTimeout(() => {
+        btn.textContent = original;
+        btn.disabled = false;
+      }, 1800);
+    }
+  } finally {
+    els.historyImportFile.value = '';
+  }
+}
+
 let lastFocused = null;
 
 function openHistory() {
@@ -2563,6 +2618,8 @@ els.historyMore.addEventListener('click', () => {
 });
 
 els.historyExport.addEventListener('click', exportHistoryBackup);
+els.historyImport.addEventListener('click', () => els.historyImportFile.click());
+els.historyImportFile.addEventListener('change', importHistoryBackup);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {

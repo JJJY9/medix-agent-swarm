@@ -408,6 +408,106 @@ class SessionStore:
             "sessions": exported,
         }
 
+    def import_data(self, data: Any, max_sessions: int = 200) -> Dict[str, int]:
+        """导入备份数据；已存在的会话编号直接跳过，不覆盖现有记录。"""
+        if not isinstance(data, dict):
+            raise ValueError("备份文件格式不正确。")
+
+        raw_sessions = data.get("sessions")
+        if not isinstance(raw_sessions, list) or not raw_sessions:
+            raise ValueError("备份文件中没有会话。")
+        if len(raw_sessions) > max_sessions:
+            raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
+
+        imported = 0
+        skipped = 0
+        invalid = 0
+        messages_imported = 0
+        now = self._now()
+
+        with self._lock, self._conn:
+            for raw in raw_sessions:
+                if not isinstance(raw, dict):
+                    invalid += 1
+                    continue
+
+                session_id = str(raw.get("id") or "").strip()[:120]
+                if not session_id:
+                    invalid += 1
+                    continue
+
+                exists = self._conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if exists:
+                    skipped += 1
+                    continue
+
+                raw_messages = raw.get("messages")
+                if not isinstance(raw_messages, list):
+                    invalid += 1
+                    continue
+
+                prepared = []
+                for message in raw_messages[:1000]:
+                    if not isinstance(message, dict):
+                        continue
+                    role = message.get("role")
+                    content = message.get("content")
+                    if role not in ("user", "assistant"):
+                        continue
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+
+                    metadata = message.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    created_at = str(message.get("created_at") or now)[:40]
+                    prepared.append((
+                        role,
+                        content,
+                        json.dumps(metadata, ensure_ascii=False),
+                        created_at,
+                    ))
+
+                if not prepared:
+                    invalid += 1
+                    continue
+
+                title = (
+                    str(raw.get("title") or "").strip()[:MAX_TITLE_LENGTH]
+                    or self._make_title(prepared[0][1])
+                )
+                created_at = str(raw.get("created_at") or now)[:40]
+                updated_at = str(raw.get("updated_at") or created_at)[:40]
+
+                self._conn.execute(
+                    """
+                    INSERT INTO sessions(id, title, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (session_id, title, created_at, updated_at),
+                )
+                self._conn.executemany(
+                    """
+                    INSERT INTO messages(session_id, role, content, metadata, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (session_id, role, content, metadata_json, created_at_text)
+                        for role, content, metadata_json, created_at_text in prepared
+                    ],
+                )
+                imported += 1
+                messages_imported += len(prepared)
+
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "invalid": invalid,
+            "messages": messages_imported,
+        }
+
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
         if not title:

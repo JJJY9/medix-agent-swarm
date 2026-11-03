@@ -117,6 +117,48 @@ def test_usage_daily_api(tmp_path, monkeypatch):
     assert data["totals"]["llm_calls"] == 2
 
 
+def test_sessions_import_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    payload = {
+        "version": 1,
+        "sessions": [{
+            "id": "imported-1",
+            "title": "导入的会诊",
+            "created_at": "2026-01-01T10:00:00",
+            "updated_at": "2026-01-01T10:00:00",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "导入的问题",
+                    "metadata": {},
+                    "created_at": "2026-01-01T10:00:00",
+                },
+                {
+                    "role": "assistant",
+                    "content": "导入的答复",
+                    "metadata": {"usage": {"total_tokens": 5}},
+                    "created_at": "2026-01-01T10:00:00",
+                },
+            ],
+        }],
+    }
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.post("/api/sessions/import", json=payload)
+        again = client.post("/api/sessions/import", json=payload)
+        empty = client.post("/api/sessions/import", json={"sessions": []})
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert response.json()["imported"] == 1
+    assert again.json()["skipped"] == 1
+    assert empty.status_code == 400
+
+
 def test_sessions_export_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(
