@@ -21,6 +21,7 @@ const els = {
   ctxHistory: document.getElementById('ctx-history'),
   ctxMedications: document.getElementById('ctx-medications'),
   ctxAllergies: document.getElementById('ctx-allergies'),
+  ctxSingle: document.getElementById('ctx-single'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
   themeToggle: document.getElementById('theme-toggle'),
@@ -2507,7 +2508,7 @@ async function send(question) {
       body: JSON.stringify({
         question,
         session_id: sid,
-        enable_swarm: true,
+        enable_swarm: !els.ctxSingle.checked,
         context: readPatientContext(),
       }),
       signal: controller.signal,
@@ -2755,6 +2756,7 @@ function showBanner(html) {
 /* ---------- 结构化补充信息 ---------- */
 
 const CONTEXT_STORAGE_KEY = 'medix.context';
+const SINGLE_MODE_KEY = 'medix.singleMode';
 
 function readPatientContext() {
   const context = {};
@@ -2814,6 +2816,7 @@ function loadSavedContext() {
   try {
     const raw = sessionStorage.getItem(CONTEXT_STORAGE_KEY);
     if (raw) applyPatientContext(JSON.parse(raw));
+    els.ctxSingle.checked = sessionStorage.getItem(SINGLE_MODE_KEY) === '1';
   } catch {
     // 忽略损坏的缓存
   }
@@ -2996,6 +2999,18 @@ els.contextPanel.addEventListener('change', updateContextSummary);
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});
   els.ctxAge.focus();
+});
+
+els.ctxSingle.addEventListener('change', () => {
+  try {
+    if (els.ctxSingle.checked) {
+      sessionStorage.setItem(SINGLE_MODE_KEY, '1');
+    } else {
+      sessionStorage.removeItem(SINGLE_MODE_KEY);
+    }
+  } catch {
+    // 忽略
+  }
 });
 
 let historySearchTimer = null;

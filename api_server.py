@@ -578,11 +578,14 @@ async def chat(request: ChatRequest):
     async with state.lock:
         try:
             coordinator = state.get_coordinator()
-            result = await coordinator.process(
-                question=request.question,
-                context=request.context,
-                session_id=session_id,
-            )
+            process_kwargs = {
+                "question": request.question,
+                "context": request.context,
+                "session_id": session_id,
+            }
+            if not request.enable_swarm:
+                process_kwargs["enable_swarm"] = False
+            result = await coordinator.process(**process_kwargs)
         except LLMError as e:
             logger.error(f"模型调用失败: {e.code} - {e.user_message}")
             raise HTTPException(
@@ -643,13 +646,16 @@ async def chat_stream(request: ChatRequest):
             def on_token(delta: str) -> None:
                 token_queue.put_nowait(delta)
 
+            stream_kwargs = {
+                "question": request.question,
+                "context": request.context,
+                "session_id": session_id,
+                "on_token": on_token,
+            }
+            if not request.enable_swarm:
+                stream_kwargs["enable_swarm"] = False
             task = asyncio.create_task(
-                coordinator.process(
-                    question=request.question,
-                    context=request.context,
-                    session_id=session_id,
-                    on_token=on_token,
-                )
+                coordinator.process(**stream_kwargs)
             )
 
             seen_agents = set()
