@@ -11,6 +11,16 @@ const els = {
   composer: document.getElementById('composer'),
   input: document.getElementById('input'),
   skipLink: document.getElementById('skip-link'),
+  contextToggle: document.getElementById('context-toggle'),
+  contextPanel: document.getElementById('context-panel'),
+  contextSummary: document.getElementById('context-summary'),
+  contextClear: document.getElementById('context-clear'),
+  ctxAge: document.getElementById('ctx-age'),
+  ctxSex: document.getElementById('ctx-sex'),
+  ctxDuration: document.getElementById('ctx-duration'),
+  ctxHistory: document.getElementById('ctx-history'),
+  ctxMedications: document.getElementById('ctx-medications'),
+  ctxAllergies: document.getElementById('ctx-allergies'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
   themeToggle: document.getElementById('theme-toggle'),
@@ -1427,6 +1437,10 @@ function renderStoredMessages(messages) {
     els.readout.usage.title = usageDetail(lastUsage, lastLlmCalls);
   }
 
+  if (lastMetadata && lastMetadata.patient_context) {
+    applyPatientContext(lastMetadata.patient_context);
+  }
+
   scrollThreadToBottom(true);
 }
 
@@ -1931,7 +1945,12 @@ async function send(question) {
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, session_id: sid, enable_swarm: true }),
+      body: JSON.stringify({
+        question,
+        session_id: sid,
+        enable_swarm: true,
+        context: readPatientContext(),
+      }),
       signal: controller.signal,
     });
 
@@ -2162,6 +2181,73 @@ function showBanner(html) {
   els.banner.hidden = false;
 }
 
+/* ---------- 结构化补充信息 ---------- */
+
+const CONTEXT_STORAGE_KEY = 'medix.context';
+
+function readPatientContext() {
+  const context = {};
+  const age = els.ctxAge.value.trim();
+  if (age) context.age = age;
+  if (els.ctxSex.value) context.sex = els.ctxSex.value;
+
+  const duration = els.ctxDuration.value.trim();
+  if (duration) context.duration = duration;
+  const history = els.ctxHistory.value.trim();
+  if (history) context.history = history;
+  const medications = els.ctxMedications.value.trim();
+  if (medications) context.medications = medications;
+  const allergies = els.ctxAllergies.value.trim();
+  if (allergies) context.allergies = allergies;
+
+  return context;
+}
+
+function updateContextSummary() {
+  const context = readPatientContext();
+  const parts = [];
+  if (context.age) parts.push(`${context.age} 岁`);
+  if (context.sex) parts.push(context.sex);
+  if (context.duration) parts.push(context.duration);
+  if (context.history) parts.push('有既往病史');
+  if (context.medications) parts.push('有用药');
+  if (context.allergies) parts.push('有过敏史');
+
+  els.contextSummary.textContent = parts.join(' · ');
+  els.contextSummary.hidden = parts.length === 0;
+  els.contextToggle.classList.toggle('has-context', parts.length > 0);
+
+  try {
+    if (parts.length) {
+      sessionStorage.setItem(CONTEXT_STORAGE_KEY, JSON.stringify(context));
+    } else {
+      sessionStorage.removeItem(CONTEXT_STORAGE_KEY);
+    }
+  } catch {
+    // 隐私模式下 sessionStorage 不可用时忽略
+  }
+}
+
+function applyPatientContext(context) {
+  const data = context && typeof context === 'object' ? context : {};
+  els.ctxAge.value = data.age || '';
+  els.ctxSex.value = data.sex || '';
+  els.ctxDuration.value = data.duration || '';
+  els.ctxHistory.value = data.history || '';
+  els.ctxMedications.value = data.medications || '';
+  els.ctxAllergies.value = data.allergies || '';
+  updateContextSummary();
+}
+
+function loadSavedContext() {
+  try {
+    const raw = sessionStorage.getItem(CONTEXT_STORAGE_KEY);
+    if (raw) applyPatientContext(JSON.parse(raw));
+  } catch {
+    // 忽略损坏的缓存
+  }
+}
+
 /* ---------- 事件绑定 ---------- */
 
 function autoGrow() {
@@ -2247,6 +2333,21 @@ els.authToken.addEventListener('input', () => {
   els.authError.hidden = true;
 });
 
+els.contextToggle.addEventListener('click', () => {
+  const opening = els.contextPanel.hidden;
+  els.contextPanel.hidden = !opening;
+  els.contextToggle.setAttribute('aria-expanded', String(opening));
+  if (opening) els.ctxAge.focus();
+});
+
+els.contextPanel.addEventListener('input', updateContextSummary);
+els.contextPanel.addEventListener('change', updateContextSummary);
+
+els.contextClear.addEventListener('click', () => {
+  applyPatientContext({});
+  els.ctxAge.focus();
+});
+
 let historySearchTimer = null;
 els.historySearch.addEventListener('input', () => {
   clearTimeout(historySearchTimer);
@@ -2323,6 +2424,7 @@ els.starters.addEventListener('click', (e) => {
 resetRail();
 initTheme();
 renderEcg();
+loadSavedContext();
 restoreCurrentSession();
 checkStatus();
 setInterval(checkStatus, 20000);
