@@ -13,7 +13,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
-from core.llm_client import LLMClient
+from core.llm_client import LLMClient, LLMError
 from .shared_context import SharedContext, SubTask, TaskStatus
 from .events import Event, EventType
 
@@ -363,6 +363,8 @@ class LeadAgent:
                 "reason": payload.get("reason", "由 LeadAgent 分解")
             }
 
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"LeadAgent assessment error: {e}")
             return {
@@ -567,6 +569,8 @@ class LeadAgent:
 
             return response
 
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"Synthesis error: {e}")
             return f"汇总结果时出错：{e}"

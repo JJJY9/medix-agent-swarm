@@ -4,13 +4,14 @@ Agent循环引擎
 支持短期记忆集成
 支持约束验证（Harness Engineering）
 """
+import asyncio
 import uuid
 import json
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
 from .state_manager import StateManager, TaskStatus
-from .llm_client import LLMResponse
+from .llm_client import LLMResponse, LLMError
 
 # Harness Engineering: 约束验证和自动修复
 try:
@@ -224,6 +225,19 @@ class AgentLoop:
                         )
                         break
 
+                except LLMError as e:
+                    logger.error(
+                        f"LLM error in iteration {state.iteration}: "
+                        f"{e.code} - {e.user_message}"
+                    )
+                    if not e.retryable:
+                        # Key 无效、余额不足等错误重试没有意义，直接向上抛
+                        state.mark_failed(e.user_message)
+                        raise
+                    if state.iteration >= state.max_iterations:
+                        state.mark_failed(e.user_message)
+                        break
+                    await asyncio.sleep(min(2 ** state.iteration, 8))
                 except Exception as e:
                     logger.error(f"Error in iteration {state.iteration}: {e}")
                     if state.iteration >= state.max_iterations:

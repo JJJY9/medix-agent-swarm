@@ -223,7 +223,10 @@ cp .env.example .env
 MEDIX_API_KEY=你的-api-key
 MEDIX_MODEL=doubao-seed-1-6-flash-250828
 MEDIX_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+MEDIX_TIMEOUT=60
 ```
+
+`MEDIX_TIMEOUT` 是单次模型请求超时（秒），可不填，默认 60。服务会把 401（Key 无效）、402（余额不足）、429（限流）、超时和网络错误转换成可读提示，其中 401/402 不会反复重试。
 
 **方式二**：编辑上一层目录的 `config.py`：
 
