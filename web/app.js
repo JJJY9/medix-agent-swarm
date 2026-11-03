@@ -21,6 +21,7 @@ const els = {
   historySearch: document.getElementById('history-search'),
   historyList: document.getElementById('history-list'),
   historySummary: document.getElementById('history-summary'),
+  historyMore: document.getElementById('history-more'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
@@ -79,6 +80,10 @@ let activeController = null;
 let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
+let historyQuery = '';
+let historyOffset = 0;
+let historyTotal = 0;
+let historyLoading = false;
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -1113,17 +1118,18 @@ function formatTime(value) {
   return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function renderHistoryItems(sessions, summary) {
-  els.historyList.replaceChildren();
+function renderHistoryItems(sessions, summary, append = false) {
+  if (!append) els.historyList.replaceChildren();
   renderHistorySummary(summary);
-  els.historyEmpty.hidden = sessions.length > 0;
 
-  if (!sessions.length) {
+  if (!sessions.length && !els.historyList.children.length) {
+    els.historyEmpty.hidden = false;
     els.historyEmpty.textContent = els.historySearch.value.trim()
       ? '没有匹配的会诊记录'
       : '还没有历史会诊，提交一次主诉后会自动保存。';
     return;
   }
+  els.historyEmpty.hidden = true;
 
   for (const item of sessions) {
     const li = document.createElement('li');
@@ -1199,6 +1205,9 @@ function renderHistorySummary(summary) {
   const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
   const llmCalls = Number(summary.llm_calls || 0);
   const parts = [`共 ${summary.sessions} 次会诊`];
+  if (summary.loaded && summary.loaded < summary.sessions) {
+    parts.push(`已加载 ${summary.loaded} 次`);
+  }
   if (summary.turns) parts.push(`${summary.turns} 轮`);
   if (totalTokens > 0) parts.push(`${totalTokens.toLocaleString()} tokens`);
   if (llmCalls > 0) parts.push(`${llmCalls} 次调用`);
@@ -1207,15 +1216,58 @@ function renderHistorySummary(summary) {
   els.historySummary.hidden = false;
 }
 
-async function loadHistory(query = '') {
+function updateHistoryMore(summary) {
+  const total = Number(summary && summary.sessions || 0);
+  const loaded = Number(summary && summary.loaded || 0);
+
+  if (loaded < total) {
+    els.historyMore.hidden = false;
+    els.historyMore.disabled = historyLoading;
+    els.historyMore.textContent = historyLoading
+      ? '加载中…'
+      : `加载更多（已加载 ${loaded} / 共 ${total}）`;
+  } else {
+    els.historyMore.hidden = true;
+    els.historyMore.disabled = false;
+  }
+}
+
+async function loadHistory(query = '', { append = false } = {}) {
+  if (!append) {
+    historyQuery = query;
+    historyOffset = 0;
+    historyTotal = 0;
+  }
+
+  historyLoading = true;
+  updateHistoryMore({ sessions: historyTotal, loaded: historyOffset });
+
   try {
-    const res = await fetch(`/api/sessions?limit=50&q=${encodeURIComponent(query)}`);
+    const res = await fetch(
+      `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}`
+    );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
-    renderHistoryItems(data.sessions || [], data.summary);
+    const sessions = data.sessions || [];
+    const loadedTotal = historyOffset + sessions.length;
+    const viewSummary = { ...(data.summary || {}), loaded: loadedTotal };
+
+    renderHistoryItems(sessions, viewSummary, append);
+    historyTotal = Number(viewSummary.sessions || 0);
+    historyOffset = loadedTotal;
+    historyLoading = false;
+    updateHistoryMore(viewSummary);
   } catch (err) {
+    historyLoading = false;
+    if (append) {
+      els.historyMore.hidden = false;
+      els.historyMore.disabled = false;
+      els.historyMore.textContent = '加载更多失败，点击重试';
+      return;
+    }
     els.historyList.replaceChildren();
     els.historySummary.hidden = true;
+    els.historyMore.hidden = true;
     els.historyEmpty.hidden = false;
     els.historyEmpty.textContent = `会诊记录加载失败：${err.message || err}`;
   }
@@ -1236,6 +1288,12 @@ function openHistory() {
   els.historyList.replaceChildren();
   els.historySummary.hidden = true;
   els.historySummary.textContent = '';
+  historyQuery = '';
+  historyOffset = 0;
+  historyTotal = 0;
+  historyLoading = false;
+  els.historyMore.hidden = true;
+  els.historyMore.disabled = false;
   els.historyEmpty.hidden = false;
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
@@ -2100,6 +2158,11 @@ els.historySearch.addEventListener('input', () => {
   historySearchTimer = setTimeout(() => {
     loadHistory(els.historySearch.value.trim());
   }, 220);
+});
+
+els.historyMore.addEventListener('click', () => {
+  if (historyLoading) return;
+  loadHistory(historyQuery, { append: true });
 });
 
 document.addEventListener('keydown', (e) => {
