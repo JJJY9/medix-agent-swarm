@@ -350,6 +350,75 @@ async def usage_daily(days: int = 7, favorite: Optional[bool] = None):
     )
 
 
+@app.get("/api/usage/export.csv")
+async def usage_export_csv(days: int = 7, favorite: Optional[bool] = None):
+    """导出按日用量 CSV（带 BOM，Excel 可直接打开）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 7), 30))
+    data = await asyncio.to_thread(
+        get_session_store().daily_usage, days, bool(favorite)
+    )
+    pricing = get_pricing()
+
+    header = ["日期", "输入tokens", "输出tokens", "总tokens", "模型调用次数", "会诊轮次"]
+    if pricing:
+        header.append(f"预估费用({pricing['currency']})")
+
+    rows = [header]
+    for day in data["days"]:
+        usage = day["usage"]
+        row = [
+            day["date"],
+            usage["prompt_tokens"],
+            usage["completion_tokens"],
+            usage["total_tokens"],
+            day["llm_calls"],
+            day["turns"],
+        ]
+        if pricing:
+            cost = (
+                usage["prompt_tokens"] / 1_000_000 * pricing["input_per_million"]
+                + usage["completion_tokens"] / 1_000_000 * pricing["output_per_million"]
+            )
+            row.append(f"{cost:.6f}")
+        rows.append(row)
+
+    totals = data["totals"]
+    total_row = [
+        "合计",
+        totals["usage"]["prompt_tokens"],
+        totals["usage"]["completion_tokens"],
+        totals["usage"]["total_tokens"],
+        totals["llm_calls"],
+        totals["turns"],
+    ]
+    if pricing:
+        cost = (
+            totals["usage"]["prompt_tokens"] / 1_000_000 * pricing["input_per_million"]
+            + totals["usage"]["completion_tokens"] / 1_000_000 * pricing["output_per_million"]
+        )
+        total_row.append(f"{cost:.6f}")
+    rows.append(total_row)
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-usage-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/sessions/export")
 async def export_sessions():
     """导出全部会话与消息（JSON），用于本地备份或迁移。"""

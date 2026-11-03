@@ -200,6 +200,35 @@ def test_sessions_import_api(tmp_path, monkeypatch):
     assert empty.status_code == 400
 
 
+def test_usage_export_csv(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEDIX_PRICE_INPUT", raising=False)
+    monkeypatch.delenv("MEDIX_PRICE_OUTPUT", raising=False)
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "今天的问题", "今天的答复",
+        metadata={
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+            "llm_calls": 2,
+        },
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/usage/export.csv", params={"days": 3})
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+
+    text = response.text
+    assert text.startswith("﻿日期,输入tokens,输出tokens,总tokens")
+    assert "合计" in text
+    assert ",10," in text
+
+
 def test_sessions_export_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(
