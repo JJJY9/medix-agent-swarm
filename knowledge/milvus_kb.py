@@ -18,6 +18,8 @@ except ImportError:  # pymilvus 未安装时直接使用本地向量库
 
 from sentence_transformers import SentenceTransformer
 
+from .scoring import hit_to_document
+
 
 def _create_vector_store(db_path: str):
     """
@@ -233,12 +235,9 @@ class MedicalKnowledgeBase:
         for hits in results:
             for hit in hits:
                 try:
-                    documents.append({
-                        "id": hit["id"],
-                        "content": hit["entity"]["content"],
-                        "metadata": json.loads(hit["entity"]["metadata"]),
-                        "score": 1 - hit["distance"]  # 转换为相似度分数
-                    })
+                    # COSINE 指标下 distance 已经是余弦相似度（越大越相似），
+                    # 直接作为 score，不能再做 1 - distance。
+                    documents.append(hit_to_document(hit))
                 except Exception as e:
                     logger.warning(f"Failed to parse result: {e}")
                     continue
