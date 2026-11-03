@@ -4,6 +4,7 @@ Assess Risk Skill
 """
 from typing import Dict, Any, List
 from loguru import logger
+from knowledge.sources import build_sources
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -76,6 +77,7 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
 
     # 从 RAG 知识库获取风险相关的医学建议
     kb_advice = None
+    sources = []
     try:
         kb = get_knowledge_base()
         # 根据风险等级查询相关医学知识
@@ -87,6 +89,7 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
         )
         if results and results[0]["score"] > 0.5:
             kb_advice = results[0]["content"][:300]  # 限制长度
+            sources = build_sources(results, max_items=1)
     except Exception as e:
         logger.warning(f"Failed to get KB advice: {e}")
 
@@ -94,7 +97,8 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
         "answer": format_assessment(symptoms, risk_level, reasons, recommendation, kb_advice),
         "risk_level": risk_level,
         "recommendation": recommendation,
-        "kb_advice": kb_advice
+        "kb_advice": kb_advice,
+        "sources": sources,
     }
 
 

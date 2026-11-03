@@ -16,6 +16,7 @@ from loguru import logger
 
 from core import LLMClient
 from core.triage import detect_red_flags
+from core.citations import merge_sources
 from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
@@ -533,11 +534,16 @@ class SwarmCoordinator:
             for subtask in shared_context.task_decomposition.values()
             if subtask.status == TaskStatus.FAILED
         ]
+
+        agent_contributions, sources = self._collect_insights(shared_context)
+
         result = {
             'answer': final_answer,
             'swarm_enabled': True,
             'session_id': session_id,
             'agents_involved': completed_agents,
+            'agent_contributions': agent_contributions,
+            'sources': sources,
             'subtasks_completed': len(shared_context.get_all_completed_subtasks()),
             'subtasks_failed': len(failed_subtasks),
             'total_time': (end_time - start_time).total_seconds(),
@@ -610,6 +616,25 @@ class SwarmCoordinator:
                 shared_context.fail_subtask(subtask.id, worker.agent_id, str(e))
             except ValueError as state_error:
                 logger.error(f"记录子任务失败状态时出错: {state_error}")
+
+    @staticmethod
+    def _collect_insights(shared_context: SharedContext):
+        """汇总各科室原始意见与知识库来源，供前端展示。"""
+        contributions = []
+        sources = []
+        for contribution in shared_context.get_contributions():
+            payload = contribution.result if isinstance(contribution.result, dict) else {}
+            content = payload.get("answer") or str(contribution.result)
+            subtask = shared_context.get_subtask(contribution.subtask_id)
+            contributions.append({
+                "agent_id": contribution.agent_id,
+                "subtask_id": contribution.subtask_id,
+                "task_type": subtask.type if subtask else "",
+                "content": content,
+                "confidence": contribution.confidence,
+            })
+            sources.extend(payload.get("sources") or [])
+        return contributions, merge_sources(sources)
 
     def _extract_suggestions(self, final_answer: str) -> List[str]:
         """从最终答案中提取建议（简化实现）"""

@@ -4,6 +4,7 @@ Search Knowledge Skill
 """
 from typing import Dict, Any
 from loguru import logger
+from knowledge.sources import build_sources
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -61,13 +62,15 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
         return {
             "answer": format_results(formatted_results),
             "total_found": len(formatted_results),
-            "query": query
+            "query": query,
+            "sources": build_sources(results),
         }
     else:
         return {
             "answer": f"未找到关于'{query}'的相关医学知识，请尝试更具体的查询。",
             "total_found": 0,
-            "query": query
+            "query": query,
+            "sources": [],
         }
 
 

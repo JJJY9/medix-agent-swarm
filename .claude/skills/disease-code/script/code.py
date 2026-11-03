@@ -4,6 +4,7 @@ Disease Code Skill
 """
 from typing import Dict, Any
 from loguru import logger
+from knowledge.sources import build_sources
 
 # 全局知识库实例
 _kb_instance = None
@@ -61,7 +62,8 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             "answer": format_code_info(disease_name, content),
             "icd10_code": icd10_code,
             "category": metadata.get("category", ""),
-            "source": "向量数据库"
+            "source": "向量数据库",
+            "sources": build_sources(results, max_items=1),
         }
     else:
         # 未找到相关内容
@@ -70,7 +72,8 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             "answer": f"未找到'{disease_name}'的ICD-10编码，建议使用更标准的疾病名称或联系医生咨询。",
             "icd10_code": "",
             "category": "",
-            "source": "未找到"
+            "source": "未找到",
+            "sources": [],
         }
 
 

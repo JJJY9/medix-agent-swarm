@@ -484,5 +484,5 @@ class LLMClient:
             "role": "tool",
             "tool_call_id": tool_call_id,
             "name": tool_name,
-            "content": json.dumps(result, ensure_ascii=False)
+            "content": json.dumps(result, ensure_ascii=False, default=str)
         }

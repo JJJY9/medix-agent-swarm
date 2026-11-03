@@ -57,7 +57,7 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
             "answer": format_research_report(query, report),
             "findings": report.key_findings,
             "confidence": "high" if report.confidence > 0.7 else "medium" if report.confidence > 0.4 else "low",
-            "sources": len(report.sources),
+            "source_count": len(report.sources),
             "evidence_level": report.evidence_level,
             "status": "completed",
             "data_sources": "Web Search + Milvus RAG + Evidence Synthesis"
@@ -69,7 +69,7 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
             "answer": f"深度研究失败：{str(e)}",
             "findings": [],
             "confidence": "low",
-            "sources": 0,
+            "source_count": 0,
             "status": "error"
         }
 

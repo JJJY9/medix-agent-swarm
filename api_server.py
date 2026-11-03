@@ -359,6 +359,16 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "agents_involved": [
             {"id": aid, "name": agent_labels.get(aid, aid)} for aid in raw_agents
         ],
+        "agent_contributions": [
+            {
+                **contribution,
+                "agent_name": agent_labels.get(
+                    contribution.get("agent_id"), contribution.get("agent_id")
+                ),
+            }
+            for contribution in result.get("agent_contributions") or []
+        ],
+        "sources": result.get("sources") or [],
         "subtasks_completed": result.get("subtasks_completed", 0),
         "subtasks_failed": result.get("subtasks_failed", 0),
         "triage": result.get("triage") or {"level": "none", "matches": [], "message": ""},
