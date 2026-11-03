@@ -59,6 +59,9 @@ const els = {
   kbStatus: document.getElementById('kb-status'),
   kbList: document.getElementById('kb-list'),
   kbBody: document.getElementById('kb-body'),
+  kbSearchInput: document.getElementById('kb-search-input'),
+  kbSearchButton: document.getElementById('kb-search-button'),
+  kbSearchResults: document.getElementById('kb-search-results'),
   kbPreview: document.getElementById('kb-preview'),
   kbPreviewTitle: document.getElementById('kb-preview-title'),
   kbPreviewMeta: document.getElementById('kb-preview-meta'),
@@ -2125,6 +2128,85 @@ async function previewKbDocument(filename) {
   }
 }
 
+function renderKbSearchResults(data) {
+  const results = data.results || [];
+  els.kbSearchResults.replaceChildren();
+  els.kbSearchResults.hidden = false;
+
+  if (!results.length) {
+    const empty = document.createElement('p');
+    empty.className = 'kb-search-empty';
+    empty.textContent = '没有匹配的文档。';
+    els.kbSearchResults.appendChild(empty);
+    return;
+  }
+
+  for (const item of results) {
+    const row = document.createElement('div');
+    row.className = 'kb-search-item';
+
+    const head = document.createElement('div');
+    head.className = 'kb-search-head';
+    const title = document.createElement('strong');
+    title.textContent = item.title || item.filename || '医学知识库';
+    const score = document.createElement('span');
+    score.className = 'kb-search-score';
+    score.textContent = `${Math.round((Number(item.score) || 0) * 100)}%`;
+    head.append(title, score);
+
+    const meta = document.createElement('p');
+    meta.className = 'kb-search-meta';
+    meta.textContent = [item.source, item.filename, item.type]
+      .filter(Boolean)
+      .join(' · ');
+
+    const snippet = document.createElement('p');
+    snippet.className = 'kb-search-snippet';
+    snippet.textContent = item.snippet || '（无片段）';
+
+    row.append(head, meta, snippet);
+    els.kbSearchResults.appendChild(row);
+  }
+}
+
+async function searchKnowledgeBase() {
+  const query = els.kbSearchInput.value.trim();
+  if (!query) {
+    els.kbSearchResults.hidden = true;
+    setKbStatus('请输入检索关键词。', true);
+    return;
+  }
+
+  const button = els.kbSearchButton;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '检索中…';
+  els.kbSearchResults.hidden = false;
+  els.kbSearchResults.replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'kb-search-empty';
+  loading.textContent = '正在检索知识库…';
+  els.kbSearchResults.appendChild(loading);
+
+  try {
+    const res = await fetch(
+      `/api/knowledge/search?q=${encodeURIComponent(query)}&top_k=5`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `检索失败（${res.status}）`);
+    renderKbSearchResults(data);
+  } catch (err) {
+    els.kbSearchResults.replaceChildren();
+    const error = document.createElement('p');
+    error.className = 'kb-search-empty';
+    error.textContent = `检索失败：${err.message || err}`;
+    els.kbSearchResults.appendChild(error);
+  } finally {
+    button.textContent = original;
+    button.disabled = false;
+  }
+}
+
 async function loadKnowledge() {
   els.kbStats.textContent = '正在加载…';
   try {
@@ -2917,6 +2999,13 @@ els.kbBackdrop.addEventListener('click', () => closeKb(true));
 els.kbUpload.addEventListener('click', () => uploadKbDocument());
 els.kbRebuild.addEventListener('click', rebuildKb);
 els.kbPreviewClose.addEventListener('click', closeKbPreview);
+els.kbSearchButton.addEventListener('click', searchKnowledgeBase);
+els.kbSearchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    searchKnowledgeBase();
+  }
+});
 
 function isFileDrag(event) {
   const types = event.dataTransfer && event.dataTransfer.types;

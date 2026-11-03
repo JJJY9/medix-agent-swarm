@@ -475,6 +475,22 @@ async def knowledge_upload(
     return {"ok": True, "document": saved, "rebuild": result}
 
 
+@app.get("/api/knowledge/search")
+async def knowledge_search(q: str = "", top_k: int = 5):
+    """知识库检索测试：返回来源、相关度与原文片段。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    try:
+        result = await asyncio.to_thread(service.search, q, top_k)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("知识库检索失败")
+        raise HTTPException(status_code=500, detail=f"检索失败：{e}")
+    return result
+
+
 @app.get("/api/knowledge/documents/{filename}/preview")
 async def knowledge_preview(filename: str):
     """预览内置或上传文档的前 4000 个字符。"""

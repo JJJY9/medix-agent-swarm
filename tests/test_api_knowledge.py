@@ -52,6 +52,22 @@ class FakeService:
             "total_length": 4,
         }
 
+    def search(self, query, top_k=5):
+        if not query.strip():
+            raise ValueError("请输入检索关键词。")
+        return {
+            "query": query,
+            "top_k": top_k,
+            "results": [{
+                "title": "高血压",
+                "source": "生活方式建议数据库",
+                "filename": "01_lifestyle_hypertension.txt",
+                "type": "lifestyle",
+                "score": 0.83,
+                "snippet": "低盐饮食",
+            }],
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_knowledge(monkeypatch):
@@ -69,6 +85,29 @@ def test_knowledge_overview():
 
     assert response.status_code == 200
     assert response.json()["document_count"] == 1
+
+
+def test_knowledge_search():
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/knowledge/search", params={"q": "高血压", "top_k": 3}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["query"] == "高血压"
+    assert data["top_k"] == 3
+    assert data["results"][0]["score"] == 0.83
+    assert data["results"][0]["snippet"] == "低盐饮食"
+
+
+def test_knowledge_search_empty_query():
+    client = TestClient(api_server.app)
+
+    response = client.get("/api/knowledge/search", params={"q": "  "})
+
+    assert response.status_code == 400
 
 
 def test_knowledge_preview():
