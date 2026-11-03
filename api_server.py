@@ -542,6 +542,7 @@ async def chat_stream(request: ChatRequest):
             )
 
             seen_agents = set()
+            started_agents = set()
             last_keepalive = asyncio.get_event_loop().time()
             try:
                 while not task.done() or not token_queue.empty():
@@ -557,6 +558,27 @@ async def chat_stream(request: ChatRequest):
                         sc = getattr(worker, "shared_context", None)
                         if sc is None or id(sc) in stale_contexts:
                             continue
+
+                        # 子任务进入执行中时先点亮对应科室
+                        for subtask in list(
+                            getattr(sc, "task_decomposition", {}).values()
+                        ):
+                            agent_id = getattr(subtask, "assigned_agent", None)
+                            status = getattr(
+                                getattr(subtask, "status", None), "value", ""
+                            )
+                            if (
+                                agent_id
+                                and status == "in_progress"
+                                and agent_id not in started_agents
+                            ):
+                                started_agents.add(agent_id)
+                                yield sse({
+                                    "type": "agent_started",
+                                    "agent_id": agent_id,
+                                    "name": AGENT_LABELS.get(agent_id, agent_id),
+                                })
+
                         for agent_id in list(getattr(sc, "agent_contributions", {}).keys()):
                             if agent_id not in seen_agents:
                                 seen_agents.add(agent_id)
