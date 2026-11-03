@@ -14,12 +14,9 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 # Windows 上 stdout 被重定向时默认用 GBK，打印 emoji 会抛 UnicodeEncodeError
-if sys.platform == "win32":
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+from core.console import ensure_utf8_stdio
+
+ensure_utf8_stdio()
 
 from swarm import process_with_swarm
 

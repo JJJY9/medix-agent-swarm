@@ -16,6 +16,11 @@ from loguru import logger
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# 中文 Windows 控制台默认 GBK，测试用到的 emoji 会抛 UnicodeEncodeError
+from core.console import ensure_utf8_stdio
+
+ensure_utf8_stdio()
+
 from agents import ConsultationAgent, DiagnosticAgent, ResearchAgent
 from swarm import SwarmCoordinator, process_with_swarm, SharedContext, EventType
 from memory import AgentIdentityManager, ShortTermMemory, LongTermMemory, MemoryEntropyManager
