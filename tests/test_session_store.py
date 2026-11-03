@@ -249,6 +249,26 @@ def test_usage_totals_cover_all_matching_sessions(store):
     assert content_filtered["usage"]["total_tokens"] == 11
 
 
+def test_export_data_includes_sessions_and_messages(store):
+    store.save_exchange(
+        "s1", "问题一", "答复一",
+        metadata={
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+            "llm_calls": 2,
+        },
+    )
+    store.save_exchange("s2", "问题二", "答复二")
+
+    data = store.export_data()
+
+    assert data["version"] == 1
+    assert data["session_count"] == 2
+    sessions = {item["id"]: item for item in data["sessions"]}
+    assert len(sessions["s1"]["messages"]) == 2
+    assert sessions["s1"]["messages"][1]["metadata"]["usage"]["total_tokens"] == 10
+    assert sessions["s2"]["messages"][0]["content"] == "问题二"
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
