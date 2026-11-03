@@ -38,3 +38,13 @@ def test_security_headers_on_unauthorized(monkeypatch):
 
     assert response.status_code == 401
     assert_security_headers(response)
+
+
+def test_docs_skip_csp_for_swagger():
+    client = TestClient(api_server.app)
+
+    response = client.get("/docs")
+
+    assert response.status_code == 200
+    assert "content-security-policy" not in response.headers
+    assert response.headers["x-frame-options"] == "DENY"

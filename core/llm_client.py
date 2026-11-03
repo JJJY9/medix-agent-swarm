@@ -108,10 +108,16 @@ def usage_to_dict(raw_usage: Any) -> Optional[Dict[str, int]]:
     if prompt is None and completion is None and total is None:
         return None
 
+    def safe_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
     return {
-        "prompt_tokens": int(prompt or 0),
-        "completion_tokens": int(completion or 0),
-        "total_tokens": int(total or ((prompt or 0) + (completion or 0))),
+        "prompt_tokens": safe_int(prompt),
+        "completion_tokens": safe_int(completion),
+        "total_tokens": safe_int(total or ((prompt or 0) + (completion or 0))),
     }
 
 
@@ -147,7 +153,7 @@ def classify_llm_error(exc: Exception) -> LLMError:
         status = getattr(response, "status_code", None)
     try:
         status = int(status) if status is not None else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         status = None
 
     message = str(exc)

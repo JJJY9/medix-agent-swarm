@@ -39,6 +39,7 @@ from core.triage import detect_red_flags
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.pricing import get_pricing
+from core.serialization import sanitize_json
 
 WEB_DIR = project_root / "web"
 
@@ -148,6 +149,7 @@ app = FastAPI(title="MediX 多智能体医疗助手", version="1.0.0", lifespan=
 
 # 前端加载和健康检查必须保持公开，其余 /api/* 在设置令牌后统一校验
 PUBLIC_API_PATHS = {"/api/status"}
+DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 CHAT_PATHS = {"/api/chat", "/api/chat/stream"}
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
 
@@ -164,14 +166,17 @@ SECURITY_CSP = (
 )
 
 
-def add_security_headers(response: Response) -> Response:
+def add_security_headers(
+    response: Response, include_csp: bool = True
+) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault(
         "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
     )
-    response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
+    if include_csp:
+        response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
     return response
 
 
@@ -205,7 +210,10 @@ async def require_access_token(request: Request, call_next):
                 headers={"Retry-After": str(max(1, int(retry_after)))},
             ))
 
-    return add_security_headers(await call_next(request))
+    return add_security_headers(
+        await call_next(request),
+        include_csp=path not in DOC_PATHS,
+    )
 
 
 # ===== API =====
@@ -672,7 +680,7 @@ def _empty_answer_reason() -> str:
 def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> Dict[str, Any]:
     """把 coordinator 的原始返回值整理成前端直接可用的结构。"""
     raw_agents = result.get("agents_involved") or []
-    return {
+    return sanitize_json({
         "answer": result.get("answer", ""),
         "disclaimer": result.get("disclaimer", ""),
         "suggestions": result.get("suggestions") or [],
@@ -700,7 +708,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),
         "route_reason": result.get("route_reason"),
-    }
+    })
 
 
 @app.post("/api/chat")

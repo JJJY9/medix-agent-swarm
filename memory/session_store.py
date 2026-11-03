@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from core.serialization import sanitize_json
+
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db"
 
 #: 会话标题取第一轮主诉的前 40 个字符
@@ -46,12 +48,12 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
         for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
             try:
                 entry["usage"][key] += int(usage.get(key) or 0)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
 
     try:
         entry["llm_calls"] += int(metadata.get("llm_calls") or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         pass
 
 
@@ -71,6 +73,17 @@ def _match_snippet(content: str, query: str, radius: int = 60) -> str:
     prefix = "…" if start > 0 else ""
     suffix = "…" if end < len(text) else ""
     return f"{prefix}{text[start:end]}{suffix}"
+
+
+def _like_pattern(query: str) -> str:
+    """生成转义过 % / _ 的 LIKE 模式，避免搜索词被当作通配符。"""
+    escaped = (
+        (query or "").strip()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+    return f"%{escaped}%"
 
 
 class SessionStore:
@@ -169,7 +182,11 @@ class SessionStore:
 
         now = self._now()
         title = self._make_title(question)
-        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        metadata_json = json.dumps(
+            sanitize_json(metadata or {}),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
 
         with self._lock, self._conn:
             self._conn.execute(
@@ -227,13 +244,13 @@ class SessionStore:
         params: List[Any] = []
         if query:
             conditions.append("""
-                (s.title LIKE ? OR s.id LIKE ?
+                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
                  OR EXISTS (
                      SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
                  ))
             """)
-            like = f"%{query.strip()}%"
+            like = _like_pattern(query)
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
@@ -249,12 +266,12 @@ class SessionStore:
             if query and rows:
                 ids = [row["id"] for row in rows]
                 placeholders = ",".join("?" for _ in ids)
-                like = f"%{query.strip()}%"
+                like = _like_pattern(query)
                 match_rows = self._conn.execute(
                     f"""
                     SELECT session_id, content
                       FROM messages
-                     WHERE session_id IN ({placeholders}) AND content LIKE ?
+                     WHERE session_id IN ({placeholders}) AND content LIKE ? ESCAPE '\\'
                      ORDER BY id
                     """,
                     [*ids, like],
@@ -284,13 +301,13 @@ class SessionStore:
         params: List[Any] = []
         if query:
             conditions.append("""
-                (s.title LIKE ? OR s.id LIKE ?
+                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
                  OR EXISTS (
                      SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
                  ))
             """)
-            like = f"%{query.strip()}%"
+            like = _like_pattern(query)
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
@@ -328,7 +345,34 @@ class SessionStore:
         for row in reversed(rows):
             item = dict(row)
             try:
-                item["metadata"] = json.loads(item.get("metadata") or "{}")
+                item["metadata"] = sanitize_json(
+                    json.loads(item.get("metadata") or "{}")
+                )
+            except (TypeError, json.JSONDecodeError):
+                item["metadata"] = {}
+            messages.append(item)
+        return messages
+
+    def get_all_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """返回会话的全部消息（备份导出用，不做条数截断）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT role, content, metadata, created_at
+                  FROM messages
+                 WHERE session_id = ?
+                 ORDER BY id
+                """,
+                (session_id,),
+            ).fetchall()
+
+        messages = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = sanitize_json(
+                    json.loads(item.get("metadata") or "{}")
+                )
             except (TypeError, json.JSONDecodeError):
                 item["metadata"] = {}
             messages.append(item)
@@ -388,13 +432,13 @@ class SessionStore:
         params: List[Any] = []
         if query:
             conditions.append("""
-                (s.title LIKE ? OR s.id LIKE ?
+                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
                  OR EXISTS (
                      SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
                  ))
             """)
-            like = f"%{query.strip()}%"
+            like = _like_pattern(query)
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
@@ -463,14 +507,23 @@ class SessionStore:
             "totals": totals,
         }
 
-    def export_data(self, limit: int = 200) -> Dict[str, Any]:
-        """导出会话与消息，供本地备份或迁移。"""
-        sessions = self.list_sessions(limit=limit)
+    def export_data(self) -> Dict[str, Any]:
+        """导出全部会话与全部消息，供本地备份或迁移。"""
+        sessions = []
+        offset = 0
+        page_size = 200
+        while True:
+            batch = self.list_sessions(limit=page_size, offset=offset)
+            sessions.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += len(batch)
+
         exported = []
         for item in sessions:
             exported.append({
                 **item,
-                "messages": self.get_messages(item["id"], limit=500),
+                "messages": self.get_all_messages(item["id"]),
             })
 
         return {
@@ -480,7 +533,7 @@ class SessionStore:
             "sessions": exported,
         }
 
-    def import_data(self, data: Any, max_sessions: int = 200) -> Dict[str, int]:
+    def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
         """导入备份数据；已存在的会话编号直接跳过，不覆盖现有记录。"""
         if not isinstance(data, dict):
             raise ValueError("备份文件格式不正确。")
@@ -519,9 +572,12 @@ class SessionStore:
                 if not isinstance(raw_messages, list):
                     invalid += 1
                     continue
+                if len(raw_messages) > 10000:
+                    invalid += 1
+                    continue
 
                 prepared = []
-                for message in raw_messages[:1000]:
+                for message in raw_messages:
                     if not isinstance(message, dict):
                         continue
                     role = message.get("role")
@@ -534,11 +590,16 @@ class SessionStore:
                     metadata = message.get("metadata")
                     if not isinstance(metadata, dict):
                         metadata = {}
+                    metadata_json = json.dumps(
+                        sanitize_json(metadata),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    )
                     created_at = str(message.get("created_at") or now)[:40]
                     prepared.append((
                         role,
                         content,
-                        json.dumps(metadata, ensure_ascii=False),
+                        metadata_json,
                         created_at,
                     ))
 
