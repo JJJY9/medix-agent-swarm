@@ -57,6 +57,7 @@ const els = {
     agents: document.getElementById('r-agents'),
     tasks: document.getElementById('r-tasks'),
     time: document.getElementById('r-time'),
+    usage: document.getElementById('r-usage'),
     kb: document.getElementById('r-kb'),
     session: document.getElementById('r-session'),
   },
@@ -175,6 +176,7 @@ function resetRail() {
   els.readout.agents.textContent = '—';
   els.readout.tasks.textContent = '—';
   els.readout.time.textContent = '—';
+  els.readout.usage.textContent = '—';
   els.readout.session.textContent = shortSession(sessionId);
 }
 
@@ -530,6 +532,8 @@ function buildMarkdown(payload, question) {
   const lines = ['# MediX 会诊意见', ''];
   lines.push(`- 会话编号：${sessionId || '—'}`);
   lines.push(`- 导出时间：${new Date().toLocaleString()}`);
+  const usageText = formatUsage(payload.usage, payload.llm_calls);
+  if (usageText !== '—') lines.push(`- 模型用量：${usageText}`);
   lines.push('');
 
   if (question) {
@@ -622,6 +626,10 @@ function buildSessionMarkdown(item, messages) {
       lines.push('### 会诊意见', '', message.content.trim(), '');
 
       const metadata = message.metadata || {};
+      const turnUsage = formatUsage(metadata.usage, metadata.llm_calls);
+      if (turnUsage !== '—') {
+        lines.push(`> 模型用量：${turnUsage}`, '');
+      }
 
       if (metadata.suggestions && metadata.suggestions.length) {
         lines.push('#### 诊疗建议', '');
@@ -680,11 +688,23 @@ function buildSessionMarkdown(item, messages) {
   return lines.join('\n');
 }
 
+function formatUsage(usage, llmCalls = 0) {
+  const total = Number(usage && usage.total_tokens || 0);
+  const calls = Number(llmCalls || 0);
+  const parts = [];
+  if (total > 0) parts.push(`${total.toLocaleString()} tokens`);
+  if (calls > 0) parts.push(`${calls} 次调用`);
+  return parts.length ? parts.join(' · ') : '—';
+}
+
 function contributionStats(contribution) {
   const stats = [];
   if (contribution.duration != null) stats.push(`耗时 ${contribution.duration}s`);
   if (contribution.tool_calls != null) stats.push(`工具 ${contribution.tool_calls} 次`);
   if (contribution.iterations != null) stats.push(`${contribution.iterations} 轮`);
+  if (contribution.usage && Number(contribution.usage.total_tokens || 0) > 0) {
+    stats.push(`${Number(contribution.usage.total_tokens).toLocaleString()} tokens`);
+  }
   return stats;
 }
 
@@ -1157,12 +1177,20 @@ function renderStoredMessages(messages) {
 
   let question = '';
   let askTurn = null;
+  let lastMetadata = null;
+  let lastUsage = null;
+  let lastLlmCalls = 0;
   for (const message of messages) {
     if (message.role === 'user') {
       question = message.content || '';
       askTurn = renderAsk(question);
     } else if (message.role === 'assistant' && message.content) {
       const metadata = message.metadata || {};
+      lastMetadata = metadata;
+      if (metadata.usage) {
+        lastUsage = metadata.usage;
+        lastLlmCalls = metadata.llm_calls || 0;
+      }
       if (metadata.triage) {
         renderTriage(askTurn, metadata.triage);
       }
@@ -1182,6 +1210,32 @@ function renderStoredMessages(messages) {
       question = '';
       askTurn = null;
     }
+  }
+
+  if (lastMetadata) {
+    if (typeof lastMetadata.swarm_enabled === 'boolean') {
+      els.readout.mode.textContent = lastMetadata.swarm_enabled ? '多学科会诊' : '单科接诊';
+    }
+    const involved = (lastMetadata.agents_involved || []).map(
+      (agentId) => AGENT_NAMES[agentId] || agentId
+    );
+    if (involved.length) {
+      els.readout.agents.textContent = involved.join('、');
+    }
+    if (lastMetadata.subtasks_completed != null) {
+      const completed = Number(lastMetadata.subtasks_completed || 0);
+      const failed = Number(lastMetadata.subtasks_failed || 0);
+      els.readout.tasks.textContent = failed
+        ? `${completed}（${failed} 失败）`
+        : String(completed);
+    }
+    if (lastMetadata.total_time != null) {
+      els.readout.time.textContent = `${Number(lastMetadata.total_time).toFixed(1)}s`;
+    }
+  }
+
+  if (lastUsage) {
+    els.readout.usage.textContent = formatUsage(lastUsage, lastLlmCalls);
   }
 
   scrollThreadToBottom(true);
@@ -1783,6 +1837,10 @@ async function send(question) {
       ? `${finalPayload.subtasks_completed ?? 0}（${failedCount} 失败）`
       : String(finalPayload.subtasks_completed ?? 0);
     els.readout.time.textContent = `${(finalPayload.total_time || elapsed).toFixed(1)}s`;
+    els.readout.usage.textContent = formatUsage(
+      finalPayload.usage,
+      finalPayload.llm_calls
+    );
     els.readout.session.textContent = shortSession(finalPayload.session_id || sid);
 
     logStep(finalPayload.mode === 'swarm' ? '协调科室已汇总各方意见' : '单科直接出具意见', false);

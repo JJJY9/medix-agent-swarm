@@ -34,6 +34,7 @@
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120 ✅
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
+- **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，并随历史记录、Markdown 导出保留 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库状态 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可浏览、搜索、重命名、导出、恢复和删除 ✅
@@ -205,6 +206,8 @@ npm install -D playwright
 | POST | `/api/knowledge/upload` | 上传文档（multipart，TXT/MD/PDF） |
 | DELETE | `/api/knowledge/documents/{filename}` | 删除上传文档并重建 |
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库） |
+
+`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
