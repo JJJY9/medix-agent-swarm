@@ -20,8 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -34,6 +34,7 @@ from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
 
+from core.auth import get_access_token, is_authorized
 from core.triage import detect_red_flags
 from core.llm_client import LLMError
 
@@ -134,8 +135,34 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="MediX 多智能体医疗助手", version="1.0.0", lifespan=lifespan)
 
+# 前端加载和健康检查必须保持公开，其余 /api/* 在设置令牌后统一校验
+PUBLIC_API_PATHS = {"/api/status"}
+
+
+@app.middleware("http")
+async def require_access_token(request: Request, call_next):
+    """设置 MEDIX_ACCESS_TOKEN 后，为 API 增加可选的访问令牌校验。"""
+    path = request.url.path
+    if (
+        get_access_token()
+        and path.startswith("/api/")
+        and path not in PUBLIC_API_PATHS
+        and not is_authorized(request)
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "需要访问令牌", "code": "auth_required"},
+        )
+    return await call_next(request)
+
 
 # ===== API =====
+
+@app.get("/api/auth/verify")
+async def verify_access_token():
+    """受保护的轻量接口，供前端确认访问令牌是否有效。"""
+    return {"ok": True}
+
 
 @app.get("/api/status")
 async def get_status():
@@ -150,6 +177,7 @@ async def get_status():
     return {
         "ok": state.startup_error is None,
         "startup_error": state.startup_error,
+        "auth_required": bool(get_access_token()),
         "llm_configured": bool(api_key),
         "model_name": LLM_CONFIG.get("model_name"),
         "base_url": LLM_CONFIG.get("base_url"),
