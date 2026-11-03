@@ -30,6 +30,7 @@
 - **🔧 Skills 直达架构**: 7个原子 Skills 自包含，直接转换为 OpenAI function calling 格式 ✅
 - **🤖 Agent Loop**: LLM 驱动的 Skill 调用循环，Agent 自主规划、调用 Skills 并完成任务 ✅
 - **🐝 Agent Swarm**: 真正的群体智能（去中心化协作，自主任务认领，并行执行）✅
+- **⚡ 流式会诊**: 汇总阶段逐段推送 Token，意见边生成边显示 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可浏览、搜索、恢复和删除 ✅
 - **💬 会诊操作**: 复制意见、导出 Markdown、再次会诊、停止生成 ✅
@@ -135,6 +136,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 - 会诊记录保存在 `data/sessions.db`（SQLite，首次运行自动创建，已加入 `.gitignore`），服务重启后不会丢失
 - 右上角「会诊记录」支持按主诉或会话编号搜索；点击条目可恢复完整问诊记录
 - 每条会诊意见下方提供「复制意见」「导出 Markdown」「再次会诊」
+- 多学科会诊的汇总阶段支持流式输出，意见边生成边显示；单科接诊在完成后一次性显示
 - 生成过程中点「停止」会中断本次请求；服务端在客户端断开后取消后台任务
 
 ### 截图
@@ -166,7 +168,7 @@ npm install -D playwright
 |------|------|------|
 | GET | `/api/status` | 健康检查、模型配置、知识库状态 |
 | POST | `/api/chat` | 同步问答，返回完整结果 |
-| POST | `/api/chat/stream` | SSE 流式问答，边跑边播报 Agent 进展 |
+| POST | `/api/chat/stream` | SSE 流式问答：分诊、科室完成、汇总 Token 与最终结果 |
 | POST | `/api/sessions` | 新建会话 |
 | GET | `/api/sessions` | 历史会诊列表（支持 `q` 搜索） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite） |
