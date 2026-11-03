@@ -39,6 +39,7 @@ const els = {
   historyMore: document.getElementById('history-more'),
   usageTrend: document.getElementById('usage-trend'),
   usageTrendTotal: document.getElementById('usage-trend-total'),
+  usageExport: document.getElementById('usage-export'),
   usageChart: document.getElementById('usage-chart'),
   usageBars: document.getElementById('usage-bars'),
   usageAxis: document.getElementById('usage-axis'),
@@ -1702,6 +1703,36 @@ async function loadUsageTrend() {
   }
 }
 
+async function exportUsageCsv() {
+  const button = els.usageExport;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '…';
+
+  try {
+    const res = await fetch(
+      `/api/usage/export.csv?days=7${favoritesOnly ? '&favorite=1' : ''}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const text = await res.text();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    downloadFile(text, `medix-usage-${stamp}.csv`, 'text/csv;charset=utf-8');
+    button.textContent = '已导出';
+  } catch (err) {
+    button.textContent = '失败';
+    window.alert(`导出用量失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1600);
+  }
+}
+
 async function exportHistoryBackup() {
   const btn = els.historyExport;
   if (btn.disabled) return;
@@ -3147,6 +3178,7 @@ els.historyMore.addEventListener('click', () => {
 });
 
 els.historyExport.addEventListener('click', exportHistoryBackup);
+els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);
 

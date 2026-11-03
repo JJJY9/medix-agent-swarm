@@ -38,7 +38,7 @@
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、拖拽上传、在线预览、检索测试、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
 - **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，历史列表汇总总用量，并随 Markdown 导出保留 ✅
-- **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细与数据表 ✅
+- **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细、CSV 导出与数据表 ✅
 - **💴 费用估算**: 可选配置每百万 Token 单价，在会诊面板、历史汇总与趋势中显示预估值 ✅
 - **⭐ 收藏会诊**: 标记重要会诊并只看收藏，列表、用量汇总与趋势同步过滤 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
@@ -218,6 +218,7 @@ npm install -D playwright
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
 | GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
+| GET | `/api/usage/export.csv` | 导出近 N 天按日用量 CSV（含 BOM 与合计行） |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |
 | GET | `/api/knowledge/search` | 知识库检索测试（返回来源、相关度与片段） |
 | GET | `/api/knowledge/documents/{filename}/preview` | 预览内置/上传文档前 4000 字 |

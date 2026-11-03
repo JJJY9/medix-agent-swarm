@@ -1324,6 +1324,23 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   white-space: nowrap;
 }
 
+.usage-export {
+  flex: none;
+  font: inherit;
+  font-size: 10px;
+  color: var(--clinic);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.usage-export:hover:not(:disabled) {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+.usage-export:disabled { opacity: 0.5; cursor: wait; }
+
 .usage-chart { position: relative; }
 
 .usage-bars {
