@@ -274,6 +274,7 @@ body {
 }
 
 .thread-col {
+  position: relative;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -430,7 +431,10 @@ body {
 .note-body { padding: 4px 18px 16px; }
 
 /* 结构化段落：LLM 用 【小节】 组织答复 */
-.section { margin-top: 20px; }
+.section {
+  margin-top: 20px;
+  overflow-wrap: break-word;
+}
 
 .section-title {
   font-family: var(--serif);
@@ -455,6 +459,71 @@ body {
 }
 .section li { margin-bottom: 5px; }
 .section strong { font-weight: 600; }
+
+/* 正文里的 Markdown 元素 */
+.section .md-heading {
+  font-family: var(--serif);
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 16px 0 8px;
+}
+
+.section code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.section blockquote {
+  margin: 10px 0;
+  padding: 8px 13px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border-left: 3px solid var(--rule);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.section hr {
+  border: 0;
+  border-top: 1px solid var(--rule-soft);
+  margin: 16px 0;
+}
+
+.md-table-wrap {
+  margin: 12px 0;
+  overflow-x: auto;
+}
+
+.section .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.section .md-table th,
+.section .md-table td {
+  border: 1px solid var(--rule);
+  padding: 6px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.section .md-table th {
+  background: var(--paper-2);
+  font-weight: 600;
+}
+
+.section a {
+  color: var(--clinic);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 
 /* 风险提示（配色对齐急诊分诊四级色标） */
 .risk {
@@ -580,6 +649,33 @@ body {
 }
 .working-bars i:nth-child(2) { animation-delay: 0.14s; }
 .working-bars i:nth-child(3) { animation-delay: 0.28s; }
+
+.working-time {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* 向上翻看历史时出现，避免自动滚动把阅读位置拽走 */
+.jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 82px;
+  transform: translateX(-50%);
+  z-index: 3;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--clinic);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 5px 13px;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(22, 48, 58, 0.14);
+}
+.jump-latest:hover { border-color: var(--clinic); background: var(--clinic-soft); }
 
 @keyframes bar {
   0%, 100% { transform: scaleY(0.4); opacity: 0.4; }
@@ -1030,12 +1126,15 @@ body {
     padding: 16px;
   }
 
-  .rail { order: -1; min-height: auto; }
+  /* 聊天区优先：手机首屏直接看到问诊记录，会诊面板放到下方 */
+  .rail { min-height: auto; }
   .rail-inner { height: auto; overflow: visible; }
   .rail-log { display: none; }
 
   .thread-col { min-height: auto; overflow: visible; }
   .thread { overflow: visible; padding: 20px 18px 4px; }
+
+  .jump-latest { display: none; }
 
   .composer {
     position: sticky;

@@ -20,6 +20,7 @@ const els = {
   historyList: document.getElementById('history-list'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
+  jumpLatest: document.getElementById('jump-latest'),
   vitals: document.getElementById('vitals'),
   vitalsText: document.getElementById('vitals-text'),
   banner: document.getElementById('config-banner'),
@@ -126,8 +127,21 @@ function logStep(text, live = true) {
   els.railLog.scrollIntoView({ block: 'nearest' });
 }
 
-function scrollThreadToBottom() {
-  els.thread.scrollTop = els.thread.scrollHeight;
+function isNearBottom() {
+  return els.thread.scrollHeight - els.thread.scrollTop - els.thread.clientHeight < 120;
+}
+
+/**
+ * 只有用户停留在底部附近时才自动跟随新内容；
+ * 用户向上翻看历史时，改为显示「回到最新」按钮，避免把阅读位置拽走。
+ */
+function scrollThreadToBottom(force = false) {
+  if (force || isNearBottom()) {
+    els.thread.scrollTop = els.thread.scrollHeight;
+    els.jumpLatest.hidden = true;
+  } else {
+    els.jumpLatest.hidden = false;
+  }
 }
 
 /** 窄屏是整页滚动，且会诊面板排在问诊区上方 */
@@ -137,47 +151,214 @@ function isStacked() {
 
 /* ---------- 渲染会诊意见 ---------- */
 
-// 把 "**粗体**" 拆成文本节点和 <strong>，不使用 innerHTML
+// 行内 Markdown：**粗体**、`代码`、[文本](https://...)，全部通过 DOM 创建，不使用 innerHTML
+const INLINE_PATTERN = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((https?:\/\/[^)\s]+)\))/g;
+
 function appendInline(parent, text) {
-  const parts = String(text).split(/\*\*([^*]+)\*\*/g);
-  parts.forEach((part, i) => {
-    if (!part) return;
-    if (i % 2 === 1) {
-      const strong = document.createElement('strong');
-      strong.textContent = part;
-      parent.appendChild(strong);
-    } else {
-      parent.appendChild(document.createTextNode(part));
+  const source = String(text);
+  INLINE_PATTERN.lastIndex = 0;
+  let cursor = 0;
+  let match;
+
+  while ((match = INLINE_PATTERN.exec(source)) !== null) {
+    if (match.index > cursor) {
+      parent.appendChild(document.createTextNode(source.slice(cursor, match.index)));
     }
-  });
+
+    const token = match[0];
+    if (token.startsWith('**')) {
+      const strong = document.createElement('strong');
+      strong.textContent = token.slice(2, -2);
+      parent.appendChild(strong);
+    } else if (token.startsWith('`')) {
+      const code = document.createElement('code');
+      code.textContent = token.slice(1, -1);
+      parent.appendChild(code);
+    } else {
+      const labelEnd = token.indexOf(']');
+      const link = document.createElement('a');
+      link.textContent = token.slice(1, labelEnd);
+      link.href = match[2];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      parent.appendChild(link);
+    }
+
+    cursor = INLINE_PATTERN.lastIndex;
+  }
+
+  if (cursor < source.length) {
+    parent.appendChild(document.createTextNode(source.slice(cursor)));
+  }
 }
 
-// 正文里的 "1. xxx" 归组成 <ol>，其余按段落处理
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+}
+
+function isTableSeparator(line) {
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell.replace(/\s+/g, '')));
+}
+
+function appendTable(container, rows) {
+  const table = document.createElement('table');
+  table.className = 'md-table';
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (const cell of rows[0]) {
+    const th = document.createElement('th');
+    appendInline(th, cell);
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  if (rows.length > 1) {
+    const tbody = document.createElement('tbody');
+    for (const row of rows.slice(1)) {
+      const tr = document.createElement('tr');
+      for (const cell of row) {
+        const td = document.createElement('td');
+        appendInline(td, cell);
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+  }
+
+  // 窄屏下表格允许横向滚动，避免撑破会诊意见卡片
+  const wrapper = document.createElement('div');
+  wrapper.className = 'md-table-wrap';
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+}
+
+// 正文块级 Markdown：标题、无序/有序列表、引用、表格、分隔线，其余按段落处理
 function appendBody(container, text) {
-  const lines = String(text)
-    .split(/\n+/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+  const lines = String(text).split(/\r?\n/);
 
   let list = null;
+  let listType = null;
+  let paragraph = [];
 
-  for (const line of lines) {
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const p = document.createElement('p');
+    appendInline(p, paragraph.join(' '));
+    container.appendChild(p);
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    list = null;
+    listType = null;
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    if (!line) {
+      flushParagraph();
+      flushList();
+      i += 1;
+      continue;
+    }
+
+    // 表格：第二行是 |---|---| 分隔行
+    if (line.startsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      flushParagraph();
+      flushList();
+      const rows = [splitTableRow(line)];
+      i += 2;
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        rows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      appendTable(container, rows);
+      continue;
+    }
+
+    // 标题
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const h = document.createElement('h4');
+      h.className = 'md-heading';
+      appendInline(h, heading[2]);
+      container.appendChild(h);
+      i += 1;
+      continue;
+    }
+
+    // 分隔线
+    if (/^[-*_]{3,}$/.test(line)) {
+      flushParagraph();
+      flushList();
+      container.appendChild(document.createElement('hr'));
+      i += 1;
+      continue;
+    }
+
+    // 引用
+    if (line.startsWith('>')) {
+      flushParagraph();
+      flushList();
+      const quote = document.createElement('blockquote');
+      appendInline(quote, line.replace(/^>\s?/, ''));
+      container.appendChild(quote);
+      i += 1;
+      continue;
+    }
+
+    // 无序列表
+    const bullet = line.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      if (!list || listType !== 'ul') {
+        list = document.createElement('ul');
+        listType = 'ul';
+        container.appendChild(list);
+      }
+      const li = document.createElement('li');
+      appendInline(li, bullet[1]);
+      list.appendChild(li);
+      i += 1;
+      continue;
+    }
+
+    // 有序列表
     const numbered = line.match(/^(\d+)\s*[.、)]\s*(.+)$/);
     if (numbered) {
-      if (!list) {
+      flushParagraph();
+      if (!list || listType !== 'ol') {
         list = document.createElement('ol');
+        listType = 'ol';
         container.appendChild(list);
       }
       const li = document.createElement('li');
       appendInline(li, numbered[2]);
       list.appendChild(li);
-    } else {
-      list = null;
-      const p = document.createElement('p');
-      appendInline(p, line);
-      container.appendChild(p);
+      i += 1;
+      continue;
     }
+
+    // 普通段落
+    flushList();
+    paragraph.push(line);
+    i += 1;
   }
+
+  flushParagraph();
 }
 
 function parseSections(text) {
@@ -443,9 +624,10 @@ function renderWorking() {
   wrap.id = 'working';
   wrap.innerHTML =
     '<span class="working-bars"><i></i><i></i><i></i></span>' +
-    '<span class="working-text">正在分诊并调度科室…</span>';
+    '<span class="working-text">正在分诊并调度科室…</span>' +
+    '<span class="working-time" id="working-time">0s</span>';
   els.thread.appendChild(wrap);
-  scrollThreadToBottom();
+  scrollThreadToBottom(true);
   return wrap;
 }
 
@@ -457,7 +639,7 @@ function renderError(message) {
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode(message));
   els.thread.appendChild(wrap);
-  scrollThreadToBottom();
+  scrollThreadToBottom(true);
 }
 
 function renderStopped() {
@@ -468,7 +650,7 @@ function renderStopped() {
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode('本次会诊在生成过程中被手动停止，未产生结果。'));
   els.thread.appendChild(wrap);
-  scrollThreadToBottom();
+  scrollThreadToBottom(true);
 }
 
 function renderAsk(text) {
@@ -486,7 +668,7 @@ function renderAsk(text) {
   turn.appendChild(ask);
 
   els.thread.appendChild(turn);
-  scrollThreadToBottom();
+  scrollThreadToBottom(true);
 }
 
 /* ---------- 会话 ---------- */
@@ -585,21 +767,30 @@ async function loadHistory(query = '') {
   }
 }
 
+let lastFocused = null;
+
 function openHistory() {
+  lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
   els.historyBackdrop.hidden = false;
   els.historyToggle.setAttribute('aria-expanded', 'true');
   els.historySearch.value = '';
+  els.historyList.replaceChildren();
+  els.historyEmpty.hidden = false;
+  els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
   els.historySearch.focus();
 }
 
-function closeHistory() {
+function closeHistory(restoreFocus = false) {
   historyOpen = false;
   els.historyDrawer.hidden = true;
   els.historyBackdrop.hidden = true;
   els.historyToggle.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && lastFocused instanceof HTMLElement) {
+    lastFocused.focus();
+  }
 }
 
 function renderStoredMessages(messages) {
@@ -620,6 +811,8 @@ function renderStoredMessages(messages) {
       question = '';
     }
   }
+
+  scrollThreadToBottom(true);
 }
 
 async function openSession(id) {
@@ -704,18 +897,25 @@ async function send(question) {
   resetRail();
   renderAsk(question);
 
+  const startedAt = performance.now();
   const working = renderWorking();
   const workingText = working.querySelector('.working-text');
+  const workingTime = working.querySelector('.working-time');
+  const elapsedTimer = setInterval(() => {
+    workingTime.textContent = `${Math.floor((performance.now() - startedAt) / 1000)}s`;
+  }, 500);
+
+  els.thread.setAttribute('aria-busy', 'true');
   els.railScan.hidden = false;
   setVitals('active', '会诊进行中');
 
-  // 窄屏整页滚动，会诊面板排在问诊区上方，提交后把视线带回问诊区
+  // 窄屏是整页滚动，提交后把视线带回问诊区
   if (isStacked()) {
     els.thread.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  const startedAt = performance.now();
   let firstAgentSeen = false;
+  let agentDoneCount = 0;
 
   AGENT_IDS.forEach((id) => setAgentState(id, 'working', '等待调度'));
   els.readout.mode.textContent = '分诊中';
@@ -765,6 +965,11 @@ async function send(question) {
         } else if (event.type === 'agent_done') {
           setAgentState(event.agent_id, 'done', '已出具意见');
           firstAgentSeen = true;
+          agentDoneCount += 1;
+          workingText.textContent =
+            agentDoneCount >= AGENT_IDS.length
+              ? '各科室意见已齐，正在汇总会诊意见…'
+              : `${event.name} 已出具意见 · 已完成 ${agentDoneCount} 个科室`;
           logStep(`${event.name} 已出具会诊意见`);
         } else if (event.type === 'result') {
           finalPayload = event;
@@ -799,11 +1004,17 @@ async function send(question) {
     els.readout.agents.textContent = (finalPayload.agents_involved || []).length
       ? finalPayload.agents_involved.map((a) => a.name).join('、')
       : '—';
-    els.readout.tasks.textContent = String(finalPayload.subtasks_completed ?? 0);
+    const failedCount = finalPayload.subtasks_failed || 0;
+    els.readout.tasks.textContent = failedCount
+      ? `${finalPayload.subtasks_completed ?? 0}（${failedCount} 失败）`
+      : String(finalPayload.subtasks_completed ?? 0);
     els.readout.time.textContent = `${(finalPayload.total_time || elapsed).toFixed(1)}s`;
     els.readout.session.textContent = shortSession(finalPayload.session_id || sid);
 
     logStep(finalPayload.mode === 'swarm' ? '协调科室已汇总各方意见' : '单科直接出具意见', false);
+    if (failedCount) {
+      logStep(`有 ${failedCount} 个会诊任务未完成`, false);
+    }
     setVitals('idle', '系统就绪');
 
     renderAnswer(finalPayload, finalPayload.total_time || elapsed, question);
@@ -828,6 +1039,8 @@ async function send(question) {
       setVitals('bad', '会诊中断');
     }
   } finally {
+    clearInterval(elapsedTimer);
+    els.thread.removeAttribute('aria-busy');
     busy = false;
     activeController = null;
     els.stop.hidden = true;
@@ -921,14 +1134,14 @@ els.stop.addEventListener('click', () => {
 
 els.historyToggle.addEventListener('click', () => {
   if (historyOpen) {
-    closeHistory();
+    closeHistory(true);
   } else {
     openHistory();
   }
 });
 
-els.historyClose.addEventListener('click', closeHistory);
-els.historyBackdrop.addEventListener('click', closeHistory);
+els.historyClose.addEventListener('click', () => closeHistory(true));
+els.historyBackdrop.addEventListener('click', () => closeHistory(true));
 
 let historySearchTimer = null;
 els.historySearch.addEventListener('input', () => {
@@ -939,7 +1152,12 @@ els.historySearch.addEventListener('input', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && historyOpen) closeHistory();
+  if (e.key === 'Escape' && historyOpen) closeHistory(true);
+});
+
+els.jumpLatest.addEventListener('click', () => scrollThreadToBottom(true));
+els.thread.addEventListener('scroll', () => {
+  if (isNearBottom()) els.jumpLatest.hidden = true;
 });
 
 els.starters.addEventListener('click', (e) => {
