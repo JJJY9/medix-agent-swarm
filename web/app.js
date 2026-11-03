@@ -108,7 +108,11 @@ const AGENT_NAMES = {
   research_agent: '医学研究',
 };
 
-let sessionId = localStorage.getItem('medix.session') || null;
+const initialSessionFromUrl = new URLSearchParams(window.location.search).get('session');
+let sessionId = initialSessionFromUrl || localStorage.getItem('medix.session') || null;
+if (initialSessionFromUrl) {
+  localStorage.setItem('medix.session', initialSessionFromUrl);
+}
 let busy = false;
 let activeController = null;
 let pricing = null;
@@ -1326,12 +1330,24 @@ function renderTriage(container, triage) {
 
 /* ---------- 会话 ---------- */
 
+function setSessionUrl(id) {
+  if (!window.history || typeof window.history.replaceState !== 'function') return;
+  const url = new URL(window.location.href);
+  if (id) {
+    url.searchParams.set('session', id);
+  } else {
+    url.searchParams.delete('session');
+  }
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
 async function ensureSession() {
   if (sessionId) return sessionId;
   const res = await fetch('/api/sessions', { method: 'POST' });
   const data = await res.json();
   sessionId = data.session_id;
   localStorage.setItem('medix.session', sessionId);
+  setSessionUrl(sessionId);
   els.readout.session.textContent = shortSession(sessionId);
   return sessionId;
 }
@@ -1341,6 +1357,7 @@ async function startNewSession() {
   const data = await res.json();
   sessionId = data.session_id;
   localStorage.setItem('medix.session', sessionId);
+  setSessionUrl(sessionId);
 
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = false;
@@ -1894,6 +1911,7 @@ async function openSession(id) {
 
     sessionId = id;
     localStorage.setItem('medix.session', id);
+    setSessionUrl(id);
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
@@ -1942,6 +1960,7 @@ async function deleteHistory(item) {
     if (item.id === sessionId) {
       sessionId = null;
       localStorage.removeItem('medix.session');
+      setSessionUrl(null);
       els.thread.replaceChildren(els.empty);
       els.empty.hidden = false;
       resetRail();
