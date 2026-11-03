@@ -53,6 +53,15 @@ def test_search_by_title(store):
     assert [s["id"] for s in results] == ["s1"]
 
 
+def test_search_by_message_content(store):
+    store.save_exchange("s1", "最近头痛", "建议先测量血压并充分休息。")
+    store.save_exchange("s2", "最近咳嗽", "多饮温水。")
+
+    assert [s["id"] for s in store.list_sessions(query="血压")] == ["s1"]
+    assert [s["id"] for s in store.list_sessions(query="温水")] == ["s2"]
+    assert store.count_sessions("血压") == 1
+
+
 def test_rename_and_delete(store):
     store.save_exchange("s1", "原始主诉", "答复")
 
@@ -232,6 +241,12 @@ def test_usage_totals_cover_all_matching_sessions(store):
     assert filtered["turns"] == 1
     assert filtered["llm_calls"] == 1
     assert filtered["usage"]["total_tokens"] == 5
+
+    # 搜索命中答复正文时，也应统计整个会话的用量
+    content_filtered = store.usage_totals("答复二")
+    assert content_filtered["turns"] == 1
+    assert content_filtered["llm_calls"] == 2
+    assert content_filtered["usage"]["total_tokens"] == 11
 
 
 def test_legacy_messages_table_is_migrated(tmp_path):
