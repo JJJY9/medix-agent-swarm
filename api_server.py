@@ -103,6 +103,15 @@ class AppState:
 state = AppState()
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """静态资源每次用 ETag 校验，避免升级后浏览器继续用旧 CSS/JS。"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("MediX API 服务启动中...")
@@ -401,11 +410,11 @@ async def index():
     index_file = WEB_DIR / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="前端页面不存在，请检查 web/ 目录")
-    return FileResponse(index_file)
+    return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
 
 if WEB_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR)), name="static")
 
 
 def main():
