@@ -137,7 +137,11 @@ function isNearBottom() {
  */
 function scrollThreadToBottom(force = false) {
   if (force || isNearBottom()) {
+    // smooth 滚动在后台标签页/部分环境下不生效，强制跟随内容时改用即时定位
+    const previous = els.thread.style.scrollBehavior;
+    els.thread.style.scrollBehavior = 'auto';
     els.thread.scrollTop = els.thread.scrollHeight;
+    els.thread.style.scrollBehavior = previous;
     els.jumpLatest.hidden = true;
   } else {
     els.jumpLatest.hidden = false;
@@ -631,6 +635,37 @@ function renderWorking() {
   return wrap;
 }
 
+/**
+ * 汇总阶段的临时意见卡片：先以纯文本渐进显示 Token，
+ * 收到 result 后再替换成带小节、风险提示和操作栏的正式意见书。
+ */
+function renderStreamingNote() {
+  const turn = document.createElement('div');
+  turn.className = 'turn';
+
+  const note = document.createElement('div');
+  note.className = 'note streaming';
+  note.dataset.mode = 'single';
+
+  const head = document.createElement('div');
+  head.className = 'note-head';
+  const kind = document.createElement('span');
+  kind.className = 'note-kind';
+  kind.textContent = '正在生成会诊意见';
+  head.appendChild(kind);
+  note.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'note-body streaming-body';
+  note.appendChild(body);
+
+  turn.appendChild(note);
+  els.thread.appendChild(turn);
+  scrollThreadToBottom(true);
+
+  return { turn, body };
+}
+
 function renderError(message) {
   const wrap = document.createElement('div');
   wrap.className = 'failure';
@@ -916,6 +951,9 @@ async function send(question) {
 
   let firstAgentSeen = false;
   let agentDoneCount = 0;
+  let streamTurn = null;
+  let streamBody = null;
+  let streamBuffer = '';
 
   AGENT_IDS.forEach((id) => setAgentState(id, 'working', '等待调度'));
   els.readout.mode.textContent = '分诊中';
@@ -971,6 +1009,17 @@ async function send(question) {
               ? '各科室意见已齐，正在汇总会诊意见…'
               : `${event.name} 已出具意见 · 已完成 ${agentDoneCount} 个科室`;
           logStep(`${event.name} 已出具会诊意见`);
+        } else if (event.type === 'token') {
+          if (!streamTurn) {
+            working.remove();
+            clearInterval(elapsedTimer);
+            const streamed = renderStreamingNote();
+            streamTurn = streamed.turn;
+            streamBody = streamed.body;
+          }
+          streamBuffer += event.delta || '';
+          streamBody.textContent = streamBuffer;
+          scrollThreadToBottom();
         } else if (event.type === 'result') {
           finalPayload = event;
         } else if (event.type === 'error') {
@@ -979,6 +1028,11 @@ async function send(question) {
       }
     }
 
+    if (streamTurn) {
+      streamTurn.remove();
+      streamTurn = null;
+      streamBody = null;
+    }
     working.remove();
 
     if (!finalPayload) {
@@ -1023,6 +1077,11 @@ async function send(question) {
       loadHistory(els.historySearch.value.trim());
     }
   } catch (err) {
+    if (streamTurn) {
+      streamTurn.remove();
+      streamTurn = null;
+      streamBody = null;
+    }
     working.remove();
 
     if (err.name === 'AbortError') {

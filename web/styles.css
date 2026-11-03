@@ -430,6 +430,41 @@ body {
 
 .note-body { padding: 4px 18px 16px; }
 
+/* 汇总阶段的流式意见卡片 */
+.note.streaming .note-kind::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: var(--clinic);
+  vertical-align: middle;
+  animation: stream-pulse 1.1s ease-in-out infinite;
+}
+
+.streaming-body {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  min-height: 1.6em;
+}
+
+.streaming-body::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--clinic);
+  animation: stream-caret 1s steps(2, start) infinite;
+}
+
+@keyframes stream-pulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@keyframes stream-caret {
+  50% { opacity: 0; }
+}
+
 /* 结构化段落：LLM 用 【小节】 组织答复 */
 .section {
   margin-top: 20px;
