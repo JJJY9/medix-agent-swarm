@@ -187,7 +187,6 @@ source .venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
-pip install fastapi uvicorn
 ```
 
 > 如果需要 `torch`，桌面端建议装 CPU 版本以免下载数 GB 的 CUDA 运行时：
@@ -237,6 +236,15 @@ export HF_ENDPOINT=https://hf-mirror.com     # macOS / Linux
 ```
 
 ### 5. 运行测试
+
+离线单元测试（不需要 API Key，也不会访问网络，CI 跑的就是这一套）：
+
+```bash
+pip install pytest
+python -m pytest tests
+```
+
+完整集成测试（会真实调用 LLM，产生 API 费用）：
 
 ```bash
 python examples/test_all.py
