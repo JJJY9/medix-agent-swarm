@@ -1689,6 +1689,91 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   margin-top: 14px;
 }
 
+/* ---------- 结构化补充信息 ---------- */
+
+.context-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 18px 0;
+}
+
+.context-toggle {
+  flex: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--clinic);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 4px 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.context-toggle:hover { border-color: var(--clinic); background: var(--clinic-soft); }
+.context-toggle.has-context { background: var(--clinic-soft); }
+
+.context-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.context-summary[hidden] { display: none; }
+
+.context-panel {
+  flex: none;
+  margin: 8px 18px 0;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.context-panel[hidden] { display: none; }
+
+.context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+}
+
+.context-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+.context-grid input,
+.context-grid select {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+}
+.context-grid input:focus,
+.context-grid select:focus { outline: none; border-color: var(--clinic); }
+
+.context-wide { grid-column: 1 / -1; }
+
+.context-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 /* ---------- 响应式 ---------- */
 
 @media (max-width: 980px) {
@@ -1743,6 +1828,8 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .advice, .disclaimer { margin-left: 14px; margin-right: 14px; }
   .contributions, .sources { margin-left: 14px; margin-right: 14px; }
   .risk { margin-left: 14px; }
+  .context-bar { padding: 8px 16px 0; }
+  .context-panel { margin: 8px 16px 0; }
 }
 
 @media (max-width: 380px) {

@@ -32,6 +32,7 @@
 - **🐝 Agent Swarm**: 真正的群体智能（去中心化协作，自主任务认领，并行执行）✅
 - **⚡ 流式会诊**: 汇总阶段逐段推送 Token，意见边生成边显示 ✅
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120 ✅
+- **🧾 结构化补充**: 可选填写年龄、性别、病程、既往史、用药与过敏史，贯穿分诊、单科与多学科会诊 ✅
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
 - **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，历史列表汇总总用量，并随 Markdown 导出保留 ✅
@@ -215,6 +216,8 @@ npm install -D playwright
 `/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数），每条会话也带有各自的 `usage` 与 `llm_calls`。
 
 设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
+
+`/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 

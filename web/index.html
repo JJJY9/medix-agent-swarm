@@ -115,6 +115,48 @@
 
       <button type="button" class="jump-latest" id="jump-latest" hidden>回到最新 ↓</button>
 
+      <div class="context-bar">
+        <button
+          type="button"
+          class="context-toggle"
+          id="context-toggle"
+          aria-expanded="false"
+          aria-controls="context-panel"
+        >＋ 补充信息</button>
+        <span class="context-summary" id="context-summary" hidden></span>
+      </div>
+
+      <section class="context-panel" id="context-panel" hidden aria-label="补充问诊信息">
+        <div class="context-grid">
+          <label>年龄
+            <input id="ctx-age" type="number" min="0" max="120" inputmode="numeric" placeholder="如 38">
+          </label>
+          <label>性别
+            <select id="ctx-sex">
+              <option value="">未填写</option>
+              <option value="女">女</option>
+              <option value="男">男</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+          <label class="context-wide">症状持续时间
+            <input id="ctx-duration" type="text" maxlength="40" placeholder="如 3 天，或 2 小时">
+          </label>
+          <label class="context-wide">既往病史
+            <input id="ctx-history" type="text" maxlength="200" placeholder="如 高血压、2 型糖尿病">
+          </label>
+          <label class="context-wide">正在使用的药物
+            <input id="ctx-medications" type="text" maxlength="200" placeholder="如 氨氯地平 5mg 每日一次">
+          </label>
+          <label class="context-wide">过敏史
+            <input id="ctx-allergies" type="text" maxlength="120" placeholder="如 青霉素过敏">
+          </label>
+        </div>
+        <div class="context-actions">
+          <button type="button" class="btn-quiet" id="context-clear">清空</button>
+        </div>
+      </section>
+
       <form class="composer" id="composer" autocomplete="off">
         <label class="sr-only" for="input">您的主诉</label>
         <textarea id="input" rows="1" placeholder="请描述症状及持续时间…" maxlength="2000"></textarea>
