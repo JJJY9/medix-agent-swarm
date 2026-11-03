@@ -145,14 +145,44 @@ class SwarmCoordinator:
                 f"(session={session_id})"
             )
 
-    def _save_exchange(self, session_id: str, question: str, answer: str) -> None:
+    def _save_exchange(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """把一轮问答写入 SQLite，供历史列表和重启恢复使用。"""
         if not (answer or "").strip():
             return
         try:
-            self.session_store.save_exchange(session_id, question, answer)
+            self.session_store.save_exchange(
+                session_id, question, answer, metadata=metadata
+            )
         except Exception as e:
             logger.error(f"保存会话记录失败（session={session_id}）: {e}")
+
+    @staticmethod
+    def _history_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
+        """提取需要随会话历史保存的会诊依据。"""
+        keys = (
+            "swarm_enabled",
+            "suggestions",
+            "disclaimer",
+            "triage",
+            "sources",
+            "agent_contributions",
+            "agents_involved",
+            "subtasks_completed",
+            "subtasks_failed",
+            "total_time",
+            "timeout_occurred",
+        )
+        return {
+            key: result.get(key)
+            for key in keys
+            if result.get(key) is not None
+        }
 
     def _enforce_required_agents(self, question: str, assessment: Dict[str, Any]) -> None:
         """按 swarm_constraints.yaml 的规则补齐必须参与的 Agent。
@@ -336,8 +366,15 @@ class SwarmCoordinator:
             )
             final_answer = result.get('answer', '')
 
-            # Swarm 模式已经在 _process_with_swarm 中保存了长期记忆，直接返回
+            # Swarm 的长期记忆已在 _process_with_swarm 中保存；这里补齐 triage 后
+            # 再把会诊依据写入 SQLite
             result['triage'] = triage
+            self._save_exchange(
+                session_id,
+                question,
+                final_answer,
+                metadata=self._history_metadata(result),
+            )
             return result
 
         else:
@@ -383,7 +420,12 @@ class SwarmCoordinator:
             logger.error(f"Failed to save to long-term memory: {e}")
 
         # 持久化到 SQLite，供历史列表与重启恢复使用
-        self._save_exchange(session_id, question, final_answer)
+        self._save_exchange(
+            session_id,
+            question,
+            final_answer,
+            metadata=self._history_metadata(result),
+        )
 
         return result
 
@@ -561,9 +603,6 @@ class SwarmCoordinator:
             result['disclaimer'] = f"以上分析基于 {len(completed_agents)} 个 Agent 的部分协作结果（部分分析模块超时未完成），仅供参考，不能替代医生诊断。"
         else:
             result['disclaimer'] = "以上分析基于多个专业 Agent 的协作，仅供参考，不能替代医生诊断。"
-
-        # 持久化到 SQLite，供历史列表与重启恢复使用
-        self._save_exchange(session_id, question, final_answer)
 
         return result
 

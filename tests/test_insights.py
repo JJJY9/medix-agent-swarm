@@ -76,3 +76,19 @@ def test_collect_insights_includes_contributions_and_sources():
     assert contributions[0]["content"] == "建议急诊评估。"
     assert contributions[0]["task_type"] == "diagnostic_agent_task"
     assert sources[0]["filename"] == "20.txt"
+
+
+def test_history_metadata_extracts_known_fields():
+    metadata = SwarmCoordinator._history_metadata({
+        "swarm_enabled": True,
+        "sources": [{"title": "指南"}],
+        "triage": {"level": "none"},
+        "answer": "不保存",
+        "foo": 1,
+    })
+
+    assert metadata == {
+        "swarm_enabled": True,
+        "sources": [{"title": "指南"}],
+        "triage": {"level": "none"},
+    }

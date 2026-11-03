@@ -198,6 +198,7 @@ async def get_session_messages(session_id: str, limit: int = 50):
                     "role": m["role"],
                     "content": m["content"],
                     "timestamp": m["created_at"],
+                    "metadata": m.get("metadata") or {},
                 }
                 for m in stored
                 if m["role"] in ("user", "assistant")
@@ -210,7 +211,12 @@ async def get_session_messages(session_id: str, limit: int = 50):
     return {
         "session_id": session_id,
         "messages": [
-            {"role": m.get("role"), "content": m.get("content"), "timestamp": m.get("timestamp")}
+            {
+                "role": m.get("role"),
+                "content": m.get("content"),
+                "timestamp": m.get("timestamp"),
+                "metadata": {},
+            }
             for m in messages
         ],
         "source": "memory",
