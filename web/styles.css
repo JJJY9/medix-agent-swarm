@@ -1275,6 +1275,28 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .history-export:disabled { opacity: 0.5; cursor: wait; }
 
+.history-favorite-filter {
+  flex: none;
+  width: 26px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-faint);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.history-favorite-filter:hover { color: var(--clinic); border-color: var(--clinic); }
+.history-favorite-filter[aria-pressed="true"] {
+  color: var(--clinic);
+  background: var(--clinic-soft);
+  border-color: var(--clinic);
+}
+
 .usage-trend {
   flex: none;
   margin: 2px 16px 10px;
@@ -1476,6 +1498,13 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 
 .history-action:hover { color: var(--clinic); background: var(--clinic-soft); }
 .history-action.danger:hover { color: var(--triage-1); background: #fdf0ef; }
+.history-action.history-star {
+  font-size: 13px;
+  line-height: 1.2;
+  padding: 1px 7px;
+  color: var(--ink-faint);
+}
+.history-action.history-star.active { color: var(--clinic); }
 
 .drawer-empty {
   margin: 0;

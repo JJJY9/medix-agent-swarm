@@ -31,6 +31,7 @@ const els = {
   historySearch: document.getElementById('history-search'),
   historyList: document.getElementById('history-list'),
   historySummary: document.getElementById('history-summary'),
+  historyFavoriteFilter: document.getElementById('history-favorite-filter'),
   historyExport: document.getElementById('history-export'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
@@ -115,6 +116,7 @@ let historyQuery = '';
 let historyOffset = 0;
 let historyTotal = 0;
 let historyLoading = false;
+let favoritesOnly = false;
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -1202,9 +1204,13 @@ function renderHistoryItems(sessions, summary, append = false) {
 
   if (!sessions.length && !els.historyList.children.length) {
     els.historyEmpty.hidden = false;
-    els.historyEmpty.textContent = els.historySearch.value.trim()
-      ? '没有匹配的会诊记录'
-      : '还没有历史会诊，提交一次主诉后会自动保存。';
+    if (favoritesOnly) {
+      els.historyEmpty.textContent = '还没有收藏的会诊';
+    } else {
+      els.historyEmpty.textContent = els.historySearch.value.trim()
+        ? '没有匹配的会诊记录'
+        : '还没有历史会诊，提交一次主诉后会自动保存。';
+    }
     return;
   }
   els.historyEmpty.hidden = true;
@@ -1243,6 +1249,20 @@ function renderHistoryItems(sessions, summary, append = false) {
     const actions = document.createElement('div');
     actions.className = 'history-actions';
 
+    const favorite = document.createElement('button');
+    favorite.type = 'button';
+    favorite.className = `history-action history-star${item.favorite ? ' active' : ''}`;
+    favorite.textContent = item.favorite ? '★' : '☆';
+    favorite.title = item.favorite ? '取消收藏' : '收藏这次会诊';
+    favorite.setAttribute(
+      'aria-label',
+      `${item.favorite ? '取消收藏' : '收藏'}：${item.title || '未命名会诊'}`
+    );
+    favorite.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleFavorite(item);
+    });
+
     const rename = document.createElement('button');
     rename.type = 'button';
     rename.className = 'history-action';
@@ -1267,7 +1287,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
-    actions.append(rename, exportBtn, del);
+    actions.append(favorite, rename, exportBtn, del);
     li.append(open, actions);
     els.historyList.appendChild(li);
   }
@@ -1282,7 +1302,7 @@ function renderHistorySummary(summary) {
 
   const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
   const llmCalls = Number(summary.llm_calls || 0);
-  const parts = [`共 ${summary.sessions} 次会诊`];
+  const parts = [`共 ${summary.sessions} 次${favoritesOnly ? '收藏' : ''}会诊`];
   if (summary.loaded && summary.loaded < summary.sessions) {
     parts.push(`已加载 ${summary.loaded} 次`);
   }
@@ -1321,7 +1341,8 @@ async function loadHistory(query = '', { append = false } = {}) {  if (!append) 
 
   try {
     const res = await fetch(
-      `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}`
+      `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}` +
+      (favoritesOnly ? '&favorite=1' : '')
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
@@ -1442,7 +1463,9 @@ function renderUsageTrend(data) {
 
 async function loadUsageTrend() {
   try {
-    const res = await fetch('/api/usage/daily?days=7');
+    const res = await fetch(
+      `/api/usage/daily?days=7${favoritesOnly ? '&favorite=1' : ''}`
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
     renderUsageTrend(data);
@@ -1672,6 +1695,28 @@ async function openSession(id) {
     closeHistory();
     renderError(`读取会诊记录失败：${err.message || err}`);
     els.input.focus();
+  }
+}
+
+async function toggleFavorite(item) {
+  const favorite = !item.favorite;
+
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(item.id)}/favorite`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ favorite }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    await loadHistory(els.historySearch.value.trim());
+    await loadUsageTrend();
+  } catch (err) {
+    window.alert(`更新收藏失败：${err.message || err}`);
   }
 }
 
@@ -2620,6 +2665,14 @@ els.historyMore.addEventListener('click', () => {
 els.historyExport.addEventListener('click', exportHistoryBackup);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);
+
+els.historyFavoriteFilter.addEventListener('click', () => {
+  favoritesOnly = !favoritesOnly;
+  els.historyFavoriteFilter.setAttribute('aria-pressed', String(favoritesOnly));
+  els.historyFavoriteFilter.textContent = favoritesOnly ? '★' : '☆';
+  loadHistory(els.historySearch.value.trim());
+  loadUsageTrend();
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {

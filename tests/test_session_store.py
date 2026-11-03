@@ -315,6 +315,41 @@ def test_export_data_includes_sessions_and_messages(store):
     assert sessions["s2"]["messages"][0]["content"] == "问题二"
 
 
+def test_favorite_filter_and_usage(store):
+    store.save_exchange(
+        "s1", "收藏问题", "收藏答复",
+        metadata={
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+            "llm_calls": 1,
+        },
+    )
+    store.save_exchange(
+        "s2", "普通问题", "普通答复",
+        metadata={
+            "usage": {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+            "llm_calls": 2,
+        },
+    )
+
+    assert store.set_favorite("s1", True) is True
+    assert store.set_favorite("missing", True) is False
+
+    sessions = store.list_sessions(favorites_only=True)
+    assert [item["id"] for item in sessions] == ["s1"]
+    assert sessions[0]["favorite"] is True
+    assert store.count_sessions(favorites_only=True) == 1
+
+    totals = store.usage_totals(favorites_only=True)
+    assert totals["usage"]["total_tokens"] == 10
+    assert totals["llm_calls"] == 1
+
+    daily = store.daily_usage(days=1, favorites_only=True)
+    assert daily["totals"]["usage"]["total_tokens"] == 10
+
+    store.set_favorite("s1", False)
+    assert store.list_sessions(favorites_only=True) == []
+
+
 def test_import_data_roundtrip(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange(
@@ -325,6 +360,10 @@ def test_import_data_roundtrip(tmp_path):
         },
     )
     data = source.export_data()
+    assert data["sessions"][0]["favorite"] is False
+    source.set_favorite("s1", True)
+    data = source.export_data()
+    assert data["sessions"][0]["favorite"] is True
     source.close()
 
     target = SessionStore(str(tmp_path / "target.db"))
@@ -340,6 +379,7 @@ def test_import_data_roundtrip(tmp_path):
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
         assert messages[1]["metadata"]["usage"]["total_tokens"] == 10
+        assert target.list_sessions()[0]["favorite"] is True
 
         again = target.import_data(data)
         assert again["imported"] == 0
@@ -400,6 +440,7 @@ def test_legacy_messages_table_is_migrated(tmp_path):
     migrated = SessionStore(db)
     try:
         assert migrated.get_messages("s1")[0]["metadata"] == {}
+        assert migrated.list_sessions()[0]["favorite"] is False
 
         migrated.save_exchange(
             "s1", "新问题", "新答复", metadata={"sources": [{"title": "x"}]}
