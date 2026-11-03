@@ -12,6 +12,14 @@ const els = {
   input: document.getElementById('input'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
+  historyToggle: document.getElementById('history-toggle'),
+  historyDrawer: document.getElementById('history-drawer'),
+  historyBackdrop: document.getElementById('history-backdrop'),
+  historyClose: document.getElementById('history-close'),
+  historySearch: document.getElementById('history-search'),
+  historyList: document.getElementById('history-list'),
+  historyEmpty: document.getElementById('history-empty'),
+  stop: document.getElementById('stop'),
   vitals: document.getElementById('vitals'),
   vitalsText: document.getElementById('vitals-text'),
   banner: document.getElementById('config-banner'),
@@ -33,6 +41,8 @@ const AGENT_IDS = ['consultation_agent', 'diagnostic_agent', 'research_agent'];
 
 let sessionId = localStorage.getItem('medix.session') || null;
 let busy = false;
+let activeController = null;
+let historyOpen = false;
 
 /* ---------- 工具 ---------- */
 
@@ -236,25 +246,109 @@ function detectRisk(text) {
   return null;
 }
 
-function renderAnswer(payload, elapsedSeconds) {
+/* ---------- 意见操作（复制 / 导出 / 再次会诊） ---------- */
+
+function makeAction(label, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'note-action';
+  btn.textContent = label;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // 非安全上下文（例如局域网 http）下 clipboard API 不可用，退回 execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    ta.remove();
+    return ok;
+  }
+}
+
+function buildMarkdown(payload, question) {
+  const lines = ['# MediX 会诊意见', ''];
+  lines.push(`- 会话编号：${sessionId || '—'}`);
+  lines.push(`- 导出时间：${new Date().toLocaleString()}`);
+  lines.push('');
+
+  if (question) {
+    lines.push('## 主诉', '', question, '');
+  }
+
+  lines.push('## 会诊意见', '', (payload.answer || '').trim(), '');
+
+  if (payload.suggestions && payload.suggestions.length) {
+    lines.push('## 诊疗建议', '');
+    payload.suggestions.forEach((s, i) => lines.push(`${i + 1}. ${s}`));
+    lines.push('');
+  }
+
+  if (payload.disclaimer) {
+    lines.push('## 免责声明', '', payload.disclaimer, '');
+  }
+
+  lines.push('---', '', '本文件由 MediX 生成，仅供参考，不能替代执业医师的诊断与治疗。', '');
+  return lines.join('\n');
+}
+
+function downloadMarkdown(payload, question) {
+  const blob = new Blob([buildMarkdown(payload, question)], {
+    type: 'text/markdown;charset=utf-8',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = (sessionId || String(Date.now())).slice(-12);
+  a.href = url;
+  a.download = `medix-consult-${stamp}.md`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function renderAnswer(payload, elapsedSeconds, question = '') {
   const turn = document.createElement('div');
   turn.className = 'turn';
 
   const note = document.createElement('div');
   note.className = 'note';
-  note.dataset.mode = payload.mode;
+  note.dataset.mode = payload.historical ? 'single' : payload.mode;
 
   const head = document.createElement('div');
   head.className = 'note-head';
 
   const kind = document.createElement('span');
   kind.className = 'note-kind';
-  kind.textContent = payload.mode === 'swarm' ? '多学科会诊意见' : '单科诊疗意见';
+  kind.textContent = payload.historical
+    ? '历史会诊意见'
+    : payload.mode === 'swarm'
+    ? '多学科会诊意见'
+    : '单科诊疗意见';
   head.appendChild(kind);
 
   const time = document.createElement('span');
   time.className = 'note-time';
-  time.textContent = `${elapsedSeconds.toFixed(1)}s`;
+  if (payload.historical || elapsedSeconds == null) {
+    time.hidden = true;
+  } else {
+    time.textContent = `${elapsedSeconds.toFixed(1)}s`;
+  }
   head.appendChild(time);
 
   note.appendChild(head);
@@ -313,6 +407,31 @@ function renderAnswer(payload, elapsedSeconds) {
     note.appendChild(d);
   }
 
+  const actions = document.createElement('div');
+  actions.className = 'note-actions';
+
+  actions.appendChild(makeAction('复制意见', async (e) => {
+    const btn = e.currentTarget;
+    const ok = await copyText(payload.answer || '');
+    btn.textContent = ok ? '已复制' : '复制失败';
+    setTimeout(() => {
+      btn.textContent = '复制意见';
+    }, 1600);
+  }));
+
+  actions.appendChild(makeAction('导出 Markdown', () => {
+    downloadMarkdown(payload, question);
+  }));
+
+  if (question) {
+    actions.appendChild(makeAction('再次会诊', () => {
+      if (busy) return;
+      send(question);
+    }));
+  }
+
+  note.appendChild(actions);
+
   turn.appendChild(note);
   els.thread.appendChild(turn);
   scrollThreadToBottom();
@@ -337,6 +456,17 @@ function renderError(message) {
   strong.textContent = '会诊未能完成';
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode(message));
+  els.thread.appendChild(wrap);
+  scrollThreadToBottom();
+}
+
+function renderStopped() {
+  const wrap = document.createElement('div');
+  wrap.className = 'failure';
+  const strong = document.createElement('strong');
+  strong.textContent = '会诊已停止';
+  wrap.appendChild(strong);
+  wrap.appendChild(document.createTextNode('本次会诊在生成过程中被手动停止，未产生结果。'));
   els.thread.appendChild(wrap);
   scrollThreadToBottom();
 }
@@ -380,7 +510,182 @@ async function startNewSession() {
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = false;
   resetRail();
+  closeHistory();
   els.input.focus();
+}
+
+/* ---------- 历史会诊 ---------- */
+
+function formatTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const pad = (n) => String(n).padStart(2, '0');
+  const sameYear = date.getFullYear() === new Date().getFullYear();
+  const day = `${sameYear ? '' : `${date.getFullYear()}-`}${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function renderHistoryItems(sessions) {
+  els.historyList.replaceChildren();
+  els.historyEmpty.hidden = sessions.length > 0;
+
+  if (!sessions.length) {
+    els.historyEmpty.textContent = els.historySearch.value.trim()
+      ? '没有匹配的会诊记录'
+      : '还没有历史会诊，提交一次主诉后会自动保存。';
+    return;
+  }
+
+  for (const item of sessions) {
+    const li = document.createElement('li');
+    li.className = 'history-item';
+    if (item.id === sessionId) li.dataset.current = '1';
+
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'history-open';
+
+    const title = document.createElement('strong');
+    title.textContent = item.title || '未命名会诊';
+
+    const meta = document.createElement('span');
+    meta.className = 'history-meta';
+    meta.textContent = `${formatTime(item.updated_at)} · ${item.message_count || 0} 条`;
+
+    const preview = document.createElement('span');
+    preview.className = 'history-preview';
+    preview.textContent = item.preview || '（暂无答复摘要）';
+
+    open.append(title, meta, preview);
+    open.addEventListener('click', () => openSession(item.id));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'history-delete';
+    del.textContent = '删除';
+    del.title = '删除这次会诊记录';
+    del.addEventListener('click', () => deleteHistory(item));
+
+    li.append(open, del);
+    els.historyList.appendChild(li);
+  }
+}
+
+async function loadHistory(query = '') {
+  try {
+    const res = await fetch(`/api/sessions?limit=50&q=${encodeURIComponent(query)}`);
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    renderHistoryItems(data.sessions || []);
+  } catch (err) {
+    els.historyList.replaceChildren();
+    els.historyEmpty.hidden = false;
+    els.historyEmpty.textContent = `会诊记录加载失败：${err.message || err}`;
+  }
+}
+
+function openHistory() {
+  historyOpen = true;
+  els.historyDrawer.hidden = false;
+  els.historyBackdrop.hidden = false;
+  els.historyToggle.setAttribute('aria-expanded', 'true');
+  els.historySearch.value = '';
+  loadHistory();
+  els.historySearch.focus();
+}
+
+function closeHistory() {
+  historyOpen = false;
+  els.historyDrawer.hidden = true;
+  els.historyBackdrop.hidden = true;
+  els.historyToggle.setAttribute('aria-expanded', 'false');
+}
+
+function renderStoredMessages(messages) {
+  els.thread.replaceChildren(els.empty);
+  els.empty.hidden = messages.length > 0;
+
+  let question = '';
+  for (const message of messages) {
+    if (message.role === 'user') {
+      question = message.content || '';
+      renderAsk(question);
+    } else if (message.role === 'assistant' && message.content) {
+      renderAnswer(
+        { answer: message.content, mode: 'single', historical: true },
+        null,
+        question
+      );
+      question = '';
+    }
+  }
+}
+
+async function openSession(id) {
+  if (busy) return;
+
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`);
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+
+    sessionId = id;
+    localStorage.setItem('medix.session', id);
+    closeHistory();
+    resetRail();
+    els.readout.session.textContent = shortSession(id);
+    renderStoredMessages(data.messages || []);
+    setVitals('idle', '历史会诊');
+  } catch (err) {
+    closeHistory();
+    renderError(`读取会诊记录失败：${err.message || err}`);
+  }
+}
+
+async function deleteHistory(item) {
+  const title = item.title || '这次会诊';
+  if (!window.confirm(`删除「${title}」的会诊记录？删除后不可恢复。`)) return;
+
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(item.id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`删除失败（${res.status}）`);
+
+    if (item.id === sessionId) {
+      sessionId = null;
+      localStorage.removeItem('medix.session');
+      els.thread.replaceChildren(els.empty);
+      els.empty.hidden = false;
+      resetRail();
+      els.readout.session.textContent = '—';
+    }
+    await loadHistory(els.historySearch.value.trim());
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
+}
+
+async function restoreCurrentSession() {
+  if (!sessionId) return;
+
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=50`
+    );
+    if (!res.ok) return;
+
+    const data = await res.json();
+    const messages = data.messages || [];
+    if (!messages.length) return;
+
+    els.readout.session.textContent = shortSession(sessionId);
+    renderStoredMessages(messages);
+    setVitals('idle', '已恢复上次会诊');
+  } catch {
+    // 服务未启动或尚无记录时保持空状态
+  }
 }
 
 /* ---------- 提交主诉 ---------- */
@@ -390,7 +695,11 @@ async function send(question) {
 
   busy = true;
   els.send.disabled = true;
+  els.stop.hidden = false;
   els.empty.hidden = true;
+
+  const controller = new AbortController();
+  activeController = controller;
 
   resetRail();
   renderAsk(question);
@@ -419,6 +728,7 @@ async function send(question) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, session_id: sid, enable_swarm: true }),
+      signal: controller.signal,
     });
 
     if (!res.ok || !res.body) {
@@ -496,16 +806,31 @@ async function send(question) {
     logStep(finalPayload.mode === 'swarm' ? '协调科室已汇总各方意见' : '单科直接出具意见', false);
     setVitals('idle', '系统就绪');
 
-    renderAnswer(finalPayload, finalPayload.total_time || elapsed);
+    renderAnswer(finalPayload, finalPayload.total_time || elapsed, question);
+
+    if (historyOpen) {
+      loadHistory(els.historySearch.value.trim());
+    }
   } catch (err) {
     working.remove();
-    renderError(err.message || String(err));
-    AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
-    els.readout.mode.textContent = '中断';
-    logStep(`中断：${err.message || err}`, false);
-    setVitals('bad', '会诊中断');
+
+    if (err.name === 'AbortError') {
+      renderStopped();
+      AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
+      els.readout.mode.textContent = '已停止';
+      logStep('用户停止了本次会诊', false);
+      setVitals('idle', '已停止会诊');
+    } else {
+      renderError(err.message || String(err));
+      AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
+      els.readout.mode.textContent = '中断';
+      logStep(`中断：${err.message || err}`, false);
+      setVitals('bad', '会诊中断');
+    }
   } finally {
     busy = false;
+    activeController = null;
+    els.stop.hidden = true;
     els.send.disabled = false;
     els.railScan.hidden = true;
     els.input.focus();
@@ -590,6 +915,33 @@ els.composer.addEventListener('submit', (e) => {
 
 els.newSession.addEventListener('click', startNewSession);
 
+els.stop.addEventListener('click', () => {
+  if (activeController) activeController.abort();
+});
+
+els.historyToggle.addEventListener('click', () => {
+  if (historyOpen) {
+    closeHistory();
+  } else {
+    openHistory();
+  }
+});
+
+els.historyClose.addEventListener('click', closeHistory);
+els.historyBackdrop.addEventListener('click', closeHistory);
+
+let historySearchTimer = null;
+els.historySearch.addEventListener('input', () => {
+  clearTimeout(historySearchTimer);
+  historySearchTimer = setTimeout(() => {
+    loadHistory(els.historySearch.value.trim());
+  }, 220);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && historyOpen) closeHistory();
+});
+
 els.starters.addEventListener('click', (e) => {
   const btn = e.target.closest('.starter');
   if (!btn) return;
@@ -599,6 +951,7 @@ els.starters.addEventListener('click', (e) => {
 
 resetRail();
 renderEcg();
+restoreCurrentSession();
 checkStatus();
 setInterval(checkStatus, 20000);
 els.input.focus();
