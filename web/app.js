@@ -32,6 +32,7 @@ const els = {
   historySearch: document.getElementById('history-search'),
   historyList: document.getElementById('history-list'),
   historySummary: document.getElementById('history-summary'),
+  historyActionStatus: document.getElementById('history-action-status'),
   historyFavoriteFilter: document.getElementById('history-favorite-filter'),
   historyExport: document.getElementById('history-export'),
   historyImport: document.getElementById('history-import'),
@@ -2035,6 +2036,10 @@ async function toggleFavorite(item) {
 
     await loadHistory(els.historySearch.value.trim());
     await loadUsageTrend();
+    els.historyActionStatus.textContent = favorite
+      ? '已收藏会诊'
+      : '已取消收藏';
+    if (historyOpen) els.historySearch.focus();
   } catch (err) {
     window.alert(`更新收藏失败：${err.message || err}`);
   }
@@ -2065,6 +2070,8 @@ async function deleteHistory(item) {
     }
     await loadHistory(els.historySearch.value.trim());
     await loadUsageTrend();
+    els.historyActionStatus.textContent = '已删除会诊';
+    if (historyOpen) els.historySearch.focus();
   } catch (err) {
     window.alert(err.message || String(err));
   }
@@ -2086,6 +2093,8 @@ async function renameHistory(item) {
     });
     if (!res.ok) throw new Error(`重命名失败（${res.status}）`);
     await loadHistory(els.historySearch.value.trim());
+    els.historyActionStatus.textContent = '已重命名会诊';
+    if (historyOpen) els.historySearch.focus();
   } catch (err) {
     window.alert(err.message || String(err));
   }
