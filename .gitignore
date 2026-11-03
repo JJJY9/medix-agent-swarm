@@ -42,6 +42,9 @@ node_modules/
 knowledge/data/*.local.json
 knowledge/data/*.db
 
+# 会话持久化数据库（运行时生成）
+/data/
+
 # Claude Code 本地配置：settings.local.json 记录的是本机权限历史，
 # 里面可能残留密钥和他人机器路径，绝不要提交。
 # （.claude/skills/ 是项目实现，必须保留）

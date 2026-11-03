@@ -58,6 +58,10 @@ class SessionResponse(BaseModel):
     session_id: str
 
 
+class RenameSessionRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=40, description="新的会话标题")
+
+
 # ===== 应用状态 =====
 
 class AppState:
@@ -156,9 +160,38 @@ async def create_session():
     return SessionResponse(session_id=session_id)
 
 
+@app.get("/api/sessions")
+async def list_sessions(limit: int = 50, q: Optional[str] = None):
+    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索）。"""
+    from memory import get_session_store
+
+    sessions = await asyncio.to_thread(
+        get_session_store().list_sessions, limit, q or ""
+    )
+    return {"sessions": sessions}
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, limit: int = 50):
-    from memory import ShortTermMemory
+    from memory import ShortTermMemory, get_session_store
+
+    stored = await asyncio.to_thread(
+        get_session_store().get_messages, session_id, limit
+    )
+    if stored:
+        return {
+            "session_id": session_id,
+            "messages": [
+                {
+                    "role": m["role"],
+                    "content": m["content"],
+                    "timestamp": m["created_at"],
+                }
+                for m in stored
+                if m["role"] in ("user", "assistant")
+            ],
+            "source": "store",
+        }
 
     memory = ShortTermMemory()
     messages = memory.get_recent_messages(session_id=session_id, limit=limit)
@@ -168,14 +201,29 @@ async def get_session_messages(session_id: str, limit: int = 50):
             {"role": m.get("role"), "content": m.get("content"), "timestamp": m.get("timestamp")}
             for m in messages
         ],
+        "source": "memory",
     }
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session(session_id: str, request: RenameSessionRequest):
+    from memory import get_session_store
+
+    title = request.title.strip()
+    ok = await asyncio.to_thread(
+        get_session_store().rename_session, session_id, title
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True, "session_id": session_id, "title": title}
 
 
 @app.delete("/api/sessions/{session_id}")
 async def clear_session(session_id: str):
-    from memory import ShortTermMemory
+    from memory import ShortTermMemory, get_session_store
 
     ShortTermMemory().clear_session(session_id)
+    await asyncio.to_thread(get_session_store().delete_session, session_id)
     return {"ok": True, "session_id": session_id}
 
 
