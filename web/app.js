@@ -1987,6 +1987,9 @@ async function send(question) {
         } else if (event.type === 'stage') {
           workingText.textContent = '正在调度专科科室…';
           els.readout.mode.textContent = '会诊分诊中';
+        } else if (event.type === 'agent_started') {
+          setAgentState(event.agent_id, 'working', '接诊中');
+          logStep(`${event.name} 开始接诊`);
         } else if (event.type === 'agent_done') {
           setAgentState(event.agent_id, 'done', '已出具意见');
           firstAgentSeen = true;

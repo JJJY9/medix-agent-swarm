@@ -1,6 +1,7 @@
 """API SSE 事件流的离线测试（假 Coordinator，不访问模型）。"""
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -84,6 +85,48 @@ def test_stream_emits_tokens_and_result():
     assert result["answer"] == "流式答案"
     assert result["agent_contributions"][0]["agent_name"] == "健康咨询"
     assert result["sources"][0]["filename"] == "20.txt"
+
+
+class LiveProgressCoordinator(FakeCoordinator):
+    """模拟 Worker 执行中，验证 SSE 会先推送 agent_started。"""
+
+    def __init__(self):
+        super().__init__()
+        self.worker = SimpleNamespace(shared_context=None)
+        self.worker_pool = [self.worker]
+
+    async def process(self, question, context=None, session_id=None, on_token=None):
+        self.worker.shared_context = SimpleNamespace(
+            agent_contributions={},
+            task_decomposition={
+                "s1": SimpleNamespace(
+                    assigned_agent="consultation_agent",
+                    status=SimpleNamespace(value="in_progress"),
+                )
+            },
+        )
+        await asyncio.sleep(0.25)
+        return await super().process(question, context, session_id, on_token)
+
+
+def test_stream_emits_agent_started_before_result():
+    api_server.state.coordinator = LiveProgressCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"question": "我头痛怎么办", "session_id": "api-started-test"},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    types = [event["type"] for event in events]
+
+    assert "agent_started" in types
+    started = events[types.index("agent_started")]
+    assert started["agent_id"] == "consultation_agent"
+    assert started["name"] == "健康咨询"
+    assert types.index("agent_started") < types.index("result")
 
 
 def test_stream_emits_triage_before_result():
