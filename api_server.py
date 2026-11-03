@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -237,6 +237,102 @@ async def clear_session(session_id: str):
     ShortTermMemory().clear_session(session_id)
     await asyncio.to_thread(get_session_store().delete_session, session_id)
     return {"ok": True, "session_id": session_id}
+
+
+# ===== 知识库管理 =====
+
+@app.get("/api/knowledge")
+async def knowledge_overview():
+    """知识库文档、向量块数量与目录信息。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    try:
+        async with state.lock:
+            return await asyncio.to_thread(service.list_documents)
+    except Exception as e:
+        logger.exception("读取知识库失败")
+        raise HTTPException(status_code=500, detail=f"读取知识库失败：{e}")
+
+
+@app.post("/api/knowledge/rebuild")
+async def knowledge_rebuild():
+    """重建知识库索引（先删除旧 collection，避免重复导入）。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    async with state.lock:
+        try:
+            result = await asyncio.to_thread(service.rebuild)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("重建知识库失败")
+            raise HTTPException(status_code=500, detail=f"重建知识库失败：{e}")
+
+    return {"ok": True, **result}
+
+
+@app.post("/api/knowledge/upload")
+async def knowledge_upload(
+    file: UploadFile = File(...),
+    rebuild: bool = True
+):
+    """上传 TXT / Markdown / PDF 文档，可选立即重建索引。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    content = await file.read()
+    try:
+        saved = await asyncio.to_thread(service.save_upload, file.filename, content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("保存知识库文档失败")
+        raise HTTPException(status_code=500, detail=f"保存文档失败：{e}")
+
+    result = None
+    if rebuild:
+        async with state.lock:
+            try:
+                result = await asyncio.to_thread(service.rebuild)
+            except Exception as e:
+                logger.exception("上传后重建知识库失败")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"文档已保存，但重建索引失败：{e}",
+                )
+
+    return {"ok": True, "document": saved, "rebuild": result}
+
+
+@app.delete("/api/knowledge/documents/{filename}")
+async def knowledge_delete(filename: str, rebuild: bool = True):
+    """删除用户上传的文档（内置文档不可删除）。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    try:
+        deleted = await asyncio.to_thread(service.delete_document, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    result = None
+    if rebuild:
+        async with state.lock:
+            try:
+                result = await asyncio.to_thread(service.rebuild)
+            except Exception as e:
+                logger.exception("删除后重建知识库失败")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"文档已删除，但重建索引失败：{e}",
+                )
+
+    return {"ok": True, "filename": filename, "rebuild": result}
 
 
 def _empty_answer_reason() -> str:
