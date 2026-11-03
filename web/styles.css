@@ -166,12 +166,12 @@ body {
 }
 .btn-quiet:hover { border-color: var(--clinic); }
 
-.rail-wide {
-  display: block;
-  width: calc(100% - 36px);
+.rail-actions {
+  display: flex;
+  gap: 8px;
   margin: 10px 18px 0;
-  text-align: center;
 }
+.rail-actions .btn-quiet { flex: 1; }
 
 .btn-icon {
   display: inline-grid;
@@ -1405,6 +1405,90 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-faint);
 }
 
+/* ---------- 系统自检抽屉 ---------- */
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 22px;
+}
+
+.diag-summary {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.diag-summary.ok {
+  color: var(--triage-4);
+  background: #eff8f2;
+  border-color: #cfe8da;
+}
+.diag-summary.warn {
+  color: var(--triage-2);
+  background: #fdf2e9;
+  border-color: #f0d5c2;
+}
+
+.diag-section { margin-bottom: 14px; }
+.diag-section h3 {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+
+.diag-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--rule-soft);
+  font-size: 12.5px;
+}
+.diag-row:last-child { border-bottom: 0; }
+.diag-row .k { flex: none; color: var(--ink-soft); }
+.diag-row .v {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.diag-row.bad .v { color: var(--triage-1); }
+
+.diag-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.diag-actions .btn-quiet { flex: 1; }
+
+.diag-status {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+}
+.diag-status.error {
+  color: #7a2f22;
+  background: #fdf0ee;
+  border-color: #eccfc9;
+}
+
 /* ---------- 滚动条 ---------- */
 
 .thread::-webkit-scrollbar,
@@ -1445,6 +1529,19 @@ html[data-theme="dark"] .kb-status.error {
   border-color: #5a3430;
 }
 html[data-theme="dark"] .kb-item-delete:hover:not(:disabled) { background: #331f1d; }
+html[data-theme="dark"] .diag-summary.ok {
+  background: #123024;
+  border-color: #1e4a35;
+}
+html[data-theme="dark"] .diag-summary.warn {
+  background: #332019;
+  border-color: #5a3430;
+}
+html[data-theme="dark"] .diag-status.error {
+  color: #f0b3a8;
+  background: #33201d;
+  border-color: #5a3430;
+}
 
 html[data-theme="dark"] .risk[data-level="low"] { background: #123024; }
 html[data-theme="dark"] .risk[data-level="medium"] { background: #322a12; }

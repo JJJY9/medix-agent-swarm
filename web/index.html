@@ -188,7 +188,10 @@
           </div>
         </dl>
 
-        <button type="button" class="btn-quiet rail-wide" id="kb-manage">管理知识库</button>
+        <div class="rail-actions">
+          <button type="button" class="btn-quiet" id="kb-manage">管理知识库</button>
+          <button type="button" class="btn-quiet" id="diagnose">系统自检</button>
+        </div>
 
         <section class="rail-log" id="rail-log" hidden>
           <h3>接诊记录</h3>
@@ -262,6 +265,35 @@
 
     <p class="kb-status" id="kb-status" hidden></p>
     <ul class="kb-list" id="kb-list"></ul>
+  </div>
+</aside>
+
+<!-- 系统自检抽屉 -->
+<div class="drawer-backdrop" id="diagnose-backdrop" hidden></div>
+<aside
+  class="drawer"
+  id="diagnose-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="diagnose-title"
+>
+  <div class="drawer-head">
+    <h2 id="diagnose-title">系统自检</h2>
+    <button type="button" class="drawer-close" id="diagnose-close" aria-label="关闭系统自检">×</button>
+  </div>
+  <div class="diag-body">
+    <div class="diag-summary" id="diag-summary">正在检查…</div>
+    <div class="diag-section" id="diag-env"></div>
+    <div class="diag-section" id="diag-llm"></div>
+    <div class="diag-section" id="diag-knowledge"></div>
+    <div class="diag-section" id="diag-packages"></div>
+    <div class="diag-actions">
+      <button type="button" class="btn-quiet" id="diag-refresh">重新检查</button>
+      <button type="button" class="btn-quiet" id="diag-copy">复制诊断信息</button>
+      <button type="button" class="btn-quiet" id="diag-download">下载诊断信息</button>
+    </div>
+    <p class="diag-status" id="diag-status" hidden></p>
   </div>
 </aside>
 
