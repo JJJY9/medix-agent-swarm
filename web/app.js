@@ -640,6 +640,90 @@ async function copyText(text) {
   }
 }
 
+function collectAnswerSections(text, pattern) {
+  const sections = {};
+  const matches = [...text.matchAll(pattern)];
+  for (let index = 0; index < matches.length; index += 1) {
+    const name = matches[index][1].trim();
+    const start = matches[index].index + matches[index][0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
+    sections[name] = text.slice(start, end).trim();
+  }
+  return sections;
+}
+
+function splitAnswerSections(text) {
+  const bracketed = collectAnswerSections(text, /【([^】]{1,20})】/g);
+  if (Object.keys(bracketed).length) return bracketed;
+  return collectAnswerSections(text, /\*\*([^*\n]{1,20})\*\*/g);
+}
+
+function formatPatientContext(context) {
+  const labels = {
+    age: '年龄',
+    sex: '性别',
+    duration: '病程',
+    history: '既往史',
+    medications: '用药',
+    allergies: '过敏史',
+  };
+  return Object.entries(labels)
+    .filter(([key]) => context && context[key])
+    .map(([key, label]) => `${label}：${context[key]}`)
+    .join('；');
+}
+
+function buildSOAP(payload, question) {
+  const answer = (payload.answer || '').trim();
+  const sections = splitAnswerSections(answer);
+  const risk = sections['风险评估'] || '';
+  const diagnosis = sections['诊断分析'] || '';
+  const evidence = sections['医学证据'] || '';
+  const core = sections['核心建议'] || '';
+
+  const subjective = [];
+  if (question) subjective.push(`主诉：${question.trim()}`);
+  const contextText = formatPatientContext(payload.patient_context || {});
+  if (contextText) subjective.push(`补充信息：${contextText}`);
+
+  const objective = [];
+  if (payload.triage && payload.triage.level && payload.triage.level !== 'none') {
+    objective.push(`分诊提示：${payload.triage.message || payload.triage.level}`);
+  }
+  if (evidence) objective.push(`医学证据：${evidence}`);
+  const sources = (payload.sources || [])
+    .map((source) => source.title || source.filename)
+    .filter(Boolean);
+  if (sources.length) objective.push(`参考来源：${sources.join('、')}`);
+
+  let assessment = [risk, diagnosis].filter(Boolean).join('\n\n');
+  if (!assessment) {
+    const otherSections = Object.entries(sections)
+      .filter(([name]) => !['核心建议', '免责声明'].includes(name))
+      .map(([, text]) => text)
+      .filter(Boolean);
+    assessment = otherSections.join('\n\n')
+      || (Object.keys(sections).length ? '详见会诊意见。' : answer);
+  }
+  const plan = [];
+  if (core) {
+    plan.push(core);
+  } else if (payload.suggestions && payload.suggestions.length) {
+    plan.push(
+      payload.suggestions.map((item, index) => `${index + 1}. ${item}`).join('\n')
+    );
+  }
+
+  return [
+    'SOAP 会诊摘要',
+    `S（主观资料）\n${subjective.join('\n') || '未提供'}`,
+    `O（客观资料）\n${objective.join('\n') || '在线问诊，未提供检查结果。'}`,
+    `A（评估）\n${assessment || '未提供'}`,
+    `P（计划）\n${plan.join('\n\n') || '未提供'}`,
+    payload.disclaimer ? `免责声明：${payload.disclaimer}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
 function buildMarkdown(payload, question) {
   const lines = ['# MediX 会诊意见', ''];
   lines.push(`- 会话编号：${sessionId || '—'}`);
@@ -1019,6 +1103,15 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
     btn.textContent = ok ? '已复制' : '复制失败';
     setTimeout(() => {
       btn.textContent = '复制意见';
+    }, 1600);
+  }));
+
+  actions.appendChild(makeAction('复制 SOAP', async (e) => {
+    const btn = e.currentTarget;
+    const ok = await copyText(buildSOAP(payload, question));
+    btn.textContent = ok ? 'SOAP 已复制' : '复制失败';
+    setTimeout(() => {
+      btn.textContent = '复制 SOAP';
     }, 1600);
   }));
 
@@ -1650,6 +1743,8 @@ function renderStoredMessages(messages) {
           disclaimer: metadata.disclaimer || '',
           sources: metadata.sources || [],
           agent_contributions: metadata.agent_contributions || [],
+          patient_context: metadata.patient_context || {},
+          triage: metadata.triage || {},
           historical: true,
         },
         null,

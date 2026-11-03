@@ -541,6 +541,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "triage": result.get("triage") or {"level": "none", "matches": [], "message": ""},
         "usage": result.get("usage") or {},
         "llm_calls": result.get("llm_calls", 0),
+        "patient_context": result.get("patient_context") or {},
         "total_time": result.get("total_time"),
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),

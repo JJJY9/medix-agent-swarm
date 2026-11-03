@@ -311,10 +311,12 @@ def test_serialize_result_includes_usage():
         "answer": "答复",
         "usage": {"prompt_tokens": 9, "completion_tokens": 6, "total_tokens": 15},
         "llm_calls": 3,
+        "patient_context": {"age": 38, "sex": "女"},
     }, {})
 
     assert payload["usage"]["total_tokens"] == 15
     assert payload["llm_calls"] == 3
+    assert payload["patient_context"] == {"age": 38, "sex": "女"}
 
 
 def test_serialize_result_defaults_usage():
@@ -322,3 +324,4 @@ def test_serialize_result_defaults_usage():
 
     assert payload["usage"] == {}
     assert payload["llm_calls"] == 0
+    assert payload["patient_context"] == {}
