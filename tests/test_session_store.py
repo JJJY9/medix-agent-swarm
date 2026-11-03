@@ -315,6 +315,56 @@ def test_export_data_includes_sessions_and_messages(store):
     assert sessions["s2"]["messages"][0]["content"] == "问题二"
 
 
+def test_import_data_roundtrip(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    source.save_exchange(
+        "s1", "导入问题", "导入答复",
+        metadata={
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+            "llm_calls": 2,
+        },
+    )
+    data = source.export_data()
+    source.close()
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        result = target.import_data(data)
+
+        assert result == {
+            "imported": 1,
+            "skipped": 0,
+            "invalid": 0,
+            "messages": 2,
+        }
+        messages = target.get_messages("s1")
+        assert messages[0]["content"] == "导入问题"
+        assert messages[1]["metadata"]["usage"]["total_tokens"] == 10
+
+        again = target.import_data(data)
+        assert again["imported"] == 0
+        assert again["skipped"] == 1
+        assert again["messages"] == 0
+    finally:
+        target.close()
+
+
+def test_import_data_rejects_invalid_payload(store):
+    for payload in (None, "not a dict", {}, {"sessions": []}, {"sessions": "x"}):
+        with pytest.raises(ValueError):
+            store.import_data(payload)
+
+    result = store.import_data({
+        "sessions": [
+            {"id": "", "messages": []},
+            {"id": "no-messages", "messages": []},
+            {"id": "only-invalid", "messages": [{"role": "tool", "content": "x"}]},
+        ]
+    })
+    assert result["imported"] == 0
+    assert result["invalid"] == 3
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
