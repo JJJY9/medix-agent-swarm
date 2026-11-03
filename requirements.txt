@@ -35,6 +35,10 @@ tqdm>=4.65.0
 # Web 服务
 fastapi>=0.110.0
 uvicorn>=0.27.0
+python-multipart>=0.0.9
+
+# 知识库文档解析
+pypdf>=4.0.0
 
 # 异步支持
 aiohttp>=3.8.0
