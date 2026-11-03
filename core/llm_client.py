@@ -59,6 +59,37 @@ class ToolCall:
     arguments: Dict[str, Any]
 
 
+def parse_tool_call_arguments(raw_arguments: Optional[str]) -> Dict[str, Any]:
+    """解析 LLM 返回的工具调用参数。
+
+    模型偶尔会输出不合法或非对象的 JSON（例如空字符串、带注释的片段），
+    直接 json.loads 会抛异常并中断整轮对话。这里统一兜底为空参数，
+    让 Skill 自己校验，至少能返回可读的错误而不是把 Agent Loop 打断。
+
+    Args:
+        raw_arguments: OpenAI function calling 返回的 arguments 字符串
+
+    Returns:
+        解析后的参数字典；无法解析时返回空字典
+    """
+    if not raw_arguments:
+        return {}
+
+    try:
+        arguments = json.loads(raw_arguments)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning(f"工具调用参数不是合法 JSON，已按空参数处理: {e}")
+        return {}
+
+    if not isinstance(arguments, dict):
+        logger.warning(
+            f"工具调用参数不是 JSON 对象（实际为 {type(arguments).__name__}），已按空参数处理"
+        )
+        return {}
+
+    return arguments
+
+
 @dataclass
 class LLMResponse:
     """LLM 响应数据结构（支持 function calling）"""
@@ -128,7 +159,7 @@ class LLMClient:
                 **kwargs
             )
 
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content or ""
             logger.debug(f"LLM response length: {len(content)} chars")
             return content
 
@@ -160,6 +191,8 @@ class LLMClient:
                     raise
                 logger.warning(f"Retry {attempt + 1}/{max_retries} after error: {e}")
                 await asyncio.sleep(2 ** attempt)  # 指数退避
+
+        raise RuntimeError(f"LLM call failed after {max_retries} retries")
 
     def create_message(self, role: str, content: str) -> Dict[str, str]:
         """
@@ -230,7 +263,7 @@ class LLMClient:
                     tool_calls.append(ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=json.loads(tc.function.arguments)
+                        arguments=parse_tool_call_arguments(tc.function.arguments)
                     ))
                 logger.debug(f"LLM requested {len(tool_calls)} tool calls")
 
