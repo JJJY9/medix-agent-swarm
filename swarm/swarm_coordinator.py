@@ -249,7 +249,8 @@ class SwarmCoordinator:
         question: str,
         context: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
-        on_token: Optional[Callable[[str], None]] = None
+        on_token: Optional[Callable[[str], None]] = None,
+        enable_swarm: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         处理用户问题
@@ -259,6 +260,7 @@ class SwarmCoordinator:
             context: 额外上下文（年龄、既往史等）
             session_id: 会话ID（如果不提供，将自动生成）
             on_token: 可选的流式回调；Swarm 汇总阶段会逐段推送文本
+            enable_swarm: 本次请求是否允许 Swarm；None 使用实例默认值
 
         Returns:
             处理结果
@@ -266,6 +268,7 @@ class SwarmCoordinator:
         start_time = datetime.now()
         if session_id is None:
             session_id = f"{start_time.strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
+        use_swarm = self.enable_swarm if enable_swarm is None else bool(enable_swarm)
 
         logger.info(f"Processing question (session={session_id}): {question[:50]}...")
 
@@ -365,7 +368,7 @@ class SwarmCoordinator:
             if 'suggestions' not in result:
                 result['suggestions'] = []
 
-        elif len(subtasks) >= 2 and self.enable_swarm:
+        elif len(subtasks) >= 2 and use_swarm:
             # 多任务 → 启动 Swarm
             logger.info(f"Route: Swarm (Multi-Agent Collaboration) - {len(subtasks)} tasks")
             mode = "swarm"

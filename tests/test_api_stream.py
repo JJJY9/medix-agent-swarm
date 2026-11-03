@@ -174,6 +174,57 @@ def test_stream_emits_triage_before_result():
     assert "呼吸困难" in triage["matches"]
 
 
+class SwarmAwareCoordinator(FakeCoordinator):
+    """记录请求是否允许 Swarm。"""
+
+    def __init__(self):
+        super().__init__()
+        self.received = None
+
+    async def process(
+        self, question, context=None, session_id=None, on_token=None,
+        enable_swarm=True
+    ):
+        self.received = enable_swarm
+        return await super().process(question, context, session_id, on_token)
+
+
+def test_chat_forwards_single_mode():
+    coordinator = SwarmAwareCoordinator()
+    api_server.state.coordinator = coordinator
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "question": "复杂问题",
+            "session_id": "single-mode-test",
+            "enable_swarm": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert coordinator.received is False
+
+
+def test_stream_forwards_single_mode():
+    coordinator = SwarmAwareCoordinator()
+    api_server.state.coordinator = coordinator
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "question": "复杂问题",
+            "session_id": "single-stream-test",
+            "enable_swarm": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert coordinator.received is False
+
+
 class FailingCoordinator:
     worker_pool = []
 
