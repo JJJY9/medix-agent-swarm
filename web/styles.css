@@ -1845,6 +1845,71 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .send-icon { display: none; }
 }
 
+@media print {
+  :root,
+  html[data-theme="dark"] {
+    color-scheme: light;
+    --wall: #fff;
+    --paper: #fff;
+    --paper-2: #fff;
+    --ink: #111;
+    --ink-soft: #333;
+    --ink-faint: #666;
+    --rule: #c9c9c9;
+    --rule-soft: #e2e2e2;
+    --clinic: #0b6e9e;
+    --clinic-soft: #eef6fa;
+  }
+
+  @page { margin: 14mm; }
+
+  html, body { height: auto; background: #fff; }
+
+  .topbar,
+  .vitals,
+  .banner,
+  .rail,
+  .composer,
+  .context-bar,
+  .context-panel,
+  .jump-latest,
+  .footnote,
+  .note-actions,
+  .working,
+  .drawer,
+  .drawer-backdrop,
+  .auth-gate,
+  .skip-link { display: none !important; }
+
+  .shell { height: auto; max-width: none; display: block; }
+  .workspace {
+    display: block;
+    padding: 0;
+    flex: none;
+    min-height: 0;
+  }
+  .thread-col { overflow: visible; min-height: 0; }
+  .thread {
+    overflow: visible;
+    height: auto;
+    max-height: none;
+    padding: 0;
+  }
+
+  .turn { margin-bottom: 18px; }
+  .note {
+    background: #fff;
+    box-shadow: none;
+    border-color: var(--rule);
+  }
+  .note-head { break-after: avoid; }
+  .note-body { padding-bottom: 2px; }
+  .ask { max-width: 100%; }
+  .risk,
+  .advice li { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important;

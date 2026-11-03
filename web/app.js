@@ -1008,6 +1008,10 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
     downloadMarkdown(payload, question);
   }));
 
+  actions.appendChild(makeAction('打印 / PDF', () => {
+    window.print();
+  }));
+
   if (question) {
     actions.appendChild(makeAction('再次会诊', () => {
       if (busy) return;
