@@ -38,6 +38,7 @@ from core.auth import get_access_token, is_authorized
 from core.triage import detect_red_flags
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
+from core.pricing import get_pricing
 
 WEB_DIR = project_root / "web"
 
@@ -207,6 +208,7 @@ async def get_status():
         "startup_error": state.startup_error,
         "auth_required": bool(get_access_token()),
         "llm_configured": bool(api_key),
+        "pricing": get_pricing(),
         "model_name": LLM_CONFIG.get("model_name"),
         "base_url": LLM_CONFIG.get("base_url"),
         "mem0_enabled": mem0_enabled,

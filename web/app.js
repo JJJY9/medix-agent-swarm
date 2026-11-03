@@ -92,6 +92,8 @@ const els = {
     tasks: document.getElementById('r-tasks'),
     time: document.getElementById('r-time'),
     usage: document.getElementById('r-usage'),
+    costRow: document.getElementById('readout-cost-row'),
+    cost: document.getElementById('r-cost'),
     kb: document.getElementById('r-kb'),
     session: document.getElementById('r-session'),
   },
@@ -108,6 +110,8 @@ const AGENT_NAMES = {
 let sessionId = localStorage.getItem('medix.session') || null;
 let busy = false;
 let activeController = null;
+let pricing = null;
+let latestUsage = null;
 let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
@@ -289,6 +293,8 @@ function resetRail() {
   els.readout.time.textContent = '—';
   els.readout.usage.textContent = '—';
   els.readout.usage.title = '';
+  latestUsage = null;
+  updateCostDisplay();
   els.readout.session.textContent = shortSession(sessionId);
 }
 
@@ -906,7 +912,53 @@ function usageDetail(usage, llmCalls = 0) {
     );
   }
   if (calls > 0) parts.push(`${calls} 次模型调用`);
+  const cost = estimateCost(usage);
+  if (cost != null && total > 0) parts.push(`约 ${formatCost(cost)}`);
   return parts.join(' · ');
+}
+
+function estimateCost(usage) {
+  if (!pricing || !usage) return null;
+  const prompt = Number(usage.prompt_tokens || 0);
+  const completion = Number(usage.completion_tokens || 0);
+  const value =
+    (prompt / 1_000_000) * Number(pricing.input_per_million || 0) +
+    (completion / 1_000_000) * Number(pricing.output_per_million || 0);
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatCost(value) {
+  if (value == null) return '';
+  const currency = (pricing && pricing.currency) || '¥';
+  if (value === 0) return `${currency}0`;
+  if (value < 0.01) return `${currency}${value.toFixed(4)}`;
+  if (value < 1) return `${currency}${value.toFixed(3)}`;
+  return `${currency}${value.toFixed(2)}`;
+}
+
+function updateCostDisplay() {
+  const visible = Boolean(pricing);
+  els.readout.costRow.hidden = !visible;
+
+  if (!visible) {
+    els.readout.cost.textContent = '—';
+    els.readout.cost.title = '';
+    return;
+  }
+
+  const total = Number(latestUsage && latestUsage.total_tokens || 0);
+  const cost = estimateCost(latestUsage);
+  els.readout.cost.textContent =
+    total > 0 && cost != null ? formatCost(cost) : '—';
+
+  if (total > 0) {
+    els.readout.cost.title =
+      `按输入 ${pricing.currency}${pricing.input_per_million}/百万 tokens、` +
+      `输出 ${pricing.currency}${pricing.output_per_million}/百万 tokens 估算，` +
+      '实际以服务商账单为准';
+  } else {
+    els.readout.cost.title = '';
+  }
 }
 
 function contributionStats(contribution) {
@@ -1455,6 +1507,10 @@ function renderHistorySummary(summary) {
   if (summary.turns) parts.push(`${summary.turns} 轮`);
   if (totalTokens > 0) parts.push(`${totalTokens.toLocaleString()} tokens`);
   if (llmCalls > 0) parts.push(`${llmCalls} 次调用`);
+  const summaryCost = estimateCost(summary.usage);
+  if (summaryCost != null && totalTokens > 0) {
+    parts.push(formatCost(summaryCost));
+  }
 
   els.historySummary.textContent = parts.join(' · ');
   els.historySummary.hidden = false;
@@ -1545,8 +1601,10 @@ function renderUsageTrend(data) {
   const totalCalls = Number(totals.llm_calls || 0);
 
   els.usageTrend.hidden = false;
+  const trendCost = estimateCost(totals.usage);
   els.usageTrendTotal.textContent = totalTokens
-    ? `${totalTokens.toLocaleString()} tokens · ${totalCalls} 次调用`
+    ? `${totalTokens.toLocaleString()} tokens · ${totalCalls} 次调用` +
+      (trendCost != null ? ` · ${formatCost(trendCost)}` : '')
     : '暂无用量';
 
   els.usageBars.replaceChildren();
@@ -1814,6 +1872,8 @@ function renderStoredMessages(messages) {
   if (lastUsage) {
     els.readout.usage.textContent = formatUsage(lastUsage, lastLlmCalls);
     els.readout.usage.title = usageDetail(lastUsage, lastLlmCalls);
+    latestUsage = lastUsage;
+    updateCostDisplay();
   }
 
   if (lastMetadata && lastMetadata.patient_context) {
@@ -2515,6 +2575,8 @@ async function send(question) {
       finalPayload.usage,
       finalPayload.llm_calls
     );
+    latestUsage = finalPayload.usage || null;
+    updateCostDisplay();
     els.readout.session.textContent = shortSession(finalPayload.session_id || sid);
 
     logStep(finalPayload.mode === 'swarm' ? '协调科室已汇总各方意见' : '单科直接出具意见', false);
@@ -2567,6 +2629,9 @@ async function checkStatus() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
+
+    pricing = data.pricing || null;
+    updateCostDisplay();
 
     if (data.auth_required) {
       if (authGateOpen) return;
