@@ -332,6 +332,7 @@ async def chat_stream(request: ChatRequest):
             )
 
             seen_agents = set()
+            last_keepalive = asyncio.get_event_loop().time()
             try:
                 while not task.done() or not token_queue.empty():
                     # 先推送汇总阶段已经产生的增量文本
@@ -354,6 +355,12 @@ async def chat_stream(request: ChatRequest):
                                     "agent_id": agent_id,
                                     "name": AGENT_LABELS.get(agent_id, agent_id),
                                 })
+
+                    now = asyncio.get_event_loop().time()
+                    if now - last_keepalive >= 15:
+                        # SSE 注释行，前端解析器会忽略；防止长时间无事件被代理断开
+                        yield ": keep-alive\n\n"
+                        last_keepalive = now
 
                     if not task.done():
                         await asyncio.sleep(0.1)
