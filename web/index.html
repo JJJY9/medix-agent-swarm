@@ -20,6 +20,8 @@
 </head>
 <body>
 
+<a class="skip-link" href="#input" id="skip-link">跳到输入框</a>
+
 <div class="shell">
 
   <header class="topbar">
@@ -193,8 +195,8 @@
         </dl>
 
         <div class="rail-actions">
-          <button type="button" class="btn-quiet" id="kb-manage">管理知识库</button>
-          <button type="button" class="btn-quiet" id="diagnose">系统自检</button>
+          <button type="button" class="btn-quiet" id="kb-manage" aria-haspopup="dialog" aria-expanded="false" aria-controls="kb-drawer">管理知识库</button>
+          <button type="button" class="btn-quiet" id="diagnose" aria-haspopup="dialog" aria-expanded="false" aria-controls="diagnose-drawer">系统自检</button>
         </div>
 
         <section class="rail-log" id="rail-log" hidden>
