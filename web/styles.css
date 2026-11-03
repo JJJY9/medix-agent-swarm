@@ -6,6 +6,8 @@
    ============================================================ */
 
 :root {
+  color-scheme: light;
+
   /* 医院墙面 / 病历纸 */
   --wall: #e9eff2;
   --paper: #ffffff;
@@ -43,6 +45,34 @@
   --rail-w: 328px;
   --gutter: 28px;
   --radius: 4px;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --wall: #0d1519;
+  --paper: #152128;
+  --paper-2: #1c2b33;
+
+  --ink: #e6eef1;
+  --ink-soft: #a6bac3;
+  --ink-faint: #6f8792;
+
+  --rule: #293b43;
+  --rule-soft: #213139;
+
+  --clinic: #6cc4e8;
+  --clinic-soft: #163645;
+  --pulse: #3fc79a;
+
+  --dept-consult: #7bb9e8;
+  --dept-diagnose: #ef8f78;
+  --dept-research: #b79be3;
+
+  --triage-1: #ff8078;
+  --triage-2: #ffa45c;
+  --triage-3: #e6c35c;
+  --triage-4: #5fd695;
 }
 
 * { box-sizing: border-box; }
@@ -135,6 +165,24 @@ body {
   transition: background 0.15s, border-color 0.15s;
 }
 .btn-quiet:hover { border-color: var(--clinic); }
+
+.btn-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.btn-icon:hover { color: var(--clinic); border-color: var(--clinic); }
+.btn-icon svg { width: 17px; height: 17px; }
+.btn-icon .icon-sun { display: none; }
+html[data-theme="dark"] .btn-icon .icon-moon { display: none; }
+html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 
 .topbar-actions {
   display: flex;
@@ -1152,6 +1200,60 @@ body {
 .thread::-webkit-scrollbar-thumb:hover,
 .rail-inner::-webkit-scrollbar-thumb:hover,
 .history-list::-webkit-scrollbar-thumb:hover { background: #a5b7bf; background-clip: content-box; }
+
+/* ---------- 深色主题组件修正 ---------- */
+
+html[data-theme="dark"] .brand-mark,
+html[data-theme="dark"] .send {
+  background: #1d6f94;
+  border-color: #1d6f94;
+}
+html[data-theme="dark"] .send:hover:not(:disabled) { background: #2a8fbf; }
+
+html[data-theme="dark"] .banner {
+  color: #d8b96a;
+  background: #2a2412;
+  border-color: #4a3f1c;
+}
+
+html[data-theme="dark"] .empty-note { background: #2a1d1c; }
+
+html[data-theme="dark"] .risk[data-level="low"] { background: #123024; }
+html[data-theme="dark"] .risk[data-level="medium"] { background: #322a12; }
+html[data-theme="dark"] .risk[data-level="high"] { background: #332019; }
+html[data-theme="dark"] .risk[data-level="emergency"] { background: #331a19; }
+
+html[data-theme="dark"] .failure {
+  color: #f0b3a8;
+  background: #33201d;
+  border-color: #5a3430;
+}
+
+html[data-theme="dark"] .stop {
+  background: #331f1d;
+  border-color: #5a3430;
+}
+html[data-theme="dark"] .stop:hover { background: #3f2724; }
+
+html[data-theme="dark"] .history-action.danger:hover { background: #331f1d; }
+
+html[data-theme="dark"] .drawer-backdrop { background: rgba(0, 0, 0, 0.55); }
+
+html[data-theme="dark"] .drawer,
+html[data-theme="dark"] .jump-latest { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45); }
+
+html[data-theme="dark"] .thread::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .rail-inner::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb {
+  background: #3a4d56;
+  background-clip: content-box;
+}
+html[data-theme="dark"] .thread::-webkit-scrollbar-thumb:hover,
+html[data-theme="dark"] .rail-inner::-webkit-scrollbar-thumb:hover,
+html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
+  background: #4b646f;
+  background-clip: content-box;
+}
 
 /* ---------- 响应式 ---------- */
 

@@ -12,6 +12,7 @@ const els = {
   input: document.getElementById('input'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
+  themeToggle: document.getElementById('theme-toggle'),
   historyToggle: document.getElementById('history-toggle'),
   historyDrawer: document.getElementById('history-drawer'),
   historyBackdrop: document.getElementById('history-backdrop'),
@@ -45,6 +46,33 @@ let busy = false;
 let activeController = null;
 let historyOpen = false;
 let userPausedFollow = false;
+
+const THEME_KEY = 'medix.theme';
+
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+function updateThemeToggle(dark) {
+  els.themeToggle.setAttribute('aria-label', dark ? '切换到浅色模式' : '切换深色模式');
+  els.themeToggle.title = dark ? '切换到浅色模式' : '切换深色模式';
+  els.themeToggle.setAttribute('aria-pressed', String(dark));
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // 隐私模式下 localStorage 可能不可用，忽略即可
+  }
+  updateThemeToggle(theme === 'dark');
+}
+
+function initTheme() {
+  // 主题已由 index.html 的内联脚本在首屏渲染前设置
+  updateThemeToggle(currentTheme() === 'dark');
+}
 
 /* ---------- 工具 ---------- */
 
@@ -1278,6 +1306,10 @@ els.composer.addEventListener('submit', (e) => {
 
 els.newSession.addEventListener('click', startNewSession);
 
+els.themeToggle.addEventListener('click', () => {
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+});
+
 els.stop.addEventListener('click', () => {
   if (activeController) activeController.abort();
 });
@@ -1330,6 +1362,7 @@ els.starters.addEventListener('click', (e) => {
 });
 
 resetRail();
+initTheme();
 renderEcg();
 restoreCurrentSession();
 checkStatus();
