@@ -166,6 +166,13 @@ body {
 }
 .btn-quiet:hover { border-color: var(--clinic); }
 
+.rail-wide {
+  display: block;
+  width: calc(100% - 36px);
+  margin: 10px 18px 0;
+  text-align: center;
+}
+
 .btn-icon {
   display: inline-grid;
   place-items: center;
@@ -1197,6 +1204,121 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-faint);
 }
 
+/* ---------- 知识库管理抽屉 ---------- */
+
+.kb-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 22px;
+}
+
+.kb-stats {
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.kb-upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kb-upload input[type="file"] {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.kb-hint {
+  margin: 8px 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.kb-actions { margin-bottom: 12px; }
+
+.kb-status {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.kb-status.error {
+  color: #7a2f22;
+  background: #fdf0ee;
+  border-color: #eccfc9;
+}
+
+.kb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.kb-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.kb-item:last-child { border-bottom: 0; }
+
+.kb-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kb-item-name {
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.kb-item-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.kb-item-delete {
+  flex: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  background: transparent;
+  border: 0;
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.kb-item-delete:hover:not(:disabled) {
+  color: var(--triage-1);
+  background: #fdf0ef;
+}
+.kb-item-delete:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.kb-empty {
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
 /* ---------- 滚动条 ---------- */
 
 .thread::-webkit-scrollbar,
@@ -1231,6 +1353,12 @@ html[data-theme="dark"] .banner {
 
 html[data-theme="dark"] .empty-note { background: #2a1d1c; }
 html[data-theme="dark"] .triage-alert { background: #331a19; color: #f0b3a8; }
+html[data-theme="dark"] .kb-status.error {
+  color: #f0b3a8;
+  background: #33201d;
+  border-color: #5a3430;
+}
+html[data-theme="dark"] .kb-item-delete:hover:not(:disabled) { background: #331f1d; }
 
 html[data-theme="dark"] .risk[data-level="low"] { background: #123024; }
 html[data-theme="dark"] .risk[data-level="medium"] { background: #322a12; }
