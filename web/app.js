@@ -32,6 +32,19 @@ const els = {
   kbStats: document.getElementById('kb-stats'),
   kbStatus: document.getElementById('kb-status'),
   kbList: document.getElementById('kb-list'),
+  diagnose: document.getElementById('diagnose'),
+  diagnoseDrawer: document.getElementById('diagnose-drawer'),
+  diagnoseBackdrop: document.getElementById('diagnose-backdrop'),
+  diagnoseClose: document.getElementById('diagnose-close'),
+  diagSummary: document.getElementById('diag-summary'),
+  diagEnv: document.getElementById('diag-env'),
+  diagLlm: document.getElementById('diag-llm'),
+  diagKnowledge: document.getElementById('diag-knowledge'),
+  diagPackages: document.getElementById('diag-packages'),
+  diagRefresh: document.getElementById('diag-refresh'),
+  diagCopy: document.getElementById('diag-copy'),
+  diagDownload: document.getElementById('diag-download'),
+  diagStatus: document.getElementById('diag-status'),
   vitals: document.getElementById('vitals'),
   vitalsText: document.getElementById('vitals-text'),
   banner: document.getElementById('config-banner'),
@@ -62,6 +75,7 @@ let busy = false;
 let activeController = null;
 let historyOpen = false;
 let kbOpen = false;
+let diagOpen = false;
 let userPausedFollow = false;
 
 const THEME_KEY = 'medix.theme';
@@ -570,8 +584,8 @@ function buildMarkdown(payload, question) {
   return lines.join('\n');
 }
 
-function downloadFile(content, filename) {
-  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+function downloadFile(content, filename, mimeType = 'text/markdown;charset=utf-8') {
+  const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -990,6 +1004,7 @@ async function startNewSession() {
   resetRail();
   closeHistory();
   closeKb();
+  closeDiagnose();
   els.input.focus();
 }
 
@@ -1086,6 +1101,7 @@ let lastFocused = null;
 
 function openHistory() {
   closeKb();
+  closeDiagnose();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -1316,6 +1332,7 @@ async function loadKnowledge() {
 
 function openKb() {
   closeHistory();
+  closeDiagnose();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -1408,6 +1425,160 @@ async function deleteKbDocument(filename) {
   } finally {
     setKbBusy(false);
   }
+}
+
+/* ---------- 系统自检 ---------- */
+
+let diagFocused = null;
+let lastDiagnostics = null;
+
+function setDiagStatus(text, isError = false) {
+  els.diagStatus.hidden = !text;
+  els.diagStatus.textContent = text || '';
+  els.diagStatus.classList.toggle('error', Boolean(isError));
+}
+
+function diagRow(label, value, ok = null) {
+  const row = document.createElement('div');
+  row.className = 'diag-row' + (ok === false ? ' bad' : '');
+
+  const key = document.createElement('span');
+  key.className = 'k';
+  key.textContent = label;
+
+  const val = document.createElement('span');
+  val.className = 'v';
+  val.textContent = String(value ?? '—');
+
+  row.append(key, val);
+  return row;
+}
+
+function renderDiagSection(container, title, rows) {
+  container.replaceChildren();
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  container.appendChild(heading);
+  rows.forEach((row) => container.appendChild(row));
+}
+
+function renderDiagnostics(report) {
+  lastDiagnostics = report;
+
+  const missing = report.missing_required || [];
+  const healthy = report.python_ok
+    && missing.length === 0
+    && report.llm_config
+    && report.llm_config.api_key_set;
+
+  els.diagSummary.className = `diag-summary ${healthy ? 'ok' : 'warn'}`;
+  els.diagSummary.textContent = healthy
+    ? '环境正常，可以运行'
+    : '发现问题，请检查下面标红的项目';
+
+  renderDiagSection(els.diagEnv, '运行环境', [
+    diagRow('操作系统', report.os || '—'),
+    diagRow('Python', report.python || '—', report.python_ok),
+    diagRow('项目目录', report.project_root || '—'),
+  ]);
+
+  const llm = report.llm_config || {};
+  renderDiagSection(els.diagLlm, 'LLM 配置', [
+    diagRow('API Key', llm.api_key_set ? '已配置' : '未配置', Boolean(llm.api_key_set)),
+    diagRow('模型', llm.model_name || '—'),
+    diagRow('接口地址', llm.base_url || '—'),
+  ]);
+
+  const kb = report.knowledge || {};
+  renderDiagSection(els.diagKnowledge, '知识库', [
+    diagRow('内置文档', `${kb.documents ?? 0} 个`),
+    diagRow('上传文档', `${kb.uploads ?? 0} 个`),
+    diagRow('向量库文件', (kb.vector_store_files || []).join('、') || '未生成'),
+  ]);
+
+  els.diagPackages.replaceChildren();
+  const heading = document.createElement('h3');
+  heading.textContent = '依赖';
+  els.diagPackages.appendChild(heading);
+
+  for (const pkg of report.packages || []) {
+    const row = document.createElement('div');
+    row.className = 'diag-row' + (pkg.ok ? '' : ' bad');
+
+    const key = document.createElement('span');
+    key.className = 'k';
+    key.textContent = `${pkg.ok ? '✅' : '❌'} ${pkg.package}`;
+
+    const val = document.createElement('span');
+    val.className = 'v';
+    val.textContent = pkg.ok
+      ? (pkg.version || '已安装')
+      : (pkg.required ? '未安装' : '未安装（可选）');
+
+    row.append(key, val);
+    els.diagPackages.appendChild(row);
+  }
+
+  setDiagStatus('');
+}
+
+async function loadDiagnostics() {
+  els.diagSummary.className = 'diag-summary';
+  els.diagSummary.textContent = '正在检查…';
+
+  try {
+    const res = await fetch('/api/diagnose');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    renderDiagnostics(data);
+  } catch (err) {
+    els.diagSummary.className = 'diag-summary warn';
+    els.diagSummary.textContent = '系统自检失败';
+    setDiagStatus(err.message || String(err), true);
+  }
+}
+
+function openDiagnose() {
+  closeHistory();
+  closeKb();
+  diagFocused = document.activeElement;
+  diagOpen = true;
+  els.diagnoseDrawer.hidden = false;
+  els.diagnoseBackdrop.hidden = false;
+  setDiagStatus('');
+  loadDiagnostics();
+  els.diagnoseClose.focus();
+}
+
+function closeDiagnose(restoreFocus = false) {
+  diagOpen = false;
+  els.diagnoseDrawer.hidden = true;
+  els.diagnoseBackdrop.hidden = true;
+  if (restoreFocus && diagFocused instanceof HTMLElement) {
+    diagFocused.focus();
+  }
+}
+
+async function copyDiagnostics() {
+  if (!lastDiagnostics) {
+    setDiagStatus('还没有可复制的诊断结果，请先重新检查。', true);
+    return;
+  }
+  const ok = await copyText(JSON.stringify(lastDiagnostics, null, 2));
+  setDiagStatus(ok ? '诊断信息已复制到剪贴板。' : '复制失败。', !ok);
+}
+
+function downloadDiagnostics() {
+  if (!lastDiagnostics) {
+    setDiagStatus('还没有可下载的诊断结果，请先重新检查。', true);
+    return;
+  }
+  downloadFile(
+    JSON.stringify(lastDiagnostics, null, 2),
+    'medix-diagnostics.json',
+    'application/json;charset=utf-8'
+  );
+  setDiagStatus('诊断信息已开始下载。');
 }
 
 async function restoreCurrentSession() {
@@ -1735,6 +1906,13 @@ els.kbBackdrop.addEventListener('click', () => closeKb(true));
 els.kbUpload.addEventListener('click', uploadKbDocument);
 els.kbRebuild.addEventListener('click', rebuildKb);
 
+els.diagnose.addEventListener('click', openDiagnose);
+els.diagnoseClose.addEventListener('click', () => closeDiagnose(true));
+els.diagnoseBackdrop.addEventListener('click', () => closeDiagnose(true));
+els.diagRefresh.addEventListener('click', loadDiagnostics);
+els.diagCopy.addEventListener('click', copyDiagnostics);
+els.diagDownload.addEventListener('click', downloadDiagnostics);
+
 let historySearchTimer = null;
 els.historySearch.addEventListener('input', () => {
   clearTimeout(historySearchTimer);
@@ -1747,6 +1925,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (historyOpen) closeHistory(true);
     if (kbOpen) closeKb(true);
+    if (diagOpen) closeDiagnose(true);
   }
 });
 
