@@ -856,6 +856,7 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   border-color: var(--clinic);
   background: var(--clinic-soft);
 }
+.failure-action + .failure-action { margin-left: 6px; }
 
 /* 等待中 */
 .working {
