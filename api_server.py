@@ -224,6 +224,31 @@ async def get_status():
     }
 
 
+@app.post("/api/diagnose/llm")
+async def diagnose_llm():
+    """用一次最小请求验证模型连通性，供系统自检抽屉使用。"""
+    from core.llm_client import LLMClient, LLMError
+
+    try:
+        client = LLMClient()
+        text, usage = await client.chat_with_usage_retry(
+            [{"role": "user", "content": "只回复：OK"}],
+            max_retries=1,
+            max_tokens=8,
+            temperature=0,
+        )
+    except LLMError as e:
+        return {"ok": False, "code": e.code, "error": e.user_message}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "reply": (text or "").strip()[:50],
+        "usage": usage or {},
+    }
+
+
 @app.get("/api/diagnose")
 async def diagnose():
     """轻量环境自检：Python、依赖、配置与知识库文件。"""

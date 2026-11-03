@@ -78,6 +78,7 @@ const els = {
   diagKnowledge: document.getElementById('diag-knowledge'),
   diagPackages: document.getElementById('diag-packages'),
   diagRefresh: document.getElementById('diag-refresh'),
+  diagLlmTest: document.getElementById('diag-llm-test'),
   diagCopy: document.getElementById('diag-copy'),
   diagDownload: document.getElementById('diag-download'),
   diagStatus: document.getElementById('diag-status'),
@@ -2494,6 +2495,35 @@ function closeDiagnose(restoreFocus = false) {
   }
 }
 
+async function testModelConnection() {
+  const button = els.diagLlmTest;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '测试中…';
+  setDiagStatus('正在调用模型…');
+
+  try {
+    const res = await fetch('/api/diagnose/llm', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    if (data.ok) {
+      const tokens = Number(data.usage && data.usage.total_tokens || 0);
+      setDiagStatus(
+        `模型连通正常，返回：${data.reply || 'OK'}` +
+        (tokens ? `（${tokens} tokens）` : '')
+      );
+    } else {
+      setDiagStatus(`模型调用失败：${data.error || '未知错误'}`, true);
+    }
+  } catch (err) {
+    setDiagStatus(`测试失败：${err.message || err}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
 async function copyDiagnostics() {
   if (!lastDiagnostics) {
     setDiagStatus('还没有可复制的诊断结果，请先重新检查。', true);
@@ -3046,6 +3076,7 @@ els.diagnose.addEventListener('click', openDiagnose);
 els.diagnoseClose.addEventListener('click', () => closeDiagnose(true));
 els.diagnoseBackdrop.addEventListener('click', () => closeDiagnose(true));
 els.diagRefresh.addEventListener('click', loadDiagnostics);
+els.diagLlmTest.addEventListener('click', testModelConnection);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
 
