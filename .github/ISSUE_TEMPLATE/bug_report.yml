@@ -1,0 +1,108 @@
+name: 🐛 Bug 报告
+description: 报告一个问题；请先运行自检脚本并粘贴完整输出
+title: "[BUG] "
+labels: [bug]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先在项目根目录运行环境自检，并把完整输出粘贴到「环境」一栏：
+
+        ```bash
+        python scripts/diagnose.py
+        ```
+
+        如果问题与模型调用有关，建议再运行 `python scripts/diagnose.py --llm --kb`。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug 描述
+      description: 用一句话说清楚发生了什么
+      placeholder: "例：Web 端点击「会诊记录」后列表为空，但数据库里已有 session"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 粘贴 `python scripts/diagnose.py` 的完整输出（不要包含 API Key）
+      placeholder: |
+        ================================================================
+        MediX 环境自检
+        ================================================================
+        系统      : ...
+        Python    : ...
+        依赖：
+          ✅ openai ...
+        ...
+      value: |
+        （运行 `python scripts/diagnose.py` 后粘贴到这里）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动服务开始的精确步骤，让维护者可以照着复现
+      placeholder: |
+        1. python api_server.py
+        2. 浏览器打开 http://127.0.0.1:8000
+        3. 点击右上角「会诊记录」
+        4. 列表为空
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: frequency
+    attributes:
+      label: 复现频率
+      description: 必现 / 偶现 / 特定条件下必现
+      placeholder: "必现"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 正常情况下应该怎样
+      placeholder: "应显示历史会诊列表"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么
+      placeholder: "列表为空，浏览器控制台报 500"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: 粘贴完整的服务端报错、浏览器控制台输出或堆栈信息
+      render: shell
+      placeholder: |
+        Traceback (most recent call last):
+          ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息（可选）
+      description: 已排查过什么、相关 commit/PR、截图链接
+    validations:
+      required: false
