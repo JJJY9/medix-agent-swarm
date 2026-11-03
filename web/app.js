@@ -69,6 +69,7 @@ const els = {
   diagnoseClose: document.getElementById('diagnose-close'),
   diagSummary: document.getElementById('diag-summary'),
   diagEnv: document.getElementById('diag-env'),
+  diagRuntime: document.getElementById('diag-runtime'),
   diagLlm: document.getElementById('diag-llm'),
   diagKnowledge: document.getElementById('diag-knowledge'),
   diagPackages: document.getElementById('diag-packages'),
@@ -2304,6 +2305,30 @@ function renderDiagnostics(report) {
     diagRow('Python', report.python || '—', report.python_ok),
     diagRow('项目目录', report.project_root || '—'),
   ]);
+
+  const runtime = report.runtime || {};
+  renderDiagSection(els.diagRuntime, '运行状态', [
+    diagRow(
+      '会话数据库',
+      runtime.db_exists
+        ? `${runtime.sessions ?? 0} 次会诊 / ${runtime.messages ?? 0} 条消息`
+        : '未生成'
+    ),
+    diagRow('数据库大小', formatBytes(runtime.db_size || 0)),
+    diagRow('访问令牌', runtime.auth_enabled ? '已开启' : '未开启'),
+    diagRow(
+      '会诊限流',
+      Number(runtime.rate_limit || 0) > 0
+        ? `${runtime.rate_limit} 次/分钟`
+        : '已关闭'
+    ),
+    diagRow('费用估算', runtime.pricing_configured ? '已配置' : '未配置'),
+  ]);
+  if (runtime.db_error) {
+    els.diagRuntime.appendChild(
+      diagRow('数据库读取', runtime.db_error)
+    );
+  }
 
   const llm = report.llm_config || {};
   renderDiagSection(els.diagLlm, 'LLM 配置', [
