@@ -1088,13 +1088,31 @@ function renderStreamingNote() {
   return { turn, body };
 }
 
-function renderError(message) {
+function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
+  if (!retry || !retry.question) return;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'failure-action';
+  button.textContent = label;
+  button.addEventListener('click', () => {
+    if (busy) return;
+    retry.askTurn?.remove();
+    wrap.remove();
+    send(retry.question);
+  });
+  wrap.appendChild(button);
+}
+
+function renderError(message, retry = null) {
   const wrap = document.createElement('div');
   wrap.className = 'failure';
   const strong = document.createElement('strong');
   strong.textContent = '会诊未能完成';
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode(message));
+
+  makeFailureRetry(wrap, retry);
 
   const action = document.createElement('button');
   action.type = 'button';
@@ -1107,13 +1125,14 @@ function renderError(message) {
   scrollThreadToBottom(true);
 }
 
-function renderStopped() {
+function renderStopped(retry = null) {
   const wrap = document.createElement('div');
   wrap.className = 'failure';
   const strong = document.createElement('strong');
   strong.textContent = '会诊已停止';
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode('本次会诊在生成过程中被手动停止，未产生结果。'));
+  makeFailureRetry(wrap, retry, '继续本次会诊');
   els.thread.appendChild(wrap);
   scrollThreadToBottom(true);
 }
@@ -2385,13 +2404,13 @@ async function send(question) {
     working.remove();
 
     if (err.name === 'AbortError') {
-      renderStopped();
+      renderStopped({ question, askTurn });
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
       logStep('用户停止了本次会诊', false);
       setVitals('idle', '已停止会诊');
     } else {
-      renderError(err.message || String(err));
+      renderError(err.message || String(err), { question, askTurn });
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '中断';
       logStep(`中断：${err.message || err}`, false);
