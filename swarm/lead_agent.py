@@ -10,7 +10,7 @@ LeadAgent：任务分解和结果汇总
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
 from core.llm_client import LLMClient
@@ -464,7 +464,8 @@ class LeadAgent:
         self,
         question: str,
         shared_context: SharedContext,
-        timeout_occurred: bool = False
+        timeout_occurred: bool = False,
+        on_token: Optional[Callable[[str], None]] = None
     ) -> str:
         """
         汇总所有 Agent 的贡献，生成最终答案
@@ -475,6 +476,7 @@ class LeadAgent:
             question: 用户问题
             shared_context: 共享上下文
             timeout_occurred: 是否发生超时
+            on_token: 可选的流式回调，汇总过程中逐段推送文本
         """
         # 收集所有贡献
         all_contributions = shared_context.get_contributions()
@@ -556,9 +558,12 @@ class LeadAgent:
 """
 
         try:
-            response = await self.llm_client.chat([
-                {"role": "user", "content": synthesis_prompt}
-            ])
+            messages = [{"role": "user", "content": synthesis_prompt}]
+
+            if on_token is not None and hasattr(self.llm_client, "chat_stream"):
+                return await self.llm_client.chat_stream(messages, on_token=on_token)
+
+            response = await self.llm_client.chat(messages)
 
             return response
 

@@ -11,7 +11,7 @@ SwarmCoordinator：Swarm 入口和智能路由
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Callable, Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient
@@ -211,7 +211,8 @@ class SwarmCoordinator:
         self,
         question: str,
         context: Optional[Dict[str, Any]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        on_token: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         处理用户问题
@@ -220,6 +221,7 @@ class SwarmCoordinator:
             question: 用户问题
             context: 额外上下文（年龄、既往史等）
             session_id: 会话ID（如果不提供，将自动生成）
+            on_token: 可选的流式回调；Swarm 汇总阶段会逐段推送文本
 
         Returns:
             处理结果
@@ -323,7 +325,8 @@ class SwarmCoordinator:
                 context=enhanced_context,
                 assessment=assessment,
                 session_id=session_id,
-                start_time=start_time
+                start_time=start_time,
+                on_token=on_token
             )
             final_answer = result.get('answer', '')
 
@@ -382,7 +385,8 @@ class SwarmCoordinator:
         context: Optional[Dict[str, Any]],
         assessment: Dict[str, Any],
         session_id: str,
-        start_time: datetime
+        start_time: datetime,
+        on_token: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -462,7 +466,8 @@ class SwarmCoordinator:
         final_answer = await self.lead_agent.synthesize_results(
             question=question,
             shared_context=shared_context,
-            timeout_occurred=timeout_occurred
+            timeout_occurred=timeout_occurred,
+            on_token=on_token
         )
 
         end_time = datetime.now()
