@@ -133,6 +133,9 @@ let historyOffset = 0;
 let historyTotal = 0;
 let historyLoading = false;
 let favoritesOnly = false;
+let historyRequestSeq = 0;
+let usageTrendRequestSeq = 0;
+let kbSearching = false;
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -140,6 +143,7 @@ const FOCUSABLE_SELECTOR = [
   'textarea:not([disabled])',
   'input:not([disabled])',
   'select:not([disabled])',
+  'summary',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
@@ -199,7 +203,10 @@ window.fetch = (input, init = {}) => {
 
   return nativeFetch(input, init).then((response) => {
     if (response.status === 401) {
-      showAuthGate('访问令牌无效或已失效，请重新输入。');
+      const hasToken = Boolean(sessionStorage.getItem('medix.token'));
+      showAuthGate(
+        hasToken ? '访问令牌无效或已失效，请重新输入。' : ''
+      );
     }
     return response;
   });
@@ -802,8 +809,28 @@ function buildMarkdown(payload, question) {
   return lines.join('\n');
 }
 
+function printAnswer() {
+  const details = [...document.querySelectorAll('.thread details')];
+  const previous = details.map((item) => item.open);
+  details.forEach((item) => { item.open = true; });
+
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    details.forEach((item, index) => { item.open = previous[index]; });
+    window.removeEventListener('afterprint', restore);
+  };
+
+  window.addEventListener('afterprint', restore);
+  window.print();
+  setTimeout(restore, 1500);
+}
+
 function downloadFile(content, filename, mimeType = 'text/markdown;charset=utf-8') {
-  const blob = new Blob([content], { type: mimeType });
+  const blob = content instanceof Blob
+    ? content
+    : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -1184,7 +1211,7 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
   }));
 
   actions.appendChild(makeAction('打印 / PDF', () => {
-    window.print();
+    printAnswer();
   }));
 
   if (question) {
@@ -1351,7 +1378,10 @@ function setSessionUrl(id) {
 async function ensureSession() {
   if (sessionId) return sessionId;
   const res = await fetch('/api/sessions', { method: 'POST' });
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.session_id) {
+    throw new Error(data.detail || `新建会话失败（${res.status}）`);
+  }
   sessionId = data.session_id;
   localStorage.setItem('medix.session', sessionId);
   setSessionUrl(sessionId);
@@ -1360,19 +1390,32 @@ async function ensureSession() {
 }
 
 async function startNewSession() {
-  const res = await fetch('/api/sessions', { method: 'POST' });
-  const data = await res.json();
-  sessionId = data.session_id;
-  localStorage.setItem('medix.session', sessionId);
-  setSessionUrl(sessionId);
+  if (busy) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
 
-  els.thread.replaceChildren(els.empty);
-  els.empty.hidden = false;
-  resetRail();
-  closeHistory();
-  closeKb();
-  closeDiagnose();
-  els.input.focus();
+  try {
+    const res = await fetch('/api/sessions', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.session_id) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    sessionId = data.session_id;
+    localStorage.setItem('medix.session', sessionId);
+    setSessionUrl(sessionId);
+
+    els.thread.replaceChildren(els.empty);
+    els.empty.hidden = false;
+    resetRail();
+    closeHistory();
+    closeKb();
+    closeDiagnose();
+    els.input.focus();
+  } catch (err) {
+    setVitals('warn', '新建会诊失败');
+    window.alert(`新建会诊失败：${err.message || err}`);
+  }
 }
 
 /* ---------- 历史会诊 ---------- */
@@ -1557,12 +1600,14 @@ function updateHistoryMore(summary) {
   }
 }
 
-async function loadHistory(query = '', { append = false } = {}) {  if (!append) {
+async function loadHistory(query = '', { append = false } = {}) {
+  if (!append) {
     historyQuery = query;
     historyOffset = 0;
     historyTotal = 0;
   }
 
+  const requestSeq = ++historyRequestSeq;
   historyLoading = true;
   updateHistoryMore({ sessions: historyTotal, loaded: historyOffset });
 
@@ -1573,6 +1618,8 @@ async function loadHistory(query = '', { append = false } = {}) {  if (!append) 
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
+    if (requestSeq !== historyRequestSeq) return;
+
     const sessions = data.sessions || [];
     const loadedTotal = historyOffset + sessions.length;
     const viewSummary = { ...(data.summary || {}), loaded: loadedTotal };
@@ -1583,6 +1630,7 @@ async function loadHistory(query = '', { append = false } = {}) {  if (!append) 
     historyLoading = false;
     updateHistoryMore(viewSummary);
   } catch (err) {
+    if (requestSeq !== historyRequestSeq) return;
     historyLoading = false;
     if (append) {
       els.historyMore.hidden = false;
@@ -1691,15 +1739,19 @@ function renderUsageTrend(data) {
 }
 
 async function loadUsageTrend() {
+  const requestSeq = ++usageTrendRequestSeq;
   try {
     const res = await fetch(
       `/api/usage/daily?days=7${favoritesOnly ? '&favorite=1' : ''}`
     );
     const data = await res.json().catch(() => ({}));
+    if (requestSeq !== usageTrendRequestSeq) return;
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
     renderUsageTrend(data);
   } catch {
-    els.usageTrend.hidden = true;
+    if (requestSeq === usageTrendRequestSeq) {
+      els.usageTrend.hidden = true;
+    }
   }
 }
 
@@ -1718,9 +1770,13 @@ async function exportUsageCsv() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
 
-    const text = await res.text();
+    const buffer = await res.arrayBuffer();
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    downloadFile(text, `medix-usage-${stamp}.csv`, 'text/csv;charset=utf-8');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-usage-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
     button.textContent = '已导出';
   } catch (err) {
     button.textContent = '失败';
@@ -1986,6 +2042,10 @@ async function toggleFavorite(item) {
 
 async function deleteHistory(item) {
   const title = item.title || '这次会诊';
+  if (busy && item.id === sessionId) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
   if (!window.confirm(`删除「${title}」的会诊记录？删除后不可恢复。`)) return;
 
   try {
@@ -2004,6 +2064,7 @@ async function deleteHistory(item) {
       els.readout.session.textContent = '—';
     }
     await loadHistory(els.historySearch.value.trim());
+    await loadUsageTrend();
   } catch (err) {
     window.alert(err.message || String(err));
   }
@@ -2033,7 +2094,7 @@ async function renameHistory(item) {
 async function exportHistory(item) {
   try {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(item.id)}/messages?limit=500`
+      `/api/sessions/${encodeURIComponent(item.id)}/messages?limit=0`
     );
     if (!res.ok) throw new Error(`读取会诊记录失败（${res.status}）`);
     const data = await res.json();
@@ -2202,6 +2263,8 @@ function renderKbSearchResults(data) {
 }
 
 async function searchKnowledgeBase() {
+  if (kbSearching) return;
+
   const query = els.kbSearchInput.value.trim();
   if (!query) {
     els.kbSearchResults.hidden = true;
@@ -2209,8 +2272,8 @@ async function searchKnowledgeBase() {
     return;
   }
 
+  kbSearching = true;
   const button = els.kbSearchButton;
-  const original = button.textContent;
   button.disabled = true;
   button.textContent = '检索中…';
   els.kbSearchResults.hidden = false;
@@ -2234,7 +2297,8 @@ async function searchKnowledgeBase() {
     error.textContent = `检索失败：${err.message || err}`;
     els.kbSearchResults.appendChild(error);
   } finally {
-    button.textContent = original;
+    kbSearching = false;
+    button.textContent = '检索';
     button.disabled = false;
   }
 }
@@ -2579,18 +2643,21 @@ function downloadDiagnostics() {
 
 async function restoreCurrentSession() {
   if (!sessionId) return;
+  const expectedSession = sessionId;
 
   try {
     const res = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=50`
+      `/api/sessions/${encodeURIComponent(expectedSession)}/messages?limit=200`
     );
     if (!res.ok) return;
 
     const data = await res.json();
+    if (sessionId !== expectedSession || busy) return;
+
     const messages = data.messages || [];
     if (!messages.length) return;
 
-    els.readout.session.textContent = shortSession(sessionId);
+    els.readout.session.textContent = shortSession(expectedSession);
     renderStoredMessages(messages);
     setVitals('idle', '已恢复上次会诊');
   } catch {
@@ -2787,6 +2854,7 @@ async function send(question) {
 
     if (historyOpen) {
       loadHistory(els.historySearch.value.trim());
+      loadUsageTrend();
     }
   } catch (err) {
     if (streamTurn) {
@@ -2867,20 +2935,23 @@ async function checkStatus() {
     } else if (data.knowledge_base.status === 'failed') {
       setVitals('warn', '知识库异常');
       showBanner(`知识库加载失败：${data.knowledge_base.error}。检索类问题会返回空结果。`);
-    } else if (busy) {
-      // 会诊进行中，不要覆盖波形状态
-    } else if (data.knowledge_base.status === 'ready') {
-      setVitals('idle', '系统就绪');
     } else {
-      setVitals('pending', '知识库加载中');
+      hideBanner();
+      if (busy) {
+        // 会诊进行中，不要覆盖波形状态
+      } else if (data.knowledge_base.status === 'ready') {
+        setVitals('idle', '系统就绪');
+      } else {
+        setVitals('pending', '知识库加载中');
+      }
     }
 
     els.readout.kb.textContent =
       data.knowledge_base.status === 'ready'
         ? '就绪'
-        : data.knowledge_base.status === 'loading'
-        ? '加载中'
-        : '失败';
+        : data.knowledge_base.status === 'failed'
+        ? '失败'
+        : '加载中';
 
     if (!els.readout.session.textContent || els.readout.session.textContent === '—') {
       els.readout.session.textContent = shortSession(sessionId);
@@ -2894,6 +2965,11 @@ async function checkStatus() {
 function showBanner(html) {
   els.banner.innerHTML = html;
   els.banner.hidden = false;
+}
+
+function hideBanner() {
+  els.banner.hidden = true;
+  els.banner.textContent = '';
 }
 
 /* ---------- 结构化补充信息 ---------- */
@@ -3025,6 +3101,10 @@ els.input.addEventListener('keydown', (e) => {
 
 els.composer.addEventListener('submit', (e) => {
   e.preventDefault();
+  if (busy) {
+    setVitals('active', '会诊进行中');
+    return;
+  }
   const q = els.input.value.trim();
   if (!q) return;
   els.input.value = '';
@@ -3062,7 +3142,7 @@ els.kbRebuild.addEventListener('click', rebuildKb);
 els.kbPreviewClose.addEventListener('click', closeKbPreview);
 els.kbSearchButton.addEventListener('click', searchKnowledgeBase);
 els.kbSearchInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
+  if (event.key === 'Enter' && !event.isComposing) {
     event.preventDefault();
     searchKnowledgeBase();
   }
@@ -3193,6 +3273,10 @@ els.historyFavoriteFilter.addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
+    if (authGateOpen) {
+      els.authToken.focus();
+      return;
+    }
     if (!historyOpen) {
       openHistory();
     } else {

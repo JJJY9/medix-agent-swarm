@@ -200,6 +200,22 @@ def test_sessions_import_api(tmp_path, monkeypatch):
     assert empty.status_code == 400
 
 
+def test_messages_limit_zero_returns_all(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    for index in range(3):
+        store.save_exchange("s1", f"问题{index}", f"答复{index}")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/sessions/s1/messages", params={"limit": 0})
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert len(response.json()["messages"]) == 6
+
+
 def test_usage_export_csv(tmp_path, monkeypatch):
     monkeypatch.delenv("MEDIX_PRICE_INPUT", raising=False)
     monkeypatch.delenv("MEDIX_PRICE_OUTPUT", raising=False)

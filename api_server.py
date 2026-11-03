@@ -463,9 +463,11 @@ async def import_sessions(request: ImportSessionsRequest):
 async def get_session_messages(session_id: str, limit: int = 50):
     from memory import ShortTermMemory, get_session_store
 
-    stored = await asyncio.to_thread(
-        get_session_store().get_messages, session_id, limit
-    )
+    store = get_session_store()
+    if limit <= 0:
+        stored = await asyncio.to_thread(store.get_all_messages, session_id)
+    else:
+        stored = await asyncio.to_thread(store.get_messages, session_id, limit)
     if stored:
         return {
             "session_id": session_id,

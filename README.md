@@ -213,7 +213,7 @@ npm install -D playwright
 | GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、用量汇总 |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
-| GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite） |
+| GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
