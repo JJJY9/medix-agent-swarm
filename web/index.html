@@ -188,6 +188,8 @@
           </div>
         </dl>
 
+        <button type="button" class="btn-quiet rail-wide" id="kb-manage">管理知识库</button>
+
         <section class="rail-log" id="rail-log" hidden>
           <h3>接诊记录</h3>
           <ul id="rail-log-list"></ul>
@@ -228,6 +230,39 @@
   />
   <ul class="history-list" id="history-list"></ul>
   <p class="drawer-empty" id="history-empty" hidden>还没有历史会诊，提交一次主诉后会自动保存。</p>
+</aside>
+
+<!-- 知识库管理抽屉 -->
+<div class="drawer-backdrop" id="kb-backdrop" hidden></div>
+<aside
+  class="drawer"
+  id="kb-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="kb-title"
+>
+  <div class="drawer-head">
+    <h2 id="kb-title">知识库管理</h2>
+    <button type="button" class="drawer-close" id="kb-close" aria-label="关闭知识库管理">×</button>
+  </div>
+  <div class="kb-body">
+    <div class="kb-stats" id="kb-stats">正在加载…</div>
+
+    <div class="kb-upload">
+      <label class="sr-only" for="kb-file">选择知识库文档</label>
+      <input type="file" id="kb-file" accept=".txt,.md,.markdown,.pdf" />
+      <button type="button" class="btn-quiet" id="kb-upload">上传并重建</button>
+    </div>
+    <p class="kb-hint">支持 TXT / Markdown / PDF，单个文件 ≤ 5 MB。上传或删除后会自动重建索引。</p>
+
+    <div class="kb-actions">
+      <button type="button" class="btn-quiet" id="kb-rebuild">重建索引</button>
+    </div>
+
+    <p class="kb-status" id="kb-status" hidden></p>
+    <ul class="kb-list" id="kb-list"></ul>
+  </div>
 </aside>
 
 <script src="/static/app.js"></script>

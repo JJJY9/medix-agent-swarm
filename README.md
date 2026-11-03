@@ -32,6 +32,7 @@
 - **🐝 Agent Swarm**: 真正的群体智能（去中心化协作，自主任务认领，并行执行）✅
 - **⚡ 流式会诊**: 汇总阶段逐段推送 Token，意见边生成边显示 ✅
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120 ✅
+- **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、删除文档、一键重建索引（幂等）✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可浏览、搜索、重命名、导出、恢复和删除 ✅
 - **💬 会诊操作**: 复制意见、导出 Markdown、再次会诊、停止生成 ✅
@@ -127,6 +128,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 | 接诊记录 | 每一步的分诊与调度日志 |
 | 问诊记录 | 用户输入标为「主诉」，答复渲染成带抬头的「多学科会诊意见书」，并自动提取风险等级、诊疗建议和免责声明 |
 | 急症警示 | 主诉命中胸痛、呼吸困难、卒中样表现等红旗时，在模型回复前先显示红色警示条 |
+| 知识库管理 | 会诊面板下方「管理知识库」：查看文档与向量块、上传 TXT/MD/PDF、删除、重建索引 |
 | 历史会诊 | 右上角「会诊记录」抽屉：按时间浏览、搜索、打开或删除历史会诊；刷新页面自动恢复上次会诊 |
 | 意见操作 | 每条意见下方可复制、导出 Markdown、再次会诊；生成过程中可随时停止 |
 | 外观 | 跟随系统深色偏好，也可用顶栏按钮切换；选择保存在浏览器本地 |
@@ -142,6 +144,14 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 - 每条会诊意见下方提供「复制意见」「导出 Markdown」「再次会诊」
 - 多学科会诊的汇总阶段，以及单 Agent 使用工具后的强制收尾，都支持流式输出；直接作答仍为一次性返回
 - 生成过程中点「停止」会中断本次请求；服务端在客户端断开后取消后台任务
+
+### 知识库管理
+
+- 会诊面板下方「管理知识库」可查看内置/上传文档、向量块数量和存储目录
+- 支持上传 TXT / Markdown / PDF（≤ 5 MB），上传或删除后自动重建索引
+- 重建会先清空旧 collection 再导入，重复执行不会产生重复向量块
+- 用户上传的文档保存在 `knowledge/data/uploads/`（已加入 `.gitignore`，不会提交到仓库）
+- 命令行等价操作：`python knowledge/scripts/import_hardcoded_data.py`（默认重建；`--append` 追加）
 
 ### 截图
 
@@ -178,6 +188,10 @@ npm install -D playwright
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite） |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
+| GET | `/api/knowledge` | 知识库文档与向量块统计 |
+| POST | `/api/knowledge/rebuild` | 重建知识库索引（幂等） |
+| POST | `/api/knowledge/upload` | 上传文档（multipart，TXT/MD/PDF） |
+| DELETE | `/api/knowledge/documents/{filename}` | 删除上传文档并重建 |
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
@@ -256,6 +270,8 @@ python knowledge/scripts/import_hardcoded_data.py
 set HF_ENDPOINT=https://hf-mirror.com        # Windows
 export HF_ENDPOINT=https://hf-mirror.com     # macOS / Linux
 ```
+
+导入默认重建索引，重复执行不会产生重复向量块；也可以启动 Web 端后在「管理知识库」里上传 TXT/Markdown/PDF。
 
 ### 5. 运行测试
 

@@ -22,6 +22,16 @@ const els = {
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
+  kbManage: document.getElementById('kb-manage'),
+  kbDrawer: document.getElementById('kb-drawer'),
+  kbBackdrop: document.getElementById('kb-backdrop'),
+  kbClose: document.getElementById('kb-close'),
+  kbFile: document.getElementById('kb-file'),
+  kbUpload: document.getElementById('kb-upload'),
+  kbRebuild: document.getElementById('kb-rebuild'),
+  kbStats: document.getElementById('kb-stats'),
+  kbStatus: document.getElementById('kb-status'),
+  kbList: document.getElementById('kb-list'),
   vitals: document.getElementById('vitals'),
   vitalsText: document.getElementById('vitals-text'),
   banner: document.getElementById('config-banner'),
@@ -45,6 +55,7 @@ let sessionId = localStorage.getItem('medix.session') || null;
 let busy = false;
 let activeController = null;
 let historyOpen = false;
+let kbOpen = false;
 let userPausedFollow = false;
 
 const THEME_KEY = 'medix.theme';
@@ -809,6 +820,7 @@ async function startNewSession() {
   els.empty.hidden = false;
   resetRail();
   closeHistory();
+  closeKb();
   els.input.focus();
 }
 
@@ -904,6 +916,7 @@ async function loadHistory(query = '') {
 let lastFocused = null;
 
 function openHistory() {
+  closeKb();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -1033,6 +1046,184 @@ async function exportHistory(item) {
     );
   } catch (err) {
     window.alert(err.message || String(err));
+  }
+}
+
+/* ---------- 知识库管理 ---------- */
+
+let kbFocused = null;
+
+function setKbStatus(text, isError = false) {
+  els.kbStatus.hidden = !text;
+  els.kbStatus.textContent = text || '';
+  els.kbStatus.classList.toggle('error', Boolean(isError));
+}
+
+function setKbBusy(busy) {
+  [els.kbFile, els.kbUpload, els.kbRebuild].forEach((el) => {
+    if (el) el.disabled = busy;
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes === undefined || bytes === null) return '—';
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function renderKbDocuments(documents) {
+  els.kbList.replaceChildren();
+  if (!documents.length) {
+    const empty = document.createElement('li');
+    empty.className = 'kb-empty';
+    empty.textContent = '还没有可导入的文档。';
+    els.kbList.appendChild(empty);
+    return;
+  }
+
+  for (const doc of documents) {
+    const item = document.createElement('li');
+    item.className = 'kb-item';
+
+    const body = document.createElement('div');
+    body.className = 'kb-item-body';
+
+    const name = document.createElement('span');
+    name.className = 'kb-item-name';
+    name.textContent = doc.filename;
+
+    const meta = document.createElement('span');
+    meta.className = 'kb-item-meta';
+    meta.textContent = `${doc.builtin ? '内置' : '上传'} · ${formatBytes(doc.size)}`;
+
+    body.append(name, meta);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'kb-item-delete';
+    del.textContent = '删除';
+    if (doc.builtin) {
+      del.disabled = true;
+      del.title = '内置文档请通过仓库更新';
+    } else {
+      del.addEventListener('click', () => deleteKbDocument(doc.filename));
+    }
+
+    item.append(body, del);
+    els.kbList.appendChild(item);
+  }
+}
+
+async function loadKnowledge() {
+  els.kbStats.textContent = '正在加载…';
+  try {
+    const res = await fetch('/api/knowledge');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    const chunks = data.chunk_count == null ? '未知' : data.chunk_count;
+    els.kbStats.textContent = `文档 ${data.document_count || 0} 个 · 向量块 ${chunks} 个`;
+    renderKbDocuments(data.documents || []);
+  } catch (err) {
+    els.kbStats.textContent = '知识库加载失败';
+    setKbStatus(err.message || String(err), true);
+  }
+}
+
+function openKb() {
+  closeHistory();
+  kbFocused = document.activeElement;
+  kbOpen = true;
+  els.kbDrawer.hidden = false;
+  els.kbBackdrop.hidden = false;
+  setKbStatus('');
+  loadKnowledge();
+  els.kbClose.focus();
+}
+
+function closeKb(restoreFocus = false) {
+  kbOpen = false;
+  els.kbDrawer.hidden = true;
+  els.kbBackdrop.hidden = true;
+  if (restoreFocus && kbFocused instanceof HTMLElement) {
+    kbFocused.focus();
+  }
+}
+
+async function uploadKbDocument() {
+  const file = els.kbFile.files && els.kbFile.files[0];
+  if (!file) {
+    setKbStatus('请先选择要上传的文件。', true);
+    return;
+  }
+
+  const form = new FormData();
+  form.append('file', file);
+
+  setKbBusy(true);
+  setKbStatus('正在上传并重建索引，首次运行可能需要加载模型…');
+
+  try {
+    const res = await fetch('/api/knowledge/upload', { method: 'POST', body: form });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `上传失败（${res.status}）`);
+
+    const rebuild = data.rebuild || {};
+    setKbStatus(
+      `已上传 ${data.document?.filename || file.name}。` +
+      `重建完成：${rebuild.documents || 0} 个文档、${rebuild.chunks || 0} 个向量块。`
+    );
+    els.kbFile.value = '';
+    await loadKnowledge();
+    checkStatus();
+  } catch (err) {
+    setKbStatus(err.message || String(err), true);
+  } finally {
+    setKbBusy(false);
+  }
+}
+
+async function rebuildKb() {
+  setKbBusy(true);
+  setKbStatus('正在重建索引，请稍候…');
+
+  try {
+    const res = await fetch('/api/knowledge/rebuild', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `重建失败（${res.status}）`);
+
+    setKbStatus(`重建完成：${data.documents} 个文档、${data.chunks} 个向量块。`);
+    await loadKnowledge();
+    checkStatus();
+  } catch (err) {
+    setKbStatus(err.message || String(err), true);
+  } finally {
+    setKbBusy(false);
+  }
+}
+
+async function deleteKbDocument(filename) {
+  if (!window.confirm(`删除「${filename}」并重建索引？`)) return;
+
+  setKbBusy(true);
+  setKbStatus(`正在删除 ${filename} 并重建索引…`);
+
+  try {
+    const res = await fetch(
+      `/api/knowledge/documents/${encodeURIComponent(filename)}?rebuild=true`,
+      { method: 'DELETE' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `删除失败（${res.status}）`);
+
+    setKbStatus(`已删除 ${filename}。`);
+    await loadKnowledge();
+    checkStatus();
+  } catch (err) {
+    setKbStatus(err.message || String(err), true);
+  } finally {
+    setKbBusy(false);
   }
 }
 
@@ -1355,6 +1546,12 @@ els.historyToggle.addEventListener('click', () => {
 els.historyClose.addEventListener('click', () => closeHistory(true));
 els.historyBackdrop.addEventListener('click', () => closeHistory(true));
 
+els.kbManage.addEventListener('click', openKb);
+els.kbClose.addEventListener('click', () => closeKb(true));
+els.kbBackdrop.addEventListener('click', () => closeKb(true));
+els.kbUpload.addEventListener('click', uploadKbDocument);
+els.kbRebuild.addEventListener('click', rebuildKb);
+
 let historySearchTimer = null;
 els.historySearch.addEventListener('input', () => {
   clearTimeout(historySearchTimer);
@@ -1364,7 +1561,10 @@ els.historySearch.addEventListener('input', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && historyOpen) closeHistory(true);
+  if (e.key === 'Escape') {
+    if (historyOpen) closeHistory(true);
+    if (kbOpen) closeKb(true);
+  }
 });
 
 els.jumpLatest.addEventListener('click', () => {
