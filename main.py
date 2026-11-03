@@ -19,6 +19,7 @@ from core.console import ensure_utf8_stdio
 ensure_utf8_stdio()
 
 from swarm import process_with_swarm
+from core.llm_client import LLMError
 
 
 def setup_logger(verbose: bool = False):
@@ -144,6 +145,8 @@ async def interactive_mode():
         except KeyboardInterrupt:
             print("\n\n👋 检测到中断信号，退出程序...\n")
             break
+        except LLMError as e:
+            print(f"\n❌ {e.user_message}\n")
         except Exception as e:
             logger.error(f"处理请求时出错: {e}")
             print(f"\n❌ 抱歉，处理您的问题时出现错误：{e}\n")

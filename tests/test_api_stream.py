@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api_server
+from core.llm_client import LLMError
 
 
 class FakeCoordinator:
@@ -90,3 +91,38 @@ def test_stream_emits_triage_before_result():
     assert triage["level"] == "emergency"
     assert "胸痛" in triage["matches"]
     assert "呼吸困难" in triage["matches"]
+
+
+class FailingCoordinator:
+    worker_pool = []
+
+    async def process(self, question, context=None, session_id=None, on_token=None):
+        raise LLMError("llm_balance", "模型账户余额不足，请充值。")
+
+
+def test_stream_emits_structured_llm_error():
+    api_server.state.coordinator = FailingCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"question": "你好", "session_id": "api-error-test"},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    error = next(event for event in events if event["type"] == "error")
+    assert error["code"] == "llm_balance"
+    assert "余额不足" in error["message"]
+
+
+def test_chat_returns_structured_llm_error():
+    api_server.state.coordinator = FailingCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post("/api/chat", json={"question": "你好"})
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["code"] == "llm_balance"
+    assert "余额不足" in detail["message"]

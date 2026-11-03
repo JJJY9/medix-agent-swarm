@@ -10,7 +10,14 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
-from openai import AsyncOpenAI
+from openai import (
+    APIStatusError,
+    APIConnectionError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    RateLimitError,
+)
 from loguru import logger
 
 # 加载项目根目录的 .env（可选，用于配置 API Key 而不改动 config.py）
@@ -90,6 +97,105 @@ def parse_tool_call_arguments(raw_arguments: Optional[str]) -> Dict[str, Any]:
     return arguments
 
 
+class LLMError(Exception):
+    """模型调用错误。
+
+    携带稳定的错误码、用户可读提示和是否可重试标记，供 Agent Loop、
+    API 和前端统一处理，避免把 401/402 这类不可恢复错误当成普通异常反复重试。
+    """
+
+    def __init__(
+        self,
+        code: str,
+        user_message: str,
+        retryable: bool = False,
+        status_code: Optional[int] = None
+    ):
+        super().__init__(user_message)
+        self.code = code
+        self.user_message = user_message
+        self.retryable = retryable
+        self.status_code = status_code
+
+
+def classify_llm_error(exc: Exception) -> LLMError:
+    """把 OpenAI SDK 的异常转换成带用户提示的 LLMError。"""
+    if isinstance(exc, LLMError):
+        return exc
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+
+    message = str(exc)
+    lowered = message.lower()
+    type_name = type(exc).__name__.lower()
+
+    if status == 402 or "insufficient balance" in lowered or "余额不足" in message:
+        return LLMError(
+            "llm_balance",
+            "模型账户余额不足，请充值或更换 API Key 后重试。",
+            retryable=False,
+            status_code=status,
+        )
+
+    if status in (401, 403) or isinstance(exc, AuthenticationError):
+        return LLMError(
+            "llm_auth",
+            "API Key 无效、已过期或没有权限，请检查 .env 中的 MEDIX_API_KEY。",
+            retryable=False,
+            status_code=status,
+        )
+
+    if status == 429 or isinstance(exc, RateLimitError) or "rate limit" in lowered:
+        return LLMError(
+            "llm_rate_limit",
+            "模型请求过于频繁或额度受限，请稍后重试。",
+            retryable=True,
+            status_code=status,
+        )
+
+    if (
+        isinstance(exc, APITimeoutError)
+        or "timeout" in type_name
+        or "timed out" in lowered
+    ):
+        return LLMError(
+            "llm_timeout",
+            "模型响应超时，请稍后重试或简化问题。",
+            retryable=True,
+            status_code=status,
+        )
+
+    if isinstance(exc, APIConnectionError) or "connection" in type_name:
+        return LLMError(
+            "llm_network",
+            "无法连接模型服务，请检查网络或 base_url 配置。",
+            retryable=True,
+            status_code=status,
+        )
+
+    if status is not None and 500 <= status < 600:
+        return LLMError(
+            "llm_server",
+            "模型服务暂时不可用，请稍后重试。",
+            retryable=True,
+            status_code=status,
+        )
+
+    return LLMError(
+        "llm_error",
+        f"模型调用失败：{message[:200]}",
+        retryable=False,
+        status_code=status,
+    )
+
+
 @dataclass
 class LLMResponse:
     """LLM 响应数据结构（支持 function calling）"""
@@ -117,9 +223,22 @@ class LLMClient:
         if model_type == "openai_compatible":
             # 使用 OpenAI 兼容的 API（通过 config.py 配置）
             self.config = LLM_CONFIG
+            try:
+                self.request_timeout = float(
+                    os.getenv("MEDIX_TIMEOUT")
+                    or self.config.get("timeout")
+                    or 60
+                )
+            except (TypeError, ValueError):
+                self.request_timeout = 60.0
+
+            # 关闭 SDK 自带重试，统一由 chat_with_retry / AgentLoop 控制，
+            # 避免不可恢复错误（401/402）被 SDK 重复请求。
             self.client = AsyncOpenAI(
                 api_key=self.config["api_key"],
-                base_url=self.config["base_url"]
+                base_url=self.config["base_url"],
+                timeout=self.request_timeout,
+                max_retries=0,
             )
             self.model_name = self.config["model_name"]
             self.temperature = self.config.get("temperature", 0.7)
@@ -163,9 +282,11 @@ class LLMClient:
             logger.debug(f"LLM response length: {len(content)} chars")
             return content
 
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
-            raise
+            raise classify_llm_error(e) from e
 
     async def chat_with_retry(
         self,
@@ -186,13 +307,15 @@ class LLMClient:
         for attempt in range(max_retries):
             try:
                 return await self.chat(messages, **kwargs)
-            except Exception as e:
-                if attempt == max_retries - 1:
+            except LLMError as e:
+                if not e.retryable or attempt == max_retries - 1:
                     raise
-                logger.warning(f"Retry {attempt + 1}/{max_retries} after error: {e}")
+                logger.warning(
+                    f"Retry {attempt + 1}/{max_retries} after {e.code}: {e.user_message}"
+                )
                 await asyncio.sleep(2 ** attempt)  # 指数退避
 
-        raise RuntimeError(f"LLM call failed after {max_retries} retries")
+        raise LLMError("llm_error", f"模型调用在 {max_retries} 次重试后仍失败。")
 
     def create_message(self, role: str, content: str) -> Dict[str, str]:
         """
@@ -262,9 +385,11 @@ class LLMClient:
 
             return "".join(chunks)
 
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"LLM stream call failed: {e}")
-            raise
+            raise classify_llm_error(e) from e
 
     async def chat_with_tools(
         self,
@@ -332,9 +457,11 @@ class LLMClient:
                 finish_reason=finish_reason
             )
 
+        except LLMError:
+            raise
         except Exception as e:
             logger.error(f"LLM call with tools failed: {e}")
-            raise
+            raise classify_llm_error(e) from e
 
     def create_tool_message(
         self,

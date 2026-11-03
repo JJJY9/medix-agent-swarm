@@ -35,6 +35,7 @@ from core.console import ensure_utf8_stdio
 ensure_utf8_stdio()
 
 from core.triage import detect_red_flags
+from core.llm_client import LLMError
 
 WEB_DIR = project_root / "web"
 
@@ -285,6 +286,12 @@ async def chat(request: ChatRequest):
                 context=request.context,
                 session_id=session_id,
             )
+        except LLMError as e:
+            logger.error(f"模型调用失败: {e.code} - {e.user_message}")
+            raise HTTPException(
+                status_code=502,
+                detail={"code": e.code, "message": e.user_message},
+            )
         except Exception as e:
             logger.exception("处理请求失败")
             raise HTTPException(status_code=500, detail=f"处理失败：{e}")
@@ -384,6 +391,14 @@ async def chat_stream(request: ChatRequest):
 
                 try:
                     result = await task
+                except LLMError as e:
+                    logger.error(f"流式模型调用失败: {e.code} - {e.user_message}")
+                    yield sse({
+                        "type": "error",
+                        "code": e.code,
+                        "message": e.user_message,
+                    })
+                    return
                 except Exception as e:
                     logger.exception("流式处理失败")
                     yield sse({"type": "error", "message": str(e)})
