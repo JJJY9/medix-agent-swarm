@@ -41,7 +41,7 @@
 - **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细与数据表 ✅
 - **💴 费用估算**: 可选配置每百万 Token 单价，在会诊面板、历史汇总与趋势中显示预估值 ✅
 - **⭐ 收藏会诊**: 标记重要会诊并只看收藏，列表、用量汇总与趋势同步过滤 ✅
-- **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态 ✅
+- **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮）、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
 - **💬 会诊操作**: 复制意见、复制 SOAP、导出 Markdown、打印 / PDF、失败重试、再次会诊、停止生成、草稿自动保存 ✅
@@ -220,6 +220,7 @@ npm install -D playwright
 | POST | `/api/knowledge/upload` | 上传文档（multipart，TXT/MD/PDF） |
 | DELETE | `/api/knowledge/documents/{filename}` | 删除上传文档并重建 |
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库） |
+| POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
 
 `/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数），每条会话也带有各自的 `usage` 与 `llm_calls`。
 
