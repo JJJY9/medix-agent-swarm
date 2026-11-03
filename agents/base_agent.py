@@ -112,19 +112,24 @@ class BaseAgent(ABC):
         # 默认不做额外处理
         return result
 
-    async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process(self, input_data: Dict[str, Any], on_token: Optional[Any] = None) -> Dict[str, Any]:
         """
         处理输入数据
         默认实现：运行 Agent Loop
         子类可以重写以实现自定义逻辑
         """
-        return await self.run_loop(input_data)
+        return await self.run_loop(input_data, on_token=on_token)
 
-    async def run_loop(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def run_loop(self, input_data: Dict[str, Any], on_token: Optional[Any] = None) -> Dict[str, Any]:
         """运行 Agent Loop"""
         # 提取session_id（如果有）
         session_id = input_data.get('session_id')
-        return await self.loop.run(self, input_data, session_id=session_id)
+        return await self.loop.run(
+            self,
+            input_data,
+            session_id=session_id,
+            on_token=on_token
+        )
 
     # ===== Swarm 协作能力 =====
 

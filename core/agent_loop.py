@@ -52,13 +52,21 @@ class AgentLoop:
         if CONSTRAINTS_ENABLED:
             logger.debug("✅ Constraint validation enabled")
 
-    async def run(self, agent, input_data: Dict[str, Any], session_id: Optional[str] = None) -> Dict[str, Any]:
+    async def run(
+        self,
+        agent,
+        input_data: Dict[str, Any],
+        session_id: Optional[str] = None,
+        on_token: Optional[Any] = None
+    ) -> Dict[str, Any]:
         """
         执行Agent循环
 
         Args:
             agent: Agent实例
             input_data: 输入数据
+            session_id: 会话ID
+            on_token: 可选的流式回调；用于强制收尾/最大迭代兜底时逐段推送文本
 
         Returns:
             最终结果
@@ -130,7 +138,7 @@ class AgentLoop:
                         # 预算为 0 时不执行任何 Skill，直接让模型给出答案
                         if self.max_tool_calls <= 0:
                             logger.warning("⚠️ Skill 调用预算为 0，直接生成最终答案")
-                            final_answer = await self._force_final_answer(agent, messages)
+                            final_answer = await self._force_final_answer(agent, messages, on_token)
                             result = await self._finalize(
                                 agent, state, final_answer, session_id, tool_call_count
                             )
@@ -199,7 +207,7 @@ class AgentLoop:
                             logger.warning(
                                 f"⚠️ 已达到最大 Skill 调用次数限制 ({self.max_tool_calls})，强制生成最终答案"
                             )
-                            final_answer = await self._force_final_answer(agent, messages)
+                            final_answer = await self._force_final_answer(agent, messages, on_token)
                             result = await self._finalize(
                                 agent, state, final_answer, session_id, tool_call_count
                             )
@@ -238,14 +246,10 @@ class AgentLoop:
                     })
 
                     # 调用 LLM（禁用 function calling）
-                    final_response = await agent.llm_client.chat_with_tools(
-                        messages=messages,
-                        tools=None,
-                        temperature=0.7
-                    )
+                    final_text = await self._complete_text(agent, messages, on_token)
 
                     result = {
-                        'answer': final_response.content or '抱歉，未能完成任务',
+                        'answer': final_text or '抱歉，未能完成任务',
                         'iterations': state.iteration,
                         'warning': 'max_iterations_reached'
                     }
@@ -280,7 +284,12 @@ class AgentLoop:
             state.mark_failed(str(e))
             raise
 
-    async def _force_final_answer(self, agent, messages: List[Dict[str, Any]]) -> str:
+    async def _force_final_answer(
+        self,
+        agent,
+        messages: List[Dict[str, Any]],
+        on_token: Optional[Any] = None
+    ) -> str:
         """禁用工具，要求模型基于已有上下文给出最终答复。"""
         messages.append({
             'role': 'user',
@@ -290,12 +299,24 @@ class AgentLoop:
             )
         })
 
+        return (await self._complete_text(agent, messages, on_token)).strip()
+
+    async def _complete_text(
+        self,
+        agent,
+        messages: List[Dict[str, Any]],
+        on_token: Optional[Any] = None
+    ) -> str:
+        """生成最终文本：有流式回调时逐段推送，否则回退到普通调用。"""
+        if on_token is not None and hasattr(agent.llm_client, "chat_stream"):
+            return await agent.llm_client.chat_stream(messages, on_token=on_token)
+
         response: LLMResponse = await agent.llm_client.chat_with_tools(
             messages=messages,
             tools=None,
             temperature=agent.config.get('temperature', 0.7)
         )
-        return (response.content or "").strip()
+        return response.content or ""
 
     async def _finalize(
         self,
