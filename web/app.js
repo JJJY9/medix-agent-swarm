@@ -762,6 +762,29 @@ function renderAsk(text) {
 
   els.thread.appendChild(turn);
   scrollThreadToBottom(true);
+  return turn;
+}
+
+function renderTriage(container, triage) {
+  if (!container || !triage || triage.level !== 'emergency') return;
+  if (container.querySelector('.triage-alert')) return;
+
+  const alert = document.createElement('div');
+  alert.className = 'triage-alert';
+  alert.setAttribute('role', 'alert');
+
+  const title = document.createElement('strong');
+  title.textContent = '急症警示';
+
+  const message = document.createElement('p');
+  const matched = (triage.matches || []).join('、');
+  message.textContent =
+    (matched ? `描述中出现：${matched}。` : '') +
+    (triage.message || '请立即拨打 120 或前往急诊科。');
+
+  alert.append(title, message);
+  container.appendChild(alert);
+  scrollThreadToBottom(true);
 }
 
 /* ---------- 会话 ---------- */
@@ -1049,7 +1072,7 @@ async function send(question) {
   activeController = controller;
 
   resetRail();
-  renderAsk(question);
+  const askTurn = renderAsk(question);
 
   const startedAt = performance.now();
   const working = renderWorking();
@@ -1116,7 +1139,9 @@ async function send(question) {
           continue;
         }
 
-        if (event.type === 'stage') {
+        if (event.type === 'triage') {
+          renderTriage(askTurn, event);
+        } else if (event.type === 'stage') {
           workingText.textContent = '正在调度专科科室…';
           els.readout.mode.textContent = '会诊分诊中';
         } else if (event.type === 'agent_done') {
@@ -1156,6 +1181,11 @@ async function send(question) {
 
     if (!finalPayload) {
       throw new Error('服务未返回结果');
+    }
+
+    // 兼容只拿到最终结果的客户端：结果里也带有 triage 字段
+    if (finalPayload.triage) {
+      renderTriage(askTurn, finalPayload.triage);
     }
 
     const elapsed = (performance.now() - startedAt) / 1000;
