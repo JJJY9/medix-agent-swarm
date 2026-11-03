@@ -305,6 +305,33 @@
   </div>
 </aside>
 
+<!-- 访问令牌入口（仅在服务端设置 MEDIX_ACCESS_TOKEN 时出现） -->
+<div class="auth-gate" id="auth-gate" hidden>
+  <form
+    class="auth-card"
+    id="auth-form"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="auth-title"
+  >
+    <h2 id="auth-title">需要访问令牌</h2>
+    <p class="auth-lede">
+      此服务已开启访问保护。请输入管理员在 <code>MEDIX_ACCESS_TOKEN</code> 中设置的令牌。
+    </p>
+    <label class="sr-only" for="auth-token">访问令牌</label>
+    <input
+      id="auth-token"
+      class="auth-input"
+      type="password"
+      placeholder="访问令牌"
+      autocomplete="off"
+      required
+    />
+    <p class="auth-error" id="auth-error" hidden></p>
+    <button type="submit" class="send auth-submit">进入</button>
+  </form>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

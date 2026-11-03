@@ -48,6 +48,10 @@ const els = {
   diagCopy: document.getElementById('diag-copy'),
   diagDownload: document.getElementById('diag-download'),
   diagStatus: document.getElementById('diag-status'),
+  authGate: document.getElementById('auth-gate'),
+  authForm: document.getElementById('auth-form'),
+  authToken: document.getElementById('auth-token'),
+  authError: document.getElementById('auth-error'),
   vitals: document.getElementById('vitals'),
   vitalsText: document.getElementById('vitals-text'),
   banner: document.getElementById('config-banner'),
@@ -80,6 +84,7 @@ let activeController = null;
 let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
+let authGateOpen = false;
 let historyQuery = '';
 let historyOffset = 0;
 let historyTotal = 0;
@@ -95,6 +100,7 @@ const FOCUSABLE_SELECTOR = [
 ].join(',');
 
 function activeDrawer() {
+  if (authGateOpen) return els.authGate;
   if (historyOpen) return els.historyDrawer;
   if (kbOpen) return els.kbDrawer;
   if (diagOpen) return els.diagnoseDrawer;
@@ -104,7 +110,7 @@ function activeDrawer() {
 function syncPageInert() {
   const shell = document.querySelector('.shell');
   if (!shell) return;
-  if (historyOpen || kbOpen || diagOpen) {
+  if (historyOpen || kbOpen || diagOpen || authGateOpen) {
     shell.setAttribute('inert', '');
     shell.setAttribute('aria-hidden', 'true');
   } else {
@@ -112,6 +118,48 @@ function syncPageInert() {
     shell.removeAttribute('aria-hidden');
   }
 }
+
+function showAuthGate(message = '') {
+  if (message) {
+    els.authError.textContent = message;
+    els.authError.hidden = false;
+  }
+  if (authGateOpen) return;
+
+  authGateOpen = true;
+  els.authGate.hidden = false;
+  syncPageInert();
+  els.authToken.focus();
+}
+
+function hideAuthGate() {
+  authGateOpen = false;
+  els.authGate.hidden = true;
+  els.authError.hidden = true;
+  els.authError.textContent = '';
+  syncPageInert();
+}
+
+// 所有同源 /api 请求自动带上访问令牌（未开启访问保护时为空操作）
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  const url = typeof input === 'string' ? input : (input && input.url) || '';
+  if (url.startsWith('/api/')) {
+    const token = sessionStorage.getItem('medix.token');
+    if (token) {
+      const headers = new Headers(init.headers || {});
+      headers.set('X-Medix-Token', token);
+      init = { ...init, headers };
+    }
+  }
+
+  return nativeFetch(input, init).then((response) => {
+    if (response.status === 401) {
+      showAuthGate('访问令牌无效或已失效，请重新输入。');
+    }
+    return response;
+  });
+};
 let userPausedFollow = false;
 
 const THEME_KEY = 'medix.theme';
@@ -2049,6 +2097,27 @@ async function checkStatus() {
     const res = await fetch('/api/status');
     const data = await res.json();
 
+    if (data.auth_required) {
+      if (authGateOpen) return;
+
+      const token = sessionStorage.getItem('medix.token');
+      if (!token) {
+        setVitals('warn', '需要访问令牌');
+        showAuthGate();
+        return;
+      }
+
+      const verify = await fetch('/api/auth/verify');
+      if (!verify.ok) {
+        sessionStorage.removeItem('medix.token');
+        setVitals('warn', '需要访问令牌');
+        showAuthGate('访问令牌无效或已失效，请重新输入。');
+        return;
+      }
+    } else if (authGateOpen) {
+      hideAuthGate();
+    }
+
     if (!data.ok) {
       setVitals('bad', '服务异常');
       showBanner(`服务初始化失败：${data.startup_error || '未知错误'}`);
@@ -2151,6 +2220,32 @@ els.diagnoseBackdrop.addEventListener('click', () => closeDiagnose(true));
 els.diagRefresh.addEventListener('click', loadDiagnostics);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
+
+els.authForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const token = els.authToken.value.trim();
+  if (!token) return;
+
+  sessionStorage.setItem('medix.token', token);
+  try {
+    const verify = await fetch('/api/auth/verify');
+    if (verify.ok) {
+      hideAuthGate();
+      window.location.reload();
+      return;
+    }
+  } catch {
+    // 网络异常按令牌无效处理，让用户重试
+  }
+
+  sessionStorage.removeItem('medix.token');
+  showAuthGate('令牌不正确，请重试。');
+  els.authToken.select();
+});
+
+els.authToken.addEventListener('input', () => {
+  els.authError.hidden = true;
+});
 
 let historySearchTimer = null;
 els.historySearch.addEventListener('input', () => {

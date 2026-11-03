@@ -1629,6 +1629,66 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   background-clip: content-box;
 }
 
+/* ---------- 访问令牌 ---------- */
+
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(13, 21, 25, 0.55);
+}
+.auth-gate[hidden] { display: none; }
+
+.auth-card {
+  width: min(360px, 100%);
+  padding: 22px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: 0 24px 60px rgba(13, 21, 25, 0.28);
+}
+
+.auth-card h2 {
+  margin: 0 0 6px;
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.auth-lede {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+}
+
+.auth-input {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+}
+.auth-input:focus { outline: none; border-color: var(--clinic); }
+
+.auth-error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--triage-1);
+}
+
+.auth-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: 14px;
+}
+
 /* ---------- 响应式 ---------- */
 
 @media (max-width: 980px) {
