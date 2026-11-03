@@ -303,7 +303,7 @@ class SwarmCoordinator:
                 'question': question,
                 'context': enhanced_context,
                 'session_id': session_id
-            })
+            }, on_token=on_token)
             final_answer = result.get('answer', '')
 
             result.update({
@@ -352,7 +352,7 @@ class SwarmCoordinator:
                 'question': question,
                 'context': enhanced_context,
                 'session_id': session_id
-            })
+            }, on_token=on_token)
             final_answer = result.get('answer', '')
             result.update({
                 'swarm_enabled': False,

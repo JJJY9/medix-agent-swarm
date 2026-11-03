@@ -99,3 +99,36 @@ def test_zero_budget_skips_tool_execution():
     assert result["tool_calls_used"] == 0
     assert agent.executed == []
     assert llm.calls == [True, False]
+
+
+class StreamingFakeLLM(FakeLLM):
+    """强制收尾时走流式接口。"""
+
+    def __init__(self):
+        super().__init__()
+        self.streamed = []
+
+    async def chat_stream(self, messages, on_token=None, **kwargs):
+        for piece in ["流式", "最终答复"]:
+            self.streamed.append(piece)
+            if on_token:
+                on_token(piece)
+        return "流式最终答复"
+
+
+def test_forced_final_answer_streams_tokens():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    llm = StreamingFakeLLM()
+    agent = FakeAgent(llm)
+    tokens = []
+
+    result = asyncio.run(
+        loop.run(agent, {"question": "测试问题"}, on_token=tokens.append)
+    )
+
+    assert result["answer"] == "流式最终答复"
+    assert result["tool_calls_used"] == 2
+    assert tokens == ["流式", "最终答复"]
+    assert llm.streamed == ["流式", "最终答复"]
+    # 工具轮仍走非流式调用；只有收尾使用 chat_stream
+    assert llm.calls == [True, True]
