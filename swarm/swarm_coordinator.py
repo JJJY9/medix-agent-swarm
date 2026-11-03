@@ -17,6 +17,7 @@ from loguru import logger
 from core import LLMClient
 from core.triage import detect_red_flags
 from core.citations import merge_sources
+from core.usage import merge_usages
 from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
@@ -177,6 +178,8 @@ class SwarmCoordinator:
             "subtasks_failed",
             "total_time",
             "timeout_occurred",
+            "usage",
+            "llm_calls",
         )
         return {
             key: result.get(key)
@@ -306,7 +309,10 @@ class SwarmCoordinator:
             logger.info(f"Found {len(similar_memories)} similar historical cases from long-term memory")
 
         # Step 1: LeadAgent 分解任务
-        assessment = await self.lead_agent.assess_and_decompose(question, enhanced_context)
+        lead_usage: Dict[str, int] = {}
+        assessment = await self.lead_agent.assess_and_decompose(
+            question, enhanced_context, usage_out=lead_usage
+        )
         # 约束兜底：高危症状/指南类问题必须包含对应 Agent
         self._enforce_required_agents(question, assessment)
         subtasks = assessment.get("subtasks", [])
@@ -337,6 +343,9 @@ class SwarmCoordinator:
             }, on_token=on_token)
             final_answer = result.get('answer', '')
 
+            result["usage"] = merge_usages(lead_usage, result.get("usage"))
+            result["llm_calls"] = int(result.get("llm_calls") or 0) + 1
+
             result.update({
                 'swarm_enabled': False,
                 'session_id': session_id,
@@ -362,7 +371,8 @@ class SwarmCoordinator:
                 assessment=assessment,
                 session_id=session_id,
                 start_time=start_time,
-                on_token=on_token
+                on_token=on_token,
+                lead_usage=lead_usage
             )
             final_answer = result.get('answer', '')
 
@@ -392,6 +402,10 @@ class SwarmCoordinator:
                 'session_id': session_id
             }, on_token=on_token)
             final_answer = result.get('answer', '')
+
+            result["usage"] = merge_usages(lead_usage, result.get("usage"))
+            result["llm_calls"] = int(result.get("llm_calls") or 0) + 1
+
             result.update({
                 'swarm_enabled': False,
                 'session_id': session_id,
@@ -436,7 +450,8 @@ class SwarmCoordinator:
         assessment: Dict[str, Any],
         session_id: str,
         start_time: datetime,
-        on_token: Optional[Callable[[str], None]] = None
+        on_token: Optional[Callable[[str], None]] = None,
+        lead_usage: Optional[Dict[str, int]] = None
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -513,11 +528,13 @@ class SwarmCoordinator:
 
         # Step 3: LeadAgent 汇总结果
         # 即使超时，也尝试汇总已完成的部分结果
+        synthesis_usage: Dict[str, int] = {}
         final_answer = await self.lead_agent.synthesize_results(
             question=question,
             shared_context=shared_context,
             timeout_occurred=timeout_occurred,
-            on_token=on_token
+            on_token=on_token,
+            usage_out=synthesis_usage
         )
 
         end_time = datetime.now()
@@ -579,6 +596,17 @@ class SwarmCoordinator:
 
         agent_contributions, sources = self._collect_insights(shared_context)
 
+        usage_total = merge_usages(
+            lead_usage or {},
+            synthesis_usage,
+            *[entry.get("usage") for entry in agent_contributions],
+        )
+        llm_calls = (
+            1  # LeadAgent 分解
+            + 1  # LeadAgent 汇总
+            + sum(int(entry.get("llm_calls") or 0) for entry in agent_contributions)
+        )
+
         result = {
             'answer': final_answer,
             'swarm_enabled': True,
@@ -586,6 +614,8 @@ class SwarmCoordinator:
             'agents_involved': completed_agents,
             'agent_contributions': agent_contributions,
             'sources': sources,
+            'usage': usage_total,
+            'llm_calls': llm_calls,
             'subtasks_completed': len(shared_context.get_all_completed_subtasks()),
             'subtasks_failed': len(failed_subtasks),
             'total_time': (end_time - start_time).total_seconds(),
@@ -684,6 +714,10 @@ class SwarmCoordinator:
                 entry["tool_calls"] = payload["tool_calls_used"]
             if payload.get("iterations") is not None:
                 entry["iterations"] = payload["iterations"]
+            if payload.get("usage"):
+                entry["usage"] = payload["usage"]
+            if payload.get("llm_calls") is not None:
+                entry["llm_calls"] = payload["llm_calls"]
             contributions.append(entry)
 
             sources.extend(payload.get("sources") or [])

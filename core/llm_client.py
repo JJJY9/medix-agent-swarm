@@ -8,7 +8,7 @@ import sys
 import asyncio
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
 from openai import (
     APIStatusError,
@@ -95,6 +95,24 @@ def parse_tool_call_arguments(raw_arguments: Optional[str]) -> Dict[str, Any]:
         return {}
 
     return arguments
+
+
+def usage_to_dict(raw_usage: Any) -> Optional[Dict[str, int]]:
+    """把 OpenAI SDK 的 usage 对象转换成普通字典。"""
+    if raw_usage is None:
+        return None
+
+    prompt = getattr(raw_usage, "prompt_tokens", None)
+    completion = getattr(raw_usage, "completion_tokens", None)
+    total = getattr(raw_usage, "total_tokens", None)
+    if prompt is None and completion is None and total is None:
+        return None
+
+    return {
+        "prompt_tokens": int(prompt or 0),
+        "completion_tokens": int(completion or 0),
+        "total_tokens": int(total or ((prompt or 0) + (completion or 0))),
+    }
 
 
 class LLMError(Exception):
@@ -202,6 +220,7 @@ class LLMResponse:
     content: Optional[str]
     tool_calls: List[ToolCall]
     finish_reason: str  # "stop", "tool_calls", "length", "content_filter"
+    usage: Optional[Dict[str, int]] = None
 
     def has_tool_calls(self) -> bool:
         """是否包含 function calls"""
@@ -264,6 +283,19 @@ class LLMClient:
         Returns:
             模型返回的文本
         """
+        content, _ = await self.chat_with_usage(
+            messages, temperature=temperature, max_tokens=max_tokens, **kwargs
+        )
+        return content
+
+    async def chat_with_usage(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> Tuple[str, Optional[Dict[str, int]]]:
+        """异步聊天接口，同时返回 token 用量字典。"""
         try:
             temperature = temperature or self.temperature
             max_tokens = max_tokens or self.max_tokens
@@ -279,8 +311,9 @@ class LLMClient:
             )
 
             content = response.choices[0].message.content or ""
+            usage = usage_to_dict(getattr(response, "usage", None))
             logger.debug(f"LLM response length: {len(content)} chars")
-            return content
+            return content, usage
 
         except LLMError:
             raise
@@ -336,6 +369,7 @@ class LLMClient:
         on_token: Optional[Callable[[str], None]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        usage_out: Optional[Dict[str, int]] = None,
         **kwargs
     ) -> str:
         """流式聊天接口（纯文本，不支持工具调用）。
@@ -348,6 +382,7 @@ class LLMClient:
             on_token: 每收到一段增量文本时调用的同步回调
             temperature: 温度参数
             max_tokens: 最大 token 数
+            usage_out: 可选字典，若上游返回 usage 则写入其中
 
         Returns:
             模型返回的完整文本
@@ -356,19 +391,36 @@ class LLMClient:
         max_tokens = self.max_tokens if max_tokens is None else max_tokens
 
         try:
-            stream = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-                **kwargs
-            )
+            request_params: Dict[str, Any] = {
+                "model": self.model_name,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+                **kwargs,
+            }
+            if usage_out is not None:
+                request_params["stream_options"] = {"include_usage": True}
+
+            try:
+                stream = await self.client.chat.completions.create(**request_params)
+            except Exception as e:
+                # 少数 OpenAI 兼容服务不支持 stream_options，退回普通流式请求
+                if usage_out is not None and "stream_options" in str(e):
+                    request_params.pop("stream_options", None)
+                    stream = await self.client.chat.completions.create(**request_params)
+                else:
+                    raise
 
             chunks: List[str] = []
             callback_failed = False
 
             async for chunk in stream:
+                chunk_usage = usage_to_dict(getattr(chunk, "usage", None))
+                if chunk_usage and usage_out is not None:
+                    usage_out.clear()
+                    usage_out.update(chunk_usage)
+
                 if not chunk.choices:
                     continue
                 content = getattr(chunk.choices[0].delta, "content", None)
@@ -454,7 +506,8 @@ class LLMClient:
             return LLMResponse(
                 content=message.content,
                 tool_calls=tool_calls,
-                finish_reason=finish_reason
+                finish_reason=finish_reason,
+                usage=usage_to_dict(getattr(response, "usage", None)),
             )
 
         except LLMError:
