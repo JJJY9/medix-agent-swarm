@@ -51,6 +51,12 @@ const els = {
 
 const AGENT_IDS = ['consultation_agent', 'diagnostic_agent', 'research_agent'];
 
+const AGENT_NAMES = {
+  consultation_agent: '健康咨询',
+  diagnostic_agent: '症状诊断',
+  research_agent: '医学研究',
+};
+
 let sessionId = localStorage.getItem('medix.session') || null;
 let busy = false;
 let activeController = null;
@@ -600,6 +606,53 @@ function buildSessionMarkdown(item, messages) {
         lines.push('### 主诉', '', question, '');
       }
       lines.push('### 会诊意见', '', message.content.trim(), '');
+
+      const metadata = message.metadata || {};
+
+      if (metadata.suggestions && metadata.suggestions.length) {
+        lines.push('#### 诊疗建议', '');
+        metadata.suggestions.forEach((suggestion, index) => {
+          lines.push(`${index + 1}. ${suggestion}`);
+        });
+        lines.push('');
+      }
+
+      if (metadata.agent_contributions && metadata.agent_contributions.length) {
+        lines.push('#### 各科室意见', '');
+        metadata.agent_contributions.forEach((contribution) => {
+          lines.push(
+            `##### ${contribution.agent_name || AGENT_NAMES[contribution.agent_id] || contribution.agent_id}`,
+            '',
+            (contribution.content || '').trim(),
+            ''
+          );
+        });
+      }
+
+      if (metadata.sources && metadata.sources.length) {
+        lines.push('#### 参考来源', '');
+        metadata.sources.forEach((source, index) => {
+          const meta = [
+            source.source,
+            source.filename,
+            typeof source.score === 'number'
+              ? `${Math.round(source.score * 100)}%`
+              : '',
+          ].filter(Boolean).join(' · ');
+          lines.push(
+            `${index + 1}. ${source.title || source.filename || '医学知识库'}（${meta}）`
+          );
+          if (source.snippet) {
+            lines.push(`   > ${String(source.snippet).replace(/\n/g, ' ')}`);
+          }
+        });
+        lines.push('');
+      }
+
+      if (metadata.disclaimer) {
+        lines.push('#### 免责声明', '', metadata.disclaimer, '');
+      }
+
       question = '';
     }
   }
@@ -624,7 +677,9 @@ function renderContributions(contributions) {
     head.className = 'contribution-head';
 
     const name = document.createElement('strong');
-    name.textContent = contribution.agent_name || contribution.agent_id;
+    name.textContent = contribution.agent_name
+      || AGENT_NAMES[contribution.agent_id]
+      || contribution.agent_id;
 
     const type = document.createElement('span');
     type.className = 'contribution-type';
@@ -1059,17 +1114,31 @@ function renderStoredMessages(messages) {
   els.empty.hidden = messages.length > 0;
 
   let question = '';
+  let askTurn = null;
   for (const message of messages) {
     if (message.role === 'user') {
       question = message.content || '';
-      renderAsk(question);
+      askTurn = renderAsk(question);
     } else if (message.role === 'assistant' && message.content) {
+      const metadata = message.metadata || {};
+      if (metadata.triage) {
+        renderTriage(askTurn, metadata.triage);
+      }
       renderAnswer(
-        { answer: message.content, mode: 'single', historical: true },
+        {
+          answer: message.content,
+          mode: metadata.swarm_enabled ? 'swarm' : 'single',
+          suggestions: metadata.suggestions || [],
+          disclaimer: metadata.disclaimer || '',
+          sources: metadata.sources || [],
+          agent_contributions: metadata.agent_contributions || [],
+          historical: true,
+        },
         null,
         question
       );
       question = '';
+      askTurn = null;
     }
   }
 
