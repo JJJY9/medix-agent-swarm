@@ -196,9 +196,15 @@ class SessionStore:
         """
         params: List[Any] = []
         if query:
-            sql += " WHERE s.title LIKE ? OR s.id LIKE ?"
+            sql += """
+             WHERE s.title LIKE ? OR s.id LIKE ?
+                OR EXISTS (
+                    SELECT 1 FROM messages mm
+                     WHERE mm.session_id = s.id AND mm.content LIKE ?
+                )
+            """
             like = f"%{query.strip()}%"
-            params.extend([like, like])
+            params.extend([like, like, like])
         sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
@@ -218,9 +224,15 @@ class SessionStore:
         sql = "SELECT COUNT(*) AS n FROM sessions"
         params: List[Any] = []
         if query:
-            sql += " WHERE title LIKE ? OR id LIKE ?"
+            sql += """
+             WHERE title LIKE ? OR id LIKE ?
+                OR EXISTS (
+                    SELECT 1 FROM messages mm
+                     WHERE mm.session_id = sessions.id AND mm.content LIKE ?
+                )
+            """
             like = f"%{query.strip()}%"
-            params.extend([like, like])
+            params.extend([like, like, like])
 
         with self._lock:
             row = self._conn.execute(sql, params).fetchone()
@@ -309,9 +321,17 @@ class SessionStore:
         """
         params: List[Any] = []
         if query:
-            sql += " AND (s.title LIKE ? OR s.id LIKE ?)"
+            sql += """
+             AND (
+                 s.title LIKE ? OR s.id LIKE ?
+                 OR EXISTS (
+                     SELECT 1 FROM messages mm
+                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                 )
+             )
+            """
             like = f"%{query.strip()}%"
-            params.extend([like, like])
+            params.extend([like, like, like])
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()

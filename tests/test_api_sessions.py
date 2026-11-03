@@ -76,6 +76,7 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     try:
         client = TestClient(api_server.app)
         response = client.get("/api/sessions", params={"q": "糖尿病"})
+        content_response = client.get("/api/sessions", params={"q": "碳水"})
     finally:
         store.close()
 
@@ -84,6 +85,11 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     assert data["summary"]["sessions"] == 1
     assert data["summary"]["usage"]["total_tokens"] == 10
     assert data["summary"]["llm_calls"] == 1
+
+    # 搜索也能命中答复正文
+    content_data = content_response.json()
+    assert [item["id"] for item in content_data["sessions"]] == ["s1"]
+    assert content_data["summary"]["usage"]["total_tokens"] == 10
 
 
 def test_sessions_api_paginates_with_global_summary(tmp_path, monkeypatch):
