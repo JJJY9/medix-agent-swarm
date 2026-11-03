@@ -42,6 +42,9 @@ def test_sessions_api_includes_usage_summary(tmp_path, monkeypatch):
     assert sessions["s2"]["llm_calls"] == 0
     assert data["summary"] == {
         "sessions": 2,
+        "loaded": 2,
+        "offset": 0,
+        "limit": 50,
         "turns": 3,
         "llm_calls": 5,
         "usage": {
@@ -81,3 +84,48 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     assert data["summary"]["sessions"] == 1
     assert data["summary"]["usage"]["total_tokens"] == 10
     assert data["summary"]["llm_calls"] == 1
+
+
+def test_sessions_api_paginates_with_global_summary(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    for index, tokens in enumerate((10, 20, 30)):
+        store.save_exchange(
+            f"s{index}", f"问题{index}", "答复",
+            metadata={
+                "usage": {
+                    "prompt_tokens": tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": tokens,
+                },
+                "llm_calls": index + 1,
+            },
+        )
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (f"2026-01-01T00:00:0{index}", f"s{index}"),
+            )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        first = client.get("/api/sessions", params={"limit": 2, "offset": 0}).json()
+        second = client.get("/api/sessions", params={"limit": 2, "offset": 2}).json()
+    finally:
+        store.close()
+
+    assert [item["id"] for item in first["sessions"]] == ["s2", "s1"]
+    assert first["summary"]["sessions"] == 3
+    assert first["summary"]["loaded"] == 2
+    assert first["summary"]["offset"] == 0
+    assert first["summary"]["limit"] == 2
+    assert first["summary"]["turns"] == 3
+    assert first["summary"]["llm_calls"] == 6
+    assert first["summary"]["usage"]["total_tokens"] == 60
+
+    assert [item["id"] for item in second["sessions"]] == ["s0"]
+    assert second["summary"]["loaded"] == 1
+    assert second["summary"]["offset"] == 2
+    # 汇总覆盖全部匹配会话，而不是当前页
+    assert second["summary"]["sessions"] == 3
+    assert second["summary"]["usage"]["total_tokens"] == 60

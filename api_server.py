@@ -185,26 +185,36 @@ async def create_session():
 
 
 @app.get("/api/sessions")
-async def list_sessions(limit: int = 50, q: Optional[str] = None):
-    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索）。
+async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = None):
+    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索与分页）。
 
-    同时按会话汇总 assistant 消息中保存的 Token 用量与模型调用次数，
-    供历史抽屉展示总消耗。
+    summary 汇总所有匹配会话的 Token 用量与模型调用次数，
+    不受当前分页影响；每条会话附带自身用量。
     """
-    from core.usage import merge_usage
     from memory import get_session_store
 
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+    query = q or ""
+
     store = get_session_store()
-    sessions = await asyncio.to_thread(store.list_sessions, limit, q or "")
+    sessions, total, totals = await asyncio.gather(
+        asyncio.to_thread(store.list_sessions, limit, query, offset),
+        asyncio.to_thread(store.count_sessions, query),
+        asyncio.to_thread(store.usage_totals, query),
+    )
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
     )
 
     summary: Dict[str, Any] = {
-        "sessions": len(sessions),
-        "turns": 0,
-        "llm_calls": 0,
-        "usage": {},
+        "sessions": total,
+        "loaded": len(sessions),
+        "offset": offset,
+        "limit": limit,
+        "turns": totals["turns"],
+        "llm_calls": totals["llm_calls"],
+        "usage": totals["usage"],
     }
     for item in sessions:
         stat = stats.get(item["id"])
@@ -213,9 +223,6 @@ async def list_sessions(limit: int = 50, q: Optional[str] = None):
         item["usage"] = stat["usage"]
         item["llm_calls"] = stat["llm_calls"]
         item["turns"] = stat["turns"]
-        summary["turns"] += stat["turns"]
-        summary["llm_calls"] += stat["llm_calls"]
-        merge_usage(summary["usage"], stat["usage"])
 
     return {"sessions": sessions, "summary": summary}
 

@@ -180,6 +180,60 @@ def test_usage_by_session_ignores_invalid_values(store):
     assert stats["s1"]["llm_calls"] == 0
 
 
+def set_session_time(store, session_id, timestamp):
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET updated_at = ? WHERE id = ?",
+            (timestamp, session_id),
+        )
+
+
+def test_list_sessions_paginates_and_counts(store):
+    for index in range(5):
+        store.save_exchange(f"s{index}", f"问题{index}", "答复")
+        set_session_time(store, f"s{index}", f"2026-01-01T00:00:0{index}")
+
+    first = store.list_sessions(limit=2)
+    second = store.list_sessions(limit=2, offset=2)
+
+    assert [s["id"] for s in first] == ["s4", "s3"]
+    assert [s["id"] for s in second] == ["s2", "s1"]
+    assert store.count_sessions() == 5
+    assert store.count_sessions("问题3") == 1
+
+
+def test_usage_totals_cover_all_matching_sessions(store):
+    store.save_exchange(
+        "s1", "糖尿病饮食", "答复一",
+        metadata={
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+            "llm_calls": 1,
+        },
+    )
+    store.save_exchange(
+        "s2", "高血压运动", "答复二",
+        metadata={
+            "usage": {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11},
+            "llm_calls": 2,
+        },
+    )
+    store.save_exchange("s3", "旧会话", "答复三")
+
+    totals = store.usage_totals()
+    assert totals["turns"] == 3
+    assert totals["llm_calls"] == 3
+    assert totals["usage"] == {
+        "prompt_tokens": 13,
+        "completion_tokens": 3,
+        "total_tokens": 16,
+    }
+
+    filtered = store.usage_totals("糖尿病")
+    assert filtered["turns"] == 1
+    assert filtered["llm_calls"] == 1
+    assert filtered["usage"]["total_tokens"] == 5
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 

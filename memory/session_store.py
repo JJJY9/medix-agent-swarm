@@ -23,6 +23,38 @@ MAX_TITLE_LENGTH = 40
 PREVIEW_LENGTH = 80
 
 
+def _new_usage_entry() -> Dict[str, Any]:
+    return {
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
+        "llm_calls": 0,
+        "turns": 0,
+    }
+
+
+def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
+    """把一条 assistant 消息的元数据累加进用量统计。"""
+    entry["turns"] += 1
+    if not isinstance(metadata, dict):
+        return
+
+    usage = metadata.get("usage")
+    if isinstance(usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            try:
+                entry["usage"][key] += int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+
+    try:
+        entry["llm_calls"] += int(metadata.get("llm_calls") or 0)
+    except (TypeError, ValueError):
+        pass
+
+
 class SessionStore:
     """基于 SQLite 的会话与消息存储。"""
 
@@ -145,9 +177,15 @@ class SessionStore:
                     (session_id, answer, metadata_json, now),
                 )
 
-    def list_sessions(self, limit: int = 50, query: str = "") -> List[Dict[str, Any]]:
-        """按最近更新时间倒序返回会话，支持标题/编号模糊搜索。"""
+    def list_sessions(
+        self,
+        limit: int = 50,
+        query: str = "",
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """按最近更新时间倒序返回会话，支持标题/编号模糊搜索与分页。"""
         limit = max(1, min(int(limit or 50), 200))
+        offset = max(0, int(offset or 0))
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
@@ -161,8 +199,8 @@ class SessionStore:
             sql += " WHERE s.title LIKE ? OR s.id LIKE ?"
             like = f"%{query.strip()}%"
             params.extend([like, like])
-        sql += " ORDER BY s.updated_at DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -174,6 +212,19 @@ class SessionStore:
             item["preview"] = preview[:PREVIEW_LENGTH]
             sessions.append(item)
         return sessions
+
+    def count_sessions(self, query: str = "") -> int:
+        """返回匹配搜索条件的会话总数，供分页展示。"""
+        sql = "SELECT COUNT(*) AS n FROM sessions"
+        params: List[Any] = []
+        if query:
+            sql += " WHERE title LIKE ? OR id LIKE ?"
+            like = f"%{query.strip()}%"
+            params.extend([like, like])
+
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        return int(row["n"]) if row else 0
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -238,37 +289,42 @@ class SessionStore:
                 metadata = json.loads(row["metadata"] or "{}")
             except (TypeError, json.JSONDecodeError):
                 metadata = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
 
-            entry = stats.setdefault(
-                row["session_id"],
-                {
-                    "usage": {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0,
-                    },
-                    "llm_calls": 0,
-                    "turns": 0,
-                },
-            )
-            entry["turns"] += 1
-
-            usage = metadata.get("usage")
-            if isinstance(usage, dict):
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    try:
-                        entry["usage"][key] += int(usage.get(key) or 0)
-                    except (TypeError, ValueError):
-                        continue
-
-            try:
-                entry["llm_calls"] += int(metadata.get("llm_calls") or 0)
-            except (TypeError, ValueError):
-                continue
+            entry = stats.setdefault(row["session_id"], _new_usage_entry())
+            _accumulate_usage(entry, metadata)
 
         return stats
+
+    def usage_totals(self, query: str = "") -> Dict[str, Any]:
+        """汇总所有匹配会话的历史用量（不受分页限制）。
+
+        Returns:
+            {"usage": {...}, "llm_calls": int, "turns": int}
+        """
+        sql = """
+            SELECT m.metadata
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+             WHERE m.role = 'assistant'
+        """
+        params: List[Any] = []
+        if query:
+            sql += " AND (s.title LIKE ? OR s.id LIKE ?)"
+            like = f"%{query.strip()}%"
+            params.extend([like, like])
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        totals = _new_usage_entry()
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            _accumulate_usage(totals, metadata)
+
+        return totals
 
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
