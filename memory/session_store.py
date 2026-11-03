@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -49,6 +50,7 @@ class SessionStore:
                     session_id TEXT NOT NULL,
                     role       TEXT NOT NULL,
                     content    TEXT NOT NULL,
+                    metadata   TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session
@@ -57,6 +59,15 @@ class SessionStore:
                     ON sessions(updated_at DESC);
                 """
             )
+            # 旧版本数据库没有 metadata 列，就地迁移
+            columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(messages)")
+            }
+            if "metadata" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+                )
 
     @staticmethod
     def _now() -> str:
@@ -79,8 +90,18 @@ class SessionStore:
                 (session_id, title, now, now),
             )
 
-    def save_exchange(self, session_id: str, question: str, answer: str) -> None:
-        """保存一轮问答。标题取第一轮主诉。"""
+    def save_exchange(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """保存一轮问答。标题取第一轮主诉。
+
+        Args:
+            metadata: 附加到 assistant 消息上的元数据（来源、科室意见等）
+        """
         question = (question or "").strip()
         answer = (answer or "").strip()
         if not session_id or not question:
@@ -88,6 +109,7 @@ class SessionStore:
 
         now = self._now()
         title = self._make_title(question)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
 
         with self._lock, self._conn:
             self._conn.execute(
@@ -117,10 +139,10 @@ class SessionStore:
             if answer:
                 self._conn.execute(
                     """
-                    INSERT INTO messages(session_id, role, content, created_at)
-                    VALUES (?, 'assistant', ?, ?)
+                    INSERT INTO messages(session_id, role, content, metadata, created_at)
+                    VALUES (?, 'assistant', ?, ?, ?)
                     """,
-                    (session_id, answer, now),
+                    (session_id, answer, metadata_json, now),
                 )
 
     def list_sessions(self, limit: int = 50, query: str = "") -> List[Dict[str, Any]]:
@@ -161,13 +183,13 @@ class SessionStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def get_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, str]]:
-        """返回最近 limit 条消息，按时间正序。"""
+    def get_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """返回最近 limit 条消息，按时间正序；附带解析后的 metadata。"""
         limit = max(1, min(int(limit or 100), 500))
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT role, content, created_at
+                SELECT role, content, metadata, created_at
                   FROM messages
                  WHERE session_id = ?
                  ORDER BY id DESC
@@ -175,7 +197,16 @@ class SessionStore:
                 """,
                 (session_id, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+
+        messages = []
+        for row in reversed(rows):
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.get("metadata") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                item["metadata"] = {}
+            messages.append(item)
+        return messages
 
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]

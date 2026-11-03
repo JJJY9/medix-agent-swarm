@@ -106,3 +106,61 @@ def test_coordinator_saves_exchange(store):
     # 空答复不落库，避免把失败请求写成历史记录
     coordinator._save_exchange("save-empty", "主诉", "   ")
     assert store.get_messages("save-empty") == []
+
+
+def test_message_metadata_roundtrip(store):
+    metadata = {
+        "swarm_enabled": True,
+        "sources": [{"title": "指南", "score": 0.8}],
+        "agent_contributions": [{"agent_id": "consultation_agent", "content": "意见"}],
+    }
+    store.save_exchange("meta-1", "问题", "答复", metadata=metadata)
+
+    messages = store.get_messages("meta-1")
+
+    assert messages[0]["metadata"] == {}
+    assert messages[1]["metadata"] == metadata
+
+
+def test_legacy_messages_table_is_migrated(tmp_path):
+    import sqlite3
+
+    db = str(tmp_path / "legacy.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES ('s1', '旧会话', '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, created_at) "
+        "VALUES ('s1', 'assistant', '旧答复', '2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = SessionStore(db)
+    try:
+        assert migrated.get_messages("s1")[0]["metadata"] == {}
+
+        migrated.save_exchange(
+            "s1", "新问题", "新答复", metadata={"sources": [{"title": "x"}]}
+        )
+        assert migrated.get_messages("s1")[-1]["metadata"]["sources"][0]["title"] == "x"
+    finally:
+        migrated.close()
