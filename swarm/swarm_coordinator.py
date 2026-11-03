@@ -15,6 +15,7 @@ from typing import Callable, Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient
+from core.triage import detect_red_flags
 from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
@@ -232,6 +233,9 @@ class SwarmCoordinator:
 
         logger.info(f"Processing question (session={session_id}): {question[:50]}...")
 
+        # 确定性急症预检：命中红旗时立即随结果返回，不依赖模型输出
+        triage = detect_red_flags(question)
+
         # 服务重启后从 SQLite 恢复本会话的最近问答
         self._restore_short_term_context(session_id)
 
@@ -305,7 +309,8 @@ class SwarmCoordinator:
             result.update({
                 'swarm_enabled': False,
                 'session_id': session_id,
-                'route_reason': f'单任务路由到 {agent_id}'
+                'route_reason': f'单任务路由到 {agent_id}',
+                'triage': triage
             })
 
             # 确保单Agent模式下也有 disclaimer 字段
@@ -331,6 +336,7 @@ class SwarmCoordinator:
             final_answer = result.get('answer', '')
 
             # Swarm 模式已经在 _process_with_swarm 中保存了长期记忆，直接返回
+            result['triage'] = triage
             return result
 
         else:
@@ -350,7 +356,8 @@ class SwarmCoordinator:
             final_answer = result.get('answer', '')
             result.update({
                 'swarm_enabled': False,
-                'session_id': session_id
+                'session_id': session_id,
+                'triage': triage
             })
 
         # ===== 统一的记忆保存（非 Swarm 模式）=====

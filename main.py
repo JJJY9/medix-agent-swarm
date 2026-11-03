@@ -98,6 +98,16 @@ async def interactive_mode():
             # 计算执行时间
             execution_time = end_time - start_time
 
+            # 急症红旗预检：在输出答案前先给出安全提示
+            triage = result.get('triage') or {}
+            if triage.get('level') == 'emergency':
+                matched = '、'.join(triage.get('matches') or [])
+                print(
+                    "\n🚨 急症警示："
+                    + (f"描述中出现 {matched}。" if matched else "描述中出现急症信号。")
+                )
+                print(f"   {triage.get('message') or '请立即拨打 120 或前往急诊科。'}\n")
+
             # 显示系统决策和执行时间
             if result.get('swarm_enabled'):
                 agents_count = len(result.get('agents_involved', []))
