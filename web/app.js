@@ -2399,8 +2399,12 @@ async function send(question) {
       signal: controller.signal,
     });
 
-    if (!res.ok || !res.body) {
-      throw new Error(`服务返回 ${res.status}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    if (!res.body) {
+      throw new Error('服务未返回流式内容');
     }
 
     const reader = res.body.getReader();

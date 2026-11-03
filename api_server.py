@@ -37,6 +37,7 @@ ensure_utf8_stdio()
 from core.auth import get_access_token, is_authorized
 from core.triage import detect_red_flags
 from core.llm_client import LLMError
+from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 
 WEB_DIR = project_root / "web"
 
@@ -146,6 +147,8 @@ app = FastAPI(title="MediX 多智能体医疗助手", version="1.0.0", lifespan=
 
 # 前端加载和健康检查必须保持公开，其余 /api/* 在设置令牌后统一校验
 PUBLIC_API_PATHS = {"/api/status"}
+CHAT_PATHS = {"/api/chat", "/api/chat/stream"}
+chat_limiter = SlidingWindowLimiter(get_rate_limit())
 
 
 @app.middleware("http")
@@ -162,6 +165,22 @@ async def require_access_token(request: Request, call_next):
             status_code=401,
             content={"detail": "需要访问令牌", "code": "auth_required"},
         )
+
+    if path in CHAT_PATHS:
+        chat_limiter.limit = get_rate_limit()
+        client_key = request.client.host if request.client else "unknown"
+        allowed, retry_after = chat_limiter.check(client_key)
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "会诊请求过于频繁，请稍后再试。",
+                    "code": "rate_limited",
+                    "retry_after": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(max(1, int(retry_after)))},
+            )
+
     return await call_next(request)
 
 

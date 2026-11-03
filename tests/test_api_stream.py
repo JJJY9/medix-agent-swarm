@@ -51,6 +51,7 @@ class FakeCoordinator:
 @pytest.fixture(autouse=True)
 def fresh_state():
     api_server.state.lock = asyncio.Lock()
+    api_server.chat_limiter.clear()
     yield
 
 
@@ -127,6 +128,28 @@ def test_stream_emits_agent_started_before_result():
     assert started["agent_id"] == "consultation_agent"
     assert started["name"] == "健康咨询"
     assert types.index("agent_started") < types.index("result")
+
+
+def test_chat_rate_limited(monkeypatch):
+    api_server.state.coordinator = FakeCoordinator()
+    monkeypatch.setenv("MEDIX_RATE_LIMIT", "2")
+    client = TestClient(api_server.app)
+
+    first = client.post("/api/chat", json={"question": "第一次", "session_id": "rate-1"})
+    second = client.post("/api/chat", json={"question": "第二次", "session_id": "rate-2"})
+    third = client.post("/api/chat", json={"question": "第三次", "session_id": "rate-3"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    body = third.json()
+    assert body["code"] == "rate_limited"
+    assert "频繁" in body["detail"]
+    assert "Retry-After" in third.headers
+
+    # 非会诊接口不受影响
+    api_server.state.coordinator = None
+    assert client.get("/api/status").status_code == 200
 
 
 def test_stream_emits_triage_before_result():
