@@ -45,7 +45,6 @@ class AgentLoop:
         self.max_tool_calls = max_tool_calls
         self.state_manager = StateManager()
         self.short_term_memory = short_term_memory
-        self.tool_call_count = 0
 
         # Harness Engineering: 约束验证器和自动修复器
         self.validator = ConstraintValidator() if CONSTRAINTS_ENABLED else None
@@ -72,8 +71,9 @@ class AgentLoop:
             max_iterations=self.max_iterations
         )
 
-        # 重置计数
-        self.tool_call_count = 0
+        # 工具调用计数属于本次运行，不能放在实例上：同一个 Agent 可能被
+        # Swarm 并发派发多个子任务，实例级计数会互相污染。
+        tool_call_count = 0
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -127,17 +127,19 @@ class AgentLoop:
 
                     # 情况1: LLM 返回 tool_calls，执行 Skills
                     if llm_response.has_tool_calls():
-                        # 硬性限制：检查是否已达到最大调用次数
-                        if self.tool_call_count >= self.max_tool_calls:
-                            logger.warning(f"⚠️ 已达到最大 Skill 调用次数限制 ({self.max_tool_calls})，强制生成最终答案")
-                            # 强制要求 LLM 提供最终答案
-                            messages.append({
-                                'role': 'user',
-                                'content': f'已完成 {self.max_tool_calls} 次信息检索。请基于已获取的信息提供最终答复。'
-                            })
-                            continue
+                        # 预算为 0 时不执行任何 Skill，直接让模型给出答案
+                        if self.max_tool_calls <= 0:
+                            logger.warning("⚠️ Skill 调用预算为 0，直接生成最终答案")
+                            final_answer = await self._force_final_answer(agent, messages)
+                            result = await self._finalize(
+                                agent, state, final_answer, session_id, tool_call_count
+                            )
+                            break
 
-                        logger.info(f"LLM requested {len(llm_response.tool_calls)} tool calls (当前已调用 {self.tool_call_count}/{self.max_tool_calls})")
+                        logger.info(
+                            f"LLM requested {len(llm_response.tool_calls)} tool calls "
+                            f"(当前已调用 {tool_call_count}/{self.max_tool_calls})"
+                        )
 
                         # 添加 assistant 消息（包含 tool_calls）
                         messages.append(self._create_assistant_message_with_tools(llm_response))
@@ -154,8 +156,8 @@ class AgentLoop:
                         # 执行每个 Skill 调用
                         for tool_call in llm_response.tool_calls:
                             # 增加计数
-                            self.tool_call_count += 1
-                            logger.debug(f"Executing: {tool_call.name}({tool_call.arguments}) - 第 {self.tool_call_count} 次调用")
+                            tool_call_count += 1
+                            logger.debug(f"Executing: {tool_call.name}({tool_call.arguments}) - 第 {tool_call_count} 次调用")
 
                             # Harness Engineering: 验证调用
                             if self.validator:
@@ -191,57 +193,27 @@ class AgentLoop:
                                     content=f"{tool_call.name}: {result_summary}"
                                 )
 
+                        # 预算耗尽后立即收尾。若继续带着 tools 进入下一轮，
+                        # 模型往往会再次请求调用工具，白白空转到 max_iterations。
+                        if tool_call_count >= self.max_tool_calls:
+                            logger.warning(
+                                f"⚠️ 已达到最大 Skill 调用次数限制 ({self.max_tool_calls})，强制生成最终答案"
+                            )
+                            final_answer = await self._force_final_answer(agent, messages)
+                            result = await self._finalize(
+                                agent, state, final_answer, session_id, tool_call_count
+                            )
+                            break
+
                         # 继续下一轮循环
                         continue
 
                     # 情况2: LLM 返回文本响应，任务完成
                     else:
                         logger.info(f"LLM provided final response (no tool calls)")
-
-                        # Harness Engineering: 验证和修复输出
-                        final_answer = llm_response.content
-
-                        if self.validator and final_answer:
-                            validation_result = self.validator.validate_output(
-                                agent.agent_id,
-                                final_answer
-                            )
-
-                            if not validation_result.get("valid"):
-                                logger.warning(
-                                    f"⚠️ 输出约束违规: {validation_result.get('violations')}"
-                                )
-
-                                # 自动修复
-                                if self.auto_fixer and validation_result.get("auto_fixable"):
-                                    fixed_answer = self.auto_fixer.fix_output(
-                                        final_answer,
-                                        validation_result.get("auto_fixable", [])
-                                    )
-                                    if fixed_answer != final_answer:
-                                        logger.info("🔧 输出已自动修复")
-                                        final_answer = fixed_answer
-
-                        # 记录最终回答到短期记忆
-                        if self.short_term_memory and session_id:
-                            self.short_term_memory.add_message(
-                                session_id=session_id,
-                                role="assistant",
-                                content=final_answer or "(empty response)"
-                            )
-                            logger.debug(f"Recorded final answer to short-term memory (session={session_id})")
-
-                        result = {
-                            'answer': final_answer,
-                            'iterations': state.iteration,
-                            'agent_id': agent.agent_id
-                        }
-
-                        # 让 Agent 进行结果后处理（如提取建议等）
-                        if hasattr(agent, 'post_process_result'):
-                            result = await agent.post_process_result(result, final_answer)
-
-                        state.mark_completed(result)
+                        result = await self._finalize(
+                            agent, state, llm_response.content or "", session_id, tool_call_count
+                        )
                         break
 
                 except Exception as e:
@@ -307,6 +279,79 @@ class AgentLoop:
             logger.error(f"Agent Loop failed: {e}")
             state.mark_failed(str(e))
             raise
+
+    async def _force_final_answer(self, agent, messages: List[Dict[str, Any]]) -> str:
+        """禁用工具，要求模型基于已有上下文给出最终答复。"""
+        messages.append({
+            'role': 'user',
+            'content': (
+                '信息检索次数已达上限。请不要再请求调用工具，'
+                '直接基于以上已有信息给出最终答复。'
+            )
+        })
+
+        response: LLMResponse = await agent.llm_client.chat_with_tools(
+            messages=messages,
+            tools=None,
+            temperature=agent.config.get('temperature', 0.7)
+        )
+        return (response.content or "").strip()
+
+    async def _finalize(
+        self,
+        agent,
+        state,
+        final_answer: Optional[str],
+        session_id: Optional[str],
+        tool_calls_used: int
+    ) -> Dict[str, Any]:
+        """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
+        final_answer = (final_answer or "").strip()
+
+        # Harness Engineering: 验证和修复输出
+        if self.validator and final_answer:
+            validation_result = self.validator.validate_output(
+                agent.agent_id,
+                final_answer
+            )
+
+            if not validation_result.get("valid"):
+                logger.warning(
+                    f"⚠️ 输出约束违规: {validation_result.get('violations')}"
+                )
+
+                # 自动修复
+                if self.auto_fixer and validation_result.get("auto_fixable"):
+                    fixed_answer = self.auto_fixer.fix_output(
+                        final_answer,
+                        validation_result.get("auto_fixable", [])
+                    )
+                    if fixed_answer != final_answer:
+                        logger.info("🔧 输出已自动修复")
+                        final_answer = fixed_answer
+
+        # 记录最终回答到短期记忆
+        if self.short_term_memory and session_id:
+            self.short_term_memory.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=final_answer or "(empty response)"
+            )
+            logger.debug(f"Recorded final answer to short-term memory (session={session_id})")
+
+        result = {
+            'answer': final_answer,
+            'iterations': state.iteration,
+            'agent_id': agent.agent_id,
+            'tool_calls_used': tool_calls_used
+        }
+
+        # 让 Agent 进行结果后处理（如提取建议等）
+        if hasattr(agent, 'post_process_result'):
+            result = await agent.post_process_result(result, final_answer)
+
+        state.mark_completed(result)
+        return result
 
     def _initialize_messages(self, agent, input_data: Dict[str, Any], session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """初始化消息列表，包含历史对话上下文"""
