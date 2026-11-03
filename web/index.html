@@ -83,6 +83,8 @@
 
       </div>
 
+      <button type="button" class="jump-latest" id="jump-latest" hidden>回到最新 ↓</button>
+
       <form class="composer" id="composer" autocomplete="off">
         <label class="sr-only" for="input">您的主诉</label>
         <textarea id="input" rows="1" placeholder="请描述症状及持续时间…" maxlength="2000"></textarea>
@@ -176,9 +178,16 @@
 
 <!-- 历史会诊抽屉 -->
 <div class="drawer-backdrop" id="history-backdrop" hidden></div>
-<aside class="drawer" id="history-drawer" hidden aria-label="历史会诊">
+<aside
+  class="drawer"
+  id="history-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="history-title"
+>
   <div class="drawer-head">
-    <h2>历史会诊</h2>
+    <h2 id="history-title">历史会诊</h2>
     <button type="button" class="drawer-close" id="history-close" aria-label="关闭历史会诊">×</button>
   </div>
   <label class="sr-only" for="history-search">搜索会诊记录</label>
