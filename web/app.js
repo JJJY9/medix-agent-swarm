@@ -2707,7 +2707,49 @@ function autoGrow() {
   els.input.style.height = Math.min(els.input.scrollHeight, 180) + 'px';
 }
 
-els.input.addEventListener('input', autoGrow);
+const DRAFT_KEY = 'medix.draft';
+let draftTimer = null;
+
+function saveDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try {
+      if (els.input.value.trim()) {
+        sessionStorage.setItem(DRAFT_KEY, els.input.value);
+      } else {
+        sessionStorage.removeItem(DRAFT_KEY);
+      }
+    } catch {
+      // 隐私模式下 sessionStorage 不可用时忽略
+    }
+  }, 200);
+}
+
+function clearDraft() {
+  clearTimeout(draftTimer);
+  try {
+    sessionStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // 忽略
+  }
+}
+
+function loadDraft() {
+  try {
+    const draft = sessionStorage.getItem(DRAFT_KEY);
+    if (draft) {
+      els.input.value = draft;
+      autoGrow();
+    }
+  } catch {
+    // 忽略
+  }
+}
+
+els.input.addEventListener('input', () => {
+  autoGrow();
+  saveDraft();
+});
 
 els.input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -2722,6 +2764,7 @@ els.composer.addEventListener('submit', (e) => {
   if (!q) return;
   els.input.value = '';
   autoGrow();
+  clearDraft();
   send(q);
 });
 
@@ -2827,6 +2870,16 @@ els.historyFavoriteFilter.addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (!historyOpen) {
+      openHistory();
+    } else {
+      els.historySearch.focus();
+    }
+    return;
+  }
+
   if (e.key === 'Escape') {
     if (historyOpen) closeHistory(true);
     if (kbOpen) closeKb(true);
@@ -2890,6 +2943,7 @@ resetRail();
 initTheme();
 renderEcg();
 loadSavedContext();
+loadDraft();
 restoreCurrentSession();
 checkStatus();
 setInterval(checkStatus, 20000);
