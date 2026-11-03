@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -151,6 +151,29 @@ PUBLIC_API_PATHS = {"/api/status"}
 CHAT_PATHS = {"/api/chat", "/api/chat/stream"}
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
 
+SECURITY_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "font-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+
+def add_security_headers(response: Response) -> Response:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
+    return response
+
 
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
@@ -162,17 +185,17 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
         and not is_authorized(request)
     ):
-        return JSONResponse(
+        return add_security_headers(JSONResponse(
             status_code=401,
             content={"detail": "需要访问令牌", "code": "auth_required"},
-        )
+        ))
 
     if path in CHAT_PATHS:
         chat_limiter.limit = get_rate_limit()
         client_key = request.client.host if request.client else "unknown"
         allowed, retry_after = chat_limiter.check(client_key)
         if not allowed:
-            return JSONResponse(
+            return add_security_headers(JSONResponse(
                 status_code=429,
                 content={
                     "detail": "会诊请求过于频繁，请稍后再试。",
@@ -180,9 +203,9 @@ async def require_access_token(request: Request, call_next):
                     "retry_after": round(retry_after, 1),
                 },
                 headers={"Retry-After": str(max(1, int(retry_after)))},
-            )
+            ))
 
-    return await call_next(request)
+    return add_security_headers(await call_next(request))
 
 
 # ===== API =====
