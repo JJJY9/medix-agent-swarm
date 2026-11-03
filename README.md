@@ -205,28 +205,35 @@ npm install -D playwright
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/status` | 健康检查、模型配置、知识库状态 |
-| POST | `/api/chat` | 同步问答，返回完整结果 |
-| POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、科室完成、汇总 Token 与最终结果 |
+| GET | `/api/status` | 健康检查、模型配置、鉴权/费用配置、知识库状态 |
+| POST | `/api/chat` | 同步问答，返回完整结果（支持 `context` 与 `enable_swarm`） |
+| POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、科室开始/完成、汇总 Token 与最终结果 |
+| GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
-| GET | `/api/sessions` | 历史会诊列表（支持 `q` 搜索） |
+| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、用量汇总 |
+| GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
+| POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite） |
-| GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天） |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
+| PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
+| GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |
 | GET | `/api/knowledge/search` | 知识库检索测试（返回来源、相关度与片段） |
+| GET | `/api/knowledge/documents/{filename}/preview` | 预览内置/上传文档前 4000 字 |
 | POST | `/api/knowledge/rebuild` | 重建知识库索引（幂等） |
 | POST | `/api/knowledge/upload` | 上传文档（multipart，TXT/MD/PDF） |
 | DELETE | `/api/knowledge/documents/{filename}` | 删除上传文档并重建 |
-| GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库） |
+| GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库/运行状态） |
 | POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
 
 `/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数），每条会话也带有各自的 `usage` 与 `llm_calls`。
 
 设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
 
-`/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。
+`/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
+
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导入时只接受 user/assistant 消息，已存在的会话编号会跳过，不覆盖现有记录。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
