@@ -289,8 +289,10 @@ async def chat_stream(request: ChatRequest):
     """
     SSE 流式接口。
 
-    在没有改动 SwarmCoordinator 的前提下，通过轮询 worker 的 shared_context
-    来播报"哪个 Agent 已完成"，前端据此点亮协作面板。
+    两路事件：
+    - 轮询 worker 的 shared_context，播报「哪个 Agent 已完成」；
+    - Swarm 汇总阶段通过 on_token 回调把增量文本推成 token 事件，
+      前端据此渐进渲染会诊意见。
     """
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
 
@@ -315,17 +317,30 @@ async def chat_stream(request: ChatRequest):
                 for w in getattr(coordinator, "worker_pool", [])
             }
 
+            token_queue: asyncio.Queue[str] = asyncio.Queue()
+
+            def on_token(delta: str) -> None:
+                token_queue.put_nowait(delta)
+
             task = asyncio.create_task(
                 coordinator.process(
                     question=request.question,
                     context=request.context,
                     session_id=session_id,
+                    on_token=on_token,
                 )
             )
 
             seen_agents = set()
             try:
-                while not task.done():
+                while not task.done() or not token_queue.empty():
+                    # 先推送汇总阶段已经产生的增量文本
+                    while not token_queue.empty():
+                        yield sse({
+                            "type": "token",
+                            "delta": token_queue.get_nowait(),
+                        })
+
                     # worker 在 swarm 模式下会被挂上 SharedContext，据此读取进展
                     for worker in getattr(coordinator, "worker_pool", []):
                         sc = getattr(worker, "shared_context", None)
@@ -339,7 +354,9 @@ async def chat_stream(request: ChatRequest):
                                     "agent_id": agent_id,
                                     "name": AGENT_LABELS.get(agent_id, agent_id),
                                 })
-                    await asyncio.sleep(0.4)
+
+                    if not task.done():
+                        await asyncio.sleep(0.1)
 
                 try:
                     result = await task

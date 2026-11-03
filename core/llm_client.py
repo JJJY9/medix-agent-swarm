@@ -8,7 +8,7 @@ import sys
 import asyncio
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from openai import AsyncOpenAI
 from loguru import logger
@@ -206,6 +206,65 @@ class LLMClient:
             消息字典
         """
         return {"role": role, "content": content}
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        on_token: Optional[Callable[[str], None]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> str:
+        """流式聊天接口（纯文本，不支持工具调用）。
+
+        逐块读取 OpenAI 兼容接口的流式响应，把增量通过 ``on_token`` 回调交给
+        调用方（用于 SSE 推送），同时累积完整文本作为返回值。
+
+        Args:
+            messages: 消息列表
+            on_token: 每收到一段增量文本时调用的同步回调
+            temperature: 温度参数
+            max_tokens: 最大 token 数
+
+        Returns:
+            模型返回的完整文本
+        """
+        temperature = self.temperature if temperature is None else temperature
+        max_tokens = self.max_tokens if max_tokens is None else max_tokens
+
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                **kwargs
+            )
+
+            chunks: List[str] = []
+            callback_failed = False
+
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                content = getattr(chunk.choices[0].delta, "content", None)
+                if not content:
+                    continue
+
+                chunks.append(content)
+                if on_token and not callback_failed:
+                    try:
+                        on_token(content)
+                    except Exception as e:
+                        callback_failed = True
+                        logger.warning(f"流式回调失败，后续增量将被忽略: {e}")
+
+            return "".join(chunks)
+
+        except Exception as e:
+            logger.error(f"LLM stream call failed: {e}")
+            raise
 
     async def chat_with_tools(
         self,

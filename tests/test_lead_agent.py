@@ -7,7 +7,7 @@ from swarm.lead_agent import (
     normalize_agent_id,
     normalize_subtasks,
 )
-from swarm.shared_context import SharedContext
+from swarm.shared_context import SharedContext, SubTask
 
 
 class FakeChatLLM:
@@ -114,3 +114,63 @@ def test_extract_json_payload_handles_nested_braces_in_prose():
 
     assert payload is not None
     assert payload["subtasks"][0]["description"] == "x"
+
+
+class FakeStreamLLM:
+    def __init__(self):
+        self.stream_calls = 0
+        self.chat_calls = 0
+
+    async def chat_stream(self, messages, on_token=None, **kwargs):
+        self.stream_calls += 1
+        for piece in ["完整", "答复"]:
+            if on_token:
+                on_token(piece)
+        return "完整答复"
+
+    async def chat(self, messages, **kwargs):
+        self.chat_calls += 1
+        return "非流式答复"
+
+
+def _context_with_contribution():
+    context = SharedContext(session_id="stream-test")
+    context.add_subtask(SubTask(
+        id="s1",
+        type="test_task",
+        description="测试任务",
+        assigned_agent="consultation_agent",
+    ))
+    context.start_subtask("s1")
+    context.complete_subtask("s1", "consultation_agent", {"answer": "贡献"})
+    return context
+
+
+def test_synthesize_results_streams_tokens():
+    llm = FakeStreamLLM()
+    agent = LeadAgent(llm_client=llm)
+    tokens = []
+
+    text = asyncio.run(
+        agent.synthesize_results(
+            "测试问题",
+            _context_with_contribution(),
+            on_token=tokens.append,
+        )
+    )
+
+    assert text == "完整答复"
+    assert tokens == ["完整", "答复"]
+    assert llm.stream_calls == 1
+    assert llm.chat_calls == 0
+
+
+def test_synthesize_results_without_callback_uses_blocking_chat():
+    llm = FakeStreamLLM()
+    agent = LeadAgent(llm_client=llm)
+
+    text = asyncio.run(agent.synthesize_results("测试问题", _context_with_contribution()))
+
+    assert text == "非流式答复"
+    assert llm.stream_calls == 0
+    assert llm.chat_calls == 1
