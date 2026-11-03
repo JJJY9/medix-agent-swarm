@@ -1310,6 +1310,36 @@ function formatTime(value) {
   return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function setHighlightedText(element, text, query) {
+  element.replaceChildren();
+  const source = String(text || '');
+  const needle = String(query || '').trim();
+  if (!needle) {
+    element.textContent = source;
+    return;
+  }
+
+  const lowerSource = source.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  let cursor = 0;
+  let index = lowerSource.indexOf(lowerNeedle, cursor);
+
+  while (index !== -1) {
+    if (index > cursor) {
+      element.appendChild(document.createTextNode(source.slice(cursor, index)));
+    }
+    const mark = document.createElement('mark');
+    mark.textContent = source.slice(index, index + needle.length);
+    element.appendChild(mark);
+    cursor = index + needle.length;
+    index = lowerSource.indexOf(lowerNeedle, cursor);
+  }
+
+  if (cursor < source.length) {
+    element.appendChild(document.createTextNode(source.slice(cursor)));
+  }
+}
+
 function renderHistoryItems(sessions, summary, append = false) {
   if (!append) els.historyList.replaceChildren();
   renderHistorySummary(summary);
@@ -1337,7 +1367,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     open.className = 'history-open';
 
     const title = document.createElement('strong');
-    title.textContent = item.title || '未命名会诊';
+    setHighlightedText(title, item.title || '未命名会诊', historyQuery);
 
     const meta = document.createElement('span');
     meta.className = 'history-meta';
@@ -1353,7 +1383,11 @@ function renderHistoryItems(sessions, summary, append = false) {
 
     const preview = document.createElement('span');
     preview.className = 'history-preview';
-    preview.textContent = item.preview || '（暂无答复摘要）';
+    setHighlightedText(
+      preview,
+      item.preview || '（暂无答复摘要）',
+      historyQuery
+    );
 
     open.append(title, meta, preview);
     open.addEventListener('click', () => openSession(item.id));

@@ -1445,6 +1445,13 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 .history-item:last-child .history-open { border-bottom: 0; }
 .history-open:hover strong { color: var(--clinic); }
 
+.history-item mark {
+  padding: 0 1px;
+  color: inherit;
+  background: var(--clinic-soft);
+  border-radius: 2px;
+}
+
 .history-more {
   flex: none;
   margin: 0 16px 14px;
