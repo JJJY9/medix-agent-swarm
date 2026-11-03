@@ -166,6 +166,18 @@ async def get_status():
     }
 
 
+@app.get("/api/diagnose")
+async def diagnose():
+    """轻量环境自检：Python、依赖、配置与知识库文件。"""
+    from core.diagnostics import collect_report
+
+    try:
+        return await asyncio.to_thread(collect_report)
+    except Exception as e:
+        logger.exception("系统自检失败")
+        raise HTTPException(status_code=500, detail=f"系统自检失败：{e}")
+
+
 @app.post("/api/sessions", response_model=SessionResponse)
 async def create_session():
     session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
