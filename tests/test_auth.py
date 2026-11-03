@@ -86,3 +86,13 @@ def test_token_is_not_echoed_in_status(client, monkeypatch):
     response = client.get("/api/status")
 
     assert token not in response.text
+
+
+def test_non_ascii_token_is_compared_safely(client, monkeypatch):
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "中文令牌🔒")
+
+    ok = client.get("/api/sessions", params={"token": "中文令牌🔒"})
+    wrong = client.get("/api/sessions", params={"token": "错误令牌"})
+
+    assert ok.status_code == 200
+    assert wrong.status_code == 401

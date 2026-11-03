@@ -17,7 +17,7 @@ def merge_usage(
     for key in USAGE_KEYS:
         try:
             value = int(usage.get(key) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             value = 0
         total[key] = total.get(key, 0) + value
     return total

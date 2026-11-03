@@ -152,6 +152,19 @@ def test_chat_rate_limited(monkeypatch):
     assert client.get("/api/status").status_code == 200
 
 
+def test_chat_with_non_finite_context_does_not_500():
+    api_server.state.coordinator = FakeCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat",
+        content='{"question":"你好","context":{"age":1e999}}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+
+
 def test_stream_emits_triage_before_result():
     api_server.state.coordinator = FakeCoordinator()
     client = TestClient(api_server.app)

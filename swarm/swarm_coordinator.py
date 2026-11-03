@@ -540,6 +540,7 @@ class SwarmCoordinator:
 
         # Step 3: LeadAgent 汇总结果
         # 即使超时，也尝试汇总已完成的部分结果
+        had_contributions = bool(shared_context.get_contributions())
         synthesis_usage: Dict[str, int] = {}
         final_answer = await self.lead_agent.synthesize_results(
             question=question,
@@ -615,7 +616,7 @@ class SwarmCoordinator:
         )
         llm_calls = (
             1  # LeadAgent 分解
-            + 1  # LeadAgent 汇总
+            + (1 if had_contributions else 0)  # 有贡献时才真正调用汇总
             + sum(int(entry.get("llm_calls") or 0) for entry in agent_contributions)
         )
 

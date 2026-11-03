@@ -43,6 +43,13 @@ def test_pricing_ignores_invalid_or_zero(monkeypatch):
     assert get_pricing() is None
 
 
+def test_pricing_ignores_non_finite_values(monkeypatch):
+    monkeypatch.setenv("MEDIX_PRICE_INPUT", "1e999")
+    monkeypatch.delenv("MEDIX_PRICE_OUTPUT", raising=False)
+
+    assert get_pricing() is None
+
+
 def test_status_exposes_pricing(monkeypatch):
     monkeypatch.setenv("MEDIX_PRICE_INPUT", "2")
     monkeypatch.setenv("MEDIX_PRICE_OUTPUT", "8")

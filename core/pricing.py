@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Dict, Optional
 
@@ -19,7 +20,9 @@ def _read_price(name: str) -> Optional[float]:
         return None
     try:
         value = float(raw)
-    except ValueError:
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value):
         return None
     return max(0.0, value)
 

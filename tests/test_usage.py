@@ -325,3 +325,12 @@ def test_serialize_result_defaults_usage():
     assert payload["usage"] == {}
     assert payload["llm_calls"] == 0
     assert payload["patient_context"] == {}
+
+
+def test_serialize_result_sanitizes_non_finite_values():
+    payload = _serialize_result({
+        "answer": "答复",
+        "patient_context": {"age": float("inf")},
+    }, {})
+
+    assert payload["patient_context"]["age"] is None

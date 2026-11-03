@@ -55,4 +55,8 @@ def is_authorized(request: Request) -> bool:
     if not supplied:
         return False
 
-    return secrets.compare_digest(supplied, expected)
+    # compare_digest 对含非 ASCII 字符的 str 会抛 TypeError，
+    # 统一按 UTF-8 字节比较，保证中文/emoji 令牌也能正常校验。
+    return secrets.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    )
