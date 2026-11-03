@@ -177,6 +177,7 @@ body {
   border: 1px solid transparent;
   border-radius: var(--radius);
   padding: 6px 13px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
@@ -1682,6 +1683,19 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .advice, .disclaimer { margin-left: 14px; margin-right: 14px; }
   .contributions, .sources { margin-left: 14px; margin-right: 14px; }
   .risk { margin-left: 14px; }
+}
+
+@media (max-width: 380px) {
+  .topbar { gap: 8px; }
+  .brand { gap: 8px; }
+  .brand-mark { width: 30px; height: 30px; }
+  .brand-text strong { font-size: 17px; }
+  .topbar-actions { gap: 4px; }
+  .btn-quiet { font-size: 12px; padding: 6px 8px; }
+  .btn-icon { width: 28px; height: 28px; }
+  .composer { padding: 12px; gap: 8px; }
+  .send { padding: 9px 12px; }
+  .send-icon { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
