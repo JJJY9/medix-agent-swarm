@@ -34,6 +34,8 @@ from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
 
+from core.triage import detect_red_flags
+
 WEB_DIR = project_root / "web"
 
 # Agent 展示名，供前端协作面板使用
@@ -262,6 +264,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         ],
         "subtasks_completed": result.get("subtasks_completed", 0),
         "subtasks_failed": result.get("subtasks_failed", 0),
+        "triage": result.get("triage") or {"level": "none", "matches": [], "message": ""},
         "total_time": result.get("total_time"),
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),
@@ -304,12 +307,17 @@ async def chat_stream(request: ChatRequest):
       前端据此渐进渲染会诊意见。
     """
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
+    triage = detect_red_flags(request.question)
 
     async def event_stream() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
         yield sse({"type": "stage", "stage": "routing", "session_id": session_id})
+
+        # 急症红旗在调用模型之前就推给前端，不必等待会诊结果
+        if triage["level"] != "none":
+            yield sse({"type": "triage", **triage})
 
         async with state.lock:
             try:
