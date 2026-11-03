@@ -131,6 +131,46 @@ def check_knowledge(
     return info
 
 
+def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
+    """检查会话数据库与访问保护等运行时状态。"""
+    import sqlite3
+
+    from core.pricing import get_pricing
+    from core.ratelimit import get_rate_limit
+
+    root = Path(project_root)
+    db_path = Path(
+        os.getenv("MEDIX_SESSION_DB") or (root / "data" / "sessions.db")
+    )
+    info: Dict[str, Any] = {
+        "session_db": str(db_path),
+        "db_exists": db_path.is_file(),
+        "db_size": db_path.stat().st_size if db_path.is_file() else 0,
+        "sessions": 0,
+        "messages": 0,
+        "auth_enabled": bool((os.getenv("MEDIX_ACCESS_TOKEN") or "").strip()),
+        "rate_limit": get_rate_limit(),
+        "pricing_configured": get_pricing() is not None,
+    }
+
+    if info["db_exists"]:
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=2)
+            try:
+                info["sessions"] = int(
+                    conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                )
+                info["messages"] = int(
+                    conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                )
+            finally:
+                conn.close()
+        except Exception as e:
+            info["db_error"] = str(e)
+
+    return info
+
+
 def collect_report(
     project_root: Optional[Path] = None,
     run_kb: bool = False
@@ -152,6 +192,7 @@ def collect_report(
         "missing_required": missing_required,
         "llm_config": read_llm_config(),
         "knowledge": check_knowledge(root, run_query=run_kb),
+        "runtime": check_runtime(root),
     }
 
 
