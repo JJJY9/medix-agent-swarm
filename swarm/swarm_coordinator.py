@@ -15,6 +15,7 @@ from typing import Callable, Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient
+from core.context import public_context
 from core.triage import detect_red_flags
 from core.citations import merge_sources
 from core.usage import merge_usages
@@ -180,6 +181,7 @@ class SwarmCoordinator:
             "timeout_occurred",
             "usage",
             "llm_calls",
+            "patient_context",
         )
         return {
             key: result.get(key)
@@ -288,6 +290,7 @@ class SwarmCoordinator:
 
         # 3. 构建增强上下文
         enhanced_context = context or {}
+        patient_context = public_context(context)
 
         # 添加短期记忆
         if recent_history:
@@ -350,7 +353,8 @@ class SwarmCoordinator:
                 'swarm_enabled': False,
                 'session_id': session_id,
                 'route_reason': f'单任务路由到 {agent_id}',
-                'triage': triage
+                'triage': triage,
+                'patient_context': patient_context,
             })
 
             # 确保单Agent模式下也有 disclaimer 字段
@@ -372,7 +376,8 @@ class SwarmCoordinator:
                 session_id=session_id,
                 start_time=start_time,
                 on_token=on_token,
-                lead_usage=lead_usage
+                lead_usage=lead_usage,
+                patient_context=patient_context
             )
             final_answer = result.get('answer', '')
 
@@ -409,7 +414,8 @@ class SwarmCoordinator:
             result.update({
                 'swarm_enabled': False,
                 'session_id': session_id,
-                'triage': triage
+                'triage': triage,
+                'patient_context': patient_context,
             })
 
         # ===== 统一的记忆保存（非 Swarm 模式）=====
@@ -451,7 +457,8 @@ class SwarmCoordinator:
         session_id: str,
         start_time: datetime,
         on_token: Optional[Callable[[str], None]] = None,
-        lead_usage: Optional[Dict[str, int]] = None
+        lead_usage: Optional[Dict[str, int]] = None,
+        patient_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -465,6 +472,8 @@ class SwarmCoordinator:
 
         # 创建 SharedContext
         shared_context = SharedContext(session_id=session_id)
+        # 让每个 Worker 在处理子任务时都能看到患者背景信息
+        shared_context.data["patient_context"] = patient_context or {}
 
         # 附加 SharedContext 到所有 Worker
         for worker in self.worker_pool:
@@ -616,6 +625,7 @@ class SwarmCoordinator:
             'sources': sources,
             'usage': usage_total,
             'llm_calls': llm_calls,
+            'patient_context': patient_context or {},
             'subtasks_completed': len(shared_context.get_all_completed_subtasks()),
             'subtasks_failed': len(failed_subtasks),
             'total_time': (end_time - start_time).total_seconds(),

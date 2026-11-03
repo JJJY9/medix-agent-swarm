@@ -94,29 +94,6 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
         """注册所有 9 个 Skills（共享实现，来自 SkillRegistryMixin）"""
         self.register_all_skills()
 
-    def format_user_input(self, input_data: Dict[str, Any]) -> str:
-        """格式化用户输入"""
-        question = input_data.get('question', '')
-        session_id = input_data.get('session_id', '')
-
-        # 构建消息
-        parts = []
-
-        # 添加session_id信息（如果有）
-        if session_id:
-            parts.append(f"[系统信息] 当前会话ID: {session_id}")
-
-        # 添加上下文信息（如果有）
-        context = input_data.get('context', {})
-        if context:
-            context_str = "\n".join([f"{k}: {v}" for k, v in context.items()])
-            parts.append(f"背景信息：\n{context_str}\n")
-
-        # 添加用户问题
-        parts.append(f"用户问题：{question}")
-
-        return "\n".join(parts)
-
     async def post_process_result(
         self,
         result: Dict[str, Any],
