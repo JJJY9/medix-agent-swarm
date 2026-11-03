@@ -524,6 +524,38 @@ function buildMarkdown(payload, question) {
     lines.push('');
   }
 
+  if (payload.agent_contributions && payload.agent_contributions.length) {
+    lines.push('## 各科室意见', '');
+    payload.agent_contributions.forEach((contribution) => {
+      lines.push(
+        `### ${contribution.agent_name || contribution.agent_id}`,
+        '',
+        (contribution.content || '').trim(),
+        ''
+      );
+    });
+  }
+
+  if (payload.sources && payload.sources.length) {
+    lines.push('## 参考来源', '');
+    payload.sources.forEach((source, index) => {
+      const meta = [
+        source.source,
+        source.filename,
+        typeof source.score === 'number'
+          ? `${Math.round(source.score * 100)}%`
+          : '',
+      ].filter(Boolean).join(' · ');
+      lines.push(
+        `${index + 1}. ${source.title || source.filename || '医学知识库'}（${meta}）`
+      );
+      if (source.snippet) {
+        lines.push(`   > ${String(source.snippet).replace(/\n/g, ' ')}`);
+      }
+    });
+    lines.push('');
+  }
+
   if (payload.disclaimer) {
     lines.push('## 免责声明', '', payload.disclaimer, '');
   }
@@ -576,9 +608,83 @@ function buildSessionMarkdown(item, messages) {
   return lines.join('\n');
 }
 
+function renderContributions(contributions) {
+  const details = document.createElement('details');
+  details.className = 'contributions';
+
+  const summary = document.createElement('summary');
+  summary.textContent = `各科室意见 · ${contributions.length}`;
+  details.appendChild(summary);
+
+  for (const contribution of contributions) {
+    const block = document.createElement('div');
+    block.className = 'contribution';
+
+    const head = document.createElement('div');
+    head.className = 'contribution-head';
+
+    const name = document.createElement('strong');
+    name.textContent = contribution.agent_name || contribution.agent_id;
+
+    const type = document.createElement('span');
+    type.className = 'contribution-type';
+    type.textContent = contribution.task_type || '';
+
+    head.append(name, type);
+
+    const body = document.createElement('div');
+    body.className = 'contribution-body';
+    appendBody(body, contribution.content || '');
+
+    block.append(head, body);
+    details.appendChild(block);
+  }
+
+  return details;
+}
+
+function renderSources(sources) {
+  const details = document.createElement('details');
+  details.className = 'sources';
+
+  const summary = document.createElement('summary');
+  summary.textContent = `参考来源 · ${sources.length}`;
+  details.appendChild(summary);
+
+  for (const source of sources) {
+    const item = document.createElement('div');
+    item.className = 'source-item';
+
+    const head = document.createElement('div');
+    head.className = 'source-head';
+
+    const title = document.createElement('strong');
+    title.textContent = source.title || source.filename || '医学知识库';
+
+    const meta = document.createElement('span');
+    meta.className = 'source-meta';
+    const score = typeof source.score === 'number'
+      ? `${Math.round(source.score * 100)}%`
+      : '';
+    meta.textContent = [source.source, source.filename, score]
+      .filter(Boolean)
+      .join(' · ');
+
+    head.append(title, meta);
+
+    const snippet = document.createElement('p');
+    snippet.className = 'source-snippet';
+    snippet.textContent = source.snippet || '';
+
+    item.append(head, snippet);
+    details.appendChild(item);
+  }
+
+  return details;
+}
+
 function renderAnswer(payload, elapsedSeconds, question = '') {
-  const turn = document.createElement('div');
-  turn.className = 'turn';
+  const turn = document.createElement('div');  turn.className = 'turn';
 
   const note = document.createElement('div');
   note.className = 'note';
@@ -652,6 +758,14 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
     }
     advice.appendChild(ol);
     note.appendChild(advice);
+  }
+
+  if (payload.agent_contributions && payload.agent_contributions.length) {
+    note.appendChild(renderContributions(payload.agent_contributions));
+  }
+
+  if (payload.sources && payload.sources.length) {
+    note.appendChild(renderSources(payload.sources));
   }
 
   if (payload.disclaimer) {
