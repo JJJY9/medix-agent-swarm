@@ -55,6 +55,7 @@ knowledge/data/*.db
 .pytest_cache/
 .coverage
 htmlcov/
+TEST_REPORT.md
 
 # 记忆数据
 /tmp/qdrant/
@@ -63,5 +64,5 @@ htmlcov/
 # 会话记录（运行时生成）
 session_summaries/*.md
 agent_identities/*.md
-memory/swarm/session_summaries/
-memory/agents/*.md
+memory/swarm/
+memory/agents/

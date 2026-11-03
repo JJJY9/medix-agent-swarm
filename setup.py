@@ -16,7 +16,7 @@ setup(
     description="Multi-agent medical assistant system based on MediX-R1",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/...",
+    url="https://github.com/JJJY9/medix-agent-swarm",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
