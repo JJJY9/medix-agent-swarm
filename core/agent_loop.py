@@ -13,6 +13,7 @@ from loguru import logger
 from .state_manager import StateManager, TaskStatus
 from .llm_client import LLMResponse, LLMError
 from .citations import merge_sources
+from .usage import merge_usage
 
 # Harness Engineering: 约束验证和自动修复
 try:
@@ -85,6 +86,8 @@ class AgentLoop:
         # Swarm 并发派发多个子任务，实例级计数会互相污染。
         tool_call_count = 0
         sources: List[Dict[str, Any]] = []
+        usage: Dict[str, int] = {}
+        llm_calls = 0
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -122,6 +125,8 @@ class AgentLoop:
                         tool_choice="auto",
                         temperature=agent.config.get('temperature', 0.7)
                     )
+                    llm_calls += 1
+                    merge_usage(usage, llm_response.usage)
 
                     # 记录中间结果
                     state.add_intermediate_result({
@@ -141,9 +146,13 @@ class AgentLoop:
                         # 预算为 0 时不执行任何 Skill，直接让模型给出答案
                         if self.max_tool_calls <= 0:
                             logger.warning("⚠️ Skill 调用预算为 0，直接生成最终答案")
-                            final_answer = await self._force_final_answer(agent, messages, on_token)
+                            llm_calls += 1
+                            final_answer = await self._force_final_answer(
+                                agent, messages, on_token, usage
+                            )
                             result = await self._finalize(
-                                agent, state, final_answer, session_id, tool_call_count, sources
+                                agent, state, final_answer, session_id,
+                                tool_call_count, sources, usage, llm_calls
                             )
                             break
 
@@ -232,9 +241,13 @@ class AgentLoop:
                             logger.warning(
                                 f"⚠️ 已达到最大 Skill 调用次数限制 ({self.max_tool_calls})，强制生成最终答案"
                             )
-                            final_answer = await self._force_final_answer(agent, messages, on_token)
+                            llm_calls += 1
+                            final_answer = await self._force_final_answer(
+                                agent, messages, on_token, usage
+                            )
                             result = await self._finalize(
-                                agent, state, final_answer, session_id, tool_call_count, sources
+                                agent, state, final_answer, session_id,
+                                tool_call_count, sources, usage, llm_calls
                             )
                             break
 
@@ -246,7 +259,7 @@ class AgentLoop:
                         logger.info(f"LLM provided final response (no tool calls)")
                         result = await self._finalize(
                             agent, state, llm_response.content or "", session_id,
-                            tool_call_count, sources
+                            tool_call_count, sources, usage, llm_calls
                         )
                         break
 
@@ -285,12 +298,17 @@ class AgentLoop:
                     })
 
                     # 调用 LLM（禁用 function calling）
-                    final_text = await self._complete_text(agent, messages, on_token)
+                    llm_calls += 1
+                    final_text = await self._complete_text(
+                        agent, messages, on_token, usage
+                    )
 
                     result = {
                         'answer': final_text or '抱歉，未能完成任务',
                         'iterations': state.iteration,
                         'sources': merge_sources(sources),
+                        'usage': dict(usage),
+                        'llm_calls': llm_calls,
                         'warning': 'max_iterations_reached'
                     }
 
@@ -328,7 +346,8 @@ class AgentLoop:
         self,
         agent,
         messages: List[Dict[str, Any]],
-        on_token: Optional[Any] = None
+        on_token: Optional[Any] = None,
+        usage: Optional[Dict[str, int]] = None
     ) -> str:
         """禁用工具，要求模型基于已有上下文给出最终答复。"""
         messages.append({
@@ -339,23 +358,33 @@ class AgentLoop:
             )
         })
 
-        return (await self._complete_text(agent, messages, on_token)).strip()
+        return (await self._complete_text(agent, messages, on_token, usage)).strip()
 
     async def _complete_text(
         self,
         agent,
         messages: List[Dict[str, Any]],
-        on_token: Optional[Any] = None
+        on_token: Optional[Any] = None,
+        usage: Optional[Dict[str, int]] = None
     ) -> str:
         """生成最终文本：有流式回调时逐段推送，否则回退到普通调用。"""
         if on_token is not None and hasattr(agent.llm_client, "chat_stream"):
-            return await agent.llm_client.chat_stream(messages, on_token=on_token)
+            stream_usage: Dict[str, int] = {}
+            try:
+                return await agent.llm_client.chat_stream(
+                    messages, on_token=on_token, usage_out=stream_usage
+                )
+            finally:
+                if usage is not None:
+                    merge_usage(usage, stream_usage)
 
         response: LLMResponse = await agent.llm_client.chat_with_tools(
             messages=messages,
             tools=None,
             temperature=agent.config.get('temperature', 0.7)
         )
+        if usage is not None:
+            merge_usage(usage, response.usage)
         return response.content or ""
 
     async def _finalize(
@@ -365,7 +394,9 @@ class AgentLoop:
         final_answer: Optional[str],
         session_id: Optional[str],
         tool_calls_used: int,
-        sources: Optional[List[Dict[str, Any]]] = None
+        sources: Optional[List[Dict[str, Any]]] = None,
+        usage: Optional[Dict[str, int]] = None,
+        llm_calls: int = 0
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
@@ -406,7 +437,9 @@ class AgentLoop:
             'iterations': state.iteration,
             'agent_id': agent.agent_id,
             'tool_calls_used': tool_calls_used,
-            'sources': merge_sources(sources or [])
+            'sources': merge_sources(sources or []),
+            'usage': dict(usage or {}),
+            'llm_calls': llm_calls
         }
 
         # 让 Agent 进行结果后处理（如提取建议等）

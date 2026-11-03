@@ -325,7 +325,8 @@ class LeadAgent:
     async def assess_and_decompose(
         self,
         question: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        usage_out: Optional[Dict[str, int]] = None
     ) -> Dict[str, Any]:
         """
         分析问题并分解为子任务
@@ -340,7 +341,13 @@ class LeadAgent:
         ]
 
         try:
-            content = await self.llm_client.chat(messages)
+            if hasattr(self.llm_client, "chat_with_usage"):
+                content, usage = await self.llm_client.chat_with_usage(messages)
+            else:
+                content, usage = await self.llm_client.chat(messages), None
+
+            if usage_out is not None and usage:
+                usage_out.update(usage)
 
             logger.debug(f"LeadAgent assessment: {(content or '')[:200]}...")
 
@@ -467,7 +474,8 @@ class LeadAgent:
         question: str,
         shared_context: SharedContext,
         timeout_occurred: bool = False,
-        on_token: Optional[Callable[[str], None]] = None
+        on_token: Optional[Callable[[str], None]] = None,
+        usage_out: Optional[Dict[str, int]] = None
     ) -> str:
         """
         汇总所有 Agent 的贡献，生成最终答案
@@ -563,9 +571,20 @@ class LeadAgent:
             messages = [{"role": "user", "content": synthesis_prompt}]
 
             if on_token is not None and hasattr(self.llm_client, "chat_stream"):
-                return await self.llm_client.chat_stream(messages, on_token=on_token)
+                stream_usage: Dict[str, int] = {}
+                text = await self.llm_client.chat_stream(
+                    messages, on_token=on_token, usage_out=stream_usage
+                )
+                if usage_out is not None:
+                    usage_out.update(stream_usage)
+                return text
 
-            response = await self.llm_client.chat(messages)
+            if hasattr(self.llm_client, "chat_with_usage"):
+                response, usage = await self.llm_client.chat_with_usage(messages)
+                if usage_out is not None and usage:
+                    usage_out.update(usage)
+            else:
+                response = await self.llm_client.chat(messages)
 
             return response
 

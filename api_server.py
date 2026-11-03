@@ -390,6 +390,8 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "subtasks_completed": result.get("subtasks_completed", 0),
         "subtasks_failed": result.get("subtasks_failed", 0),
         "triage": result.get("triage") or {"level": "none", "matches": [], "message": ""},
+        "usage": result.get("usage") or {},
+        "llm_calls": result.get("llm_calls", 0),
         "total_time": result.get("total_time"),
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),
