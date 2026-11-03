@@ -89,6 +89,7 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     # 搜索也能命中答复正文
     content_data = content_response.json()
     assert [item["id"] for item in content_data["sessions"]] == ["s1"]
+    assert "碳水" in content_data["sessions"][0]["match_snippet"]
     assert content_data["summary"]["usage"]["total_tokens"] == 10
 
 

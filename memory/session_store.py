@@ -55,6 +55,24 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
         pass
 
 
+def _match_snippet(content: str, query: str, radius: int = 60) -> str:
+    """在消息正文中截取搜索词附近的片段。"""
+    text = " ".join((content or "").split())
+    needle = (query or "").strip()
+    if not text or not needle:
+        return text[:PREVIEW_LENGTH]
+
+    index = text.lower().find(needle.lower())
+    if index < 0:
+        return text[:PREVIEW_LENGTH]
+
+    start = max(0, index - radius)
+    end = min(len(text), index + len(needle) + radius)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
+
+
 class SessionStore:
     """基于 SQLite 的会话与消息存储。"""
 
@@ -227,12 +245,35 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
 
+            snippets: Dict[str, str] = {}
+            if query and rows:
+                ids = [row["id"] for row in rows]
+                placeholders = ",".join("?" for _ in ids)
+                like = f"%{query.strip()}%"
+                match_rows = self._conn.execute(
+                    f"""
+                    SELECT session_id, content
+                      FROM messages
+                     WHERE session_id IN ({placeholders}) AND content LIKE ?
+                     ORDER BY id
+                    """,
+                    [*ids, like],
+                ).fetchall()
+                for match in match_rows:
+                    session_id = match["session_id"]
+                    if session_id not in snippets:
+                        snippets[session_id] = _match_snippet(
+                            match["content"], query
+                        )
+
         sessions = []
         for row in rows:
             item = dict(row)
             item["favorite"] = bool(item.get("favorite"))
             preview = (item.pop("last_answer", "") or "").replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
+            if query:
+                item["match_snippet"] = snippets.get(item["id"], "")
             sessions.append(item)
         return sessions
 

@@ -64,6 +64,21 @@ def test_search_by_message_content(store):
     assert store.count_sessions("血压") == 1
 
 
+def test_search_returns_message_snippet(store):
+    store.save_exchange(
+        "s1",
+        "最近头痛",
+        "建议先测量血压并充分休息。" * 8,
+    )
+
+    results = store.list_sessions(query="血压")
+
+    snippet = results[0]["match_snippet"]
+    assert "血压" in snippet
+    assert snippet.endswith("…")
+    assert len(snippet) < 200
+
+
 def test_rename_and_delete(store):
     store.save_exchange("s1", "原始主诉", "答复")
 
