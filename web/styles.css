@@ -1113,6 +1113,7 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   gap: 12px;
   padding: 5px 0;
 }
+.readout-row[hidden] { display: none; }
 
 .readout-row dt {
   font-size: 12.5px;
