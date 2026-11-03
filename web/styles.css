@@ -1530,6 +1530,11 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   overflow-y: auto;
   padding: 14px 18px 22px;
 }
+.kb-body.dragging {
+  outline: 2px dashed var(--clinic);
+  outline-offset: -6px;
+  background: var(--clinic-soft);
+}
 
 .kb-stats {
   margin-bottom: 14px;

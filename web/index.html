@@ -333,7 +333,7 @@
     <h2 id="kb-title">知识库管理</h2>
     <button type="button" class="drawer-close" id="kb-close" aria-label="关闭知识库管理">×</button>
   </div>
-  <div class="kb-body">
+  <div class="kb-body" id="kb-body">
     <div class="kb-stats" id="kb-stats">正在加载…</div>
 
     <div class="kb-upload">
@@ -341,7 +341,7 @@
       <input type="file" id="kb-file" accept=".txt,.md,.markdown,.pdf" />
       <button type="button" class="btn-quiet" id="kb-upload">上传并重建</button>
     </div>
-    <p class="kb-hint">支持 TXT / Markdown / PDF，单个文件 ≤ 5 MB。上传或删除后会自动重建索引。</p>
+    <p class="kb-hint">支持 TXT / Markdown / PDF，单个文件 ≤ 5 MB。也可把文件拖到面板上；上传或删除后会自动重建索引。</p>
 
     <div class="kb-actions">
       <button type="button" class="btn-quiet" id="kb-rebuild">重建索引</button>

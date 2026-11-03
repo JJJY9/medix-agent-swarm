@@ -57,6 +57,7 @@ const els = {
   kbStats: document.getElementById('kb-stats'),
   kbStatus: document.getElementById('kb-status'),
   kbList: document.getElementById('kb-list'),
+  kbBody: document.getElementById('kb-body'),
   kbPreview: document.getElementById('kb-preview'),
   kbPreviewTitle: document.getElementById('kb-preview-title'),
   kbPreviewMeta: document.getElementById('kb-preview-meta'),
@@ -2145,10 +2146,19 @@ function closeKb(restoreFocus = false) {
   }
 }
 
-async function uploadKbDocument() {
-  const file = els.kbFile.files && els.kbFile.files[0];
+async function uploadKbDocument(fileOverride = null) {
+  const file = fileOverride || (els.kbFile.files && els.kbFile.files[0]);
   if (!file) {
     setKbStatus('请先选择要上传的文件。', true);
+    return;
+  }
+
+  if (!/\.(txt|md|markdown|pdf)$/i.test(file.name)) {
+    setKbStatus('仅支持 TXT / Markdown / PDF 文件。', true);
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    setKbStatus('文件超过 5 MB 限制。', true);
     return;
   }
 
@@ -2857,9 +2867,44 @@ els.historyBackdrop.addEventListener('click', () => closeHistory(true));
 els.kbManage.addEventListener('click', openKb);
 els.kbClose.addEventListener('click', () => closeKb(true));
 els.kbBackdrop.addEventListener('click', () => closeKb(true));
-els.kbUpload.addEventListener('click', uploadKbDocument);
+els.kbUpload.addEventListener('click', () => uploadKbDocument());
 els.kbRebuild.addEventListener('click', rebuildKb);
 els.kbPreviewClose.addEventListener('click', closeKbPreview);
+
+function isFileDrag(event) {
+  const types = event.dataTransfer && event.dataTransfer.types;
+  return types ? Array.from(types).includes('Files') : false;
+}
+
+['dragenter', 'dragover'].forEach((type) => {
+  els.kbBody.addEventListener(type, (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    els.kbBody.classList.add('dragging');
+  });
+});
+
+els.kbBody.addEventListener('dragleave', (event) => {
+  if (!els.kbBody.contains(event.relatedTarget)) {
+    els.kbBody.classList.remove('dragging');
+  }
+});
+
+els.kbBody.addEventListener('drop', (event) => {
+  event.preventDefault();
+  els.kbBody.classList.remove('dragging');
+  const file =
+    event.dataTransfer &&
+    event.dataTransfer.files &&
+    event.dataTransfer.files[0];
+  if (file) uploadKbDocument(file);
+});
+
+document.addEventListener('drop', (event) => {
+  if (!els.kbBody.contains(event.target) && isFileDrag(event)) {
+    event.preventDefault();
+  }
+});
 
 els.diagnose.addEventListener('click', openDiagnose);
 els.diagnoseClose.addEventListener('click', () => closeDiagnose(true));
