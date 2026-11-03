@@ -33,6 +33,14 @@ const els = {
   historySummary: document.getElementById('history-summary'),
   historyExport: document.getElementById('history-export'),
   historyMore: document.getElementById('history-more'),
+  usageTrend: document.getElementById('usage-trend'),
+  usageTrendTotal: document.getElementById('usage-trend-total'),
+  usageChart: document.getElementById('usage-chart'),
+  usageBars: document.getElementById('usage-bars'),
+  usageAxis: document.getElementById('usage-axis'),
+  usageTooltip: document.getElementById('usage-tooltip'),
+  usageTable: document.getElementById('usage-table'),
+  usageTableBody: document.getElementById('usage-table-body'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
@@ -1340,6 +1348,107 @@ async function loadHistory(query = '', { append = false } = {}) {  if (!append) 
   }
 }
 
+function hideUsageTooltip() {
+  els.usageTooltip.hidden = true;
+}
+
+function showUsageTooltip(day, slot) {
+  const chartRect = els.usageChart.getBoundingClientRect();
+  const slotRect = slot.getBoundingClientRect();
+  const tokens = Number(day.usage && day.usage.total_tokens || 0);
+
+  els.usageTooltip.textContent =
+    `${day.date} · ${tokens.toLocaleString()} tokens · ` +
+    `${Number(day.llm_calls || 0)} 次调用`;
+  els.usageTooltip.hidden = false;
+
+  const half = els.usageTooltip.offsetWidth / 2;
+  let left = slotRect.left - chartRect.left + slotRect.width / 2;
+  left = Math.max(half + 4, Math.min(left, chartRect.width - half - 4));
+  els.usageTooltip.style.left = `${left}px`;
+  els.usageTooltip.style.top = `${slotRect.top - chartRect.top + 2}px`;
+}
+
+function renderUsageTrend(data) {
+  const days = Array.isArray(data.days) ? data.days : [];
+  const totals = data.totals || {};
+  const totalTokens = Number(totals.usage && totals.usage.total_tokens || 0);
+  const totalCalls = Number(totals.llm_calls || 0);
+
+  els.usageTrend.hidden = false;
+  els.usageTrendTotal.textContent = totalTokens
+    ? `${totalTokens.toLocaleString()} tokens · ${totalCalls} 次调用`
+    : '暂无用量';
+
+  els.usageBars.replaceChildren();
+  els.usageAxis.replaceChildren();
+  els.usageTableBody.replaceChildren();
+  hideUsageTooltip();
+
+  if (!days.length || !totalTokens) {
+    els.usageChart.hidden = true;
+    els.usageTable.hidden = true;
+    return;
+  }
+
+  els.usageChart.hidden = false;
+  els.usageTable.hidden = false;
+
+  const max = Math.max(
+    ...days.map((day) => Number(day.usage && day.usage.total_tokens || 0)),
+    1
+  );
+
+  for (const day of days) {
+    const tokens = Number(day.usage && day.usage.total_tokens || 0);
+    const calls = Number(day.llm_calls || 0);
+
+    const slot = document.createElement('button');
+    slot.type = 'button';
+    slot.className = 'usage-bar-slot';
+    slot.setAttribute(
+      'aria-label',
+      `${day.date}：${tokens.toLocaleString()} tokens，${calls} 次调用`
+    );
+    slot.addEventListener('pointerenter', () => showUsageTooltip(day, slot));
+    slot.addEventListener('pointerleave', hideUsageTooltip);
+    slot.addEventListener('focus', () => showUsageTooltip(day, slot));
+    slot.addEventListener('blur', hideUsageTooltip);
+
+    const bar = document.createElement('span');
+    bar.className = 'usage-bar';
+    bar.style.height = tokens > 0
+      ? `${Math.max(2, Math.round((tokens / max) * 100))}%`
+      : '0';
+    slot.appendChild(bar);
+
+    const label = document.createElement('span');
+    label.textContent = String(day.date || '').slice(5);
+
+    els.usageBars.appendChild(slot);
+    els.usageAxis.appendChild(label);
+
+    const row = document.createElement('tr');
+    for (const value of [day.date, tokens.toLocaleString(), String(calls)]) {
+      const cell = document.createElement('td');
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    els.usageTableBody.appendChild(row);
+  }
+}
+
+async function loadUsageTrend() {
+  try {
+    const res = await fetch('/api/usage/daily?days=7');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    renderUsageTrend(data);
+  } catch {
+    els.usageTrend.hidden = true;
+  }
+}
+
 async function exportHistoryBackup() {
   const btn = els.historyExport;
   if (btn.disabled) return;
@@ -1397,6 +1506,7 @@ function openHistory() {
   els.historyEmpty.hidden = false;
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
+  loadUsageTrend();
   els.historySearch.focus();
 }
 
@@ -1404,6 +1514,7 @@ function closeHistory(restoreFocus = false) {
   historyOpen = false;
   els.historyDrawer.hidden = true;
   els.historyBackdrop.hidden = true;
+  hideUsageTooltip();
   syncPageInert();
   els.historyToggle.setAttribute('aria-expanded', 'false');
   if (restoreFocus && lastFocused instanceof HTMLElement) {

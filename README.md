@@ -37,6 +37,7 @@
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、在线预览、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
 - **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，历史列表汇总总用量，并随 Markdown 导出保留 ✅
+- **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细与数据表 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库状态 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索、重命名、导出、整库备份、恢复和删除 ✅
@@ -206,6 +207,7 @@ npm install -D playwright
 | POST | `/api/sessions` | 新建会话 |
 | GET | `/api/sessions` | 历史会诊列表（支持 `q` 搜索） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite） |
+| GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天） |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |

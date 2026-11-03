@@ -23,6 +23,9 @@
   /* 导视蓝：医院标识系统的底色 */
   --clinic: #0b6e9e;
   --clinic-soft: #e3f0f6;
+  /* 图表单系列柱色（已通过对比度校验） */
+  --chart-bar: #0b6e9e;
+  --chart-bar-strong: #095a82;
 
   /* 监护仪心电绿 */
   --pulse: #0e9f6e;
@@ -62,6 +65,8 @@ html[data-theme="dark"] {
   --rule-soft: #213139;
 
   --clinic: #6cc4e8;
+  --chart-bar: #3987e5;
+  --chart-bar-strong: #5a9eea;
   --clinic-soft: #163645;
   --pulse: #3fc79a;
 
@@ -1269,6 +1274,119 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   background: var(--clinic-soft);
 }
 .history-export:disabled { opacity: 0.5; cursor: wait; }
+
+.usage-trend {
+  flex: none;
+  margin: 2px 16px 10px;
+  padding: 10px 12px 8px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: var(--radius);
+}
+.usage-trend[hidden] { display: none; }
+
+.usage-trend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.usage-trend-title { font-size: 11.5px; color: var(--ink-soft); }
+.usage-trend-total {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.usage-chart { position: relative; }
+
+.usage-bars {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+  align-items: end;
+  height: 64px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.usage-bar-slot {
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+.usage-bar-slot:focus-visible { outline: 2px solid var(--clinic); outline-offset: 1px; }
+
+.usage-bar {
+  display: block;
+  width: min(24px, 100%);
+  height: 0;
+  background: var(--chart-bar);
+  border-radius: 4px 4px 0 0;
+  transition: background 0.12s;
+}
+.usage-bar-slot:hover .usage-bar,
+.usage-bar-slot:focus-visible .usage-bar { background: var(--chart-bar-strong); }
+
+.usage-axis {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+  margin-top: 4px;
+}
+.usage-axis span {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-faint);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.usage-tooltip {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, -100%);
+  padding: 5px 8px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(22, 48, 58, 0.12);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.usage-tooltip[hidden] { display: none; }
+
+.usage-table { margin-top: 8px; font-size: 10.5px; color: var(--ink-faint); }
+.usage-table summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--ink-faint);
+}
+.usage-table table {
+  width: 100%;
+  margin-top: 4px;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.usage-table th,
+.usage-table td {
+  padding: 2px 4px;
+  text-align: right;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.usage-table th:first-child,
+.usage-table td:first-child { text-align: left; }
 
 .history-list {
   flex: 1;

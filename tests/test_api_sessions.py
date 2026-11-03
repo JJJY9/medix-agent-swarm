@@ -92,6 +92,31 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     assert content_data["summary"]["usage"]["total_tokens"] == 10
 
 
+def test_usage_daily_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "今天的问题", "今天的答复",
+        metadata={
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+            "llm_calls": 2,
+        },
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/usage/daily", params={"days": 3})
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["days"]) == 3
+    assert data["days"][-1]["usage"]["total_tokens"] == 12
+    assert data["totals"]["usage"]["total_tokens"] == 12
+    assert data["totals"]["llm_calls"] == 2
+
+
 def test_sessions_export_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(
