@@ -341,7 +341,9 @@ class LeadAgent:
         ]
 
         try:
-            if hasattr(self.llm_client, "chat_with_usage"):
+            if hasattr(self.llm_client, "chat_with_usage_retry"):
+                content, usage = await self.llm_client.chat_with_usage_retry(messages)
+            elif hasattr(self.llm_client, "chat_with_usage"):
                 content, usage = await self.llm_client.chat_with_usage(messages)
             else:
                 content, usage = await self.llm_client.chat(messages), None
@@ -570,8 +572,17 @@ class LeadAgent:
         try:
             messages = [{"role": "user", "content": synthesis_prompt}]
 
-            if on_token is not None and hasattr(self.llm_client, "chat_stream"):
+            if on_token is not None and hasattr(self.llm_client, "chat_stream_retry"):
                 stream_usage: Dict[str, int] = {}
+                text = await self.llm_client.chat_stream_retry(
+                    messages, on_token=on_token, usage_out=stream_usage
+                )
+                if usage_out is not None:
+                    usage_out.update(stream_usage)
+                return text
+
+            if on_token is not None and hasattr(self.llm_client, "chat_stream"):
+                stream_usage = {}
                 text = await self.llm_client.chat_stream(
                     messages, on_token=on_token, usage_out=stream_usage
                 )
@@ -579,7 +590,11 @@ class LeadAgent:
                     usage_out.update(stream_usage)
                 return text
 
-            if hasattr(self.llm_client, "chat_with_usage"):
+            if hasattr(self.llm_client, "chat_with_usage_retry"):
+                response, usage = await self.llm_client.chat_with_usage_retry(messages)
+                if usage_out is not None and usage:
+                    usage_out.update(usage)
+            elif hasattr(self.llm_client, "chat_with_usage"):
                 response, usage = await self.llm_client.chat_with_usage(messages)
                 if usage_out is not None and usage:
                     usage_out.update(usage)

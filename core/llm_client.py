@@ -230,6 +230,9 @@ class LLMResponse:
 class LLMClient:
     """统一的LLM客户端，支持多种模型"""
 
+    #: 指数退避的基数（秒）；测试里可设为 0 跳过等待
+    RETRY_BASE_DELAY = 2
+
     def __init__(self, model_type: str = "openai_compatible"):
         """
         初始化LLM客户端
@@ -321,6 +324,10 @@ class LLMClient:
             logger.error(f"LLM call failed: {e}")
             raise classify_llm_error(e) from e
 
+    async def _sleep_before_retry(self, attempt: int) -> None:
+        """指数退避等待，单次最多 8 秒。"""
+        await asyncio.sleep(min(self.RETRY_BASE_DELAY ** attempt, 8))
+
     async def chat_with_retry(
         self,
         messages: List[Dict[str, str]],
@@ -332,7 +339,7 @@ class LLMClient:
 
         Args:
             messages: 消息列表
-            max_retries: 最大重试次数
+            max_retries: 最大尝试次数
 
         Returns:
             模型返回的文本
@@ -346,7 +353,67 @@ class LLMClient:
                 logger.warning(
                     f"Retry {attempt + 1}/{max_retries} after {e.code}: {e.user_message}"
                 )
-                await asyncio.sleep(2 ** attempt)  # 指数退避
+                await self._sleep_before_retry(attempt)
+
+        raise LLMError("llm_error", f"模型调用在 {max_retries} 次重试后仍失败。")
+
+    async def chat_with_usage_retry(
+        self,
+        messages: List[Dict[str, str]],
+        max_retries: int = 3,
+        **kwargs
+    ) -> Tuple[str, Optional[Dict[str, int]]]:
+        """带重试的 chat_with_usage，只重试可恢复错误。"""
+        for attempt in range(max_retries):
+            try:
+                return await self.chat_with_usage(messages, **kwargs)
+            except LLMError as e:
+                if not e.retryable or attempt == max_retries - 1:
+                    raise
+                logger.warning(
+                    f"Retry {attempt + 1}/{max_retries} after {e.code}: {e.user_message}"
+                )
+                await self._sleep_before_retry(attempt)
+
+        raise LLMError("llm_error", f"模型调用在 {max_retries} 次重试后仍失败。")
+
+    async def chat_stream_retry(
+        self,
+        messages: List[Dict[str, str]],
+        on_token: Optional[Callable[[str], None]] = None,
+        usage_out: Optional[Dict[str, int]] = None,
+        max_retries: int = 3,
+        **kwargs
+    ) -> str:
+        """带重试的流式聊天。
+
+        已经向前端推送过增量文本时不再重试，否则同一段文字会重复出现；
+        此时直接抛出错误，由上层决定如何展示。
+        """
+        for attempt in range(max_retries):
+            emitted = False
+
+            def guarded_on_token(delta: str) -> None:
+                nonlocal emitted
+                emitted = True
+                if on_token is not None:
+                    on_token(delta)
+
+            try:
+                return await self.chat_stream(
+                    messages,
+                    on_token=guarded_on_token,
+                    usage_out=usage_out,
+                    **kwargs
+                )
+            except LLMError as e:
+                if emitted or not e.retryable or attempt == max_retries - 1:
+                    raise
+                logger.warning(
+                    f"Retry stream {attempt + 1}/{max_retries} after "
+                    f"{e.code}: {e.user_message}"
+                )
+                await self._sleep_before_retry(attempt)
 
         raise LLMError("llm_error", f"模型调用在 {max_retries} 次重试后仍失败。")
 
