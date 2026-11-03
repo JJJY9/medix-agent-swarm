@@ -818,6 +818,23 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .failure strong { display: block; margin-bottom: 3px; }
 
+.failure-action {
+  display: inline-block;
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--clinic);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.failure-action:hover {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
 /* 等待中 */
 .working {
   margin-top: 16px;

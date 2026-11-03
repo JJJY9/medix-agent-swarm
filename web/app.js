@@ -634,8 +634,13 @@ function buildSessionMarkdown(item, messages) {
       if (metadata.agent_contributions && metadata.agent_contributions.length) {
         lines.push('#### 各科室意见', '');
         metadata.agent_contributions.forEach((contribution) => {
+          const name = contribution.agent_name
+            || AGENT_NAMES[contribution.agent_id]
+            || contribution.agent_id;
+          const stats = contributionStats(contribution);
+          const suffix = stats.length ? `（${stats.join(' · ')}）` : '';
           lines.push(
-            `##### ${contribution.agent_name || AGENT_NAMES[contribution.agent_id] || contribution.agent_id}`,
+            `##### ${name}${suffix}`,
             '',
             (contribution.content || '').trim(),
             ''
@@ -675,6 +680,19 @@ function buildSessionMarkdown(item, messages) {
   return lines.join('\n');
 }
 
+function contributionStats(contribution) {
+  const stats = [];
+  if (contribution.duration != null) stats.push(`耗时 ${contribution.duration}s`);
+  if (contribution.tool_calls != null) stats.push(`工具 ${contribution.tool_calls} 次`);
+  if (contribution.iterations != null) stats.push(`${contribution.iterations} 轮`);
+  return stats;
+}
+
+function contributeStats(contribution) {
+  const stats = contributionStats(contribution);
+  return stats.length ? stats.join(' · ') : (contribution.task_type || '');
+}
+
 function renderContributions(contributions) {
   const details = document.createElement('details');
   details.className = 'contributions';
@@ -695,11 +713,11 @@ function renderContributions(contributions) {
       || AGENT_NAMES[contribution.agent_id]
       || contribution.agent_id;
 
-    const type = document.createElement('span');
-    type.className = 'contribution-type';
-    type.textContent = contribution.task_type || '';
+    const meta = document.createElement('span');
+    meta.className = 'contribution-type';
+    meta.textContent = contributeStats(contribution);
 
-    head.append(name, type);
+    head.append(name, meta);
 
     const body = document.createElement('div');
     body.className = 'contribution-body';
@@ -925,6 +943,14 @@ function renderError(message) {
   strong.textContent = '会诊未能完成';
   wrap.appendChild(strong);
   wrap.appendChild(document.createTextNode(message));
+
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = 'failure-action';
+  action.textContent = '打开系统自检';
+  action.addEventListener('click', openDiagnose);
+  wrap.appendChild(action);
+
   els.thread.appendChild(wrap);
   scrollThreadToBottom(true);
 }
