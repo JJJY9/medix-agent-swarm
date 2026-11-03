@@ -658,20 +658,34 @@ class SwarmCoordinator:
 
     @staticmethod
     def _collect_insights(shared_context: SharedContext):
-        """汇总各科室原始意见与知识库来源，供前端展示。"""
+        """汇总各科室原始意见、来源与执行统计，供前端展示。"""
         contributions = []
         sources = []
         for contribution in shared_context.get_contributions():
             payload = contribution.result if isinstance(contribution.result, dict) else {}
             content = payload.get("answer") or str(contribution.result)
             subtask = shared_context.get_subtask(contribution.subtask_id)
-            contributions.append({
+
+            duration = None
+            if subtask and subtask.started_at and subtask.completed_at:
+                duration = round(
+                    (subtask.completed_at - subtask.started_at).total_seconds(), 1
+                )
+
+            entry = {
                 "agent_id": contribution.agent_id,
                 "subtask_id": contribution.subtask_id,
                 "task_type": subtask.type if subtask else "",
                 "content": content,
                 "confidence": contribution.confidence,
-            })
+                "duration": duration,
+            }
+            if payload.get("tool_calls_used") is not None:
+                entry["tool_calls"] = payload["tool_calls_used"]
+            if payload.get("iterations") is not None:
+                entry["iterations"] = payload["iterations"]
+            contributions.append(entry)
+
             sources.extend(payload.get("sources") or [])
         return contributions, merge_sources(sources)
 

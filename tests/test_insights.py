@@ -64,6 +64,8 @@ def test_collect_insights_includes_contributions_and_sources():
         "diagnostic_agent",
         {
             "answer": "建议急诊评估。",
+            "tool_calls_used": 2,
+            "iterations": 3,
             "sources": [
                 {"source": "临床指南数据库", "filename": "20.txt", "snippet": "x", "score": 0.8}
             ],
@@ -75,6 +77,9 @@ def test_collect_insights_includes_contributions_and_sources():
     assert contributions[0]["agent_id"] == "diagnostic_agent"
     assert contributions[0]["content"] == "建议急诊评估。"
     assert contributions[0]["task_type"] == "diagnostic_agent_task"
+    assert contributions[0]["tool_calls"] == 2
+    assert contributions[0]["iterations"] == 3
+    assert contributions[0]["duration"] is not None
     assert sources[0]["filename"] == "20.txt"
 
 
