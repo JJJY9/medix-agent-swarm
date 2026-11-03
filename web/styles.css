@@ -1276,6 +1276,13 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 .history-item:last-child .history-open { border-bottom: 0; }
 .history-open:hover strong { color: var(--clinic); }
 
+.history-more {
+  flex: none;
+  margin: 0 16px 14px;
+  text-align: center;
+  justify-content: center;
+}
+
 .history-open strong {
   font-size: 13.5px;
   font-weight: 600;
