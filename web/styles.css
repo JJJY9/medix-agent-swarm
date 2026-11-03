@@ -1218,6 +1218,14 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .drawer-search:focus { outline: none; border-color: var(--clinic); }
 
+.history-summary {
+  flex: none;
+  margin: 0 16px 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
 .history-list {
   flex: 1;
   min-height: 0;

@@ -19,6 +19,7 @@ const els = {
   historyClose: document.getElementById('history-close'),
   historySearch: document.getElementById('history-search'),
   historyList: document.getElementById('history-list'),
+  historySummary: document.getElementById('history-summary'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
@@ -177,6 +178,7 @@ function resetRail() {
   els.readout.tasks.textContent = '—';
   els.readout.time.textContent = '—';
   els.readout.usage.textContent = '—';
+  els.readout.usage.title = '';
   els.readout.session.textContent = shortSession(sessionId);
 }
 
@@ -697,6 +699,22 @@ function formatUsage(usage, llmCalls = 0) {
   return parts.length ? parts.join(' · ') : '—';
 }
 
+function usageDetail(usage, llmCalls = 0) {
+  const total = Number(usage && usage.total_tokens || 0);
+  const calls = Number(llmCalls || 0);
+  if (!total && !calls) return '';
+  const prompt = Number(usage && usage.prompt_tokens || 0);
+  const completion = Number(usage && usage.completion_tokens || 0);
+  const parts = [];
+  if (total > 0) {
+    parts.push(
+      `输入 ${prompt.toLocaleString()} · 输出 ${completion.toLocaleString()} · 合计 ${total.toLocaleString()} tokens`
+    );
+  }
+  if (calls > 0) parts.push(`${calls} 次模型调用`);
+  return parts.join(' · ');
+}
+
 function contributionStats(contribution) {
   const stats = [];
   if (contribution.duration != null) stats.push(`耗时 ${contribution.duration}s`);
@@ -1066,8 +1084,9 @@ function formatTime(value) {
   return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function renderHistoryItems(sessions) {
+function renderHistoryItems(sessions, summary) {
   els.historyList.replaceChildren();
+  renderHistorySummary(summary);
   els.historyEmpty.hidden = sessions.length > 0;
 
   if (!sessions.length) {
@@ -1091,7 +1110,15 @@ function renderHistoryItems(sessions) {
 
     const meta = document.createElement('span');
     meta.className = 'history-meta';
-    meta.textContent = `${formatTime(item.updated_at)} · ${item.message_count || 0} 条`;
+    const metaParts = [
+      formatTime(item.updated_at),
+      `${item.message_count || 0} 条`,
+    ];
+    const sessionTokens = Number(item.usage && item.usage.total_tokens || 0);
+    if (sessionTokens > 0) {
+      metaParts.push(`${sessionTokens.toLocaleString()} tokens`);
+    }
+    meta.textContent = metaParts.join(' · ');
 
     const preview = document.createElement('span');
     preview.className = 'history-preview';
@@ -1130,14 +1157,33 @@ function renderHistoryItems(sessions) {
   }
 }
 
+function renderHistorySummary(summary) {
+  if (!summary || !summary.sessions) {
+    els.historySummary.hidden = true;
+    els.historySummary.textContent = '';
+    return;
+  }
+
+  const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
+  const llmCalls = Number(summary.llm_calls || 0);
+  const parts = [`共 ${summary.sessions} 次会诊`];
+  if (summary.turns) parts.push(`${summary.turns} 轮`);
+  if (totalTokens > 0) parts.push(`${totalTokens.toLocaleString()} tokens`);
+  if (llmCalls > 0) parts.push(`${llmCalls} 次调用`);
+
+  els.historySummary.textContent = parts.join(' · ');
+  els.historySummary.hidden = false;
+}
+
 async function loadHistory(query = '') {
   try {
     const res = await fetch(`/api/sessions?limit=50&q=${encodeURIComponent(query)}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
-    renderHistoryItems(data.sessions || []);
+    renderHistoryItems(data.sessions || [], data.summary);
   } catch (err) {
     els.historyList.replaceChildren();
+    els.historySummary.hidden = true;
     els.historyEmpty.hidden = false;
     els.historyEmpty.textContent = `会诊记录加载失败：${err.message || err}`;
   }
@@ -1155,6 +1201,8 @@ function openHistory() {
   els.historyToggle.setAttribute('aria-expanded', 'true');
   els.historySearch.value = '';
   els.historyList.replaceChildren();
+  els.historySummary.hidden = true;
+  els.historySummary.textContent = '';
   els.historyEmpty.hidden = false;
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
@@ -1236,6 +1284,7 @@ function renderStoredMessages(messages) {
 
   if (lastUsage) {
     els.readout.usage.textContent = formatUsage(lastUsage, lastLlmCalls);
+    els.readout.usage.title = usageDetail(lastUsage, lastLlmCalls);
   }
 
   scrollThreadToBottom(true);
@@ -1838,6 +1887,10 @@ async function send(question) {
       : String(finalPayload.subtasks_completed ?? 0);
     els.readout.time.textContent = `${(finalPayload.total_time || elapsed).toFixed(1)}s`;
     els.readout.usage.textContent = formatUsage(
+      finalPayload.usage,
+      finalPayload.llm_calls
+    );
+    els.readout.usage.title = usageDetail(
       finalPayload.usage,
       finalPayload.llm_calls
     );
