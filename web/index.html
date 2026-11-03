@@ -351,6 +351,19 @@
       <button type="button" class="btn-quiet" id="kb-rebuild">重建索引</button>
     </div>
 
+    <div class="kb-search">
+      <label class="sr-only" for="kb-search-input">测试知识库检索</label>
+      <input
+        id="kb-search-input"
+        class="kb-search-input"
+        type="search"
+        placeholder="测试检索：如 高血压 饮食"
+        autocomplete="off"
+      />
+      <button type="button" class="btn-quiet" id="kb-search-button">检索</button>
+    </div>
+    <div class="kb-search-results" id="kb-search-results" hidden></div>
+
     <p class="kb-status" id="kb-status" hidden></p>
     <ul class="kb-list" id="kb-list"></ul>
 

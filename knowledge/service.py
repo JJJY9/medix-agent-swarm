@@ -19,6 +19,7 @@ from .documents import (
     load_document,
     load_documents_from_directory,
 )
+from .sources import build_sources
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DOCS_DIR = KNOWLEDGE_DIR / "data" / "documents"
@@ -148,6 +149,25 @@ class KnowledgeService:
             "content": content[:max_chars],
             "truncated": len(content) > max_chars,
             "total_length": len(content),
+        }
+
+    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+        """执行一次知识库检索，返回来源卡片，用于管理页的检索测试。"""
+        query = (query or "").strip()
+        if not query:
+            raise ValueError("请输入检索关键词。")
+
+        top_k = max(1, min(int(top_k or 5), 20))
+        with self._lock:
+            try:
+                results = self.kb.search(query, top_k=top_k)
+            except Exception as e:
+                raise ValueError(f"检索失败：{e}") from e
+
+        return {
+            "query": query,
+            "top_k": top_k,
+            "results": build_sources(results, max_items=top_k),
         }
 
     def rebuild(self, replace_existing: bool = True) -> Dict[str, Any]:

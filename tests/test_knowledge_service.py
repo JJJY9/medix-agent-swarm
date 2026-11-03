@@ -11,6 +11,8 @@ class FakeKB:
     def __init__(self):
         self.imported = []
         self.replace_flags = []
+        self.search_results = []
+        self.search_calls = []
 
     def add_documents(self, documents, replace_existing=False):
         self.imported.append(list(documents))
@@ -19,6 +21,10 @@ class FakeKB:
 
     def count_documents(self):
         return len(self.imported[-1]) * 2 if self.imported else 0
+
+    def search(self, query, top_k=5, filter_type=None):
+        self.search_calls.append((query, top_k, filter_type))
+        return self.search_results[:top_k]
 
 
 @pytest.fixture
@@ -65,6 +71,32 @@ def test_save_list_and_delete_upload(service):
 
     assert svc.delete_document("我的指南.md") is True
     assert svc.list_documents()["document_count"] == 1
+
+
+def test_search_builds_source_cards(service):
+    svc, kb = service
+    kb.search_results = [{
+        "content": "高血压患者应低盐饮食。" * 20,
+        "metadata": {
+            "disease": "高血压",
+            "source": "生活方式建议数据库",
+            "filename": "01_lifestyle_hypertension.txt",
+            "type": "lifestyle",
+        },
+        "score": 0.8341,
+    }]
+
+    result = svc.search("高血压 饮食", top_k=3)
+
+    assert result["query"] == "高血压 饮食"
+    assert result["top_k"] == 3
+    assert result["results"][0]["title"] == "高血压"
+    assert result["results"][0]["score"] == 0.8341
+    assert len(result["results"][0]["snippet"]) <= 160
+    assert kb.search_calls == [("高血压 饮食", 3, None)]
+
+    with pytest.raises(ValueError):
+        svc.search("   ")
 
 
 def test_preview_builtin_and_upload(service):
