@@ -1,0 +1,20 @@
+name: PR 标题规范
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  title:
+    name: 校验 Conventional Commits 前缀
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检查 PR 标题
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR 标题：$TITLE"
+          echo "$TITLE" | grep -Eq '^(feat|fix|perf|refactor|docs|style|test|build|ci|chore|revert)(\([^)]+\))?!?: .+' || {
+            echo "::error::PR 标题需以 feat / fix / docs / test / ci 等语义前缀开头，例如：fix(web): 修复历史会诊列表为空"
+            exit 1
+          }
