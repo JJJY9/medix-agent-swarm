@@ -3,13 +3,13 @@ import json
 import sys
 from pathlib import Path
 
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 # Windows 控制台默认 GBK，答复里带 emoji 会抛 UnicodeEncodeError
-if sys.platform == "win32":
-    for _s in (sys.stdout, sys.stderr):
-        try:
-            _s.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
+from core.console import ensure_utf8_stdio
+
+ensure_utf8_stdio()
 
 import httpx
 
