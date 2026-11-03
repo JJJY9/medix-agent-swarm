@@ -35,6 +35,23 @@ class FakeService:
     def delete_document(self, filename):
         return True
 
+    def preview_document(self, filename):
+        if filename == "missing.md":
+            return None
+        if filename == "bad.md":
+            raise ValueError("文档内容为空或无法解析。")
+        return {
+            "filename": filename,
+            "builtin": False,
+            "size": 10,
+            "suffix": ".md",
+            "type": "general",
+            "source": "自定义文档",
+            "content": "预览内容",
+            "truncated": False,
+            "total_length": 4,
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_knowledge(monkeypatch):
@@ -52,6 +69,29 @@ def test_knowledge_overview():
 
     assert response.status_code == 200
     assert response.json()["document_count"] == 1
+
+
+def test_knowledge_preview():
+    client = TestClient(api_server.app)
+
+    response = client.get("/api/knowledge/documents/a.md/preview")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["filename"] == "a.md"
+    assert data["content"] == "预览内容"
+    assert data["builtin"] is False
+
+
+def test_knowledge_preview_missing_and_invalid():
+    client = TestClient(api_server.app)
+
+    assert client.get(
+        "/api/knowledge/documents/missing.md/preview"
+    ).status_code == 404
+    assert client.get(
+        "/api/knowledge/documents/bad.md/preview"
+    ).status_code == 400
 
 
 def test_knowledge_rebuild():

@@ -45,6 +45,11 @@ const els = {
   kbStats: document.getElementById('kb-stats'),
   kbStatus: document.getElementById('kb-status'),
   kbList: document.getElementById('kb-list'),
+  kbPreview: document.getElementById('kb-preview'),
+  kbPreviewTitle: document.getElementById('kb-preview-title'),
+  kbPreviewMeta: document.getElementById('kb-preview-meta'),
+  kbPreviewBody: document.getElementById('kb-preview-body'),
+  kbPreviewClose: document.getElementById('kb-preview-close'),
   diagnose: document.getElementById('diagnose'),
   diagnoseDrawer: document.getElementById('diagnose-drawer'),
   diagnoseBackdrop: document.getElementById('diagnose-backdrop'),
@@ -1587,6 +1592,12 @@ function renderKbDocuments(documents) {
 
     body.append(name, meta);
 
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'kb-item-preview';
+    preview.textContent = '预览';
+    preview.addEventListener('click', () => previewKbDocument(doc.filename));
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'kb-item-delete';
@@ -1598,8 +1609,45 @@ function renderKbDocuments(documents) {
       del.addEventListener('click', () => deleteKbDocument(doc.filename));
     }
 
-    item.append(body, del);
+    item.append(body, preview, del);
     els.kbList.appendChild(item);
+  }
+}
+
+function closeKbPreview() {
+  els.kbPreview.hidden = true;
+  els.kbPreviewTitle.textContent = '文档预览';
+  els.kbPreviewMeta.textContent = '';
+  els.kbPreviewBody.textContent = '';
+}
+
+async function previewKbDocument(filename) {
+  els.kbPreview.hidden = false;
+  els.kbPreviewTitle.textContent = filename;
+  els.kbPreviewMeta.textContent = '正在读取…';
+  els.kbPreviewBody.textContent = '';
+  els.kbPreview.scrollIntoView({ block: 'nearest' });
+  els.kbPreviewClose.focus();
+
+  try {
+    const res = await fetch(
+      `/api/knowledge/documents/${encodeURIComponent(filename)}/preview`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    const meta = [
+      data.builtin ? '内置' : '上传',
+      data.type,
+      data.source,
+      `${Number(data.total_length || 0).toLocaleString()} 字`,
+      data.truncated ? `仅显示前 ${Number(data.content.length).toLocaleString()} 字` : '',
+    ].filter(Boolean);
+    els.kbPreviewTitle.textContent = data.filename || filename;
+    els.kbPreviewMeta.textContent = meta.join(' · ');
+    els.kbPreviewBody.textContent = data.content || '（文档内容为空）';
+  } catch (err) {
+    els.kbPreviewMeta.textContent = `读取失败：${err.message || err}`;
   }
 }
 
@@ -1629,6 +1677,7 @@ function openKb() {
   syncPageInert();
   els.kbManage.setAttribute('aria-expanded', 'true');
   setKbStatus('');
+  closeKbPreview();
   loadKnowledge();
   els.kbClose.focus();
 }
@@ -2306,6 +2355,7 @@ els.kbClose.addEventListener('click', () => closeKb(true));
 els.kbBackdrop.addEventListener('click', () => closeKb(true));
 els.kbUpload.addEventListener('click', uploadKbDocument);
 els.kbRebuild.addEventListener('click', rebuildKb);
+els.kbPreviewClose.addEventListener('click', closeKbPreview);
 
 els.diagnose.addEventListener('click', openDiagnose);
 els.diagnoseClose.addEventListener('click', () => closeDiagnose(true));
