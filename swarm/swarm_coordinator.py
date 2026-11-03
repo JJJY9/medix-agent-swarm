@@ -19,7 +19,13 @@ from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
 from agents import ConsultationAgent, DiagnosticAgent, ResearchAgent
-from memory import SessionSummaryManager, SessionSummary, ShortTermMemory, LongTermMemory
+from memory import (
+    SessionSummaryManager,
+    SessionSummary,
+    ShortTermMemory,
+    LongTermMemory,
+    get_session_store,
+)
 
 try:
     from constraints import ConstraintValidator
@@ -81,6 +87,7 @@ class SwarmCoordinator:
         self.session_manager = SessionSummaryManager()
         self.short_term_memory = ShortTermMemory(storage_type="memory")  # 或 "redis"
         self.long_term_memory = LongTermMemory()
+        self.session_store = get_session_store()
 
         # Harness Engineering: Swarm 约束（高危症状必须包含诊断 Agent 等）
         if CONSTRAINTS_AVAILABLE:
@@ -109,6 +116,41 @@ class SwarmCoordinator:
             "research_agent": self.research_agent
         }
         return mapping.get(agent_id)
+
+    def _restore_short_term_context(self, session_id: str) -> None:
+        """服务重启后从 SQLite 恢复最近问答，保证多轮上下文不中断。"""
+        if self.short_term_memory.get_session(session_id) is not None:
+            return
+
+        try:
+            stored = self.session_store.get_messages(session_id, limit=10)
+        except Exception as e:
+            logger.warning(f"读取历史会话失败（session={session_id}）: {e}")
+            return
+
+        for message in stored:
+            role = message.get("role")
+            if role in ("user", "assistant"):
+                self.short_term_memory.add_message(
+                    session_id=session_id,
+                    role=role,
+                    content=message.get("content", ""),
+                )
+
+        if stored:
+            logger.info(
+                f"Restored {len(stored)} messages from session store "
+                f"(session={session_id})"
+            )
+
+    def _save_exchange(self, session_id: str, question: str, answer: str) -> None:
+        """把一轮问答写入 SQLite，供历史列表和重启恢复使用。"""
+        if not (answer or "").strip():
+            return
+        try:
+            self.session_store.save_exchange(session_id, question, answer)
+        except Exception as e:
+            logger.error(f"保存会话记录失败（session={session_id}）: {e}")
 
     def _enforce_required_agents(self, question: str, assessment: Dict[str, Any]) -> None:
         """按 swarm_constraints.yaml 的规则补齐必须参与的 Agent。
@@ -187,6 +229,9 @@ class SwarmCoordinator:
             session_id = f"{start_time.strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
 
         logger.info(f"Processing question (session={session_id}): {question[:50]}...")
+
+        # 服务重启后从 SQLite 恢复本会话的最近问答
+        self._restore_short_term_context(session_id)
 
         # ===== 统一的记忆检索（所有模式都使用）=====
         # 1. 检索短期记忆（当前会话历史）
@@ -325,6 +370,9 @@ class SwarmCoordinator:
             logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
         except Exception as e:
             logger.error(f"Failed to save to long-term memory: {e}")
+
+        # 持久化到 SQLite，供历史列表与重启恢复使用
+        self._save_exchange(session_id, question, final_answer)
 
         return result
 
@@ -495,6 +543,9 @@ class SwarmCoordinator:
             result['disclaimer'] = f"以上分析基于 {len(completed_agents)} 个 Agent 的部分协作结果（部分分析模块超时未完成），仅供参考，不能替代医生诊断。"
         else:
             result['disclaimer'] = "以上分析基于多个专业 Agent 的协作，仅供参考，不能替代医生诊断。"
+
+        # 持久化到 SQLite，供历史列表与重启恢复使用
+        self._save_exchange(session_id, question, final_answer)
 
         return result
 

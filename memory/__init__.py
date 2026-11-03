@@ -21,6 +21,13 @@ from .entropy_manager import (
     MemoryEntropyManager
 )
 
+# 会话持久化（SQLite）
+from .session_store import (
+    SessionStore,
+    get_session_store,
+    reset_session_store,
+)
+
 # 本地 Markdown 持久化
 from .agent_identity import (
     AgentIdentity,
@@ -44,6 +51,10 @@ __all__ = [
     'LongTermMemory',
     # Harness Engineering: 熵管理
     'MemoryEntropyManager',
+    # 会话持久化
+    'SessionStore',
+    'get_session_store',
+    'reset_session_store',
     # 本地持久化类
     'AgentIdentity',
     'AgentIdentityManager',
