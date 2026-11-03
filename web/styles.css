@@ -442,6 +442,19 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   overflow-wrap: anywhere;
 }
 
+.triage-alert {
+  margin-top: 10px;
+  padding: 11px 14px;
+  border-left: 4px solid var(--triage-1);
+  background: #fdf0ef;
+  color: #7a2f22;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.triage-alert strong { display: block; margin-bottom: 3px; }
+.triage-alert p { margin: 0; }
+
 /* 会诊意见书 */
 .note {
   margin-top: 16px;
@@ -1217,6 +1230,7 @@ html[data-theme="dark"] .banner {
 }
 
 html[data-theme="dark"] .empty-note { background: #2a1d1c; }
+html[data-theme="dark"] .triage-alert { background: #331a19; color: #f0b3a8; }
 
 html[data-theme="dark"] .risk[data-level="low"] { background: #123024; }
 html[data-theme="dark"] .risk[data-level="medium"] { background: #322a12; }
