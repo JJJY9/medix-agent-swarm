@@ -1461,7 +1461,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     preview.className = 'history-preview';
     setHighlightedText(
       preview,
-      item.preview || '（暂无答复摘要）',
+      item.match_snippet || item.preview || '（暂无答复摘要）',
       historyQuery
     );
 
