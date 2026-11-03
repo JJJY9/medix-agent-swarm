@@ -208,6 +208,68 @@ class SessionStore:
             messages.append(item)
         return messages
 
+    def usage_by_session(
+        self, session_ids: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """按会话汇总 assistant 消息里记录的历史用量。
+
+        Returns:
+            {session_id: {"usage": {...}, "llm_calls": int, "turns": int}}
+            只有存在 assistant 消息的会话才会出现在结果中。
+        """
+        ids = [str(session_id) for session_id in session_ids if session_id]
+        if not ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT session_id, metadata
+                  FROM messages
+                 WHERE role = 'assistant' AND session_id IN ({placeholders})
+                """,
+                ids,
+            ).fetchall()
+
+        stats: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            entry = stats.setdefault(
+                row["session_id"],
+                {
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "llm_calls": 0,
+                    "turns": 0,
+                },
+            )
+            entry["turns"] += 1
+
+            usage = metadata.get("usage")
+            if isinstance(usage, dict):
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    try:
+                        entry["usage"][key] += int(usage.get(key) or 0)
+                    except (TypeError, ValueError):
+                        continue
+
+            try:
+                entry["llm_calls"] += int(metadata.get("llm_calls") or 0)
+            except (TypeError, ValueError):
+                continue
+
+        return stats
+
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
         if not title:

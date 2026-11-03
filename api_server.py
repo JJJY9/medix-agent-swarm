@@ -186,13 +186,38 @@ async def create_session():
 
 @app.get("/api/sessions")
 async def list_sessions(limit: int = 50, q: Optional[str] = None):
-    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索）。"""
+    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索）。
+
+    同时按会话汇总 assistant 消息中保存的 Token 用量与模型调用次数，
+    供历史抽屉展示总消耗。
+    """
+    from core.usage import merge_usage
     from memory import get_session_store
 
-    sessions = await asyncio.to_thread(
-        get_session_store().list_sessions, limit, q or ""
+    store = get_session_store()
+    sessions = await asyncio.to_thread(store.list_sessions, limit, q or "")
+    stats = await asyncio.to_thread(
+        store.usage_by_session, [item["id"] for item in sessions]
     )
-    return {"sessions": sessions}
+
+    summary: Dict[str, Any] = {
+        "sessions": len(sessions),
+        "turns": 0,
+        "llm_calls": 0,
+        "usage": {},
+    }
+    for item in sessions:
+        stat = stats.get(item["id"])
+        if not stat:
+            continue
+        item["usage"] = stat["usage"]
+        item["llm_calls"] = stat["llm_calls"]
+        item["turns"] = stat["turns"]
+        summary["turns"] += stat["turns"]
+        summary["llm_calls"] += stat["llm_calls"]
+        merge_usage(summary["usage"], stat["usage"])
+
+    return {"sessions": sessions, "summary": summary}
 
 
 @app.get("/api/sessions/{session_id}/messages")
