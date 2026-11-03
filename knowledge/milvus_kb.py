@@ -99,18 +99,22 @@ class MedicalKnowledgeBase:
         self.milvus_client = _create_vector_store(db_path)
 
         # 创建 collection（如果不存在）
-        if not self.milvus_client.has_collection(collection_name):
-            logger.info(f"Creating collection: {collection_name}")
+        self._ensure_collection()
+
+        self._initialized = True
+
+    def _ensure_collection(self):
+        """确保 collection 存在（重建索引后会再次调用）。"""
+        if not self.milvus_client.has_collection(self.collection_name):
+            logger.info(f"Creating collection: {self.collection_name}")
             self.milvus_client.create_collection(
-                collection_name=collection_name,
+                collection_name=self.collection_name,
                 dimension=self.embedding_dim,
                 metric_type="COSINE",  # 余弦相似度
                 auto_id=True  # 自动生成整数ID
             )
         else:
-            logger.info(f"Collection already exists: {collection_name}")
-
-        self._initialized = True
+            logger.info(f"Collection already exists: {self.collection_name}")
 
     def _chunk_text(self, text: str, chunk_size: int = 1024, overlap: int = 100) -> List[str]:
         """
@@ -137,13 +141,19 @@ class MedicalKnowledgeBase:
 
         return chunks
 
-    def add_documents(self, documents: List[Dict[str, Any]], chunk_size: int = 1024) -> int:
+    def add_documents(
+        self,
+        documents: List[Dict[str, Any]],
+        chunk_size: int = 1024,
+        replace_existing: bool = False
+    ) -> int:
         """
         添加文档到知识库（支持分块）
 
         Args:
             documents: 文档列表，每个文档包含 id, content, metadata
             chunk_size: 分块大小（字符数），默认 1024
+            replace_existing: 是否先删除旧 collection 再导入（幂等重建）
 
         Returns:
             成功添加的文档块数量
@@ -151,6 +161,10 @@ class MedicalKnowledgeBase:
         if not documents:
             logger.warning("No documents to add")
             return 0
+
+        if replace_existing:
+            self.delete_collection()
+            self._ensure_collection()
 
         logger.info(f"Adding {len(documents)} documents to knowledge base (chunk_size={chunk_size})...")
 
