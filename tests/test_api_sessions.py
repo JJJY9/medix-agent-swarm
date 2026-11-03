@@ -92,6 +92,46 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     assert content_data["summary"]["usage"]["total_tokens"] == 10
 
 
+def test_favorite_api_and_filter(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "收藏问题", "收藏答复",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "普通问题", "普通答复",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        patched = client.patch(
+            "/api/sessions/s1/favorite", json={"favorite": True}
+        )
+        listed = client.get("/api/sessions", params={"favorite": "true"})
+        daily = client.get(
+            "/api/usage/daily", params={"days": 1, "favorite": "true"}
+        )
+        missing = client.patch(
+            "/api/sessions/missing/favorite", json={"favorite": True}
+        )
+    finally:
+        store.close()
+
+    assert patched.status_code == 200
+    assert patched.json()["favorite"] is True
+    assert missing.status_code == 404
+
+    data = listed.json()
+    assert [item["id"] for item in data["sessions"]] == ["s1"]
+    assert data["summary"]["sessions"] == 1
+    assert data["summary"]["usage"]["total_tokens"] == 10
+
+    usage = daily.json()
+    assert usage["totals"]["usage"]["total_tokens"] == 10
+
+
 def test_usage_daily_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(

@@ -75,7 +75,8 @@ class SessionStore:
                     id         TEXT PRIMARY KEY,
                     title      TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    favorite   INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +100,15 @@ class SessionStore:
             if "metadata" not in columns:
                 self._conn.execute(
                     "ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+                )
+            # 旧版本 sessions 表没有 favorite 列
+            session_columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(sessions)")
+            }
+            if "favorite" not in session_columns:
+                self._conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
                 )
 
     @staticmethod
@@ -181,30 +191,36 @@ class SessionStore:
         self,
         limit: int = 50,
         query: str = "",
-        offset: int = 0
+        offset: int = 0,
+        favorites_only: bool = False
     ) -> List[Dict[str, Any]]:
         """按最近更新时间倒序返回会话，支持标题/编号模糊搜索与分页。"""
         limit = max(1, min(int(limit or 50), 200))
         offset = max(0, int(offset or 0))
         sql = """
-            SELECT s.id, s.title, s.created_at, s.updated_at,
+            SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
                    (SELECT content FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'assistant'
                      ORDER BY m.id DESC LIMIT 1) AS last_answer
               FROM sessions s
         """
+        conditions: List[str] = []
         params: List[Any] = []
         if query:
-            sql += """
-             WHERE s.title LIKE ? OR s.id LIKE ?
-                OR EXISTS (
-                    SELECT 1 FROM messages mm
-                     WHERE mm.session_id = s.id AND mm.content LIKE ?
-                )
-            """
+            conditions.append("""
+                (s.title LIKE ? OR s.id LIKE ?
+                 OR EXISTS (
+                     SELECT 1 FROM messages mm
+                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                 ))
+            """)
             like = f"%{query.strip()}%"
             params.extend([like, like, like])
+        if favorites_only:
+            conditions.append("s.favorite = 1")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
@@ -214,25 +230,31 @@ class SessionStore:
         sessions = []
         for row in rows:
             item = dict(row)
+            item["favorite"] = bool(item.get("favorite"))
             preview = (item.pop("last_answer", "") or "").replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
             sessions.append(item)
         return sessions
 
-    def count_sessions(self, query: str = "") -> int:
+    def count_sessions(self, query: str = "", favorites_only: bool = False) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
-        sql = "SELECT COUNT(*) AS n FROM sessions"
+        sql = "SELECT COUNT(*) AS n FROM sessions s"
+        conditions: List[str] = []
         params: List[Any] = []
         if query:
-            sql += """
-             WHERE title LIKE ? OR id LIKE ?
-                OR EXISTS (
-                    SELECT 1 FROM messages mm
-                     WHERE mm.session_id = sessions.id AND mm.content LIKE ?
-                )
-            """
+            conditions.append("""
+                (s.title LIKE ? OR s.id LIKE ?
+                 OR EXISTS (
+                     SELECT 1 FROM messages mm
+                      WHERE mm.session_id = s.id AND mm.content LIKE ?
+                 ))
+            """)
             like = f"%{query.strip()}%"
             params.extend([like, like, like])
+        if favorites_only:
+            conditions.append("s.favorite = 1")
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
 
         with self._lock:
             row = self._conn.execute(sql, params).fetchone()
@@ -307,7 +329,9 @@ class SessionStore:
 
         return stats
 
-    def usage_totals(self, query: str = "") -> Dict[str, Any]:
+    def usage_totals(
+        self, query: str = "", favorites_only: bool = False
+    ) -> Dict[str, Any]:
         """汇总所有匹配会话的历史用量（不受分页限制）。
 
         Returns:
@@ -319,19 +343,22 @@ class SessionStore:
               JOIN sessions s ON s.id = m.session_id
              WHERE m.role = 'assistant'
         """
+        conditions: List[str] = []
         params: List[Any] = []
         if query:
-            sql += """
-             AND (
-                 s.title LIKE ? OR s.id LIKE ?
+            conditions.append("""
+                (s.title LIKE ? OR s.id LIKE ?
                  OR EXISTS (
                      SELECT 1 FROM messages mm
                       WHERE mm.session_id = s.id AND mm.content LIKE ?
-                 )
-             )
-            """
+                 ))
+            """)
             like = f"%{query.strip()}%"
             params.extend([like, like, like])
+        if favorites_only:
+            conditions.append("s.favorite = 1")
+        if conditions:
+            sql += " AND " + " AND ".join(conditions)
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -346,22 +373,26 @@ class SessionStore:
 
         return totals
 
-    def daily_usage(self, days: int = 7) -> Dict[str, Any]:
+    def daily_usage(
+        self, days: int = 7, favorites_only: bool = False
+    ) -> Dict[str, Any]:
         """按自然日汇总用量，返回最近 days 天（含没有记录的日期）。"""
         days = max(1, min(int(days or 7), 30))
         today = datetime.now().date()
         start = today - timedelta(days=days - 1)
         start_text = start.isoformat()
 
+        sql = """
+            SELECT m.metadata, m.created_at
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+             WHERE m.role = 'assistant' AND m.created_at >= ?
+        """
+        if favorites_only:
+            sql += " AND s.favorite = 1"
+
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT metadata, created_at
-                  FROM messages
-                 WHERE role = 'assistant' AND created_at >= ?
-                """,
-                (start_text,),
-            ).fetchall()
+            rows = self._conn.execute(sql, (start_text,)).fetchall()
 
         buckets: Dict[str, Dict[str, Any]] = {}
         for offset in range(days):
@@ -480,13 +511,14 @@ class SessionStore:
                 )
                 created_at = str(raw.get("created_at") or now)[:40]
                 updated_at = str(raw.get("updated_at") or created_at)[:40]
+                favorite = 1 if raw.get("favorite") in (1, True, "1") else 0
 
                 self._conn.execute(
                     """
-                    INSERT INTO sessions(id, title, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions(id, title, created_at, updated_at, favorite)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (session_id, title, created_at, updated_at),
+                    (session_id, title, created_at, updated_at, favorite),
                 )
                 self._conn.executemany(
                     """
@@ -507,6 +539,15 @@ class SessionStore:
             "invalid": invalid,
             "messages": messages_imported,
         }
+
+    def set_favorite(self, session_id: str, favorite: bool) -> bool:
+        """收藏或取消收藏会话；会话不存在返回 False。"""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE sessions SET favorite = ? WHERE id = ?",
+                (1 if favorite else 0, session_id),
+            )
+            return cursor.rowcount > 0
 
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]

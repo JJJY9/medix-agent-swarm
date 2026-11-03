@@ -71,6 +71,10 @@ class ImportSessionsRequest(BaseModel):
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class FavoriteRequest(BaseModel):
+    favorite: bool
+
+
 # ===== 应用状态 =====
 
 class AppState:
@@ -218,8 +222,13 @@ async def create_session():
 
 
 @app.get("/api/sessions")
-async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = None):
-    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索与分页）。
+async def list_sessions(
+    limit: int = 50,
+    offset: int = 0,
+    q: Optional[str] = None,
+    favorite: Optional[bool] = None
+):
+    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索、分页与收藏筛选）。
 
     summary 汇总所有匹配会话的 Token 用量与模型调用次数，
     不受当前分页影响；每条会话附带自身用量。
@@ -229,12 +238,13 @@ async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = Non
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
     query = q or ""
+    favorites_only = bool(favorite)
 
     store = get_session_store()
     sessions, total, totals = await asyncio.gather(
-        asyncio.to_thread(store.list_sessions, limit, query, offset),
-        asyncio.to_thread(store.count_sessions, query),
-        asyncio.to_thread(store.usage_totals, query),
+        asyncio.to_thread(store.list_sessions, limit, query, offset, favorites_only),
+        asyncio.to_thread(store.count_sessions, query, favorites_only),
+        asyncio.to_thread(store.usage_totals, query, favorites_only),
     )
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
@@ -261,12 +271,14 @@ async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = Non
 
 
 @app.get("/api/usage/daily")
-async def usage_daily(days: int = 7):
+async def usage_daily(days: int = 7, favorite: Optional[bool] = None):
     """按自然日汇总最近 N 天的 Token 用量与调用次数。"""
     from memory import get_session_store
 
     days = max(1, min(int(days or 7), 30))
-    return await asyncio.to_thread(get_session_store().daily_usage, days)
+    return await asyncio.to_thread(
+        get_session_store().daily_usage, days, bool(favorite)
+    )
 
 
 @app.get("/api/sessions/export")
@@ -352,6 +364,18 @@ async def rename_session(session_id: str, request: RenameSessionRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"ok": True, "session_id": session_id, "title": title}
+
+
+@app.patch("/api/sessions/{session_id}/favorite")
+async def favorite_session(session_id: str, request: FavoriteRequest):
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().set_favorite, session_id, request.favorite
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True, "session_id": session_id, "favorite": request.favorite}
 
 
 @app.delete("/api/sessions/{session_id}")
