@@ -44,6 +44,7 @@ let sessionId = localStorage.getItem('medix.session') || null;
 let busy = false;
 let activeController = null;
 let historyOpen = false;
+let userPausedFollow = false;
 
 /* ---------- 工具 ---------- */
 
@@ -925,6 +926,7 @@ async function send(question) {
   els.send.disabled = true;
   els.stop.hidden = false;
   els.empty.hidden = true;
+  userPausedFollow = false;
 
   const controller = new AbortController();
   activeController = controller;
@@ -1019,7 +1021,7 @@ async function send(question) {
           }
           streamBuffer += event.delta || '';
           streamBody.textContent = streamBuffer;
-          scrollThreadToBottom();
+          scrollThreadToBottom(!userPausedFollow);
         } else if (event.type === 'result') {
           finalPayload = event;
         } else if (event.type === 'error') {
@@ -1214,10 +1216,22 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && historyOpen) closeHistory(true);
 });
 
-els.jumpLatest.addEventListener('click', () => scrollThreadToBottom(true));
-els.thread.addEventListener('scroll', () => {
-  if (isNearBottom()) els.jumpLatest.hidden = true;
+els.jumpLatest.addEventListener('click', () => {
+  userPausedFollow = false;
+  scrollThreadToBottom(true);
 });
+els.thread.addEventListener('scroll', () => {
+  if (isNearBottom()) {
+    els.jumpLatest.hidden = true;
+    userPausedFollow = false;
+  }
+});
+els.thread.addEventListener('wheel', () => {
+  userPausedFollow = true;
+}, { passive: true });
+els.thread.addEventListener('touchmove', () => {
+  userPausedFollow = true;
+}, { passive: true });
 
 els.starters.addEventListener('click', (e) => {
   const btn = e.target.closest('.starter');
