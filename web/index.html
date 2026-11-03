@@ -279,7 +279,10 @@
     placeholder="搜索主诉、答复或会诊编号…"
     autocomplete="off"
   />
-  <p class="history-summary" id="history-summary" hidden></p>
+  <div class="history-toolbar">
+    <p class="history-summary" id="history-summary" hidden></p>
+    <button type="button" class="history-export" id="history-export">导出备份</button>
+  </div>
   <ul class="history-list" id="history-list"></ul>
   <button type="button" class="btn-quiet history-more" id="history-more" hidden>加载更多</button>
   <p class="drawer-empty" id="history-empty" hidden>还没有历史会诊，提交一次主诉后会自动保存。</p>

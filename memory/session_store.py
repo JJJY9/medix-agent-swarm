@@ -346,6 +346,23 @@ class SessionStore:
 
         return totals
 
+    def export_data(self, limit: int = 200) -> Dict[str, Any]:
+        """导出会话与消息，供本地备份或迁移。"""
+        sessions = self.list_sessions(limit=limit)
+        exported = []
+        for item in sessions:
+            exported.append({
+                **item,
+                "messages": self.get_messages(item["id"], limit=500),
+            })
+
+        return {
+            "version": 1,
+            "exported_at": self._now(),
+            "session_count": len(exported),
+            "sessions": exported,
+        }
+
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
         if not title:

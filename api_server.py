@@ -255,6 +255,19 @@ async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = Non
     return {"sessions": sessions, "summary": summary}
 
 
+@app.get("/api/sessions/export")
+async def export_sessions():
+    """导出全部会话与消息（JSON），用于本地备份或迁移。"""
+    from memory import get_session_store
+
+    try:
+        data = await asyncio.to_thread(get_session_store().export_data)
+    except Exception as e:
+        logger.exception("导出会话失败")
+        raise HTTPException(status_code=500, detail=f"导出会话失败：{e}")
+    return data
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, limit: int = 50):
     from memory import ShortTermMemory, get_session_store

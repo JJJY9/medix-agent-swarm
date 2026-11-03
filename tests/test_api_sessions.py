@@ -92,6 +92,29 @@ def test_sessions_api_summary_respects_search(tmp_path, monkeypatch):
     assert content_data["summary"]["usage"]["total_tokens"] == 10
 
 
+def test_sessions_export_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "导出问题", "导出答复",
+        metadata={"usage": {"total_tokens": 8}, "llm_calls": 1},
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/sessions/export")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == 1
+    assert data["session_count"] == 1
+    assert data["sessions"][0]["id"] == "s1"
+    assert len(data["sessions"][0]["messages"]) == 2
+    assert data["sessions"][0]["messages"][1]["metadata"]["usage"]["total_tokens"] == 8
+
+
 def test_sessions_api_paginates_with_global_summary(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     for index, tokens in enumerate((10, 20, 30)):

@@ -31,6 +31,7 @@ const els = {
   historySearch: document.getElementById('history-search'),
   historyList: document.getElementById('history-list'),
   historySummary: document.getElementById('history-summary'),
+  historyExport: document.getElementById('history-export'),
   historyMore: document.getElementById('history-more'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
@@ -1299,8 +1300,7 @@ function updateHistoryMore(summary) {
   }
 }
 
-async function loadHistory(query = '', { append = false } = {}) {
-  if (!append) {
+async function loadHistory(query = '', { append = false } = {}) {  if (!append) {
     historyQuery = query;
     historyOffset = 0;
     historyTotal = 0;
@@ -1337,6 +1337,39 @@ async function loadHistory(query = '', { append = false } = {}) {
     els.historyMore.hidden = true;
     els.historyEmpty.hidden = false;
     els.historyEmpty.textContent = `会诊记录加载失败：${err.message || err}`;
+  }
+}
+
+async function exportHistoryBackup() {
+  const btn = els.historyExport;
+  if (btn.disabled) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '导出中…';
+
+  try {
+    const res = await fetch('/api/sessions/export');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    const stamp = String(data.exported_at || new Date().toISOString())
+      .replace(/[:T]/g, '-')
+      .slice(0, 19);
+    downloadFile(
+      JSON.stringify(data, null, 2),
+      `medix-sessions-${stamp}.json`,
+      'application/json;charset=utf-8'
+    );
+    btn.textContent = `已导出 ${data.session_count || 0} 次`;
+  } catch (err) {
+    btn.textContent = '导出失败';
+    window.alert(`导出备份失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1800);
   }
 }
 
@@ -2417,6 +2450,8 @@ els.historyMore.addEventListener('click', () => {
   if (historyLoading) return;
   loadHistory(historyQuery, { append: true });
 });
+
+els.historyExport.addEventListener('click', exportHistoryBackup);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
