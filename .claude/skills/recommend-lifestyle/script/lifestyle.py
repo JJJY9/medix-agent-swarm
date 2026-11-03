@@ -4,6 +4,7 @@ Recommend Lifestyle Skill
 """
 from typing import Dict, Any
 from loguru import logger
+from knowledge.sources import build_sources
 
 # 全局知识库实例
 _kb_instance = None
@@ -50,7 +51,8 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
             "answer": format_advice(diagnosis, content),
             "diagnosis": diagnosis,
             "categories": ["diet", "exercise", "lifestyle", "medication"],
-            "source": "向量数据库"
+            "source": "向量数据库",
+            "sources": build_sources(results, max_items=1),
         }
     else:
         # 未找到相关内容
@@ -59,7 +61,8 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
             "answer": f"未找到关于'{diagnosis}'的生活方式建议，请尝试更具体的疾病名称或联系医生咨询。",
             "diagnosis": diagnosis,
             "categories": [],
-            "source": "未找到"
+            "source": "未找到",
+            "sources": [],
         }
 
 

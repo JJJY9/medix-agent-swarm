@@ -132,3 +132,75 @@ def test_forced_final_answer_streams_tokens():
     assert llm.streamed == ["流式", "最终答复"]
     # 工具轮仍走非流式调用；只有收尾使用 chat_stream
     assert llm.calls == [True, True]
+
+
+class SourceAgent(FakeAgent):
+    async def execute_tool(self, tool_name, arguments):
+        self.executed.append(tool_name)
+        return {
+            "ok": True,
+            "sources": [{
+                "source": "临床指南数据库",
+                "filename": "20.txt",
+                "snippet": "指南片段",
+                "score": 0.8,
+            }],
+        }
+
+
+def test_tool_sources_are_collected_and_deduplicated():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    llm = FakeLLM()
+    agent = SourceAgent(llm)
+
+    result = asyncio.run(loop.run(agent, {"question": "测试问题"}))
+
+    assert result["answer"] == "最终答复"
+    assert len(result["sources"]) == 1
+    assert result["sources"][0]["filename"] == "20.txt"
+
+
+class IntSourcesAgent(FakeAgent):
+    async def execute_tool(self, tool_name, arguments):
+        self.executed.append(tool_name)
+        # deep_research 历史上把 sources 用作“来源数量”
+        return {"ok": True, "sources": 5}
+
+
+class RaisingToolAgent(FakeAgent):
+    async def execute_tool(self, tool_name, arguments):
+        raise RuntimeError("skill boom")
+
+
+class UnserializableAgent(FakeAgent):
+    async def execute_tool(self, tool_name, arguments):
+        return {"ok": True, "obj": object()}
+
+
+def test_non_list_sources_are_ignored():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    agent = IntSourcesAgent(FakeLLM())
+
+    result = asyncio.run(loop.run(agent, {"question": "测试"}))
+
+    assert result["answer"] == "最终答复"
+    assert result["sources"] == []
+
+
+def test_tool_exception_still_produces_tool_response():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    agent = RaisingToolAgent(FakeLLM())
+
+    result = asyncio.run(loop.run(agent, {"question": "测试"}))
+
+    # 工具抛异常也应被记录为 tool 结果，历史保持合法，最终仍能收尾
+    assert result["answer"] == "最终答复"
+
+
+def test_unserializable_tool_result_falls_back():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    agent = UnserializableAgent(FakeLLM())
+
+    result = asyncio.run(loop.run(agent, {"question": "测试"}))
+
+    assert result["answer"] == "最终答复"

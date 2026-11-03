@@ -4,6 +4,7 @@ Analyze Symptoms Skill
 """
 from typing import Dict, Any, List
 from loguru import logger
+from knowledge.sources import build_sources
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -101,6 +102,7 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
 
     # 从 RAG 知识库获取更详细的疾病信息
     kb_insights = []
+    source_docs = []
     if possible_diseases:
         try:
             kb = get_knowledge_base()
@@ -116,6 +118,7 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
                         "disease": disease,
                         "info": results[0]["content"][:200]  # 限制长度
                     })
+                    source_docs.append(results[0])
         except Exception as e:
             logger.warning(f"Failed to get KB insights: {e}")
 
@@ -123,7 +126,8 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
         "answer": format_analysis(symptoms, patterns, possible_diseases, kb_insights),
         "patterns": patterns,
         "possible_diseases": possible_diseases,
-        "kb_insights": kb_insights
+        "kb_insights": kb_insights,
+        "sources": build_sources(source_docs),
     }
 
 

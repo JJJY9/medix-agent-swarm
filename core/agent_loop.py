@@ -12,6 +12,7 @@ from loguru import logger
 
 from .state_manager import StateManager, TaskStatus
 from .llm_client import LLMResponse, LLMError
+from .citations import merge_sources
 
 # Harness Engineering: 约束验证和自动修复
 try:
@@ -83,6 +84,7 @@ class AgentLoop:
         # 工具调用计数属于本次运行，不能放在实例上：同一个 Agent 可能被
         # Swarm 并发派发多个子任务，实例级计数会互相污染。
         tool_call_count = 0
+        sources: List[Dict[str, Any]] = []
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -141,7 +143,7 @@ class AgentLoop:
                             logger.warning("⚠️ Skill 调用预算为 0，直接生成最终答案")
                             final_answer = await self._force_final_answer(agent, messages, on_token)
                             result = await self._finalize(
-                                agent, state, final_answer, session_id, tool_call_count
+                                agent, state, final_answer, session_id, tool_call_count, sources
                             )
                             break
 
@@ -179,19 +181,41 @@ class AgentLoop:
                                         f"⚠️ 约束警告: {validation_result.get('reason')}"
                                     )
 
-                            tool_result = await agent.execute_tool(
-                                tool_name=tool_call.name,
-                                arguments=tool_call.arguments
-                            )
+                            try:
+                                tool_result = await agent.execute_tool(
+                                    tool_name=tool_call.name,
+                                    arguments=tool_call.arguments
+                                )
+                            except Exception as e:
+                                # 任何 Skill 异常都要变成一条 tool 响应，
+                                # 否则历史里会留下没有结果的 tool_calls，下一轮 API 直接 400
+                                logger.error(f"Skill {tool_call.name} execution failed: {e}")
+                                tool_result = {"success": False, "error": str(e)}
+
+                            # 收集 Skill 返回的知识库来源，最终随意见一起展示
+                            if isinstance(tool_result, dict):
+                                tool_sources = tool_result.get("sources")
+                                if isinstance(tool_sources, list):
+                                    sources.extend(tool_sources)
 
                             # 添加结果消息
-                            messages.append(
-                                agent.llm_client.create_tool_message(
+                            try:
+                                tool_message = agent.llm_client.create_tool_message(
                                     tool_call_id=tool_call.id,
                                     tool_name=tool_call.name,
                                     result=tool_result
                                 )
-                            )
+                            except Exception as e:
+                                logger.error(f"Failed to serialize tool result: {e}")
+                                tool_message = {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "name": tool_call.name,
+                                    "content": json.dumps(
+                                        {"error": str(e)}, ensure_ascii=False
+                                    ),
+                                }
+                            messages.append(tool_message)
 
                             # 记录结果到短期记忆
                             if self.short_term_memory and session_id:
@@ -210,7 +234,7 @@ class AgentLoop:
                             )
                             final_answer = await self._force_final_answer(agent, messages, on_token)
                             result = await self._finalize(
-                                agent, state, final_answer, session_id, tool_call_count
+                                agent, state, final_answer, session_id, tool_call_count, sources
                             )
                             break
 
@@ -221,7 +245,8 @@ class AgentLoop:
                     else:
                         logger.info(f"LLM provided final response (no tool calls)")
                         result = await self._finalize(
-                            agent, state, llm_response.content or "", session_id, tool_call_count
+                            agent, state, llm_response.content or "", session_id,
+                            tool_call_count, sources
                         )
                         break
 
@@ -265,6 +290,7 @@ class AgentLoop:
                     result = {
                         'answer': final_text or '抱歉，未能完成任务',
                         'iterations': state.iteration,
+                        'sources': merge_sources(sources),
                         'warning': 'max_iterations_reached'
                     }
 
@@ -338,7 +364,8 @@ class AgentLoop:
         state,
         final_answer: Optional[str],
         session_id: Optional[str],
-        tool_calls_used: int
+        tool_calls_used: int,
+        sources: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
@@ -378,7 +405,8 @@ class AgentLoop:
             'answer': final_answer,
             'iterations': state.iteration,
             'agent_id': agent.agent_id,
-            'tool_calls_used': tool_calls_used
+            'tool_calls_used': tool_calls_used,
+            'sources': merge_sources(sources or [])
         }
 
         # 让 Agent 进行结果后处理（如提取建议等）

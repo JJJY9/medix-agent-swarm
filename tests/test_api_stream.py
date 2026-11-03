@@ -31,6 +31,19 @@ class FakeCoordinator:
             "suggestions": [],
             "disclaimer": "仅供参考",
             "triage": {"level": "none", "matches": [], "message": ""},
+            "agent_contributions": [{
+                "agent_id": "consultation_agent",
+                "subtask_id": "s1",
+                "task_type": "consultation_agent_task",
+                "content": "科室原始意见",
+                "confidence": 1.0,
+            }],
+            "sources": [{
+                "source": "临床指南数据库",
+                "filename": "20.txt",
+                "snippet": "指南片段",
+                "score": 0.8,
+            }],
         }
 
 
@@ -69,6 +82,8 @@ def test_stream_emits_tokens_and_result():
     result = next(event for event in events if event["type"] == "result")
     assert tokens == "流式答案"
     assert result["answer"] == "流式答案"
+    assert result["agent_contributions"][0]["agent_name"] == "健康咨询"
+    assert result["sources"][0]["filename"] == "20.txt"
 
 
 def test_stream_emits_triage_before_result():
