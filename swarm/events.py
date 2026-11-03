@@ -13,6 +13,7 @@ class EventType(Enum):
     TASK_DECOMPOSED = "task_decomposed"          # LeadAgent 分解了任务
     SUBTASK_STARTED = "subtask_started"          # Agent 开始执行子任务
     SUBTASK_COMPLETED = "subtask_completed"      # Agent 完成子任务
+    SUBTASK_FAILED = "subtask_failed"            # Agent 执行子任务失败
     CONTEXT_UPDATED = "context_updated"          # 共享上下文更新
     AGENT_QUESTION = "agent_question"            # Agent 提出问题
     AGENT_ANSWER = "agent_answer"                # Agent 回答问题

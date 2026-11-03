@@ -5,7 +5,12 @@ Swarm 模块：Agent 群体智能协作系统
 from .shared_context import SharedContext, SubTask, Contribution, TaskStatus
 from .events import Event, EventType
 from .lead_agent import LeadAgent
-from .swarm_coordinator import SwarmCoordinator, process_with_swarm
+from .swarm_coordinator import (
+    SwarmCoordinator,
+    process_with_swarm,
+    get_default_coordinator,
+    reset_default_coordinators,
+)
 
 __all__ = [
     'SharedContext',
@@ -17,4 +22,6 @@ __all__ = [
     'LeadAgent',
     'SwarmCoordinator',
     'process_with_swarm',
+    'get_default_coordinator',
+    'reset_default_coordinators',
 ]

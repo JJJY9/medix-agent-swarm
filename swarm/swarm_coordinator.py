@@ -15,11 +15,29 @@ from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient
-from .shared_context import SharedContext
+from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
 from agents import ConsultationAgent, DiagnosticAgent, ResearchAgent
 from memory import SessionSummaryManager, SessionSummary, ShortTermMemory, LongTermMemory
+
+try:
+    from constraints import ConstraintValidator
+    CONSTRAINTS_AVAILABLE = True
+except ImportError:  # pragma: no cover - constraints 是可选模块
+    ConstraintValidator = None
+    CONSTRAINTS_AVAILABLE = False
+
+
+#: 单次会诊最多拆出的子任务数，与 constraints/swarm_constraints.yaml 保持一致
+MAX_SWARM_SUBTASKS = 5
+
+#: 约束规则强制补全 Agent 时使用的任务描述
+_REQUIRED_AGENT_DESCRIPTIONS = {
+    "diagnostic_agent": "评估症状风险等级，分析症状模式并给出鉴别诊断思路",
+    "research_agent": "检索权威临床指南与循证医学证据，为问题提供证据支持",
+    "consultation_agent": "提供健康管理、生活方式和就医建议",
+}
 
 
 class SwarmCoordinator:
@@ -64,6 +82,16 @@ class SwarmCoordinator:
         self.short_term_memory = ShortTermMemory(storage_type="memory")  # 或 "redis"
         self.long_term_memory = LongTermMemory()
 
+        # Harness Engineering: Swarm 约束（高危症状必须包含诊断 Agent 等）
+        if CONSTRAINTS_AVAILABLE:
+            try:
+                self.validator = ConstraintValidator()
+            except Exception as e:
+                logger.warning(f"Swarm 约束加载失败，已禁用约束兜底: {e}")
+                self.validator = None
+        else:
+            self.validator = None
+
         # 将短期记忆注入到所有 Worker Agent 的 Loop
         # 注意：LeadAgent 不继承 BaseAgent，没有 loop 属性，不需要注入
         for worker in self.worker_pool:
@@ -81,6 +109,61 @@ class SwarmCoordinator:
             "research_agent": self.research_agent
         }
         return mapping.get(agent_id)
+
+    def _enforce_required_agents(self, question: str, assessment: Dict[str, Any]) -> None:
+        """按 swarm_constraints.yaml 的规则补齐必须参与的 Agent。
+
+        LeadAgent 的分解结果可能漏掉高危症状要求的诊断 Agent，
+        或漏掉指南类问题要求的 ResearchAgent。这里用约束规则兜底，
+        同时把子任务数量控制在 MAX_SWARM_SUBTASKS 以内。
+        """
+        if self.validator is None:
+            return
+
+        try:
+            required_agents = self.validator.get_required_agents(question)
+        except Exception as e:
+            logger.warning(f"读取 Swarm 约束规则失败，跳过强制 Agent 补全: {e}")
+            return
+
+        subtasks = assessment.get("subtasks") or []
+        if not isinstance(subtasks, list):
+            return
+
+        assigned = {
+            task.get("assigned_agent")
+            for task in subtasks
+            if isinstance(task, dict)
+        }
+
+        for agent_id in required_agents:
+            description = _REQUIRED_AGENT_DESCRIPTIONS.get(agent_id)
+            if not description or agent_id in assigned:
+                continue
+
+            subtasks.append({
+                "description": description,
+                "assigned_agent": agent_id,
+            })
+            assigned.add(agent_id)
+            logger.info(f"约束规则要求补充子任务：{agent_id}")
+
+        if len(subtasks) > MAX_SWARM_SUBTASKS:
+            required_set = set(required_agents)
+            required_tasks = [
+                task for task in subtasks
+                if isinstance(task, dict) and task.get("assigned_agent") in required_set
+            ]
+            other_tasks = [
+                task for task in subtasks
+                if not isinstance(task, dict) or task.get("assigned_agent") not in required_set
+            ]
+            subtasks = (required_tasks + other_tasks)[:MAX_SWARM_SUBTASKS]
+            logger.warning(
+                f"子任务数量超过上限 {MAX_SWARM_SUBTASKS}，已截断为 {len(subtasks)} 个"
+            )
+
+        assessment["subtasks"] = subtasks
 
     async def process(
         self,
@@ -142,6 +225,8 @@ class SwarmCoordinator:
 
         # Step 1: LeadAgent 分解任务
         assessment = await self.lead_agent.assess_and_decompose(question, enhanced_context)
+        # 约束兜底：高危症状/指南类问题必须包含对应 Agent
+        self._enforce_required_agents(question, assessment)
         subtasks = assessment.get("subtasks", [])
 
         logger.info(f"LeadAgent 分解任务：{len(subtasks)} 个")
@@ -302,13 +387,27 @@ class SwarmCoordinator:
             logger.warning("Swarm execution timeout (90s)")
             # 记录哪些 Agent 已完成，哪些未完成
             completed_agents = list(shared_context.agent_contributions.keys())
-            claimed_tasks = [
-                (subtask.assigned_to, subtask.type)
+            unfinished_tasks = [
+                (subtask.assigned_agent, subtask.type)
                 for subtask in shared_context.task_decomposition.values()
-                if subtask.status.value == "claimed"
+                if subtask.status in (
+                    TaskStatus.PENDING, TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS
+                )
             ]
             logger.info(f"Completed agents: {completed_agents}")
-            logger.info(f"Timed out tasks: {claimed_tasks}")
+            logger.info(f"Timed out tasks: {unfinished_tasks}")
+
+            # 超时后仍未结束的子任务标记为失败，让汇总和统计有明确状态
+            for subtask in shared_context.task_decomposition.values():
+                if subtask.status in (
+                    TaskStatus.PENDING, TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS
+                ):
+                    try:
+                        shared_context.fail_subtask(
+                            subtask.id, subtask.assigned_agent, "系统超时"
+                        )
+                    except ValueError:
+                        pass
 
         # Step 3: LeadAgent 汇总结果
         # 即使超时，也尝试汇总已完成的部分结果
@@ -369,12 +468,18 @@ class SwarmCoordinator:
 
         # 返回结果
         completed_agents = list(shared_context.agent_contributions.keys())
+        failed_subtasks = [
+            subtask
+            for subtask in shared_context.task_decomposition.values()
+            if subtask.status == TaskStatus.FAILED
+        ]
         result = {
             'answer': final_answer,
             'swarm_enabled': True,
             'session_id': session_id,
             'agents_involved': completed_agents,
             'subtasks_completed': len(shared_context.get_all_completed_subtasks()),
+            'subtasks_failed': len(failed_subtasks),
             'total_time': (end_time - start_time).total_seconds(),
             'swarm_metadata': shared_context.get_summary(),
             'timeout_occurred': timeout_occurred
@@ -414,31 +519,34 @@ class SwarmCoordinator:
                 logger.debug(f"{worker.agent_id}: No assigned tasks")
                 return
 
-            # 并行执行所有分配的任务
-            tasks = []
+            # 同一个 Worker 复用同一个 AgentLoop 和 LLM 客户端。
+            # 子任务串行执行，避免并发请求互相抢占工具预算和 API 速率配额；
+            # 不同 Worker 之间仍然并行。
             for subtask in assigned_tasks:
                 logger.info(f"{worker.agent_id}: Starting {subtask.type}")
-                shared_context.start_subtask(subtask.id)
+                if not shared_context.start_subtask(subtask.id):
+                    logger.warning(
+                        f"{worker.agent_id}: SubTask {subtask.id} 已被其他 Worker 认领"
+                    )
+                    continue
 
-                task = asyncio.create_task(
-                    self._execute_single_subtask(worker, subtask, shared_context)
-                )
-                tasks.append(task)
-
-            # 等待所有任务完成
-            await asyncio.gather(*tasks, return_exceptions=True)
+                await self._execute_single_subtask(worker, subtask, shared_context)
 
         except Exception as e:
             logger.error(f"{worker.agent_id}: Error processing subtask: {e}")
 
     async def _execute_single_subtask(self, worker, subtask, shared_context):
-        """执行单个子任务"""
+        """执行单个子任务，失败时记录状态而不是静默吞掉。"""
         try:
             result = await worker.process_subtask(subtask)
             shared_context.complete_subtask(subtask.id, worker.agent_id, result)
             logger.info(f"{worker.agent_id}: Completed {subtask.type}")
         except Exception as e:
             logger.error(f"{worker.agent_id}: Error in {subtask.type}: {e}")
+            try:
+                shared_context.fail_subtask(subtask.id, worker.agent_id, str(e))
+            except ValueError as state_error:
+                logger.error(f"记录子任务失败状态时出错: {state_error}")
 
     def _extract_suggestions(self, final_answer: str) -> List[str]:
         """从最终答案中提取建议（简化实现）"""
@@ -461,6 +569,26 @@ class SwarmCoordinator:
 
         return suggestions or ["请遵循医嘱，注意休息和营养"]
 
+_default_coordinators: Dict[bool, "SwarmCoordinator"] = {}
+
+
+def get_default_coordinator(enable_swarm: bool = True) -> "SwarmCoordinator":
+    """获取进程级复用的 SwarmCoordinator。
+
+    每次调用都新建协调器会重复初始化三个 Agent、重复扫描并动态加载 9 个
+    Skills，命令行连续问答时开销明显。按 enable_swarm 缓存，请求之间
+    只共享无状态的执行框架，会话数据仍由 ShortTermMemory 按 session 隔离。
+    """
+    if enable_swarm not in _default_coordinators:
+        _default_coordinators[enable_swarm] = SwarmCoordinator(enable_swarm=enable_swarm)
+    return _default_coordinators[enable_swarm]
+
+
+def reset_default_coordinators() -> None:
+    """清空协调器缓存（测试或需要重新加载配置时使用）。"""
+    _default_coordinators.clear()
+
+
 async def process_with_swarm(
     question: str,
     context: Optional[Dict[str, Any]] = None,
@@ -479,5 +607,5 @@ async def process_with_swarm(
     Returns:
         处理结果
     """
-    coordinator = SwarmCoordinator(enable_swarm=enable_swarm)
+    coordinator = get_default_coordinator(enable_swarm)
     return await coordinator.process(question, context, session_id=session_id)

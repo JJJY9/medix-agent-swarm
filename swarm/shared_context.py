@@ -240,6 +240,26 @@ class SharedContext:
             }
         ))
 
+    def fail_subtask(self, subtask_id: str, agent_id: str, error: str):
+        """标记子任务失败，并发布事件供监控和汇总使用。"""
+        subtask = self.get_subtask(subtask_id)
+        if not subtask:
+            raise ValueError(f"SubTask {subtask_id} not found")
+
+        if subtask.assigned_agent != agent_id:
+            raise ValueError(f"SubTask {subtask_id} not assigned to {agent_id}")
+
+        subtask.fail(str(error))
+
+        self.publish_event(Event(
+            type=EventType.SUBTASK_FAILED,
+            source_agent=agent_id,
+            data={
+                "subtask_id": subtask_id,
+                "error": str(error)[:200]
+            }
+        ))
+
     def get_contributions(
         self,
         agent_id: Optional[str] = None,
