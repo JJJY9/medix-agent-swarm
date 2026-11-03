@@ -10,6 +10,7 @@ const els = {
   starters: document.getElementById('starters'),
   composer: document.getElementById('composer'),
   input: document.getElementById('input'),
+  skipLink: document.getElementById('skip-link'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
   themeToggle: document.getElementById('theme-toggle'),
@@ -78,6 +79,34 @@ let activeController = null;
 let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'textarea:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function activeDrawer() {
+  if (historyOpen) return els.historyDrawer;
+  if (kbOpen) return els.kbDrawer;
+  if (diagOpen) return els.diagnoseDrawer;
+  return null;
+}
+
+function syncPageInert() {
+  const shell = document.querySelector('.shell');
+  if (!shell) return;
+  if (historyOpen || kbOpen || diagOpen) {
+    shell.setAttribute('inert', '');
+    shell.setAttribute('aria-hidden', 'true');
+  } else {
+    shell.removeAttribute('inert');
+    shell.removeAttribute('aria-hidden');
+  }
+}
 let userPausedFollow = false;
 
 const THEME_KEY = 'medix.theme';
@@ -1135,6 +1164,7 @@ function renderHistoryItems(sessions, summary) {
     rename.className = 'history-action';
     rename.textContent = '改名';
     rename.title = '重命名这次会诊';
+    rename.setAttribute('aria-label', `重命名：${item.title || '未命名会诊'}`);
     rename.addEventListener('click', () => renameHistory(item));
 
     const exportBtn = document.createElement('button');
@@ -1142,6 +1172,7 @@ function renderHistoryItems(sessions, summary) {
     exportBtn.className = 'history-action';
     exportBtn.textContent = '导出';
     exportBtn.title = '导出整段会诊记录为 Markdown';
+    exportBtn.setAttribute('aria-label', `导出：${item.title || '未命名会诊'}`);
     exportBtn.addEventListener('click', () => exportHistory(item));
 
     const del = document.createElement('button');
@@ -1149,6 +1180,7 @@ function renderHistoryItems(sessions, summary) {
     del.className = 'history-action danger';
     del.textContent = '删除';
     del.title = '删除这次会诊记录';
+    del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
     actions.append(rename, exportBtn, del);
@@ -1198,6 +1230,7 @@ function openHistory() {
   historyOpen = true;
   els.historyDrawer.hidden = false;
   els.historyBackdrop.hidden = false;
+  syncPageInert();
   els.historyToggle.setAttribute('aria-expanded', 'true');
   els.historySearch.value = '';
   els.historyList.replaceChildren();
@@ -1213,6 +1246,7 @@ function closeHistory(restoreFocus = false) {
   historyOpen = false;
   els.historyDrawer.hidden = true;
   els.historyBackdrop.hidden = true;
+  syncPageInert();
   els.historyToggle.setAttribute('aria-expanded', 'false');
   if (restoreFocus && lastFocused instanceof HTMLElement) {
     lastFocused.focus();
@@ -1305,9 +1339,11 @@ async function openSession(id) {
     els.readout.session.textContent = shortSession(id);
     renderStoredMessages(data.messages || []);
     setVitals('idle', '历史会诊');
+    els.input.focus();
   } catch (err) {
     closeHistory();
     renderError(`读取会诊记录失败：${err.message || err}`);
+    els.input.focus();
   }
 }
 
@@ -1466,6 +1502,8 @@ function openKb() {
   kbOpen = true;
   els.kbDrawer.hidden = false;
   els.kbBackdrop.hidden = false;
+  syncPageInert();
+  els.kbManage.setAttribute('aria-expanded', 'true');
   setKbStatus('');
   loadKnowledge();
   els.kbClose.focus();
@@ -1475,6 +1513,8 @@ function closeKb(restoreFocus = false) {
   kbOpen = false;
   els.kbDrawer.hidden = true;
   els.kbBackdrop.hidden = true;
+  syncPageInert();
+  els.kbManage.setAttribute('aria-expanded', 'false');
   if (restoreFocus && kbFocused instanceof HTMLElement) {
     kbFocused.focus();
   }
@@ -1674,6 +1714,8 @@ function openDiagnose() {
   diagOpen = true;
   els.diagnoseDrawer.hidden = false;
   els.diagnoseBackdrop.hidden = false;
+  syncPageInert();
+  els.diagnose.setAttribute('aria-expanded', 'true');
   setDiagStatus('');
   loadDiagnostics();
   els.diagnoseClose.focus();
@@ -1683,6 +1725,8 @@ function closeDiagnose(restoreFocus = false) {
   diagOpen = false;
   els.diagnoseDrawer.hidden = true;
   els.diagnoseBackdrop.hidden = true;
+  syncPageInert();
+  els.diagnose.setAttribute('aria-expanded', 'false');
   if (restoreFocus && diagFocused instanceof HTMLElement) {
     diagFocused.focus();
   }
@@ -2063,7 +2107,35 @@ document.addEventListener('keydown', (e) => {
     if (historyOpen) closeHistory(true);
     if (kbOpen) closeKb(true);
     if (diagOpen) closeDiagnose(true);
+    return;
   }
+
+  if (e.key !== 'Tab') return;
+  const drawer = activeDrawer();
+  if (!drawer) return;
+
+  const focusable = Array.from(drawer.querySelectorAll(FOCUSABLE_SELECTOR))
+    .filter((el) => el.getClientRects().length > 0);
+  if (!focusable.length) return;
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const current = document.activeElement;
+
+  if (e.shiftKey) {
+    if (current === first || !drawer.contains(current)) {
+      e.preventDefault();
+      last.focus();
+    }
+  } else if (current === last || !drawer.contains(current)) {
+    e.preventDefault();
+    first.focus();
+  }
+});
+
+els.skipLink.addEventListener('click', (event) => {
+  event.preventDefault();
+  els.input.focus();
 });
 
 els.jumpLatest.addEventListener('click', () => {
