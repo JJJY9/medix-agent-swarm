@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient, AgentLoop
+from core.context import format_context
 from core.skill_registry import SkillRegistry
 
 
@@ -75,23 +76,24 @@ class BaseAgent(ABC):
         return await self.skill_registry.execute(tool_name, **arguments)
 
     def format_user_input(self, input_data: Dict[str, Any]) -> str:
-        """
-        格式化用户输入
-        子类可以重写
+        """格式化用户输入：会话信息 + 结构化背景 + 问题。"""
+        question = (
+            input_data.get('question')
+            or input_data.get('query')
+            or str(input_data)
+        )
 
-        Args:
-            input_data: 输入数据
+        parts = []
+        session_id = input_data.get('session_id')
+        if session_id:
+            parts.append(f"[系统信息] 当前会话ID: {session_id}")
 
-        Returns:
-            格式化后的用户消息
-        """
-        # 默认实现
-        if 'question' in input_data:
-            return input_data['question']
-        elif 'query' in input_data:
-            return input_data['query']
-        else:
-            return str(input_data)
+        context_text = format_context(input_data.get('context') or {})
+        if context_text:
+            parts.append(f"背景信息：\n{context_text}\n")
+
+        parts.append(f"用户问题：{question}")
+        return "\n".join(parts)
 
     async def post_process_result(
         self,
@@ -156,11 +158,19 @@ class BaseAgent(ABC):
         子类可以重写以实现自定义逻辑
         默认实现：运行 Agent Loop
         """
-        # 使用 subtask.description 作为输入
+        # 使用 subtask.description 作为输入；带上患者背景信息，
+        # 让诊断 / 研究 Agent 也能看到年龄、病程等结构化上下文。
+        patient_context = {}
+        if self.shared_context is not None:
+            patient_context = getattr(self.shared_context, "data", {}).get(
+                "patient_context", {}
+            ) or {}
+
         input_data = {
             'question': subtask.description,
             'subtask_id': subtask.id,
-            'subtask_type': subtask.type
+            'subtask_type': subtask.type,
+            'context': patient_context,
         }
 
         return await self.run_loop(input_data)
