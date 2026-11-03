@@ -67,6 +67,30 @@ def test_save_list_and_delete_upload(service):
     assert svc.list_documents()["document_count"] == 1
 
 
+def test_preview_builtin_and_upload(service):
+    svc, _ = service
+
+    builtin = svc.preview_document("20_guideline_hypertension.txt")
+    assert builtin["builtin"] is True
+    assert "低盐" in builtin["content"]
+    assert builtin["truncated"] is False
+
+    saved = svc.save_upload("我的指南.md", ("自定义内容" * 2000).encode("utf-8"))
+    preview = svc.preview_document(saved["filename"])
+
+    assert preview["builtin"] is False
+    assert preview["truncated"] is True
+    assert len(preview["content"]) == 4000
+    assert preview["total_length"] == 10000
+
+
+def test_preview_missing_and_traversal(service):
+    svc, _ = service
+
+    assert svc.preview_document("missing.md") is None
+    assert svc.preview_document("../../etc/passwd") is None
+
+
 def test_duplicate_upload_gets_unique_name(service):
     svc, _ = service
 

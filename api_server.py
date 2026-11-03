@@ -384,6 +384,25 @@ async def knowledge_upload(
     return {"ok": True, "document": saved, "rebuild": result}
 
 
+@app.get("/api/knowledge/documents/{filename}/preview")
+async def knowledge_preview(filename: str):
+    """预览内置或上传文档的前 4000 个字符。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    try:
+        result = await asyncio.to_thread(service.preview_document, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("预览知识库文档失败")
+        raise HTTPException(status_code=500, detail=f"读取文档失败：{e}")
+
+    if not result:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return result
+
+
 @app.delete("/api/knowledge/documents/{filename}")
 async def knowledge_delete(filename: str, rebuild: bool = True):
     """删除用户上传的文档（内置文档不可删除）。"""

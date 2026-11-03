@@ -121,6 +121,35 @@ class KnowledgeService:
         logger.info(f"Deleted knowledge upload: {safe_name}")
         return True
 
+    def preview_document(self, filename: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
+        """读取文档前 max_chars 个字符，供知识库抽屉预览。"""
+        safe_name = self._safe_filename(filename)
+        candidates = (self.upload_dir / safe_name, self.docs_dir / safe_name)
+        path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if path is None:
+            return None
+
+        builtin = path.parent == self.docs_dir
+        try:
+            document = load_document(path)
+        except Exception as e:
+            raise ValueError(f"读取文档失败：{e}") from e
+        if not document:
+            raise ValueError("文档内容为空或无法解析。")
+
+        content = document["content"]
+        return {
+            "filename": path.name,
+            "builtin": builtin,
+            "size": path.stat().st_size,
+            "suffix": path.suffix.lower(),
+            "type": document["metadata"].get("type", ""),
+            "source": document["metadata"].get("source", ""),
+            "content": content[:max_chars],
+            "truncated": len(content) > max_chars,
+            "total_length": len(content),
+        }
+
     def rebuild(self, replace_existing: bool = True) -> Dict[str, Any]:
         builtin_documents = load_documents_from_directory(self.docs_dir)
         uploaded_documents = load_documents_from_directory(
