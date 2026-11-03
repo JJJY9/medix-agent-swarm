@@ -9,7 +9,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -345,6 +345,51 @@ class SessionStore:
             _accumulate_usage(totals, metadata)
 
         return totals
+
+    def daily_usage(self, days: int = 7) -> Dict[str, Any]:
+        """按自然日汇总用量，返回最近 days 天（含没有记录的日期）。"""
+        days = max(1, min(int(days or 7), 30))
+        today = datetime.now().date()
+        start = today - timedelta(days=days - 1)
+        start_text = start.isoformat()
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT metadata, created_at
+                  FROM messages
+                 WHERE role = 'assistant' AND created_at >= ?
+                """,
+                (start_text,),
+            ).fetchall()
+
+        buckets: Dict[str, Dict[str, Any]] = {}
+        for offset in range(days):
+            day = (start + timedelta(days=offset)).isoformat()
+            buckets[day] = {"date": day, **_new_usage_entry()}
+
+        for row in rows:
+            day = str(row["created_at"])[:10]
+            bucket = buckets.get(day)
+            if bucket is None:
+                continue
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            _accumulate_usage(bucket, metadata)
+
+        totals = _new_usage_entry()
+        for bucket in buckets.values():
+            totals["turns"] += bucket["turns"]
+            totals["llm_calls"] += bucket["llm_calls"]
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                totals["usage"][key] += bucket["usage"][key]
+
+        return {
+            "days": list(buckets.values()),
+            "totals": totals,
+        }
 
     def export_data(self, limit: int = 200) -> Dict[str, Any]:
         """导出会话与消息，供本地备份或迁移。"""

@@ -255,6 +255,15 @@ async def list_sessions(limit: int = 50, offset: int = 0, q: Optional[str] = Non
     return {"sessions": sessions, "summary": summary}
 
 
+@app.get("/api/usage/daily")
+async def usage_daily(days: int = 7):
+    """按自然日汇总最近 N 天的 Token 用量与调用次数。"""
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 7), 30))
+    return await asyncio.to_thread(get_session_store().daily_usage, days)
+
+
 @app.get("/api/sessions/export")
 async def export_sessions():
     """导出全部会话与消息（JSON），用于本地备份或迁移。"""

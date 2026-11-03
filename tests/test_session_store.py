@@ -1,4 +1,6 @@
 """会话持久化与上下文恢复的单元测试。"""
+from datetime import datetime, timedelta
+
 import pytest
 
 from memory import ShortTermMemory
@@ -247,6 +249,50 @@ def test_usage_totals_cover_all_matching_sessions(store):
     assert content_filtered["turns"] == 1
     assert content_filtered["llm_calls"] == 2
     assert content_filtered["usage"]["total_tokens"] == 11
+
+
+def test_daily_usage_groups_by_date(store):
+    store.save_exchange(
+        "s1", "昨天的问题", "昨天的答复",
+        metadata={
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10},
+            "llm_calls": 1,
+        },
+    )
+    store.save_exchange(
+        "s2", "今天的问题", "今天的答复",
+        metadata={
+            "usage": {"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+            "llm_calls": 2,
+        },
+    )
+
+    yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
+    today = datetime.now().date().isoformat()
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = 's1'",
+            (f"{yesterday}T12:00:00",),
+        )
+
+    data = store.daily_usage(days=2)
+
+    assert [day["date"] for day in data["days"]] == [yesterday, today]
+    assert data["days"][0]["usage"]["total_tokens"] == 10
+    assert data["days"][0]["llm_calls"] == 1
+    assert data["days"][1]["usage"]["total_tokens"] == 20
+    assert data["days"][1]["llm_calls"] == 2
+    assert data["totals"]["usage"]["total_tokens"] == 30
+    assert data["totals"]["llm_calls"] == 3
+    assert data["totals"]["turns"] == 2
+
+
+def test_daily_usage_includes_empty_days(store):
+    data = store.daily_usage(days=7)
+
+    assert len(data["days"]) == 7
+    assert all(day["usage"]["total_tokens"] == 0 for day in data["days"])
+    assert data["totals"]["turns"] == 0
 
 
 def test_export_data_includes_sessions_and_messages(store):
