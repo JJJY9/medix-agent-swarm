@@ -24,7 +24,17 @@
       </span>
     </div>
 
-    <button type="button" class="btn-quiet" id="new-session">新建会诊</button>
+    <div class="topbar-actions">
+      <button
+        type="button"
+        class="btn-quiet"
+        id="history-toggle"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-controls="history-drawer"
+      >会诊记录</button>
+      <button type="button" class="btn-quiet" id="new-session">新建会诊</button>
+    </div>
   </header>
 
   <!-- 生命体征条：心电波形随系统状态改变节律 -->
@@ -76,6 +86,7 @@
       <form class="composer" id="composer" autocomplete="off">
         <label class="sr-only" for="input">您的主诉</label>
         <textarea id="input" rows="1" placeholder="请描述症状及持续时间…" maxlength="2000"></textarea>
+        <button type="button" class="stop" id="stop" hidden>停止</button>
         <button type="submit" class="send" id="send">
           <span class="send-label">提交</span>
           <svg class="send-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -162,6 +173,25 @@
   </footer>
 
 </div>
+
+<!-- 历史会诊抽屉 -->
+<div class="drawer-backdrop" id="history-backdrop" hidden></div>
+<aside class="drawer" id="history-drawer" hidden aria-label="历史会诊">
+  <div class="drawer-head">
+    <h2>历史会诊</h2>
+    <button type="button" class="drawer-close" id="history-close" aria-label="关闭历史会诊">×</button>
+  </div>
+  <label class="sr-only" for="history-search">搜索会诊记录</label>
+  <input
+    id="history-search"
+    class="drawer-search"
+    type="search"
+    placeholder="搜索主诉或会诊编号…"
+    autocomplete="off"
+  />
+  <ul class="history-list" id="history-list"></ul>
+  <p class="drawer-empty" id="history-empty" hidden>还没有历史会诊，提交一次主诉后会自动保存。</p>
+</aside>
 
 <script src="/static/app.js"></script>
 </body>
