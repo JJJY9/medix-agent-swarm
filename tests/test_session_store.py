@@ -122,6 +122,64 @@ def test_message_metadata_roundtrip(store):
     assert messages[1]["metadata"] == metadata
 
 
+def test_usage_by_session_aggregates_metadata(store):
+    store.save_exchange(
+        "s1", "第一问", "第一答",
+        metadata={
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+            "llm_calls": 2,
+        },
+    )
+    store.save_exchange(
+        "s1", "第二问", "第二答",
+        metadata={
+            "usage": {"prompt_tokens": 20, "completion_tokens": 4, "total_tokens": 24},
+            "llm_calls": 3,
+        },
+    )
+    store.save_exchange(
+        "s2", "另一个问题", "另一个答复",
+        metadata={
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+            "llm_calls": 1,
+        },
+    )
+    store.save_exchange("s3", "旧会话问题", "旧会话答复")
+
+    stats = store.usage_by_session(["s1", "s2", "s3", "missing"])
+
+    assert stats["s1"]["usage"] == {
+        "prompt_tokens": 30,
+        "completion_tokens": 6,
+        "total_tokens": 36,
+    }
+    assert stats["s1"]["llm_calls"] == 5
+    assert stats["s1"]["turns"] == 2
+    assert stats["s2"]["usage"]["total_tokens"] == 5
+    assert stats["s3"]["usage"]["total_tokens"] == 0
+    assert stats["s3"]["llm_calls"] == 0
+    assert "missing" not in stats
+
+
+def test_usage_by_session_ignores_invalid_values(store):
+    store.save_exchange(
+        "s1", "问题", "答复",
+        metadata={
+            "usage": {"prompt_tokens": "bad", "total_tokens": None},
+            "llm_calls": "unknown",
+        },
+    )
+
+    stats = store.usage_by_session(["s1"])
+
+    assert stats["s1"]["usage"] == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    assert stats["s1"]["llm_calls"] == 0
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
