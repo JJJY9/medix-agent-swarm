@@ -204,6 +204,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
             {"id": aid, "name": agent_labels.get(aid, aid)} for aid in raw_agents
         ],
         "subtasks_completed": result.get("subtasks_completed", 0),
+        "subtasks_failed": result.get("subtasks_failed", 0),
         "total_time": result.get("total_time"),
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),

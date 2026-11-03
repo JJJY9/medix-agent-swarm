@@ -7,13 +7,140 @@ LeadAgent：任务分解和结果汇总
 - 不直接调用 Worker
 - Worker 自主认领任务并执行
 """
+import json
+import re
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from core.llm_client import LLMClient
 from .shared_context import SharedContext, SubTask, TaskStatus
 from .events import Event, EventType
+
+
+#: 单个问题最多拆出的子任务数（与 constraints/swarm_constraints.yaml 的
+#: max_parallel_tasks 保持一致，避免模型把任务拆得过碎）。
+MAX_SUBTASKS = 5
+
+KNOWN_AGENT_IDS = ("consultation_agent", "diagnostic_agent", "research_agent")
+
+# 模型可能返回类名、短名或中文名，这里统一映射到内部 agent_id。
+_AGENT_ALIASES = {
+    "consultation_agent": "consultation_agent",
+    "consultation": "consultation_agent",
+    "consultationagent": "consultation_agent",
+    "health_consultation": "consultation_agent",
+    "健康咨询": "consultation_agent",
+    "diagnostic_agent": "diagnostic_agent",
+    "diagnostic": "diagnostic_agent",
+    "diagnosticagent": "diagnostic_agent",
+    "diagnosis": "diagnostic_agent",
+    "诊断": "diagnostic_agent",
+    "research_agent": "research_agent",
+    "research": "research_agent",
+    "researchagent": "research_agent",
+    "researcher": "research_agent",
+    "循证医学": "research_agent",
+}
+
+
+def normalize_agent_id(raw_agent: Any) -> Optional[str]:
+    """把模型输出的 Agent 名称归一化为内部 agent_id。
+
+    Returns:
+        已知 agent_id；无法识别时返回 None。
+    """
+    if not isinstance(raw_agent, str) or not raw_agent.strip():
+        return None
+
+    key = raw_agent.strip().lower().replace("-", "_").replace(" ", "_")
+    if key in _AGENT_ALIASES:
+        return _AGENT_ALIASES[key]
+
+    compact = key.replace("_", "")
+    if compact in _AGENT_ALIASES:
+        return _AGENT_ALIASES[compact]
+
+    if key in KNOWN_AGENT_IDS:
+        return key
+
+    return None
+
+
+def extract_json_payload(content: Optional[str]) -> Optional[Any]:
+    """从 LLM 回复中提取第一个包含 subtasks 的 JSON 对象或数组。
+
+    模型经常在 JSON 前后附带解释文字，或者用 ```json 代码块包裹，
+    直接 re.search(r'\\{.*\\}') 在贪婪匹配下容易把尾随文本也吞掉。
+    这里先去掉代码块围栏，再用 JSONDecoder 从每个可能的起始位置尝试解析。
+    """
+    if not content:
+        return None
+
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[A-Za-z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    text = text.strip()
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(payload, dict) and "subtasks" in payload:
+            return payload
+        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
+            return {"subtasks": payload}
+
+    return None
+
+
+def normalize_subtasks(raw_subtasks: Any, max_subtasks: int = MAX_SUBTASKS) -> List[Dict[str, str]]:
+    """校验并归一化 LeadAgent 分解出的子任务列表。
+
+    丢弃缺少描述的条目；未知 Agent 改派给 ConsultationAgent；
+    超过上限时截断，保证后续流程不会因模型输出不规范而崩溃。
+    """
+    if isinstance(raw_subtasks, dict):
+        raw_subtasks = [raw_subtasks]
+    if not isinstance(raw_subtasks, list):
+        return []
+
+    normalized: List[Dict[str, str]] = []
+    for item in raw_subtasks:
+        if not isinstance(item, dict):
+            continue
+
+        description = item.get("description") or item.get("task") or item.get("desc")
+        if not isinstance(description, str) or not description.strip():
+            logger.warning(f"丢弃缺少 description 的子任务: {item!r}")
+            continue
+
+        raw_agent = (
+            item.get("assigned_agent")
+            or item.get("agent")
+            or item.get("assigned_to")
+        )
+        agent_id = normalize_agent_id(raw_agent)
+        if agent_id is None:
+            logger.warning(f"未知 Agent {raw_agent!r}，子任务改派给 consultation_agent")
+            agent_id = "consultation_agent"
+
+        normalized.append({
+            "description": description.strip(),
+            "assigned_agent": agent_id,
+        })
+
+        if len(normalized) >= max_subtasks:
+            logger.warning(f"子任务数量超过上限 {max_subtasks}，已截断")
+            break
+
+    return normalized
 
 
 class LeadAgent:
@@ -215,25 +342,25 @@ class LeadAgent:
         try:
             content = await self.llm_client.chat(messages)
 
-            logger.debug(f"LeadAgent assessment: {content[:200]}...")
+            logger.debug(f"LeadAgent assessment: {(content or '')[:200]}...")
 
-            import json
-            import re
+            payload = extract_json_payload(content)
+            if not isinstance(payload, dict):
+                logger.warning("LeadAgent 返回内容中没有可解析的 JSON，回退到单 Agent")
+                return self._fallback_assessment(
+                    "无法解析 LLM 响应，默认使用 ConsultationAgent"
+                )
 
-            # 尝试提取 JSON
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                return result
+            subtasks = normalize_subtasks(payload.get("subtasks"))
+            if not subtasks:
+                logger.warning("LeadAgent 没有给出有效子任务，回退到单 Agent")
+                return self._fallback_assessment(
+                    "LLM 未给出有效子任务，默认使用 ConsultationAgent"
+                )
 
-            # 回退：假设是简单问题，交给 ConsultationAgent
             return {
-                "subtasks": [{
-                    "type": "knowledge_search",
-                    "description": "回答用户问题",
-                    "assigned_agent": "consultation_agent"
-                }],
-                "reason": "无法解析 LLM 响应，默认使用 ConsultationAgent"
+                "subtasks": subtasks,
+                "reason": payload.get("reason", "由 LeadAgent 分解")
             }
 
         except Exception as e:
@@ -242,6 +369,17 @@ class LeadAgent:
                 "subtasks": [],
                 "reason": f"评估失败：{e}"
             }
+
+    @staticmethod
+    def _fallback_assessment(reason: str) -> Dict[str, Any]:
+        """解析失败时交给单个 ConsultationAgent，避免整条请求失败。"""
+        return {
+            "subtasks": [{
+                "description": "回答用户问题，并提供必要的健康建议",
+                "assigned_agent": "consultation_agent"
+            }],
+            "reason": reason
+        }
 
     def create_subtasks(
         self,
@@ -257,15 +395,27 @@ class LeadAgent:
         subtasks = []
 
         for data in subtasks_data:
+            if not isinstance(data, dict):
+                logger.warning(f"跳过非字典子任务: {data!r}")
+                continue
+
+            description = data.get("description") or data.get("task") or "回答用户问题"
+            description = str(description).strip()
+
+            raw_agent = data.get("assigned_agent") or data.get("agent")
+            assigned_agent = normalize_agent_id(raw_agent)
+            if assigned_agent is None:
+                logger.warning(f"未知 Agent {raw_agent!r}，改派给 consultation_agent")
+                assigned_agent = "consultation_agent"
+
             # 自动推断 type（基于 assigned_agent，向后兼容）
             # LeadAgent 不再输出 type 字段，这里根据 Agent 生成通用 type
-            assigned_agent = data["assigned_agent"]
             inferred_type = data.get("type") or f"{assigned_agent}_task"
 
             subtask = SubTask(
                 id=str(uuid.uuid4()),
                 type=inferred_type,
-                description=data["description"],
+                description=description,
                 assigned_agent=assigned_agent
             )
 
@@ -276,6 +426,10 @@ class LeadAgent:
                 f"Created SubTask: {subtask.type} "
                 f"(assigned to: {subtask.assigned_agent})"
             )
+
+            if len(subtasks) >= MAX_SUBTASKS:
+                logger.warning(f"子任务数量达到上限 {MAX_SUBTASKS}，忽略其余任务")
+                break
 
         return subtasks
 
