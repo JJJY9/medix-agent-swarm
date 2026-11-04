@@ -388,3 +388,13 @@ def test_app_js_ships_overdue_filter_and_today(client):
     assert "没有逾期的提醒" in app_js
     assert 'id="reminders-overdue-only"' in html
     assert 'id="reminders-calendar-today"' in html
+
+
+def test_app_js_ships_home_glance(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function loadHomeGlance" in app_js
+    assert "function renderHomeGlance" in app_js
+    assert 'id="home-glance-reminders"' in html
+    assert 'id="home-glance-metrics"' in html
