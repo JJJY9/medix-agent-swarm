@@ -1771,7 +1771,7 @@ function buildReportHtml(item, messages) {
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
 function buildVisitSummaryHtml({
   profile, context, metrics, reminders, sessions, targets, summaries,
-  symptoms, medications,
+  symptoms, medications, weekly,
 }) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
@@ -1901,6 +1901,17 @@ function buildVisitSummaryHtml({
     + ` · ${escapeHtml(item.title || '未命名会诊')}</li>`
   )).join('\n');
 
+  const weeklyItems = weekly
+    ? weeklySummaryLines(weekly)
+      .map(([label, text]) => (
+        `<li><strong>${escapeHtml(label)}</strong>：${escapeHtml(text)}</li>`
+      ))
+      .join('\n')
+    : '';
+  const weeklyRange = weekly
+    ? `${escapeHtml(weekly.start)} 至 ${escapeHtml(weekly.end)}`
+    : '';
+
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1962,6 +1973,13 @@ function buildVisitSummaryHtml({
       ? `<table><tbody>${contextRows}</tbody></table>`
       : '<p class="muted">还没有填写年龄、既往史、用药或过敏史等补充信息。</p>'}
   </section>
+
+  ${weeklyItems
+    ? `<section>
+        <h2>近 7 天小结（${weeklyRange}）</h2>
+        <ul>${weeklyItems}</ul>
+      </section>`
+    : ''}
 
   <section>
     <h2>指标概览</h2>
@@ -2065,9 +2083,11 @@ async function exportVisitSummary() {
       active_only: 'true', limit: '100',
     });
     if (profile) medicationParams.set('profile', profile);
+    const weeklyParams = new URLSearchParams();
+    if (profile) weeklyParams.set('profile', profile);
     const [
       metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
-      medicationsRes,
+      medicationsRes, weeklyRes,
     ] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch(`/api/reminders${reminderParams.toString() ? `?${reminderParams}` : ''}`),
@@ -2075,6 +2095,7 @@ async function exportVisitSummary() {
       fetch(`/api/metric-targets?${targetParams.toString()}`),
       fetch(`/api/symptoms?${symptomParams.toString()}`),
       fetch(`/api/medications?${medicationParams.toString()}`),
+      fetch(`/api/reports/weekly?${weeklyParams.toString()}`),
     ]);
     const metrics = metricsRes.ok
       ? (await metricsRes.json()).metrics || []
@@ -2094,6 +2115,9 @@ async function exportVisitSummary() {
     const medications = medicationsRes.ok
       ? (await medicationsRes.json()).medications || []
       : [];
+    const weekly = weeklyRes && weeklyRes.ok
+      ? await weeklyRes.json().catch(() => null)
+      : null;
     const summaries = await fetchMetricSummaries(
       profile, metrics, 0, true
     );
@@ -2102,7 +2126,7 @@ async function exportVisitSummary() {
     downloadFile(
       buildVisitSummaryHtml({
         profile, context, metrics, reminders, sessions, targets,
-        summaries, symptoms, medications,
+        summaries, symptoms, medications, weekly,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
@@ -8153,32 +8177,14 @@ function weeklyMetricText(row) {
   return `${name} ${row.count} 次，平均 ${average}`;
 }
 
-function renderWeeklySummary(data) {
-  if (!els.weeklySummaryBody) return;
-  els.weeklySummaryBody.replaceChildren();
-  const range = document.createElement('p');
-  range.className = 'metric-reference';
-  range.textContent =
-    `${formatReminderDue(data.start)} – ${formatReminderDue(data.end)}`
-    + ` · 档案：${data.profile || '未指定'}`;
-
-  const list = document.createElement('ul');
-  list.className = 'weekly-summary-list';
-  const addLine = (label, text) => {
-    const li = document.createElement('li');
-    const strong = document.createElement('strong');
-    strong.textContent = label;
-    li.append(strong, document.createTextNode(`：${text}`));
-    list.appendChild(li);
-  };
-
+function weeklySummaryLines(data) {
   const metricRows = data.metrics.by_metric || [];
-  addLine(
+  const lines = [[
     '健康指标',
     metricRows.length
       ? metricRows.map(weeklyMetricText).join('；')
-      : '近 7 天没有记录'
-  );
+      : '近 7 天没有记录',
+  ]];
 
   const symptoms = data.symptoms;
   let symptomText = '近 7 天没有记录';
@@ -8192,7 +8198,7 @@ function renderWeeklySummary(data) {
         .join('、')}`;
     }
   }
-  addLine('症状日记', symptomText);
+  lines.push(['症状日记', symptomText]);
 
   const meds = data.medications;
   let medicationText = '没有在用药物';
@@ -8204,13 +8210,34 @@ function renderWeeklySummary(data) {
         .join('、')}）`;
     }
   }
-  addLine('用药', medicationText);
+  lines.push(['用药', medicationText]);
 
-  addLine(
+  lines.push([
     '随访提醒',
     `待办 ${data.reminders.pending} 条，逾期 ${data.reminders.overdue} 条`
-    + `，7 天内到期 ${data.reminders.due_in_7_days} 条`
-  );
+    + `，7 天内到期 ${data.reminders.due_in_7_days} 条`,
+  ]);
+  return lines;
+}
+
+function renderWeeklySummary(data) {
+  if (!els.weeklySummaryBody) return;
+  els.weeklySummaryBody.replaceChildren();
+  const range = document.createElement('p');
+  range.className = 'metric-reference';
+  range.textContent =
+    `${formatReminderDue(data.start)} – ${formatReminderDue(data.end)}`
+    + ` · 档案：${data.profile || '未指定'}`;
+
+  const list = document.createElement('ul');
+  list.className = 'weekly-summary-list';
+  for (const [label, text] of weeklySummaryLines(data)) {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = label;
+    li.append(strong, document.createTextNode(`：${text}`));
+    list.appendChild(li);
+  }
 
   els.weeklySummaryBody.append(range, list);
 }
