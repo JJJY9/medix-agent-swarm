@@ -2102,8 +2102,33 @@ class SessionStore:
                     """,
                     prev_params,
                 ).fetchone()
+            target_row = None
+            if profile is not None:
+                target_row = self._conn.execute(
+                    """
+                    SELECT value1, value2 FROM metric_targets
+                     WHERE profile = ? AND metric = ?
+                    """,
+                    (_normalize_profile_name(profile), metric),
+                ).fetchone()
 
         count = int(row["count"] or 0) if row else 0
+
+        within_target = None
+        if target_row is not None and count:
+            target_conditions = list(conditions)
+            target_params = list(params)
+            target_conditions.append("value1 <= ?")
+            target_params.append(float(target_row["value1"]))
+            if metric == "bp" and target_row["value2"] is not None:
+                target_conditions.append("value2 <= ?")
+                target_params.append(float(target_row["value2"]))
+            with self._lock:
+                within_target = int(self._conn.execute(
+                    "SELECT COUNT(*) FROM health_metrics WHERE "
+                    + " AND ".join(target_conditions),
+                    target_params,
+                ).fetchone()[0] or 0)
 
         def stat(value):
             return round(float(value), 1) if value is not None else None
@@ -2140,6 +2165,14 @@ class SessionStore:
             "value1": value1,
             "value2": value2,
             "latest": dict(latest_row) if latest_row else None,
+            "target": None if target_row is None else {
+                "value1": float(target_row["value1"]),
+                "value2": (
+                    float(target_row["value2"])
+                    if target_row["value2"] is not None else None
+                ),
+            },
+            "within_target": within_target,
         }
 
     def update_metric(
