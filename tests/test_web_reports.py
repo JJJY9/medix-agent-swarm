@@ -574,3 +574,12 @@ def test_app_js_ships_symptom_csv(client):
 
     assert "async function exportSymptomsCsv" in app_js
     assert 'id="symptom-export"' in html
+
+
+def test_app_js_ships_home_symptoms(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "homeGlanceSymptoms" in app_js
+    assert 'id="home-glance-symptoms"' in html
+    assert "症状日记'" in app_js

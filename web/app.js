@@ -312,6 +312,7 @@ const els = {
   homeGlance: document.getElementById('home-glance'),
   homeGlanceReminders: document.getElementById('home-glance-reminders'),
   homeGlanceMetrics: document.getElementById('home-glance-metrics'),
+  homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   remindersCalendar: document.getElementById('reminders-calendar'),
   remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
   remindersCalendarTitle: document.getElementById('reminders-calendar-title'),
@@ -6669,7 +6670,7 @@ function homeGlanceLine(label, value, sub) {
   return parts;
 }
 
-function renderHomeGlance(reminders, metrics) {
+function renderHomeGlance(reminders, metrics, symptoms) {
   if (!els.homeGlance) return;
 
   const pending = (reminders || []).filter((item) => !item.done);
@@ -6713,11 +6714,23 @@ function renderHomeGlance(reminders, metrics) {
   const metricValue = recent.length ? recent.join(' · ') : '暂无健康记录';
   const metricSub = recent.length ? '点击打开健康记录' : '点击录入第一条记录';
 
+  const latestSymptom = (symptoms || [])[0];
+  const symptomValue = latestSymptom
+    ? `${latestSymptom.symptom} ${latestSymptom.severity}/10`
+    : '暂无症状记录';
+  const symptomSub = latestSymptom
+    ? [formatTime(latestSymptom.recorded_at), latestSymptom.profile || '未指定档案']
+      .join(' · ')
+    : '点击记录第一条症状';
+
   els.homeGlanceReminders.replaceChildren(
     ...homeGlanceLine('随访提醒', reminderValue, reminderSub)
   );
   els.homeGlanceMetrics.replaceChildren(
     ...homeGlanceLine('健康记录', metricValue, metricSub)
+  );
+  els.homeGlanceSymptoms.replaceChildren(
+    ...homeGlanceLine('症状日记', symptomValue, symptomSub)
   );
   els.homeGlance.hidden = false;
 }
@@ -6726,11 +6739,12 @@ async function loadHomeGlance() {
   if (!els.homeGlance) return;
   const requestSeq = ++homeGlanceRequestSeq;
   try {
-    const [remindersRes, metricsRes] = await Promise.all([
+    const [remindersRes, metricsRes, symptomsRes] = await Promise.all([
       fetch('/api/reminders'),
       fetch('/api/metrics/latest'),
+      fetch('/api/symptoms?limit=1'),
     ]);
-    if (!remindersRes.ok || !metricsRes.ok) {
+    if (!remindersRes.ok || !metricsRes.ok || !symptomsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
         els.homeGlance.hidden = true;
       }
@@ -6738,8 +6752,9 @@ async function loadHomeGlance() {
     }
     const reminders = (await remindersRes.json()).reminders || [];
     const metrics = (await metricsRes.json()).metrics || [];
+    const symptoms = (await symptomsRes.json()).symptoms || [];
     if (requestSeq !== homeGlanceRequestSeq) return;
-    renderHomeGlance(reminders, metrics);
+    renderHomeGlance(reminders, metrics, symptoms);
   } catch {
     if (requestSeq === homeGlanceRequestSeq) {
       els.homeGlance.hidden = true;
@@ -9730,6 +9745,10 @@ els.homeGlanceReminders.addEventListener('click', () => {
 });
 els.homeGlanceMetrics.addEventListener('click', () => {
   openMetrics();
+});
+els.homeGlanceSymptoms.addEventListener('click', () => {
+  openMetrics();
+  if (els.symptomSection) els.symptomSection.open = true;
 });
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
