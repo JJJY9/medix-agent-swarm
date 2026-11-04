@@ -79,10 +79,15 @@ class RenameSessionRequest(BaseModel):
 class ImportSessionsRequest(BaseModel):
     version: Optional[int] = None
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
+    profiles: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
     favorite: bool
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool
 
 
 class FeedbackRequest(BaseModel):
@@ -351,11 +356,13 @@ async def list_sessions(
     offset: int = 0,
     q: Optional[str] = None,
     favorite: Optional[bool] = None,
-    days: int = 0
+    days: int = 0,
+    archived: bool = False
 ):
-    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏与时间范围）。
+    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围与归档）。
 
-    summary 汇总所有匹配会话的 Token 用量与模型调用次数，
+    archived=false（默认）只返回未归档会话；archived=true 只返回已归档会话。
+    summary 汇总所有匹配会话的 Token 用量、模型调用次数与反馈，
     不受当前分页影响；每条会话附带自身用量。
     """
     from memory import get_session_store
@@ -369,11 +376,23 @@ async def list_sessions(
     store = get_session_store()
     sessions, total, totals, feedback = await asyncio.gather(
         asyncio.to_thread(
-            store.list_sessions, limit, query, offset, favorites_only, days
+            store.list_sessions,
+            limit,
+            query,
+            offset,
+            favorites_only,
+            days,
+            archived,
         ),
-        asyncio.to_thread(store.count_sessions, query, favorites_only, days),
-        asyncio.to_thread(store.usage_totals, query, favorites_only, days),
-        asyncio.to_thread(store.feedback_totals, query, favorites_only, days),
+        asyncio.to_thread(
+            store.count_sessions, query, favorites_only, days, archived
+        ),
+        asyncio.to_thread(
+            store.usage_totals, query, favorites_only, days, archived
+        ),
+        asyncio.to_thread(
+            store.feedback_totals, query, favorites_only, days, archived
+        ),
     )
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
@@ -518,7 +537,11 @@ async def import_sessions(request: ImportSessionsRequest):
     """导入备份文件；已存在的会话编号会跳过，不覆盖现有记录。"""
     from memory import get_session_store
 
-    payload = {"version": request.version, "sessions": request.sessions}
+    payload = {
+        "version": request.version,
+        "sessions": request.sessions,
+        "profiles": request.profiles,
+    }
     try:
         result = await asyncio.to_thread(
             get_session_store().import_data, payload
@@ -633,6 +656,19 @@ async def favorite_session(session_id: str, request: FavoriteRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"ok": True, "session_id": session_id, "favorite": request.favorite}
+
+
+@app.patch("/api/sessions/{session_id}/archive")
+async def archive_session(session_id: str, request: ArchiveRequest):
+    """归档或移出归档；归档不会删除会话与用量记录。"""
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().set_archived, session_id, request.archived
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True, "session_id": session_id, "archived": request.archived}
 
 
 @app.post("/api/sessions/{session_id}/feedback")

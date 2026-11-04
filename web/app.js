@@ -37,6 +37,7 @@ const els = {
   historySummary: document.getElementById('history-summary'),
   historyActionStatus: document.getElementById('history-action-status'),
   historyFavoriteFilter: document.getElementById('history-favorite-filter'),
+  historyArchiveFilter: document.getElementById('history-archive-filter'),
   historyExport: document.getElementById('history-export'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
@@ -146,6 +147,7 @@ let historyOffset = 0;
 let historyTotal = 0;
 let historyLoading = false;
 let favoritesOnly = false;
+let archivedOnly = false;
 let historyDays = 0;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
@@ -1658,7 +1660,9 @@ function renderHistoryItems(sessions, summary, append = false) {
 
   if (!sessions.length && !els.historyList.children.length) {
     els.historyEmpty.hidden = false;
-    if (favoritesOnly) {
+    if (archivedOnly) {
+      els.historyEmpty.textContent = '还没有归档的会诊';
+    } else if (favoritesOnly) {
       els.historyEmpty.textContent = '还没有收藏的会诊';
     } else if (historyDays > 0) {
       els.historyEmpty.textContent = '所选时间范围内没有会诊记录';
@@ -1739,6 +1743,20 @@ function renderHistoryItems(sessions, summary, append = false) {
     exportBtn.setAttribute('aria-label', `导出：${item.title || '未命名会诊'}`);
     exportBtn.addEventListener('click', () => exportHistory(item));
 
+    const archive = document.createElement('button');
+    archive.type = 'button';
+    archive.className = 'history-action';
+    archive.textContent = item.archived ? '恢复' : '归档';
+    archive.title = item.archived ? '移出归档' : '把这次会诊移入归档';
+    archive.setAttribute(
+      'aria-label',
+      `${item.archived ? '移出归档' : '归档'}：${item.title || '未命名会诊'}`
+    );
+    archive.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleArchive(item);
+    });
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'history-action danger';
@@ -1747,7 +1765,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
-    actions.append(favorite, rename, exportBtn, del);
+    actions.append(favorite, rename, exportBtn, archive, del);
     li.append(open, actions);
     els.historyList.appendChild(li);
   }
@@ -1762,7 +1780,8 @@ function renderHistorySummary(summary) {
 
   const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
   const llmCalls = Number(summary.llm_calls || 0);
-  const parts = [`共 ${summary.sessions} 次${favoritesOnly ? '收藏' : ''}会诊`];
+  const scope = archivedOnly ? '已归档' : favoritesOnly ? '收藏' : '';
+  const parts = [`共 ${summary.sessions} 次${scope}会诊`];
   if (summary.loaded && summary.loaded < summary.sessions) {
     parts.push(`已加载 ${summary.loaded} 次`);
   }
@@ -1815,6 +1834,7 @@ async function loadHistory(query = '', { append = false } = {}) {
     const res = await fetch(
       `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}` +
       (favoritesOnly ? '&favorite=1' : '') +
+      (archivedOnly ? '&archived=true' : '') +
       (historyDays > 0 ? `&days=${historyDays}` : '')
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
@@ -2087,11 +2107,16 @@ async function importHistoryBackup() {
     }
 
     const count = Array.isArray(data.sessions) ? data.sessions.length : 0;
-    if (!count) {
-      window.alert('备份文件中没有会话。');
+    const profileCount = Array.isArray(data.profiles) ? data.profiles.length : 0;
+    if (!count && !profileCount) {
+      window.alert('备份文件中没有会话或患者档案。');
       return;
     }
-    if (!window.confirm(`导入 ${count} 个会话？已存在的会话编号会跳过。`)) {
+    const summary = [
+      count ? `${count} 个会话` : '',
+      profileCount ? `${profileCount} 个患者档案` : '',
+    ].filter(Boolean).join('、');
+    if (!window.confirm(`导入 ${summary}？已存在的会话编号与档案名称会跳过。`)) {
       return;
     }
 
@@ -2104,7 +2129,11 @@ async function importHistoryBackup() {
       const res = await fetch('/api/sessions/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version: data.version, sessions: data.sessions }),
+        body: JSON.stringify({
+          version: data.version,
+          sessions: data.sessions,
+          profiles: data.profiles,
+        }),
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
@@ -2113,6 +2142,7 @@ async function importHistoryBackup() {
       await loadHistory(els.historySearch.value.trim());
       await loadUsageTrend();
       await loadUsageBudget();
+      if (result.profiles) await initProfiles();
     } catch (err) {
       btn.textContent = '导入失败';
       window.alert(`导入备份失败：${err.message || err}`);
@@ -2300,6 +2330,31 @@ async function toggleFavorite(item) {
     if (historyOpen) els.historySearch.focus();
   } catch (err) {
     window.alert(`更新收藏失败：${err.message || err}`);
+  }
+}
+
+async function toggleArchive(item) {
+  const archived = !item.archived;
+
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(item.id)}/archive`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    await loadHistory(els.historySearch.value.trim());
+    els.historyActionStatus.textContent = archived
+      ? '已归档会诊'
+      : '已移出归档';
+    if (historyOpen) els.historySearch.focus();
+  } catch (err) {
+    window.alert(`更新归档失败：${err.message || err}`);
   }
 }
 
@@ -3828,6 +3883,12 @@ els.historyFavoriteFilter.addEventListener('click', () => {
   els.historyFavoriteFilter.textContent = favoritesOnly ? '★' : '☆';
   loadHistory(els.historySearch.value.trim());
   loadUsageTrend();
+});
+
+els.historyArchiveFilter.addEventListener('click', () => {
+  archivedOnly = !archivedOnly;
+  els.historyArchiveFilter.setAttribute('aria-pressed', String(archivedOnly));
+  loadHistory(els.historySearch.value.trim());
 });
 
 els.historyRange.addEventListener('change', () => {

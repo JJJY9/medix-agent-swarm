@@ -201,6 +201,52 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_archive_api_and_filter(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "归档问题", "归档答复",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "普通问题", "普通答复",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        patched = client.patch(
+            "/api/sessions/s1/archive", json={"archived": True}
+        )
+        active = client.get("/api/sessions")
+        archived = client.get("/api/sessions", params={"archived": "true"})
+        unarchived = client.patch(
+            "/api/sessions/s1/archive", json={"archived": False}
+        )
+        missing = client.patch(
+            "/api/sessions/missing/archive", json={"archived": True}
+        )
+    finally:
+        store.close()
+
+    assert patched.status_code == 200
+    assert patched.json()["archived"] is True
+
+    active_data = active.json()
+    assert [item["id"] for item in active_data["sessions"]] == ["s2"]
+    assert active_data["summary"]["sessions"] == 1
+    assert active_data["summary"]["usage"]["total_tokens"] == 20
+
+    archived_data = archived.json()
+    assert [item["id"] for item in archived_data["sessions"]] == ["s1"]
+    assert archived_data["sessions"][0]["archived"] is True
+    assert archived_data["summary"]["sessions"] == 1
+    assert archived_data["summary"]["usage"]["total_tokens"] == 10
+
+    assert unarchived.status_code == 200
+    assert missing.status_code == 404
+
+
 def test_serialize_result_keeps_assistant_message_id():
     payload = api_server._serialize_result(
         {"answer": "答复", "assistant_message_id": 42, "session_id": "s1"},
@@ -291,6 +337,29 @@ def test_sessions_import_api(tmp_path, monkeypatch):
     assert response.json()["imported"] == 1
     assert again.json()["skipped"] == 1
     assert empty.status_code == 400
+
+
+def test_import_api_accepts_profiles_only(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.post(
+            "/api/sessions/import",
+            json={
+                "profiles": [
+                    {"name": "孩子", "context": {"age": "6"}},
+                ]
+            },
+        )
+        profiles = client.get("/api/profiles")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert response.json()["profiles"] == 1
+    assert [item["name"] for item in profiles.json()["profiles"]] == ["孩子"]
 
 
 def test_sessions_api_filters_by_days(tmp_path, monkeypatch):

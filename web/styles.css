@@ -1355,6 +1355,12 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   border-color: var(--clinic);
 }
 
+.history-archive-filter {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .usage-trend {
   flex: none;
   margin: 2px 16px 10px;

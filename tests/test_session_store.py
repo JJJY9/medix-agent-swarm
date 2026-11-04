@@ -625,6 +625,63 @@ def test_import_profiles_only_backup(store):
     assert store.list_profiles()[0]["name"] == "孩子"
 
 
+def test_archive_filters_and_counts(store):
+    store.save_exchange(
+        "s1", "归档问题", "答复一",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "普通问题", "答复二",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+
+    assert store.set_archived("s1", True) is True
+    assert store.set_archived("missing", True) is False
+    assert store.list_sessions(archived=True)[0]["archived"] is True
+
+    assert [item["id"] for item in store.list_sessions(archived=False)] == ["s2"]
+    assert [item["id"] for item in store.list_sessions(archived=True)] == ["s1"]
+    assert {item["id"] for item in store.list_sessions()} == {"s1", "s2"}
+
+    assert store.count_sessions(archived=False) == 1
+    assert store.count_sessions(archived=True) == 1
+    assert store.usage_totals(archived=False)["usage"]["total_tokens"] == 20
+    assert store.usage_totals(archived=True)["usage"]["total_tokens"] == 10
+
+    store.set_archived("s1", False)
+    assert store.list_sessions(archived=True) == []
+    assert store.count_sessions(archived=True) == 0
+
+
+def test_feedback_totals_respects_archive(store):
+    archived_id = store.save_exchange("s1", "归档问题", "答复一")
+    active_id = store.save_exchange("s2", "普通问题", "答复二")
+    store.set_message_feedback("s1", archived_id, 1)
+    store.set_message_feedback("s2", active_id, -1)
+    store.set_archived("s1", True)
+
+    assert store.feedback_totals(archived=False)["unhelpful"] == 1
+    assert store.feedback_totals(archived=True)["helpful"] == 1
+    assert store.feedback_totals()["total"] == 2
+
+
+def test_archive_survives_export_and_import(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    source.save_exchange("s1", "归档问题", "答复")
+    source.set_archived("s1", True)
+    data = source.export_data()
+    source.close()
+
+    assert data["sessions"][0]["archived"] is True
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        target.import_data(data)
+        assert [item["id"] for item in target.list_sessions(archived=True)] == ["s1"]
+    finally:
+        target.close()
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
