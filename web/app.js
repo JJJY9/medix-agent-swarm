@@ -4155,6 +4155,7 @@ async function runCalc(url, body, build) {
     els.calcSave.hidden = !currentCalcAction;
     els.calcSave.textContent = currentCalcAction ? currentCalcAction.label : '保存到健康记录';
     els.calcResult.hidden = false;
+    els.calcResult.scrollIntoView({ block: 'nearest' });
     setCalcStatus('');
   } catch (err) {
     currentCalcAction = null;
@@ -5226,7 +5227,8 @@ els.calcSave.addEventListener('click', async () => {
   els.calcSave.textContent = '保存中…';
   try {
     await currentCalcAction.run();
-    els.calcSave.textContent = '已保存';
+    currentCalcAction = null;
+    els.calcSave.hidden = true;
   } catch {
     els.calcSave.textContent = original;
   } finally {
