@@ -335,6 +335,7 @@ class SessionStore:
                     note       TEXT NOT NULL DEFAULT '',
                     due_at     TEXT NOT NULL,
                     session_id TEXT NOT NULL DEFAULT '',
+                    profile    TEXT NOT NULL DEFAULT '',
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -372,6 +373,14 @@ class SessionStore:
             if "profile" not in session_columns:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT ''"
+                )
+            reminder_columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(reminders)")
+            }
+            if "profile" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN profile TEXT NOT NULL DEFAULT ''"
                 )
 
     @staticmethod
@@ -1199,6 +1208,7 @@ class SessionStore:
             "profiles": self.list_profiles(),
             "health_metrics": self.list_metrics(limit=100000),
             "metric_targets": self.list_metric_targets(),
+            "reminders": self.list_reminders(include_done=True),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
@@ -1210,6 +1220,7 @@ class SessionStore:
         raw_profiles = data.get("profiles")
         raw_metrics = data.get("health_metrics")
         raw_targets = data.get("metric_targets")
+        raw_reminders = data.get("reminders")
         if raw_sessions is None and (
             isinstance(raw_profiles, list) or isinstance(raw_metrics, list)
         ):
@@ -1474,6 +1485,51 @@ class SessionStore:
                     )
                     targets_imported += 1
 
+            reminders_imported = 0
+            if isinstance(raw_reminders, list):
+                for raw in raw_reminders[:2000]:
+                    if not isinstance(raw, dict):
+                        continue
+                    title = " ".join(
+                        str(raw.get("title") or "").split()
+                    )[:MAX_REMINDER_TITLE_LENGTH]
+                    due_at = str(raw.get("due_at") or "").strip()[:32]
+                    if not title or not REMINDER_DATE_PATTERN.match(due_at):
+                        continue
+                    note = " ".join(
+                        str(raw.get("note") or "").split()
+                    )[:MAX_REMINDER_NOTE_LENGTH]
+                    profile = " ".join(
+                        str(raw.get("profile") or "").split()
+                    )[:MAX_PROFILE_NAME_LENGTH]
+                    session_id = str(raw.get("session_id") or "").strip()[:64]
+                    done = 1 if raw.get("done") in (1, True, "1") else 0
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM reminders
+                         WHERE title = ? AND due_at = ? AND profile = ?
+                        """,
+                        (title, due_at, profile),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    created_at = str(raw.get("created_at") or now)[:40]
+                    updated_at = str(raw.get("updated_at") or created_at)[:40]
+                    self._conn.execute(
+                        """
+                        INSERT INTO reminders(
+                            title, note, due_at, session_id, profile, done,
+                            created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            title, note, due_at, session_id, profile,
+                            done, created_at, updated_at,
+                        ),
+                    )
+                    reminders_imported += 1
+
         return {
             "imported": imported,
             "skipped": skipped,
@@ -1482,6 +1538,7 @@ class SessionStore:
             "profiles": profiles_imported,
             "metrics": metrics_imported,
             "targets": targets_imported,
+            "reminders": reminders_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -2002,7 +2059,12 @@ class SessionStore:
         return [row["action"] for row in rows]
 
     def add_reminder(
-        self, title: str, due_at: str, note: str = "", session_id: str = ""
+        self,
+        title: str,
+        due_at: str,
+        note: str = "",
+        session_id: str = "",
+        profile: str = "",
     ) -> Dict[str, Any]:
         """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
@@ -2013,15 +2075,17 @@ class SessionStore:
             raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
         note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
         session_id = str(session_id or "").strip()[:64]
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 INSERT INTO reminders(
-                    title, note, due_at, session_id, done, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 0, ?, ?)
+                    title, note, due_at, session_id, profile, done,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
                 """,
-                (title, note, due_at, session_id, now, now),
+                (title, note, due_at, session_id, profile, now, now),
             )
             reminder_id = int(cursor.lastrowid)
         return {
@@ -2030,22 +2094,36 @@ class SessionStore:
             "note": note,
             "due_at": due_at,
             "session_id": session_id,
+            "profile": profile,
             "done": False,
             "created_at": now,
             "updated_at": now,
         }
 
-    def list_reminders(self, include_done: bool = False) -> List[Dict[str, Any]]:
-        """按到期时间升序返回随访提醒，默认只返回未完成的。"""
-        where = "" if include_done else " WHERE done = 0"
+    def list_reminders(
+        self,
+        include_done: bool = False,
+        profile: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """按到期时间升序返回随访提醒，默认只返回未完成的，可按档案筛选。"""
+        clauses: List[str] = []
+        params: List[Any] = []
+        if not include_done:
+            clauses.append("done = 0")
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        if profile:
+            clauses.append("profile = ?")
+            params.append(profile)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT id, title, note, due_at, session_id, done,
+                SELECT id, title, note, due_at, session_id, profile, done,
                        created_at, updated_at
                   FROM reminders{where}
                  ORDER BY done ASC, due_at ASC, id ASC
-                """
+                """,
+                params,
             ).fetchall()
         return [
             {**dict(row), "done": bool(row["done"])}
@@ -2116,7 +2194,7 @@ class SessionStore:
                 return None
             row = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, done,
+                SELECT id, title, note, due_at, session_id, profile, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -2150,7 +2228,7 @@ class SessionStore:
             )
             updated = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, done,
+                SELECT id, title, note, due_at, session_id, profile, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,

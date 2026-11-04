@@ -87,6 +87,7 @@ class ImportSessionsRequest(BaseModel):
     profiles: Optional[List[Dict[str, Any]]] = None
     health_metrics: Optional[List[Dict[str, Any]]] = None
     metric_targets: Optional[List[Dict[str, Any]]] = None
+    reminders: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -147,6 +148,7 @@ class ReminderRequest(BaseModel):
     )
     note: str = Field("", max_length=300, description="可选备注")
     session_id: str = Field("", max_length=64, description="关联的会诊编号")
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
 
 
 class ReminderUpdateRequest(BaseModel):
@@ -950,6 +952,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "profiles": request.profiles,
         "health_metrics": request.health_metrics,
         "metric_targets": request.metric_targets,
+        "reminders": request.reminders,
     }
     try:
         result = await asyncio.to_thread(
@@ -968,7 +971,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"skipped={result.get('skipped', 0)} "
             f"profiles={result.get('profiles', 0)} "
             f"metrics={result.get('metrics', 0)} "
-            f"targets={result.get('targets', 0)}"
+            f"targets={result.get('targets', 0)} "
+            f"reminders={result.get('reminders', 0)}"
         ),
     )
     return {"ok": True, **result}
@@ -1399,12 +1403,14 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
 
 
 @app.get("/api/reminders")
-async def list_reminders(include_done: bool = False):
-    """随访提醒列表，默认只返回未完成的，按到期时间升序。"""
+async def list_reminders(
+    include_done: bool = False, profile: Optional[str] = None
+):
+    """随访提醒列表，默认只返回未完成的，可按档案筛选。"""
     from memory import get_session_store
 
     reminders = await asyncio.to_thread(
-        get_session_store().list_reminders, include_done
+        get_session_store().list_reminders, include_done, profile
     )
     return {"reminders": reminders}
 
@@ -1421,6 +1427,7 @@ async def add_reminder(request: ReminderRequest):
             request.due_at,
             request.note,
             request.session_id,
+            request.profile,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

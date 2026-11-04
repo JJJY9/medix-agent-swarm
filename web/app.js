@@ -1818,9 +1818,11 @@ async function exportVisitSummary() {
     if (profile) sessionParams.set('profile', profile);
     const targetParams = new URLSearchParams();
     if (profile) targetParams.set('profile', profile);
+    const reminderParams = new URLSearchParams();
+    if (profile) reminderParams.set('profile', profile);
     const [metricsRes, remindersRes, sessionsRes, targetsRes] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
-      fetch('/api/reminders'),
+      fetch(`/api/reminders${reminderParams.toString() ? `?${reminderParams}` : ''}`),
       fetch(`/api/sessions?${sessionParams.toString()}`),
       fetch(`/api/metric-targets?${targetParams.toString()}`),
     ]);
@@ -5509,7 +5511,8 @@ function renderReminders(items) {
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
-    meta.textContent = `到期：${formatReminderDue(item.due_at)}`;
+    meta.textContent = `到期：${formatReminderDue(item.due_at)}`
+      + (item.profile ? ` · 档案：${item.profile}` : '');
     if (due) {
       const badge = document.createElement('span');
       badge.className = 'reminder-badge';
@@ -5691,6 +5694,7 @@ async function addReminder() {
     title,
     due_at: dueAt,
     note: (els.reminderNote.value || '').trim(),
+    profile: els.profileSelect.value || '',
   };
   if (!editingId) payload.session_id = sessionId || '';
 
