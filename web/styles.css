@@ -2894,8 +2894,11 @@ html[data-theme="dark"] .metrics-status.error {
 
 .metric-item-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   flex: none;
   gap: 2px;
+  max-width: 55%;
 }
 
 .metric-delete,

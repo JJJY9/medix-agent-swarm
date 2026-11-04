@@ -660,6 +660,8 @@ def test_rename_profile_updates_metrics(store):
     store.add_reminder("复查", "2026-11-10", profile="妈妈")
     store.add_symptom("妈妈", "头晕", 5, "2026-11-01T08:00")
     store.set_metric_target("妈妈", "weight", 70)
+    medication = store.add_medication("妈妈", "氨氯地平", "5 mg")
+    store.add_medication_log(medication["id"], "2026-11-01T08:00")
 
     assert store.rename_profile("妈妈", "母亲") == "母亲"
     assert [p["name"] for p in store.list_profiles()] == ["母亲"]
@@ -674,6 +676,14 @@ def test_rename_profile_updates_metrics(store):
     assert [
         item["symptom"] for item in store.list_symptoms(profile="母亲")
     ] == ["头晕"]
+    assert [
+        item["name"] for item in store.list_medications(profile="母亲")
+    ] == ["氨氯地平"]
+    renamed_logs = store.list_medication_logs(profile="母亲")
+    assert len(renamed_logs) == 1
+    assert renamed_logs[0]["profile"] == "母亲"
+    assert "妈妈" not in store.list_used_profile_names()
+    assert "母亲" in store.list_used_profile_names()
 
     assert store.rename_profile("missing", "x") is None
     assert store.rename_profile("母亲", "母亲") == "母亲"
@@ -1742,11 +1752,15 @@ def test_medication_logs_cascade_and_backup(store, tmp_path):
 
     other = SessionStore(str(tmp_path / "medication-logs-copy.db"))
     try:
+        # 目标库先有一条无关药物，确保导入后 id 必然错位
+        other.add_medication("其他人", "维生素D", "400 IU")
         result = other.import_data(data)
         assert result["medication_logs"] == 1
         imported = other.list_medication_logs()
         assert imported[0]["taken_at"] == "2026-11-05T08:30"
-        assert imported[0]["medication_id"] == other.list_medications()[0]["id"]
+        copied_medication = other.list_medications(profile="父亲")[0]
+        assert imported[0]["medication_id"] == copied_medication["id"]
+        assert imported[0]["medication_id"] != item["id"]
         again = other.import_data(data)
         assert again["medication_logs"] == 0
     finally:
@@ -1754,6 +1768,32 @@ def test_medication_logs_cascade_and_backup(store, tmp_path):
 
     assert store.delete_medication(item["id"]) is True
     assert store.list_medication_logs(item["id"]) == []
+
+
+def test_medication_logs_ignore_future_dates_in_stats(store):
+    item = store.add_medication("", "测试药")
+    today = datetime.now().strftime("%Y-%m-%d")
+    store.add_medication_log(item["id"], f"{today}T08:00")
+    store.add_medication_log(item["id"], "2099-01-01T09:00")
+
+    listed = store.list_medications()[0]
+    assert listed["today_count"] == 1
+    assert listed["week_count"] == 1
+    assert listed["last_taken_at"] == f"{today}T08:00"
+
+
+def test_update_medication_syncs_log_profile(store):
+    item = store.add_medication("旧档案", "药A", "1 mg")
+    store.add_medication_log(item["id"], "2026-11-01T08:00")
+
+    updated = store.update_medication(
+        item["id"], "新档案", "药A", "1 mg", "", "", True
+    )
+    assert updated["profile"] == "新档案"
+    assert store.list_medication_logs(profile="旧档案") == []
+    logs = store.list_medication_logs(profile="新档案")
+    assert len(logs) == 1
+    assert logs[0]["profile"] == "新档案"
 
 
 def test_medication_import_skips_status_change(store):

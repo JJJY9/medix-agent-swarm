@@ -613,6 +613,8 @@ def test_app_js_ships_medication_filters(client):
     assert 'id="medication-status-filter"' in html
     assert "function filterMedications" in app_js
     assert ".medication-filters" in css
+    assert "els.medicationSearch.addEventListener('input'" in app_js
+    assert "els.medicationStatusFilter.addEventListener('change'" in app_js
 
 
 def test_app_js_ships_reminder_snooze_days(client):
@@ -636,6 +638,33 @@ def test_app_js_ships_medication_intake_log(client):
     assert "近 7 天" in app_js
     assert "今日未打卡" in app_js
     assert "已记录用药" in app_js
+    assert "medicationLogBusy.has(item.id)" in app_js
+    assert "medicationLogBusy.delete(item.id)" in app_js
+
+
+def test_app_js_medication_review_hardening(client):
+    app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
+    css = client.get("/static/styles.css").text
+
+    # 编辑中的药物被筛选隐藏时不应重置表单
+    assert "!medicationItemsCache.some(" in app_js
+    # 增删改/导入后刷新首页速览
+    assert app_js.count("await loadMedications();\n    loadHomeGlance();") >= 4
+    # 首页用药卡片标注档案，避免跨档案聚合歧义
+    assert "（${item.profile}）" in app_js
+    # 备份导入携带打卡记录
+    assert "medication_logs: data.medication_logs" in app_js
+    # 推迟下拉失败后可重试
+    assert "snooze.value = '';" in app_js
+    # 频次解析覆盖每两月 / 每 N 天
+    assert "每两月" in app_js
+    assert "everyDays" in app_js
+    # 审计标签补全
+    assert "'metric_target.set': '设置指标目标'" in app_js
+    assert "'maintenance.purge': '维护清理'" in app_js
+    # 窄屏操作区可换行
+    assert "flex-wrap: wrap" in css
+    assert "max-width: 55%" in css
 
 
 def test_app_js_ships_medication_logs_export(client):
