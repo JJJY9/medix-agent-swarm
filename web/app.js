@@ -3461,6 +3461,8 @@ function formatMetricValue(item) {
 function renderMetrics(items) {
   els.metricsList.replaceChildren();
   els.metricsEmpty.hidden = items.length > 0;
+  els.metricsEmpty.textContent =
+    `还没有${METRIC_NAMES[els.metricType.value] || '该类'}记录。`;
 
   for (const item of items) {
     const li = document.createElement('li');
@@ -3676,8 +3678,13 @@ async function refreshMetrics() {
 }
 
 async function loadMetrics() {
+  const metric = els.metricType.value;
+  const profile = els.metricProfile.value;
   try {
-    const res = await fetch('/api/metrics?limit=50');
+    const res = await fetch(
+      `/api/metrics?limit=50&metric=${encodeURIComponent(metric)}`
+      + `&profile=${encodeURIComponent(profile)}`
+    );
     if (!res.ok) return;
     const data = await res.json();
     renderMetrics(data.metrics || []);
@@ -4804,9 +4811,9 @@ els.metricsClose.addEventListener('click', () => closeMetrics(true));
 els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
 els.metricType.addEventListener('change', () => {
   setMetricType(els.metricType.value);
-  loadMetricTrend();
+  refreshMetrics();
 });
-els.metricProfile.addEventListener('change', loadMetricTrend);
+els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.metricExport.addEventListener('click', exportMetricsCsv);
 
