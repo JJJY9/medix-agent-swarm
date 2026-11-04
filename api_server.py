@@ -90,6 +90,7 @@ class ImportSessionsRequest(BaseModel):
     reminders: Optional[List[Dict[str, Any]]] = None
     symptoms: Optional[List[Dict[str, Any]]] = None
     medications: Optional[List[Dict[str, Any]]] = None
+    medication_logs: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -371,6 +372,11 @@ class MedicationRequest(BaseModel):
     frequency: str = Field("", max_length=60, description="频次，如 每日一次")
     note: str = Field("", max_length=300)
     active: bool = True
+
+
+class MedicationLogRequest(BaseModel):
+    taken_at: str = Field("", max_length=40, description="服用时间（ISO），默认当前时间")
+    note: str = Field("", max_length=300)
 class SymptomRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
@@ -1082,6 +1088,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "reminders": request.reminders,
         "symptoms": request.symptoms,
         "medications": request.medications,
+        "medication_logs": request.medication_logs,
     }
     try:
         result = await asyncio.to_thread(
@@ -1103,7 +1110,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"targets={result.get('targets', 0)} "
             f"reminders={result.get('reminders', 0)} "
             f"symptoms={result.get('symptoms', 0)} "
-            f"medications={result.get('medications', 0)}"
+            f"medications={result.get('medications', 0)} "
+            f"medication_logs={result.get('medication_logs', 0)}"
         ),
     )
     return {"ok": True, **result}
@@ -1454,6 +1462,73 @@ async def delete_medication(medication_id: int):
         "medication.delete", f"{item['id']}·{item['name']}"
     )
     return {"ok": True, "id": medication_id}
+
+
+@app.get("/api/medications/{medication_id}/logs")
+async def list_medication_logs(
+    medication_id: int,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """某个药物的到药记录（按服用时间倒序）。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_medication, medication_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="药物不存在")
+    limit = max(1, min(int(limit or 100), 1000))
+    offset = max(0, int(offset or 0))
+    logs = await asyncio.to_thread(
+        store.list_medication_logs,
+        medication_id,
+        None,
+        limit,
+        offset,
+    )
+    return {"logs": logs}
+
+
+@app.post("/api/medications/{medication_id}/logs")
+async def add_medication_log(
+    medication_id: int,
+    request: MedicationLogRequest,
+):
+    """记录一次用药（打卡）。"""
+    from memory import get_session_store
+
+    log = await asyncio.to_thread(
+        get_session_store().add_medication_log,
+        medication_id,
+        request.taken_at,
+        request.note,
+    )
+    if log is None:
+        raise HTTPException(status_code=404, detail="药物不存在或时间不正确")
+    await record_audit(
+        "medication.log",
+        f"{log['medication_id']}·{log['taken_at']}",
+    )
+    return {"ok": True, "log": log}
+
+
+@app.delete("/api/medication-logs/{log_id}")
+async def delete_medication_log(log_id: int):
+    """撤销一条用药记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    log = await asyncio.to_thread(store.get_medication_log, log_id)
+    if log is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_medication_log, log_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit(
+        "medication.log_delete",
+        f"{log['medication_id']}·{log['taken_at']}",
+    )
+    return {"ok": True, "id": log_id}
 
 
 @app.get("/api/symptoms")

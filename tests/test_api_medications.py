@@ -78,6 +78,44 @@ def test_medications_api_validation(client_and_store):
     assert missing_name.status_code == 422
 
 
+def test_medication_logs_api_roundtrip(client_and_store):
+    client, _store = client_and_store
+    from datetime import datetime
+
+    item = client.post(
+        "/api/medications",
+        json={"profile": "父亲", "name": "二甲双胍", "dose": "500 mg"},
+    ).json()["medication"]
+    taken_at = datetime.now().isoformat(timespec="minutes")
+
+    logged = client.post(
+        f"/api/medications/{item['id']}/logs",
+        json={"taken_at": taken_at, "note": "早餐后"},
+    )
+    logs = client.get(f"/api/medications/{item['id']}/logs")
+    listed = client.get("/api/medications").json()["medications"][0]
+    undone = client.delete(
+        f"/api/medication-logs/{logged.json()['log']['id']}"
+    )
+    missing_log = client.post("/api/medications/99999/logs", json={})
+    missing_delete = client.delete("/api/medication-logs/99999")
+    audit = client.get("/api/audit")
+
+    assert logged.status_code == 200
+    assert logged.json()["log"]["taken_at"] == taken_at
+    assert logs.status_code == 200
+    assert logs.json()["logs"][0]["medication_name"] == "二甲双胍"
+    assert logs.json()["logs"][0]["note"] == "早餐后"
+    assert listed["today_count"] == 1
+    assert listed["last_taken_at"] == taken_at
+    assert undone.status_code == 200
+    assert missing_log.status_code == 404
+    assert missing_delete.status_code == 404
+    actions = [row["action"] for row in audit.json()["actions"]]
+    assert "medication.log" in actions
+    assert "medication.log_delete" in actions
+
+
 def test_medications_import_backup(client_and_store):
     client, _store = client_and_store
 
