@@ -1480,6 +1480,26 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 .usage-budget.warn .usage-budget-hint { color: var(--triage-2); }
 .usage-budget.critical .usage-budget-hint { color: var(--triage-1); }
 
+.history-filters {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 6px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.history-filters select {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 3px 6px;
+}
+.history-filters select:focus { outline: none; border-color: var(--clinic); }
+
 .history-list {
   flex: 1;
   min-height: 0;

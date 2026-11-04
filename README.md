@@ -44,7 +44,7 @@
 - **⭐ 收藏会诊**: 标记重要会诊并只看收藏，列表、用量汇总与趋势同步过滤 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
-- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
+- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
 - **💬 会诊操作**: 复制意见、复制 SOAP、导出 Markdown、打印 / PDF、失败重试、再次会诊、停止生成、草稿自动保存 ✅
 - **⌨️ 键盘与无障碍**: 跳到输入框、Ctrl+K 打开会诊记录、Enter 发送 / Shift+Enter 换行、Esc 关闭抽屉、焦点圈定与语义标签 ✅
 - **🌗 深色模式**: 跟随系统偏好，可手动切换并记住选择 ✅
@@ -211,7 +211,7 @@ npm install -D playwright
 | POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、科室开始/完成、汇总 Token 与最终结果 |
 | GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
-| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、用量汇总 |
+| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、用量汇总 |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
