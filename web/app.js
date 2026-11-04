@@ -45,6 +45,7 @@ const els = {
   historyFeedback: document.getElementById('history-feedback'),
   historyFeedbackCount: document.getElementById('history-feedback-count'),
   historyFeedbackList: document.getElementById('history-feedback-list'),
+  historyFeedbackExport: document.getElementById('history-feedback-export'),
   historyMore: document.getElementById('history-more'),
   usageTrend: document.getElementById('usage-trend'),
   usageTrendTotal: document.getElementById('usage-trend-total'),
@@ -2007,6 +2008,38 @@ async function loadRecentFeedback() {
     renderRecentFeedback(data.feedback || []);
   } catch {
     // 反馈区加载失败不影响历史列表
+  }
+}
+
+async function exportFeedbackCsv() {
+  const button = els.historyFeedbackExport;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '…';
+
+  try {
+    const res = await fetch('/api/feedback/export.csv?rating=-1');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const buffer = await res.arrayBuffer();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-feedback-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    button.textContent = '已导出';
+  } catch (err) {
+    button.textContent = '失败';
+    window.alert(`导出反馈失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1600);
   }
 }
 
@@ -4846,6 +4879,7 @@ els.historyMore.addEventListener('click', () => {
 });
 
 els.historyExport.addEventListener('click', exportHistoryBackup);
+els.historyFeedbackExport.addEventListener('click', exportFeedbackCsv);
 els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);

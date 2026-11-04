@@ -1438,6 +1438,10 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-faint);
 }
 
+.history-feedback-export {
+  margin: 0 8px 8px;
+}
+
 .history-quality {
   margin: 0 0 8px;
   border: 1px solid var(--rule);

@@ -265,6 +265,36 @@ def test_quality_insights_api(tmp_path, monkeypatch):
     assert data["top_risks"] == [{"label": "胸痛", "count": 1}]
 
 
+def test_feedback_csv_export(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    first = store.save_exchange("s1", "问题一", "答复一")
+    second = store.save_exchange("s2", "问题二", "答复二")
+    store.set_message_feedback("s1", first, -1, "依据不足")
+    store.set_message_feedback("s2", second, 1)
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        unhelpful = client.get("/api/feedback/export.csv")
+        helpful = client.get(
+            "/api/feedback/export.csv", params={"rating": 1}
+        )
+        invalid = client.get(
+            "/api/feedback/export.csv", params={"rating": 5}
+        )
+    finally:
+        store.close()
+
+    assert unhelpful.status_code == 200
+    text = unhelpful.content.decode("utf-8-sig")
+    assert text.startswith("更新时间")
+    assert "待改进" in text
+    assert "依据不足" in text
+    assert "s2" not in text
+    assert helpful.content.decode("utf-8-sig").count("有用") == 1
+    assert invalid.status_code == 400
+
+
 def test_recent_feedback_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     first = store.save_exchange("s1", "问题一", "答复一")

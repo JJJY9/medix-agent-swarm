@@ -717,7 +717,7 @@ class SessionStore:
             rating = int(rating)
         except (TypeError, ValueError, OverflowError):
             return []
-        limit = max(1, min(int(limit or 10), 50))
+        limit = max(1, min(int(limit or 10), 100000))
 
         with self._lock:
             rows = self._conn.execute(
