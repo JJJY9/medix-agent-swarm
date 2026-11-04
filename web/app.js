@@ -331,6 +331,7 @@ const els = {
   metricTargetText: document.getElementById('metric-target-text'),
   metricTargetEdit: document.getElementById('metric-target-edit'),
   metricTargetClear: document.getElementById('metric-target-clear'),
+  metricTargetHint: document.getElementById('metric-target-hint'),
   metricTargetList: document.getElementById('metric-target-list'),
   metricTargetListItems: document.getElementById('metric-target-list-items'),
   metricTargetForm: document.getElementById('metric-target-form'),
@@ -5127,6 +5128,12 @@ function targetIsLowerBound(metric) {
   return metric === 'spo2';
 }
 
+const METRIC_TARGET_DEFAULTS = {
+  bp: { value1: 135, value2: 85 },
+  spo2: { value1: 95 },
+  heart_rate: { value1: 100 },
+};
+
 function formatMetricTarget(target) {
   if (!target) return '';
   const unit = target.unit || '';
@@ -5156,6 +5163,7 @@ function updateMetricTargetDisplay() {
   els.metricTargetEdit.textContent = target ? '修改目标' : '设置目标';
   els.metricTargetEdit.hidden = false;
   els.metricTargetForm.hidden = true;
+  if (els.metricTargetHint) els.metricTargetHint.hidden = true;
   renderMetricTargetList();
 }
 
@@ -5163,9 +5171,22 @@ function startEditMetricTarget() {
   const metric = els.metricType.value;
   const target = findMetricTarget(els.metricProfile.value, metric);
   const isBp = metric === 'bp';
-  els.metricTargetValue1.value = target ? String(target.value1) : '';
-  els.metricTargetValue2.value =
-    target && target.value2 != null ? String(target.value2) : '';
+  let usedDefaults = false;
+  if (target) {
+    els.metricTargetValue1.value = String(target.value1);
+    els.metricTargetValue2.value =
+      target.value2 != null ? String(target.value2) : '';
+  } else {
+    const defaults = METRIC_TARGET_DEFAULTS[metric];
+    els.metricTargetValue1.value =
+      defaults ? String(defaults.value1) : '';
+    els.metricTargetValue2.value =
+      defaults && defaults.value2 != null ? String(defaults.value2) : '';
+    usedDefaults = Boolean(defaults);
+  }
+  if (els.metricTargetHint) {
+    els.metricTargetHint.hidden = !usedDefaults;
+  }
   els.metricTargetValue2.hidden = !isBp;
   els.metricTargetSep.hidden = !isBp;
   els.metricTargetValue1.setAttribute(

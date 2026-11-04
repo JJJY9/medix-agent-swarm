@@ -481,3 +481,12 @@ def test_app_js_ships_consult_health_context(client):
     assert "async function buildConsultContext" in app_js
     assert "context: await buildConsultContext()" in app_js
     assert "pending_reminders" in app_js
+
+
+def test_app_js_ships_metric_target_defaults(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "METRIC_TARGET_DEFAULTS" in app_js
+    assert "已填入常用参考值" in html
+    assert 'id="metric-target-hint"' in html
