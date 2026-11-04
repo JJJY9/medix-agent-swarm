@@ -430,6 +430,8 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .home-glance[hidden] { display: none; }
 
+.home-glance-card[hidden] { display: none; }
+
 .home-glance-card {
   display: flex;
   flex-direction: column;

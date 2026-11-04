@@ -150,6 +150,7 @@ def test_symptoms_csv_import(client_and_store):
         "2026-11-03T20:00,孩子,咳嗽,3,",
         "2026-11-03T20:00,,咳嗽,11,",
         "2026-11-04T08:00,母亲,,6,",
+        ",母亲,缺时间,5,备注",
     ]
     content = chr(0xFEFF) + "\n".join(lines)
     first = client.post(
@@ -169,10 +170,30 @@ def test_symptoms_csv_import(client_and_store):
     assert first.status_code == 200
     assert first.json()["imported"] == 2
     assert first.json()["skipped"] == 1
-    assert first.json()["invalid"] == 2
+    assert first.json()["invalid"] == 3
     titles = sorted(item["symptom"] for item in listed.json()["symptoms"])
     assert titles == ["咳嗽", "头晕"]
     assert again.status_code == 200
     assert again.json()["imported"] == 0
     assert again.json()["skipped"] == 3
     assert empty.status_code == 400
+
+
+def test_import_backup_accepts_targets_only(client_and_store):
+    client, _store = client_and_store
+
+    response = client.post(
+        "/api/sessions/import",
+        json={
+            "metric_targets": [
+                {"profile": "妈妈", "metric": "weight", "value1": 70}
+            ]
+        },
+    )
+    targets = client.get(
+        "/api/metric-targets", params={"profile": "妈妈"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["targets"] == 1
+    assert targets.json()["targets"][0]["value1"] == 70
