@@ -841,6 +841,32 @@ def test_health_metrics_validation(store):
     assert store.list_metrics() == []
 
 
+def test_update_health_metric(store):
+    item = store.add_metric(
+        "妈妈", "bp", 138, 86,
+        measured_at="2026-01-02T08:00", note="晨起",
+    )
+
+    updated = store.update_metric(
+        item["id"], "妈妈", "weight", 62.5,
+        measured_at="2026-01-03T07:30", note="复测",
+    )
+
+    assert updated["metric"] == "weight"
+    assert updated["value1"] == 62.5
+    assert updated["unit"] == "kg"
+    assert updated["note"] == "复测"
+
+    listed = store.list_metrics()
+    assert len(listed) == 1
+    assert listed[0]["metric"] == "weight"
+    assert listed[0]["measured_at"] == "2026-01-03T07:30"
+
+    assert store.update_metric(999999, "妈妈", "weight", 60) is None
+    assert store.update_metric(item["id"], "妈妈", "bp", 80, 120) is None
+    assert store.update_metric(item["id"], "妈妈", "weight", 0) is None
+
+
 def test_health_metrics_survive_export_and_import(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange("s1", "问题", "答复")
