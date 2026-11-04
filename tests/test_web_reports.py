@@ -663,6 +663,8 @@ def test_app_js_ships_batch_medication_reminders(client):
     assert "已创建 ${created} 条用药提醒" in app_js
     assert "repeat_days: repeatDays" in app_js
     assert "条频次无法识别" in app_js
+    assert "medicationReminderBusy" in app_js
+    assert "reminders.push({" in app_js
 
 
 def test_app_js_ships_weekly_summary(client):
@@ -678,14 +680,19 @@ def test_app_js_ships_weekly_summary(client):
     assert ".weekly-summary-list" in css
     assert "近 7 天打卡" in app_js
     assert "近 7 天小结" in app_js
+    assert "weeklySummaryRequestSeq" in app_js
+    assert "medicationLogRequestSeq" in app_js
+    assert "function refreshOverview" in app_js
 
 
 def test_app_js_links_medication_log_and_reminder(client):
     app_js = client.get("/static/app.js").text
 
     assert "async function completeDueMedicationReminder" in app_js
+    assert "async function reopenLinkedMedicationReminder" in app_js
     assert "已完成今日用药提醒" in app_js
     assert "days >= -1 && days <= 0" in app_js
+    assert "candidates.find(" in app_js
     assert "readPatientContext().allergies" in app_js
 
 
@@ -695,10 +702,13 @@ def test_app_js_medication_review_hardening(client):
 
     # 编辑中的药物被筛选隐藏时不应重置表单
     assert "!medicationItemsCache.some(" in app_js
-    # 增删改/导入后刷新首页速览
-    assert app_js.count("await loadMedications();\n    loadHomeGlance();") >= 3
+    # 增删改/导入后刷新首页速览与本周小结
     assert app_js.count(
-        "await loadMedications();\n    loadMedicationLogs();\n    loadHomeGlance();"
+        "await loadMedications();\n    refreshOverview();"
+    ) >= 3
+    assert app_js.count(
+        "await loadMedications();\n    loadMedicationLogs();\n"
+        "    refreshOverview();"
     ) >= 3
     # 首页用药卡片标注档案，避免跨档案聚合歧义
     assert "（${item.profile}）" in app_js
