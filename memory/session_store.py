@@ -2855,7 +2855,9 @@ class SessionStore:
         if active_only:
             conditions.append("active = 1")
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        week_cutoff = (now - timedelta(days=6)).strftime("%Y-%m-%d")
         with self._lock:
             rows = self._conn.execute(
                 f"""
@@ -2869,18 +2871,24 @@ class SessionStore:
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND substr(l.taken_at, 1, 10) = ?
-                       ) AS today_count
+                       ) AS today_count,
+                       (
+                           SELECT COUNT(*) FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND substr(l.taken_at, 1, 10) >= ?
+                       ) AS week_count
                   FROM medications{where}
                  ORDER BY active DESC, name ASC, id ASC
                  LIMIT ? OFFSET ?
                 """,
-                [today] + params + [limit, offset],
+                [today, week_cutoff] + params + [limit, offset],
             ).fetchall()
         return [
             {
                 **dict(row),
                 "active": bool(row["active"]),
                 "today_count": int(row["today_count"] or 0),
+                "week_count": int(row["week_count"] or 0),
                 "last_taken_at": row["last_taken_at"] or "",
             }
             for row in rows
