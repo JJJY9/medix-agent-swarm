@@ -161,6 +161,13 @@ def test_app_js_exports_reminders_csv(client):
     assert "/api/reminders/export.csv" in app_js
 
 
+def test_app_js_exports_reminders_ics(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function exportRemindersIcs" in app_js
+    assert "/api/reminders/export.ics" in app_js
+
+
 def test_app_js_groups_and_remembers_calc_tool(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

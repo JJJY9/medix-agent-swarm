@@ -199,6 +199,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 - 提醒与当前会诊编号关联保存；创建时会记录当前选中的患者档案，列表显示所属档案
 - 抽屉内可按档案筛选提醒；删除档案后其历史提醒仍以「（已删除）」显示并可筛选
 - 支持按当前筛选导出提醒 CSV（含到期日、档案、状态与备注）
+- 支持按当前筛选导出 iCalendar（.ics），可导入手机或桌面日历
 - 入口按钮显示已到期数量；在抽屉中可开启浏览器通知，到期当天打开页面时提示一次（依赖浏览器通知权限）
 
 ### 健康指标目标
@@ -311,6 +312,7 @@ npm install -D playwright
 | DELETE | `/api/metric-targets/{metric}` | 删除某档案某指标的目标（`profile` 查询参数） |
 | GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
 | GET | `/api/reminders/export.csv` | 按筛选导出随访提醒 CSV（带 BOM） |
+| GET | `/api/reminders/export.ics` | 按筛选导出随访提醒 iCalendar（.ics） |
 | POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile` 关联档案；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
 | POST | `/api/reminders/{id}/complete` | 把随访提醒标记为完成 |
 | POST | `/api/reminders/{id}/reopen` | 把已完成的随访提醒恢复为待完成 |

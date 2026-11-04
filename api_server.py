@@ -1545,6 +1545,71 @@ async def export_reminders_csv(
     )
 
 
+@app.get("/api/reminders/export.ics")
+async def export_reminders_ics(
+    profile: Optional[str] = None,
+    include_done: bool = False,
+):
+    """导出随访提醒为 iCalendar（.ics），可导入手机/桌面日历。"""
+    from datetime import timedelta, timezone
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_reminders, include_done, profile
+    )
+
+    def escape_ics(value: str) -> str:
+        text = str(value or "")
+        return (
+            text.replace("\\", "\\\\")
+            .replace(";", "\\;")
+            .replace(",", "\\,")
+            .replace("\r\n", "\\n")
+            .replace("\n", "\\n")
+        )
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//MediX//Reminders//CN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+    ]
+    for item in items:
+        due = str(item.get("due_at") or "")[:10]
+        try:
+            start = datetime.fromisoformat(due)
+        except ValueError:
+            continue
+        end = start + timedelta(days=1)
+        description = item.get("note") or ""
+        if item.get("profile"):
+            description = f"档案：{item['profile']}。{description}".strip()
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:medix-reminder-{item['id']}@medix.local",
+            f"DTSTAMP:{stamp}",
+            f"DTSTART;VALUE=DATE:{start.strftime('%Y%m%d')}",
+            f"DTEND;VALUE=DATE:{end.strftime('%Y%m%d')}",
+            f"SUMMARY:{escape_ics(item.get('title') or '随访提醒')}",
+            f"DESCRIPTION:{escape_ics(description)}",
+            "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
+            "END:VEVENT",
+        ])
+    lines.append("END:VCALENDAR")
+
+    content = "\r\n".join(lines) + "\r\n"
+    filename = f"medix-reminders-{datetime.now().strftime('%Y%m%d')}.ics"
+
+    return Response(
+        content=content,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/reminders/{reminder_id}/complete")
 async def complete_reminder(reminder_id: int):
     """把随访提醒标记为已完成。"""
