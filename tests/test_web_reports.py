@@ -625,6 +625,17 @@ def test_app_js_ships_reminder_snooze_days(client):
     assert ".reminder-snooze" in css
 
 
+def test_app_js_ships_medication_intake_log(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "async function logMedication" in app_js
+    assert "async function undoMedicationLog" in app_js
+    assert "/api/medications/${item.id}/logs" in app_js
+    assert "/api/medication-logs/" in app_js
+    assert "今日已服" in app_js
+    assert "已记录用药" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

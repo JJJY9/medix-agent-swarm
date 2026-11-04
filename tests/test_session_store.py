@@ -477,6 +477,7 @@ def test_import_data_roundtrip(tmp_path):
             "reminders": 0,
             "symptoms": 0,
             "medications": 0,
+            "medication_logs": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -1700,6 +1701,58 @@ def test_medications_crud_and_export_import(store, tmp_path):
     assert store.delete_medication(item["id"]) is True
     assert store.delete_medication(item["id"]) is False
     assert store.add_medication("", "  ") is None
+
+
+def test_medication_logs_crud_and_counts(store):
+    item = store.add_medication("父亲", "二甲双胍", "500 mg", "每日两次")
+    today = datetime.now().strftime("%Y-%m-%d")
+    first = store.add_medication_log(item["id"], f"{today}T08:30", "早餐后")
+    second = store.add_medication_log(item["id"], f"{today}T20:00")
+    older = store.add_medication_log(item["id"], "2020-01-01T09:00")
+
+    assert first["medication_id"] == item["id"]
+    assert first["profile"] == "父亲"
+    assert store.add_medication_log(99999) is None
+    assert store.add_medication_log(item["id"], "not-a-time") is None
+
+    logs = store.list_medication_logs(item["id"])
+    assert [log["id"] for log in logs] == [
+        second["id"], first["id"], older["id"]
+    ]
+    assert logs[0]["medication_name"] == "二甲双胍"
+    assert store.list_medication_logs(profile="父亲") == logs
+
+    listed = store.list_medications()[0]
+    assert listed["today_count"] == 2
+    assert listed["last_taken_at"] == f"{today}T20:00"
+
+    assert store.get_medication_log(first["id"])["note"] == "早餐后"
+    assert store.delete_medication_log(first["id"]) is True
+    assert store.delete_medication_log(first["id"]) is False
+    assert store.get_medication_log(99999) is None
+
+
+def test_medication_logs_cascade_and_backup(store, tmp_path):
+    item = store.add_medication("父亲", "氨氯地平", "5 mg", "每日一次")
+    store.add_medication_log(item["id"], "2026-11-05T08:30:00", "早餐后")
+
+    data = store.export_data()
+    assert data["medication_logs"][0]["medication_name"] == "氨氯地平"
+
+    other = SessionStore(str(tmp_path / "medication-logs-copy.db"))
+    try:
+        result = other.import_data(data)
+        assert result["medication_logs"] == 1
+        imported = other.list_medication_logs()
+        assert imported[0]["taken_at"] == "2026-11-05T08:30"
+        assert imported[0]["medication_id"] == other.list_medications()[0]["id"]
+        again = other.import_data(data)
+        assert again["medication_logs"] == 0
+    finally:
+        other.close()
+
+    assert store.delete_medication(item["id"]) is True
+    assert store.list_medication_logs(item["id"]) == []
 
 
 def test_medication_import_skips_status_change(store):

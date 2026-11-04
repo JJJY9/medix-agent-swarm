@@ -3845,10 +3845,13 @@ async function importHistoryBackup() {
     const medicationCount = Array.isArray(data.medications)
       ? data.medications.length
       : 0;
+    const medicationLogCount = Array.isArray(data.medication_logs)
+      ? data.medication_logs.length
+      : 0;
     if (
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
-      && !medicationCount
+      && !medicationCount && !medicationLogCount
     ) {
       window.alert('备份文件中没有可导入的数据。');
       return;
@@ -3861,6 +3864,7 @@ async function importHistoryBackup() {
       targetCount ? `${targetCount} 个指标目标` : '',
       symptomCount ? `${symptomCount} 条症状记录` : '',
       medicationCount ? `${medicationCount} 条用药记录` : '',
+      medicationLogCount ? `${medicationLogCount} 次用药打卡` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
@@ -3884,6 +3888,7 @@ async function importHistoryBackup() {
           reminders: data.reminders,
           symptoms: data.symptoms,
           medications: data.medications,
+          medication_logs: data.medication_logs,
         }),
       });
       const result = await res.json().catch(() => ({}));
@@ -3897,11 +3902,11 @@ async function importHistoryBackup() {
       if (result.targets) loadMetricTargets();
       if (
         result.metrics || result.symptoms || result.reminders
-        || result.medications
+        || result.medications || result.medication_logs
       ) {
         await refreshMetricProfileOptions();
         loadSymptoms();
-        if (result.medications) loadMedications();
+        if (result.medications || result.medication_logs) loadMedications();
         loadHomeGlance();
       }
       await loadQualityInsights();
@@ -7727,6 +7732,7 @@ let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
 let medicationItemsCache = [];
+let medicationLogBusy = false;
 
 function setMedicationStatus(text, isError = false) {
   if (!els.medicationStatus) return;
@@ -7811,11 +7817,18 @@ function renderMedications(items) {
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
-    meta.textContent = [
+    const metaParts = [
       item.profile || '未指定档案',
       item.dose,
       item.frequency,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean);
+    if (Number(item.today_count) > 0) {
+      metaParts.push(`今日已服 ${Number(item.today_count)} 次`);
+    }
+    if (item.last_taken_at) {
+      metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
+    }
+    meta.textContent = metaParts.join(' · ');
 
     main.append(title, meta);
     if (item.note) {
@@ -7838,9 +7851,16 @@ function renderMedications(items) {
     const remind = document.createElement('button');
     remind.type = 'button';
     remind.className = 'metric-edit';
-    remind.textContent = '设提醒';
+    remind.textContent = '提醒';
     remind.setAttribute('aria-label', `为药物设置提醒：${item.name}`);
     remind.addEventListener('click', () => scheduleMedicationReminder(item));
+
+    const log = document.createElement('button');
+    log.type = 'button';
+    log.className = 'metric-edit';
+    log.textContent = '打卡';
+    log.setAttribute('aria-label', `记录一次用药：${item.name}`);
+    log.addEventListener('click', () => logMedication(item));
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -7856,7 +7876,17 @@ function renderMedications(items) {
     del.setAttribute('aria-label', `删除药物：${item.name}`);
     del.addEventListener('click', () => deleteMedication(item));
 
-    actions.append(toggle, remind, edit, del);
+    actions.append(toggle, log, remind);
+    if (Number(item.today_count) > 0) {
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'metric-delete';
+      undo.textContent = '撤销';
+      undo.setAttribute('aria-label', `撤销最近一次用药记录：${item.name}`);
+      undo.addEventListener('click', () => undoMedicationLog(item));
+      actions.appendChild(undo);
+    }
+    actions.append(edit, del);
     li.append(main, actions);
     els.medicationList.appendChild(li);
   }
@@ -7899,6 +7929,62 @@ async function toggleMedication(item) {
     await loadMedications();
   } catch (err) {
     setMedicationStatus(`更新状态失败：${err.message || err}`, true);
+  }
+}
+
+async function logMedication(item) {
+  if (medicationLogBusy) return;
+  medicationLogBusy = true;
+  try {
+    const res = await fetch(`/api/medications/${item.id}/logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const takenAt = data.log ? formatTime(data.log.taken_at) : '';
+    setMedicationStatus(
+      takenAt
+        ? `已记录用药：${item.name}（${takenAt}）。`
+        : `已记录用药：${item.name}。`
+    );
+    await loadMedications();
+    loadHomeGlance();
+  } catch (err) {
+    setMedicationStatus(`记录用药失败：${err.message || err}`, true);
+  } finally {
+    medicationLogBusy = false;
+  }
+}
+
+async function undoMedicationLog(item) {
+  if (medicationLogBusy) return;
+  if (!window.confirm(`撤销「${item.name}」最近一次用药记录？`)) return;
+  medicationLogBusy = true;
+  try {
+    const listRes = await fetch(
+      `/api/medications/${item.id}/logs?limit=1`
+    );
+    if (!listRes.ok) throw new Error(`服务返回 ${listRes.status}`);
+    const logs = (await listRes.json()).logs || [];
+    if (!logs.length) {
+      setMedicationStatus('没有可撤销的用药记录。');
+      return;
+    }
+    const res = await fetch(`/api/medication-logs/${logs[0].id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setMedicationStatus(
+      `已撤销 ${formatTime(logs[0].taken_at)} 的用药记录。`
+    );
+    await loadMedications();
+    loadHomeGlance();
+  } catch (err) {
+    setMedicationStatus(`撤销用药记录失败：${err.message || err}`, true);
+  } finally {
+    medicationLogBusy = false;
   }
 }
 
