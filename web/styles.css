@@ -3074,6 +3074,63 @@ html[data-theme="dark"] .reminders-due-hint {
   color: var(--ink);
 }
 
+.metric-weekly {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+.metric-weekly[hidden] { display: none; }
+
+.metric-weekly h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.metric-weekly-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metric-weekly-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.metric-weekly-item:hover {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
+.metric-weekly-name {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.metric-weekly-value {
+  font-size: 14px;
+}
+
+.metric-weekly-delta {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
 .metric-trend {
   padding: 10px 12px;
   border: 1px solid var(--rule);

@@ -330,6 +330,8 @@ const els = {
   metricStatGrid: document.getElementById('metric-stat-grid'),
   metricOverview: document.getElementById('metric-overview'),
   metricOverviewGrid: document.getElementById('metric-overview-grid'),
+  metricWeekly: document.getElementById('metric-weekly'),
+  metricWeeklyList: document.getElementById('metric-weekly-list'),
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
   metricsEmpty: document.getElementById('metrics-empty'),
@@ -1890,7 +1892,7 @@ function buildVisitSummaryHtml({
 </html>`;
 }
 
-async function fetchMetricSummaries(profile, metrics) {
+async function fetchMetricSummaries(profile, metrics, days = 0) {
   const types = [...new Set((metrics || []).map((item) => item.metric))];
   const results = await Promise.all(types.map(async (metric) => {
     try {
@@ -1898,6 +1900,7 @@ async function fetchMetricSummaries(profile, metrics) {
         metric,
         profile: profile || '',
       });
+      if (days > 0) params.set('days', String(days));
       const res = await fetch(
         `/api/metrics/summary?${params.toString()}`
       );
@@ -4956,6 +4959,7 @@ let metricsRequestSeq = 0;
 let metricTrendRequestSeq = 0;
 let metricOverviewRequestSeq = 0;
 let metricSummaryRequestSeq = 0;
+let metricWeeklyRequestSeq = 0;
 
 const METRIC_UNITS = {
   bp: 'mmHg',
@@ -5562,6 +5566,90 @@ async function loadMetricSummary() {
   }
 }
 
+function renderMetricWeekly(summaries) {
+  const list = els.metricWeeklyList;
+  if (!list) return;
+  list.replaceChildren();
+  const order = ['bp', 'weight', 'glucose', 'temperature', 'phq9', 'gad7'];
+  const items = (summaries || [])
+    .filter((item) => item.count > 0)
+    .sort((a, b) => order.indexOf(a.metric) - order.indexOf(b.metric));
+  if (!items.length) {
+    els.metricWeekly.hidden = true;
+    return;
+  }
+  els.metricWeekly.hidden = false;
+
+  for (const summary of items) {
+    const metric = summary.metric;
+    const v1 = summary.value1 || {};
+    const v2 = summary.value2 || {};
+    const isBp = metric === 'bp';
+    const unit = METRIC_UNITS[metric] ? ` ${METRIC_UNITS[metric]}` : '';
+    const average = isBp
+      ? `${formatStatNumber(v1.avg)}/${formatStatNumber(v2.avg)}`
+      : formatStatNumber(v1.avg);
+    const hasPrev1 = v1.prev_avg !== null && v1.prev_avg !== undefined;
+    const hasPrev2 = v2.prev_avg !== null && v2.prev_avg !== undefined;
+
+    const li = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'metric-weekly-item';
+    button.title = `查看${METRIC_NAMES[metric] || metric}趋势`;
+
+    const name = document.createElement('span');
+    name.className = 'metric-weekly-name';
+    name.textContent = `${METRIC_NAMES[metric] || metric} · ${summary.count} 条`;
+
+    const value = document.createElement('strong');
+    value.className = 'metric-weekly-value';
+    value.textContent = `${average}${unit}`;
+
+    button.append(name, value);
+
+    if (hasPrev1) {
+      const delta1 = Number(v1.avg) - Number(v1.prev_avg);
+      const deltaText = isBp && hasPrev2
+        ? `${formatStatDelta(delta1)}/${formatStatDelta(
+          Number(v2.avg) - Number(v2.prev_avg)
+        )}`
+        : formatStatDelta(delta1);
+      const delta = document.createElement('span');
+      delta.className = 'metric-weekly-delta';
+      delta.textContent = `较前 7 天 ${deltaText}${unit}`;
+      button.appendChild(delta);
+    }
+
+    button.addEventListener('click', () => {
+      setMetricType(metric);
+      refreshMetrics();
+    });
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+}
+
+async function loadMetricWeekly() {
+  const requestSeq = ++metricWeeklyRequestSeq;
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/metrics?limit=500&profile=${encodeURIComponent(profile)}&days=7`
+    );
+    if (!res.ok) return;
+    const items = (await res.json()).metrics || [];
+    if (requestSeq !== metricWeeklyRequestSeq) return;
+    const summaries = await fetchMetricSummaries(profile, items, 7);
+    if (requestSeq !== metricWeeklyRequestSeq) return;
+    renderMetricWeekly(summaries);
+  } catch {
+    if (requestSeq === metricWeeklyRequestSeq) {
+      els.metricWeekly.hidden = true;
+    }
+  }
+}
+
 async function loadMetricOverview() {
   const requestSeq = ++metricOverviewRequestSeq;
   const profile = els.metricProfile.value;
@@ -5616,6 +5704,7 @@ async function refreshMetrics() {
   await loadMetrics();
   await loadMetricTrend();
   await loadMetricSummary();
+  await loadMetricWeekly();
   await loadMetricOverview();
 }
 
