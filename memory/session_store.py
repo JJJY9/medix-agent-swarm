@@ -2004,9 +2004,14 @@ class SessionStore:
         metric: Optional[str] = None,
         limit: int = 100,
         days: int = 0,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """按测量时间倒序返回健康指标记录，可按最近天数筛选。"""
+        """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
+        try:
+            offset = max(0, int(offset or 0))
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
         sql = """
             SELECT id, profile, metric, value1, value2, unit,
                    measured_at, note, created_at
@@ -2034,8 +2039,8 @@ class SessionStore:
             params.append(end_of_today)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY measured_at DESC, id DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY measured_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
