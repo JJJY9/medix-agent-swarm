@@ -1769,9 +1769,7 @@ function buildVisitSummaryHtml({
   const metricRows = metrics.map((item) => {
     const target = findTarget(item.metric);
     const over = isOverTarget(item, target);
-    const grade = item.metric === 'bp'
-      ? classifyBloodPressure(item.value1, item.value2)
-      : null;
+    const grade = classifyMetric(item);
     return '<tr>'
       + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
       + `<td>${escapeHtml(formatMetricValue(item))}`
@@ -5034,6 +5032,41 @@ function classifyBloodPressure(systolic, diastolic) {
 }
 
 
+
+/**
+ * 静息心率分级（仅作提示；运动后、发热或情绪激动时升高属正常）。
+ */
+function classifyHeartRate(value) {
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return null;
+  if (rate < 50) return { label: '明显心动过缓', level: 'danger' };
+  if (rate < 60) return { label: '心动过缓', level: 'warn' };
+  if (rate <= 100) return { label: '正常', level: 'ok' };
+  if (rate <= 120) return { label: '心动过速', level: 'warn' };
+  return { label: '明显心动过速', level: 'danger' };
+}
+
+/**
+ * 静息血氧饱和度分级（海平面、静息状态）。
+ */
+function classifySpo2(value) {
+  const percent = Number(value);
+  if (!Number.isFinite(percent)) return null;
+  if (percent >= 95) return { label: '正常', level: 'ok' };
+  if (percent >= 90) return { label: '偏低', level: 'warn' };
+  return { label: '低氧', level: 'danger' };
+}
+
+function classifyMetric(item) {
+  if (!item) return null;
+  if (item.metric === 'bp') {
+    return classifyBloodPressure(item.value1, item.value2);
+  }
+  if (item.metric === 'heart_rate') return classifyHeartRate(item.value1);
+  if (item.metric === 'spo2') return classifySpo2(item.value1);
+  return null;
+}
+
 function setMetricsStatus(text, isError = false) {
   els.metricsStatus.textContent = text;
   els.metricsStatus.hidden = !text;
@@ -5308,13 +5341,11 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
       }
     }
 
-    const bpGrade = item.metric === 'bp'
-      ? classifyBloodPressure(item.value1, item.value2)
-      : null;
-    if (bpGrade) {
+    const metricGrade = classifyMetric(item);
+    if (metricGrade) {
       const badge = document.createElement('span');
-      badge.className = `bp-grade bp-grade-${bpGrade.level}`;
-      badge.textContent = bpGrade.label;
+      badge.className = `bp-grade bp-grade-${metricGrade.level}`;
+      badge.textContent = metricGrade.label;
       value.append(' ', badge);
     }
 
@@ -5337,7 +5368,7 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
 
-    if (overTarget || (bpGrade && bpGrade.level !== 'ok')) {
+    if (overTarget || (metricGrade && metricGrade.level !== 'ok')) {
       const follow = document.createElement('button');
       follow.type = 'button';
       follow.className = 'metric-edit';
@@ -5784,9 +5815,7 @@ async function loadMetricOverview() {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'metric-overview-chip';
-      const grade = metric === 'bp'
-        ? classifyBloodPressure(item.value1, item.value2)
-        : null;
+      const grade = classifyMetric(item);
       chip.textContent =
         `${METRIC_NAMES[metric]} ${formatMetricValue(item)}`
         + (grade ? ` · ${grade.label}` : '');

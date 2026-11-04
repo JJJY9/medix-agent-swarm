@@ -322,3 +322,13 @@ def test_app_js_ships_reminder_search(client):
     assert "function searchFilteredReminders" in app_js
     assert "function refreshReminderViews" in app_js
     assert 'id="reminders-search"' in html
+
+
+def test_app_js_ships_metric_grading(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function classifyHeartRate" in app_js
+    assert "function classifySpo2" in app_js
+    assert "function classifyMetric" in app_js
+    assert "明显心动过缓" in app_js
+    assert "低氧" in app_js
