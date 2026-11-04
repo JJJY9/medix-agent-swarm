@@ -2544,14 +2544,22 @@ async def export_reminders_csv(
 
     from memory import get_session_store
 
+    store = get_session_store()
     items = await asyncio.to_thread(
-        get_session_store().list_reminders, include_done, profile
+        store.list_reminders, include_done, profile
     )
+    medications = await asyncio.to_thread(
+        store.list_medications, None, False, 100000
+    )
+    medication_names = {
+        int(item["id"]): item.get("name", "") for item in medications
+    }
     rows = [[
         "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
-        "重复截止", "重复来源ID", "备注",
+        "重复截止", "重复来源ID", "备注", "关联药物ID", "关联药物",
     ]]
     for item in items:
+        medication_id = int(item.get("medication_id") or 0)
         rows.append([
             item.get("due_at", ""),
             csv_safe_cell(item.get("title", "")),
@@ -2562,6 +2570,8 @@ async def export_reminders_csv(
             item.get("repeat_until", "") or "",
             int(item.get("repeats_from") or 0) or "",
             csv_safe_cell(item.get("note", "")),
+            medication_id or "",
+            csv_safe_cell(medication_names.get(medication_id, "")),
         ])
 
     buffer = io.StringIO()
@@ -2720,6 +2730,8 @@ async def import_reminders_csv(file: UploadFile = File(...)):
         "重复截止": "repeat_until",
         "重复来源ID": "repeats_from",
         "备注": "note",
+        "关联药物ID": "medication_id",
+        "关联药物": "medication_name",
     }
 
     records = []
@@ -2755,6 +2767,10 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             repeats_from = max(0, int(mapped.get("repeats_from") or 0))
         except (TypeError, ValueError):
             repeats_from = 0
+        try:
+            medication_id = max(0, int(mapped.get("medication_id") or 0))
+        except (TypeError, ValueError):
+            medication_id = 0
         records.append({
             "title": title,
             "due_at": due_at,
@@ -2764,6 +2780,8 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             "repeat_days": repeat_days,
             "repeat_until": mapped.get("repeat_until", ""),
             "repeats_from": repeats_from,
+            "medication_id": medication_id,
+            "medication_name": mapped.get("medication_name", ""),
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 

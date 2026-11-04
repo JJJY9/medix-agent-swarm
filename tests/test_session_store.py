@@ -1569,12 +1569,37 @@ def test_reminder_schema_migrates_old_database(tmp_path):
                 note TEXT NOT NULL DEFAULT '',
                 due_at TEXT NOT NULL,
                 session_id TEXT NOT NULL DEFAULT '',
+                profile TEXT NOT NULL DEFAULT '',
                 done INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             INSERT INTO reminders(title, due_at, created_at, updated_at)
             VALUES ('旧提醒', '2026-11-10', '2026-01-01', '2026-01-01');
+            CREATE TABLE medications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL,
+                dose TEXT NOT NULL DEFAULT '',
+                frequency TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO medications(
+                profile, name, dose, frequency, active,
+                created_at, updated_at
+            ) VALUES (
+                '母亲', '氨氯地平', '5 mg', '每日一次', 1,
+                '2026-01-01', '2026-01-01'
+            );
+            INSERT INTO reminders(
+                title, due_at, profile, created_at, updated_at
+            ) VALUES (
+                '用药：氨氯地平', '2026-11-11', '母亲',
+                '2026-01-01', '2026-01-01'
+            );
             """
         )
         conn.commit()
@@ -1587,13 +1612,20 @@ def test_reminder_schema_migrates_old_database(tmp_path):
     finally:
         store.close()
 
-    assert len(items) == 1
-    assert items[0]["title"] == "旧提醒"
-    assert items[0]["profile"] == ""
-    assert items[0]["advance_days"] == 0
-    assert items[0]["repeat_days"] == 0
-    assert items[0]["repeat_until"] == ""
-    assert items[0]["repeats_from"] == 0
+    assert len(items) == 2
+    legacy = next(item for item in items if item["title"] == "旧提醒")
+    assert legacy["profile"] == ""
+    assert legacy["advance_days"] == 0
+    assert legacy["repeat_days"] == 0
+    assert legacy["repeat_until"] == ""
+    assert legacy["repeats_from"] == 0
+    assert legacy["medication_id"] == 0
+
+    linked = next(
+        item for item in items if item["title"] == "用药：氨氯地平"
+    )
+    assert linked["profile"] == "母亲"
+    assert linked["medication_id"] == 1
 
 
 def test_symptoms_crud_and_export_import(store, tmp_path):
@@ -1911,6 +1943,22 @@ def test_backup_preserves_reminder_medication_link(store, tmp_path):
         assert reminder["medication_id"] == other.list_medications()[0]["id"]
     finally:
         other.close()
+
+
+def test_update_medication_keeps_custom_reminder_titles(store):
+    item = store.add_medication("母亲", "氨氯地平")
+    store.add_reminder(
+        "早上吃降压药", "2026-11-06",
+        profile="母亲", medication_id=item["id"],
+    )
+
+    store.update_medication(
+        item["id"], "母亲", "苯磺酸氨氯地平", "5 mg"
+    )
+
+    reminder = store.list_reminders(profile="母亲")[0]
+    assert reminder["title"] == "早上吃降压药"
+    assert reminder["profile"] == "母亲"
 
 
 def test_reminder_sync_only_touches_linked_medication(store):

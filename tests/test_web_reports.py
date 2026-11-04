@@ -749,6 +749,7 @@ def test_app_js_profile_scoping_and_refresh(client):
         "    await loadMedications();"
     ) in app_js
     assert "payload.medication_id = reminderMedicationId" in app_js
+    assert "medication_id: reminderMedicationId" in app_js
     assert "medication_id: item.id" in app_js
     assert "Number(reminder.medication_id) === item.id" in app_js
     assert "limit: '200', profile" in app_js

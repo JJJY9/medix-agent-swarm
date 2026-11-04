@@ -209,7 +209,7 @@ def test_reminders_csv_export(client_and_store):
     assert response.status_code == 200
     assert lines[0] == (
         "到期日,内容,档案,状态,提前天数,重复天数,重复截止,"
-        "重复来源ID,备注"
+        "重复来源ID,备注,关联药物ID,关联药物"
     )
     assert any("妈妈复查" in line for line in lines)
     assert all("孩子复诊" not in line for line in lines)
@@ -562,3 +562,42 @@ def test_reminders_ics_skips_rrule_for_done(client_and_store):
 
     assert "STATUS:COMPLETED" in text
     assert text.count("RRULE:FREQ=DAILY;INTERVAL=3") == 1
+
+
+def test_reminders_csv_preserves_medication_link(client_and_store):
+    import csv
+    import io
+
+    client, _store = client_and_store
+    medication = client.post(
+        "/api/medications",
+        json={"profile": "母亲", "name": "氨氯地平", "dose": "5 mg"},
+    ).json()["medication"]
+    client.post(
+        "/api/reminders",
+        json={
+            "profile": "母亲",
+            "title": "用药：氨氯地平",
+            "due_at": "2026-11-10",
+            "medication_id": medication["id"],
+        },
+    )
+
+    export = client.get("/api/reminders/export.csv")
+    text = export.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert rows[0][-2:] == ["关联药物ID", "关联药物"]
+    assert rows[1][-2] == str(medication["id"])
+    assert rows[1][-1] == "氨氯地平"
+
+    reminder_id = client.get("/api/reminders").json()["reminders"][0]["id"]
+    client.delete(f"/api/reminders/{reminder_id}")
+    imported = client.post(
+        "/api/reminders/import",
+        files={"file": ("reminders.csv", export.content, "text/csv")},
+    )
+
+    assert imported.status_code == 200
+    restored = client.get("/api/reminders").json()["reminders"][0]
+    assert restored["medication_id"] == medication["id"]
