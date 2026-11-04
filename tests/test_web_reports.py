@@ -378,3 +378,13 @@ def test_app_js_ships_reminder_countdown(client):
     assert "function reminderDueCountdown" in app_js
     assert "已逾期 ${" in app_js
     assert "（还有 ${days} 天）" in app_js
+
+
+def test_app_js_ships_overdue_filter_and_today(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "remindersOverdueOnly" in app_js
+    assert "没有逾期的提醒" in app_js
+    assert 'id="reminders-overdue-only"' in html
+    assert 'id="reminders-calendar-today"' in html
