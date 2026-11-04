@@ -1296,6 +1296,100 @@ async def export_symptoms_csv(
     )
 
 
+@app.post("/api/symptoms/import")
+async def import_symptoms_csv(file: UploadFile = File(...)):
+    """从导出的 CSV 格式导入症状记录，重复记录自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+
+    field_alias = {
+        "记录时间": "recorded_at",
+        "时间": "recorded_at",
+        "患者档案": "profile",
+        "档案": "profile",
+        "症状": "symptom",
+        "程度": "severity",
+        "严重程度": "severity",
+        "备注": "note",
+    }
+
+    records = []
+    invalid = 0
+    for row in reader:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            name = key.strip()
+            mapped[field_alias.get(name, name)] = (value or "").strip()
+
+        symptom = mapped.get("symptom", "")
+        if not symptom:
+            invalid += 1
+            continue
+        severity_text = mapped.get("severity", "")
+        if severity_text == "":
+            invalid += 1
+            continue
+        try:
+            severity = int(severity_text)
+        except (TypeError, ValueError):
+            invalid += 1
+            continue
+        if severity < 0 or severity > 10:
+            invalid += 1
+            continue
+
+        records.append({
+            "profile": mapped.get("profile", ""),
+            "symptom": symptom,
+            "severity": severity,
+            "recorded_at": mapped.get("recorded_at", ""),
+            "note": mapped.get("note", ""),
+        })
+
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的症状记录（无效 {invalid} 行）",
+        )
+
+    result = await asyncio.to_thread(
+        get_session_store().import_data, {"symptoms": records}
+    )
+    imported = int(result.get("symptoms", 0))
+    await record_audit(
+        "symptom.import",
+        detail=f"imported={imported} invalid={invalid}",
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
 @app.post("/api/symptoms")
 async def add_symptom(request: SymptomRequest):
     """新增一条症状记录。"""

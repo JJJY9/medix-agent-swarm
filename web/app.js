@@ -375,6 +375,8 @@ const els = {
   symptomNote: document.getElementById('symptom-note'),
   symptomSave: document.getElementById('symptom-save'),
   symptomExport: document.getElementById('symptom-export'),
+  symptomImport: document.getElementById('symptom-import'),
+  symptomImportFile: document.getElementById('symptom-import-file'),
   symptomCancel: document.getElementById('symptom-cancel'),
   symptomStatus: document.getElementById('symptom-status'),
   symptomList: document.getElementById('symptom-list'),
@@ -7339,6 +7341,37 @@ async function loadSymptoms() {
   }
 }
 
+async function importSymptomsCsv(file) {
+  if (!file) return;
+  setSymptomStatus('正在导入症状记录…');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/api/symptoms/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或时间无效`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    setSymptomStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetricProfileOptions();
+    await loadSymptoms();
+    loadHomeGlance();
+  } catch (err) {
+    setSymptomStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.symptomImportFile.value = '';
+  }
+}
+
 async function exportSymptomsCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile.value,
@@ -9795,6 +9828,14 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
 els.symptomExport.addEventListener('click', exportSymptomsCsv);
+els.symptomImport.addEventListener('click', () => {
+  els.symptomImportFile.click();
+});
+els.symptomImportFile.addEventListener('change', () => {
+  const file = els.symptomImportFile.files
+    && els.symptomImportFile.files[0];
+  if (file) importSymptomsCsv(file);
+});
 els.symptomSearch.addEventListener('input', () => {
   renderSymptoms(filterSymptoms(symptomItemsCache));
 });
