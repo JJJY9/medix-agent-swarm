@@ -484,6 +484,34 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 .triage-alert strong { display: block; margin-bottom: 3px; }
 .triage-alert p { margin: 0; }
 
+/* 用药安全提示（规则引擎命中） */
+.medication-alert {
+  margin-top: 10px;
+  padding: 11px 14px;
+  border-left: 4px solid var(--triage-3);
+  background: #fff8e5;
+  color: #5f4a00;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.medication-alert[data-level="warning"] {
+  border-left-color: var(--triage-2);
+  background: #fff4e8;
+  color: #6b3a12;
+}
+
+.medication-alert strong { display: block; margin-bottom: 6px; }
+.medication-item + .medication-item { margin-top: 8px; }
+.medication-item b { display: block; font-size: 13px; }
+.medication-item p { margin: 2px 0 0; }
+.medication-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 /* 会诊意见书 */
 .note {
   margin-top: 16px;
@@ -2060,6 +2088,8 @@ html[data-theme="dark"] .banner {
 
 html[data-theme="dark"] .empty-note { background: #2a1d1c; }
 html[data-theme="dark"] .triage-alert { background: #331a19; color: #f0b3a8; }
+html[data-theme="dark"] .medication-alert { background: #2c2612; color: #e6cf92; }
+html[data-theme="dark"] .medication-alert[data-level="warning"] { background: #2f2416; color: #f0c79e; }
 html[data-theme="dark"] .kb-status.error {
   color: #f0b3a8;
   background: #33201d;

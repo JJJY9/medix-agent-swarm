@@ -17,6 +17,7 @@ from loguru import logger
 from core import LLMClient
 from core.context import public_context
 from core.triage import detect_red_flags
+from core.medication_safety import check_medication_safety
 from core.citations import merge_sources
 from core.usage import merge_usages
 from .shared_context import SharedContext, TaskStatus
@@ -177,6 +178,7 @@ class SwarmCoordinator:
             "suggestions",
             "disclaimer",
             "triage",
+            "medication_safety",
             "sources",
             "agent_contributions",
             "agents_involved",
@@ -280,6 +282,9 @@ class SwarmCoordinator:
         # 确定性急症预检：命中红旗时立即随结果返回，不依赖模型输出
         triage = detect_red_flags(question)
 
+        # 确定性用药安全预检：过敏史、重复用药与常见相互作用
+        medication_safety = check_medication_safety(question, context)
+
         # 服务重启后从 SQLite 恢复本会话的最近问答
         self._restore_short_term_context(session_id)
 
@@ -362,6 +367,7 @@ class SwarmCoordinator:
                 'session_id': session_id,
                 'route_reason': f'单任务路由到 {agent_id}',
                 'triage': triage,
+                'medication_safety': medication_safety,
                 'patient_context': patient_context,
             })
 
@@ -392,6 +398,7 @@ class SwarmCoordinator:
             # Swarm 的长期记忆已在 _process_with_swarm 中保存；这里补齐 triage 后
             # 再把会诊依据写入 SQLite
             result['triage'] = triage
+            result['medication_safety'] = medication_safety
             result['assistant_message_id'] = self._save_exchange(
                 session_id,
                 question,
@@ -423,6 +430,7 @@ class SwarmCoordinator:
                 'swarm_enabled': False,
                 'session_id': session_id,
                 'triage': triage,
+                'medication_safety': medication_safety,
                 'patient_context': patient_context,
             })
 

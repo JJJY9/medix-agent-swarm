@@ -41,6 +41,7 @@ install_log_redaction()
 
 from core.auth import get_access_token, is_authorized
 from core.triage import detect_red_flags
+from core.medication_safety import check_medication_safety
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.pricing import get_pricing
@@ -828,6 +829,8 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "subtasks_completed": result.get("subtasks_completed", 0),
         "subtasks_failed": result.get("subtasks_failed", 0),
         "triage": result.get("triage") or {"level": "none", "matches": [], "message": ""},
+        "medication_safety": result.get("medication_safety")
+        or {"level": "none", "alerts": []},
         "usage": result.get("usage") or {},
         "llm_calls": result.get("llm_calls", 0),
         "patient_context": result.get("patient_context") or {},
@@ -887,6 +890,7 @@ async def chat_stream(request: ChatRequest):
     """
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     triage = detect_red_flags(request.question)
+    medication_safety = check_medication_safety(request.question, request.context)
 
     async def event_stream() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:
@@ -897,6 +901,10 @@ async def chat_stream(request: ChatRequest):
         # 急症红旗在调用模型之前就推给前端，不必等待会诊结果
         if triage["level"] != "none":
             yield sse({"type": "triage", **triage})
+
+        # 用药安全提示同样先行推送，让用户在等待模型时就能看到
+        if medication_safety["alerts"]:
+            yield sse({"type": "medication_safety", **medication_safety})
 
         async with state.lock:
             try:
