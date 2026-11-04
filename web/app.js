@@ -4887,6 +4887,19 @@ function renderDiagnostics(report) {
         : '未生成'
     ),
     diagRow('数据库大小', formatBytes(runtime.db_size || 0)),
+    diagRow(
+      '健康数据',
+      `${runtime.metrics ?? 0} 条指标 / ${runtime.symptoms ?? 0} 条症状`
+      + ` / ${runtime.medications ?? 0} 种药物`
+    ),
+    diagRow(
+      '用药打卡',
+      `${runtime.medication_logs ?? 0} 次 / ${runtime.reminders ?? 0} 条提醒`
+    ),
+    diagRow(
+      '患者档案',
+      `${runtime.profiles ?? 0} 个 / ${runtime.targets ?? 0} 个指标目标`
+    ),
     diagRow('访问令牌', runtime.auth_enabled ? '已开启' : '未开启'),
     diagRow(
       '会诊限流',
