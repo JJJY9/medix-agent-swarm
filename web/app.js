@@ -44,6 +44,7 @@ const els = {
   historyBulkCount: document.getElementById('history-bulk-count'),
   historyBulkAll: document.getElementById('history-bulk-all'),
   historyBulkCompare: document.getElementById('history-bulk-compare'),
+  historyBulkExport: document.getElementById('history-bulk-export'),
   historyBulkArchive: document.getElementById('history-bulk-archive'),
   historyBulkUnarchive: document.getElementById('history-bulk-unarchive'),
   historyBulkTags: document.getElementById('history-bulk-tags'),
@@ -2871,6 +2872,7 @@ function updateBulkBar() {
       button.disabled = count === 0;
     });
   els.historyBulkCompare.disabled = count !== 2;
+  els.historyBulkExport.disabled = count === 0;
 }
 
 function setBulkMode(enabled) {
@@ -3005,6 +3007,36 @@ async function bulkDelete() {
 }
 
 /* ---------- 会诊对比 ---------- */
+
+async function bulkExportMarkdown() {
+  const ids = Array.from(selectedSessions);
+  if (!ids.length) return;
+
+  els.historyActionStatus.textContent = '正在导出选中会诊…';
+  try {
+    const documents = await Promise.all(ids.map(async (id) => {
+      const item = historyItemMap.get(id) || { id, title: '未命名会诊' };
+      const messages = await fetchSessionMessages({ id });
+      return buildSessionMarkdown(item, messages);
+    }));
+
+    const header = [
+      '# MediX 会诊记录导出',
+      '',
+      `导出时间：${new Date().toLocaleString()}`,
+      `会话数：${ids.length}`,
+      '',
+    ].join('\n');
+    const content = `${header}\n${documents.join('\n\n---\n\n')}\n`;
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(content, `medix-sessions-${stamp}.md`);
+    els.historyActionStatus.textContent = `已导出 ${ids.length} 次会诊`;
+  } catch (err) {
+    els.historyActionStatus.textContent = '批量导出失败';
+    window.alert(`批量导出失败：${err.message || err}`);
+  }
+}
+
 
 function compareTurns(messages) {
   const turns = [];
@@ -7430,6 +7462,7 @@ els.historyBulkCancel.addEventListener('click', () => setBulkMode(false));
 els.historyBulkCompare.addEventListener('click', () => {
   openCompare(Array.from(selectedSessions));
 });
+els.historyBulkExport.addEventListener('click', bulkExportMarkdown);
 els.compareClose.addEventListener('click', () => closeCompare(true));
 els.compareBackdrop.addEventListener('click', () => closeCompare(true));
 
