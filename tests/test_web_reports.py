@@ -218,3 +218,13 @@ def test_app_js_ships_reminder_csv_import(client):
     assert "async function importRemindersCsv" in app_js
     assert "/api/reminders/import" in app_js
     assert 'id="reminders-import"' in html
+
+
+def test_app_js_ships_reminder_advance_notice(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function reminderIsAdvanceDue" in app_js
+    assert "reminder-badge-advance" in app_js
+    assert "advance_days" in app_js
+    assert 'id="reminder-advance"' in html

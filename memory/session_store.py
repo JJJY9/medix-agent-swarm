@@ -197,6 +197,18 @@ def _normalize_reminder_due(value: Any) -> str:
     return due
 
 
+def _normalize_reminder_advance(value: Any) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        days = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("提前提醒天数应为 0-30 的整数")
+    if days < 0 or days > 30:
+        raise ValueError("提前提醒天数应为 0-30 的整数")
+    return days
+
+
 def _tag_like_pattern(tag: str) -> str:
     escaped = (
         str(tag or "")
@@ -403,6 +415,7 @@ class SessionStore:
                     due_at     TEXT NOT NULL,
                     session_id TEXT NOT NULL DEFAULT '',
                     profile    TEXT NOT NULL DEFAULT '',
+                    advance_days INTEGER NOT NULL DEFAULT 0,
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -454,6 +467,10 @@ class SessionStore:
             if "profile" not in reminder_columns:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN profile TEXT NOT NULL DEFAULT ''"
+                )
+            if "advance_days" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN advance_days INTEGER NOT NULL DEFAULT 0"
                 )
 
     @staticmethod
@@ -1619,6 +1636,12 @@ class SessionStore:
                     )[:MAX_REMINDER_NOTE_LENGTH]
                     profile = _normalize_profile_name(raw.get("profile"))
                     session_id = str(raw.get("session_id") or "").strip()[:64]
+                    try:
+                        advance_days = _normalize_reminder_advance(
+                            raw.get("advance_days")
+                        )
+                    except ValueError:
+                        advance_days = 0
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -1639,13 +1662,14 @@ class SessionStore:
                             """
                             INSERT INTO reminders(
                                 id, title, note, due_at, session_id, profile,
-                                done, created_at, updated_at
+                                advance_days, done, created_at, updated_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 reminder_id, title, note, due_at, session_id,
-                                profile, done, created_at, updated_at,
+                                profile, advance_days, done,
+                                created_at, updated_at,
                             ),
                         )
                         reminders_imported += 1
@@ -1664,14 +1688,14 @@ class SessionStore:
                     self._conn.execute(
                         """
                         INSERT INTO reminders(
-                            title, note, due_at, session_id, profile, done,
-                            created_at, updated_at
+                            title, note, due_at, session_id, profile,
+                            advance_days, done, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             title, note, due_at, session_id, profile,
-                            done, created_at, updated_at,
+                            advance_days, done, created_at, updated_at,
                         ),
                     )
                     reminders_imported += 1
@@ -2408,6 +2432,7 @@ class SessionStore:
         note: str = "",
         session_id: str = "",
         profile: str = "",
+        advance_days: int = 0,
     ) -> Dict[str, Any]:
         """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
@@ -2417,16 +2442,20 @@ class SessionStore:
         note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
         session_id = str(session_id or "").strip()[:64]
         profile = _normalize_profile_name(profile)
+        advance_days = _normalize_reminder_advance(advance_days)
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 INSERT INTO reminders(
-                    title, note, due_at, session_id, profile, done,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                    title, note, due_at, session_id, profile, advance_days,
+                    done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
-                (title, note, due_at, session_id, profile, now, now),
+                (
+                    title, note, due_at, session_id, profile,
+                    advance_days, now, now,
+                ),
             )
             reminder_id = int(cursor.lastrowid)
         return {
@@ -2436,6 +2465,7 @@ class SessionStore:
             "due_at": due_at,
             "session_id": session_id,
             "profile": profile,
+            "advance_days": advance_days,
             "done": False,
             "created_at": now,
             "updated_at": now,
@@ -2446,7 +2476,7 @@ class SessionStore:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -2472,7 +2502,7 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT id, title, note, due_at, session_id, profile, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
                        created_at, updated_at
                   FROM reminders{where}
                  ORDER BY done ASC, due_at ASC, id ASC
@@ -2517,8 +2547,9 @@ class SessionStore:
         title: Optional[str] = None,
         due_at: Optional[str] = None,
         note: Optional[str] = None,
+        advance_days: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """修改提醒的标题、日期或备注；无效值抛 ValueError，不存在返回 None。"""
+        """修改提醒的标题、日期、备注或提前天数。"""
         updates: List[str] = []
         params: List[Any] = []
 
@@ -2539,6 +2570,11 @@ class SessionStore:
             updates.append("note = ?")
             params.append(note)
 
+        if advance_days is not None:
+            advance_days = _normalize_reminder_advance(advance_days)
+            updates.append("advance_days = ?")
+            params.append(advance_days)
+
         if not updates:
             return None
 
@@ -2556,7 +2592,7 @@ class SessionStore:
                 return None
             row = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -2600,7 +2636,7 @@ class SessionStore:
             )
             updated = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,

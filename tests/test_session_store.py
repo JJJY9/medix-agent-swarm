@@ -1160,9 +1160,10 @@ def test_reminders_profile_filter(store):
 
 
 def test_reminders_export_import(store, tmp_path):
-    store.add_reminder("复查", "2026-11-10", profile="母亲")
+    store.add_reminder("复查", "2026-11-10", profile="母亲", advance_days=2)
     data = store.export_data()
     assert data["reminders"][0]["profile"] == "母亲"
+    assert data["reminders"][0]["advance_days"] == 2
 
     other = SessionStore(str(tmp_path / "copy-reminders.db"))
     try:
@@ -1171,6 +1172,7 @@ def test_reminders_export_import(store, tmp_path):
         reminders = other.list_reminders(profile="母亲")
         assert reminders[0]["title"] == "复查"
         assert reminders[0]["due_at"] == "2026-11-10"
+        assert reminders[0]["advance_days"] == 2
 
         again = other.import_data(data)
         assert again["reminders"] == 0
@@ -1469,3 +1471,19 @@ def test_metric_timezone_is_normalized(store):
     )
     assert item["measured_at"] == expected
     assert "+" not in item["measured_at"]
+
+
+def test_reminders_advance_days(store):
+    item = store.add_reminder("复查", "2026-11-10", advance_days=3)
+    assert item["advance_days"] == 3
+    assert store.get_reminder(item["id"])["advance_days"] == 3
+
+    updated = store.update_reminder(item["id"], advance_days=5)
+    assert updated["advance_days"] == 5
+    assert store.snooze_reminder(item["id"])["advance_days"] == 5
+
+    for bad in (-1, 31, "x"):
+        with pytest.raises(ValueError):
+            store.add_reminder("复查", "2026-11-10", advance_days=bad)
+    with pytest.raises(ValueError):
+        store.update_reminder(item["id"], advance_days=31)

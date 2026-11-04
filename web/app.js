@@ -275,6 +275,7 @@ const els = {
   reminderTitle: document.getElementById('reminder-title'),
   reminderDue: document.getElementById('reminder-due'),
   reminderNote: document.getElementById('reminder-note'),
+  reminderAdvance: document.getElementById('reminder-advance'),
   reminderAdd: document.getElementById('reminder-add'),
   remindersExport: document.getElementById('reminders-export'),
   remindersExportIcs: document.getElementById('reminders-export-ics'),
@@ -5639,6 +5640,7 @@ function resetReminderForm() {
   els.reminderTitle.value = '';
   els.reminderNote.value = '';
   els.reminderDue.value = defaultReminderDue();
+  els.reminderAdvance.value = '0';
   els.reminderAdd.textContent = '添加提醒';
   els.reminderCancel.hidden = true;
 }
@@ -5647,6 +5649,7 @@ function editReminder(item) {
   editingReminderId = item.id;
   els.reminderTitle.value = item.title || '';
   els.reminderDue.value = String(item.due_at || '').slice(0, 10);
+  els.reminderAdvance.value = String(item.advance_days || 0);
   els.reminderNote.value = item.note || '';
   els.reminderAdd.textContent = '保存修改';
   els.reminderCancel.hidden = false;
@@ -5701,6 +5704,23 @@ function formatReminderDue(dueAt) {
 
 function reminderIsDue(dueAt) {
   return String(dueAt || '').slice(0, 10) <= todayLocalDate();
+}
+
+function reminderDaysUntil(dueAt) {
+  const due = String(dueAt || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) return null;
+  const today = todayLocalDate();
+  const diff = Date.parse(`${due}T00:00:00`)
+    - Date.parse(`${today}T00:00:00`);
+  return Number.isFinite(diff) ? Math.round(diff / 86400000) : null;
+}
+
+function reminderIsAdvanceDue(item) {
+  if (!item || item.done) return false;
+  const advance = Number(item.advance_days) || 0;
+  if (advance <= 0) return false;
+  const days = reminderDaysUntil(item.due_at);
+  return days !== null && days > 0 && days <= advance;
 }
 
 function localDateAfter(days) {
@@ -5771,6 +5791,9 @@ function renderReminders(items) {
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
     meta.textContent = `到期：${formatReminderDue(item.due_at)}`
+      + (Number(item.advance_days) > 0
+        ? ` · 提前 ${Number(item.advance_days)} 天`
+        : '')
       + (item.profile ? ` · 档案：${item.profile}` : '');
     if (item.done) {
       const badge = document.createElement('span');
@@ -5781,6 +5804,11 @@ function renderReminders(items) {
       const badge = document.createElement('span');
       badge.className = 'reminder-badge';
       badge.textContent = '已到期';
+      meta.append(' ', badge);
+    } else if (reminderIsAdvanceDue(item)) {
+      const badge = document.createElement('span');
+      badge.className = 'reminder-badge reminder-badge-advance';
+      badge.textContent = '提前提醒';
       meta.append(' ', badge);
     }
 
@@ -5859,7 +5887,7 @@ function updateReminderBadge(count) {
   els.remindersCount.textContent = value > 99 ? '99+' : String(value);
   els.remindersOpen.setAttribute(
     'aria-label',
-    value ? `随访提醒，${value} 条已到期` : '随访提醒'
+    value ? `随访提醒，${value} 条需要关注` : '随访提醒'
   );
 }
 
@@ -5869,11 +5897,12 @@ async function refreshReminderBadge() {
     if (!res.ok) return;
     const data = await res.json();
     const reminders = data.reminders || [];
-    const dueItems = reminders.filter(
-      (item) => !item.done && reminderIsDue(item.due_at)
+    const attentionItems = reminders.filter(
+      (item) => !item.done
+        && (reminderIsDue(item.due_at) || reminderIsAdvanceDue(item))
     );
-    updateReminderBadge(dueItems.length);
-    maybeNotifyDueReminders(dueItems.length, reminders);
+    updateReminderBadge(attentionItems.length);
+    maybeNotifyDueReminders(reminders);
   } catch {
     // 徽标加载失败不影响主流程
   }
@@ -5920,7 +5949,7 @@ async function enableReminderNotifications() {
   }
 }
 
-function maybeNotifyDueReminders(dueCount, items) {
+function maybeNotifyDueReminders(items) {
   if (!('Notification' in window) || Notification.permission !== 'granted') {
     return;
   }
@@ -5933,13 +5962,20 @@ function maybeNotifyDueReminders(dueCount, items) {
   const dueItems = (items || []).filter(
     (item) => !item.done && reminderIsDue(item.due_at)
   );
-  const count = dueItems.length || Number(dueCount) || 0;
-  if (count <= 0) return;
+  const advanceItems = (items || []).filter(reminderIsAdvanceDue);
+  if (!dueItems.length && !advanceItems.length) return;
 
-  const titles = dueItems.slice(0, 3).map((item) => item.title).join('、');
+  const parts = [];
+  if (dueItems.length) parts.push(`${dueItems.length} 条提醒已到期`);
+  if (advanceItems.length) parts.push(`${advanceItems.length} 条提醒即将到期`);
+  const titles = dueItems.concat(advanceItems)
+    .slice(0, 3)
+    .map((item) => item.title)
+    .join('、');
+  const total = dueItems.length + advanceItems.length;
   const body = titles
-    ? `有 ${count} 条提醒已到期：${titles}${count > 3 ? ' 等' : ''}`
-    : `有 ${count} 条随访提醒已到期。`;
+    ? `有${parts.join('，')}：${titles}${total > 3 ? ' 等' : ''}`
+    : `有${parts.join('，')}。`;
   try {
     new Notification('MediX 随访提醒', { body, tag: 'medix-reminders' });
     localStorage.setItem(REMINDER_NOTIFIED_KEY, today);
@@ -6017,6 +6053,10 @@ async function addReminder() {
     due_at: dueAt,
     note: (els.reminderNote.value || '').trim(),
     profile: els.profileSelect.value || '',
+    advance_days: Math.max(
+      0,
+      Math.min(30, Number(els.reminderAdvance.value) || 0)
+    ),
   };
   if (!editingId) payload.session_id = sessionId || '';
 
