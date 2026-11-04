@@ -1562,6 +1562,30 @@ async def add_medication_log(
     return {"ok": True, "log": log}
 
 
+@app.get("/api/medication-logs")
+async def list_all_medication_logs(
+    profile: Optional[str] = None,
+    days: int = 0,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """用药打卡记录（跨药物，按服用时间倒序）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 100), 1000))
+    offset = max(0, int(offset or 0))
+    days = max(0, min(int(days or 0), 3650))
+    logs = await asyncio.to_thread(
+        get_session_store().list_medication_logs,
+        None,
+        profile,
+        limit,
+        offset,
+        days,
+    )
+    return {"logs": logs}
+
+
 @app.delete("/api/medication-logs/{log_id}")
 async def delete_medication_log(log_id: int):
     """撤销一条用药记录。"""

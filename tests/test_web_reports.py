@@ -642,6 +642,18 @@ def test_app_js_ships_medication_intake_log(client):
     assert "medicationLogBusy.delete(item.id)" in app_js
 
 
+def test_app_js_ships_medication_intake_log_history(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function loadMedicationLogs" in app_js
+    assert "function renderMedicationLogs" in app_js
+    assert "async function deleteMedicationLogItem" in app_js
+    assert "/api/medication-logs?limit=20" in app_js
+    assert 'id="medication-log-list"' in html
+    assert 'id="medication-log-empty"' in html
+
+
 def test_app_js_medication_review_hardening(client):
     app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
     css = client.get("/static/styles.css").text
@@ -649,7 +661,10 @@ def test_app_js_medication_review_hardening(client):
     # 编辑中的药物被筛选隐藏时不应重置表单
     assert "!medicationItemsCache.some(" in app_js
     # 增删改/导入后刷新首页速览
-    assert app_js.count("await loadMedications();\n    loadHomeGlance();") >= 4
+    assert app_js.count("await loadMedications();\n    loadHomeGlance();") >= 3
+    assert app_js.count(
+        "await loadMedications();\n    loadMedicationLogs();\n    loadHomeGlance();"
+    ) >= 3
     # 首页用药卡片标注档案，避免跨档案聚合歧义
     assert "（${item.profile}）" in app_js
     # 备份导入携带打卡记录

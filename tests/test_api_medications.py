@@ -66,6 +66,44 @@ def test_medications_api_roundtrip(client_and_store):
     assert "medication.delete" in actions
 
 
+def test_medication_logs_api_list_all(client_and_store):
+    client, _store = client_and_store
+
+    mother = client.post(
+        "/api/medications", json={"profile": "母亲", "name": "药A"}
+    ).json()["medication"]
+    child = client.post(
+        "/api/medications", json={"profile": "孩子", "name": "药B"}
+    ).json()["medication"]
+    client.post(
+        f"/api/medications/{mother['id']}/logs",
+        json={"taken_at": "2026-11-05T08:00"},
+    )
+    client.post(
+        f"/api/medications/{child['id']}/logs",
+        json={"taken_at": "2026-11-05T09:00"},
+    )
+
+    all_logs = client.get("/api/medication-logs")
+    mother_logs = client.get(
+        "/api/medication-logs", params={"profile": "母亲"}
+    )
+    limited = client.get("/api/medication-logs", params={"limit": 1})
+    huge_days = client.get(
+        "/api/medication-logs", params={"days": 4000000}
+    )
+
+    assert all_logs.status_code == 200
+    assert [
+        row["medication_name"] for row in all_logs.json()["logs"]
+    ] == ["药B", "药A"]
+    assert [
+        row["medication_name"] for row in mother_logs.json()["logs"]
+    ] == ["药A"]
+    assert len(limited.json()["logs"]) == 1
+    assert huge_days.status_code == 200
+
+
 def test_medications_api_validation(client_and_store):
     client, _store = client_and_store
 

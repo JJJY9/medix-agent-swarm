@@ -396,6 +396,9 @@ const els = {
   medicationCancel: document.getElementById('medication-cancel'),
   medicationStatus: document.getElementById('medication-status'),
   medicationList: document.getElementById('medication-list'),
+  medicationLogHistory: document.getElementById('medication-log-history'),
+  medicationLogList: document.getElementById('medication-log-list'),
+  medicationLogEmpty: document.getElementById('medication-log-empty'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
   medicationEmpty: document.getElementById('medication-empty'),
@@ -3917,6 +3920,7 @@ async function importHistoryBackup() {
         await refreshMetricProfileOptions();
         loadSymptoms();
         if (result.medications || result.medication_logs) loadMedications();
+        if (result.medication_logs) loadMedicationLogs();
         loadHomeGlance();
       }
       await loadQualityInsights();
@@ -6089,6 +6093,7 @@ async function refreshMetrics() {
   await loadMetricOverview();
   loadSymptoms();
   loadMedications();
+  loadMedicationLogs();
   loadHomeGlance();
 }
 
@@ -7807,6 +7812,7 @@ let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
 let medicationItemsCache = [];
+let medicationLogItemsCache = [];
 let medicationLogBusy = new Set();
 
 function setMedicationStatus(text, isError = false) {
@@ -7987,6 +7993,87 @@ async function loadMedications() {
   }
 }
 
+function renderMedicationLogs(items) {
+  if (!els.medicationLogList) return;
+  els.medicationLogList.replaceChildren();
+  els.medicationLogEmpty.hidden = items.length > 0;
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.medication_name || '已删除药物';
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      formatTime(item.taken_at),
+      item.medication_dose,
+      item.profile || '未指定档案',
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute(
+      'aria-label',
+      `删除打卡记录：${item.medication_name || ''} ${formatTime(item.taken_at)}`
+    );
+    del.addEventListener('click', () => deleteMedicationLogItem(item));
+    actions.appendChild(del);
+
+    li.append(main, actions);
+    els.medicationLogList.appendChild(li);
+  }
+}
+
+async function loadMedicationLogs() {
+  if (!els.medicationLogList) return;
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/medication-logs?limit=20&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    medicationLogItemsCache = data.logs || [];
+    renderMedicationLogs(medicationLogItemsCache);
+  } catch {
+    // 打卡历史加载失败不影响用药清单
+  }
+}
+
+async function deleteMedicationLogItem(item) {
+  const label = `${item.medication_name || '药物'} ${formatTime(item.taken_at)}`;
+  if (!window.confirm(`删除打卡记录「${label}」？`)) return;
+  try {
+    const res = await fetch(`/api/medication-logs/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setMedicationStatus('已删除打卡记录。');
+    await Promise.all([loadMedications(), loadMedicationLogs()]);
+    loadHomeGlance();
+  } catch (err) {
+    setMedicationStatus(`删除打卡记录失败：${err.message || err}`, true);
+  }
+}
+
 async function toggleMedication(item) {
   try {
     const res = await fetch(`/api/medications/${item.id}`, {
@@ -8028,6 +8115,7 @@ async function logMedication(item) {
         : `已记录用药：${item.name}。`
     );
     await loadMedications();
+    loadMedicationLogs();
     loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`记录用药失败：${err.message || err}`, true);
@@ -8058,6 +8146,7 @@ async function undoMedicationLog(item) {
       `已撤销 ${formatTime(logs[0].taken_at)} 的用药记录。`
     );
     await loadMedications();
+    loadMedicationLogs();
     loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`撤销用药记录失败：${err.message || err}`, true);
@@ -8139,6 +8228,7 @@ async function deleteMedication(item) {
     if (editingMedicationId === item.id) resetMedicationForm();
     setMedicationStatus('已删除药物。');
     await loadMedications();
+    loadMedicationLogs();
     loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`删除失败：${err.message || err}`, true);
