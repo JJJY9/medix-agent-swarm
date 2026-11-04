@@ -296,3 +296,12 @@ def test_app_js_ships_reminder_calendar(client):
     assert "REMINDER_WEEKDAYS" in app_js
     assert 'id="reminders-calendar-grid"' in html
     assert 'id="reminders-calendar-toggle"' in html
+
+
+def test_app_js_ships_metric_target_list(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function renderMetricTargetList" in app_js
+    assert "async function deleteMetricTargetFor" in app_js
+    assert 'id="metric-target-list"' in html
