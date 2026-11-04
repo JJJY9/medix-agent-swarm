@@ -1892,14 +1892,16 @@ function buildVisitSummaryHtml({
 </html>`;
 }
 
-async function fetchMetricSummaries(profile, metrics, days = 0) {
+async function fetchMetricSummaries(
+  profile, metrics, days = 0, omitEmptyProfile = false
+) {
   const types = [...new Set((metrics || []).map((item) => item.metric))];
   const results = await Promise.all(types.map(async (metric) => {
     try {
-      const params = new URLSearchParams({
-        metric,
-        profile: profile || '',
-      });
+      const params = new URLSearchParams({ metric });
+      if (!(omitEmptyProfile && !profile)) {
+        params.set('profile', profile || '');
+      }
       if (days > 0) params.set('days', String(days));
       const res = await fetch(
         `/api/metrics/summary?${params.toString()}`
@@ -1948,7 +1950,9 @@ async function exportVisitSummary() {
     const targets = targetsRes.ok
       ? (await targetsRes.json()).targets || []
       : [];
-    const summaries = await fetchMetricSummaries(profile, metrics);
+    const summaries = await fetchMetricSummaries(
+      profile, metrics, 0, true
+    );
 
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
@@ -6236,22 +6240,22 @@ async function addReminderSeries() {
     return;
   }
 
-  const interval = Math.max(
+  const interval = Math.trunc(Math.max(
     1, Math.min(Number(els.reminderPlanInterval.value) || 1, 12)
-  );
+  ));
   const unit = els.reminderPlanUnit.value;
-  const count = Math.max(
+  const count = Math.trunc(Math.max(
     2, Math.min(Number(els.reminderPlanCount.value) || 2, 24)
-  );
+  ));
   const dates = buildReminderSeries(startDate, interval, unit, count);
   const base = {
     title,
     note: (els.reminderNote.value || '').trim(),
     profile: els.profileSelect.value || '',
-    advance_days: Math.max(
+    advance_days: Math.trunc(Math.max(
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
-    ),
+    )),
   };
 
   reminderPlanBusy = true;
@@ -6307,10 +6311,10 @@ async function addReminder() {
     due_at: dueAt,
     note: (els.reminderNote.value || '').trim(),
     profile: els.profileSelect.value || '',
-    advance_days: Math.max(
+    advance_days: Math.trunc(Math.max(
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
-    ),
+    )),
   };
   if (!editingId) payload.session_id = sessionId || '';
 
