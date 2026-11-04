@@ -370,3 +370,11 @@ def test_app_js_ships_repeating_reminders(client):
     assert "每次都" not in app_js
     assert 'id="reminder-repeat"' in html
     assert 'id="reminder-until"' in html
+
+
+def test_app_js_ships_reminder_countdown(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function reminderDueCountdown" in app_js
+    assert "已逾期 ${" in app_js
+    assert "（还有 ${days} 天）" in app_js

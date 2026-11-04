@@ -6123,6 +6123,15 @@ function syncReminderRepeatFields() {
   if (repeat <= 0) els.reminderUntil.value = '';
 }
 
+function reminderDueCountdown(item) {
+  if (!item || item.done) return '';
+  const days = reminderDaysUntil(item.due_at);
+  if (days === null) return '';
+  if (days < 0) return `（已逾期 ${Math.abs(days)} 天）`;
+  if (days === 0) return '（今天）';
+  return `（还有 ${days} 天）`;
+}
+
 function localDateAfter(days) {
   const now = new Date();
   now.setDate(now.getDate() + Number(days || 0));
@@ -6323,7 +6332,7 @@ function renderReminders(items) {
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
-    meta.textContent = `到期：${formatReminderDue(item.due_at)}`
+    meta.textContent = `到期：${formatReminderDue(item.due_at)}${reminderDueCountdown(item)}`
       + (Number(item.advance_days) > 0
         ? ` · 提前 ${Number(item.advance_days)} 天`
         : '')
