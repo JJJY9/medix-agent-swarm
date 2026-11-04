@@ -123,6 +123,13 @@ const els = {
   calcChadsDiabetes: document.getElementById('calc-chads-diabetes'),
   calcChadsStroke: document.getElementById('calc-chads-stroke'),
   calcChadsVascular: document.getElementById('calc-chads-vascular'),
+  calcFormCurb65: document.getElementById('calc-form-curb65'),
+  calcCurbAge: document.getElementById('calc-curb-age'),
+  calcCurbConfusion: document.getElementById('calc-curb-confusion'),
+  calcCurbUrea: document.getElementById('calc-curb-urea'),
+  calcCurbRr: document.getElementById('calc-curb-rr'),
+  calcCurbSbp: document.getElementById('calc-curb-sbp'),
+  calcCurbDbp: document.getElementById('calc-curb-dbp'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -3784,7 +3791,12 @@ function setCalcStatus(text, isError = false) {
 
 function setCalcTool(tool) {
   els.calcTool.value = tool;
-  for (const form of [els.calcFormBmi, els.calcFormEgfr, els.calcFormChads]) {
+  for (const form of [
+    els.calcFormBmi,
+    els.calcFormEgfr,
+    els.calcFormChads,
+    els.calcFormCurb65,
+  ]) {
     form.hidden = form.dataset.tool !== tool;
   }
   els.calcResult.hidden = true;
@@ -3808,6 +3820,7 @@ function openCalc() {
   if (Number.isFinite(age)) {
     els.calcEgfrAge.value = String(age);
     els.calcChadsAge.value = String(age);
+    els.calcCurbAge.value = String(age);
   }
   if (context.sex === '女' || context.sex === '男') {
     const sex = context.sex === '女' ? 'female' : 'male';
@@ -3917,6 +3930,31 @@ function submitChads(event) {
       title: 'CHA₂DS₂-VASc 结果',
       main: `评分 ${data.score} / 9`,
       detail: `风险分层：${data.risk}`,
+      note: data.note,
+    })
+  );
+}
+
+function submitCurb65(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/curb65',
+    {
+      age: Number(els.calcCurbAge.value),
+      confusion: els.calcCurbConfusion.checked,
+      urea: Number(els.calcCurbUrea.value),
+      respiratory_rate: Number(els.calcCurbRr.value),
+      systolic_bp: Number(els.calcCurbSbp.value),
+      diastolic_bp: Number(els.calcCurbDbp.value),
+    },
+    (data) => ({
+      title: 'CURB-65 结果',
+      main: `评分 ${data.score} / 5`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
       note: data.note,
     })
   );
@@ -4704,6 +4742,7 @@ els.calcTool.addEventListener('change', () => setCalcTool(els.calcTool.value));
 els.calcFormBmi.addEventListener('submit', submitBmi);
 els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcFormChads.addEventListener('submit', submitChads);
+els.calcFormCurb65.addEventListener('submit', submitCurb65);
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));

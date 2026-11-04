@@ -106,3 +106,49 @@ def test_chads_vasc_api_defaults(client):
     assert response.status_code == 200
     assert response.json()["score"] == 0
     assert response.json()["risk"] == "低危"
+
+
+def test_curb65_api(client):
+    response = client.post(
+        "/api/tools/curb65",
+        json={
+            "age": 70,
+            "confusion": False,
+            "urea": 8,
+            "respiratory_rate": 20,
+            "systolic_bp": 120,
+            "diastolic_bp": 80,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["score"] == 2
+    assert data["risk"] == "中危"
+    assert "年龄 ≥ 65 岁" in data["criteria"]
+
+
+def test_curb65_api_validates_ranges(client):
+    below_adult = client.post(
+        "/api/tools/curb65",
+        json={
+            "age": 10,
+            "urea": 5,
+            "respiratory_rate": 18,
+            "systolic_bp": 120,
+            "diastolic_bp": 80,
+        },
+    )
+    negative_urea = client.post(
+        "/api/tools/curb65",
+        json={
+            "age": 50,
+            "urea": -1,
+            "respiratory_rate": 18,
+            "systolic_bp": 120,
+            "diastolic_bp": 80,
+        },
+    )
+
+    assert below_adult.status_code == 422
+    assert negative_urea.status_code == 422

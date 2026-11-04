@@ -133,6 +133,15 @@ class ChadsVascRequest(BaseModel):
     vascular_disease: bool = False
 
 
+class Curb65Request(BaseModel):
+    age: int = Field(..., ge=18, le=120, description="年龄（岁）")
+    confusion: bool = False
+    urea: float = Field(..., ge=0, le=100, description="尿素氮（mmol/L）")
+    respiratory_rate: float = Field(..., ge=0, le=100, description="呼吸频率（次/分）")
+    systolic_bp: float = Field(..., ge=0, le=300, description="收缩压（mmHg）")
+    diastolic_bp: float = Field(..., ge=0, le=200, description="舒张压（mmHg）")
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal["bp", "weight", "glucose", "temperature"]
@@ -807,6 +816,24 @@ async def tool_chads_vasc(request: ChadsVascRequest):
             diabetes=request.diabetes,
             stroke_tia=request.stroke_tia,
             vascular_disease=request.vascular_disease,
+        ),
+    }
+
+
+@app.post("/api/tools/curb65")
+async def tool_curb65(request: Curb65Request):
+    """CURB-65 社区获得性肺炎严重程度评分。"""
+    from core.clinical_tools import calculate_curb65
+
+    return {
+        "ok": True,
+        **calculate_curb65(
+            request.age,
+            request.confusion,
+            request.urea,
+            request.respiratory_rate,
+            request.systolic_bp,
+            request.diastolic_bp,
         ),
     }
 
