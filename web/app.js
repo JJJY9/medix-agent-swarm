@@ -51,6 +51,7 @@ const els = {
   historyBulkDelete: document.getElementById('history-bulk-delete'),
   historyBulkCancel: document.getElementById('history-bulk-cancel'),
   historyExport: document.getElementById('history-export'),
+  historyExportCsv: document.getElementById('history-export-csv'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
   historyRange: document.getElementById('history-range'),
@@ -3475,6 +3476,50 @@ async function exportHistoryBackup() {
       btn.textContent = original;
       btn.disabled = false;
     }, 1800);
+  }
+}
+
+async function exportHistoryCsv() {
+  const btn = els.historyExportCsv;
+  if (btn.disabled) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '导出中…';
+
+  try {
+    const params = new URLSearchParams();
+    const query = els.historySearch.value.trim();
+    if (query) params.set('q', query);
+    if (favoritesOnly) params.set('favorite', '1');
+    if (archivedOnly) params.set('archived', 'true');
+    if (historyTag) params.set('tag', historyTag);
+    if (historyProfile) params.set('profile', historyProfile);
+    if (historyDays > 0) params.set('days', String(historyDays));
+
+    const res = await fetch(
+      `/api/sessions/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-sessions-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    btn.textContent = '已导出';
+  } catch (err) {
+    btn.textContent = '失败';
+    window.alert(`导出列表失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1600);
   }
 }
 
@@ -7416,6 +7461,7 @@ els.historyMore.addEventListener('click', () => {
 });
 
 els.historyExport.addEventListener('click', exportHistoryBackup);
+els.historyExportCsv.addEventListener('click', exportHistoryCsv);
 els.historyFeedbackExport.addEventListener('click', exportFeedbackCsv);
 els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());

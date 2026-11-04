@@ -82,3 +82,27 @@ def test_metric_targets_validate_bp_pair(client_and_store):
     assert missing_diastolic.status_code == 400
     assert reversed_pair.status_code == 400
     assert bad_metric.status_code == 422
+
+
+def test_import_backup_preserves_metric_targets(client_and_store):
+    client, _store = client_and_store
+
+    response = client.post(
+        "/api/sessions/import",
+        json={
+            "sessions": [],
+            "profiles": [],
+            "health_metrics": [],
+            "metric_targets": [
+                {"profile": "母亲", "metric": "bp", "value1": 130, "value2": 80}
+            ],
+        },
+    )
+    listed = client.get("/api/metric-targets")
+
+    assert response.status_code == 200
+    assert response.json()["targets"] == 1
+    targets = listed.json()["targets"]
+    assert targets[0]["profile"] == "母亲"
+    assert targets[0]["value1"] == 130
+    assert targets[0]["value2"] == 80
