@@ -1119,13 +1119,28 @@ async def knowledge_upload_batch(
 
 
 @app.get("/api/knowledge/search")
-async def knowledge_search(q: str = "", top_k: int = 5):
-    """知识库检索测试：返回来源、相关度与原文片段。"""
+async def knowledge_search(
+    q: str = "",
+    top_k: int = 5,
+    filter_type: Optional[str] = None,
+):
+    """知识库检索测试：返回来源、相关度与原文片段，可按文档类型过滤。"""
     from knowledge.service import get_knowledge_service
+
+    allowed_types = {
+        "lifestyle",
+        "disease_classification",
+        "clinical_guideline",
+        "general",
+    }
+    if filter_type and filter_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="不支持的文档类型")
 
     service = get_knowledge_service()
     try:
-        result = await asyncio.to_thread(service.search, q, top_k)
+        result = await asyncio.to_thread(
+            service.search, q, top_k, filter_type
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

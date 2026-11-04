@@ -396,6 +396,14 @@
         placeholder="测试检索：如 高血压 饮食"
         autocomplete="off"
       />
+      <label class="sr-only" for="kb-search-type">文档类型</label>
+      <select id="kb-search-type" class="kb-search-input kb-search-type">
+        <option value="">全部类型</option>
+        <option value="lifestyle">生活方式</option>
+        <option value="disease_classification">疾病分类</option>
+        <option value="clinical_guideline">临床指南</option>
+        <option value="general">通用 / 上传</option>
+      </select>
       <button type="button" class="btn-quiet" id="kb-search-button">检索</button>
     </div>
     <div class="kb-search-results" id="kb-search-results" hidden></div>
