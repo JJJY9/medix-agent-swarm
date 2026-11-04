@@ -100,6 +100,7 @@ const els = {
   diagKnowledge: document.getElementById('diag-knowledge'),
   diagPackages: document.getElementById('diag-packages'),
   diagAudit: document.getElementById('diag-audit'),
+  diagAuditExport: document.getElementById('diag-audit-export'),
   diagRefresh: document.getElementById('diag-refresh'),
   diagLlmTest: document.getElementById('diag-llm-test'),
   diagCopy: document.getElementById('diag-copy'),
@@ -3401,6 +3402,37 @@ async function loadAuditLog() {
   }
 }
 
+async function exportAuditCsv() {
+  const button = els.diagAuditExport;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '…';
+
+  try {
+    const res = await fetch('/api/audit/export.csv');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-audit-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    button.textContent = '已导出';
+  } catch (err) {
+    button.textContent = '失败';
+    window.alert(`导出审计失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1600);
+  }
+}
+
 async function loadDiagnostics() {
   els.diagSummary.className = 'diag-summary';
   els.diagSummary.textContent = '正在检查…';
@@ -5151,6 +5183,7 @@ els.diagRefresh.addEventListener('click', loadDiagnostics);
 els.diagLlmTest.addEventListener('click', testModelConnection);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
+els.diagAuditExport.addEventListener('click', exportAuditCsv);
 
 els.calcOpen.addEventListener('click', openCalc);
 els.calcClose.addEventListener('click', () => closeCalc(true));

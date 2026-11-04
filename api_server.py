@@ -381,6 +381,41 @@ async def audit_log(limit: int = 50):
     return {"actions": actions}
 
 
+@app.get("/api/audit/export.csv")
+async def export_audit_csv():
+    """导出全部操作审计 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_audit_log, 100000
+    )
+    rows = [["时间", "动作", "对象", "说明"]]
+    for item in reversed(items):
+        rows.append([
+            item.get("created_at", ""),
+            item.get("action", ""),
+            item.get("target", ""),
+            item.get("detail", ""),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-audit-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/status")
 async def get_status():
     """健康检查 + 配置状态，前端用它决定是否显示警告。"""

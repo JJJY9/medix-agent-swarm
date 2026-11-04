@@ -201,6 +201,29 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_audit_csv_export(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.log_action("session.delete", "s1", "用户删除")
+    store.log_action("session.import", detail="imported=2")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/audit/export.csv")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    text = response.content.decode("utf-8-sig")
+    assert text.startswith("时间")
+    assert "session.delete" in text
+    assert "s1" in text
+    assert "用户删除" in text
+    # 按时间从早到晚导出
+    assert text.index("session.delete") < text.index("session.import")
+
+
 def test_audit_log_api_records_session_actions(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange("s1", "删除问题", "答复一")
