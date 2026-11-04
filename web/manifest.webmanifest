@@ -1,0 +1,24 @@
+{
+  "name": "MediX 多智能体医疗助手",
+  "short_name": "MediX",
+  "description": "多智能体会诊、用药安全提示与健康记录",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#e9eff2",
+  "theme_color": "#0b6e9e",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

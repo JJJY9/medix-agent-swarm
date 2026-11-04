@@ -4990,6 +4990,15 @@ checkStatus();
 setInterval(checkStatus, 20000);
 els.input.focus();
 
+// 可安装 PWA：只缓存静态外壳，API 数据不进入 Service Worker 缓存
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // 非 HTTPS / 浏览器不支持时静默降级
+    });
+  });
+}
+
 // 屏宽变化后重新排布波形（两份波形共用同一段路径，拼接处才能无缝衔接）
 let ecgResizeTimer = null;
 window.addEventListener('resize', () => {
