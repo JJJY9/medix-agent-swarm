@@ -135,6 +135,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     """检查会话数据库与访问保护等运行时状态。"""
     import sqlite3
 
+    from core.budget import get_token_budget
     from core.pricing import get_pricing
     from core.ratelimit import get_rate_limit
 
@@ -151,6 +152,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "auth_enabled": bool((os.getenv("MEDIX_ACCESS_TOKEN") or "").strip()),
         "rate_limit": get_rate_limit(),
         "pricing_configured": get_pricing() is not None,
+        "monthly_token_budget": get_token_budget(),
     }
 
     if info["db_exists"]:

@@ -39,6 +39,7 @@ from core.triage import detect_red_flags
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.pricing import get_pricing
+from core.budget import get_token_budget
 from core.serialization import sanitize_json
 
 WEB_DIR = project_root / "web"
@@ -240,6 +241,7 @@ async def get_status():
         "auth_required": bool(get_access_token()),
         "llm_configured": bool(api_key),
         "pricing": get_pricing(),
+        "monthly_token_budget": get_token_budget(),
         "model_name": LLM_CONFIG.get("model_name"),
         "base_url": LLM_CONFIG.get("base_url"),
         "mem0_enabled": mem0_enabled,
@@ -356,6 +358,26 @@ async def usage_daily(days: int = 7, favorite: Optional[bool] = None):
     return await asyncio.to_thread(
         get_session_store().daily_usage, days, bool(favorite)
     )
+
+
+@app.get("/api/usage/month")
+async def usage_month():
+    """本月 Token 用量与预算进度。"""
+    from memory import get_session_store
+
+    data = await asyncio.to_thread(
+        get_session_store().month_usage
+    )
+    budget = get_token_budget()
+    total = int(data["usage"].get("total_tokens") or 0)
+    percent = round(total / budget * 100, 1) if budget > 0 else None
+
+    return {
+        **data,
+        "budget": budget,
+        "percent": percent,
+        "exceeded": bool(budget > 0 and total >= budget),
+    }
 
 
 @app.get("/api/usage/export.csv")

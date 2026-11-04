@@ -507,6 +507,36 @@ class SessionStore:
             "totals": totals,
         }
 
+    def month_usage(self) -> Dict[str, Any]:
+        """汇总当前自然月的用量。"""
+        today = datetime.now().date()
+        start = today.replace(day=1).isoformat()
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT metadata
+                  FROM messages
+                 WHERE role = 'assistant' AND created_at >= ?
+                """,
+                (start,),
+            ).fetchall()
+
+        totals = _new_usage_entry()
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            _accumulate_usage(totals, metadata)
+
+        return {
+            "month": today.strftime("%Y-%m"),
+            "usage": totals["usage"],
+            "llm_calls": totals["llm_calls"],
+            "turns": totals["turns"],
+        }
+
     def export_data(self) -> Dict[str, Any]:
         """导出全部会话与全部消息，供本地备份或迁移。"""
         sessions = []

@@ -47,6 +47,10 @@ const els = {
   usageTooltip: document.getElementById('usage-tooltip'),
   usageTable: document.getElementById('usage-table'),
   usageTableBody: document.getElementById('usage-table-body'),
+  usageBudget: document.getElementById('usage-budget'),
+  usageBudgetText: document.getElementById('usage-budget-text'),
+  usageBudgetBar: document.getElementById('usage-budget-bar'),
+  usageBudgetHint: document.getElementById('usage-budget-hint'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
@@ -136,6 +140,7 @@ let historyLoading = false;
 let favoritesOnly = false;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
+let usageBudgetRequestSeq = 0;
 let kbSearching = false;
 
 const FOCUSABLE_SELECTOR = [
@@ -1756,6 +1761,56 @@ async function loadUsageTrend() {
   }
 }
 
+function renderUsageBudget(data) {
+  const budget = Number(data.budget || 0);
+  if (!budget) {
+    els.usageBudget.hidden = true;
+    return;
+  }
+
+  const usage = data.usage || {};
+  const total = Number(usage.total_tokens || 0);
+  const percent = Number(
+    data.percent != null ? data.percent : (total / budget) * 100
+  );
+  const width = Math.max(0, Math.min(100, percent));
+
+  els.usageBudget.hidden = false;
+  els.usageBudgetText.textContent =
+    `${total.toLocaleString()} / ${budget.toLocaleString()} tokens` +
+    `（${percent.toFixed(1)}%）`;
+  els.usageBudgetBar.style.width = `${width}%`;
+
+  els.usageBudget.classList.toggle(
+    'warn', percent >= 80 && percent < 100
+  );
+  els.usageBudget.classList.toggle('critical', percent >= 100);
+
+  if (percent >= 100) {
+    els.usageBudgetHint.textContent = '已超出本月预算，请留意模型费用。';
+  } else if (percent >= 80) {
+    els.usageBudgetHint.textContent = '已使用 80% 以上，接近本月预算。';
+  } else {
+    els.usageBudgetHint.textContent =
+      `剩余 ${Math.max(0, budget - total).toLocaleString()} tokens`;
+  }
+}
+
+async function loadUsageBudget() {
+  const requestSeq = ++usageBudgetRequestSeq;
+  try {
+    const res = await fetch('/api/usage/month');
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== usageBudgetRequestSeq) return;
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    renderUsageBudget(data);
+  } catch {
+    if (requestSeq === usageBudgetRequestSeq) {
+      els.usageBudget.hidden = true;
+    }
+  }
+}
+
 async function exportUsageCsv() {
   const button = els.usageExport;
   const original = button.textContent;
@@ -1862,6 +1917,7 @@ async function importHistoryBackup() {
       btn.textContent = `已导入 ${result.imported || 0} 次`;
       await loadHistory(els.historySearch.value.trim());
       await loadUsageTrend();
+      await loadUsageBudget();
     } catch (err) {
       btn.textContent = '导入失败';
       window.alert(`导入备份失败：${err.message || err}`);
@@ -1901,6 +1957,7 @@ function openHistory() {
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
   loadUsageTrend();
+  loadUsageBudget();
   els.historySearch.focus();
 }
 
@@ -2070,6 +2127,7 @@ async function deleteHistory(item) {
     }
     await loadHistory(els.historySearch.value.trim());
     await loadUsageTrend();
+    await loadUsageBudget();
     els.historyActionStatus.textContent = '已删除会诊';
     if (historyOpen) els.historySearch.focus();
   } catch (err) {
@@ -2511,6 +2569,12 @@ function renderDiagnostics(report) {
         : '已关闭'
     ),
     diagRow('费用估算', runtime.pricing_configured ? '已配置' : '未配置'),
+    diagRow(
+      '月度预算',
+      Number(runtime.monthly_token_budget || 0) > 0
+        ? `${Number(runtime.monthly_token_budget).toLocaleString()} tokens`
+        : '未配置'
+    ),
   ]);
   if (runtime.db_error) {
     els.diagRuntime.appendChild(
@@ -2864,6 +2928,7 @@ async function send(question) {
     if (historyOpen) {
       loadHistory(els.historySearch.value.trim());
       loadUsageTrend();
+      loadUsageBudget();
     }
   } catch (err) {
     if (streamTurn) {

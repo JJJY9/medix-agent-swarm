@@ -40,6 +40,7 @@
 - **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，历史列表汇总总用量，并随 Markdown 导出保留 ✅
 - **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细、CSV 导出与数据表 ✅
 - **💴 费用估算**: 可选配置每百万 Token 单价，在会诊面板、历史汇总与趋势中显示预估值 ✅
+- **🎯 月度预算**: 可选设置每月 Token 预算，历史抽屉展示本月进度、剩余额度与超限提醒 ✅
 - **⭐ 收藏会诊**: 标记重要会诊并只看收藏，列表、用量汇总与趋势同步过滤 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
@@ -218,6 +219,7 @@ npm install -D playwright
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
 | GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
+| GET | `/api/usage/month` | 本月用量、预算进度与是否超限 |
 | GET | `/api/usage/export.csv` | 导出近 N 天按日用量 CSV（含 BOM 与合计行） |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |
 | GET | `/api/knowledge/search` | 知识库检索测试（返回来源、相关度与片段） |
@@ -283,7 +285,7 @@ MEDIX_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 MEDIX_TIMEOUT=60
 ```
 
-`MEDIX_TIMEOUT` 是单次模型请求超时（秒），可不填，默认 60。服务会把 401（Key 无效）、402（余额不足）、429（限流）、超时和网络错误转换成可读提示，其中 401/402 不会反复重试。`MEDIX_RATE_LIMIT` 控制 `/api/chat` 与 `/api/chat/stream` 每分钟允许的请求数，默认 30，设为 0 关闭限流。`MEDIX_PRICE_INPUT` / `MEDIX_PRICE_OUTPUT` 是每百万输入/输出 Token 的单价，配合 `MEDIX_CURRENCY`（默认 `¥`）在界面显示预估费用，未配置时不显示。
+`MEDIX_TIMEOUT` 是单次模型请求超时（秒），可不填，默认 60。服务会把 401（Key 无效）、402（余额不足）、429（限流）、超时和网络错误转换成可读提示，其中 401/402 不会反复重试。`MEDIX_RATE_LIMIT` 控制 `/api/chat` 与 `/api/chat/stream` 每分钟允许的请求数，默认 30，设为 0 关闭限流。`MEDIX_PRICE_INPUT` / `MEDIX_PRICE_OUTPUT` 是每百万输入/输出 Token 的单价，配合 `MEDIX_CURRENCY`（默认 `¥`）在界面显示预估费用，未配置时不显示。`MEDIX_MONTHLY_TOKEN_BUDGET` 设置每月 Token 预算（0 或留空不启用），历史抽屉会显示本月进度和超限提醒。
 
 **方式二**：编辑上一层目录的 `config.py`：
 
