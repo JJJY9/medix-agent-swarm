@@ -6867,9 +6867,13 @@ function renderTodayMeds(medications) {
   const todayDoses = active.reduce(
     (total, item) => total + Number(item.today_count || 0), 0
   );
-  els.todayMedsSummary.textContent = todayDoses > 0
-    ? `今日已服 ${todayDoses} 次`
-    : '今天还没有打卡';
+  const allDone = active.every((item) => Number(item.today_count) > 0);
+  els.todayMedsSummary.textContent = allDone
+    ? `今日已全部打卡 · 共 ${todayDoses} 次`
+    : (todayDoses > 0
+      ? `今日已服 ${todayDoses} 次`
+      : '今天还没有打卡');
+  els.todayMedsSummary.classList.toggle('is-complete', allDone);
   els.todayMedsList.replaceChildren();
   for (const item of active) {
     const li = document.createElement('li');

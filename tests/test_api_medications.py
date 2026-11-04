@@ -255,6 +255,32 @@ def test_medications_import_backup(client_and_store):
     assert logs[0]["medication_id"] == medication["id"]
 
 
+def test_medications_csv_export_includes_counts(client_and_store):
+    client, _store = client_and_store
+    import csv
+    import io
+    from datetime import datetime
+
+    medication = client.post(
+        "/api/medications", json={
+            "profile": "母亲", "name": "氨氯地平", "dose": "5 mg",
+        },
+    ).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": datetime.now().isoformat(timespec="minutes")},
+    )
+
+    export = client.get("/api/medications/export.csv")
+    text = export.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert rows[0][-3:] == ["今日次数", "近7天次数", "最近服用"]
+    assert rows[1][-3] == "1"
+    assert rows[1][-2] == "1"
+    assert rows[1][-1] != ""
+
+
 def test_medications_csv_export_and_import(client_and_store):
     client, _store = client_and_store
 
@@ -282,7 +308,10 @@ def test_medications_csv_export_and_import(client_and_store):
         "/api/medications/export.csv", params={"profile": "母亲"}
     )
     text = exported.content.decode("utf-8-sig")
-    assert text.splitlines()[0] == "药物名称,剂量,频次,患者档案,状态,备注"
+    assert text.splitlines()[0] == (
+        "药物名称,剂量,频次,患者档案,状态,备注,"
+        "今日次数,近7天次数,最近服用"
+    )
     assert "氨氯地平" in text
     assert "布洛芬" not in text
     assert "'=HYPERLINK" in text
