@@ -2219,6 +2219,16 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def reopen_reminder(self, reminder_id: int) -> bool:
+        """把已完成的提醒恢复为待完成，不存在时返回 False。"""
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE reminders SET done = 0, updated_at = ? WHERE id = ?",
+                (now, int(reminder_id)),
+            )
+            return cursor.rowcount > 0
+
     def delete_reminder(self, reminder_id: int) -> bool:
         with self._lock, self._conn:
             cursor = self._conn.execute(

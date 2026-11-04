@@ -1480,6 +1480,20 @@ async def complete_reminder(reminder_id: int):
     return {"ok": True, "id": reminder_id}
 
 
+@app.post("/api/reminders/{reminder_id}/reopen")
+async def reopen_reminder(reminder_id: int):
+    """把已完成的随访提醒恢复为待完成。"""
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().reopen_reminder, reminder_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    await record_audit("reminder.reopen", str(reminder_id))
+    return {"ok": True, "id": reminder_id}
+
+
 @app.patch("/api/reminders/{reminder_id}")
 async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
     """修改随访提醒的内容、日期或备注。"""

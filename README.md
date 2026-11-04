@@ -193,7 +193,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 
 - 会诊面板下方「随访提醒」：填写提醒内容与日期即可创建，日期默认一周后
 - 到期（含当天）的提醒会显示「已到期」标记，并在列表顶部汇总数量
-- 提醒支持「编辑」「完成」「推迟」（+7 天）与「删除」，新增/修改/完成/推迟/删除都会写入操作审计
+- 提醒支持「编辑」「完成」「推迟」（+7 天）与「删除」，可勾选「显示已完成」查看完成项并「恢复」为待完成；新增/修改/完成/推迟/恢复/删除都会写入操作审计
 - 提醒与当前会诊编号关联保存；创建时会记录当前选中的患者档案，列表显示所属档案
 - 入口按钮显示已到期数量；在抽屉中可开启浏览器通知，到期当天打开页面时提示一次（依赖浏览器通知权限）
 
@@ -303,6 +303,7 @@ npm install -D playwright
 | GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
 | POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile` 关联档案；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
 | POST | `/api/reminders/{id}/complete` | 把随访提醒标记为完成 |
+| POST | `/api/reminders/{id}/reopen` | 把已完成的随访提醒恢复为待完成 |
 | PATCH | `/api/reminders/{id}` | 修改随访提醒的内容、日期或备注 |
 | POST | `/api/reminders/{id}/snooze` | 把随访提醒推迟 N 天（`days` 查询参数，默认 7） |
 | DELETE | `/api/reminders/{id}` | 删除随访提醒 |
