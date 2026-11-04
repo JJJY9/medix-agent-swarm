@@ -636,6 +636,56 @@ class SessionStore:
             "rate": round(helpful / total * 100, 1) if total else None,
         }
 
+    def recent_feedback(
+        self, limit: int = 10, rating: int = -1
+    ) -> List[Dict[str, Any]]:
+        """返回最近带指定评分的会诊反馈，供质量复核。"""
+        try:
+            rating = int(rating)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        limit = max(1, min(int(limit or 10), 50))
+
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT m.id AS message_id, m.session_id, m.metadata,
+                       m.created_at, s.title AS session_title
+                  FROM messages m
+                  JOIN sessions s ON s.id = m.session_id
+                 WHERE m.role = 'assistant'
+                """
+            ).fetchall()
+
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            feedback = metadata.get("feedback")
+            if not isinstance(feedback, dict):
+                continue
+            try:
+                item_rating = int(feedback.get("rating"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if item_rating != rating:
+                continue
+            items.append({
+                "message_id": row["message_id"],
+                "session_id": row["session_id"],
+                "session_title": row["session_title"],
+                "rating": item_rating,
+                "comment": str(feedback.get("comment") or "")[:MAX_FEEDBACK_LENGTH],
+                "updated_at": str(feedback.get("updated_at") or row["created_at"]),
+            })
+
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return items[:limit]
+
     def set_message_feedback(
         self,
         session_id: str,

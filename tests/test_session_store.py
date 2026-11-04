@@ -1,4 +1,5 @@
 """会话持久化与上下文恢复的单元测试。"""
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -212,6 +213,24 @@ def set_session_time(store, session_id, timestamp):
         store._conn.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
             (timestamp, session_id),
+        )
+
+
+def set_feedback_time(store, session_id, timestamp):
+    with store._lock, store._conn:
+        row = store._conn.execute(
+            """
+            SELECT id, metadata FROM messages
+             WHERE session_id = ? AND role = 'assistant'
+             ORDER BY id DESC LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        metadata = json.loads(row["metadata"] or "{}")
+        metadata["feedback"]["updated_at"] = timestamp
+        store._conn.execute(
+            "UPDATE messages SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), row["id"]),
         )
 
 
@@ -680,6 +699,28 @@ def test_archive_survives_export_and_import(tmp_path):
         assert [item["id"] for item in target.list_sessions(archived=True)] == ["s1"]
     finally:
         target.close()
+
+
+def test_recent_feedback_returns_latest_by_rating(store):
+    first = store.save_exchange("s1", "问题一", "答复一")
+    second = store.save_exchange("s2", "问题二", "答复二")
+    third = store.save_exchange("s3", "问题三", "答复三")
+    store.set_message_feedback("s1", first, -1, "依据不足")
+    store.set_message_feedback("s2", second, 1)
+    store.set_message_feedback("s3", third, -1, "缺少剂量")
+
+    set_feedback_time(store, "s1", "2026-01-01T00:00:00")
+    set_feedback_time(store, "s3", "2026-01-02T00:00:00")
+
+    unhelpful = store.recent_feedback(limit=10)
+    assert [item["session_id"] for item in unhelpful] == ["s3", "s1"]
+    assert unhelpful[0]["comment"] == "缺少剂量"
+    assert unhelpful[0]["session_title"] == "问题三"
+
+    helpful = store.recent_feedback(rating=1)
+    assert [item["session_id"] for item in helpful] == ["s2"]
+    assert store.recent_feedback(limit=1)[0]["session_id"] == "s3"
+    assert store.recent_feedback(rating=5) == []
 
 
 def test_legacy_messages_table_is_migrated(tmp_path):

@@ -555,6 +555,20 @@ async def import_sessions(request: ImportSessionsRequest):
     return {"ok": True, **result}
 
 
+@app.get("/api/feedback/recent")
+async def recent_feedback(limit: int = 10, rating: int = -1):
+    """最近的会诊反馈（默认待改进），用于质量复核。"""
+    from memory import get_session_store
+
+    if rating not in (-1, 1):
+        raise HTTPException(status_code=400, detail="rating 只能是 1 或 -1")
+    limit = max(1, min(int(limit or 10), 50))
+    items = await asyncio.to_thread(
+        get_session_store().recent_feedback, limit, rating
+    )
+    return {"feedback": items}
+
+
 @app.get("/api/profiles")
 async def list_profiles():
     """常用患者档案（服务端持久化，可跨浏览器使用）。"""
