@@ -2629,6 +2629,19 @@ html[data-theme="dark"] .reminder-badge {
   background: #331f1d;
 }
 
+.reminder-count {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10.5px;
+  line-height: 16px;
+  color: #fff;
+  background: var(--triage-1);
+  border-radius: 999px;
+  text-align: center;
+}
+
 .reminders-due-hint {
   margin: 0 0 8px;
   padding: 6px 10px;

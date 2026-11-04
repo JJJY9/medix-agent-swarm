@@ -29,3 +29,13 @@ def test_app_js_ships_voice_input(client):
     assert "function toggleVoice" in app_js
     assert "webkitSpeechRecognition" in app_js
     assert "voice-toggle" in app_js
+
+
+def test_app_js_ships_reminder_badge_and_notifications(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function updateReminderBadge" in app_js
+    assert "function refreshReminderBadge" in app_js
+    assert "function enableReminderNotifications" in app_js
+    assert "Notification.requestPermission" in app_js
+    assert "reminders-count" in app_js

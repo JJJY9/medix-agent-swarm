@@ -207,6 +207,8 @@ const els = {
   metricsBackdrop: document.getElementById('metrics-backdrop'),
   metricsClose: document.getElementById('metrics-close'),
   remindersOpen: document.getElementById('reminders-open'),
+  remindersCount: document.getElementById('reminders-count'),
+  remindersNotify: document.getElementById('reminders-notify'),
   remindersDrawer: document.getElementById('reminders-drawer'),
   remindersBackdrop: document.getElementById('reminders-backdrop'),
   remindersClose: document.getElementById('reminders-close'),
@@ -4678,6 +4680,7 @@ function openReminders() {
   syncPageInert();
   els.remindersOpen.setAttribute('aria-expanded', 'true');
   setRemindersStatus('');
+  syncNotifyButton();
   if (!els.reminderDue.value) els.reminderDue.value = defaultReminderDue();
   loadReminders();
   els.remindersClose.focus();
@@ -4769,6 +4772,99 @@ function renderReminders(items) {
   els.remindersDueHint.textContent = dueCount
     ? `有 ${dueCount} 条提醒已到期`
     : '';
+  updateReminderBadge(dueCount);
+  maybeNotifyDueReminders(dueCount, items);
+}
+
+function updateReminderBadge(count) {
+  if (!els.remindersCount) return;
+  const value = Number(count) || 0;
+  els.remindersCount.hidden = value === 0;
+  els.remindersCount.textContent = value > 99 ? '99+' : String(value);
+  els.remindersOpen.setAttribute(
+    'aria-label',
+    value ? `随访提醒，${value} 条已到期` : '随访提醒'
+  );
+}
+
+async function refreshReminderBadge() {
+  try {
+    const res = await fetch('/api/reminders');
+    if (!res.ok) return;
+    const data = await res.json();
+    const due = (data.reminders || [])
+      .filter((item) => reminderIsDue(item.due_at)).length;
+    updateReminderBadge(due);
+  } catch {
+    // 徽标加载失败不影响主流程
+  }
+}
+
+const REMINDER_NOTIFIED_KEY = 'medix.reminderNotified';
+
+function syncNotifyButton() {
+  if (!els.remindersNotify) return;
+  if (!('Notification' in window)) {
+    els.remindersNotify.hidden = true;
+    return;
+  }
+  els.remindersNotify.hidden = false;
+  const state = Notification.permission;
+  if (state === 'granted') {
+    els.remindersNotify.textContent = '已开启到期通知';
+    els.remindersNotify.disabled = true;
+  } else if (state === 'denied') {
+    els.remindersNotify.textContent = '通知已被浏览器拒绝';
+    els.remindersNotify.disabled = true;
+  } else {
+    els.remindersNotify.textContent = '开启到期通知';
+    els.remindersNotify.disabled = false;
+  }
+}
+
+async function enableReminderNotifications() {
+  if (!('Notification' in window)) return;
+  try {
+    const permission = await Notification.requestPermission();
+    syncNotifyButton();
+    if (permission === 'granted') {
+      setRemindersStatus('已开启到期通知。');
+      await loadReminders();
+    } else if (permission === 'denied') {
+      setRemindersStatus(
+        '浏览器已拒绝通知权限，可在站点设置中重新开启。',
+        true
+      );
+    }
+  } catch {
+    // 部分浏览器需要用户手势，失败时静默
+  }
+}
+
+function maybeNotifyDueReminders(dueCount, items) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    return;
+  }
+  const today = todayLocalDate();
+  try {
+    if (localStorage.getItem(REMINDER_NOTIFIED_KEY) === today) return;
+  } catch {
+    return;
+  }
+  const dueItems = (items || []).filter((item) => reminderIsDue(item.due_at));
+  const count = dueItems.length || Number(dueCount) || 0;
+  if (count <= 0) return;
+
+  const titles = dueItems.slice(0, 3).map((item) => item.title).join('、');
+  const body = titles
+    ? `有 ${count} 条提醒已到期：${titles}${count > 3 ? ' 等' : ''}`
+    : `有 ${count} 条随访提醒已到期。`;
+  try {
+    new Notification('MediX 随访提醒', { body, tag: 'medix-reminders' });
+    localStorage.setItem(REMINDER_NOTIFIED_KEY, today);
+  } catch {
+    // 通知构造失败时忽略
+  }
 }
 
 async function loadReminders() {
@@ -6352,6 +6448,8 @@ if (els.voiceToggle) {
   els.voiceToggle.addEventListener('click', toggleVoice);
 }
 setupVoiceInput();
+refreshReminderBadge();
+syncNotifyButton();
 
 els.newSession.addEventListener('click', startNewSession);
 
@@ -6483,6 +6581,7 @@ els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
 els.remindersOpen.addEventListener('click', openReminders);
 els.remindersClose.addEventListener('click', () => closeReminders(true));
 els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
+els.remindersNotify.addEventListener('click', enableReminderNotifications);
 els.reminderAdd.addEventListener('click', addReminder);
 els.reminderTitle.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
