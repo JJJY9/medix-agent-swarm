@@ -349,7 +349,7 @@ class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ]
     value1: float
     value2: Optional[float] = None
@@ -361,7 +361,7 @@ class MetricTargetRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ]
     value1: float = Field(..., description="目标上限（血压为收缩压）")
     value2: Optional[float] = Field(None, description="血压目标舒张压")
@@ -1191,7 +1191,7 @@ async def list_metrics(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
@@ -1214,7 +1214,7 @@ async def metric_summary(
 
     if metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     days = max(0, min(int(days or 0), 3650))
@@ -1289,7 +1289,7 @@ async def export_metrics_csv(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
@@ -1306,6 +1306,10 @@ async def export_metrics_csv(
         "waist": "腰围",
         "phq9": "PHQ-9 评分",
         "gad7": "GAD-7 评分",
+        "cat": "CAT 评分",
+        "ess": "ESS 评分",
+        "auditc": "AUDIT-C 评分",
+        "mmrc": "mMRC 分级",
     }
 
     rows = [["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"]]
@@ -1381,6 +1385,14 @@ async def import_metrics_csv(file: UploadFile = File(...)):
         "PHQ-9评分": "phq9",
         "GAD-7 评分": "gad7",
         "GAD-7评分": "gad7",
+        "CAT 评分": "cat",
+        "CAT评分": "cat",
+        "ESS 评分": "ess",
+        "ESS评分": "ess",
+        "AUDIT-C 评分": "auditc",
+        "AUDIT-C评分": "auditc",
+        "mMRC 分级": "mmrc",
+        "mMRC分级": "mmrc",
         "心率": "heart_rate",
         "血氧": "spo2",
         "血氧饱和度": "spo2",
@@ -1392,7 +1404,7 @@ async def import_metrics_csv(file: UploadFile = File(...)):
     }
     allowed = {
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7"
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     }
 
     records = []

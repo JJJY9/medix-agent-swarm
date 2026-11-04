@@ -5024,6 +5024,10 @@ const METRIC_UNITS = {
   waist: 'cm',
   phq9: '分',
   gad7: '分',
+  cat: '分',
+  ess: '分',
+  auditc: '分',
+  mmrc: '级',
 };
 const METRIC_NAMES = {
   bp: '血压',
@@ -5035,6 +5039,10 @@ const METRIC_NAMES = {
   waist: '腰围',
   phq9: 'PHQ-9 评分',
   gad7: 'GAD-7 评分',
+  cat: 'CAT 评分',
+  ess: 'ESS 评分',
+  auditc: 'AUDIT-C 评分',
+  mmrc: 'mMRC 分级',
 };
 const METRIC_REFERENCES = {
   bp: '家庭血压参考：<135/85 mmHg；≥135/85 建议复测并咨询医生。',
@@ -5046,6 +5054,10 @@ const METRIC_REFERENCES = {
   waist: '腰围参考：男性 <90 cm、女性 <85 cm（中国成人中心性肥胖标准）。',
   phq9: '评分越高提示抑郁症状越明显，需结合临床访谈判断。',
   gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
+  cat: 'CAT 总分 0–40，分数越高提示慢阻肺对生活影响越大。',
+  ess: 'ESS 总分 0–24，分数越高提示日间嗜睡越明显。',
+  auditc: 'AUDIT-C 总分 0–12，分数越高提示风险饮酒可能性越大。',
+  mmrc: 'mMRC 0–4 级，级别越高提示呼吸困难越明显。',
 };
 
 /**
@@ -5337,7 +5349,9 @@ function setMetricType(type) {
   els.metricBpValues.hidden = !isBp;
   els.metricSingleWrap.hidden = isBp;
   els.metricUnit.textContent = METRIC_UNITS[value];
-  const isScore = value === 'phq9' || value === 'gad7';
+  const isScore = [
+    'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
+  ].includes(value);
   els.metricValue.step = isScore ? '1' : '0.1';
   els.metricValue.min = isScore ? '0' : '';
   els.metricReference.textContent = METRIC_REFERENCES[value] || '';
@@ -5780,7 +5794,7 @@ function renderMetricWeekly(summaries) {
   list.replaceChildren();
   const order = [
     'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
-    'waist', 'phq9', 'gad7',
+    'waist', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
   ];
   const items = (summaries || [])
     .filter((item) => item.count > 0)
@@ -5890,7 +5904,7 @@ async function loadMetricOverview() {
     let count = 0;
     for (const metric of [
       'bp', 'weight', 'glucose', 'temperature', 'heart_rate',
-      'spo2', 'waist', 'phq9', 'gad7',
+      'spo2', 'waist', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
     ]) {
       const item = latest[metric];
       if (!item) continue;
@@ -7702,6 +7716,10 @@ function submitEss(event) {
       detail: `嗜睡程度：${data.drowsiness}`,
       note: data.note,
       level: data.score > 15 ? 'warning' : '',
+      action: {
+        label: '保存 ESS 评分',
+        run: () => saveScreenerScore('ess', data.score, 'ESS 嗜睡评估'),
+      },
     })
   );
 }
@@ -7722,6 +7740,10 @@ function submitCat(event) {
       detail: `影响程度：${data.impact}`,
       note: data.note,
       level: data.score > 30 ? 'warning' : '',
+      action: {
+        label: '保存 CAT 评分',
+        run: () => saveScreenerScore('cat', data.score, 'CAT 评估'),
+      },
     })
   );
 }
@@ -7737,6 +7759,10 @@ function submitMmrc(event) {
       detail: data.label,
       note: data.note,
       level: data.grade >= 3 ? 'warning' : '',
+      action: {
+        label: '保存 mMRC 分级',
+        run: () => saveScreenerScore('mmrc', data.grade, 'mMRC 呼吸困难'),
+      },
     })
   );
 }
@@ -7756,6 +7782,10 @@ function submitAuditC(event) {
       detail: `风险分层：${data.risk}`,
       note: data.note,
       level: data.risk === '高风险' ? 'warning' : '',
+      action: {
+        label: '保存 AUDIT-C 评分',
+        run: () => saveScreenerScore('auditc', data.score, 'AUDIT-C 筛查'),
+      },
     })
   );
 }
