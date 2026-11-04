@@ -396,6 +396,9 @@ const els = {
   medicationStatus: document.getElementById('medication-status'),
   medicationList: document.getElementById('medication-list'),
   medicationEmpty: document.getElementById('medication-empty'),
+  medicationExport: document.getElementById('medication-export'),
+  medicationImport: document.getElementById('medication-import'),
+  medicationImportFile: document.getElementById('medication-import-file'),
   calcInteractionsLoad: document.getElementById('calc-interactions-load'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
@@ -7516,6 +7519,58 @@ async function exportSymptomsCsv() {
   }
 }
 
+async function exportMedicationsCsv() {
+  const params = new URLSearchParams({ profile: els.metricProfile.value });
+  try {
+    const res = await fetch(
+      `/api/medications/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-medications-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setMedicationStatus('已导出用药清单 CSV。');
+  } catch (err) {
+    setMedicationStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+async function importMedicationsCsv(file) {
+  if (!file) return;
+  setMedicationStatus('正在导入用药清单…');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/api/medications/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
+    if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
+    setMedicationStatus(parts.join('，') + '。', data.imported === 0);
+    await loadMedications();
+  } catch (err) {
+    setMedicationStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.medicationImportFile.value = '';
+  }
+}
+
 function editSymptom(item) {
   editingSymptomId = item.id;
   editingSymptomProfile = item.profile || '';
@@ -7663,6 +7718,13 @@ function renderMedications(items) {
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
 
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'metric-edit';
+    toggle.textContent = item.active ? '停用' : '启用';
+    toggle.setAttribute('aria-label', `${item.active ? '停用' : '启用'}药物：${item.name}`);
+    toggle.addEventListener('click', () => toggleMedication(item));
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -7677,7 +7739,7 @@ function renderMedications(items) {
     del.setAttribute('aria-label', `删除药物：${item.name}`);
     del.addEventListener('click', () => deleteMedication(item));
 
-    actions.append(edit, del);
+    actions.append(toggle, edit, del);
     li.append(main, actions);
     els.medicationList.appendChild(li);
   }
@@ -7698,6 +7760,28 @@ async function loadMedications() {
     renderMedications(medicationItemsCache);
   } catch {
     // 用药清单加载失败不影响健康记录
+  }
+}
+
+async function toggleMedication(item) {
+  try {
+    const res = await fetch(`/api/medications/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile: item.profile || '',
+        name: item.name,
+        dose: item.dose || '',
+        frequency: item.frequency || '',
+        note: item.note || '',
+        active: !item.active,
+      }),
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setMedicationStatus(item.active ? '已停用药物。' : '已启用药物。');
+    await loadMedications();
+  } catch (err) {
+    setMedicationStatus(`更新状态失败：${err.message || err}`, true);
   }
 }
 
@@ -10183,6 +10267,15 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
 els.medicationSave.addEventListener('click', saveMedication);
+els.medicationExport.addEventListener('click', exportMedicationsCsv);
+els.medicationImport.addEventListener('click', () => {
+  els.medicationImportFile.click();
+});
+els.medicationImportFile.addEventListener('change', () => {
+  const file = els.medicationImportFile.files
+    && els.medicationImportFile.files[0];
+  if (file) importMedicationsCsv(file);
+});
 els.medicationCancel.addEventListener('click', () => {
   resetMedicationForm();
   setMedicationStatus('已取消编辑。');
