@@ -3879,6 +3879,10 @@ function openMetrics() {
   els.metricsOpen.setAttribute('aria-expanded', 'true');
   setMetricsStatus('');
   refreshMetricProfileOptions();
+  const activeProfile = els.profileSelect.value;
+  if (activeProfile && profilesCache[activeProfile]) {
+    els.metricProfile.value = activeProfile;
+  }
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
