@@ -764,6 +764,14 @@ def test_app_js_ships_audit_labels_for_records(client):
     assert "'reminder.import': '导入随访提醒'" in app_js
 
 
+def test_app_js_ships_diag_data_stats(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "健康数据" in app_js
+    assert "用药打卡" in app_js
+    assert "个指标目标" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

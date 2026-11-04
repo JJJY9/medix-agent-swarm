@@ -38,6 +38,15 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     data_dir.mkdir()
     store = SessionStore(str(data_dir / "sessions.db"))
     store.save_exchange("s1", "测试问题", "测试答复")
+    store.save_profile("妈妈", {"age": "58"})
+    store.add_metric(
+        "妈妈", "weight", 63, measured_at="2026-11-05T08:00"
+    )
+    store.set_metric_target("妈妈", "weight", 65)
+    store.add_symptom("妈妈", "头晕", 4, "2026-11-05T08:00")
+    medication = store.add_medication("妈妈", "氨氯地平", "5 mg")
+    store.add_medication_log(medication["id"], "2026-11-05T08:00")
+    store.add_reminder("复查", "2026-11-10", profile="妈妈")
     store.close()
 
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "secret-token")
@@ -53,6 +62,13 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     assert runtime["db_size"] > 0
     assert runtime["sessions"] == 1
     assert runtime["messages"] == 2
+    assert runtime["profiles"] == 1
+    assert runtime["metrics"] == 1
+    assert runtime["targets"] == 1
+    assert runtime["symptoms"] == 1
+    assert runtime["medications"] == 1
+    assert runtime["medication_logs"] == 1
+    assert runtime["reminders"] == 1
     assert runtime["auth_enabled"] is True
     assert runtime["rate_limit"] == 5
     assert runtime["pricing_configured"] is True
