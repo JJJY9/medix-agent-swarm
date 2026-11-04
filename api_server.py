@@ -149,12 +149,16 @@ class ReminderRequest(BaseModel):
     note: str = Field("", max_length=300, description="可选备注")
     session_id: str = Field("", max_length=64, description="关联的会诊编号")
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    advance_days: int = Field(
+        0, ge=0, le=30, description="提前提醒天数，0 表示仅到期当天提醒"
+    )
 
 
 class ReminderUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, max_length=120)
     due_at: Optional[str] = Field(None, max_length=32)
     note: Optional[str] = Field(None, max_length=300)
+    advance_days: Optional[int] = Field(None, ge=0, le=30)
 
 
 class BmiRequest(BaseModel):
@@ -1534,6 +1538,7 @@ async def add_reminder(request: ReminderRequest):
             request.note,
             request.session_id,
             request.profile,
+            request.advance_days,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1557,13 +1562,14 @@ async def export_reminders_csv(
     items = await asyncio.to_thread(
         get_session_store().list_reminders, include_done, profile
     )
-    rows = [["到期日", "内容", "档案", "状态", "备注"]]
+    rows = [["到期日", "内容", "档案", "状态", "提前天数", "备注"]]
     for item in items:
         rows.append([
             item.get("due_at", ""),
             csv_safe_cell(item.get("title", "")),
             csv_safe_cell(item.get("profile", "")),
             "已完成" if item.get("done") else "待完成",
+            int(item.get("advance_days") or 0),
             csv_safe_cell(item.get("note", "")),
         ])
 
@@ -1652,8 +1658,17 @@ async def export_reminders_ics(
             f"SUMMARY:{escape_ics(item.get('title') or '随访提醒')}",
             f"DESCRIPTION:{escape_ics(description)}",
             "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
-            "END:VEVENT",
         ])
+        advance = int(item.get("advance_days") or 0)
+        if advance > 0:
+            lines.extend([
+                "BEGIN:VALARM",
+                f"TRIGGER:-P{advance}D",
+                "ACTION:DISPLAY",
+                "DESCRIPTION:随访提醒",
+                "END:VALARM",
+            ])
+        lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
 
     content = "\r\n".join(fold_line(line) for line in lines) + "\r\n"
@@ -1702,6 +1717,7 @@ async def import_reminders_csv(file: UploadFile = File(...)):
         "档案": "profile",
         "患者档案": "profile",
         "状态": "done",
+        "提前天数": "advance_days",
         "备注": "note",
     }
 
@@ -1722,11 +1738,18 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             continue
 
         status = mapped.get("done", "")
+        try:
+            advance_days = max(
+                0, min(int(mapped.get("advance_days") or 0), 30)
+            )
+        except (TypeError, ValueError):
+            advance_days = 0
         records.append({
             "title": title,
             "due_at": due_at,
             "profile": mapped.get("profile", ""),
             "note": mapped.get("note", ""),
+            "advance_days": advance_days,
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 
@@ -1793,6 +1816,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
         request.title is None
         and request.due_at is None
         and request.note is None
+        and request.advance_days is None
     ):
         raise HTTPException(status_code=400, detail="没有需要修改的字段")
     try:
@@ -1802,6 +1826,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
             request.title,
             request.due_at,
             request.note,
+            request.advance_days,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

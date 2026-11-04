@@ -2857,6 +2857,16 @@ html[data-theme="dark"] .metric-delete:hover {
   border-radius: 999px;
 }
 
+.reminder-badge-advance {
+  color: #8a5a00;
+  background: #fff3d6;
+}
+
+html[data-theme="dark"] .reminder-badge-advance {
+  color: #f2c66d;
+  background: #3a2f14;
+}
+
 .reminder-badge-done {
   color: var(--ink-soft);
   background: var(--paper-2);

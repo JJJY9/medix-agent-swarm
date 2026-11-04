@@ -205,7 +205,7 @@ def test_reminders_csv_export(client_and_store):
     lines = text.strip().splitlines()
 
     assert response.status_code == 200
-    assert lines[0] == "到期日,内容,档案,状态,备注"
+    assert lines[0] == "到期日,内容,档案,状态,提前天数,备注"
     assert any("妈妈复查" in line for line in lines)
     assert all("孩子复诊" not in line for line in lines)
 
@@ -219,6 +219,7 @@ def test_reminders_ics_export(client_and_store):
             "due_at": "2026-11-10",
             "note": "空腹,带报告",
             "profile": "母亲",
+            "advance_days": 2,
         },
     )
 
@@ -235,6 +236,9 @@ def test_reminders_ics_export(client_and_store):
     assert "DTEND;VALUE=DATE:20261111" in text
     assert "SUMMARY:复查\\;血常规" in text
     assert "档案：母亲" in text
+    assert "BEGIN:VALARM" in text
+    assert "TRIGGER:-P2D" in text
+    assert "END:VALARM" in text
 
 
 def test_import_backup_preserves_reminders(client_and_store):
@@ -247,7 +251,12 @@ def test_import_backup_preserves_reminders(client_and_store):
             "profiles": [],
             "health_metrics": [],
             "reminders": [
-                {"title": "复查", "due_at": "2026-11-10", "profile": "母亲"}
+                {
+                    "title": "复查",
+                    "due_at": "2026-11-10",
+                    "profile": "母亲",
+                    "advance_days": 2,
+                }
             ],
         },
     )
@@ -256,6 +265,7 @@ def test_import_backup_preserves_reminders(client_and_store):
     assert response.status_code == 200
     assert response.json()["reminders"] == 1
     assert listed.json()["reminders"][0]["title"] == "复查"
+    assert listed.json()["reminders"][0]["advance_days"] == 2
 
 
 def test_reminders_api_rejects_invalid_dates(client_and_store):
@@ -345,12 +355,12 @@ def test_reminders_csv_import(client_and_store):
     client, _store = client_and_store
 
     lines = [
-        "到期日,内容,档案,状态,备注",
-        "2026-11-10,复查血常规,母亲,未完成,空腹",
-        "2026-11-10,复查血常规,母亲,未完成,空腹",
-        "2026-11-12,接种疫苗,孩子,已完成,",
-        "2026-02-30,无效日期,,,",
-        ",缺少日期,,,",
+        "到期日,内容,档案,状态,提前天数,备注",
+        "2026-11-10,复查血常规,母亲,未完成,3,空腹",
+        "2026-11-10,复查血常规,母亲,未完成,3,空腹",
+        "2026-11-12,接种疫苗,孩子,已完成,0,",
+        "2026-02-30,无效日期,,,,",
+        ",缺少日期,,,,",
     ]
     content = chr(0xFEFF) + "\n".join(lines)
     first = client.post(
@@ -374,6 +384,11 @@ def test_reminders_csv_import(client_and_store):
     assert first.json()["invalid"] == 1
     titles = sorted(item["title"] for item in listed.json()["reminders"])
     assert titles == ["复查血常规", "接种疫苗"]
+    advance = {
+        item["title"]: item["advance_days"]
+        for item in listed.json()["reminders"]
+    }
+    assert advance == {"复查血常规": 3, "接种疫苗": 0}
     done = [
         item["title"] for item in listed.json()["reminders"] if item["done"]
     ]
@@ -384,3 +399,38 @@ def test_reminders_csv_import(client_and_store):
     assert empty.status_code == 400
     actions = [item["action"] for item in audit.json()["actions"]]
     assert "reminder.import" in actions
+
+
+def test_reminders_advance_days(client_and_store):
+    client, _store = client_and_store
+
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10", "advance_days": 3},
+    )
+    too_big = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10", "advance_days": 31},
+    )
+    negative = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10", "advance_days": -1},
+    )
+    reminder_id = created.json()["reminder"]["id"]
+    updated = client.patch(
+        f"/api/reminders/{reminder_id}", json={"advance_days": 5}
+    )
+    cleared = client.patch(
+        f"/api/reminders/{reminder_id}", json={"advance_days": 0}
+    )
+    listed = client.get("/api/reminders")
+
+    assert created.status_code == 200
+    assert created.json()["reminder"]["advance_days"] == 3
+    assert too_big.status_code == 422
+    assert negative.status_code == 422
+    assert updated.status_code == 200
+    assert updated.json()["reminder"]["advance_days"] == 5
+    assert cleared.status_code == 200
+    assert cleared.json()["reminder"]["advance_days"] == 0
+    assert listed.json()["reminders"][0]["advance_days"] == 0
