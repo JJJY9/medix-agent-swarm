@@ -1512,6 +1512,42 @@ async def add_reminder(request: ReminderRequest):
     return {"ok": True, "reminder": reminder}
 
 
+@app.get("/api/reminders/export.csv")
+async def export_reminders_csv(
+    profile: Optional[str] = None,
+    include_done: bool = True,
+):
+    """导出随访提醒 CSV（带 BOM），可按档案与完成状态筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_reminders, include_done, profile
+    )
+    rows = [["到期日", "内容", "档案", "状态", "备注"]]
+    for item in items:
+        rows.append([
+            item.get("due_at", ""),
+            item.get("title", ""),
+            item.get("profile", ""),
+            "已完成" if item.get("done") else "待完成",
+            item.get("note", ""),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-reminders-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/reminders/{reminder_id}/complete")
 async def complete_reminder(reminder_id: int):
     """把随访提醒标记为已完成。"""
