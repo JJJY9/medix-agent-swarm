@@ -3848,7 +3848,8 @@ async function importHistoryBackup() {
       await loadUsageBudget();
       if (result.profiles) await initProfiles();
       if (result.targets) loadMetricTargets();
-      if (result.symptoms || result.reminders) {
+      if (result.metrics || result.symptoms || result.reminders) {
+        await refreshMetricProfileOptions();
         loadSymptoms();
         loadHomeGlance();
       }
