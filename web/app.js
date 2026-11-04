@@ -5039,8 +5039,11 @@ function setMetricType(type) {
   els.metricReference.textContent = METRIC_REFERENCES[value] || '';
 }
 
-function refreshMetricProfileOptions() {
+async function refreshMetricProfileOptions() {
   const current = els.metricProfile.value;
+  const names = new Set(Object.keys(profilesCache));
+  for (const name of await fetchUsedProfileNames()) names.add(name);
+
   els.metricProfile.replaceChildren();
 
   const placeholder = document.createElement('option');
@@ -5048,14 +5051,16 @@ function refreshMetricProfileOptions() {
   placeholder.textContent = '未指定';
   els.metricProfile.appendChild(placeholder);
 
-  for (const name of Object.keys(profilesCache).sort()) {
+  for (const name of [...names].sort()) {
     const option = document.createElement('option');
     option.value = name;
-    option.textContent = name;
+    option.textContent = profilesCache[name]
+      ? name
+      : `${name}（已删除）`;
     els.metricProfile.appendChild(option);
   }
 
-  els.metricProfile.value = profilesCache[current] ? current : '';
+  els.metricProfile.value = names.has(current) ? current : '';
 }
 
 function formatMetricValue(item) {
@@ -5426,7 +5431,7 @@ async function loadMetrics() {
   }
 }
 
-function openMetrics() {
+async function openMetrics() {
   closeHistory();
   closeKb();
   closeCalc();
@@ -5440,7 +5445,7 @@ function openMetrics() {
   syncPageInert();
   els.metricsOpen.setAttribute('aria-expanded', 'true');
   setMetricsStatus('');
-  refreshMetricProfileOptions();
+  await refreshMetricProfileOptions();
   const activeProfile = els.profileSelect.value;
   if (activeProfile && profilesCache[activeProfile]) {
     els.metricProfile.value = activeProfile;
