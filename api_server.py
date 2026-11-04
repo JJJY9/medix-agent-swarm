@@ -18,7 +18,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
@@ -107,6 +107,28 @@ class ProfileRequest(BaseModel):
         default_factory=dict,
         description="年龄、性别、病程、既往史、用药与过敏史",
     )
+
+
+class BmiRequest(BaseModel):
+    height_cm: float = Field(..., gt=50, lt=260, description="身高（厘米）")
+    weight_kg: float = Field(..., gt=10, lt=400, description="体重（千克）")
+
+
+class EgfrRequest(BaseModel):
+    age: int = Field(..., ge=18, le=120, description="年龄（岁）")
+    sex: Literal["male", "female"]
+    creatinine: float = Field(..., gt=0, lt=3000, description="血肌酐")
+    unit: Literal["mg/dL", "umol/L"] = "mg/dL"
+
+
+class ChadsVascRequest(BaseModel):
+    age: int = Field(..., ge=18, le=120, description="年龄（岁）")
+    sex: Literal["male", "female"]
+    chf: bool = False
+    hypertension: bool = False
+    diabetes: bool = False
+    stroke_tia: bool = False
+    vascular_disease: bool = False
 
 
 class UpdateDocumentRequest(BaseModel):
@@ -599,6 +621,52 @@ async def delete_profile(name: str):
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
     return {"ok": True, "name": name}
+
+
+@app.post("/api/tools/bmi")
+async def tool_bmi(request: BmiRequest):
+    """BMI 计算（中国成人分类）。"""
+    from core.clinical_tools import calculate_bmi
+
+    return {
+        "ok": True,
+        **calculate_bmi(request.height_cm, request.weight_kg),
+    }
+
+
+@app.post("/api/tools/egfr")
+async def tool_egfr(request: EgfrRequest):
+    """CKD-EPI 2021 估算肾小球滤过率。"""
+    from core.clinical_tools import calculate_egfr
+
+    return {
+        "ok": True,
+        **calculate_egfr(
+            request.age,
+            request.sex,
+            request.creatinine,
+            unit=request.unit,
+        ),
+    }
+
+
+@app.post("/api/tools/chads-vasc")
+async def tool_chads_vasc(request: ChadsVascRequest):
+    """CHA₂DS₂-VASc 房颤卒中风险评分。"""
+    from core.clinical_tools import calculate_chads_vasc
+
+    return {
+        "ok": True,
+        **calculate_chads_vasc(
+            request.age,
+            request.sex,
+            chf=request.chf,
+            hypertension=request.hypertension,
+            diabetes=request.diabetes,
+            stroke_tia=request.stroke_tia,
+            vascular_disease=request.vascular_disease,
+        ),
+    }
 
 
 @app.get("/api/sessions/{session_id}/messages")

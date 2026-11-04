@@ -100,6 +100,33 @@ const els = {
   diagCopy: document.getElementById('diag-copy'),
   diagDownload: document.getElementById('diag-download'),
   diagStatus: document.getElementById('diag-status'),
+  calcOpen: document.getElementById('calc-open'),
+  calcDrawer: document.getElementById('calc-drawer'),
+  calcBackdrop: document.getElementById('calc-backdrop'),
+  calcClose: document.getElementById('calc-close'),
+  calcTool: document.getElementById('calc-tool'),
+  calcFormBmi: document.getElementById('calc-form-bmi'),
+  calcBmiHeight: document.getElementById('calc-bmi-height'),
+  calcBmiWeight: document.getElementById('calc-bmi-weight'),
+  calcFormEgfr: document.getElementById('calc-form-egfr'),
+  calcEgfrAge: document.getElementById('calc-egfr-age'),
+  calcEgfrSex: document.getElementById('calc-egfr-sex'),
+  calcEgfrCreatinine: document.getElementById('calc-egfr-creatinine'),
+  calcEgfrUnit: document.getElementById('calc-egfr-unit'),
+  calcFormChads: document.getElementById('calc-form-chads'),
+  calcChadsAge: document.getElementById('calc-chads-age'),
+  calcChadsSex: document.getElementById('calc-chads-sex'),
+  calcChadsChf: document.getElementById('calc-chads-chf'),
+  calcChadsHypertension: document.getElementById('calc-chads-hypertension'),
+  calcChadsDiabetes: document.getElementById('calc-chads-diabetes'),
+  calcChadsStroke: document.getElementById('calc-chads-stroke'),
+  calcChadsVascular: document.getElementById('calc-chads-vascular'),
+  calcResult: document.getElementById('calc-result'),
+  calcResultTitle: document.getElementById('calc-result-title'),
+  calcResultMain: document.getElementById('calc-result-main'),
+  calcResultDetail: document.getElementById('calc-result-detail'),
+  calcResultNote: document.getElementById('calc-result-note'),
+  calcStatus: document.getElementById('calc-status'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
   authToken: document.getElementById('auth-token'),
@@ -144,6 +171,7 @@ let latestUsage = null;
 let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
+let calcOpen = false;
 let authGateOpen = false;
 let historyQuery = '';
 let historyOffset = 0;
@@ -172,13 +200,14 @@ function activeDrawer() {
   if (historyOpen) return els.historyDrawer;
   if (kbOpen) return els.kbDrawer;
   if (diagOpen) return els.diagnoseDrawer;
+  if (calcOpen) return els.calcDrawer;
   return null;
 }
 
 function syncPageInert() {
   const shell = document.querySelector('.shell');
   if (!shell) return;
-  if (historyOpen || kbOpen || diagOpen || authGateOpen) {
+  if (historyOpen || kbOpen || diagOpen || calcOpen || authGateOpen) {
     shell.setAttribute('inert', '');
     shell.setAttribute('aria-hidden', 'true');
   } else {
@@ -2283,6 +2312,7 @@ let lastFocused = null;
 function openHistory() {
   closeKb();
   closeDiagnose();
+  closeCalc();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -2877,6 +2907,7 @@ async function loadKnowledge() {
 function openKb() {
   closeHistory();
   closeDiagnose();
+  closeCalc();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -3129,6 +3160,7 @@ async function loadDiagnostics() {
 function openDiagnose() {
   closeHistory();
   closeKb();
+  closeCalc();
   diagFocused = document.activeElement;
   diagOpen = true;
   els.diagnoseDrawer.hidden = false;
@@ -3149,6 +3181,155 @@ function closeDiagnose(restoreFocus = false) {
   if (restoreFocus && diagFocused instanceof HTMLElement) {
     diagFocused.focus();
   }
+}
+
+/* ---------- 临床计算工具 ---------- */
+
+let calcFocused = null;
+
+function setCalcStatus(text, isError = false) {
+  els.calcStatus.textContent = text;
+  els.calcStatus.hidden = !text;
+  els.calcStatus.classList.toggle('error', isError);
+}
+
+function setCalcTool(tool) {
+  els.calcTool.value = tool;
+  for (const form of [els.calcFormBmi, els.calcFormEgfr, els.calcFormChads]) {
+    form.hidden = form.dataset.tool !== tool;
+  }
+  els.calcResult.hidden = true;
+  setCalcStatus('');
+}
+
+function openCalc() {
+  closeHistory();
+  closeKb();
+  closeDiagnose();
+  calcFocused = document.activeElement;
+  calcOpen = true;
+  els.calcDrawer.hidden = false;
+  els.calcBackdrop.hidden = false;
+  syncPageInert();
+  els.calcOpen.setAttribute('aria-expanded', 'true');
+
+  const context = readPatientContext();
+  const age = Number.parseInt(context.age, 10);
+  if (Number.isFinite(age)) {
+    els.calcEgfrAge.value = String(age);
+    els.calcChadsAge.value = String(age);
+  }
+  if (context.sex === '女' || context.sex === '男') {
+    const sex = context.sex === '女' ? 'female' : 'male';
+    els.calcEgfrSex.value = sex;
+    els.calcChadsSex.value = sex;
+  }
+
+  setCalcTool(els.calcTool.value || 'bmi');
+  els.calcClose.focus();
+}
+
+function closeCalc(restoreFocus = false) {
+  calcOpen = false;
+  els.calcDrawer.hidden = true;
+  els.calcBackdrop.hidden = true;
+  syncPageInert();
+  els.calcOpen.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && calcFocused instanceof HTMLElement) {
+    calcFocused.focus();
+  }
+}
+
+async function runCalc(url, body, build) {
+  setCalcStatus('计算中…');
+  els.calcResult.hidden = true;
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string'
+        ? data.detail
+        : `请检查输入（${res.status}）`;
+      throw new Error(detail);
+    }
+
+    const view = build(data);
+    els.calcResultTitle.textContent = view.title;
+    els.calcResultMain.textContent = view.main;
+    els.calcResultDetail.textContent = view.detail || '';
+    els.calcResultNote.textContent = view.note || data.note || '';
+    els.calcResult.hidden = false;
+    setCalcStatus('');
+  } catch (err) {
+    setCalcStatus(`计算失败：${err.message || err}`, true);
+  }
+}
+
+function submitBmi(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/bmi',
+    {
+      height_cm: Number(els.calcBmiHeight.value),
+      weight_kg: Number(els.calcBmiWeight.value),
+    },
+    (data) => ({
+      title: 'BMI 结果',
+      main: `BMI ${data.bmi}`,
+      detail:
+        `分类：${data.category} · 健康体重范围 `
+        + `${data.healthy_weight_min}–${data.healthy_weight_max} kg`,
+      note: data.note,
+    })
+  );
+}
+
+function submitEgfr(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/egfr',
+    {
+      age: Number(els.calcEgfrAge.value),
+      sex: els.calcEgfrSex.value,
+      creatinine: Number(els.calcEgfrCreatinine.value),
+      unit: els.calcEgfrUnit.value,
+    },
+    (data) => ({
+      title: 'eGFR 结果',
+      main: `eGFR ${data.egfr} mL/min/1.73 m²`,
+      detail:
+        `分期 ${data.stage}（${data.description}）· `
+        + `血肌酐 ${data.creatinine_mg_dl} mg/dL`,
+      note: data.note,
+    })
+  );
+}
+
+function submitChads(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/chads-vasc',
+    {
+      age: Number(els.calcChadsAge.value),
+      sex: els.calcChadsSex.value,
+      chf: els.calcChadsChf.checked,
+      hypertension: els.calcChadsHypertension.checked,
+      diabetes: els.calcChadsDiabetes.checked,
+      stroke_tia: els.calcChadsStroke.checked,
+      vascular_disease: els.calcChadsVascular.checked,
+    },
+    (data) => ({
+      title: 'CHA₂DS₂-VASc 结果',
+      main: `评分 ${data.score} / 9`,
+      detail: `风险分层：${data.risk}`,
+      note: data.note,
+    })
+  );
 }
 
 async function testModelConnection() {
@@ -3924,6 +4105,14 @@ els.diagLlmTest.addEventListener('click', testModelConnection);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
 
+els.calcOpen.addEventListener('click', openCalc);
+els.calcClose.addEventListener('click', () => closeCalc(true));
+els.calcBackdrop.addEventListener('click', () => closeCalc(true));
+els.calcTool.addEventListener('change', () => setCalcTool(els.calcTool.value));
+els.calcFormBmi.addEventListener('submit', submitBmi);
+els.calcFormEgfr.addEventListener('submit', submitEgfr);
+els.calcFormChads.addEventListener('submit', submitChads);
+
 els.authForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const token = els.authToken.value.trim();
@@ -4038,6 +4227,7 @@ document.addEventListener('keydown', (e) => {
     if (historyOpen) closeHistory(true);
     if (kbOpen) closeKb(true);
     if (diagOpen) closeDiagnose(true);
+    if (calcOpen) closeCalc(true);
     return;
   }
 

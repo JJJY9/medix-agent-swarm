@@ -2120,6 +2120,118 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .diag-actions .btn-quiet { flex: 1; }
 
+/* ---------- 临床计算工具抽屉 ---------- */
+
+.calc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calc-field {
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.calc-field input,
+.calc-field select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+}
+
+.calc-form { display: grid; gap: 10px; }
+.calc-form[hidden] { display: none; }
+.calc-form .btn-quiet { justify-self: start; }
+
+.calc-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.calc-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--clinic);
+}
+
+.calc-result {
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--clinic);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--paper-2);
+}
+.calc-result[hidden] { display: none; }
+
+.calc-result h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.calc-result-main {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.calc-result-detail {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.calc-result-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+
+.calc-status {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.calc-status.error {
+  color: var(--triage-1);
+  background: #fdf0ef;
+  border-color: #f0cfc9;
+}
+
+html[data-theme="dark"] .calc-status.error {
+  background: #331f1d;
+  border-color: #5a3430;
+}
+
+.calc-disclaimer {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
 .diag-status {
   margin: 10px 0 0;
   padding: 8px 10px;
