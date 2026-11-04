@@ -646,6 +646,15 @@ def test_app_js_ships_reminder_snooze_days(client):
     assert ".reminder-snooze" in css
 
 
+def test_app_js_ships_clear_done_reminders(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="reminders-clear-done"' in html
+    assert "async function clearDoneReminders" in app_js
+    assert "清理已完成（" in app_js
+
+
 def test_app_js_ships_medication_intake_log(client):
     app_js = client.get("/static/app.js").text
 
