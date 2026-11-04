@@ -32,6 +32,21 @@ def _stringify(value: Any) -> str:
     return str(value).strip()
 
 
+def medication_context_text(context: Any) -> str:
+    """合并自由文本药物与结构化用药清单，供安全与分诊规则使用。"""
+    if not isinstance(context, dict):
+        return ""
+    parts = []
+    for key in ("medications", "active_medications"):
+        value = context.get(key)
+        if value in (None, "", [], {}):
+            continue
+        text = _stringify(value)
+        if text:
+            parts.append(text)
+    return "；".join(parts)
+
+
 def format_context(context: Any, max_length: int = MAX_CONTEXT_LENGTH) -> str:
     """把上下文字典格式化为提示词里的「背景信息」段落。
 

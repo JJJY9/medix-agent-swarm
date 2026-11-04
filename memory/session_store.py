@@ -1894,12 +1894,11 @@ class SessionStore:
                         """
                         SELECT 1 FROM medications
                          WHERE profile = ? AND name = ? AND dose = ?
-                           AND frequency = ? AND note = ? AND active = ?
+                           AND frequency = ?
                         """,
                         (
                             normalized["profile"], normalized["name"],
                             normalized["dose"], normalized["frequency"],
-                            normalized["note"], normalized["active"],
                         ),
                     ).fetchone()
                     if exists:

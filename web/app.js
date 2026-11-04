@@ -7779,7 +7779,7 @@ async function deleteMedication(item) {
 }
 
 async function loadMedicationsIntoInteractions() {
-  const profile = els.profileSelect.value || '';
+  const profile = els.metricProfile.value || els.profileSelect.value || '';
   try {
     const res = await fetch(
       `/api/medications?active_only=true&limit=100`
@@ -7788,13 +7788,23 @@ async function loadMedicationsIntoInteractions() {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const items = (await res.json()).medications || [];
     if (!items.length) {
-      setCalcStatus('用药清单中还没有在用药物。', true);
+      els.calcInteractionsDrugs.value = '';
+      els.calcResult.hidden = true;
+      currentCalcAction = null;
+      els.calcSave.hidden = true;
+      setCalcStatus(
+        `用药清单中还没有在用药物${profile ? `（档案：${profile}）` : ''}。`,
+        true
+      );
       return;
     }
     els.calcInteractionsDrugs.value = items
       .map((item) => (item.dose ? `${item.name} ${item.dose}` : item.name))
       .join('\n');
-    setCalcStatus(`已带入 ${items.length} 种在用药物，可直接检查相互作用。`);
+    setCalcStatus(
+      `已带入 ${items.length} 种在用药物`
+      + `${profile ? `（档案：${profile}）` : ''}，可直接检查相互作用。`
+    );
   } catch (err) {
     setCalcStatus(`带入用药清单失败：${err.message || err}`, true);
   }

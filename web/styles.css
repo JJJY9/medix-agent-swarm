@@ -3285,6 +3285,12 @@ html[data-theme="dark"] .medication-active-badge {
   background: #14301f;
 }
 
+html[data-theme="dark"] .medication-active-badge.is-inactive {
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+
 .symptom-section {
   margin-top: 10px;
   padding: 8px 10px;
