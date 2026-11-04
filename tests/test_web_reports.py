@@ -591,3 +591,11 @@ def test_app_js_ships_symptom_severity_styles(client):
 
     assert "is-high" in app_js
     assert ".symptom-severity.is-high" in css
+
+
+def test_app_js_ships_symptom_search(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function filterSymptoms" in app_js
+    assert 'id="symptom-search"' in html
