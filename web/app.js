@@ -280,6 +280,7 @@ const els = {
   remindersCount: document.getElementById('reminders-count'),
   visitSummary: document.getElementById('visit-summary'),
   remindersNotify: document.getElementById('reminders-notify'),
+  remindersClearDone: document.getElementById('reminders-clear-done'),
   remindersDrawer: document.getElementById('reminders-drawer'),
   remindersBackdrop: document.getElementById('reminders-backdrop'),
   remindersClose: document.getElementById('reminders-close'),
@@ -7144,6 +7145,7 @@ async function loadReminders() {
     const data = await res.json();
     if (requestSeq !== remindersRequestSeq) return;
     reminderItemsCache = data.reminders || [];
+    updateClearDoneButton(reminderItemsCache);
     refreshReminderViews();
     refreshReminderBadge();
     refreshOverview();
@@ -7151,6 +7153,39 @@ async function loadReminders() {
     if (requestSeq !== remindersRequestSeq) return;
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
   }
+}
+
+function updateClearDoneButton(reminders) {
+  if (!els.remindersClearDone) return;
+  const count = (reminders || []).filter((item) => item.done).length;
+  els.remindersClearDone.hidden = count === 0;
+  els.remindersClearDone.textContent = count
+    ? `清理已完成（${count}）`
+    : '清理已完成';
+}
+
+async function clearDoneReminders() {
+  const done = reminderItemsCache.filter((item) => item.done);
+  if (!done.length) {
+    setRemindersStatus('没有已完成的提醒。');
+    return;
+  }
+  if (!window.confirm(`删除 ${done.length} 条已完成的提醒？`)) return;
+  let deleted = 0;
+  for (const item of done) {
+    try {
+      const res = await fetch(`/api/reminders/${item.id}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) deleted += 1;
+    } catch {
+      // 单条删除失败时继续处理其余记录
+    }
+  }
+  setRemindersStatus(`已清理 ${deleted} 条已完成提醒。`);
+  await loadReminders();
+  refreshReminderBadge();
+  refreshOverview();
 }
 
 async function refreshReminderProfileOptions() {
@@ -11036,6 +11071,7 @@ els.remindersOpen.addEventListener('click', openReminders);
 els.remindersClose.addEventListener('click', () => closeReminders(true));
 els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
 els.remindersNotify.addEventListener('click', enableReminderNotifications);
+els.remindersClearDone.addEventListener('click', clearDoneReminders);
 els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
 els.remindersExport.addEventListener('click', exportRemindersCsv);
