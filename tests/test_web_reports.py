@@ -247,3 +247,13 @@ def test_app_js_ships_reminder_series(client):
     assert "function addMonthsToDate" in app_js
     assert "按周期安排多次随访" in html
     assert 'id="reminder-plan-add"' in html
+
+
+def test_app_js_ships_metric_weekly_overview(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function loadMetricWeekly" in app_js
+    assert "function renderMetricWeekly" in app_js
+    assert "近 7 天变化" in html
+    assert 'id="metric-weekly"' in html
