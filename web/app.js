@@ -143,6 +143,12 @@ const els = {
   calcCurbRr: document.getElementById('calc-curb-rr'),
   calcCurbSbp: document.getElementById('calc-curb-sbp'),
   calcCurbDbp: document.getElementById('calc-curb-dbp'),
+  calcFormChildPugh: document.getElementById('calc-form-child-pugh'),
+  calcChildBilirubin: document.getElementById('calc-child-bilirubin'),
+  calcChildAlbumin: document.getElementById('calc-child-albumin'),
+  calcChildInr: document.getElementById('calc-child-inr'),
+  calcChildAscites: document.getElementById('calc-child-ascites'),
+  calcChildEncephalopathy: document.getElementById('calc-child-encephalopathy'),
   calcFormPhq9: document.getElementById('calc-form-phq9'),
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcFormGad7: document.getElementById('calc-form-gad7'),
@@ -4387,6 +4393,7 @@ function setCalcTool(tool) {
     els.calcFormEgfr,
     els.calcFormChads,
     els.calcFormCurb65,
+    els.calcFormChildPugh,
     els.calcFormPhq9,
     els.calcFormGad7,
     els.calcFormHasBled,
@@ -4770,6 +4777,27 @@ function submitWells(event) {
           : ' · 未命中评分项'),
       note: data.note,
       level: data.risk === '高概率' ? 'warning' : '',
+    })
+  );
+}
+
+function submitChildPugh(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/child-pugh',
+    {
+      bilirubin: Number(els.calcChildBilirubin.value),
+      albumin: Number(els.calcChildAlbumin.value),
+      inr: Number(els.calcChildInr.value),
+      ascites: Number(els.calcChildAscites.value),
+      encephalopathy: Number(els.calcChildEncephalopathy.value),
+    },
+    (data) => ({
+      title: 'Child-Pugh 结果',
+      main: `评分 ${data.score} / 15`,
+      detail: `分级：Child-Pugh ${data.grade}`,
+      note: data.note,
+      level: data.grade === 'C' ? 'warning' : '',
     })
   );
 }
@@ -5583,6 +5611,7 @@ els.calcFormBmi.addEventListener('submit', submitBmi);
 els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
+els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);

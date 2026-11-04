@@ -154,6 +154,14 @@ class Curb65Request(BaseModel):
     diastolic_bp: float = Field(..., ge=0, le=200, description="舒张压（mmHg）")
 
 
+class ChildPughRequest(BaseModel):
+    bilirubin: int = Field(..., ge=1, le=3)
+    albumin: int = Field(..., ge=1, le=3)
+    inr: int = Field(..., ge=1, le=3)
+    ascites: int = Field(..., ge=1, le=3)
+    encephalopathy: int = Field(..., ge=1, le=3)
+
+
 class Phq9Request(BaseModel):
     answers: List[int] = Field(..., min_length=9, max_length=9)
 
@@ -1157,6 +1165,24 @@ async def tool_curb65(request: Curb65Request):
             request.diastolic_bp,
         ),
     }
+
+
+@app.post("/api/tools/child-pugh")
+async def tool_child_pugh(request: ChildPughRequest):
+    """Child-Pugh 肝硬化严重程度评分。"""
+    from core.clinical_tools import calculate_child_pugh
+
+    try:
+        result = calculate_child_pugh(
+            request.bilirubin,
+            request.albumin,
+            request.inr,
+            request.ascites,
+            request.encephalopathy,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
 
 
 @app.post("/api/tools/phq9")

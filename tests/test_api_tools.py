@@ -128,6 +128,49 @@ def test_curb65_api(client):
     assert "年龄 ≥ 65 岁" in data["criteria"]
 
 
+def test_child_pugh_api(client):
+    a = client.post(
+        "/api/tools/child-pugh",
+        json={
+            "bilirubin": 1,
+            "albumin": 1,
+            "inr": 1,
+            "ascites": 1,
+            "encephalopathy": 1,
+        },
+    )
+    c = client.post(
+        "/api/tools/child-pugh",
+        json={
+            "bilirubin": 3,
+            "albumin": 3,
+            "inr": 3,
+            "ascites": 3,
+            "encephalopathy": 3,
+        },
+    )
+    invalid = client.post(
+        "/api/tools/child-pugh",
+        json={
+            "bilirubin": 0,
+            "albumin": 1,
+            "inr": 1,
+            "ascites": 1,
+            "encephalopathy": 1,
+        },
+    )
+
+    assert a.status_code == 200
+    assert a.json()["score"] == 5
+    assert a.json()["grade"] == "A"
+
+    assert c.status_code == 200
+    assert c.json()["score"] == 15
+    assert c.json()["grade"] == "C"
+
+    assert invalid.status_code == 422
+
+
 def test_curb65_api_validates_ranges(client):
     below_adult = client.post(
         "/api/tools/curb65",

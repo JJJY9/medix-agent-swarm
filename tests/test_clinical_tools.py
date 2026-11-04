@@ -4,6 +4,7 @@ import pytest
 from core.clinical_tools import (
     calculate_bmi,
     calculate_chads_vasc,
+    calculate_child_pugh,
     calculate_curb65,
     calculate_egfr,
     calculate_gad7,
@@ -126,6 +127,25 @@ def test_curb65_all_criteria_high_risk():
     assert result["risk"] == "高危"
     assert len(result["criteria"]) == 5
     assert "低血压（收缩压 < 90 或舒张压 ≤ 60 mmHg）" in result["criteria"]
+
+
+def test_child_pugh_thresholds():
+    assert calculate_child_pugh(1, 1, 1, 1, 1)["grade"] == "A"
+    assert calculate_child_pugh(2, 1, 1, 1, 1)["grade"] == "A"
+    assert calculate_child_pugh(2, 2, 1, 1, 1)["grade"] == "B"
+    assert calculate_child_pugh(2, 2, 2, 2, 1)["grade"] == "B"
+    assert calculate_child_pugh(2, 2, 2, 2, 2)["grade"] == "C"
+    assert calculate_child_pugh(3, 3, 3, 3, 3)["score"] == 15
+    assert calculate_child_pugh(3, 3, 3, 3, 3)["grade"] == "C"
+
+
+def test_child_pugh_validation():
+    with pytest.raises(ValueError):
+        calculate_child_pugh(0, 1, 1, 1, 1)
+    with pytest.raises(ValueError):
+        calculate_child_pugh(1, 4, 1, 1, 1)
+    with pytest.raises(ValueError):
+        calculate_child_pugh(1, 1, 1, 1, True)
 
 
 def test_phq9_severity_thresholds():

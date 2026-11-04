@@ -586,6 +586,7 @@
         <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
         <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
         <option value="curb65">CURB-65 肺炎严重程度</option>
+        <option value="child-pugh">Child-Pugh 肝硬化分级</option>
         <option value="phq9">PHQ-9 抑郁筛查</option>
         <option value="gad7">GAD-7 焦虑筛查</option>
         <option value="hasbled">HAS-BLED 出血风险</option>
@@ -736,6 +737,46 @@
       <label class="calc-check"><input type="checkbox" id="calc-wells-collateral"> 浅表侧支静脉</label>
       <label class="calc-check"><input type="checkbox" id="calc-wells-previous"> 既往 DVT</label>
       <label class="calc-check"><input type="checkbox" id="calc-wells-alternative"> 其他诊断可能性不低于 DVT（-2 分）</label>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-child-pugh" data-tool="child-pugh" hidden>
+      <p class="calc-hint">每项按 1/2/3 分选择，总分 5–15 分。</p>
+      <label class="calc-field">总胆红素
+        <select id="calc-child-bilirubin">
+          <option value="1">1 分：&lt;34 μmol/L</option>
+          <option value="2">2 分：34–51 μmol/L</option>
+          <option value="3">3 分：&gt;51 μmol/L</option>
+        </select>
+      </label>
+      <label class="calc-field">白蛋白
+        <select id="calc-child-albumin">
+          <option value="1">1 分：&gt;35 g/L</option>
+          <option value="2">2 分：28–35 g/L</option>
+          <option value="3">3 分：&lt;28 g/L</option>
+        </select>
+      </label>
+      <label class="calc-field">INR
+        <select id="calc-child-inr">
+          <option value="1">1 分：&lt;1.7</option>
+          <option value="2">2 分：1.7–2.3</option>
+          <option value="3">3 分：&gt;2.3</option>
+        </select>
+      </label>
+      <label class="calc-field">腹水
+        <select id="calc-child-ascites">
+          <option value="1">1 分：无</option>
+          <option value="2">2 分：轻度/可控</option>
+          <option value="3">3 分：中重度</option>
+        </select>
+      </label>
+      <label class="calc-field">肝性脑病
+        <select id="calc-child-encephalopathy">
+          <option value="1">1 分：无</option>
+          <option value="2">2 分：1–2 级</option>
+          <option value="3">3 分：3–4 级</option>
+        </select>
+      </label>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 
