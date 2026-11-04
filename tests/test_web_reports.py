@@ -735,6 +735,21 @@ def test_app_js_links_medication_log_and_reminder(client):
     assert "readPatientContext().allergies" in app_js
 
 
+def test_app_js_profile_scoping_and_refresh(client):
+    app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
+
+    assert "new URLSearchParams({ limit: '30', profile })" in app_js
+    assert "(item.profile || '') === profile" in app_js
+    assert "applyPatientContext({});" in app_js
+    assert "全部档案 · 症状" in app_js
+    assert "没有在用药物，近 ${days} 天打卡" in app_js
+    assert "refreshReminderBadge();\n        refreshOverview();" in app_js
+    assert (
+        "await refreshMetricProfileOptions();\n"
+        "    await loadMedications();"
+    ) in app_js
+
+
 def test_app_js_medication_review_hardening(client):
     app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
     css = client.get("/static/styles.css").text
