@@ -398,3 +398,13 @@ def test_app_js_ships_home_glance(client):
     assert "function renderHomeGlance" in app_js
     assert 'id="home-glance-reminders"' in html
     assert 'id="home-glance-metrics"' in html
+
+
+def test_app_js_ships_audit_c(client):
+    html = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'value="auditc"' in html
+    assert 'id="calc-form-auditc"' in html
+    assert "function submitAuditC" in app_js
+    assert "/api/tools/audit-c" in app_js

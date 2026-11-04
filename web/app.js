@@ -166,6 +166,10 @@ const els = {
   calcFormPhq9: document.getElementById('calc-form-phq9'),
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcFormGad7: document.getElementById('calc-form-gad7'),
+  calcFormAuditc: document.getElementById('calc-form-auditc'),
+  calcAuditCQ1: document.getElementById('calc-auditc-q1'),
+  calcAuditCQ2: document.getElementById('calc-auditc-q2'),
+  calcAuditCQ3: document.getElementById('calc-auditc-q3'),
   calcGad7Questions: document.getElementById('calc-gad7-questions'),
   calcFormHasBled: document.getElementById('calc-form-hasbled'),
   calcHasBledAge: document.getElementById('calc-hasbled-age'),
@@ -7243,6 +7247,7 @@ function setCalcTool(tool) {
     els.calcFormChildPugh,
     els.calcFormPhq9,
     els.calcFormGad7,
+    els.calcFormAuditc,
     els.calcFormHasBled,
     els.calcFormGcs,
     els.calcFormWells,
@@ -7541,6 +7546,25 @@ function submitGad7(event) {
         label: '保存 GAD-7 评分',
         run: () => saveScreenerScore('gad7', data.score, 'GAD-7 筛查'),
       },
+    })
+  );
+}
+
+function submitAuditC(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/audit-c',
+    {
+      q1: Number(els.calcAuditCQ1.value),
+      q2: Number(els.calcAuditCQ2.value),
+      q3: Number(els.calcAuditCQ3.value),
+    },
+    (data) => ({
+      title: 'AUDIT-C 结果',
+      main: `评分 ${data.score} / 12`,
+      detail: `风险分层：${data.risk}`,
+      note: data.note,
+      level: data.risk === '高风险' ? 'warning' : '',
     })
   );
 }
@@ -8999,6 +9023,7 @@ els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
+els.calcFormAuditc.addEventListener('submit', submitAuditC);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);

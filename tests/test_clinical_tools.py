@@ -3,6 +3,7 @@ import pytest
 
 from core.clinical_tools import (
     calculate_abcd2,
+    calculate_audit_c,
     calculate_bmi,
     calculate_chads_vasc,
     calculate_child_pugh,
@@ -495,3 +496,16 @@ def test_morse_fall_thresholds():
     assert maximum["score"] == 125
     assert maximum["risk"] == "高风险"
     assert len(maximum["criteria"]) == 6
+
+
+def test_audit_c_thresholds():
+    assert calculate_audit_c(0, 0, 0)["risk"] == "低风险"
+    assert calculate_audit_c(2, 1, 0)["risk"] == "低风险"
+    assert calculate_audit_c(2, 2, 0)["risk"] == "偏高"
+    assert calculate_audit_c(4, 2, 1)["risk"] == "偏高"
+    assert calculate_audit_c(4, 4, 0)["risk"] == "高风险"
+
+    with pytest.raises(ValueError):
+        calculate_audit_c(5, 0, 0)
+    with pytest.raises(ValueError):
+        calculate_audit_c(True, 0, 0)
