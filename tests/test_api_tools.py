@@ -182,3 +182,24 @@ def test_phq9_api(client):
 
     assert invalid_length.status_code == 422
     assert invalid_value.status_code == 400
+
+
+def test_gad7_api(client):
+    response = client.post(
+        "/api/tools/gad7",
+        json={"answers": [2] * 5 + [0] * 2},
+    )
+    invalid_length = client.post(
+        "/api/tools/gad7",
+        json={"answers": [0] * 6},
+    )
+    invalid_value = client.post(
+        "/api/tools/gad7",
+        json={"answers": [0] * 6 + [4]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["score"] == 10
+    assert response.json()["severity"] == "中度"
+    assert invalid_length.status_code == 422
+    assert invalid_value.status_code == 400

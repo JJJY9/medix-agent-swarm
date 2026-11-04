@@ -134,6 +134,8 @@ const els = {
   calcCurbDbp: document.getElementById('calc-curb-dbp'),
   calcFormPhq9: document.getElementById('calc-form-phq9'),
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
+  calcFormGad7: document.getElementById('calc-form-gad7'),
+  calcGad7Questions: document.getElementById('calc-gad7-questions'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -3861,10 +3863,12 @@ function setCalcTool(tool) {
     els.calcFormChads,
     els.calcFormCurb65,
     els.calcFormPhq9,
+    els.calcFormGad7,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
   if (tool === 'phq9') ensurePhq9Form();
+  if (tool === 'gad7') ensureGad7Form();
   els.calcResult.hidden = true;
   setCalcStatus('');
 }
@@ -4044,6 +4048,64 @@ function ensurePhq9Form() {
     label.append(text, select);
     els.calcPhq9Questions.appendChild(label);
   });
+}
+
+const GAD7_QUESTIONS = [
+  '感到紧张、焦虑或急切',
+  '不能停止或控制担忧',
+  '对各种各样的事情担忧过多',
+  '很难放松下来',
+  '由于不安而无法静坐',
+  '变得容易烦恼或急躁',
+  '感到似乎将有可怕的事情发生而害怕',
+];
+
+function ensureQuestionOptions(select) {
+  for (const [value, optionLabel] of PHQ9_OPTIONS) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = optionLabel;
+    select.appendChild(option);
+  }
+}
+
+function ensureGad7Form() {
+  if (els.calcGad7Questions.children.length) return;
+
+  GAD7_QUESTIONS.forEach((question, index) => {
+    const label = document.createElement('label');
+    label.className = 'calc-field phq9-question';
+
+    const text = document.createElement('span');
+    text.textContent = `${index + 1}. ${question}`;
+
+    const select = document.createElement('select');
+    select.className = 'gad7-select';
+    select.dataset.index = String(index);
+    ensureQuestionOptions(select);
+
+    label.append(text, select);
+    els.calcGad7Questions.appendChild(label);
+  });
+}
+
+function submitGad7(event) {
+  event.preventDefault();
+  ensureGad7Form();
+  const answers = Array.from(
+    els.calcGad7Questions.querySelectorAll('select')
+  ).map((select) => Number(select.value));
+
+  runCalc(
+    '/api/tools/gad7',
+    { answers },
+    (data) => ({
+      title: 'GAD-7 结果',
+      main: `评分 ${data.score} / 21`,
+      detail: `严重程度：${data.severity}`,
+      note: data.note,
+    })
+  );
 }
 
 function submitPhq9(event) {
@@ -4877,6 +4939,7 @@ els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
+els.calcFormGad7.addEventListener('submit', submitGad7);
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));

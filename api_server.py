@@ -146,6 +146,10 @@ class Phq9Request(BaseModel):
     answers: List[int] = Field(..., min_length=9, max_length=9)
 
 
+class Gad7Request(BaseModel):
+    answers: List[int] = Field(..., min_length=7, max_length=7)
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal["bp", "weight", "glucose", "temperature"]
@@ -888,6 +892,18 @@ async def tool_phq9(request: Phq9Request):
 
     try:
         result = calculate_phq9(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/gad7")
+async def tool_gad7(request: Gad7Request):
+    """GAD-7 焦虑筛查评分。"""
+    from core.clinical_tools import calculate_gad7
+
+    try:
+        result = calculate_gad7(request.answers)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}
