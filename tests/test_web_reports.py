@@ -599,3 +599,11 @@ def test_app_js_ships_symptom_search(client):
 
     assert "function filterSymptoms" in app_js
     assert 'id="symptom-search"' in html
+
+
+def test_app_js_ships_symptom_summary(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="symptom-summary"' in html
+    assert "平均 ${Math.round(average * 10) / 10}/10" in app_js
