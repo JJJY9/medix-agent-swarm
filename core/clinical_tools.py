@@ -367,6 +367,46 @@ def calculate_wells_dvt(
     }
 
 
+def calculate_child_pugh(
+    bilirubin: int,
+    albumin: int,
+    inr: int,
+    ascites: int,
+    encephalopathy: int,
+) -> Dict[str, object]:
+    """Child-Pugh 肝硬化严重程度评分（5–15 分）。
+
+    每项取 1/2/3 分，A 级 5–6 分、B 级 7–9 分、C 级 10–15 分。
+    """
+    values = {
+        "bilirubin": bilirubin,
+        "albumin": albumin,
+        "inr": inr,
+        "ascites": ascites,
+        "encephalopathy": encephalopathy,
+    }
+    for key, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("Child-Pugh 每项必须是整数。")
+        if value < 1 or value > 3:
+            raise ValueError("Child-Pugh 每项必须在 1–3 分之间。")
+
+    score = sum(values.values())
+    if score <= 6:
+        grade = "A"
+    elif score <= 9:
+        grade = "B"
+    else:
+        grade = "C"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "components": values,
+        "note": "Child-Pugh 用于肝硬化肝功能储备分层，需结合病因、并发症与临床判断；C 级提示肝功能储备较差。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,
