@@ -726,6 +726,26 @@ async def add_metric(request: MetricRequest):
     return {"ok": True, "metric": item}
 
 
+@app.patch("/api/metrics/{metric_id}")
+async def update_metric(metric_id: int, request: MetricRequest):
+    """更新一条健康指标记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().update_metric,
+        metric_id,
+        request.profile,
+        request.metric,
+        request.value1,
+        request.value2,
+        request.measured_at,
+        request.note,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+    return {"ok": True, "metric": item}
+
+
 @app.delete("/api/metrics/{metric_id}")
 async def delete_metric(metric_id: int):
     from memory import get_session_store

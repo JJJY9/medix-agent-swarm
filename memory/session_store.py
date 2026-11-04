@@ -1488,6 +1488,55 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def update_metric(
+        self,
+        metric_id: int,
+        profile: str,
+        metric: str,
+        value1: Any,
+        value2: Any = None,
+        measured_at: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """更新一条健康指标记录；记录不存在或字段无效时返回 None。"""
+        try:
+            metric_id = int(metric_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+        normalized = _normalize_metric(
+            profile, metric, value1, value2, measured_at, note
+        )
+        if normalized is None:
+            return None
+
+        with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT 1 FROM health_metrics WHERE id = ?", (metric_id,)
+            ).fetchone()
+            if existing is None:
+                return None
+            self._conn.execute(
+                """
+                UPDATE health_metrics
+                   SET profile = ?, metric = ?, value1 = ?, value2 = ?,
+                       unit = ?, measured_at = ?, note = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"],
+                    normalized["metric"],
+                    normalized["value1"],
+                    normalized["value2"],
+                    normalized["unit"],
+                    normalized["measured_at"],
+                    normalized["note"],
+                    metric_id,
+                ),
+            )
+
+        return {"id": metric_id, **normalized}
+
     def delete_metric(self, metric_id: int) -> bool:
         try:
             metric_id = int(metric_id)

@@ -157,6 +157,7 @@ const els = {
   metricTime: document.getElementById('metric-time'),
   metricNote: document.getElementById('metric-note'),
   metricAdd: document.getElementById('metric-add'),
+  metricCancel: document.getElementById('metric-cancel'),
   metricExport: document.getElementById('metric-export'),
   metricTrend: document.getElementById('metric-trend'),
   metricTrendTitle: document.getElementById('metric-trend-title'),
@@ -3401,6 +3402,7 @@ function closeDiagnose(restoreFocus = false) {
 /* ---------- 健康指标记录 ---------- */
 
 let metricsFocused = null;
+let editingMetricId = null;
 
 const METRIC_UNITS = {
   bp: 'mmHg',
@@ -3495,6 +3497,16 @@ function renderMetrics(items) {
       main.appendChild(note);
     }
 
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑记录：${formatMetricValue(item)}`);
+    edit.addEventListener('click', () => editMetricRecord(item));
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'metric-delete';
@@ -3502,7 +3514,8 @@ function renderMetrics(items) {
     del.setAttribute('aria-label', `删除记录：${formatMetricValue(item)}`);
     del.addEventListener('click', () => deleteMetricRecord(item));
 
-    li.append(main, del);
+    actions.append(edit, del);
+    li.append(main, actions);
     els.metricsList.appendChild(li);
   }
 }
@@ -3712,6 +3725,7 @@ function openMetrics() {
   refreshMetricProfileOptions();
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   setMetricType(els.metricType.value || 'bp');
+  resetMetricForm();
   refreshMetrics();
   els.metricsClose.focus();
 }
@@ -3727,11 +3741,56 @@ function closeMetrics(restoreFocus = false) {
   }
 }
 
+function resetMetricForm() {
+  editingMetricId = null;
+  els.metricSystolic.value = '';
+  els.metricDiastolic.value = '';
+  els.metricValue.value = '';
+  els.metricNote.value = '';
+  els.metricTime.value = metricNowLocal();
+  els.metricAdd.textContent = '保存记录';
+  els.metricCancel.hidden = true;
+}
+
+function cancelMetricEdit() {
+  resetMetricForm();
+  setMetricsStatus('已取消编辑。');
+}
+
+function editMetricRecord(item) {
+  editingMetricId = item.id;
+  setMetricType(item.metric);
+  const hasProfile = Array.from(els.metricProfile.options)
+    .some((option) => option.value === item.profile);
+  els.metricProfile.value = hasProfile ? item.profile : '';
+
+  if (item.metric === 'bp') {
+    els.metricSystolic.value = String(item.value1);
+    els.metricDiastolic.value = String(item.value2);
+    els.metricValue.value = '';
+  } else {
+    els.metricSystolic.value = '';
+    els.metricDiastolic.value = '';
+    els.metricValue.value = String(item.value1);
+  }
+
+  els.metricTime.value = String(item.measured_at || '').slice(0, 16);
+  els.metricNote.value = item.note || '';
+  els.metricAdd.textContent = '保存修改';
+  els.metricCancel.hidden = false;
+  setMetricsStatus(`正在编辑：${formatMetricValue(item)}`);
+
+  const form = els.metricsDrawer.querySelector('.metrics-form');
+  if (form) form.scrollIntoView({ block: 'start' });
+  (item.metric === 'bp' ? els.metricSystolic : els.metricValue).focus();
+}
+
 async function addMetricRecord() {
   const type = els.metricType.value;
   const profile = els.metricProfile.value;
   const measuredAt = els.metricTime.value || metricNowLocal();
   const note = els.metricNote.value.trim();
+  const editing = editingMetricId;
   let value1;
   let value2 = null;
 
@@ -3751,21 +3810,24 @@ async function addMetricRecord() {
   }
 
   els.metricAdd.disabled = true;
-  els.metricAdd.textContent = '保存中…';
+  els.metricAdd.textContent = editing ? '更新中…' : '保存中…';
 
   try {
-    const res = await fetch('/api/metrics', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        profile,
-        metric: type,
-        value1,
-        value2,
-        measured_at: measuredAt,
-        note,
-      }),
-    });
+    const res = await fetch(
+      editing ? `/api/metrics/${editing}` : '/api/metrics',
+      {
+        method: editing ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          profile,
+          metric: type,
+          value1,
+          value2,
+          measured_at: measuredAt,
+          note,
+        }),
+      }
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const detail = typeof data.detail === 'string'
@@ -3774,18 +3836,14 @@ async function addMetricRecord() {
       throw new Error(detail);
     }
 
-    setMetricsStatus('已保存记录。');
-    els.metricSystolic.value = '';
-    els.metricDiastolic.value = '';
-    els.metricValue.value = '';
-    els.metricNote.value = '';
-    els.metricTime.value = metricNowLocal();
+    setMetricsStatus(editing ? '已更新记录。' : '已保存记录。');
+    resetMetricForm();
     await refreshMetrics();
   } catch (err) {
-    setMetricsStatus(`保存失败：${err.message || err}`, true);
+    setMetricsStatus(`${editing ? '更新' : '保存'}失败：${err.message || err}`, true);
   } finally {
     els.metricAdd.disabled = false;
-    els.metricAdd.textContent = '保存记录';
+    els.metricAdd.textContent = editingMetricId ? '保存修改' : '保存记录';
   }
 }
 
@@ -3800,6 +3858,7 @@ async function deleteMetricRecord(item) {
     if (!res.ok && res.status !== 404) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
+    if (editingMetricId === item.id) resetMetricForm();
     setMetricsStatus('已删除记录。');
     await refreshMetrics();
   } catch (err) {
@@ -4950,6 +5009,7 @@ els.metricType.addEventListener('change', () => {
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricAdd.addEventListener('click', addMetricRecord);
+els.metricCancel.addEventListener('click', cancelMetricEdit);
 els.metricExport.addEventListener('click', exportMetricsCsv);
 
 els.authForm.addEventListener('submit', async (event) => {
