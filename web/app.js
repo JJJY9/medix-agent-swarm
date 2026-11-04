@@ -144,6 +144,11 @@ const els = {
   metricTime: document.getElementById('metric-time'),
   metricNote: document.getElementById('metric-note'),
   metricAdd: document.getElementById('metric-add'),
+  metricTrend: document.getElementById('metric-trend'),
+  metricTrendTitle: document.getElementById('metric-trend-title'),
+  metricTrendLatest: document.getElementById('metric-trend-latest'),
+  metricTrendChart: document.getElementById('metric-trend-chart'),
+  metricTrendHint: document.getElementById('metric-trend-hint'),
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
   metricsEmpty: document.getElementById('metrics-empty'),
@@ -3408,6 +3413,180 @@ function renderMetrics(items) {
   }
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    el.setAttribute(key, String(value));
+  }
+  return el;
+}
+
+function renderMetricTrend(items, metric) {
+  const chart = els.metricTrendChart;
+  chart.replaceChildren();
+
+  if (!items.length) {
+    els.metricTrend.hidden = true;
+    return;
+  }
+
+  els.metricTrend.hidden = false;
+  const chronological = items.slice().reverse();
+  const latest = chronological[chronological.length - 1];
+  els.metricTrendTitle.textContent =
+    `${METRIC_NAMES[metric] || metric}趋势（最近 ${items.length} 条）`;
+  els.metricTrendLatest.textContent = `最新：${formatMetricValue(latest)}`;
+
+  const series = metric === 'bp'
+    ? [
+        { key: 'value1', cls: 'systolic', label: '收缩压' },
+        { key: 'value2', cls: 'diastolic', label: '舒张压' },
+      ]
+    : [{ key: 'value1', cls: 'single', label: METRIC_NAMES[metric] || metric }];
+
+  const values = [];
+  for (const item of chronological) {
+    for (const s of series) {
+      const value = Number(item[s.key]);
+      if (Number.isFinite(value)) values.push(value);
+    }
+  }
+  if (!values.length) {
+    els.metricTrend.hidden = true;
+    return;
+  }
+
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const padding = Math.max(1, (max - min) * 0.15);
+  min = Math.floor(min - padding);
+  max = Math.ceil(max + padding);
+
+  const width = 320;
+  const height = 120;
+  const left = 30;
+  const right = 10;
+  const top = 12;
+  const bottom = 20;
+  const plotW = width - left - right;
+  const plotH = height - top - bottom;
+  const x = (index) => chronological.length === 1
+    ? left + plotW / 2
+    : left + (plotW * index) / (chronological.length - 1);
+  const y = (value) => top + plotH * (1 - (value - min) / (max - min));
+
+  for (const value of [min, (min + max) / 2, max]) {
+    chart.appendChild(svgEl('line', {
+      x1: left,
+      y1: y(value),
+      x2: width - right,
+      y2: y(value),
+      class: 'trend-grid',
+    }));
+    const label = svgEl('text', {
+      x: left - 4,
+      y: y(value) + 3,
+      class: 'trend-axis',
+      'text-anchor': 'end',
+    });
+    label.textContent = Number.isInteger(value)
+      ? String(value)
+      : value.toFixed(1);
+    chart.appendChild(label);
+  }
+
+  for (const s of series) {
+    const points = chronological
+      .map((item, index) => {
+        const value = Number(item[s.key]);
+        return Number.isFinite(value)
+          ? `${x(index).toFixed(1)},${y(value).toFixed(1)}`
+          : null;
+      })
+      .filter(Boolean)
+      .join(' ');
+
+    if (points) {
+      chart.appendChild(svgEl('polyline', {
+        points,
+        class: `trend-line ${s.cls}`,
+      }));
+    }
+
+    chronological.forEach((item, index) => {
+      const value = Number(item[s.key]);
+      if (!Number.isFinite(value)) return;
+      const dot = svgEl('circle', {
+        cx: x(index),
+        cy: y(value),
+        r: 2.6,
+        class: `trend-dot ${s.cls}`,
+      });
+      const title = svgEl('title');
+      title.textContent =
+        `${s.label} ${formatMetricValue(item)} · ${formatTime(item.measured_at)}`;
+      dot.appendChild(title);
+      chart.appendChild(dot);
+    });
+  }
+
+  const firstAxis = svgEl('text', {
+    x: left,
+    y: height - 4,
+    class: 'trend-axis',
+  });
+  firstAxis.textContent = formatTime(chronological[0].measured_at);
+  chart.appendChild(firstAxis);
+
+  if (chronological.length > 1) {
+    const lastAxis = svgEl('text', {
+      x: width - right,
+      y: height - 4,
+      class: 'trend-axis',
+      'text-anchor': 'end',
+    });
+    lastAxis.textContent = formatTime(latest.measured_at);
+    chart.appendChild(lastAxis);
+  }
+
+  els.metricTrendHint.textContent = chronological.length < 2
+    ? '再记录一次即可看到变化。'
+    : metric === 'bp'
+    ? '蓝色为收缩压，绿色为舒张压；按测量时间从早到晚。'
+    : '按测量时间从早到晚。';
+  chart.setAttribute(
+    'aria-label',
+    `${METRIC_NAMES[metric] || metric}趋势，最新 ${formatMetricValue(latest)}`
+  );
+}
+
+async function loadMetricTrend() {
+  const metric = els.metricType.value;
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/metrics?limit=30&metric=${encodeURIComponent(metric)}`
+      + `&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    renderMetricTrend(data.metrics || [], metric);
+  } catch {
+    // 趋势加载失败不影响记录列表
+  }
+}
+
+async function refreshMetrics() {
+  await loadMetrics();
+  await loadMetricTrend();
+}
+
 async function loadMetrics() {
   try {
     const res = await fetch('/api/metrics?limit=50');
@@ -3434,7 +3613,7 @@ function openMetrics() {
   refreshMetricProfileOptions();
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   setMetricType(els.metricType.value || 'bp');
-  loadMetrics();
+  refreshMetrics();
   els.metricsClose.focus();
 }
 
@@ -3502,7 +3681,7 @@ async function addMetricRecord() {
     els.metricValue.value = '';
     els.metricNote.value = '';
     els.metricTime.value = metricNowLocal();
-    await loadMetrics();
+    await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`保存失败：${err.message || err}`, true);
   } finally {
@@ -3523,7 +3702,7 @@ async function deleteMetricRecord(item) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     setMetricsStatus('已删除记录。');
-    await loadMetrics();
+    await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`删除失败：${err.message || err}`, true);
   }
@@ -4464,7 +4643,11 @@ els.calcFormChads.addEventListener('submit', submitChads);
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));
 els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
-els.metricType.addEventListener('change', () => setMetricType(els.metricType.value));
+els.metricType.addEventListener('change', () => {
+  setMetricType(els.metricType.value);
+  loadMetricTrend();
+});
+els.metricProfile.addEventListener('change', loadMetricTrend);
 els.metricAdd.addEventListener('click', addMetricRecord);
 
 els.authForm.addEventListener('submit', async (event) => {

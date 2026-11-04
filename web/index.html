@@ -499,6 +499,21 @@
       </label>
       <button type="button" class="btn-quiet" id="metric-add">保存记录</button>
     </div>
+
+    <section class="metric-trend" id="metric-trend" hidden aria-label="健康指标趋势">
+      <div class="metric-trend-head">
+        <strong id="metric-trend-title">趋势</strong>
+        <span id="metric-trend-latest"></span>
+      </div>
+      <svg
+        id="metric-trend-chart"
+        viewBox="0 0 320 120"
+        role="img"
+        aria-labelledby="metric-trend-title"
+      ></svg>
+      <p class="metric-trend-hint" id="metric-trend-hint"></p>
+    </section>
+
     <p class="metrics-status" id="metrics-status" hidden></p>
     <ul class="metrics-list" id="metrics-list"></ul>
     <p class="metrics-empty" id="metrics-empty" hidden>还没有健康记录。</p>
