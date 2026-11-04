@@ -89,6 +89,7 @@ class ImportSessionsRequest(BaseModel):
     metric_targets: Optional[List[Dict[str, Any]]] = None
     reminders: Optional[List[Dict[str, Any]]] = None
     symptoms: Optional[List[Dict[str, Any]]] = None
+    medications: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -361,6 +362,15 @@ class MetricRequest(BaseModel):
 
 
 
+
+
+class MedicationRequest(BaseModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    name: str = Field(..., min_length=1, max_length=120)
+    dose: str = Field("", max_length=60, description="剂量，如 5 mg")
+    frequency: str = Field("", max_length=60, description="频次，如 每日一次")
+    note: str = Field("", max_length=300)
+    active: bool = True
 class SymptomRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
@@ -1071,6 +1081,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "metric_targets": request.metric_targets,
         "reminders": request.reminders,
         "symptoms": request.symptoms,
+        "medications": request.medications,
     }
     try:
         result = await asyncio.to_thread(
@@ -1091,7 +1102,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"metrics={result.get('metrics', 0)} "
             f"targets={result.get('targets', 0)} "
             f"reminders={result.get('reminders', 0)} "
-            f"symptoms={result.get('symptoms', 0)}"
+            f"symptoms={result.get('symptoms', 0)} "
+            f"medications={result.get('medications', 0)}"
         ),
     )
     return {"ok": True, **result}
@@ -1234,6 +1246,88 @@ async def metric_summary(
         get_session_store().metric_summary, profile, metric, days
     )
     return data
+
+
+@app.get("/api/medications")
+async def list_medications(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    limit: int = 1000,
+    offset: int = 0,
+):
+    """用药清单（可按档案与在用状态筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    offset = max(0, int(offset or 0))
+    items = await asyncio.to_thread(
+        get_session_store().list_medications,
+        profile, active_only, limit, offset,
+    )
+    return {"medications": items}
+
+
+@app.post("/api/medications")
+async def add_medication(request: MedicationRequest):
+    """新增一条用药记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().add_medication,
+        request.profile,
+        request.name,
+        request.dose,
+        request.frequency,
+        request.note,
+        request.active,
+    )
+    if item is None:
+        raise HTTPException(status_code=400, detail="药物名称不能为空")
+    await record_audit(
+        "medication.create", f"{item['id']}·{item['name']}"
+    )
+    return {"ok": True, "medication": item}
+
+
+@app.patch("/api/medications/{medication_id}")
+async def update_medication(medication_id: int, request: MedicationRequest):
+    """更新一条用药记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().update_medication,
+        medication_id,
+        request.profile,
+        request.name,
+        request.dose,
+        request.frequency,
+        request.note,
+        request.active,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+    await record_audit(
+        "medication.update", f"{item['id']}·{item['name']}"
+    )
+    return {"ok": True, "medication": item}
+
+
+@app.delete("/api/medications/{medication_id}")
+async def delete_medication(medication_id: int):
+    """删除一条用药记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_medication, medication_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_medication, medication_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit(
+        "medication.delete", f"{item['id']}·{item['name']}"
+    )
+    return {"ok": True, "id": medication_id}
 
 
 @app.get("/api/symptoms")

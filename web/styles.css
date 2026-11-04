@@ -3243,6 +3243,48 @@ html[data-theme="dark"] .reminders-due-hint {
   font-weight: 500;
 }
 
+.medication-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.medication-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.medication-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.medication-active-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #1f7a4d;
+  background: #e7f5ec;
+  border-radius: 999px;
+}
+
+.medication-active-badge.is-inactive {
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+html[data-theme="dark"] .medication-active-badge {
+  color: #7ee2a8;
+  background: #14301f;
+}
+
 .symptom-section {
   margin-top: 10px;
   padding: 8px 10px;

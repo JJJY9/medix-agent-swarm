@@ -167,7 +167,7 @@
           <input type="checkbox" id="ctx-single">
           仅单科接诊（更快、更省；复杂问题可能不够全面）
         </label>
-        <p class="context-hint">会诊时会自动参考当前档案的最近健康指标与待办随访。</p>
+        <p class="context-hint">会诊时会自动参考当前档案的最近健康指标、症状、用药清单与待办随访。</p>
         <div class="context-actions">
           <button type="button" class="btn-quiet" id="context-clear">清空</button>
         </div>
@@ -689,6 +689,33 @@
       <p class="metrics-empty" id="symptom-empty" hidden>还没有症状记录。</p>
     </details>
 
+    <details class="medication-section" id="medication-section">
+      <summary>用药清单</summary>
+      <p class="calc-hint">维护正在使用的药物；可在药物相互作用检查中一键带入。</p>
+      <div class="medication-form">
+        <label class="calc-field">药物名称
+          <input id="medication-name" type="text" maxlength="120" placeholder="如：氨氯地平">
+        </label>
+        <label class="calc-field">剂量
+          <input id="medication-dose" type="text" maxlength="60" placeholder="如：5 mg">
+        </label>
+        <label class="calc-field">频次
+          <input id="medication-frequency" type="text" maxlength="60" placeholder="如：每日一次">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="medication-note" type="text" maxlength="300" placeholder="如：早餐后">
+        </label>
+        <label class="calc-check"><input type="checkbox" id="medication-active" checked> 在用</label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="medication-save">添加药物</button>
+          <button type="button" class="btn-quiet" id="medication-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="medication-status" role="status" hidden></p>
+      <ul class="metrics-list" id="medication-list"></ul>
+      <p class="metrics-empty" id="medication-empty" hidden>还没有用药记录。</p>
+    </details>
+
 
     <p class="calc-disclaimer">记录仅用于趋势回顾，异常值请及时咨询医生。</p>
   </div>
@@ -1111,6 +1138,7 @@
       <label class="calc-field">过敏史（可选）
         <input id="calc-interactions-allergies" type="text" maxlength="200" placeholder="如：青霉素">
       </label>
+      <button type="button" class="btn-quiet" id="calc-interactions-load">从用药清单带入</button>
       <button type="submit" class="btn-quiet">检查相互作用</button>
     </form>
 

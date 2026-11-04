@@ -385,6 +385,18 @@ const els = {
   symptomSummary: document.getElementById('symptom-summary'),
   symptomTrend: document.getElementById('symptom-trend'),
   symptomTrendChart: document.getElementById('symptom-trend-chart'),
+  medicationSection: document.getElementById('medication-section'),
+  medicationName: document.getElementById('medication-name'),
+  medicationDose: document.getElementById('medication-dose'),
+  medicationFrequency: document.getElementById('medication-frequency'),
+  medicationNote: document.getElementById('medication-note'),
+  medicationActive: document.getElementById('medication-active'),
+  medicationSave: document.getElementById('medication-save'),
+  medicationCancel: document.getElementById('medication-cancel'),
+  medicationStatus: document.getElementById('medication-status'),
+  medicationList: document.getElementById('medication-list'),
+  medicationEmpty: document.getElementById('medication-empty'),
+  calcInteractionsLoad: document.getElementById('calc-interactions-load'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -1746,7 +1758,7 @@ function buildReportHtml(item, messages) {
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
 function buildVisitSummaryHtml({
   profile, context, metrics, reminders, sessions, targets, summaries,
-  symptoms,
+  symptoms, medications,
 }) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
@@ -1855,6 +1867,13 @@ function buildVisitSummaryHtml({
     + '</li>'
   )).join('\n');
 
+  const medicationItems = (medications || []).map((item) => (
+    `<li>${escapeHtml(item.name)}`
+    + `${item.dose ? ` · ${escapeHtml(item.dose)}` : ''}`
+    + `${item.frequency ? ` · ${escapeHtml(item.frequency)}` : ''}`
+    + `${item.note ? `（${escapeHtml(item.note)}）` : ''}</li>`
+  )).join('\n');
+
   const sessionItems = sessions.map((item) => (
     `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`
     + ` · ${escapeHtml(item.title || '未命名会诊')}</li>`
@@ -1942,6 +1961,13 @@ function buildVisitSummaryHtml({
   </section>
 
   <section>
+    <h2>用药清单</h2>
+    ${medicationItems
+      ? `<ul>${medicationItems}</ul>`
+      : '<p class="muted">没有在用的药物记录。</p>'}
+  </section>
+
+  <section>
     <h2>近期症状</h2>
     ${symptomItems
       ? `<ul>${symptomItems}</ul>`
@@ -2013,14 +2039,20 @@ async function exportVisitSummary() {
     if (profile) reminderParams.set('profile', profile);
     const symptomParams = new URLSearchParams({ limit: '30', days: '30' });
     if (profile) symptomParams.set('profile', profile);
+    const medicationParams = new URLSearchParams({
+      active_only: 'true', limit: '100',
+    });
+    if (profile) medicationParams.set('profile', profile);
     const [
       metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
+      medicationsRes,
     ] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch(`/api/reminders${reminderParams.toString() ? `?${reminderParams}` : ''}`),
       fetch(`/api/sessions?${sessionParams.toString()}`),
       fetch(`/api/metric-targets?${targetParams.toString()}`),
       fetch(`/api/symptoms?${symptomParams.toString()}`),
+      fetch(`/api/medications?${medicationParams.toString()}`),
     ]);
     const metrics = metricsRes.ok
       ? (await metricsRes.json()).metrics || []
@@ -2037,6 +2069,9 @@ async function exportVisitSummary() {
     const symptoms = symptomsRes.ok
       ? (await symptomsRes.json()).symptoms || []
       : [];
+    const medications = medicationsRes.ok
+      ? (await medicationsRes.json()).medications || []
+      : [];
     const summaries = await fetchMetricSummaries(
       profile, metrics, 0, true
     );
@@ -2045,7 +2080,7 @@ async function exportVisitSummary() {
     downloadFile(
       buildVisitSummaryHtml({
         profile, context, metrics, reminders, sessions, targets,
-        summaries, symptoms,
+        summaries, symptoms, medications,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
@@ -3801,9 +3836,13 @@ async function importHistoryBackup() {
     const symptomCount = Array.isArray(data.symptoms)
       ? data.symptoms.length
       : 0;
+    const medicationCount = Array.isArray(data.medications)
+      ? data.medications.length
+      : 0;
     if (
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
+      && !medicationCount
     ) {
       window.alert('备份文件中没有可导入的数据。');
       return;
@@ -3815,6 +3854,7 @@ async function importHistoryBackup() {
       reminderCount ? `${reminderCount} 条随访提醒` : '',
       targetCount ? `${targetCount} 个指标目标` : '',
       symptomCount ? `${symptomCount} 条症状记录` : '',
+      medicationCount ? `${medicationCount} 条用药记录` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
@@ -3837,6 +3877,7 @@ async function importHistoryBackup() {
           metric_targets: data.metric_targets,
           reminders: data.reminders,
           symptoms: data.symptoms,
+          medications: data.medications,
         }),
       });
       const result = await res.json().catch(() => ({}));
@@ -3848,9 +3889,13 @@ async function importHistoryBackup() {
       await loadUsageBudget();
       if (result.profiles) await initProfiles();
       if (result.targets) loadMetricTargets();
-      if (result.metrics || result.symptoms || result.reminders) {
+      if (
+        result.metrics || result.symptoms || result.reminders
+        || result.medications
+      ) {
         await refreshMetricProfileOptions();
         loadSymptoms();
+        if (result.medications) loadMedications();
         loadHomeGlance();
       }
       await loadQualityInsights();
@@ -6006,6 +6051,7 @@ async function refreshMetrics() {
   await loadMetricWeekly();
   await loadMetricOverview();
   loadSymptoms();
+  loadMedications();
   loadHomeGlance();
 }
 
@@ -7545,6 +7591,215 @@ async function deleteSymptom(item) {
   }
 }
 
+let editingMedicationId = null;
+let editingMedicationProfile = '';
+let medicationSaving = false;
+let medicationRequestSeq = 0;
+let medicationItemsCache = [];
+
+function setMedicationStatus(text, isError = false) {
+  if (!els.medicationStatus) return;
+  els.medicationStatus.textContent = text || '';
+  els.medicationStatus.hidden = !text;
+  els.medicationStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetMedicationForm() {
+  editingMedicationId = null;
+  editingMedicationProfile = '';
+  els.medicationName.value = '';
+  els.medicationDose.value = '';
+  els.medicationFrequency.value = '';
+  els.medicationNote.value = '';
+  els.medicationActive.checked = true;
+  els.medicationSave.textContent = '添加药物';
+  els.medicationCancel.hidden = true;
+}
+
+function renderMedications(items) {
+  if (!els.medicationList) return;
+  els.medicationList.replaceChildren();
+  els.medicationEmpty.hidden = items.length > 0;
+  if (
+    editingMedicationId
+    && !items.some((item) => item.id === editingMedicationId)
+  ) {
+    resetMedicationForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.name;
+    const badge = document.createElement('span');
+    badge.className = item.active
+      ? 'medication-active-badge'
+      : 'medication-active-badge is-inactive';
+    badge.textContent = item.active ? '在用' : '停用';
+    title.append(' ', badge);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      item.dose,
+      item.frequency,
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑药物：${item.name}`);
+    edit.addEventListener('click', () => editMedication(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除药物：${item.name}`);
+    del.addEventListener('click', () => deleteMedication(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.medicationList.appendChild(li);
+  }
+}
+
+async function loadMedications() {
+  if (!els.medicationList) return;
+  const requestSeq = ++medicationRequestSeq;
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/medications?limit=1000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    if (requestSeq !== medicationRequestSeq) return;
+    medicationItemsCache = data.medications || [];
+    renderMedications(medicationItemsCache);
+  } catch {
+    // 用药清单加载失败不影响健康记录
+  }
+}
+
+function editMedication(item) {
+  editingMedicationId = item.id;
+  editingMedicationProfile = item.profile || '';
+  const hasProfile = Array.from(els.metricProfile.options)
+    .some((option) => option.value === item.profile);
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.medicationName.value = item.name || '';
+  els.medicationDose.value = item.dose || '';
+  els.medicationFrequency.value = item.frequency || '';
+  els.medicationNote.value = item.note || '';
+  els.medicationActive.checked = Boolean(item.active);
+  els.medicationSave.textContent = '保存修改';
+  els.medicationCancel.hidden = false;
+  els.medicationName.focus();
+}
+
+async function saveMedication() {
+  if (medicationSaving) return;
+  const name = (els.medicationName.value || '').trim();
+  if (!name) {
+    setMedicationStatus('请填写药物名称。', true);
+    els.medicationName.focus();
+    return;
+  }
+  const editingId = editingMedicationId;
+  const payload = {
+    profile: editingId
+      ? editingMedicationProfile
+      : (els.metricProfile.value || ''),
+    name,
+    dose: (els.medicationDose.value || '').trim(),
+    frequency: (els.medicationFrequency.value || '').trim(),
+    note: (els.medicationNote.value || '').trim(),
+    active: els.medicationActive.checked,
+  };
+
+  medicationSaving = true;
+  els.medicationSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/medications/${editingId}` : '/api/medications',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetMedicationForm();
+    setMedicationStatus(editingId ? '已保存修改。' : '已添加药物。');
+    await loadMedications();
+  } catch (err) {
+    setMedicationStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    medicationSaving = false;
+    els.medicationSave.disabled = false;
+  }
+}
+
+async function deleteMedication(item) {
+  if (!window.confirm(`删除药物「${item.name}」？`)) return;
+  try {
+    const res = await fetch(`/api/medications/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingMedicationId === item.id) resetMedicationForm();
+    setMedicationStatus('已删除药物。');
+    await loadMedications();
+  } catch (err) {
+    setMedicationStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
+async function loadMedicationsIntoInteractions() {
+  const profile = els.profileSelect.value || '';
+  try {
+    const res = await fetch(
+      `/api/medications?active_only=true&limit=100`
+      + `&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const items = (await res.json()).medications || [];
+    if (!items.length) {
+      setCalcStatus('用药清单中还没有在用药物。', true);
+      return;
+    }
+    els.calcInteractionsDrugs.value = items
+      .map((item) => (item.dose ? `${item.name} ${item.dose}` : item.name))
+      .join('\n');
+    setCalcStatus(`已带入 ${items.length} 种在用药物，可直接检查相互作用。`);
+  } catch (err) {
+    setCalcStatus(`带入用药清单失败：${err.message || err}`, true);
+  }
+}
+
 function editMetricRecord(item) {
   editingMetricId = item.id;
   setMetricType(item.metric);
@@ -8706,6 +8961,9 @@ async function handleLaunchAction() {
     if (params.get('symptoms') === '1' && els.symptomSection) {
       els.symptomSection.open = true;
     }
+    if (params.get('medications') === '1' && els.medicationSection) {
+      els.medicationSection.open = true;
+    }
   }
 }
 
@@ -9079,11 +9337,17 @@ async function buildConsultContext() {
   const context = readPatientContext();
   const profile = els.profileSelect.value || '';
   try {
-    const [metricsRes, remindersRes, symptomsRes] = await Promise.all([
+    const [
+      metricsRes, remindersRes, symptomsRes, medicationsRes,
+    ] = await Promise.all([
       fetch(`/api/metrics/latest?profile=${encodeURIComponent(profile)}`),
       fetch('/api/reminders'),
       fetch(
         `/api/symptoms?limit=3&days=7&profile=${encodeURIComponent(profile)}`
+      ),
+      fetch(
+        `/api/medications?active_only=true&limit=20`
+        + `&profile=${encodeURIComponent(profile)}`
       ),
     ]);
     if (metricsRes.ok) {
@@ -9117,6 +9381,17 @@ async function buildConsultContext() {
             + `（${formatTime(item.recorded_at)}）`
         );
       if (recent.length) context.recent_symptoms = recent.join('；');
+    }
+    if (medicationsRes.ok) {
+      const medications = (await medicationsRes.json()).medications || [];
+      const activeMeds = medications.slice(0, 10).map((item) => (
+        item.name
+        + (item.dose ? ` ${item.dose}` : '')
+        + (item.frequency ? ` ${item.frequency}` : '')
+      ));
+      if (activeMeds.length) {
+        context.active_medications = activeMeds.join('；');
+      }
     }
   } catch {
     // 辅助信息加载失败时不影响本次会诊
@@ -9897,6 +10172,27 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
+els.medicationSave.addEventListener('click', saveMedication);
+els.medicationCancel.addEventListener('click', () => {
+  resetMedicationForm();
+  setMedicationStatus('已取消编辑。');
+});
+els.calcInteractionsLoad.addEventListener(
+  'click', loadMedicationsIntoInteractions
+);
+for (const input of [
+  els.medicationName, els.medicationDose,
+  els.medicationFrequency, els.medicationNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveMedication();
+    }
+  });
+}
 els.symptomExport.addEventListener('click', exportSymptomsCsv);
 els.symptomImport.addEventListener('click', () => {
   els.symptomImportFile.click();
