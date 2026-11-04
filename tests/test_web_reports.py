@@ -200,3 +200,12 @@ def test_app_js_ships_metric_summary(client):
     assert "async function loadMetricSummary" in app_js
     assert "/api/metrics/summary" in app_js
     assert 'id="metric-stat-grid"' in html
+
+
+def test_app_js_ships_reminder_groups(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function reminderGroupOf" in app_js
+    assert "reminder-group-head" in app_js
+    assert "已逾期" in app_js
+    assert "未来 7 天" in app_js
