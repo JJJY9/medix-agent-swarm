@@ -35,7 +35,7 @@ class FakeService:
     def delete_document(self, filename):
         return True
 
-    def preview_document(self, filename):
+    def preview_document(self, filename, max_chars=4000):
         if filename == "missing.md":
             return None
         if filename == "bad.md":
@@ -51,6 +51,13 @@ class FakeService:
             "truncated": False,
             "total_length": 4,
         }
+
+    def update_document(self, filename, content):
+        if filename == "builtin.md":
+            raise ValueError("内置文档不能在线编辑。")
+        if not content:
+            raise ValueError("文件内容为空。")
+        return {"filename": filename, "size": len(content)}
 
     def search(self, query, top_k=5):
         if not query.strip():
@@ -106,6 +113,32 @@ def test_knowledge_search_empty_query():
     client = TestClient(api_server.app)
 
     response = client.get("/api/knowledge/search", params={"q": "  "})
+
+    assert response.status_code == 400
+
+
+def test_knowledge_update():
+    client = TestClient(api_server.app)
+
+    response = client.put(
+        "/api/knowledge/documents/a.md",
+        json={"content": "新的内容"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["document"]["filename"] == "a.md"
+    assert data["rebuild"]["documents"] == 1
+
+
+def test_knowledge_update_rejects_builtin():
+    client = TestClient(api_server.app)
+
+    response = client.put(
+        "/api/knowledge/documents/builtin.md",
+        json={"content": "新的内容"},
+    )
 
     assert response.status_code == 400
 

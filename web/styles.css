@@ -1751,6 +1751,45 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .kb-preview-close:hover { text-decoration: underline; }
 
+.kb-preview-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kb-preview-action {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--clinic);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.kb-preview-action:hover:not(:disabled) {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+.kb-preview-action:disabled { opacity: 0.5; cursor: wait; }
+
+.kb-preview-editor {
+  width: 100%;
+  min-height: 240px;
+  margin: 0;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--clinic);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+.kb-preview-editor:focus { outline: none; border-color: var(--clinic); }
+
 .kb-preview-meta {
   margin: 4px 0 6px;
   font-size: 11px;

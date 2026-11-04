@@ -99,6 +99,25 @@ def test_search_builds_source_cards(service):
         svc.search("   ")
 
 
+def test_update_uploaded_document(service):
+    svc, _ = service
+    saved = svc.save_upload("可编辑.md", "旧内容".encode("utf-8"))
+
+    result = svc.update_document(saved["filename"], "新的内容".encode("utf-8"))
+
+    assert result["size"] == len("新的内容".encode("utf-8"))
+    full = svc.preview_document(saved["filename"], max_chars=None)
+    assert full["content"] == "新的内容"
+    assert full["truncated"] is False
+
+    with pytest.raises(ValueError):
+        svc.update_document("20_guideline_hypertension.txt", b"x")
+
+    (svc.upload_dir / "a.pdf").write_bytes(b"%PDF-1.4")
+    with pytest.raises(ValueError):
+        svc.update_document("a.pdf", b"x")
+
+
 def test_preview_builtin_and_upload(service):
     svc, _ = service
 
