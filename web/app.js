@@ -320,6 +320,7 @@ const els = {
   metricTrendLatest: document.getElementById('metric-trend-latest'),
   metricTrendChart: document.getElementById('metric-trend-chart'),
   metricTrendHint: document.getElementById('metric-trend-hint'),
+  metricStatGrid: document.getElementById('metric-stat-grid'),
   metricOverview: document.getElementById('metric-overview'),
   metricOverviewGrid: document.getElementById('metric-overview-grid'),
   metricsStatus: document.getElementById('metrics-status'),
@@ -4888,6 +4889,7 @@ let editingMetricId = null;
 let metricsRequestSeq = 0;
 let metricTrendRequestSeq = 0;
 let metricOverviewRequestSeq = 0;
+let metricSummaryRequestSeq = 0;
 
 const METRIC_UNITS = {
   bp: 'mmHg',
@@ -5399,6 +5401,95 @@ async function loadMetricTrend() {
   }
 }
 
+function formatStatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return String(Math.round(number * 10) / 10);
+}
+
+function formatStatDelta(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  const rounded = Math.round(number * 10) / 10;
+  if (rounded === 0) return '0';
+  return rounded > 0 ? `+${rounded}` : `−${Math.abs(rounded)}`;
+}
+
+function renderMetricSummary(data) {
+  const grid = els.metricStatGrid;
+  if (!grid) return;
+  grid.replaceChildren();
+  const count = Number(data && data.count) || 0;
+  if (!count) {
+    grid.hidden = true;
+    return;
+  }
+  grid.hidden = false;
+
+  const metric = data.metric;
+  const isBp = metric === 'bp';
+  const unit = METRIC_UNITS[metric] ? ` ${METRIC_UNITS[metric]}` : '';
+  const v1 = data.value1 || {};
+  const v2 = data.value2 || {};
+  const pair = (first, second, mapper) => (isBp
+    ? `${mapper(first)}/${mapper(second)}`
+    : mapper(first));
+
+  const addChip = (label, value) => {
+    const chip = document.createElement('div');
+    chip.className = 'metric-stat';
+    const name = document.createElement('span');
+    name.className = 'metric-stat-label';
+    name.textContent = label;
+    const strong = document.createElement('strong');
+    strong.className = 'metric-stat-value';
+    strong.textContent = value;
+    chip.append(name, strong);
+    grid.appendChild(chip);
+  };
+
+  addChip('记录', `${count} 条`);
+  addChip('平均', pair(v1.avg, v2.avg, formatStatNumber) + unit);
+  addChip('最高', pair(v1.max, v2.max, formatStatNumber));
+  addChip('最低', pair(v1.min, v2.min, formatStatNumber));
+
+  if (
+    Number(data.days) > 0
+    && Number.isFinite(Number(v1.avg))
+    && Number.isFinite(Number(v1.prev_avg))
+  ) {
+    const delta1 = Number(v1.avg) - Number(v1.prev_avg);
+    const deltaText = isBp && Number.isFinite(Number(v2.prev_avg))
+      ? `${formatStatDelta(delta1)}/${formatStatDelta(
+        Number(v2.avg) - Number(v2.prev_avg)
+      )}`
+      : formatStatDelta(delta1);
+    addChip('较上期', deltaText + unit);
+  }
+}
+
+async function loadMetricSummary() {
+  const requestSeq = ++metricSummaryRequestSeq;
+  const metric = els.metricType.value;
+  const profile = els.metricProfile.value;
+  const days = metricRangeDays();
+  try {
+    const res = await fetch(
+      `/api/metrics/summary?metric=${encodeURIComponent(metric)}`
+      + `&profile=${encodeURIComponent(profile)}`
+      + (days > 0 ? `&days=${days}` : '')
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    if (requestSeq !== metricSummaryRequestSeq) return;
+    renderMetricSummary(data);
+  } catch {
+    if (requestSeq === metricSummaryRequestSeq) {
+      els.metricStatGrid.hidden = true;
+    }
+  }
+}
+
 async function loadMetricOverview() {
   const requestSeq = ++metricOverviewRequestSeq;
   const profile = els.metricProfile.value;
@@ -5452,6 +5543,7 @@ async function refreshMetrics() {
   updateMetricTargetDisplay();
   await loadMetrics();
   await loadMetricTrend();
+  await loadMetricSummary();
   await loadMetricOverview();
 }
 

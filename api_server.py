@@ -1169,6 +1169,26 @@ async def list_metrics(
     return {"metrics": items}
 
 
+@app.get("/api/metrics/summary")
+async def metric_summary(
+    profile: Optional[str] = None,
+    metric: str = "",
+    days: int = 0,
+):
+    """所选范围内的指标统计（平均/最高/最低，以及与上一周期的差值）。"""
+    from memory import get_session_store
+
+    if metric not in (
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    ):
+        raise HTTPException(status_code=400, detail="不支持的健康指标类型")
+    days = max(0, min(int(days or 0), 3650))
+    data = await asyncio.to_thread(
+        get_session_store().metric_summary, profile, metric, days
+    )
+    return data
+
+
 @app.post("/api/metrics")
 async def add_metric(request: MetricRequest):
     """新增血压、体重、血糖或体温记录。"""
