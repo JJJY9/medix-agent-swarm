@@ -641,3 +641,10 @@ def test_app_js_symptom_cards_can_hide(client):
 
     assert "limit=100000" in app_js
     assert ".home-glance-card[hidden]" in css
+
+
+def test_app_js_ships_dark_symptom_severity(client):
+    css = client.get("/static/styles.css").text
+
+    assert 'html[data-theme="dark"] .symptom-severity.is-low' in css
+    assert 'html[data-theme="dark"] .symptom-severity.is-high' in css
