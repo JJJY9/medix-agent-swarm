@@ -7,6 +7,7 @@ from core.clinical_tools import (
     calculate_curb65,
     calculate_egfr,
     calculate_gad7,
+    calculate_gcs,
     calculate_has_bled,
     calculate_phq9,
 )
@@ -210,3 +211,27 @@ def test_has_bled_boundary_low_risk():
     two_points = calculate_has_bled(80, hypertension=True)
     assert two_points["score"] == 2
     assert two_points["risk"] == "低危"
+
+
+def test_gcs_severity_thresholds():
+    assert calculate_gcs(4, 5, 6)["score"] == 15
+    assert calculate_gcs(4, 5, 6)["severity"] == "轻度"
+    assert calculate_gcs(3, 4, 5)["score"] == 12
+    assert calculate_gcs(3, 4, 5)["severity"] == "中度"
+    assert calculate_gcs(2, 3, 4)["score"] == 9
+    assert calculate_gcs(2, 3, 4)["severity"] == "中度"
+    assert calculate_gcs(1, 1, 1)["score"] == 3
+    assert calculate_gcs(1, 1, 1)["severity"] == "重度"
+    assert calculate_gcs(2, 2, 4)["score"] == 8
+    assert calculate_gcs(2, 2, 4)["severity"] == "重度"
+
+
+def test_gcs_validation():
+    with pytest.raises(ValueError):
+        calculate_gcs(0, 5, 6)
+    with pytest.raises(ValueError):
+        calculate_gcs(4, 6, 6)
+    with pytest.raises(ValueError):
+        calculate_gcs(4, 5, 7)
+    with pytest.raises(ValueError):
+        calculate_gcs(True, 5, 6)

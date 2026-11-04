@@ -284,6 +284,38 @@ def calculate_has_bled(
     }
 
 
+def calculate_gcs(eye: int, verbal: int, motor: int) -> Dict[str, object]:
+    """GCS 格拉斯哥昏迷评分（3–15 分）。
+
+    仅用于意识水平评估，需结合瞳孔、生命体征与病因。
+    """
+    values = {"eye": eye, "verbal": verbal, "motor": motor}
+    limits = {"eye": (1, 4), "verbal": (1, 5), "motor": (1, 6)}
+    for key, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("GCS 各项必须是整数。")
+        low, high = limits[key]
+        if value < low or value > high:
+            raise ValueError(f"GCS {key} 必须在 {low}–{high} 之间。")
+
+    score = int(eye) + int(verbal) + int(motor)
+    if score >= 13:
+        severity = "轻度"
+    elif score >= 9:
+        severity = "中度"
+    else:
+        severity = "重度"
+
+    return {
+        "score": score,
+        "severity": severity,
+        "eye": int(eye),
+        "verbal": int(verbal),
+        "motor": int(motor),
+        "note": "GCS ≤ 8 分通常提示需要气道保护，请立即由急诊或重症团队评估；评分需结合瞳孔、生命体征与病因。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,

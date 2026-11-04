@@ -157,6 +157,10 @@ const els = {
   calcHasBledInr: document.getElementById('calc-hasbled-inr'),
   calcHasBledDrugs: document.getElementById('calc-hasbled-drugs'),
   calcHasBledAlcohol: document.getElementById('calc-hasbled-alcohol'),
+  calcFormGcs: document.getElementById('calc-form-gcs'),
+  calcGcsEye: document.getElementById('calc-gcs-eye'),
+  calcGcsVerbal: document.getElementById('calc-gcs-verbal'),
+  calcGcsMotor: document.getElementById('calc-gcs-motor'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -4375,6 +4379,7 @@ function setCalcTool(tool) {
     els.calcFormPhq9,
     els.calcFormGad7,
     els.calcFormHasBled,
+    els.calcFormGcs,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -4702,6 +4707,27 @@ function submitPhq9(event) {
         label: '保存 PHQ-9 评分',
         run: () => saveScreenerScore('phq9', data.score, 'PHQ-9 筛查'),
       },
+    })
+  );
+}
+
+function submitGcs(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/gcs',
+    {
+      eye: Number(els.calcGcsEye.value),
+      verbal: Number(els.calcGcsVerbal.value),
+      motor: Number(els.calcGcsMotor.value),
+    },
+    (data) => ({
+      title: 'GCS 结果',
+      main: `评分 ${data.score} / 15`,
+      detail:
+        `严重程度：${data.severity} · `
+        + `睁眼 ${data.eye} / 语言 ${data.verbal} / 运动 ${data.motor}`,
+      note: data.note,
+      level: data.score <= 8 ? 'warning' : '',
     })
   );
 }
@@ -5518,6 +5544,7 @@ els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
+els.calcFormGcs.addEventListener('submit', submitGcs);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;
