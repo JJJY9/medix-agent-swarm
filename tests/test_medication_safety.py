@@ -1,4 +1,6 @@
 """用药安全规则引擎的离线测试。"""
+import pytest
+
 from core.medication_safety import check_medication_safety
 from swarm.swarm_coordinator import SwarmCoordinator
 
@@ -112,6 +114,39 @@ def test_alert_cap_keeps_allergy_first():
 
     assert len(result["alerts"]) <= 5
     assert any("青霉素类过敏史" in title for title in titles(result))
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("阿托伐他汀和克拉霉素能一起吃吗？", "他汀与部分抗感染药"),
+        ("吃辛伐他汀能喝西柚汁吗？", "他汀与西柚"),
+        ("优甲乐和碳酸钙能一起吗？", "左甲状腺素与钙/铁/铝剂"),
+        ("左氧氟沙星和铁剂要间隔吗？", "喹诺酮类与矿物质"),
+        ("多西环素和钙片能同服吗？", "四环素类与矿物质"),
+        ("舍曲林和布洛芬一起吃会出血吗？", "SSRI 与非甾体抗炎药"),
+        ("甲氨蝶呤和布洛芬能合用吗？", "甲氨蝶呤与非甾体抗炎药"),
+        ("甲氨蝶呤和复方磺胺甲噁唑能一起吗？", "甲氨蝶呤与磺胺类"),
+        ("别嘌醇和硫唑嘌呤能一起用吗？", "别嘌醇与硫唑嘌呤"),
+        ("吗啡和阿普唑仑一起会呼吸抑制吗？", "阿片类与苯二氮䓬类"),
+        ("格列美脲期间能喝酒吗？", "磺脲类降糖药与酒精"),
+        ("打胰岛素能喝酒吗？", "胰岛素与酒精"),
+        ("缬沙坦和布洛芬能同服吗？", "降压药与非甾体抗炎药"),
+        ("碳酸锂和布洛芬能一起吗？", "锂盐与非甾体抗炎药"),
+        ("碳酸锂和依那普利能一起用吗？", "锂盐与 ACEI/ARB"),
+    ],
+)
+def test_additional_interaction_rules(question, expected):
+    result = check_medication_safety(question)
+
+    assert expected in titles(result)
+    assert result["level"] == "warning"
+
+
+def test_new_rules_do_not_fire_without_both_drugs():
+    assert check_medication_safety("阿托伐他汀怎么吃？")["alerts"] == []
+    assert check_medication_safety("优甲乐早上吃还是晚上吃？")["alerts"] == []
+    assert check_medication_safety("左氧氟沙星怎么服用？")["alerts"] == []
 
 
 def test_history_metadata_includes_medication_safety():
