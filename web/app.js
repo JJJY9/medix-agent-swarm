@@ -2079,7 +2079,7 @@ async function exportVisitSummary() {
 
   try {
     const metricParams = new URLSearchParams({ limit: '30', profile });
-    const sessionParams = new URLSearchParams({ limit: '5', profile });
+    const sessionParams = new URLSearchParams({ limit: '200', profile });
     const targetParams = new URLSearchParams({ profile });
     const reminderParams = new URLSearchParams({ profile });
     const symptomParams = new URLSearchParams({
@@ -2110,12 +2110,14 @@ async function exportVisitSummary() {
       )
       : [];
     const sessions = sessionsRes.ok
-      ? ((await sessionsRes.json()).sessions || []).filter(
-        (item) => (item.profile || '') === profile
-      )
+      ? ((await sessionsRes.json()).sessions || [])
+        .filter((item) => (item.profile || '') === profile)
+        .slice(0, 5)
       : [];
     const targets = targetsRes.ok
-      ? (await targetsRes.json()).targets || []
+      ? ((await targetsRes.json()).targets || []).filter(
+        (item) => (item.profile || '') === profile
+      )
       : [];
     const symptoms = symptomsRes.ok
       ? (await symptomsRes.json()).symptoms || []
@@ -2127,7 +2129,7 @@ async function exportVisitSummary() {
       ? await weeklyRes.json().catch(() => null)
       : null;
     const summaries = await fetchMetricSummaries(
-      profile, metrics, 0, true
+      profile, metrics, 0, false
     );
 
     const stamp = todayLocalDate().replace(/-/g, '');
@@ -6243,6 +6245,7 @@ function closeMetrics(restoreFocus = false) {
 
 let remindersFocused = null;
 let editingReminderId = null;
+let reminderMedicationId = 0;
 let remindersRequestSeq = 0;
 let reminderSaving = false;
 let reminderActionBusy = false;
@@ -6267,6 +6270,7 @@ function defaultReminderDue() {
 
 function resetReminderForm() {
   editingReminderId = null;
+  reminderMedicationId = 0;
   els.reminderTitle.value = '';
   els.reminderNote.value = '';
   els.reminderDue.value = defaultReminderDue();
@@ -6280,6 +6284,7 @@ function resetReminderForm() {
 
 function editReminder(item) {
   editingReminderId = item.id;
+  reminderMedicationId = Number(item.medication_id) || 0;
   els.reminderTitle.value = item.title || '';
   if (els.reminderProfile) {
     els.reminderProfile.value = item.profile || '';
@@ -7324,7 +7329,10 @@ async function addReminder() {
     repeat_days: repeatDays,
     repeat_until: repeatDays > 0 ? (els.reminderUntil.value || '') : '',
   };
-  if (!editingId) payload.session_id = sessionId || '';
+  if (!editingId) {
+    payload.session_id = sessionId || '';
+    payload.medication_id = reminderMedicationId;
+  }
 
   els.reminderAdd.disabled = true;
   reminderSaving = true;
@@ -7572,6 +7580,7 @@ async function scheduleMetricFollowUp(item) {
 
 async function scheduleMedicationReminder(item) {
   await openReminders();
+  reminderMedicationId = Number(item.id) || 0;
   if (els.reminderProfile) {
     els.reminderProfile.value = item.profile || '';
   }
@@ -7635,8 +7644,14 @@ async function scheduleAllMedicationReminders() {
       const title = `用药：${item.name}`;
       const exists = reminders.some((reminder) => (
         !reminder.done
-        && reminder.title === title
-        && (reminder.profile || '') === (item.profile || '')
+        && (
+          Number(reminder.medication_id) === item.id
+          || (
+            !Number(reminder.medication_id)
+            && reminder.title === title
+            && (reminder.profile || '') === (item.profile || '')
+          )
+        )
       ));
       if (exists) {
         skipped += 1;
@@ -7653,12 +7668,14 @@ async function scheduleAllMedicationReminders() {
             profile: item.profile || '',
             advance_days: 0,
             repeat_days: repeatDays,
+            medication_id: item.id,
           }),
         });
         if (!res.ok) throw new Error(`服务返回 ${res.status}`);
         reminders.push({
           title,
           profile: item.profile || '',
+          medication_id: item.id,
           done: false,
         });
         created += 1;
@@ -8368,7 +8385,8 @@ async function deleteMedicationLogItem(item) {
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const reopenNote = await reopenLinkedMedicationReminder(
-      item.medication_name || '', item.profile || '', item.taken_at
+      item.medication_name || '', item.profile || '', item.taken_at,
+      item.medication_id
     );
     const message =
       '已删除打卡记录。' + (reopenNote ? ` ${reopenNote}` : '');
@@ -8592,8 +8610,12 @@ async function completeDueMedicationReminder(item) {
     const reminders = (await res.json()).reminders || [];
     const title = `用药：${item.name}`;
     const candidates = reminders.filter((reminder) => {
-      if (reminder.done || reminder.title !== title) return false;
-      if ((reminder.profile || '') !== (item.profile || '')) return false;
+      if (reminder.done) return false;
+      const byId = Number(reminder.medication_id) === item.id;
+      const legacy = !Number(reminder.medication_id)
+        && reminder.title === title
+        && (reminder.profile || '') === (item.profile || '');
+      if (!byId && !legacy) return false;
       const days = reminderDaysUntil(reminder.due_at);
       return days !== null && days >= -1 && days <= 0;
     });
@@ -8619,19 +8641,25 @@ async function completeDueMedicationReminder(item) {
   }
 }
 
-async function reopenLinkedMedicationReminder(name, profile, takenAt) {
+async function reopenLinkedMedicationReminder(
+  name, profile, takenAt, medicationId = 0
+) {
   if (String(takenAt || '').slice(0, 10) !== todayLocalDate()) return null;
   try {
     const res = await fetch('/api/reminders?include_done=true');
     if (!res.ok) return null;
     const reminders = (await res.json()).reminders || [];
     const title = `用药：${name}`;
-    const done = reminders.find((reminder) => (
-      reminder.done
-      && reminder.title === title
-      && (reminder.profile || '') === (profile || '')
-      && String(reminder.due_at || '').slice(0, 10) === todayLocalDate()
-    ));
+    const done = reminders.find((reminder) => {
+      if (!reminder.done) return false;
+      const byId = Number(medicationId) > 0
+        && Number(reminder.medication_id) === Number(medicationId);
+      const legacy = !Number(reminder.medication_id)
+        && reminder.title === title
+        && (reminder.profile || '') === (profile || '');
+      return (byId || legacy)
+        && String(reminder.due_at || '').slice(0, 10) === todayLocalDate();
+    });
     if (!done) return null;
     const reopen = await fetch(`/api/reminders/${done.id}/reopen`, {
       method: 'POST',
@@ -8707,7 +8735,7 @@ async function undoMedicationLog(item) {
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const reopenNote = await reopenLinkedMedicationReminder(
-      item.name, item.profile || '', logs[0].taken_at
+      item.name, item.profile || '', logs[0].taken_at, item.id
     );
     const message =
       `已撤销 ${formatTime(logs[0].taken_at)} 的用药记录。`
@@ -8800,6 +8828,7 @@ async function deleteMedication(item) {
     await loadMedications();
     loadMedicationLogs();
     refreshOverview();
+    refreshReminderBadge();
   } catch (err) {
     setMedicationStatus(`删除失败：${err.message || err}`, true);
   }

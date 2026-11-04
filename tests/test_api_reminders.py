@@ -28,6 +28,7 @@ def test_reminders_api_roundtrip(client_and_store):
             "due_at": "2026-11-10",
             "note": "空腹",
             "session_id": "s1",
+            "medication_id": 42,
         },
     )
     listed = client.get("/api/reminders")
@@ -37,6 +38,7 @@ def test_reminders_api_roundtrip(client_and_store):
     reminder = created.json()["reminder"]
     assert reminder["title"] == "复查血常规"
     assert reminder["session_id"] == "s1"
+    assert reminder["medication_id"] == 42
     assert reminder["done"] is False
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()["reminders"]] == [reminder["id"]]

@@ -177,6 +177,9 @@ class ReminderRequest(BaseModel):
         0, ge=0, le=365, description="重复间隔天数，0 表示不重复"
     )
     repeat_until: str = Field("", max_length=32, description="重复截止日期")
+    medication_id: int = Field(
+        0, ge=0, description="关联的用药记录 ID（用药提醒）"
+    )
 
 
 class ReminderUpdateRequest(BaseModel):
@@ -2520,6 +2523,7 @@ async def add_reminder(request: ReminderRequest):
             request.advance_days,
             request.repeat_days,
             request.repeat_until,
+            request.medication_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
