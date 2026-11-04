@@ -492,6 +492,11 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink);
 }
 
+.today-meds-head .is-complete {
+  font-weight: 600;
+  color: var(--clinic);
+}
+
 .today-meds-list {
   display: grid;
   gap: 4px;

@@ -1290,7 +1290,10 @@ async def export_medications_csv(
         get_session_store().list_medications,
         profile, active_only, 100000,
     )
-    rows = [["药物名称", "剂量", "频次", "患者档案", "状态", "备注"]]
+    rows = [[
+        "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
+        "今日次数", "近7天次数", "最近服用",
+    ]]
     for item in items:
         rows.append([
             csv_safe_cell(item.get("name", "")),
@@ -1299,6 +1302,9 @@ async def export_medications_csv(
             csv_safe_cell(item.get("profile", "")),
             "在用" if item.get("active") else "停用",
             csv_safe_cell(item.get("note", "")),
+            str(int(item.get("today_count") or 0)),
+            str(int(item.get("week_count") or 0)),
+            csv_safe_cell(item.get("last_taken_at") or ""),
         ])
 
     buffer = io.StringIO()
