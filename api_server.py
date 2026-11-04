@@ -13,6 +13,7 @@ MediX 多智能体医疗助手 - Web API 服务
 import argparse
 import asyncio
 import json
+import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -426,28 +427,73 @@ async def verify_access_token():
     return {"ok": True}
 
 
+AUDIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$")
+
+
+def audit_date_param(name: str, value: Optional[str]) -> Optional[str]:
+    """校验审计筛选日期：接受 YYYY-MM-DD 或 ISO 时间。"""
+    value = (value or "").strip()
+    if not value:
+        return None
+    if not AUDIT_DATE_PATTERN.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} 格式应为 YYYY-MM-DD 或 ISO 时间",
+        )
+    return value
+
+
+def audit_filter_kwargs(
+    action: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
+    keyword: Optional[str],
+) -> Dict[str, Any]:
+    return {
+        "action": action or None,
+        "start": audit_date_param("start", start),
+        "end": audit_date_param("end", end),
+        "keyword": keyword or None,
+    }
+
+
 @app.get("/api/audit")
-async def audit_log(limit: int = 50):
-    """最近的操作审计（删除、归档、导入导出等）。"""
+async def audit_log(
+    limit: int = 50,
+    action: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """最近的操作审计（删除、归档、导入导出等），支持筛选。"""
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 50), 500))
+    kwargs = audit_filter_kwargs(action, start, end, q)
+    store = get_session_store()
     actions = await asyncio.to_thread(
-        get_session_store().list_audit_log, limit
+        store.list_audit_log, limit, **kwargs
     )
-    return {"actions": actions}
+    available = await asyncio.to_thread(store.list_audit_actions)
+    return {"actions": actions, "available_actions": available}
 
 
 @app.get("/api/audit/export.csv")
-async def export_audit_csv():
-    """导出全部操作审计 CSV（带 BOM）。"""
+async def export_audit_csv(
+    action: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """导出操作审计 CSV（带 BOM），筛选条件与列表一致。"""
     import csv
     import io
 
     from memory import get_session_store
 
+    kwargs = audit_filter_kwargs(action, start, end, q)
     items = await asyncio.to_thread(
-        get_session_store().list_audit_log, 100000
+        get_session_store().list_audit_log, 100000, **kwargs
     )
     rows = [["时间", "动作", "对象", "说明"]]
     for item in reversed(items):

@@ -471,6 +471,18 @@
     <div class="diag-section" id="diag-llm"></div>
     <div class="diag-section" id="diag-knowledge"></div>
     <div class="diag-section" id="diag-packages"></div>
+    <div class="diag-audit-filters" id="diag-audit-filters">
+      <label class="sr-only" for="audit-action">按动作筛选</label>
+      <select id="audit-action"><option value="">全部动作</option></select>
+      <label class="sr-only" for="audit-keyword">搜索对象或说明</label>
+      <input id="audit-keyword" type="search" placeholder="搜索对象或说明">
+      <div class="row">
+        <input id="audit-start" type="date" aria-label="开始日期">
+        <span class="sep">至</span>
+        <input id="audit-end" type="date" aria-label="结束日期">
+        <button type="button" class="btn-quiet" id="audit-filter-apply">筛选</button>
+      </div>
+    </div>
     <div class="diag-section" id="diag-audit"></div>
     <div class="diag-actions">
       <button type="button" class="btn-quiet" id="diag-refresh">重新检查</button>

@@ -1734,20 +1734,61 @@ class SessionStore:
             )
             return int(cursor.lastrowid)
 
-    def list_audit_log(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """按时间倒序返回最近的操作审计。"""
+    def list_audit_log(
+        self,
+        limit: int = 50,
+        action: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        keyword: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """按时间倒序返回操作审计，可按动作、日期范围与关键字筛选。"""
         limit = max(1, min(int(limit or 50), 100000))
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        action = " ".join(str(action or "").split())[:80]
+        if action:
+            clauses.append("action = ?")
+            params.append(action)
+
+        start = str(start or "").strip()[:32]
+        if start:
+            clauses.append("created_at >= ?")
+            params.append(start)
+
+        end = str(end or "").strip()[:32]
+        if end:
+            clauses.append("created_at <= ?")
+            params.append(end + "T23:59:59" if len(end) == 10 else end)
+
+        keyword = " ".join(str(keyword or "").split())[:80]
+        if keyword:
+            pattern = f"%{keyword}%"
+            clauses.append("(target LIKE ? OR detail LIKE ?)")
+            params.extend([pattern, pattern])
+
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT id, action, target, detail, created_at
-                  FROM audit_log
+                  FROM audit_log{where}
                  ORDER BY id DESC
                  LIMIT ?
                 """,
-                (limit,),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_audit_actions(self) -> List[str]:
+        """返回出现过的审计动作类型（去重排序）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT action FROM audit_log ORDER BY action"
+            ).fetchall()
+        return [row["action"] for row in rows]
 
     def count(self) -> int:
         with self._lock:
