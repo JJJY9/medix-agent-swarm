@@ -20,7 +20,7 @@ from openai import (
 )
 from loguru import logger
 
-from .security import install_log_redaction, redact_secrets
+from .security import install_log_redaction, redact_secrets, register_secret
 
 # 所有模型调用路径都会经过这里，导入时即开启日志脱敏，
 # 避免脚本或 CLI 绕过 api_server 时把 SDK 报错里的 Key 原样打出来。
@@ -62,6 +62,9 @@ for _env_key, _cfg_key in (
         LLM_CONFIG[_cfg_key] = os.getenv(_env_key)
 
 del _env_key, _cfg_key
+
+# config.py 中的密钥不在环境变量里，登记后再做日志/错误脱敏
+register_secret(LLM_CONFIG.get("api_key"))
 
 
 @dataclass

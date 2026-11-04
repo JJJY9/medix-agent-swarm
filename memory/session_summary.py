@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import json
+import re
 from loguru import logger
 
 
@@ -263,12 +264,21 @@ class SessionSummaryManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_summary_path(self, session_id: str) -> Path:
-        """获取会话总结文件路径"""
-        # 按日期组织
-        date_str = session_id.split("-")[0] if "-" in session_id else "unknown"
+        """获取会话总结文件路径（会话 ID 只保留安全字符，防止路径穿越）。"""
+        safe_id = re.sub(
+            r"[^\w.-]", "_", str(session_id or "")
+        )[:120]
+        if not safe_id or safe_id in {".", ".."}:
+            safe_id = "unknown"
+        date_str = (
+            safe_id.split("-")[0] if "-" in safe_id else "unknown"
+        )
+        date_str = re.sub(r"[^0-9A-Za-z._-]", "_", date_str)[:40]
+        if not date_str or date_str in {".", ".."}:
+            date_str = "unknown"
         date_dir = self.base_dir / date_str
         date_dir.mkdir(parents=True, exist_ok=True)
-        return date_dir / f"{session_id}.md"
+        return date_dir / f"{safe_id}.md"
 
     def save_summary(self, summary: SessionSummary):
         """保存会话总结"""

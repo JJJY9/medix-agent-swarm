@@ -13,6 +13,7 @@ MediX 多智能体医疗助手 - Web API 服务
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import uuid
@@ -20,13 +21,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 project_root = Path(__file__).parent
@@ -71,6 +73,22 @@ class ChatRequest(BaseModel):
     patient_profile: str = Field(
         "", max_length=40, description="关联的常用患者档案名称"
     )
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value):
+        if value is None:
+            return value
+        text = str(value).strip()
+        if (
+            len(text) > 120
+            or "/" in text
+            or "\\" in text
+            or ".." in text
+            or any(ord(ch) < 32 for ch in text)
+        ):
+            raise ValueError("会话 ID 不合法")
+        return text
 
 
 class SessionResponse(BaseModel):
@@ -490,6 +508,36 @@ def csv_safe_cell(value: Any) -> str:
     return text
 
 
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
+
+
+def _request_content_length(request: Request) -> int:
+    try:
+        return max(0, int(request.headers.get("content-length") or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _public_base_url(value: Any) -> Any:
+    """去掉服务地址中可能携带的账号密码后再对外展示。"""
+    text = str(value or "")
+    if not text:
+        return value
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return text
+    if not parsed.username and not parsed.password:
+        return text
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit(
+        (parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
 def reminder_audit_target(reminder: Dict[str, Any]) -> str:
     return f"{reminder.get('id')}·{reminder.get('title', '')}"[:120]
 
@@ -521,7 +569,16 @@ async def lifespan(_: FastAPI):
     logger.info("MediX API 服务已停止")
 
 
-app = FastAPI(title="MediX 多智能体医疗助手", version="1.0.0", lifespan=lifespan)
+_AUTH_ENABLED = bool((os.getenv("MEDIX_ACCESS_TOKEN") or "").strip())
+
+app = FastAPI(
+    title="MediX 多智能体医疗助手",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if _AUTH_ENABLED else "/docs",
+    redoc_url=None if _AUTH_ENABLED else "/redoc",
+    openapi_url=None if _AUTH_ENABLED else "/openapi.json",
+)
 
 # 前端加载和健康检查必须保持公开，其余 /api/* 在设置令牌后统一校验
 PUBLIC_API_PATHS = {"/api/status"}
@@ -727,7 +784,7 @@ async def get_status():
         "monthly_token_budget": get_token_budget(),
         "auto_archive_days": get_auto_archive_days(),
         "model_name": LLM_CONFIG.get("model_name"),
-        "base_url": LLM_CONFIG.get("base_url"),
+        "base_url": _public_base_url(LLM_CONFIG.get("base_url")),
         "mem0_enabled": mem0_enabled,
         "knowledge_base": {
             "status": state.kb_status,
@@ -1048,7 +1105,7 @@ async def export_sessions_csv(
     for item in items:
         stats = usage.get(item["id"], {})
         rows.append([
-            item.get("id", ""),
+            csv_safe_cell(item.get("id", "")),
             csv_safe_cell(item.get("title", "")),
             csv_safe_cell(item.get("profile", "")),
             csv_safe_cell("、".join(item.get("tags") or [])),
@@ -1058,8 +1115,8 @@ async def export_sessions_csv(
             stats.get("turns", 0),
             (stats.get("usage") or {}).get("total_tokens", 0),
             stats.get("llm_calls", 0),
-            item.get("created_at", ""),
-            item.get("updated_at", ""),
+            csv_safe_cell(item.get("created_at", "")),
+            csv_safe_cell(item.get("updated_at", "")),
         ])
 
     buffer = io.StringIO()
@@ -1175,8 +1232,8 @@ async def export_feedback_csv(
     rows = [["更新时间", "会话编号", "会话标题", "评分", "反馈原因"]]
     for item in items:
         rows.append([
-            item.get("updated_at", ""),
-            item.get("session_id", ""),
+            csv_safe_cell(item.get("updated_at", "")),
+            csv_safe_cell(item.get("session_id", "")),
             csv_safe_cell(item.get("session_title", "")),
             "有用" if item.get("rating") == 1 else "待改进",
             csv_safe_cell(item.get("comment", "")),
@@ -3450,14 +3507,19 @@ async def knowledge_rebuild():
 
 @app.post("/api/knowledge/upload")
 async def knowledge_upload(
+    request: Request,
     file: UploadFile = File(...),
     rebuild: bool = True
 ):
     """上传 TXT / Markdown / PDF 文档，可选立即重建索引。"""
     from knowledge.service import get_knowledge_service
 
+    if _request_content_length(request) > MAX_UPLOAD_BYTES + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件过大（最大 5 MB）")
     service = get_knowledge_service()
-    content = await file.read()
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件过大（最大 5 MB）")
     try:
         saved = await asyncio.to_thread(service.save_upload, file.filename, content)
     except ValueError as e:
@@ -3483,6 +3545,7 @@ async def knowledge_upload(
 
 @app.post("/api/knowledge/upload-batch")
 async def knowledge_upload_batch(
+    request: Request,
     files: List[UploadFile] = File(...),
     rebuild: bool = True
 ):
@@ -3493,6 +3556,8 @@ async def knowledge_upload_batch(
         raise HTTPException(status_code=400, detail="请选择要上传的文件")
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="一次最多上传 10 个文件")
+    if _request_content_length(request) > MAX_UPLOAD_BATCH_BYTES + 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="上传内容过大")
 
     service = get_knowledge_service()
     saved: List[Dict[str, Any]] = []
@@ -3500,7 +3565,9 @@ async def knowledge_upload_batch(
 
     for file in files:
         try:
-            content = await file.read()
+            content = await file.read(MAX_UPLOAD_BYTES + 1)
+            if len(content) > MAX_UPLOAD_BYTES:
+                raise ValueError("文件过大（最大 5 MB）")
             document = await asyncio.to_thread(
                 service.save_upload, file.filename, content
             )
