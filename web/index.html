@@ -662,6 +662,12 @@
       <label class="calc-field">提醒日期
         <input id="reminder-due" type="date">
       </label>
+      <div class="reminder-due-quick" id="reminder-due-quick" role="group" aria-label="快捷选择提醒日期">
+        <button type="button" data-days="0">今天</button>
+        <button type="button" data-days="3">3 天后</button>
+        <button type="button" data-days="7">1 周后</button>
+        <button type="button" data-days="30">1 个月后</button>
+      </div>
       <label class="calc-field">提前提醒（天）
         <input id="reminder-advance" type="number" min="0" max="30" step="1" inputmode="numeric" value="0">
       </label>
