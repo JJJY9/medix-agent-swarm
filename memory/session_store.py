@@ -667,6 +667,28 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN medication_id INTEGER NOT NULL DEFAULT 0"
                 )
+                # 旧提醒按「用药：药名 + 档案」回填关联，尽量恢复联动
+                self._conn.execute(
+                    """
+                    UPDATE reminders
+                       SET medication_id = (
+                           SELECT m.id FROM medications m
+                            WHERE reminders.title = substr(
+                                      '用药：' || m.name, 1, 120
+                                  )
+                              AND m.profile = reminders.profile
+                            ORDER BY m.id LIMIT 1
+                       )
+                     WHERE medication_id = 0
+                       AND EXISTS (
+                           SELECT 1 FROM medications m
+                            WHERE reminders.title = substr(
+                                      '用药：' || m.name, 1, 120
+                                  )
+                              AND m.profile = reminders.profile
+                       )
+                    """
+                )
             self._conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_reminders_medication
@@ -2108,6 +2130,21 @@ class SessionStore:
                         mapped_medication["id"]
                         if mapped_medication else 0
                     )
+                    if not medication_id:
+                        medication_name = " ".join(
+                            str(raw.get("medication_name") or "").split()
+                        )[:MAX_MEDICATION_NAME_LENGTH]
+                        if medication_name:
+                            med_row = self._conn.execute(
+                                """
+                                SELECT id FROM medications
+                                 WHERE profile = ? AND name = ?
+                                 ORDER BY id LIMIT 1
+                                """,
+                                (profile, medication_name),
+                            ).fetchone()
+                            if med_row is not None:
+                                medication_id = int(med_row["id"])
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -3050,13 +3087,27 @@ class SessionStore:
                     """
                     UPDATE reminders
                        SET title = ?, profile = ?, updated_at = ?
-                     WHERE medication_id = ? AND done = 0
+                     WHERE medication_id = ? AND done = 0 AND title = ?
                     """,
                     (
                         f"用药：{normalized['name']}",
                         normalized["profile"],
                         now,
                         medication_id,
+                        f"用药：{previous['name']}",
+                    ),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE reminders
+                       SET profile = ?, updated_at = ?
+                     WHERE medication_id = ? AND done = 0 AND title != ?
+                    """,
+                    (
+                        normalized["profile"],
+                        now,
+                        medication_id,
+                        f"用药：{previous['name']}",
                     ),
                 )
             row = self._conn.execute(

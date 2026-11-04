@@ -7259,6 +7259,7 @@ async function addReminderSeries() {
     title,
     note: (els.reminderNote.value || '').trim(),
     profile: els.reminderProfile.value || '',
+    medication_id: reminderMedicationId,
     advance_days: Math.trunc(Math.max(
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
