@@ -482,10 +482,18 @@ medix-agent-swarm/
 ├── core/                              # 核心引擎
 │   ├── __init__.py
 │   ├── agent_loop.py                  # Agent Loop（集成约束验证）
+│   ├── clinical_tools.py              # BMI/eGFR/CHA₂DS₂-VASc/HAS-BLED/CURB-65/PHQ-9/GAD-7
+│   ├── context.py                     # 结构化问诊上下文
+│   ├── diagnostics.py                 # 环境自检
 │   ├── llm_client.py                  # LLM 客户端
+│   ├── medication_safety.py           # 用药安全规则引擎
+│   ├── retention.py                   # 自动归档策略
+│   ├── security.py                    # 密钥脱敏与日志保护
+│   ├── serialization.py               # JSON 安全序列化
 │   ├── skill_loader.py                # 动态加载 Skills
 │   ├── skill_registry.py              # Skill 注册表（直接转 OpenAI format，无 Tool 层）
-│   └── state_manager.py               # 状态管理
+│   ├── state_manager.py               # 状态管理
+│   └── triage.py                      # 急症红旗预检
 │
 ├── swarm/                             # Swarm 协调器
 │   ├── __init__.py
@@ -500,6 +508,7 @@ medix-agent-swarm/
 │   ├── long_term.py                   # 长期记忆（Mem0）
 │   ├── short_term.py                  # 短期记忆（自动去重和压缩）
 │   ├── session_summary.py             # 会话总结
+│   ├── session_store.py               # SQLite 会话/档案/健康记录/审计
 │   ├── entropy_manager.py             # 熵管理器（Harness）
 │   ├── agents/                        # Agent 身份文件存储
 │   └── swarm/session_summaries/       # Swarm 会话总结存储
@@ -528,7 +537,12 @@ medix-agent-swarm/
 ├── web/                               # 前端页面（原生 HTML/CSS/JS）
 │   ├── index.html
 │   ├── styles.css
-│   └── app.js
+│   ├── app.js
+│   ├── manifest.webmanifest           # PWA manifest
+│   ├── sw.js                          # Service Worker（只缓存静态外壳）
+│   └── icons/                         # PWA 图标（192/512）
+│
+├── tests/                             # 离线单元测试（无需 API Key）
 │
 ├── tools/
 │   └── capture_screenshots.js         # 抓运行截图，输出到 docs/screenshots/
