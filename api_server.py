@@ -1411,6 +1411,21 @@ async def complete_reminder(reminder_id: int):
     return {"ok": True, "id": reminder_id}
 
 
+@app.post("/api/reminders/{reminder_id}/snooze")
+async def snooze_reminder(reminder_id: int, days: int = 7):
+    """把随访提醒推迟若干天（默认 7 天）。"""
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 7), 365))
+    reminder = await asyncio.to_thread(
+        get_session_store().snooze_reminder, reminder_id, days
+    )
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    await record_audit("reminder.snooze", str(reminder_id), f"days={days}")
+    return {"ok": True, "reminder": reminder}
+
+
 @app.delete("/api/reminders/{reminder_id}")
 async def delete_reminder(reminder_id: int):
     """删除随访提醒。"""

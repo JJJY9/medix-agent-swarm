@@ -2069,6 +2069,40 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def snooze_reminder(
+        self, reminder_id: int, days: int = 7
+    ) -> Optional[Dict[str, Any]]:
+        """把提醒推迟若干天；从今天与原到期日中较晚者起算。"""
+        days = max(1, min(int(days or 7), 365))
+        now = self._now()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT due_at FROM reminders WHERE id = ?", (int(reminder_id),)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                current = datetime.fromisoformat(
+                    str(row["due_at"])[:10]
+                ).date()
+            except ValueError:
+                current = datetime.now().date()
+            base = max(current, datetime.now().date())
+            new_due = (base + timedelta(days=days)).isoformat()
+            self._conn.execute(
+                "UPDATE reminders SET due_at = ?, updated_at = ? WHERE id = ?",
+                (new_due, now, int(reminder_id)),
+            )
+            updated = self._conn.execute(
+                """
+                SELECT id, title, note, due_at, session_id, done,
+                       created_at, updated_at
+                  FROM reminders WHERE id = ?
+                """,
+                (int(reminder_id),),
+            ).fetchone()
+        return {**dict(updated), "done": bool(updated["done"])}
+
     def count(self) -> int:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
