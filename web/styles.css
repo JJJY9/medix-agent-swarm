@@ -2890,6 +2890,84 @@ html[data-theme="dark"] .reminder-badge-done {
   color: var(--ink-soft);
 }
 
+.reminders-calendar {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+.reminders-calendar[hidden] { display: none; }
+
+.reminders-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.reminders-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+
+.reminders-calendar-weekday {
+  text-align: center;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.reminders-calendar-blank {
+  min-height: 34px;
+}
+
+.reminders-calendar-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-height: 34px;
+  padding: 2px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reminders-calendar-day:hover {
+  border-color: var(--clinic);
+}
+
+.reminders-calendar-day.is-today {
+  border-color: var(--clinic);
+  color: var(--clinic);
+}
+
+.reminders-calendar-day.is-selected {
+  background: var(--clinic-soft);
+  border-color: var(--clinic);
+}
+
+.reminders-calendar-dot {
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 14px;
+  color: #fff;
+  background: var(--triage-1, #c0392b);
+  border-radius: 999px;
+}
+
+.reminders-calendar-clear {
+  margin-top: 8px;
+}
+
 .reminders-filters {
   display: flex;
   flex-wrap: wrap;

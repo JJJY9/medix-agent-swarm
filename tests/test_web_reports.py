@@ -284,3 +284,15 @@ def test_app_js_ships_extended_metric_types(client):
     assert 'value="waist"' in html
     assert "血氧饱和度" in app_js
     assert "腰围参考" in app_js
+
+
+def test_app_js_ships_reminder_calendar(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function renderReminderCalendar" in app_js
+    assert "function shiftReminderCalendarMonth" in app_js
+    assert "REMMINDER_WEEKDAYS" not in app_js
+    assert "REMINDER_WEEKDAYS" in app_js
+    assert 'id="reminders-calendar-grid"' in html
+    assert 'id="reminders-calendar-toggle"' in html
