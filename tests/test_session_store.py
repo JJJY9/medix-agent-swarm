@@ -867,6 +867,19 @@ def test_update_health_metric(store):
     assert store.update_metric(item["id"], "妈妈", "weight", 0) is None
 
 
+def test_screener_score_metrics(store):
+    phq9 = store.add_metric("", "phq9", 10, note="PHQ-9 筛查")
+    gad7 = store.add_metric("", "gad7", 21, note="GAD-7 筛查")
+
+    assert phq9["unit"] == "分"
+    assert gad7["unit"] == "分"
+    assert store.add_metric("", "phq9", 28) is None
+    assert store.add_metric("", "gad7", 22) is None
+    assert [item["metric"] for item in store.list_metrics(metric="phq9")] == [
+        "phq9"
+    ]
+
+
 def test_health_metrics_survive_export_and_import(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange("s1", "问题", "答复")

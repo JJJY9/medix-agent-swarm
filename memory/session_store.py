@@ -71,6 +71,8 @@ METRIC_TYPES = {
     "weight": ("体重", "kg", (10, 400)),
     "glucose": ("血糖", "mmol/L", (1, 50)),
     "temperature": ("体温", "°C", (30, 45)),
+    "phq9": ("PHQ-9 评分", "分", (0, 27)),
+    "gad7": ("GAD-7 评分", "分", (0, 21)),
 }
 MAX_METRIC_NOTE_LENGTH = 300
 

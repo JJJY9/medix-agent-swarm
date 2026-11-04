@@ -152,6 +152,7 @@ const els = {
   calcResultMain: document.getElementById('calc-result-main'),
   calcResultDetail: document.getElementById('calc-result-detail'),
   calcResultNote: document.getElementById('calc-result-note'),
+  calcSave: document.getElementById('calc-save'),
   calcStatus: document.getElementById('calc-status'),
   pwaInstall: document.getElementById('pwa-install'),
   metricsOpen: document.getElementById('metrics-open'),
@@ -3452,12 +3453,16 @@ const METRIC_UNITS = {
   weight: 'kg',
   glucose: 'mmol/L',
   temperature: '°C',
+  phq9: '分',
+  gad7: '分',
 };
 const METRIC_NAMES = {
   bp: '血压',
   weight: '体重',
   glucose: '血糖',
   temperature: '体温',
+  phq9: 'PHQ-9 评分',
+  gad7: 'GAD-7 评分',
 };
 
 function setMetricsStatus(text, isError = false) {
@@ -3479,6 +3484,9 @@ function setMetricType(type) {
   els.metricBpValues.hidden = !isBp;
   els.metricSingleWrap.hidden = isBp;
   els.metricUnit.textContent = METRIC_UNITS[value];
+  const isScore = value === 'phq9' || value === 'gad7';
+  els.metricValue.step = isScore ? '1' : '0.1';
+  els.metricValue.min = isScore ? '0' : '';
 }
 
 function refreshMetricProfileOptions() {
@@ -3950,6 +3958,7 @@ async function exportMetricsCsv() {
 /* ---------- 临床计算工具 ---------- */
 
 let calcFocused = null;
+let currentCalcAction = null;
 
 function setCalcStatus(text, isError = false) {
   els.calcStatus.textContent = text;
@@ -3959,6 +3968,8 @@ function setCalcStatus(text, isError = false) {
 
 function setCalcTool(tool) {
   els.calcTool.value = tool;
+  currentCalcAction = null;
+  els.calcSave.hidden = true;
   for (const form of [
     els.calcFormBmi,
     els.calcFormEgfr,
@@ -4041,9 +4052,14 @@ async function runCalc(url, body, build) {
     els.calcResultDetail.textContent = view.detail || '';
     els.calcResultNote.textContent = view.note || data.note || '';
     els.calcResult.dataset.level = view.level || '';
+    currentCalcAction = view.action || null;
+    els.calcSave.hidden = !currentCalcAction;
+    els.calcSave.textContent = currentCalcAction ? currentCalcAction.label : '保存到健康记录';
     els.calcResult.hidden = false;
     setCalcStatus('');
   } catch (err) {
+    currentCalcAction = null;
+    els.calcSave.hidden = true;
     setCalcStatus(`计算失败：${err.message || err}`, true);
   }
 }
@@ -4193,6 +4209,28 @@ function ensureGad7Form() {
   });
 }
 
+async function saveScreenerScore(metric, score, note) {
+  const res = await fetch('/api/metrics', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      metric,
+      value1: score,
+      measured_at: metricNowLocal(),
+      note,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string'
+      ? data.detail
+      : `服务返回 ${res.status}`;
+    setCalcStatus(`保存失败：${detail}`, true);
+    throw new Error(detail);
+  }
+  setCalcStatus('已保存到健康记录，可在「健康记录」中查看趋势。');
+}
+
 function submitGad7(event) {
   event.preventDefault();
   ensureGad7Form();
@@ -4208,6 +4246,10 @@ function submitGad7(event) {
       main: `评分 ${data.score} / 21`,
       detail: `严重程度：${data.severity}`,
       note: data.note,
+      action: {
+        label: '保存 GAD-7 评分',
+        run: () => saveScreenerScore('gad7', data.score, 'GAD-7 筛查'),
+      },
     })
   );
 }
@@ -4258,6 +4300,10 @@ function submitPhq9(event) {
         + (data.self_harm ? ' · 第 9 题提示需要立即获得专业帮助' : ''),
       note: data.note,
       level: data.urgent ? 'warning' : '',
+      action: {
+        label: '保存 PHQ-9 评分',
+        run: () => saveScreenerScore('phq9', data.score, 'PHQ-9 筛查'),
+      },
     })
   );
 }
@@ -5073,6 +5119,20 @@ els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
+els.calcSave.addEventListener('click', async () => {
+  if (!currentCalcAction) return;
+  const original = els.calcSave.textContent;
+  els.calcSave.disabled = true;
+  els.calcSave.textContent = '保存中…';
+  try {
+    await currentCalcAction.run();
+    els.calcSave.textContent = '已保存';
+  } catch {
+    els.calcSave.textContent = original;
+  } finally {
+    els.calcSave.disabled = false;
+  }
+});
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));

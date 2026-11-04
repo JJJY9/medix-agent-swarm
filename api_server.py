@@ -164,7 +164,9 @@ class HasBledRequest(BaseModel):
 
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
-    metric: Literal["bp", "weight", "glucose", "temperature"]
+    metric: Literal[
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    ]
     value1: float
     value2: Optional[float] = None
     measured_at: str = Field("", max_length=40, description="测量时间（ISO）")
@@ -747,7 +749,9 @@ async def list_metrics(
     """健康指标记录（默认最近 100 条）。"""
     from memory import get_session_store
 
-    if metric and metric not in ("bp", "weight", "glucose", "temperature"):
+    if metric and metric not in (
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
     items = await asyncio.to_thread(
@@ -819,7 +823,9 @@ async def export_metrics_csv(
 
     from memory import get_session_store
 
-    if metric and metric not in ("bp", "weight", "glucose", "temperature"):
+    if metric and metric not in (
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
     items = await asyncio.to_thread(
@@ -830,6 +836,8 @@ async def export_metrics_csv(
         "weight": "体重",
         "glucose": "血糖",
         "temperature": "体温",
+        "phq9": "PHQ-9 评分",
+        "gad7": "GAD-7 评分",
     }
 
     rows = [["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"]]
