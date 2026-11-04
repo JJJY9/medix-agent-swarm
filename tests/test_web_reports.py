@@ -604,6 +604,9 @@ def test_app_js_ships_home_today_meds(client):
     assert 'id="today-meds"' in html
     assert 'id="today-meds-list"' in html
     assert "today-meds-item" in app_js
+    assert "today-meds-actions" in app_js
+    assert "撤销最近一次用药记录" in app_js
+    assert "今日未打卡" in app_js
     assert "今天还没有打卡" in app_js
     assert "今日均已打卡" in app_js
     assert "today-meds-status" in app_js
