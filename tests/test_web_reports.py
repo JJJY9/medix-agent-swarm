@@ -145,3 +145,10 @@ def test_app_js_scopes_profile_state(client):
     assert "medix.activeProfile" in app_js
     assert "function setActiveProfile" in app_js
     assert "切换患者档案会开始新的会诊记录" in app_js
+
+
+def test_app_js_filters_reminders_by_profile(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function refreshReminderProfileOptions" in app_js
+    assert "reminders-profile" in app_js

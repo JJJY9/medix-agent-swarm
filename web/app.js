@@ -243,6 +243,7 @@ const els = {
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
+  remindersProfile: document.getElementById('reminders-profile'),
   remindersShowDone: document.getElementById('reminders-show-done'),
   remindersList: document.getElementById('reminders-list'),
   remindersEmpty: document.getElementById('reminders-empty'),
@@ -5508,6 +5509,7 @@ function openReminders() {
   setRemindersStatus('');
   syncNotifyButton();
   resetReminderForm();
+  refreshReminderProfileOptions();
   loadReminders();
   els.remindersClose.focus();
 }
@@ -5733,15 +5735,55 @@ async function loadReminders() {
     const includeDone = Boolean(
       els.remindersShowDone && els.remindersShowDone.checked
     );
-    const res = await fetch(
-      `/api/reminders${includeDone ? '?include_done=true' : ''}`
-    );
+    const params = new URLSearchParams();
+    const profile = els.remindersProfile
+      ? els.remindersProfile.value
+      : '';
+    if (profile) params.set('profile', profile);
+    if (includeDone) params.set('include_done', 'true');
+    const query = params.toString();
+    const res = await fetch(`/api/reminders${query ? `?${query}` : ''}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     renderReminders(data.reminders || []);
   } catch (err) {
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
   }
+}
+
+async function refreshReminderProfileOptions() {
+  if (!els.remindersProfile) return;
+  let items = [];
+  try {
+    const res = await fetch('/api/session-profiles');
+    if (res.ok) {
+      const data = await res.json();
+      items = data.profiles || [];
+    }
+  } catch {
+    // 会话档案加载失败时退回档案列表
+  }
+
+  const names = new Set(Object.keys(readProfiles()));
+  for (const item of items) {
+    if (item && item.name) names.add(item.name);
+  }
+
+  const current = els.remindersProfile.value || '';
+  els.remindersProfile.replaceChildren();
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部档案';
+  els.remindersProfile.appendChild(all);
+  for (const name of [...names].sort()) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = readProfiles()[name]
+      ? name
+      : `${name}（已删除）`;
+    els.remindersProfile.appendChild(option);
+  }
+  els.remindersProfile.value = names.has(current) ? current : '';
 }
 
 async function addReminder() {
@@ -7690,6 +7732,7 @@ els.remindersNotify.addEventListener('click', enableReminderNotifications);
 els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
 els.remindersShowDone.addEventListener('change', loadReminders);
+els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
   resetReminderForm();
   setRemindersStatus('已取消编辑。');

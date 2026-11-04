@@ -2880,6 +2880,28 @@ html[data-theme="dark"] .reminder-badge-done {
   color: var(--ink-soft);
 }
 
+.reminders-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+}
+
+.reminders-filters .reminders-show-done { margin: 0; }
+
+.reminders-filters select {
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
 html[data-theme="dark"] .reminder-badge {
   background: #331f1d;
 }
