@@ -169,6 +169,8 @@ const els = {
   calcFormAuditc: document.getElementById('calc-form-auditc'),
   calcFormMmrc: document.getElementById('calc-form-mmrc'),
   calcFormCat: document.getElementById('calc-form-cat'),
+  calcFormEss: document.getElementById('calc-form-ess'),
+  calcEssQuestions: document.getElementById('calc-ess-questions'),
   calcCatQuestions: document.getElementById('calc-cat-questions'),
   calcMmrcGrade: document.getElementById('calc-mmrc-grade'),
   calcAuditCQ1: document.getElementById('calc-auditc-q1'),
@@ -7275,6 +7277,7 @@ function setCalcTool(tool) {
     els.calcFormAuditc,
     els.calcFormMmrc,
     els.calcFormCat,
+    els.calcFormEss,
     els.calcFormHasBled,
     els.calcFormGcs,
     els.calcFormWells,
@@ -7293,6 +7296,7 @@ function setCalcTool(tool) {
   if (tool === 'phq9') ensurePhq9Form();
   if (tool === 'gad7') ensureGad7Form();
   if (tool === 'cat') ensureCatForm();
+  if (tool === 'ess') ensureEssForm();
   els.calcResult.hidden = true;
   setCalcStatus('');
 }
@@ -7612,6 +7616,69 @@ function ensureCatForm() {
     label.append(text, select);
     els.calcCatQuestions.appendChild(label);
   });
+}
+
+const ESS_QUESTIONS = [
+  '坐着阅读时',
+  '看电视时',
+  '在公共场所坐着不动时（如开会、剧院）',
+  '作为乘客连续乘车 1 小时',
+  '午后躺下休息时',
+  '坐着与人交谈时',
+  '午餐后安静坐着（未饮酒）',
+  '开车时等红灯或堵车几分钟',
+];
+
+const ESS_OPTIONS = [
+  ['0', '从不'],
+  ['1', '很少'],
+  ['2', '有时'],
+  ['3', '经常'],
+];
+
+function ensureEssForm() {
+  if (els.calcEssQuestions.children.length) return;
+
+  ESS_QUESTIONS.forEach((question, index) => {
+    const label = document.createElement('label');
+    label.className = 'calc-field phq9-question';
+
+    const text = document.createElement('span');
+    text.textContent = `${index + 1}. ${question}`;
+
+    const select = document.createElement('select');
+    select.className = 'phq9-select';
+    select.dataset.index = String(index);
+    for (const [value, optionLabel] of ESS_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = `${value} ${optionLabel}`;
+      select.appendChild(option);
+    }
+
+    label.append(text, select);
+    els.calcEssQuestions.appendChild(label);
+  });
+}
+
+function submitEss(event) {
+  event.preventDefault();
+  ensureEssForm();
+  const answers = Array.from(
+    els.calcEssQuestions.querySelectorAll('select')
+  ).map((select) => Number(select.value));
+
+  runCalc(
+    '/api/tools/ess',
+    { answers },
+    (data) => ({
+      title: 'ESS 结果',
+      main: `评分 ${data.score} / 24`,
+      detail: `嗜睡程度：${data.drowsiness}`,
+      note: data.note,
+      level: data.score > 15 ? 'warning' : '',
+    })
+  );
 }
 
 function submitCat(event) {
@@ -9125,6 +9192,7 @@ els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormAuditc.addEventListener('submit', submitAuditC);
 els.calcFormMmrc.addEventListener('submit', submitMmrc);
 els.calcFormCat.addEventListener('submit', submitCat);
+els.calcFormEss.addEventListener('submit', submitEss);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);

@@ -240,6 +240,52 @@ def calculate_gad7(answers: List[int]) -> Dict[str, object]:
     }
 
 
+ESS_QUESTIONS = [
+    "坐着阅读时",
+    "看电视时",
+    "在公共场所坐着不动时（如开会、剧院）",
+    "作为乘客连续乘车 1 小时",
+    "午后躺下休息时",
+    "坐着与人交谈时",
+    "午餐后安静坐着（未饮酒）",
+    "开车时等红灯或堵车几分钟",
+]
+
+ESS_OPTIONS = [(0, "从不"), (1, "很少"), (2, "有时"), (3, "经常")]
+
+
+def calculate_ess(answers: List[int]) -> Dict[str, object]:
+    """Epworth 嗜睡量表（ESS，0–24 分）。
+
+    仅用于日间嗜睡筛查，不能替代睡眠监测与医生诊断。
+    """
+    if not isinstance(answers, list) or len(answers) != len(ESS_QUESTIONS):
+        raise ValueError("ESS 需要 8 个答案。")
+    values = []
+    for answer in answers:
+        if isinstance(answer, bool) or not isinstance(answer, int):
+            raise ValueError("ESS 每个答案必须是 0–3 的整数。")
+        if answer < 0 or answer > 3:
+            raise ValueError("ESS 每个答案必须在 0–3 之间。")
+        values.append(answer)
+
+    score = sum(values)
+    if score <= 7:
+        drowsiness = "正常"
+    elif score <= 9:
+        drowsiness = "轻度嗜睡"
+    elif score <= 15:
+        drowsiness = "中度嗜睡"
+    else:
+        drowsiness = "重度嗜睡"
+
+    return {
+        "score": score,
+        "drowsiness": drowsiness,
+        "note": "ESS 用于评估日间嗜睡程度，结果需结合睡眠史与医生判断，不能替代诊断。",
+    }
+
+
 CAT_QUESTIONS = [
     "我从不咳嗽 —— 我总在咳嗽",
     "我一点痰也没有 —— 我有很多很多痰",
