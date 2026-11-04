@@ -805,6 +805,32 @@ function formatPatientContext(context) {
     .join('；');
 }
 
+/** 把急症预检与用药安全提示写进 Markdown，保证导出/打印信息完整。 */
+function buildSafetyMarkdown(payload, heading) {
+  const lines = [];
+
+  if (payload.triage && payload.triage.level === 'emergency') {
+    const matched = (payload.triage.matches || []).join('、');
+    lines.push(`${heading} 急症预检`, '');
+    lines.push(
+      `${matched ? `命中：${matched}。` : ''}`
+      + (payload.triage.message || '请立即拨打 120 或前往急诊科。'),
+      ''
+    );
+  }
+
+  const safety = payload.medication_safety;
+  if (safety && safety.alerts && safety.alerts.length) {
+    lines.push(`${heading} 用药安全提示`, '');
+    for (const alert of safety.alerts) {
+      lines.push(`- **${alert.title}**：${alert.detail}`);
+    }
+    lines.push('', '> 以上为规则提示，不能替代医生或药师的判断。', '');
+  }
+
+  return lines;
+}
+
 function buildSOAP(payload, question) {
   const answer = (payload.answer || '').trim();
   const sections = splitAnswerSections(answer);
@@ -821,6 +847,12 @@ function buildSOAP(payload, question) {
   const objective = [];
   if (payload.triage && payload.triage.level && payload.triage.level !== 'none') {
     objective.push(`分诊提示：${payload.triage.message || payload.triage.level}`);
+  }
+  const safety = payload.medication_safety;
+  if (safety && safety.alerts && safety.alerts.length) {
+    objective.push(
+      `用药安全提示：${safety.alerts.map((alert) => alert.title).join('；')}`
+    );
   }
   if (evidence) objective.push(`医学证据：${evidence}`);
   const sources = (payload.sources || [])
@@ -867,6 +899,13 @@ function buildMarkdown(payload, question) {
   if (question) {
     lines.push('## 主诉', '', question, '');
   }
+
+  const contextText = formatPatientContext(payload.patient_context || {});
+  if (contextText) {
+    lines.push('## 补充信息', '', contextText, '');
+  }
+
+  lines.push(...buildSafetyMarkdown(payload, '##'));
 
   lines.push('## 会诊意见', '', (payload.answer || '').trim(), '');
 
@@ -967,13 +1006,21 @@ function buildSessionMarkdown(item, messages) {
       question = message.content || '';
     } else if (message.role === 'assistant' && message.content) {
       turn += 1;
+      const metadata = message.metadata || {};
       lines.push(`## 第 ${turn} 轮`, '');
       if (question) {
         lines.push('### 主诉', '', question, '');
       }
+
+      const contextText = formatPatientContext(metadata.patient_context || {});
+      if (contextText) {
+        lines.push('#### 补充信息', '', contextText, '');
+      }
+
+      lines.push(...buildSafetyMarkdown(metadata, '####'));
+
       lines.push('### 会诊意见', '', message.content.trim(), '');
 
-      const metadata = message.metadata || {};
       const turnUsage = formatUsage(metadata.usage, metadata.llm_calls);
       if (turnUsage !== '—') {
         lines.push(`> 模型用量：${turnUsage}`, '');
