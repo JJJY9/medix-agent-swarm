@@ -158,7 +158,8 @@ class SessionStore:
                     title      TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    favorite   INTEGER NOT NULL DEFAULT 0
+                    favorite   INTEGER NOT NULL DEFAULT 0,
+                    archived   INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +200,10 @@ class SessionStore:
             if "favorite" not in session_columns:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0"
+                )
+            if "archived" not in session_columns:
+                self._conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
                 )
 
     @staticmethod
@@ -294,13 +299,17 @@ class SessionStore:
         query: str = "",
         offset: int = 0,
         favorites_only: bool = False,
-        days: int = 0
+        days: int = 0,
+        archived: Optional[bool] = None
     ) -> List[Dict[str, Any]]:
-        """按最近更新时间倒序返回会话，支持搜索、分页、收藏与时间范围。"""
+        """按最近更新时间倒序返回会话，支持搜索、分页、收藏、时间范围与归档筛选。
+
+        archived 为 None 时返回全部（备份导出用）；False 只看未归档；True 只看已归档。
+        """
         limit = max(1, min(int(limit or 50), 200))
         offset = max(0, int(offset or 0))
         sql = """
-            SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
+            SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite, s.archived,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
                    (SELECT content FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'assistant'
@@ -321,6 +330,9 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        if archived is not None:
+            conditions.append("s.archived = ?")
+            params.append(1 if archived else 0)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -358,6 +370,7 @@ class SessionStore:
         for row in rows:
             item = dict(row)
             item["favorite"] = bool(item.get("favorite"))
+            item["archived"] = bool(item.get("archived"))
             preview = (item.pop("last_answer", "") or "").replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
             if query:
@@ -366,7 +379,11 @@ class SessionStore:
         return sessions
 
     def count_sessions(
-        self, query: str = "", favorites_only: bool = False, days: int = 0
+        self,
+        query: str = "",
+        favorites_only: bool = False,
+        days: int = 0,
+        archived: Optional[bool] = None
     ) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
         sql = "SELECT COUNT(*) AS n FROM sessions s"
@@ -384,6 +401,9 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        if archived is not None:
+            conditions.append("s.archived = ?")
+            params.append(1 if archived else 0)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -492,7 +512,11 @@ class SessionStore:
         return stats
 
     def usage_totals(
-        self, query: str = "", favorites_only: bool = False, days: int = 0
+        self,
+        query: str = "",
+        favorites_only: bool = False,
+        days: int = 0,
+        archived: Optional[bool] = None
     ) -> Dict[str, Any]:
         """汇总所有匹配会话的历史用量（不受分页限制）。
 
@@ -519,6 +543,9 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        if archived is not None:
+            conditions.append("s.archived = ?")
+            params.append(1 if archived else 0)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -540,7 +567,11 @@ class SessionStore:
         return totals
 
     def feedback_totals(
-        self, query: str = "", favorites_only: bool = False, days: int = 0
+        self,
+        query: str = "",
+        favorites_only: bool = False,
+        days: int = 0,
+        archived: Optional[bool] = None
     ) -> Dict[str, Any]:
         """汇总会诊答复的用户反馈，支持与历史列表相同的筛选条件。"""
         sql = """
@@ -563,6 +594,9 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        if archived is not None:
+            conditions.append("s.archived = ?")
+            params.append(1 if archived else 0)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -858,13 +892,16 @@ class SessionStore:
                 created_at = str(raw.get("created_at") or now)[:40]
                 updated_at = str(raw.get("updated_at") or created_at)[:40]
                 favorite = 1 if raw.get("favorite") in (1, True, "1") else 0
+                archived = 1 if raw.get("archived") in (1, True, "1") else 0
 
                 self._conn.execute(
                     """
-                    INSERT INTO sessions(id, title, created_at, updated_at, favorite)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO sessions(
+                        id, title, created_at, updated_at, favorite, archived
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, title, created_at, updated_at, favorite),
+                    (session_id, title, created_at, updated_at, favorite, archived),
                 )
                 self._conn.executemany(
                     """
@@ -930,6 +967,15 @@ class SessionStore:
             cursor = self._conn.execute(
                 "UPDATE sessions SET favorite = ? WHERE id = ?",
                 (1 if favorite else 0, session_id),
+            )
+            return cursor.rowcount > 0
+
+    def set_archived(self, session_id: str, archived: bool) -> bool:
+        """归档或移出归档；会话不存在返回 False。"""
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE sessions SET archived = ? WHERE id = ?",
+                (1 if archived else 0, session_id),
             )
             return cursor.rowcount > 0
 

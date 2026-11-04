@@ -46,7 +46,7 @@
 - **👍 会诊反馈**: 每条意见可标记「有用 / 待改进」，再次点击取消；历史抽屉汇总反馈数与好评率，反馈随备份导出与恢复 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
-- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
+- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、归档/恢复、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
 - **💬 会诊操作**: 复制意见、复制 SOAP、导出 Markdown、打印 / PDF、失败重试、再次会诊、停止生成、草稿自动保存 ✅
 - **⌨️ 键盘与无障碍**: 跳到输入框、Ctrl+K 打开会诊记录、Enter 发送 / Shift+Enter 换行、Esc 关闭抽屉、焦点圈定与语义标签 ✅
 - **🌗 深色模式**: 跟随系统偏好，可手动切换并记住选择 ✅
@@ -215,7 +215,7 @@ npm install -D playwright
 | POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、用药安全提示、科室开始/完成、汇总 Token 与最终结果 |
 | GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
-| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、用量汇总 |
+| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、用量与反馈汇总 |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
@@ -224,6 +224,7 @@ npm install -D playwright
 | DELETE | `/api/profiles/{name}` | 删除患者档案 |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
+| PATCH | `/api/sessions/{id}/archive` | 归档或移出归档（归档不删除会话） |
 | POST | `/api/sessions/{id}/feedback` | 记录会诊意见反馈（`message_id`、`rating`：1 有用 / -1 待改进 / 0 清除、可选 `comment`） |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
 | GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
@@ -245,7 +246,7 @@ npm install -D playwright
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 
-`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案。导入时只接受 user/assistant 消息，已存在的会话编号与档案名称会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案与归档状态。导入时只接受 user/assistant 消息，已存在的会话编号与档案名称会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
