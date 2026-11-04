@@ -568,3 +568,19 @@ def test_mmrc_api(client):
     assert ok.json()["grade"] == 3
     assert ok.json()["severity"] == "较重"
     assert invalid.status_code == 422
+
+
+def test_cat_api(client):
+    ok = client.post(
+        "/api/tools/cat",
+        json={"answers": [4, 4, 4, 4, 4, 4, 4, 4]},
+    )
+    invalid = client.post(
+        "/api/tools/cat",
+        json={"answers": [6] + [0] * 7},
+    )
+
+    assert ok.status_code == 200
+    assert ok.json()["score"] == 32
+    assert ok.json()["impact"] == "非常严重影响"
+    assert invalid.status_code == 400
