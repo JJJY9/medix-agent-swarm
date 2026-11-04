@@ -90,6 +90,8 @@ def test_weekly_report_aggregates(client_and_store):
     assert by_metric["bp"]["avg_value2"] == 85.0
     assert by_metric["weight"]["count"] == 1
     assert by_metric["weight"]["avg_value1"] == 60.0
+    assert by_metric["weight"]["prev_avg_value1"] == 80.0
+    assert by_metric["bp"]["prev_avg_value1"] is None
     assert data["symptoms"]["count"] == 3
     assert data["symptoms"]["avg_severity"] == 4.3
     assert data["symptoms"]["max_severity"] == 6

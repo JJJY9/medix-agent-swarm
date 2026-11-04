@@ -1909,11 +1909,18 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     end = now.strftime("%Y-%m-%d")
     start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, days
+        store.list_metrics, profile, None, 100000, days * 2
     )
     metrics = [
         item for item in raw_metrics
         if start <= str(item.get("measured_at") or "")[:10] <= end
+    ]
+    prev_start = (
+        now - timedelta(days=days * 2 - 1)
+    ).strftime("%Y-%m-%d")
+    previous_metrics = [
+        item for item in raw_metrics
+        if prev_start <= str(item.get("measured_at") or "")[:10] < start
     ]
     raw_symptoms = await asyncio.to_thread(
         store.list_symptoms, profile, 100000, days
@@ -1998,6 +2005,31 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
                     )
             if within:
                 entry["within"] += 1
+
+    previous_grouped: dict = {}
+    for item in previous_metrics:
+        entry = previous_grouped.setdefault(item["metric"], {
+            "count": 0,
+            "sum1": 0.0,
+            "sum2": 0.0,
+            "with_second": 0,
+        })
+        entry["count"] += 1
+        entry["sum1"] += float(item["value1"])
+        if item.get("value2") is not None:
+            entry["sum2"] += float(item["value2"])
+            entry["with_second"] += 1
+    previous_rows = {
+        metric: {
+            "prev_avg_value1": round(entry["sum1"] / entry["count"], 2),
+            "prev_avg_value2": (
+                round(entry["sum2"] / entry["with_second"], 2)
+                if entry["with_second"] else None
+            ),
+        }
+        for metric, entry in previous_grouped.items()
+    }
+
     metric_rows = [
         {
             "metric": entry["metric"],
@@ -2013,6 +2045,12 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "within_target": (
                 entry["within"] if entry["target"] is not None else None
             ),
+            "prev_avg_value1": previous_rows.get(
+                entry["metric"], {}
+            ).get("prev_avg_value1"),
+            "prev_avg_value2": previous_rows.get(
+                entry["metric"], {}
+            ).get("prev_avg_value2"),
         }
         for entry in grouped.values()
     ]

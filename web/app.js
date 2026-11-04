@@ -8386,10 +8386,24 @@ function weeklyMetricText(row) {
   const average = row.avg_value2 === null || row.avg_value2 === undefined
     ? `${row.avg_value1}${unit}`
     : `${row.avg_value1}/${row.avg_value2}${unit}`;
+  let change = '';
+  const previous = row.prev_avg_value1;
+  if (previous !== null && previous !== undefined) {
+    const diff = Number(row.avg_value1) - Number(previous);
+    if (Number.isFinite(diff)) {
+      if (Math.abs(diff) < 0.05) {
+        change = '，较上期持平';
+      } else {
+        const arrow = diff > 0 ? '↑' : '↓';
+        const magnitude = Math.round(Math.abs(diff) * 10) / 10;
+        change = `，较上期 ${arrow}${magnitude}${unit}`;
+      }
+    }
+  }
   const targetText = row.target && row.within_target !== null
     ? `，达标 ${row.within_target}/${row.count}`
     : '';
-  return `${name} ${row.count} 次，平均 ${average}${targetText}`;
+  return `${name} ${row.count} 次，平均 ${average}${change}${targetText}`;
 }
 
 function weeklySummaryLines(data) {
