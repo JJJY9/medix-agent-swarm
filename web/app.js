@@ -253,6 +253,7 @@ const els = {
   compareBody: document.getElementById('compare-body'),
   metricProfile: document.getElementById('metric-profile'),
   metricType: document.getElementById('metric-type'),
+  metricRange: document.getElementById('metric-range'),
   metricReference: document.getElementById('metric-reference'),
   metricTargetText: document.getElementById('metric-target-text'),
   metricTargetEdit: document.getElementById('metric-target-edit'),
@@ -5067,8 +5068,10 @@ function formatMetricValue(item) {
 function renderMetrics(items) {
   els.metricsList.replaceChildren();
   els.metricsEmpty.hidden = items.length > 0;
-  els.metricsEmpty.textContent =
-    `还没有${METRIC_NAMES[els.metricType.value] || '该类'}记录。`;
+  const metricName = METRIC_NAMES[els.metricType.value] || '该类';
+  els.metricsEmpty.textContent = metricRangeDays() > 0
+    ? `所选时间范围内还没有${metricName}记录。`
+    : `还没有${metricName}记录。`;
 
   for (const item of items) {
     const li = document.createElement('li');
@@ -5332,10 +5335,12 @@ function renderMetricTrend(items, metric) {
 async function loadMetricTrend() {
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
+  const days = metricRangeDays();
   try {
     const res = await fetch(
       `/api/metrics?limit=30&metric=${encodeURIComponent(metric)}`
       + `&profile=${encodeURIComponent(profile)}`
+      + (days > 0 ? `&days=${days}` : '')
     );
     if (!res.ok) return;
     const data = await res.json();
@@ -5347,9 +5352,11 @@ async function loadMetricTrend() {
 
 async function loadMetricOverview() {
   const profile = els.metricProfile.value;
+  const days = metricRangeDays();
   try {
     const res = await fetch(
       `/api/metrics?limit=500&profile=${encodeURIComponent(profile)}`
+      + (days > 0 ? `&days=${days}` : '')
     );
     if (!res.ok) return;
     const items = (await res.json()).metrics || [];
@@ -5397,13 +5404,19 @@ async function refreshMetrics() {
   await loadMetricOverview();
 }
 
+function metricRangeDays() {
+  return Number(els.metricRange && els.metricRange.value) || 0;
+}
+
 async function loadMetrics() {
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
+  const days = metricRangeDays();
   try {
     const res = await fetch(
       `/api/metrics?limit=50&metric=${encodeURIComponent(metric)}`
       + `&profile=${encodeURIComponent(profile)}`
+      + (days > 0 ? `&days=${days}` : '')
     );
     if (!res.ok) return;
     const data = await res.json();
@@ -7754,6 +7767,7 @@ els.metricType.addEventListener('change', () => {
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
+els.metricRange.addEventListener('change', refreshMetrics);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);

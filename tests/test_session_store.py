@@ -885,6 +885,15 @@ def test_health_metrics_crud_and_filters(store):
     assert all(item["id"] != bp["id"] for item in store.list_metrics())
 
 
+def test_list_metrics_days_filter(store):
+    store.add_metric("", "weight", 60, measured_at="2020-01-01T08:00")
+    store.add_metric("", "weight", 61, measured_at="2099-01-01T08:00")
+
+    assert len(store.list_metrics()) == 2
+    recent = store.list_metrics(days=30)
+    assert [item["value1"] for item in recent] == [61]
+
+
 def test_health_metrics_validation(store):
     assert store.add_metric("", "bp", 120, None) is None
     assert store.add_metric("", "bp", 90, 100) is None
