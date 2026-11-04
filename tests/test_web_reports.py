@@ -455,3 +455,12 @@ def test_app_js_ships_ess(client):
     assert "function ensureEssForm" in app_js
     assert "function submitEss" in app_js
     assert "/api/tools/ess" in app_js
+
+
+def test_app_js_enter_submits_forms(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "els.reminderDue," in app_js
+    assert "els.metricSystolic," in app_js
+    assert "addMetricRecord();" in app_js
+    assert "addReminder();" in app_js
