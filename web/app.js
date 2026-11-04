@@ -8266,7 +8266,10 @@ function weeklyMetricText(row) {
   const average = row.avg_value2 === null || row.avg_value2 === undefined
     ? `${row.avg_value1}${unit}`
     : `${row.avg_value1}/${row.avg_value2}${unit}`;
-  return `${name} ${row.count} 次，平均 ${average}`;
+  const targetText = row.target && row.within_target !== null
+    ? `，达标 ${row.within_target}/${row.count}`
+    : '';
+  return `${name} ${row.count} 次，平均 ${average}${targetText}`;
 }
 
 function weeklySummaryLines(data) {

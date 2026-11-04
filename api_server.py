@@ -1882,6 +1882,23 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     else:
         reminders = pending_reminders
 
+    raw_targets = await asyncio.to_thread(store.list_metric_targets, None)
+    if profile is not None:
+        profile_key = str(profile).strip()
+        targets = [
+            item for item in raw_targets
+            if (item.get("profile") or "") == profile_key
+        ]
+    else:
+        targets = raw_targets
+    target_map = {
+        (item.get("profile") or "", item["metric"]): item
+        for item in targets
+        if isinstance(item, dict) and item.get("metric")
+    }
+
+    from memory.session_store import LOWER_BOUND_TARGET_METRICS
+
     grouped: dict = {}
     for item in metrics:
         entry = grouped.setdefault(item["metric"], {
@@ -1892,6 +1909,8 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "sum2": 0.0,
             "with_second": 0,
             "latest": None,
+            "target": None,
+            "within": 0,
         })
         entry["count"] += 1
         entry["sum1"] += float(item["value1"])
@@ -1900,6 +1919,26 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             entry["with_second"] += 1
         if entry["latest"] is None:
             entry["latest"] = item
+        target = target_map.get(
+            (item.get("profile") or "", item["metric"])
+        )
+        if target is not None:
+            entry["target"] = target
+            value1 = float(item["value1"])
+            if item["metric"] in LOWER_BOUND_TARGET_METRICS:
+                within = value1 >= float(target["value1"])
+            else:
+                within = value1 <= float(target["value1"])
+                if (
+                    within
+                    and item["metric"] == "bp"
+                    and target.get("value2") is not None
+                ):
+                    within = float(item.get("value2") or 0) <= float(
+                        target["value2"]
+                    )
+            if within:
+                entry["within"] += 1
     metric_rows = [
         {
             "metric": entry["metric"],
@@ -1911,6 +1950,10 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
                 if entry["with_second"] else None
             ),
             "latest": entry["latest"],
+            "target": entry["target"],
+            "within_target": (
+                entry["within"] if entry["target"] is not None else None
+            ),
         }
         for entry in grouped.values()
     ]

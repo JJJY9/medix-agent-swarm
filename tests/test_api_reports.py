@@ -102,6 +102,24 @@ def test_weekly_report_aggregates(client_and_store):
     assert data["reminders"]["overdue"] == 1
     assert data["reminders"]["due_in_7_days"] == 1
 
+    client.put("/api/metric-targets", json={
+        "profile": "母亲", "metric": "bp",
+        "value1": 130, "value2": 85,
+    })
+    client.put("/api/metric-targets", json={
+        "profile": "母亲", "metric": "weight", "value1": 65,
+    })
+    targeted = client.get(
+        "/api/reports/weekly", params={"profile": "母亲"}
+    ).json()
+    by_metric = {
+        row["metric"]: row for row in targeted["metrics"]["by_metric"]
+    }
+    assert by_metric["bp"]["within_target"] == 1
+    assert by_metric["bp"]["target"]["value1"] == 130
+    assert by_metric["bp"]["target"]["value2"] == 85
+    assert by_metric["weight"]["within_target"] == 1
+
     client.post("/api/metrics", json={
         "profile": "父亲", "metric": "weight",
         "value1": 70, "measured_at": recent,
