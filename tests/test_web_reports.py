@@ -273,3 +273,14 @@ def test_app_js_ships_reminder_profile_select(client):
     assert "reminderProfile: document.getElementById('reminder-profile')" in app_js
     assert "els.reminderProfile.value = item.profile" in app_js
     assert 'id="reminder-profile"' in html
+
+
+def test_app_js_ships_extended_metric_types(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'value="heart_rate"' in html
+    assert 'value="spo2"' in html
+    assert 'value="waist"' in html
+    assert "血氧饱和度" in app_js
+    assert "腰围参考" in app_js

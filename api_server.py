@@ -323,7 +323,8 @@ class MorseFallRequest(BaseModel):
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     ]
     value1: float
     value2: Optional[float] = None
@@ -334,7 +335,8 @@ class MetricRequest(BaseModel):
 class MetricTargetRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     ]
     value1: float = Field(..., description="目标上限（血压为收缩压）")
     value2: Optional[float] = Field(None, description="血压目标舒张压")
@@ -1162,7 +1164,8 @@ async def list_metrics(
     from memory import get_session_store
 
     if metric and metric not in (
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
@@ -1183,7 +1186,8 @@ async def metric_summary(
     from memory import get_session_store
 
     if metric not in (
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     days = max(0, min(int(days or 0), 3650))
@@ -1257,7 +1261,8 @@ async def export_metrics_csv(
     from memory import get_session_store
 
     if metric and metric not in (
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
@@ -1269,6 +1274,9 @@ async def export_metrics_csv(
         "weight": "体重",
         "glucose": "血糖",
         "temperature": "体温",
+        "heart_rate": "心率",
+        "spo2": "血氧饱和度",
+        "waist": "腰围",
         "phq9": "PHQ-9 评分",
         "gad7": "GAD-7 评分",
     }
@@ -1346,9 +1354,18 @@ async def import_metrics_csv(file: UploadFile = File(...)):
         "PHQ-9评分": "phq9",
         "GAD-7 评分": "gad7",
         "GAD-7评分": "gad7",
+        "心率": "heart_rate",
+        "血氧": "spo2",
+        "血氧饱和度": "spo2",
+        "腰围": "waist",
+        "心率": "heart_rate",
+        "血氧": "spo2",
+        "血氧饱和度": "spo2",
+        "腰围": "waist",
     }
     allowed = {
-        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7"
     }
 
     records = []
