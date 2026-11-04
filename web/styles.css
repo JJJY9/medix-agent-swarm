@@ -2662,6 +2662,26 @@ html[data-theme="dark"] .metric-over-target {
   background: #331f1d;
 }
 
+.bp-grade {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 16px;
+  border-radius: 999px;
+  vertical-align: 1px;
+}
+
+.bp-grade-ok { color: #0f766e; background: #e6f7f1; }
+.bp-grade-warn { color: #b45309; background: #fef3c7; }
+.bp-grade-danger { color: #b91c1c; background: #fee2e2; }
+.bp-grade-low { color: #1d4ed8; background: #dbeafe; }
+
+html[data-theme="dark"] .bp-grade-ok { background: #12302b; }
+html[data-theme="dark"] .bp-grade-warn { background: #33290f; }
+html[data-theme="dark"] .bp-grade-danger { background: #331f1d; }
+html[data-theme="dark"] .bp-grade-low { background: #17263f; }
+
 .metrics-actions {
   display: flex;
   flex-wrap: wrap;

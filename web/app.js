@@ -1675,9 +1675,13 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions,
   const metricRows = metrics.map((item) => {
     const target = findTarget(item.metric);
     const over = isOverTarget(item, target);
+    const grade = item.metric === 'bp'
+      ? classifyBloodPressure(item.value1, item.value2)
+      : null;
     return '<tr>'
       + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
       + `<td>${escapeHtml(formatMetricValue(item))}`
+      + `${grade ? ` <span class="muted">（${escapeHtml(grade.label)}）</span>` : ''}`
       + `${over ? ' <span class="overdue">（高于目标）</span>' : ''}</td>`
       + `<td>${escapeHtml(formatTime(item.measured_at))}</td>`
       + `<td>${escapeHtml(item.note || '')}</td>`
@@ -4769,6 +4773,30 @@ const METRIC_REFERENCES = {
   gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
 };
 
+/**
+ * 诊室血压分级（中国高血压防治指南 2018 成人标准）。
+ * 收缩压与舒张压分属不同级别时取较高者；均未达正常高值时再判断偏低。
+ */
+function classifyBloodPressure(systolic, diastolic) {
+  const sys = Number(systolic);
+  const dia = Number(diastolic);
+  if (!Number.isFinite(sys) || !Number.isFinite(dia)) return null;
+
+  const grade = (s, d) => {
+    if (s >= 180 || d >= 110) return { label: '3 级高血压', level: 'danger' };
+    if (s >= 160 || d >= 100) return { label: '2 级高血压', level: 'danger' };
+    if (s >= 140 || d >= 90) return { label: '1 级高血压', level: 'warn' };
+    if (s >= 120 || d >= 80) return { label: '正常高值', level: 'warn' };
+    return { label: '正常', level: 'ok' };
+  };
+
+  const result = grade(sys, dia);
+  if (result.label !== '正常') return result;
+  if (sys < 90 || dia < 60) return { label: '偏低', level: 'low' };
+  return result;
+}
+
+
 function setMetricsStatus(text, isError = false) {
   els.metricsStatus.textContent = text;
   els.metricsStatus.hidden = !text;
@@ -4965,6 +4993,16 @@ function renderMetrics(items) {
         badge.className = 'metric-over-target';
         badge.textContent = '高于目标';
         badge.title = `目标上限：${formatMetricTarget(target)}`;
+        value.append(' ', badge);
+      }
+    }
+
+    if (item.metric === 'bp') {
+      const grade = classifyBloodPressure(item.value1, item.value2);
+      if (grade) {
+        const badge = document.createElement('span');
+        badge.className = `bp-grade bp-grade-${grade.level}`;
+        badge.textContent = grade.label;
         value.append(' ', badge);
       }
     }
@@ -5201,8 +5239,12 @@ async function loadMetricOverview() {
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'metric-overview-chip';
+      const grade = metric === 'bp'
+        ? classifyBloodPressure(item.value1, item.value2)
+        : null;
       chip.textContent =
-        `${METRIC_NAMES[metric]} ${formatMetricValue(item)}`;
+        `${METRIC_NAMES[metric]} ${formatMetricValue(item)}`
+        + (grade ? ` · ${grade.label}` : '');
       chip.title = `${formatTime(item.measured_at)}${item.note ? ` · ${item.note}` : ''}`;
       chip.addEventListener('click', () => {
         setMetricType(metric);
