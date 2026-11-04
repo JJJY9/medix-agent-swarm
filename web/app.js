@@ -6925,9 +6925,21 @@ function renderTodayMeds(medications) {
       item.profile,
       Number(item.today_count) > 0
         ? `今日 ${Number(item.today_count)} 次`
-        : '',
+        : '今日未打卡',
     ].filter(Boolean).join(' · ');
     name.append(strong, meta);
+
+    const actions = document.createElement('span');
+    actions.className = 'today-meds-actions';
+    if (Number(item.today_count) > 0) {
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'btn-quiet today-meds-log';
+      undo.textContent = '撤销';
+      undo.setAttribute('aria-label', `撤销最近一次用药记录：${item.name}`);
+      undo.addEventListener('click', () => undoMedicationLog(item));
+      actions.appendChild(undo);
+    }
 
     const log = document.createElement('button');
     log.type = 'button';
@@ -6935,8 +6947,9 @@ function renderTodayMeds(medications) {
     log.textContent = '打卡';
     log.setAttribute('aria-label', `记录一次用药：${item.name}`);
     log.addEventListener('click', () => logMedication(item));
+    actions.appendChild(log);
 
-    li.append(name, log);
+    li.append(name, actions);
     els.todayMedsList.appendChild(li);
   }
   els.todayMeds.hidden = false;
