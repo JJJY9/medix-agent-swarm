@@ -5455,18 +5455,24 @@ function renderMetricSummary(data) {
   addChip('最高', pair(v1.max, v2.max, formatStatNumber));
   addChip('最低', pair(v1.min, v2.min, formatStatNumber));
 
+  const hasPrev1 = v1.prev_avg !== null && v1.prev_avg !== undefined;
+  const hasPrev2 = v2.prev_avg !== null && v2.prev_avg !== undefined;
   if (
     Number(data.days) > 0
     && Number.isFinite(Number(v1.avg))
-    && Number.isFinite(Number(v1.prev_avg))
+    && hasPrev1
   ) {
     const delta1 = Number(v1.avg) - Number(v1.prev_avg);
-    const deltaText = isBp && Number.isFinite(Number(v2.prev_avg))
+    const deltaText = isBp && hasPrev2
       ? `${formatStatDelta(delta1)}/${formatStatDelta(
         Number(v2.avg) - Number(v2.prev_avg)
       )}`
       : formatStatDelta(delta1);
     addChip('较上期', deltaText + unit);
+  }
+
+  if (data.target && Number.isFinite(Number(data.within_target))) {
+    addChip('达标', `${data.within_target}/${count} 条`);
   }
 }
 

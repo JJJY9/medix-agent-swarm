@@ -368,3 +368,48 @@ def test_metrics_summary_bp_series(client):
     assert body["value1"]["max"] == 140.0
     assert body["value2"]["min"] == 80.0
     assert body["latest"]["value1"] == 120.0
+
+
+
+def test_metrics_summary_target_adherence(client):
+    for value1, value2, at in (
+        (140, 90, "2026-01-02T08:00"),
+        (120, 80, "2026-01-03T08:00"),
+        (130, 85, "2026-01-04T08:00"),
+    ):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "bp",
+                "value1": value1,
+                "value2": value2,
+                "measured_at": at,
+            },
+        )
+    client.put(
+        "/api/metric-targets",
+        json={
+            "profile": "妈妈",
+            "metric": "bp",
+            "value1": 125,
+            "value2": 80,
+        },
+    )
+
+    with_target = client.get(
+        "/api/metrics/summary", params={"metric": "bp", "profile": "妈妈"}
+    ).json()
+    all_profiles = client.get(
+        "/api/metrics/summary", params={"metric": "bp"}
+    ).json()
+    no_target = client.get(
+        "/api/metrics/summary", params={"metric": "weight", "profile": "妈妈"}
+    ).json()
+
+    assert with_target["target"] == {"value1": 125.0, "value2": 80.0}
+    assert with_target["within_target"] == 1
+    assert all_profiles["target"] is None
+    assert all_profiles["within_target"] is None
+    assert no_target["target"] is None
+    assert no_target["within_target"] is None
