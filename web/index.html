@@ -707,14 +707,14 @@
     <section class="reminders-calendar" id="reminders-calendar" hidden aria-label="提醒月历">
       <div class="reminders-calendar-head">
         <button type="button" class="btn-quiet" id="reminders-calendar-prev" aria-label="上个月">‹</button>
-        <strong id="reminders-calendar-title"></strong>
+        <strong id="reminders-calendar-title" aria-live="polite"></strong>
         <button type="button" class="btn-quiet" id="reminders-calendar-next" aria-label="下个月">›</button>
       </div>
       <div class="reminders-calendar-grid" id="reminders-calendar-grid"></div>
       <button type="button" class="btn-quiet reminders-calendar-clear" id="reminders-calendar-clear" hidden>显示全部日期</button>
     </section>
     <ul class="metrics-list" id="reminders-list"></ul>
-    <p class="metrics-empty" id="reminders-empty" hidden>还没有随访提醒。</p>
+    <p class="metrics-empty" id="reminders-empty" role="status" hidden>还没有随访提醒。</p>
     <p class="calc-disclaimer">提醒仅在页面打开时显示；开启浏览器通知后，到期当天会在页面打开时提示一次。</p>
   </div>
 </aside>

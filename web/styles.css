@@ -3257,6 +3257,11 @@ html[data-theme="dark"] .reminders-due-hint {
   font-size: 14px;
 }
 
+.metric-weekly-target {
+  font-size: 12px;
+  color: var(--clinic);
+}
+
 .metric-weekly-delta {
   font-size: 12px;
   color: var(--ink-faint);

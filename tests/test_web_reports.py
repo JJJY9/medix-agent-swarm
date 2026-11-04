@@ -349,3 +349,13 @@ def test_app_js_ships_target_direction_and_guards(client):
     assert "function targetIsLowerBound" in app_js
     assert "reminderProfileTouched" in app_js
     assert "低于目标" in app_js
+
+
+def test_app_js_ships_weekly_adherence_and_a11y(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "metric-weekly-target" in app_js
+    assert "aria-pressed" in app_js
+    assert 'aria-live="polite"' in html
+    assert 'id="reminders-empty" role="status"' in html
