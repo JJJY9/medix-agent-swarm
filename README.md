@@ -33,6 +33,7 @@
 - **⚡ 流式会诊**: 汇总阶段逐段推送 Token，意见边生成边显示 ✅
 - **📡 实时进度**: 科室开始接诊即点亮，完成时更新状态并写入接诊时间线 ✅
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120 ✅
+- **💊 用药安全提示**: 根据主诉、正在使用的药物与过敏史，规则化筛查重复用药、常见相互作用和过敏交叉风险，在模型回复前先行提示 ✅
 - **🧾 结构化补充**: 可选填写年龄、性别、病程、既往史、用药与过敏史，支持保存常用档案（仅浏览器本地），贯穿分诊、单科与多学科会诊 ✅
 - **🩺 接诊模式**: 可勾选「仅单科接诊」，跳过多学科协作以降低延迟与用量 ✅
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、拖拽上传、在线预览与编辑、检索测试、删除文档、一键重建索引（幂等）✅
@@ -145,6 +146,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 | 接诊记录 | 每一步的分诊与调度日志 |
 | 问诊记录 | 用户输入标为「主诉」，答复渲染成带抬头的「多学科会诊意见书」，并自动提取风险等级、诊疗建议和免责声明 |
 | 急症警示 | 主诉命中胸痛、呼吸困难、卒中样表现等红旗时，在模型回复前先显示红色警示条 |
+| 用药安全提示 | 过敏史、重复用药或常见相互作用命中时，在模型回复前显示橙色/黄色提示，并注明不能替代医生或药师判断 |
 | 知识库管理 | 会诊面板下方「管理知识库」：查看文档与向量块、上传 TXT/MD/PDF、删除、重建索引 |
 | 会诊依据 | 多学科会诊可展开各科室原始意见；使用知识库时展示来源、文件名、相关度与原文片段 |
 | 系统自检 | 会诊面板下方「系统自检」：Python、依赖版本、LLM 配置、知识库状态，可复制诊断信息 |
@@ -210,7 +212,7 @@ npm install -D playwright
 |------|------|------|
 | GET | `/api/status` | 健康检查、模型配置、鉴权/费用配置、知识库状态 |
 | POST | `/api/chat` | 同步问答，返回完整结果（支持 `context` 与 `enable_swarm`） |
-| POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、科室开始/完成、汇总 Token 与最终结果 |
+| POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、用药安全提示、科室开始/完成、汇总 Token 与最终结果 |
 | GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
 | GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、用量汇总 |
@@ -234,7 +236,7 @@ npm install -D playwright
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库/运行状态） |
 | POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
 
-`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。
+`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。流式接口会在模型调用前额外推送 `triage` 与 `medication_safety` 事件，最终结果的 `medication_safety.alerts` 会随会诊记录保存。
 
 设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
 

@@ -111,6 +111,14 @@ async def interactive_mode():
                 )
                 print(f"   {triage.get('message') or '请立即拨打 120 或前往急诊科。'}\n")
 
+            safety = result.get('medication_safety') or {}
+            if safety.get('alerts'):
+                print("\n💊 用药安全提示：")
+                for alert in safety['alerts']:
+                    print(f"  · {alert.get('title')}")
+                    print(f"    {alert.get('detail')}")
+                print("  以上为规则提示，不能替代医生或药师的判断。\n")
+
             # 显示系统决策和执行时间
             if result.get('swarm_enabled'):
                 agents_count = len(result.get('agents_involved', []))

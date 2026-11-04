@@ -1472,6 +1472,41 @@ function renderTriage(container, triage) {
   scrollThreadToBottom(true);
 }
 
+function renderMedicationSafety(container, safety) {
+  if (!container || !safety || !safety.alerts || !safety.alerts.length) return;
+  if (container.querySelector('.medication-alert')) return;
+
+  const box = document.createElement('div');
+  box.className = 'medication-alert';
+  box.dataset.level = safety.level === 'warning' ? 'warning' : 'info';
+  box.setAttribute('role', 'alert');
+
+  const title = document.createElement('strong');
+  title.textContent = safety.level === 'warning' ? '用药安全提示' : '用药提醒';
+  box.appendChild(title);
+
+  for (const alert of safety.alerts) {
+    const item = document.createElement('div');
+    item.className = 'medication-item';
+
+    const itemTitle = document.createElement('b');
+    itemTitle.textContent = alert.title;
+    const detail = document.createElement('p');
+    detail.textContent = alert.detail;
+
+    item.append(itemTitle, detail);
+    box.appendChild(item);
+  }
+
+  const note = document.createElement('p');
+  note.className = 'medication-note';
+  note.textContent = '以上为规则提示，不能替代医生或药师的判断。';
+  box.appendChild(note);
+
+  container.appendChild(box);
+  scrollThreadToBottom(true);
+}
+
 /* ---------- 会话 ---------- */
 
 function setSessionUrl(id) {
@@ -2108,6 +2143,9 @@ function renderStoredMessages(messages, activeSessionId = sessionId) {
       }
       if (metadata.triage) {
         renderTriage(askTurn, metadata.triage);
+      }
+      if (metadata.medication_safety) {
+        renderMedicationSafety(askTurn, metadata.medication_safety);
       }
       renderAnswer(
         {
@@ -3056,6 +3094,8 @@ async function send(question) {
 
         if (event.type === 'triage') {
           renderTriage(askTurn, event);
+        } else if (event.type === 'medication_safety') {
+          renderMedicationSafety(askTurn, event);
         } else if (event.type === 'stage') {
           workingText.textContent = '正在调度专科科室…';
           els.readout.mode.textContent = '会诊分诊中';
@@ -3104,6 +3144,9 @@ async function send(question) {
     // 兼容只拿到最终结果的客户端：结果里也带有 triage 字段
     if (finalPayload.triage) {
       renderTriage(askTurn, finalPayload.triage);
+    }
+    if (finalPayload.medication_safety) {
+      renderMedicationSafety(askTurn, finalPayload.medication_safety);
     }
 
     const elapsed = (performance.now() - startedAt) / 1000;

@@ -130,6 +130,29 @@ def test_stream_emits_agent_started_before_result():
     assert types.index("agent_started") < types.index("result")
 
 
+def test_stream_emits_medication_safety_before_result():
+    api_server.state.coordinator = FakeCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "question": "我在吃华法林，头痛能吃布洛芬吗？",
+            "session_id": "api-medication-test",
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    types = [event["type"] for event in events]
+
+    assert "medication_safety" in types
+    safety = events[types.index("medication_safety")]
+    assert safety["level"] == "warning"
+    assert any("华法林" in alert["title"] for alert in safety["alerts"])
+    assert types.index("medication_safety") < types.index("result")
+
+
 def test_chat_rate_limited(monkeypatch):
     api_server.state.coordinator = FakeCoordinator()
     monkeypatch.setenv("MEDIX_RATE_LIMIT", "2")

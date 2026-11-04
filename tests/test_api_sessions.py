@@ -210,6 +210,22 @@ def test_serialize_result_keeps_assistant_message_id():
     assert payload["assistant_message_id"] == 42
 
 
+def test_serialize_result_defaults_medication_safety():
+    payload = api_server._serialize_result(
+        {"answer": "答复", "session_id": "s1"},
+        api_server.AGENT_LABELS,
+    )
+
+    assert payload["medication_safety"] == {"level": "none", "alerts": []}
+
+    warning = {"level": "warning", "alerts": [{"title": "示例"}]}
+    payload = api_server._serialize_result(
+        {"answer": "答复", "session_id": "s1", "medication_safety": warning},
+        api_server.AGENT_LABELS,
+    )
+    assert payload["medication_safety"] == warning
+
+
 def test_usage_daily_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(
