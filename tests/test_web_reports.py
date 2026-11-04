@@ -110,3 +110,12 @@ def test_app_js_ships_blood_pressure_grading(client):
     assert "function classifyBloodPressure" in app_js
     assert "正常高值" in app_js
     assert "bp-grade-" in app_js
+
+
+def test_app_js_draws_metric_target_line(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "trend-target" in app_js
+    assert "目标 " in app_js
+    assert ".trend-target" in css

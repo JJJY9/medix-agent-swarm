@@ -5092,6 +5092,18 @@ function renderMetricTrend(items, metric) {
     return;
   }
 
+  const target = findMetricTarget(els.metricProfile.value, metric);
+  const targetValues = [];
+  if (target) {
+    targetValues.push(Number(target.value1));
+    if (metric === 'bp' && target.value2 != null) {
+      targetValues.push(Number(target.value2));
+    }
+  }
+  for (const value of targetValues) {
+    if (Number.isFinite(value)) values.push(value);
+  }
+
   let min = Math.min(...values);
   let max = Math.max(...values);
   if (min === max) {
@@ -5132,6 +5144,25 @@ function renderMetricTrend(items, metric) {
     label.textContent = Number.isInteger(value)
       ? String(value)
       : value.toFixed(1);
+    chart.appendChild(label);
+  }
+
+  for (const value of targetValues) {
+    if (!Number.isFinite(value)) continue;
+    chart.appendChild(svgEl('line', {
+      x1: left,
+      y1: y(value),
+      x2: width - right,
+      y2: y(value),
+      class: 'trend-target',
+    }));
+    const label = svgEl('text', {
+      x: width - right,
+      y: y(value) - 3,
+      class: 'trend-target-label',
+      'text-anchor': 'end',
+    });
+    label.textContent = `目标 ${value}`;
     chart.appendChild(label);
   }
 
