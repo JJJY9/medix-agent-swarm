@@ -6171,6 +6171,11 @@ function setCalcStatus(text, isError = false) {
 
 function setCalcTool(tool) {
   els.calcTool.value = tool;
+  try {
+    localStorage.setItem('medix.calcTool', tool);
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
   currentCalcAction = null;
   els.calcSave.hidden = true;
   for (const form of [
@@ -6230,7 +6235,18 @@ function openCalc() {
     els.calcChadsSex.value = sex;
   }
 
-  setCalcTool(els.calcTool.value || 'bmi');
+  let storedTool = '';
+  try {
+    storedTool = localStorage.getItem('medix.calcTool') || '';
+  } catch {
+    storedTool = '';
+  }
+  const hasStoredTool = [...els.calcTool.options].some(
+    (option) => option.value === storedTool
+  );
+  setCalcTool(
+    hasStoredTool ? storedTool : (els.calcTool.value || 'bmi')
+  );
   els.calcClose.focus();
 }
 

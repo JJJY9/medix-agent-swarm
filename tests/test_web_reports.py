@@ -161,6 +161,15 @@ def test_app_js_exports_reminders_csv(client):
     assert "/api/reminders/export.csv" in app_js
 
 
+def test_app_js_groups_and_remembers_calc_tool(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "medix.calcTool" in app_js
+    assert '<optgroup label="心血管与血栓">' in html
+    assert '<optgroup label="肝病">' in html
+
+
 def test_app_js_ships_metric_range_filter(client):
     app_js = client.get("/static/app.js").text
 
