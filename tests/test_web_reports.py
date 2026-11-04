@@ -607,3 +607,12 @@ def test_app_js_ships_symptom_summary(client):
 
     assert 'id="symptom-summary"' in html
     assert "平均 ${Math.round(average * 10) / 10}/10" in app_js
+
+
+def test_app_js_backup_import_includes_all_data(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "symptoms: data.symptoms" in app_js
+    assert "reminders: data.reminders" in app_js
+    assert "metric_targets: data.metric_targets" in app_js
+    assert "editingSymptomProfile" in app_js

@@ -226,12 +226,13 @@ def _normalize_symptom(
         except ValueError:
             return None
         if parsed.tzinfo is not None:
-            recorded_at = (
-                parsed.astimezone().replace(tzinfo=None)
-                .isoformat(timespec="seconds")
-            )
-        elif len(recorded_at) == 10:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        if len(recorded_at) == 10 or (
+            parsed.second == 0 and parsed.microsecond == 0
+        ):
             recorded_at = parsed.isoformat(timespec="minutes")
+        else:
+            recorded_at = parsed.isoformat(timespec="seconds")
 
     return {
         "profile": _normalize_profile_name(profile),
@@ -679,6 +680,7 @@ class SessionStore:
                 ("reminders", "profile"),
                 ("metric_targets", "profile"),
                 ("health_metrics", "profile"),
+                ("symptoms", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2146,6 +2148,7 @@ class SessionStore:
                 "health_metrics",
                 "metric_targets",
                 "reminders",
+                "symptoms",
                 "sessions",
             ):
                 self._conn.execute(

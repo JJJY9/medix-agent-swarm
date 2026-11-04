@@ -656,6 +656,7 @@ def test_rename_profile_updates_metrics(store):
     store.save_exchange("s1", "妈妈的头痛", "答复")
     store.ensure_session("s1", "", "妈妈")
     store.add_reminder("复查", "2026-11-10", profile="妈妈")
+    store.add_symptom("妈妈", "头晕", 5, "2026-11-01T08:00")
     store.set_metric_target("妈妈", "weight", 70)
 
     assert store.rename_profile("妈妈", "母亲") == "母亲"
@@ -668,6 +669,9 @@ def test_rename_profile_updates_metrics(store):
     assert [
         item["metric"] for item in store.list_metric_targets("母亲")
     ] == ["weight"]
+    assert [
+        item["symptom"] for item in store.list_symptoms(profile="母亲")
+    ] == ["头晕"]
 
     assert store.rename_profile("missing", "x") is None
     assert store.rename_profile("母亲", "母亲") == "母亲"
@@ -715,9 +719,10 @@ def test_list_used_profile_names(store):
     store.add_metric(
         "档案E", "weight", 60, measured_at="2026-11-01T08:00"
     )
+    store.add_symptom("档案F", "头晕", 5, "2026-11-01T08:00")
 
     assert set(store.list_used_profile_names()) == {
-        "档案A", "档案B", "档案C", "档案D", "档案E",
+        "档案A", "档案B", "档案C", "档案D", "档案E", "档案F",
     }
 
 
@@ -1612,3 +1617,12 @@ def test_symptoms_crud_and_export_import(store, tmp_path):
     assert store.add_symptom("", "  ", 5) is None
     assert store.add_symptom("", "头晕", 11) is None
     assert store.add_symptom("", "头晕", 5, "not-a-date") is None
+
+
+def test_symptom_time_is_canonical(store):
+    item = store.add_symptom("", "头晕", 5, "2026-11-05 23:00")
+    assert item["recorded_at"] == "2026-11-05T23:00"
+
+    store.add_symptom("", "乏力", 3, "2026-11-05T01:00")
+    items = store.list_symptoms()
+    assert [row["symptom"] for row in items] == ["头晕", "乏力"]
