@@ -86,6 +86,10 @@ METRIC_TYPES = {
     "waist": ("腰围", "cm", (30, 200)),
     "phq9": ("PHQ-9 评分", "分", (0, 27)),
     "gad7": ("GAD-7 评分", "分", (0, 21)),
+    "cat": ("CAT 评分", "分", (0, 40)),
+    "ess": ("ESS 评分", "分", (0, 24)),
+    "auditc": ("AUDIT-C 评分", "分", (0, 12)),
+    "mmrc": ("mMRC 分级", "级", (0, 4)),
 }
 MAX_METRIC_NOTE_LENGTH = 300
 

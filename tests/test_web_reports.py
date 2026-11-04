@@ -497,3 +497,14 @@ def test_app_js_home_glance_labels_profiles(client):
 
     assert "（${item.profile}）" in app_js
     assert "· ${upcoming[0].profile}" in app_js
+
+
+def test_app_js_saves_screener_scores(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "saveScreenerScore('cat'" in app_js
+    assert "saveScreenerScore('ess'" in app_js
+    assert "saveScreenerScore('auditc'" in app_js
+    assert "saveScreenerScore('mmrc'" in app_js
+    assert 'value="cat"' in html

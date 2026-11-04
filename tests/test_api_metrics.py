@@ -493,3 +493,28 @@ def test_metrics_summary_spo2_lower_bound_target(client):
 
     assert body["target"] == {"value1": 95.0, "value2": None}
     assert body["within_target"] == 1
+
+
+def test_screener_metrics_roundtrip(client):
+    for metric, value in (
+        ("cat", 32), ("ess", 16), ("auditc", 8), ("mmrc", 3),
+    ):
+        created = client.post(
+            "/api/metrics",
+            json={
+                "metric": metric,
+                "value1": value,
+                "measured_at": "2026-01-05T09:00",
+            },
+        )
+        assert created.status_code == 200
+        assert created.json()["metric"]["unit"] in ("分", "级")
+
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "cat"}
+    )
+    assert "CAT 评分" in exported.content.decode("utf-8-sig")
+    summary = client.get(
+        "/api/metrics/summary", params={"metric": "ess", "profile": ""}
+    )
+    assert summary.json()["count"] == 1
