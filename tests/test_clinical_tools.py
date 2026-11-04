@@ -6,6 +6,7 @@ from core.clinical_tools import (
     calculate_chads_vasc,
     calculate_curb65,
     calculate_egfr,
+    calculate_gad7,
     calculate_phq9,
 )
 
@@ -149,3 +150,20 @@ def test_phq9_validation():
         calculate_phq9([0] * 8 + [4])
     with pytest.raises(ValueError):
         calculate_phq9([0] * 8 + [True])
+
+
+def test_gad7_severity_thresholds():
+    assert calculate_gad7([0] * 7)["severity"] == "无或极轻"
+    assert calculate_gad7([1] * 4 + [0] * 3)["severity"] == "无或极轻"
+    assert calculate_gad7([1] * 5 + [0] * 2)["severity"] == "轻度"
+    assert calculate_gad7([2] * 5 + [0] * 2)["severity"] == "中度"
+    assert calculate_gad7([3] * 5 + [0] * 2)["severity"] == "重度"
+
+
+def test_gad7_validation():
+    with pytest.raises(ValueError):
+        calculate_gad7([0] * 6)
+    with pytest.raises(ValueError):
+        calculate_gad7([0] * 6 + [4])
+    with pytest.raises(ValueError):
+        calculate_gad7([0] * 6 + [True])

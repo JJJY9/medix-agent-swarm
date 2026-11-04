@@ -198,6 +198,47 @@ def calculate_phq9(answers: List[int]) -> Dict[str, object]:
     }
 
 
+GAD7_QUESTIONS = (
+    "感到紧张、焦虑或急切",
+    "不能停止或控制担忧",
+    "对各种各样的事情担忧过多",
+    "很难放松下来",
+    "由于不安而无法静坐",
+    "变得容易烦恼或急躁",
+    "感到似乎将有可怕的事情发生而害怕",
+)
+
+
+def calculate_gad7(answers: List[int]) -> Dict[str, object]:
+    """GAD-7 焦虑筛查评分（0–21 分），仅用于近两周筛查。"""
+    if not isinstance(answers, list) or len(answers) != len(GAD7_QUESTIONS):
+        raise ValueError("GAD-7 需要 7 个答案。")
+
+    values = []
+    for answer in answers:
+        if isinstance(answer, bool) or not isinstance(answer, int):
+            raise ValueError("GAD-7 每个答案必须是 0–3 的整数。")
+        if answer < 0 or answer > 3:
+            raise ValueError("GAD-7 每个答案必须在 0–3 之间。")
+        values.append(answer)
+
+    score = sum(values)
+    if score <= 4:
+        severity = "无或极轻"
+    elif score <= 9:
+        severity = "轻度"
+    elif score <= 14:
+        severity = "中度"
+    else:
+        severity = "重度"
+
+    return {
+        "score": score,
+        "severity": severity,
+        "note": "GAD-7 是近两周的焦虑筛查工具，不能替代临床诊断；结果需要由医生或心理专业人员结合访谈判断。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,
