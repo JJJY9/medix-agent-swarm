@@ -24,6 +24,7 @@ const els = {
   ctxSingle: document.getElementById('ctx-single'),
   profileSelect: document.getElementById('profile-select'),
   profileSave: document.getElementById('profile-save'),
+  profileRename: document.getElementById('profile-rename'),
   profileDelete: document.getElementById('profile-delete'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
@@ -3721,6 +3722,7 @@ const AUDIT_LABELS = {
   'session.bulk_delete': '批量删除',
   'session.bulk_tags': '批量设置标签',
   'profile.delete': '删除患者档案',
+  'profile.rename': '重命名患者档案',
   'metric.delete': '删除健康记录',
 };
 
@@ -5486,6 +5488,38 @@ async function savePatientProfile() {
   }
 }
 
+async function renamePatientProfile() {
+  const name = els.profileSelect.value;
+  if (!name) {
+    window.alert('请先选择一个常用档案。');
+    return;
+  }
+
+  const nextName = (window.prompt('新的档案名称', name) || '').trim();
+  if (!nextName || nextName === name) return;
+
+  try {
+    const res = await fetch(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_name: nextName }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    await initProfiles();
+    els.profileSelect.value = data.name;
+    setVitals('idle', '档案已重命名');
+  } catch (err) {
+    window.alert(`重命名档案失败：${err.message || err}`);
+  }
+}
+
 async function deletePatientProfile() {
   const name = els.profileSelect.value;
   if (!name) {
@@ -5765,6 +5799,7 @@ els.contextClear.addEventListener('click', () => {
 
 els.profileSelect.addEventListener('change', applySelectedProfile);
 els.profileSave.addEventListener('click', savePatientProfile);
+els.profileRename.addEventListener('click', renamePatientProfile);
 els.profileDelete.addEventListener('click', deletePatientProfile);
 
 els.ctxSingle.addEventListener('change', () => {

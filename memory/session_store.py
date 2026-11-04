@@ -1535,6 +1535,47 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def rename_profile(
+        self, old_name: str, new_name: str
+    ) -> Optional[str]:
+        """重命名患者档案，并同步健康指标里的档案名。
+
+        旧档案不存在返回 None；新名称已被占用时抛出 ValueError。
+        """
+        old_name = " ".join(str(old_name or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        new_name = " ".join(str(new_name or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        if not old_name or not new_name:
+            raise ValueError("档案名称不能为空")
+        if old_name == new_name:
+            return new_name
+
+        with self._lock, self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM patient_profiles WHERE name = ?", (old_name,)
+            ).fetchone()
+            if exists is None:
+                return None
+            duplicate = self._conn.execute(
+                "SELECT 1 FROM patient_profiles WHERE name = ?", (new_name,)
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("新档案名称已存在")
+
+            now = self._now()
+            self._conn.execute(
+                """
+                UPDATE patient_profiles
+                   SET name = ?, updated_at = ?
+                 WHERE name = ?
+                """,
+                (new_name, now, old_name),
+            )
+            self._conn.execute(
+                "UPDATE health_metrics SET profile = ? WHERE profile = ?",
+                (new_name, old_name),
+            )
+        return new_name
+
     def add_metric(
         self,
         profile: str,
