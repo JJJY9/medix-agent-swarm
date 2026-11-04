@@ -280,6 +280,16 @@ def test_medications_csv_export_includes_counts(client_and_store):
     assert rows[1][-2] == "1"
     assert rows[1][-1] != ""
 
+    client.delete(f"/api/medications/{medication['id']}")
+    imported = client.post(
+        "/api/medications/import",
+        files={"file": ("meds.csv", export.content, "text/csv")},
+    )
+    assert imported.status_code == 200
+    assert imported.json()["imported"] == 1
+    reexported = client.get("/api/medications/export.csv")
+    assert "氨氯地平" in reexported.content.decode("utf-8-sig")
+
 
 def test_medications_csv_export_and_import(client_and_store):
     client, _store = client_and_store
