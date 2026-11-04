@@ -3155,6 +3155,29 @@ html[data-theme="dark"] .reminders-due-hint {
   background: var(--clinic-soft);
 }
 
+.reminder-due-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -2px;
+}
+
+.reminder-due-quick button {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--clinic);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.reminder-due-quick button:hover {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
 .reminder-plan {
   margin-top: 10px;
   padding: 8px 10px;

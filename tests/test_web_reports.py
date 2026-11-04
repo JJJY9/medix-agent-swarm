@@ -464,3 +464,12 @@ def test_app_js_enter_submits_forms(client):
     assert "els.metricSystolic," in app_js
     assert "addMetricRecord();" in app_js
     assert "addReminder();" in app_js
+
+
+def test_app_js_ships_reminder_due_quick(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "reminderDueQuick" in app_js
+    assert 'id="reminder-due-quick"' in html
+    assert 'data-days="30"' in html

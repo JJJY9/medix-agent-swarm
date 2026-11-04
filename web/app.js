@@ -289,6 +289,7 @@ const els = {
   reminderAdvance: document.getElementById('reminder-advance'),
   reminderRepeat: document.getElementById('reminder-repeat'),
   reminderUntil: document.getElementById('reminder-until'),
+  reminderDueQuick: document.getElementById('reminder-due-quick'),
   reminderUntilWrap: document.getElementById('reminder-until-wrap'),
   reminderAdd: document.getElementById('reminder-add'),
   remindersExport: document.getElementById('reminders-export'),
@@ -9273,6 +9274,14 @@ els.reminderProfile.addEventListener('change', () => {
   reminderProfileTouched = true;
 });
 els.reminderRepeat.addEventListener('input', syncReminderRepeatFields);
+els.reminderDueQuick.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-days]');
+  if (!button) return;
+  const days = Number(button.dataset.days) || 0;
+  els.reminderDue.value = days === 30
+    ? addMonthsToDate(todayLocalDate(), 1)
+    : localDateAfter(days);
+});
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
