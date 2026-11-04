@@ -5292,12 +5292,13 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
     value.textContent = formatMetricValue(item);
 
     const target = findMetricTarget(item.profile || '', item.metric);
+    let overTarget = false;
     if (target) {
-      const over = item.metric === 'bp'
+      overTarget = item.metric === 'bp'
         ? Number(item.value1) > target.value1
           || (target.value2 != null && Number(item.value2) > target.value2)
         : Number(item.value1) > target.value1;
-      if (over) {
+      if (overTarget) {
         const badge = document.createElement('span');
         badge.className = 'metric-over-target';
         badge.textContent = '高于目标';
@@ -5306,14 +5307,14 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
       }
     }
 
-    if (item.metric === 'bp') {
-      const grade = classifyBloodPressure(item.value1, item.value2);
-      if (grade) {
-        const badge = document.createElement('span');
-        badge.className = `bp-grade bp-grade-${grade.level}`;
-        badge.textContent = grade.label;
-        value.append(' ', badge);
-      }
+    const bpGrade = item.metric === 'bp'
+      ? classifyBloodPressure(item.value1, item.value2)
+      : null;
+    if (bpGrade) {
+      const badge = document.createElement('span');
+      badge.className = `bp-grade bp-grade-${bpGrade.level}`;
+      badge.textContent = bpGrade.label;
+      value.append(' ', badge);
     }
 
     const meta = document.createElement('span');
@@ -5334,6 +5335,18 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
 
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
+
+    if (overTarget || (bpGrade && bpGrade.level !== 'ok')) {
+      const follow = document.createElement('button');
+      follow.type = 'button';
+      follow.className = 'metric-edit';
+      follow.textContent = '安排复查';
+      follow.setAttribute(
+        'aria-label', `安排复查：${formatMetricValue(item)}`
+      );
+      follow.addEventListener('click', () => scheduleMetricFollowUp(item));
+      actions.appendChild(follow);
+    }
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -6744,6 +6757,24 @@ function resetMetricForm() {
 function cancelMetricEdit() {
   resetMetricForm();
   setMetricsStatus('已取消编辑。');
+}
+
+async function scheduleMetricFollowUp(item) {
+  await openReminders();
+  if (els.reminderProfile) {
+    els.reminderProfile.value = item.profile || '';
+  }
+  els.reminderTitle.value = `复查${METRIC_NAMES[item.metric] || '指标'}`;
+  els.reminderDue.value = localDateAfter(7);
+  els.reminderAdvance.value = '1';
+  els.reminderNote.value =
+    `上次记录：${formatMetricValue(item)}（${formatTime(item.measured_at)}）`;
+  if (els.remindersProfile && item.profile) {
+    els.remindersProfile.value = item.profile;
+    loadReminders();
+  }
+  setRemindersStatus('已代入复查提醒，确认后点击「添加提醒」。');
+  els.reminderTitle.focus();
 }
 
 function editMetricRecord(item) {

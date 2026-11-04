@@ -305,3 +305,11 @@ def test_app_js_ships_metric_target_list(client):
     assert "function renderMetricTargetList" in app_js
     assert "async function deleteMetricTargetFor" in app_js
     assert 'id="metric-target-list"' in html
+
+
+def test_app_js_ships_metric_followup(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "async function scheduleMetricFollowUp" in app_js
+    assert "安排复查" in app_js
+    assert "上次记录：" in app_js
