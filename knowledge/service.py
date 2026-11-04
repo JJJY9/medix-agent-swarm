@@ -193,8 +193,13 @@ class KnowledgeService:
         logger.info(f"Updated knowledge upload: {path.name} ({len(content)} bytes)")
         return {"filename": path.name, "size": len(content)}
 
-    def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
-        """执行一次知识库检索，返回来源卡片，用于管理页的检索测试。"""
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filter_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """执行一次知识库检索，返回来源卡片，可按文档类型过滤。"""
         query = (query or "").strip()
         if not query:
             raise ValueError("请输入检索关键词。")
@@ -202,13 +207,16 @@ class KnowledgeService:
         top_k = max(1, min(int(top_k or 5), 20))
         with self._lock:
             try:
-                results = self.kb.search(query, top_k=top_k)
+                results = self.kb.search(
+                    query, top_k=top_k, filter_type=filter_type or None
+                )
             except Exception as e:
                 raise ValueError(f"检索失败：{e}") from e
 
         return {
             "query": query,
             "top_k": top_k,
+            "filter_type": filter_type or "",
             "results": build_sources(results, max_items=top_k),
         }
 

@@ -2071,6 +2071,12 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .kb-search-input:focus { outline: none; border-color: var(--clinic); }
 
+.kb-search-type {
+  flex: none;
+  width: auto;
+  cursor: pointer;
+}
+
 .kb-search-results {
   display: flex;
   flex-direction: column;

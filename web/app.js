@@ -77,6 +77,7 @@ const els = {
   kbList: document.getElementById('kb-list'),
   kbBody: document.getElementById('kb-body'),
   kbSearchInput: document.getElementById('kb-search-input'),
+  kbSearchType: document.getElementById('kb-search-type'),
   kbSearchButton: document.getElementById('kb-search-button'),
   kbSearchResults: document.getElementById('kb-search-results'),
   kbPreview: document.getElementById('kb-preview'),
@@ -3050,8 +3051,10 @@ async function searchKnowledgeBase() {
   els.kbSearchResults.appendChild(loading);
 
   try {
+    const filterType = els.kbSearchType.value;
     const res = await fetch(
       `/api/knowledge/search?q=${encodeURIComponent(query)}&top_k=5`
+      + (filterType ? `&filter_type=${encodeURIComponent(filterType)}` : '')
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `检索失败（${res.status}）`);

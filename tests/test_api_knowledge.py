@@ -61,17 +61,18 @@ class FakeService:
             raise ValueError("文件内容为空。")
         return {"filename": filename, "size": len(content)}
 
-    def search(self, query, top_k=5):
+    def search(self, query, top_k=5, filter_type=None):
         if not query.strip():
             raise ValueError("请输入检索关键词。")
         return {
             "query": query,
             "top_k": top_k,
+            "filter_type": filter_type or "",
             "results": [{
                 "title": "高血压",
                 "source": "生活方式建议数据库",
                 "filename": "01_lifestyle_hypertension.txt",
-                "type": "lifestyle",
+                "type": filter_type or "lifestyle",
                 "score": 0.83,
                 "snippet": "低盐饮食",
             }],
@@ -165,6 +166,24 @@ def test_knowledge_search():
     assert data["top_k"] == 3
     assert data["results"][0]["score"] == 0.83
     assert data["results"][0]["snippet"] == "低盐饮食"
+
+
+def test_knowledge_search_filters_by_type():
+    client = TestClient(api_server.app)
+
+    filtered = client.get(
+        "/api/knowledge/search",
+        params={"q": "高血压", "filter_type": "lifestyle"},
+    )
+    invalid = client.get(
+        "/api/knowledge/search",
+        params={"q": "高血压", "filter_type": "unknown"},
+    )
+
+    assert filtered.status_code == 200
+    assert filtered.json()["filter_type"] == "lifestyle"
+    assert filtered.json()["results"][0]["type"] == "lifestyle"
+    assert invalid.status_code == 400
 
 
 def test_knowledge_search_empty_query():
