@@ -446,3 +446,26 @@ def test_extended_metric_types(client):
         "/api/metrics", json={"metric": "heart_rate", "value1": 5}
     )
     assert invalid.status_code == 400
+
+
+def test_metrics_api_offset(client):
+    for value in (60, 61, 62):
+        client.post(
+            "/api/metrics",
+            json={
+                "metric": "weight",
+                "value1": value,
+                "measured_at": f"2026-01-0{value - 59}T08:00",
+            },
+        )
+
+    first = client.get(
+        "/api/metrics", params={"metric": "weight", "limit": 2}
+    )
+    second = client.get(
+        "/api/metrics",
+        params={"metric": "weight", "limit": 2, "offset": 2},
+    )
+
+    assert [item["value1"] for item in first.json()["metrics"]] == [62, 61]
+    assert [item["value1"] for item in second.json()["metrics"]] == [60]

@@ -345,6 +345,7 @@ const els = {
   metricWeeklyList: document.getElementById('metric-weekly-list'),
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
+  metricsMore: document.getElementById('metric-more'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -4973,6 +4974,9 @@ let metricTrendRequestSeq = 0;
 let metricOverviewRequestSeq = 0;
 let metricSummaryRequestSeq = 0;
 let metricWeeklyRequestSeq = 0;
+let metricsOffset = 0;
+let metricItemsCache = [];
+const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
   bp: 'mmHg',
@@ -5847,21 +5851,35 @@ function metricRangeDays() {
   return Number(els.metricRange && els.metricRange.value) || 0;
 }
 
-async function loadMetrics() {
+async function loadMetrics(append = false) {
   const requestSeq = ++metricsRequestSeq;
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
+  if (!append) {
+    metricsOffset = 0;
+    metricItemsCache = [];
+  }
   try {
     const res = await fetch(
-      `/api/metrics?limit=50&metric=${encodeURIComponent(metric)}`
+      `/api/metrics?limit=${METRICS_PAGE_SIZE}`
+      + `&offset=${metricsOffset}`
+      + `&metric=${encodeURIComponent(metric)}`
       + `&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
     if (!res.ok) return;
     const data = await res.json();
     if (requestSeq !== metricsRequestSeq) return;
-    renderMetrics(data.metrics || [], days, metric);
+    const items = data.metrics || [];
+    metricItemsCache = append
+      ? metricItemsCache.concat(items)
+      : items;
+    metricsOffset = metricItemsCache.length;
+    if (els.metricsMore) {
+      els.metricsMore.hidden = items.length < METRICS_PAGE_SIZE;
+    }
+    renderMetrics(metricItemsCache, days, metric);
   } catch {
     // 读取失败时保留当前列表
   }
@@ -8900,6 +8918,7 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
   }
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
+els.metricsMore.addEventListener('click', () => loadMetrics(true));
 els.metricCancel.addEventListener('click', cancelMetricEdit);
 els.metricExport.addEventListener('click', exportMetricsCsv);
 els.metricImport.addEventListener('click', () => els.metricImportFile.click());

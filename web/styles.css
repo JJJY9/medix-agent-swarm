@@ -3169,6 +3169,13 @@ html[data-theme="dark"] .reminders-due-hint {
   font-weight: 500;
 }
 
+.metric-more {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+}
+.metric-more[hidden] { display: none; }
+
 .metric-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));

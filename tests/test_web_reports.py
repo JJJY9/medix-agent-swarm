@@ -332,3 +332,12 @@ def test_app_js_ships_metric_grading(client):
     assert "function classifyMetric" in app_js
     assert "明显心动过缓" in app_js
     assert "低氧" in app_js
+
+
+def test_app_js_ships_metrics_paging(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "METRICS_PAGE_SIZE" in app_js
+    assert "metricsOffset" in app_js
+    assert 'id="metric-more"' in html
