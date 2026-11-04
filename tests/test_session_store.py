@@ -416,6 +416,7 @@ def test_import_data_roundtrip(tmp_path):
             "skipped": 0,
             "invalid": 0,
             "messages": 2,
+            "profiles": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -540,6 +541,88 @@ def test_feedback_survives_export_and_import(tmp_path):
         assert target.feedback_totals()["unhelpful"] == 1
     finally:
         target.close()
+
+
+def test_profile_crud(store):
+    assert store.list_profiles() == []
+
+    saved = store.save_profile(
+        "妈妈",
+        {"age": "58", "sex": "女", "medications": "氨氯地平"},
+    )
+    assert saved["name"] == "妈妈"
+    assert saved["context"] == {
+        "age": "58",
+        "sex": "女",
+        "medications": "氨氯地平",
+    }
+
+    profiles = store.list_profiles()
+    assert [profile["name"] for profile in profiles] == ["妈妈"]
+    assert profiles[0]["context"]["age"] == "58"
+
+    updated = store.save_profile("妈妈", {"age": 60, "allergies": "青霉素"})
+    assert updated["created_at"] == saved["created_at"]
+    assert updated["context"] == {"age": "60", "allergies": "青霉素"}
+
+    assert store.delete_profile("妈妈") is True
+    assert store.delete_profile("妈妈") is False
+    assert store.list_profiles() == []
+
+
+def test_profile_validation_and_normalization(store):
+    assert store.save_profile("", {"age": "30"}) is None
+    assert store.save_profile("name", {}) is None
+    assert store.save_profile("name", "not-a-dict") is None
+    assert store.save_profile("name", {"unknown": "value"}) is None
+
+    saved = store.save_profile(
+        "  长期   档案  ",
+        {
+            "history": ["高血压", "糖尿病"],
+            "age": 30,
+            "medications": {"早": "氨氯地平", "晚": "阿托伐他汀"},
+        },
+    )
+
+    assert saved["name"] == "长期 档案"
+    assert saved["context"]["history"] == "高血压；糖尿病"
+    assert saved["context"]["age"] == "30"
+    assert "早=氨氯地平" in saved["context"]["medications"]
+
+
+def test_profiles_survive_export_and_import(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    source.save_exchange("s1", "问题", "答复")
+    source.save_profile("妈妈", {"age": "58"})
+    data = source.export_data()
+    source.close()
+
+    assert data["profiles"][0]["name"] == "妈妈"
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        result = target.import_data(data)
+
+        assert result["profiles"] == 1
+        assert target.list_profiles()[0]["name"] == "妈妈"
+
+        again = target.import_data(data)
+        assert again["profiles"] == 0
+    finally:
+        target.close()
+
+
+def test_import_profiles_only_backup(store):
+    result = store.import_data({
+        "profiles": [
+            {"name": "孩子", "context": {"age": "6", "allergies": "青霉素"}},
+        ]
+    })
+
+    assert result["profiles"] == 1
+    assert result["imported"] == 0
+    assert store.list_profiles()[0]["name"] == "孩子"
 
 
 def test_legacy_messages_table_is_migrated(tmp_path):
