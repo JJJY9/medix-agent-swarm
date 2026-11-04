@@ -139,6 +139,45 @@ def test_favorite_api_and_filter(tmp_path, monkeypatch):
     assert usage["totals"]["usage"]["total_tokens"] == 10
 
 
+def test_bulk_archive_and_delete(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    for session_id in ("s1", "s2", "s3"):
+        store.save_exchange(session_id, f"问题 {session_id}", "答复")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        archived = client.patch(
+            "/api/bulk/sessions/archive",
+            json={"ids": ["s1", "s2", "missing"], "archived": True},
+        )
+        archived_list = client.get(
+            "/api/sessions", params={"archived": "true"}
+        )
+        deleted = client.post(
+            "/api/bulk/sessions/delete",
+            json={"ids": ["s1", "missing"]},
+        )
+        remaining = client.get("/api/sessions")
+        empty = client.post(
+            "/api/bulk/sessions/delete", json={"ids": []}
+        )
+    finally:
+        store.close()
+
+    assert archived.status_code == 200
+    assert archived.json()["updated"] == 2
+    assert archived.json()["missing"] == ["missing"]
+    assert {item["id"] for item in archived_list.json()["sessions"]} == {
+        "s1", "s2",
+    }
+
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] == 1
+    assert [item["id"] for item in remaining.json()["sessions"]] == ["s3"]
+    assert empty.status_code == 422
+
+
 def test_tags_api_and_filter(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(
