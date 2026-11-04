@@ -508,3 +508,13 @@ def test_app_js_saves_screener_scores(client):
     assert "saveScreenerScore('auditc'" in app_js
     assert "saveScreenerScore('mmrc'" in app_js
     assert 'value="cat"' in html
+
+
+def test_app_js_screener_saves_active_profile(client):
+    app_js = client.get("/static/app.js").text
+    match = re.search(
+        r"async function saveScreenerScore.*?\n}", app_js, re.S
+    )
+
+    assert match is not None
+    assert "profile: els.profileSelect.value" in match.group(0)
