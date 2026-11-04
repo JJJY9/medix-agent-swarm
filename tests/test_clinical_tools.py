@@ -11,6 +11,7 @@ from core.clinical_tools import (
     calculate_curb65,
     calculate_egfr,
     calculate_fib4,
+    calculate_ess,
     calculate_gad7,
     calculate_gcs,
     calculate_has_bled,
@@ -537,3 +538,16 @@ def test_cat_thresholds():
         calculate_cat([0] * 7)
     with pytest.raises(ValueError):
         calculate_cat([6] + [0] * 7)
+
+
+def test_ess_thresholds():
+    assert calculate_ess([0] * 8)["drowsiness"] == "正常"
+    assert calculate_ess([1, 1, 1, 1, 1, 1, 1, 0])["drowsiness"] == "正常"
+    assert calculate_ess([1, 1, 1, 1, 1, 1, 1, 1])["drowsiness"] == "轻度嗜睡"
+    assert calculate_ess([2, 2, 2, 2, 2, 2, 2, 1])["drowsiness"] == "中度嗜睡"
+    assert calculate_ess([2, 2, 2, 2, 2, 2, 2, 2])["drowsiness"] == "重度嗜睡"
+
+    with pytest.raises(ValueError):
+        calculate_ess([0] * 7)
+    with pytest.raises(ValueError):
+        calculate_ess([4] + [0] * 7)

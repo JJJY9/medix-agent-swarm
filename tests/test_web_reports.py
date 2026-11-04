@@ -444,3 +444,14 @@ def test_app_js_ships_cat(client):
     assert "function ensureCatForm" in app_js
     assert "function submitCat" in app_js
     assert "/api/tools/cat" in app_js
+
+
+def test_app_js_ships_ess(client):
+    html = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'value="ess"' in html
+    assert 'id="calc-form-ess"' in html
+    assert "function ensureEssForm" in app_js
+    assert "function submitEss" in app_js
+    assert "/api/tools/ess" in app_js

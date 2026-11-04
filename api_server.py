@@ -229,6 +229,10 @@ class CatRequest(BaseModel):
     answers: List[int] = Field(..., min_length=8, max_length=8)
 
 
+class EssRequest(BaseModel):
+    answers: List[int] = Field(..., min_length=8, max_length=8)
+
+
 class HasBledRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     hypertension: bool = False
@@ -2042,6 +2046,18 @@ async def tool_cat(request: CatRequest):
 
     try:
         result = calculate_cat(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/ess")
+async def tool_ess(request: EssRequest):
+    """Epworth 嗜睡量表评分。"""
+    from core.clinical_tools import calculate_ess
+
+    try:
+        result = calculate_ess(request.answers)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}

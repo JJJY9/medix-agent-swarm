@@ -584,3 +584,19 @@ def test_cat_api(client):
     assert ok.json()["score"] == 32
     assert ok.json()["impact"] == "非常严重影响"
     assert invalid.status_code == 400
+
+
+def test_ess_api(client):
+    ok = client.post(
+        "/api/tools/ess",
+        json={"answers": [2, 2, 2, 2, 2, 2, 2, 2]},
+    )
+    invalid = client.post(
+        "/api/tools/ess",
+        json={"answers": [4] + [0] * 7},
+    )
+
+    assert ok.status_code == 200
+    assert ok.json()["score"] == 16
+    assert ok.json()["drowsiness"] == "重度嗜睡"
+    assert invalid.status_code == 400

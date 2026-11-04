@@ -781,6 +781,7 @@
           <option value="stopbang">STOP-BANG 睡眠呼吸暂停筛查</option>
           <option value="mmrc">mMRC 呼吸困难量表</option>
           <option value="cat">CAT 慢阻肺评估测试</option>
+          <option value="ess">ESS 嗜睡量表（Epworth）</option>
         </optgroup>
         <optgroup label="神经与精神">
           <option value="gcs">GCS 格拉斯哥昏迷评分</option>
@@ -1083,6 +1084,12 @@
       </label>
       <label class="calc-check"><input type="checkbox" id="calc-meld-dialysis"> 近一周规律透析（肌酐按 4.0 计）</label>
       <button type="submit" class="btn-quiet">计算 MELD</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-ess" data-tool="ess" hidden>
+      <p class="calc-hint">按最近一段时间在下列情景中打瞌睡的频率选择（0 从不 – 3 经常）。</p>
+      <div class="phq9-questions" id="calc-ess-questions"></div>
+      <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 
     <form class="calc-form" id="calc-form-cat" data-tool="cat" hidden>
