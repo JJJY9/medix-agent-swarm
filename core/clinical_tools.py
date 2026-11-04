@@ -316,6 +316,57 @@ def calculate_gcs(eye: int, verbal: int, motor: int) -> Dict[str, object]:
     }
 
 
+def calculate_wells_dvt(
+    active_cancer: bool = False,
+    paralysis_or_immobilization: bool = False,
+    bedridden_or_surgery: bool = False,
+    deep_vein_tenderness: bool = False,
+    entire_leg_swelling: bool = False,
+    calf_swelling: bool = False,
+    pitting_edema: bool = False,
+    collateral_veins: bool = False,
+    previous_dvt: bool = False,
+    alternative_diagnosis: bool = False,
+) -> Dict[str, object]:
+    """Wells 评分（深静脉血栓，DVT）概率分层。
+
+    仅用于临床概率评估，不能替代 D-二聚体、超声等客观检查。
+    """
+    criteria = []
+    score = 0
+
+    def add(flag: bool, points: int, label: str) -> None:
+        nonlocal score
+        if flag:
+            score += points
+            criteria.append(f"{label}（{points:+d}）")
+
+    add(active_cancer, 1, "活动性肿瘤")
+    add(paralysis_or_immobilization, 1, "瘫痪/近期石膏固定")
+    add(bedridden_or_surgery, 1, "卧床 >3 天或 12 周内大手术")
+    add(deep_vein_tenderness, 1, "深静脉走行区压痛")
+    add(entire_leg_swelling, 1, "整个下肢肿胀")
+    add(calf_swelling, 1, "小腿肿胀 >3 cm")
+    add(pitting_edema, 1, "患肢凹陷性水肿")
+    add(collateral_veins, 1, "浅表侧支静脉")
+    add(previous_dvt, 1, "既往 DVT")
+    add(alternative_diagnosis, -2, "其他诊断可能性不低于 DVT")
+
+    if score <= 0:
+        risk = "低概率"
+    elif score <= 2:
+        risk = "中概率"
+    else:
+        risk = "高概率"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "Wells 评分用于 DVT 概率分层，不能替代 D-二聚体、静脉超声等检查；高概率或症状进行性加重请尽快就医。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,

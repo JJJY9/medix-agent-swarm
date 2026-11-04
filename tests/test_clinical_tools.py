@@ -10,6 +10,7 @@ from core.clinical_tools import (
     calculate_gcs,
     calculate_has_bled,
     calculate_phq9,
+    calculate_wells_dvt,
 )
 
 
@@ -235,3 +236,45 @@ def test_gcs_validation():
         calculate_gcs(4, 5, 7)
     with pytest.raises(ValueError):
         calculate_gcs(True, 5, 6)
+
+
+def test_wells_dvt_probability_thresholds():
+    assert calculate_wells_dvt()["score"] == 0
+    assert calculate_wells_dvt()["risk"] == "低概率"
+
+    one = calculate_wells_dvt(active_cancer=True)
+    assert one["score"] == 1
+    assert one["risk"] == "中概率"
+
+    two = calculate_wells_dvt(active_cancer=True, previous_dvt=True)
+    assert two["score"] == 2
+    assert two["risk"] == "中概率"
+
+    three = calculate_wells_dvt(
+        active_cancer=True, previous_dvt=True, entire_leg_swelling=True
+    )
+    assert three["score"] == 3
+    assert three["risk"] == "高概率"
+
+    alternative = calculate_wells_dvt(alternative_diagnosis=True)
+    assert alternative["score"] == -2
+    assert alternative["risk"] == "低概率"
+
+
+def test_wells_dvt_all_criteria():
+    result = calculate_wells_dvt(
+        active_cancer=True,
+        paralysis_or_immobilization=True,
+        bedridden_or_surgery=True,
+        deep_vein_tenderness=True,
+        entire_leg_swelling=True,
+        calf_swelling=True,
+        pitting_edema=True,
+        collateral_veins=True,
+        previous_dvt=True,
+        alternative_diagnosis=True,
+    )
+
+    assert result["score"] == 7
+    assert result["risk"] == "高概率"
+    assert len(result["criteria"]) == 10

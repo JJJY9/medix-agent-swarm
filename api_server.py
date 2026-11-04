@@ -180,6 +180,19 @@ class GcsRequest(BaseModel):
     motor: int = Field(..., ge=1, le=6, description="运动反应")
 
 
+class WellsDvtRequest(BaseModel):
+    active_cancer: bool = False
+    paralysis_or_immobilization: bool = False
+    bedridden_or_surgery: bool = False
+    deep_vein_tenderness: bool = False
+    entire_leg_swelling: bool = False
+    calf_swelling: bool = False
+    pitting_edema: bool = False
+    collateral_veins: bool = False
+    previous_dvt: bool = False
+    alternative_diagnosis: bool = False
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1203,6 +1216,28 @@ async def tool_gcs(request: GcsRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}
+
+
+@app.post("/api/tools/wells-dvt")
+async def tool_wells_dvt(request: WellsDvtRequest):
+    """Wells 评分（DVT 概率分层）。"""
+    from core.clinical_tools import calculate_wells_dvt
+
+    return {
+        "ok": True,
+        **calculate_wells_dvt(
+            active_cancer=request.active_cancer,
+            paralysis_or_immobilization=request.paralysis_or_immobilization,
+            bedridden_or_surgery=request.bedridden_or_surgery,
+            deep_vein_tenderness=request.deep_vein_tenderness,
+            entire_leg_swelling=request.entire_leg_swelling,
+            calf_swelling=request.calf_swelling,
+            pitting_edema=request.pitting_edema,
+            collateral_veins=request.collateral_veins,
+            previous_dvt=request.previous_dvt,
+            alternative_diagnosis=request.alternative_diagnosis,
+        ),
+    }
 
 
 @app.get("/api/sessions/{session_id}/messages")
