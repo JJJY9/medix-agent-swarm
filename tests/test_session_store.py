@@ -1052,6 +1052,28 @@ def test_snooze_reminder(store):
     assert snoozed_future["due_at"] == "2099-01-08"
 
 
+def test_update_reminder(store):
+    reminder = store.add_reminder("复查", "2026-11-10", note="空腹")
+
+    updated = store.update_reminder(
+        reminder["id"], title="复查肝功", due_at="2026-11-20"
+    )
+    assert updated["title"] == "复查肝功"
+    assert updated["due_at"] == "2026-11-20"
+    assert updated["note"] == "空腹"
+
+    note_only = store.update_reminder(reminder["id"], note="带报告")
+    assert note_only["note"] == "带报告"
+    assert note_only["title"] == "复查肝功"
+
+    assert store.update_reminder(99999, title="x") is None
+    assert store.update_reminder(reminder["id"]) is None
+    with pytest.raises(ValueError):
+        store.update_reminder(reminder["id"], title="  ")
+    with pytest.raises(ValueError):
+        store.update_reminder(reminder["id"], due_at="2026/11/20")
+
+
 def test_session_profile_filter(store):
     store.save_exchange(
         "s1", "妈妈的头痛", "答复一",

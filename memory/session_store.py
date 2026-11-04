@@ -2069,6 +2069,61 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def update_reminder(
+        self,
+        reminder_id: int,
+        title: Optional[str] = None,
+        due_at: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """修改提醒的标题、日期或备注；无效值抛 ValueError，不存在返回 None。"""
+        updates: List[str] = []
+        params: List[Any] = []
+
+        if title is not None:
+            title = " ".join(str(title).split())[:MAX_REMINDER_TITLE_LENGTH]
+            if not title:
+                raise ValueError("提醒内容不能为空")
+            updates.append("title = ?")
+            params.append(title)
+
+        if due_at is not None:
+            due_at = str(due_at).strip()[:32]
+            if not due_at or not REMINDER_DATE_PATTERN.match(due_at):
+                raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
+            updates.append("due_at = ?")
+            params.append(due_at)
+
+        if note is not None:
+            note = " ".join(str(note).split())[:MAX_REMINDER_NOTE_LENGTH]
+            updates.append("note = ?")
+            params.append(note)
+
+        if not updates:
+            return None
+
+        now = self._now()
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(int(reminder_id))
+
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                f"UPDATE reminders SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                """
+                SELECT id, title, note, due_at, session_id, done,
+                       created_at, updated_at
+                  FROM reminders WHERE id = ?
+                """,
+                (int(reminder_id),),
+            ).fetchone()
+        return {**dict(row), "done": bool(row["done"])}
+
     def snooze_reminder(
         self, reminder_id: int, days: int = 7
     ) -> Optional[Dict[str, Any]]:

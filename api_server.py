@@ -145,6 +145,12 @@ class ReminderRequest(BaseModel):
     session_id: str = Field("", max_length=64, description="关联的会诊编号")
 
 
+class ReminderUpdateRequest(BaseModel):
+    title: Optional[str] = Field(None, max_length=120)
+    due_at: Optional[str] = Field(None, max_length=32)
+    note: Optional[str] = Field(None, max_length=300)
+
+
 class BmiRequest(BaseModel):
     height_cm: float = Field(..., gt=50, lt=260, description="身高（厘米）")
     weight_kg: float = Field(..., gt=10, lt=400, description="体重（千克）")
@@ -1409,6 +1415,33 @@ async def complete_reminder(reminder_id: int):
         raise HTTPException(status_code=404, detail="提醒不存在")
     await record_audit("reminder.complete", str(reminder_id))
     return {"ok": True, "id": reminder_id}
+
+
+@app.patch("/api/reminders/{reminder_id}")
+async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
+    """修改随访提醒的内容、日期或备注。"""
+    from memory import get_session_store
+
+    if (
+        request.title is None
+        and request.due_at is None
+        and request.note is None
+    ):
+        raise HTTPException(status_code=400, detail="没有需要修改的字段")
+    try:
+        reminder = await asyncio.to_thread(
+            get_session_store().update_reminder,
+            reminder_id,
+            request.title,
+            request.due_at,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    await record_audit("reminder.update", str(reminder_id))
+    return {"ok": True, "reminder": reminder}
 
 
 @app.post("/api/reminders/{reminder_id}/snooze")

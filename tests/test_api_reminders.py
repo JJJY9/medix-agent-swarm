@@ -112,3 +112,33 @@ def test_reminders_api_snooze(client_and_store):
     assert missing.status_code == 404
     actions = [item["action"] for item in audit.json()["actions"]]
     assert "reminder.snooze" in actions
+
+
+def test_reminders_api_update(client_and_store):
+    client, _store = client_and_store
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10"},
+    ).json()["reminder"]
+
+    updated = client.patch(
+        f"/api/reminders/{created['id']}",
+        json={"title": "复查肝功", "note": "空腹"},
+    )
+    invalid = client.patch(
+        f"/api/reminders/{created['id']}", json={"due_at": "2026/11/10"}
+    )
+    empty = client.patch(f"/api/reminders/{created['id']}", json={})
+    missing = client.patch("/api/reminders/99999", json={"title": "x"})
+    audit = client.get("/api/audit")
+
+    assert updated.status_code == 200
+    reminder = updated.json()["reminder"]
+    assert reminder["title"] == "复查肝功"
+    assert reminder["note"] == "空腹"
+    assert reminder["due_at"] == "2026-11-10"
+    assert invalid.status_code == 400
+    assert empty.status_code == 400
+    assert missing.status_code == 404
+    actions = [item["action"] for item in audit.json()["actions"]]
+    assert "reminder.update" in actions

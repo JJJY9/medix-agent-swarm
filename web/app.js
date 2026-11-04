@@ -238,6 +238,7 @@ const els = {
   reminderDue: document.getElementById('reminder-due'),
   reminderNote: document.getElementById('reminder-note'),
   reminderAdd: document.getElementById('reminder-add'),
+  reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
   remindersList: document.getElementById('reminders-list'),
@@ -4590,6 +4591,7 @@ const AUDIT_LABELS = {
   'metric.delete': '删除健康记录',
   'reminder.create': '添加随访提醒',
   'reminder.complete': '完成随访提醒',
+  'reminder.update': '修改随访提醒',
   'reminder.snooze': '推迟随访提醒',
   'reminder.delete': '删除随访提醒',
 };
@@ -5355,6 +5357,7 @@ function closeMetrics(restoreFocus = false) {
 /* ---------- 随访提醒 ---------- */
 
 let remindersFocused = null;
+let editingReminderId = null;
 
 function todayLocalDate() {
   const now = new Date();
@@ -5367,6 +5370,25 @@ function defaultReminderDue() {
   now.setDate(now.getDate() + 7);
   const offset = now.getTimezoneOffset() * 60000;
   return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function resetReminderForm() {
+  editingReminderId = null;
+  els.reminderTitle.value = '';
+  els.reminderNote.value = '';
+  els.reminderDue.value = defaultReminderDue();
+  els.reminderAdd.textContent = '添加提醒';
+  els.reminderCancel.hidden = true;
+}
+
+function editReminder(item) {
+  editingReminderId = item.id;
+  els.reminderTitle.value = item.title || '';
+  els.reminderDue.value = String(item.due_at || '').slice(0, 10);
+  els.reminderNote.value = item.note || '';
+  els.reminderAdd.textContent = '保存修改';
+  els.reminderCancel.hidden = false;
+  els.reminderTitle.focus();
 }
 
 function setRemindersStatus(text, isError = false) {
@@ -5390,7 +5412,7 @@ function openReminders() {
   els.remindersOpen.setAttribute('aria-expanded', 'true');
   setRemindersStatus('');
   syncNotifyButton();
-  if (!els.reminderDue.value) els.reminderDue.value = defaultReminderDue();
+  resetReminderForm();
   loadReminders();
   els.remindersClose.focus();
 }
@@ -5473,6 +5495,13 @@ function renderReminders(items) {
     snooze.setAttribute('aria-label', `推迟提醒：${item.title}`);
     snooze.addEventListener('click', () => snoozeReminder(item));
 
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑提醒：${item.title}`);
+    edit.addEventListener('click', () => editReminder(item));
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'metric-delete';
@@ -5480,7 +5509,7 @@ function renderReminders(items) {
     del.setAttribute('aria-label', `删除提醒：${item.title}`);
     del.addEventListener('click', () => deleteReminder(item));
 
-    actions.append(done, snooze, del);
+    actions.append(done, snooze, edit, del);
     li.append(main, actions);
     els.remindersList.appendChild(li);
   }
@@ -5609,29 +5638,36 @@ async function addReminder() {
     return;
   }
 
+  const editingId = editingReminderId;
+  const payload = {
+    title,
+    due_at: dueAt,
+    note: (els.reminderNote.value || '').trim(),
+  };
+  if (!editingId) payload.session_id = sessionId || '';
+
   els.reminderAdd.disabled = true;
   try {
-    const res = await fetch('/api/reminders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        due_at: dueAt,
-        note: (els.reminderNote.value || '').trim(),
-        session_id: sessionId || '',
-      }),
-    });
+    const res = await fetch(
+      editingId ? `/api/reminders/${editingId}` : '/api/reminders',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
-    els.reminderTitle.value = '';
-    els.reminderNote.value = '';
-    els.reminderDue.value = defaultReminderDue();
-    setRemindersStatus('已添加提醒。');
+    resetReminderForm();
+    setRemindersStatus(editingId ? '已保存修改。' : '已添加提醒。');
     await loadReminders();
   } catch (err) {
-    setRemindersStatus(`添加提醒失败：${err.message || err}`, true);
+    setRemindersStatus(
+      `${editingId ? '保存修改' : '添加提醒'}失败：${err.message || err}`,
+      true
+    );
   } finally {
     els.reminderAdd.disabled = false;
   }
@@ -7443,6 +7479,10 @@ els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
 els.remindersNotify.addEventListener('click', enableReminderNotifications);
 els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
+els.reminderCancel.addEventListener('click', () => {
+  resetReminderForm();
+  setRemindersStatus('已取消编辑。');
+});
 els.reminderTitle.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
