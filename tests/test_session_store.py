@@ -616,10 +616,21 @@ def test_profile_validation_and_normalization(store):
 def test_rename_profile_updates_metrics(store):
     store.save_profile("妈妈", {"age": "58"})
     store.add_metric("妈妈", "weight", 62.5, measured_at="2026-01-02T08:00")
+    store.save_exchange("s1", "妈妈的头痛", "答复")
+    store.ensure_session("s1", "", "妈妈")
+    store.add_reminder("复查", "2026-11-10", profile="妈妈")
+    store.set_metric_target("妈妈", "weight", 70)
 
     assert store.rename_profile("妈妈", "母亲") == "母亲"
     assert [p["name"] for p in store.list_profiles()] == ["母亲"]
     assert store.list_metrics()[0]["profile"] == "母亲"
+    assert [item["id"] for item in store.list_sessions(profile="母亲")] == ["s1"]
+    assert [
+        item["title"] for item in store.list_reminders(profile="母亲")
+    ] == ["复查"]
+    assert [
+        item["metric"] for item in store.list_metric_targets("母亲")
+    ] == ["weight"]
 
     assert store.rename_profile("missing", "x") is None
     assert store.rename_profile("母亲", "母亲") == "母亲"
@@ -630,6 +641,32 @@ def test_rename_profile_updates_metrics(store):
 
     with pytest.raises(ValueError):
         store.rename_profile("母亲", "   ")
+
+
+def test_set_session_profile_only_updates_existing(store):
+    store.save_exchange("s1", "问题", "答复")
+
+    assert store.set_session_profile("s1", "母亲") is True
+    assert store.get_session("s1")["profile"] == "母亲"
+    assert store.set_session_profile("s1", "孩子") is False
+    assert store.get_session("s1")["profile"] == "母亲"
+    assert store.set_session_profile("missing", "母亲") is False
+    assert store.get_session("missing") is None
+    assert store.set_session_profile("s1", "   ") is False
+
+
+def test_list_session_profiles(store):
+    store.save_exchange("s1", "妈妈的头痛", "答复")
+    store.ensure_session("s1", "", "母亲")
+    store.save_exchange("s2", "孩子的发烧", "答复")
+    store.ensure_session("s2", "", "孩子")
+    store.save_exchange("s3", "未指定档案", "答复")
+
+    profiles = {
+        item["name"]: item["count"]
+        for item in store.list_session_profiles()
+    }
+    assert profiles == {"母亲": 1, "孩子": 1}
 
 
 def test_profiles_survive_export_and_import(tmp_path):

@@ -366,6 +366,21 @@ async def record_audit(action: str, target: str = "", detail: str = "") -> None:
         logger.warning(f"记录操作审计失败: {e}")
 
 
+async def _link_patient_profile(session_id: str, raw_profile: str) -> None:
+    """把已有会话关联到患者档案；失败只记日志，不影响会诊结果。"""
+    profile = " ".join(str(raw_profile or "").split())
+    if not profile:
+        return
+    try:
+        from memory import get_session_store
+
+        await asyncio.to_thread(
+            get_session_store().set_session_profile, session_id, profile
+        )
+    except Exception as e:
+        logger.warning(f"关联患者档案失败（忽略）: {redact_secrets(str(e))}")
+
+
 class NoCacheStaticFiles(StaticFiles):
     """静态资源每次用 ETag 校验，避免升级后浏览器继续用旧 CSS/JS。"""
 
@@ -680,7 +695,7 @@ async def list_sessions(
     days = max(0, min(int(days or 0), 365))
     query = q or ""
     favorites_only = bool(favorite)
-    profile = " ".join((profile or "").split())[:40] or None
+    profile = profile or None
 
     store = get_session_store()
     sessions, total, totals, feedback = await asyncio.gather(
@@ -749,13 +764,17 @@ async def list_sessions(
 
 
 @app.get("/api/usage/daily")
-async def usage_daily(days: int = 7, favorite: Optional[bool] = None):
+async def usage_daily(
+    days: int = 7,
+    favorite: Optional[bool] = None,
+    profile: Optional[str] = None,
+):
     """按自然日汇总最近 N 天的 Token 用量与调用次数。"""
     from memory import get_session_store
 
     days = max(1, min(int(days or 7), 30))
     return await asyncio.to_thread(
-        get_session_store().daily_usage, days, bool(favorite)
+        get_session_store().daily_usage, days, bool(favorite), profile
     )
 
 
@@ -780,7 +799,11 @@ async def usage_month():
 
 
 @app.get("/api/usage/export.csv")
-async def usage_export_csv(days: int = 7, favorite: Optional[bool] = None):
+async def usage_export_csv(
+    days: int = 7,
+    favorite: Optional[bool] = None,
+    profile: Optional[str] = None,
+):
     """导出按日用量 CSV（带 BOM，Excel 可直接打开）。"""
     import csv
     import io
@@ -789,7 +812,7 @@ async def usage_export_csv(days: int = 7, favorite: Optional[bool] = None):
 
     days = max(1, min(int(days or 7), 30))
     data = await asyncio.to_thread(
-        get_session_store().daily_usage, days, bool(favorite)
+        get_session_store().daily_usage, days, bool(favorite), profile
     )
     pricing = get_pricing()
 
@@ -884,7 +907,7 @@ async def export_sessions_csv(
     query = q or ""
     favorites_only = bool(favorite)
     days = max(0, min(int(days or 0), 365))
-    profile = " ".join((profile or "").split())[:40] or None
+    profile = profile or None
 
     items: List[Dict[str, Any]] = []
     offset = 0
@@ -1000,7 +1023,11 @@ async def purge_old_sessions(request: PurgeRequest):
 
 
 @app.get("/api/feedback/recent")
-async def recent_feedback(limit: int = 10, rating: int = -1):
+async def recent_feedback(
+    limit: int = 10,
+    rating: int = -1,
+    profile: Optional[str] = None,
+):
     """最近的会诊反馈（默认待改进），用于质量复核。"""
     from memory import get_session_store
 
@@ -1008,13 +1035,15 @@ async def recent_feedback(limit: int = 10, rating: int = -1):
         raise HTTPException(status_code=400, detail="rating 只能是 1 或 -1")
     limit = max(1, min(int(limit or 10), 50))
     items = await asyncio.to_thread(
-        get_session_store().recent_feedback, limit, rating
+        get_session_store().recent_feedback, limit, rating, profile
     )
     return {"feedback": items}
 
 
 @app.get("/api/feedback/export.csv")
-async def export_feedback_csv(rating: int = -1):
+async def export_feedback_csv(
+    rating: int = -1, profile: Optional[str] = None
+):
     """导出会诊反馈 CSV（默认待改进），带 BOM。"""
     import csv
     import io
@@ -1025,7 +1054,7 @@ async def export_feedback_csv(rating: int = -1):
         raise HTTPException(status_code=400, detail="rating 只能是 1 或 -1")
 
     items = await asyncio.to_thread(
-        get_session_store().recent_feedback, 100000, rating
+        get_session_store().recent_feedback, 100000, rating, profile
     )
     rows = [["更新时间", "会话编号", "会话标题", "评分", "反馈原因"]]
     for item in items:
@@ -1053,13 +1082,15 @@ async def export_feedback_csv(rating: int = -1):
 
 
 @app.get("/api/insights/quality")
-async def quality_insights(days: int = 30):
+async def quality_insights(
+    days: int = 30, profile: Optional[str] = None
+):
     """最近一段时间的会诊质量概览（急症、用药提示、反馈与平均用量）。"""
     from memory import get_session_store
 
     days = max(1, min(int(days or 30), 365))
     return await asyncio.to_thread(
-        get_session_store().quality_insights, days
+        get_session_store().quality_insights, days, profile
     )
 
 
@@ -1768,8 +1799,10 @@ async def get_session_messages(session_id: str, limit: int = 50):
     else:
         stored = await asyncio.to_thread(store.get_messages, session_id, limit)
     if stored:
+        session = await asyncio.to_thread(store.get_session, session_id)
         return {
             "session_id": session_id,
+            "profile": (session or {}).get("profile", ""),
             "messages": [
                 {
                     "id": m.get("id"),
@@ -1789,6 +1822,7 @@ async def get_session_messages(session_id: str, limit: int = 50):
     messages = memory.get_recent_messages(session_id=session_id, limit=limit)
     return {
         "session_id": session_id,
+        "profile": "",
         "messages": [
             {
                 "id": None,
@@ -1805,14 +1839,25 @@ async def get_session_messages(session_id: str, limit: int = 50):
 
 
 @app.get("/api/tags")
-async def list_tags():
-    """未归档会话的标签及数量，供历史筛选。"""
+async def list_tags(profile: Optional[str] = None):
+    """未归档会话的标签及数量，供历史筛选；可按档案筛选。"""
     from memory import get_session_store
 
     tags = await asyncio.to_thread(
-        get_session_store().list_tags, False
+        get_session_store().list_tags, False, profile
     )
     return {"tags": tags}
+
+
+@app.get("/api/session-profiles")
+async def list_session_profiles():
+    """会话中出现过的档案名及数量（含已删除档案留下的历史名字）。"""
+    from memory import get_session_store
+
+    profiles = await asyncio.to_thread(
+        get_session_store().list_session_profiles
+    )
+    return {"profiles": profiles}
 
 
 @app.patch("/api/sessions/{session_id}/tags")
@@ -2324,16 +2369,9 @@ async def chat(request: ChatRequest):
     if not (payload["answer"] or "").strip():
         raise HTTPException(status_code=502, detail=_empty_answer_reason())
 
-    profile = " ".join(request.patient_profile.split())[:40]
-    if profile:
-        from memory import get_session_store
-
-        await asyncio.to_thread(
-            get_session_store().ensure_session, session_id, "", profile
-        )
+    await _link_patient_profile(session_id, request.patient_profile)
 
     return payload
-
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
@@ -2478,13 +2516,7 @@ async def chat_stream(request: ChatRequest):
             yield sse({"type": "error", "message": _empty_answer_reason()})
             return
 
-        profile = " ".join(request.patient_profile.split())[:40]
-        if profile:
-            from memory import get_session_store
-
-            await asyncio.to_thread(
-                get_session_store().ensure_session, session_id, "", profile
-            )
+        await _link_patient_profile(session_id, request.patient_profile)
 
         yield sse({"type": "result", **payload})
 

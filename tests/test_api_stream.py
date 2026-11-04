@@ -323,6 +323,7 @@ def test_stream_saves_patient_profile(tmp_path, monkeypatch):
 
     monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
     store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("profile-stream-test", "我头痛怎么办", "先前的答复")
     monkeypatch.setattr(memory, "get_session_store", lambda: store)
     api_server.state.coordinator = FakeCoordinator()
     client = TestClient(api_server.app)
@@ -352,3 +353,30 @@ def test_stream_saves_patient_profile(tmp_path, monkeypatch):
     assert second.status_code == 200
     assert saved is not None
     assert saved["profile"] == "母亲"
+
+
+def test_stream_does_not_create_session_for_profile(tmp_path, monkeypatch):
+    import memory
+    from memory.session_store import SessionStore
+
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    api_server.state.coordinator = FakeCoordinator()
+    client = TestClient(api_server.app)
+
+    try:
+        response = client.post(
+            "/api/chat/stream",
+            json={
+                "question": "我头痛怎么办",
+                "session_id": "profile-phantom-test",
+                "patient_profile": "母亲",
+            },
+        )
+        saved = store.get_session("profile-phantom-test")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert saved is None
