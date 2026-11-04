@@ -1,4 +1,6 @@
 """会诊 HTML 报告导出的静态资源离线测试。"""
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -49,3 +51,14 @@ def test_app_js_ships_session_compare(client):
     assert "function compareStats" in app_js
     assert "history-bulk-compare" in app_js
     assert "compare-drawer" in app_js
+
+
+def test_calc_forms_have_submit_buttons(client):
+    html = client.get("/").text
+    forms = re.findall(
+        r'<form[^>]*class="calc-form"[^>]*>.*?</form>', html, re.S
+    )
+    assert forms
+    for block in forms:
+        form_id = re.search(r'id="([^"]+)"', block).group(1)
+        assert 'type="submit"' in block, f"{form_id} 缺少提交按钮"
