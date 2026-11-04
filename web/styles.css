@@ -2365,6 +2365,13 @@ html[data-theme="dark"] .calc-status.error {
 
 .metrics-form .btn-quiet { justify-self: start; }
 
+.metric-reference {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
 .metrics-actions {
   display: flex;
   flex-wrap: wrap;

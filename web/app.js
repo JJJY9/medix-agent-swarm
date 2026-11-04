@@ -162,6 +162,7 @@ const els = {
   metricsClose: document.getElementById('metrics-close'),
   metricProfile: document.getElementById('metric-profile'),
   metricType: document.getElementById('metric-type'),
+  metricReference: document.getElementById('metric-reference'),
   metricBpValues: document.getElementById('metric-bp-values'),
   metricSystolic: document.getElementById('metric-systolic'),
   metricDiastolic: document.getElementById('metric-diastolic'),
@@ -3498,6 +3499,14 @@ const METRIC_NAMES = {
   phq9: 'PHQ-9 评分',
   gad7: 'GAD-7 评分',
 };
+const METRIC_REFERENCES = {
+  bp: '家庭血压参考：<135/85 mmHg；≥135/85 建议复测并咨询医生。',
+  weight: '体重需结合身高计算 BMI，单一体重没有统一正常范围。',
+  glucose: '血糖参考值需结合空腹/餐后与化验单，本工具不做诊断。',
+  temperature: '腋温参考：36.0–37.3 °C。',
+  phq9: '评分越高提示抑郁症状越明显，需结合临床访谈判断。',
+  gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
+};
 
 function setMetricsStatus(text, isError = false) {
   els.metricsStatus.textContent = text;
@@ -3521,6 +3530,7 @@ function setMetricType(type) {
   const isScore = value === 'phq9' || value === 'gad7';
   els.metricValue.step = isScore ? '1' : '0.1';
   els.metricValue.min = isScore ? '0' : '';
+  els.metricReference.textContent = METRIC_REFERENCES[value] || '';
 }
 
 function refreshMetricProfileOptions() {
