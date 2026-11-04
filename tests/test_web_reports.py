@@ -129,3 +129,10 @@ def test_app_js_ships_custom_starters(client):
     assert "medix.customStarters" in app_js
     assert "starter-add" in app_js
     assert ".starter-wrap" in css
+
+
+def test_app_js_ships_reminder_from_note(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "设随访提醒" in app_js
+    assert "来自会诊建议" in app_js
