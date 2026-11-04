@@ -1449,6 +1449,20 @@ def test_snooze_preserves_time_of_day(store):
     assert snoozed["due_at"] == "2026-11-17T09:30:00"
 
 
+def test_repeat_completion_inherits_medication_link(store):
+    medication = store.add_medication("母亲", "氨氯地平")
+    reminder = store.add_reminder(
+        "用药：氨氯地平", "2026-11-05",
+        profile="母亲", repeat_days=1,
+        medication_id=medication["id"],
+    )
+
+    result = store.complete_reminder_with_repeat(reminder["id"])
+
+    assert result["next"]["medication_id"] == medication["id"]
+    assert result["next"]["title"] == "用药：氨氯地平"
+
+
 def test_reminder_import_uses_stable_id(store, tmp_path):
     created = store.add_reminder("复查", "2026-11-10")
     data = store.export_data()
