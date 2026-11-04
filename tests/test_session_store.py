@@ -437,6 +437,7 @@ def test_import_data_roundtrip(tmp_path):
             "messages": 2,
             "profiles": 0,
             "metrics": 0,
+            "targets": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -1058,6 +1059,52 @@ def test_session_profile_filter(store):
     store.ensure_session("s1", "", "其他")
     assert store.get_session("s1")["profile"] == "母亲"
     assert [item["id"] for item in store.list_sessions(profile="母亲")] == ["s1"]
+
+
+def test_metric_targets_crud(store):
+    assert store.list_metric_targets() == []
+
+    target = store.set_metric_target("母亲", "bp", 130, 80)
+    assert target["value1"] == 130
+    assert target["value2"] == 80
+    assert target["unit"] == "mmHg"
+
+    updated = store.set_metric_target("母亲", "bp", 125, 75)
+    assert updated["value1"] == 125
+    assert len(store.list_metric_targets()) == 1
+    assert store.list_metric_targets("母亲")[0]["value2"] == 75
+    assert store.list_metric_targets("孩子") == []
+
+    weight = store.set_metric_target("", "weight", 65)
+    assert weight["value2"] is None
+    assert len(store.list_metric_targets()) == 2
+
+    assert store.set_metric_target("母亲", "bp", 80, 130) is None
+    assert store.set_metric_target("母亲", "unknown", 1) is None
+    assert store.set_metric_target("母亲", "weight", -1) is None
+
+    assert store.delete_metric_target("母亲", "bp") is True
+    assert store.delete_metric_target("母亲", "bp") is False
+    assert len(store.list_metric_targets()) == 1
+
+
+def test_metric_targets_export_import(store, tmp_path):
+    store.set_metric_target("母亲", "bp", 130, 80)
+    data = store.export_data()
+    assert data["metric_targets"][0]["profile"] == "母亲"
+
+    other = SessionStore(str(tmp_path / "copy.db"))
+    try:
+        result = other.import_data(data)
+        assert result["targets"] == 1
+        targets = other.list_metric_targets("母亲")
+        assert targets[0]["value1"] == 130
+        assert targets[0]["value2"] == 80
+
+        again = other.import_data(data)
+        assert again["targets"] == 0
+    finally:
+        other.close()
 
 
 def test_session_tags_and_filter(store):
