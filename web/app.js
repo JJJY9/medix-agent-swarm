@@ -161,6 +161,17 @@ const els = {
   calcGcsEye: document.getElementById('calc-gcs-eye'),
   calcGcsVerbal: document.getElementById('calc-gcs-verbal'),
   calcGcsMotor: document.getElementById('calc-gcs-motor'),
+  calcFormWells: document.getElementById('calc-form-wells'),
+  calcWellsCancer: document.getElementById('calc-wells-cancer'),
+  calcWellsParalysis: document.getElementById('calc-wells-paralysis'),
+  calcWellsBedridden: document.getElementById('calc-wells-bedridden'),
+  calcWellsTenderness: document.getElementById('calc-wells-tenderness'),
+  calcWellsEntire: document.getElementById('calc-wells-entire'),
+  calcWellsCalf: document.getElementById('calc-wells-calf'),
+  calcWellsEdema: document.getElementById('calc-wells-edema'),
+  calcWellsCollateral: document.getElementById('calc-wells-collateral'),
+  calcWellsPrevious: document.getElementById('calc-wells-previous'),
+  calcWellsAlternative: document.getElementById('calc-wells-alternative'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -4380,6 +4391,7 @@ function setCalcTool(tool) {
     els.calcFormGad7,
     els.calcFormHasBled,
     els.calcFormGcs,
+    els.calcFormWells,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -4728,6 +4740,36 @@ function submitGcs(event) {
         + `睁眼 ${data.eye} / 语言 ${data.verbal} / 运动 ${data.motor}`,
       note: data.note,
       level: data.score <= 8 ? 'warning' : '',
+    })
+  );
+}
+
+function submitWells(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/wells-dvt',
+    {
+      active_cancer: els.calcWellsCancer.checked,
+      paralysis_or_immobilization: els.calcWellsParalysis.checked,
+      bedridden_or_surgery: els.calcWellsBedridden.checked,
+      deep_vein_tenderness: els.calcWellsTenderness.checked,
+      entire_leg_swelling: els.calcWellsEntire.checked,
+      calf_swelling: els.calcWellsCalf.checked,
+      pitting_edema: els.calcWellsEdema.checked,
+      collateral_veins: els.calcWellsCollateral.checked,
+      previous_dvt: els.calcWellsPrevious.checked,
+      alternative_diagnosis: els.calcWellsAlternative.checked,
+    },
+    (data) => ({
+      title: 'Wells DVT 结果',
+      main: `评分 ${data.score} 分`,
+      detail:
+        `概率分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '高概率' ? 'warning' : '',
     })
   );
 }
@@ -5545,6 +5587,7 @@ els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);
+els.calcFormWells.addEventListener('submit', submitWells);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;

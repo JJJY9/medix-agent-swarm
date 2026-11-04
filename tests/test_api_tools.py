@@ -263,3 +263,24 @@ def test_gcs_api(client):
     assert severe.json()["severity"] == "重度"
 
     assert invalid.status_code == 422
+
+
+def test_wells_dvt_api(client):
+    low = client.post("/api/tools/wells-dvt", json={})
+    high = client.post(
+        "/api/tools/wells-dvt",
+        json={
+            "active_cancer": True,
+            "previous_dvt": True,
+            "entire_leg_swelling": True,
+        },
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低概率"
+
+    assert high.status_code == 200
+    assert high.json()["score"] == 3
+    assert high.json()["risk"] == "高概率"
+    assert len(high.json()["criteria"]) == 3

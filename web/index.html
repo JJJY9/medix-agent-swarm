@@ -590,6 +590,7 @@
         <option value="gad7">GAD-7 焦虑筛查</option>
         <option value="hasbled">HAS-BLED 出血风险</option>
         <option value="gcs">GCS 格拉斯哥昏迷评分</option>
+        <option value="wells">Wells DVT 概率评分</option>
       </select>
     </label>
 
@@ -720,6 +721,21 @@
           <option value="1">1 无运动</option>
         </select>
       </label>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-wells" data-tool="wells" hidden>
+      <p class="calc-hint">用于疑似下肢深静脉血栓的临床概率评估。</p>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-cancer"> 活动性肿瘤</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-paralysis"> 瘫痪、轻瘫或近期石膏固定</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-bedridden"> 卧床 &gt;3 天或 12 周内大手术</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-tenderness"> 深静脉走行区压痛</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-entire"> 整个下肢肿胀</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-calf"> 小腿肿胀 &gt;3 cm</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-edema"> 患肢凹陷性水肿</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-collateral"> 浅表侧支静脉</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-previous"> 既往 DVT</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wells-alternative"> 其他诊断可能性不低于 DVT（-2 分）</label>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 
