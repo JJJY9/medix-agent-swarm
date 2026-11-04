@@ -339,3 +339,48 @@ def test_reminders_ics_folds_long_lines(client_and_store):
 
     for line in text.split("\r\n"):
         assert len(line.encode("utf-8")) <= 75, line
+
+
+def test_reminders_csv_import(client_and_store):
+    client, _store = client_and_store
+
+    lines = [
+        "到期日,内容,档案,状态,备注",
+        "2026-11-10,复查血常规,母亲,未完成,空腹",
+        "2026-11-10,复查血常规,母亲,未完成,空腹",
+        "2026-11-12,接种疫苗,孩子,已完成,",
+        "2026-02-30,无效日期,,,",
+        ",缺少日期,,,",
+    ]
+    content = chr(0xFEFF) + "\n".join(lines)
+    first = client.post(
+        "/api/reminders/import",
+        files={"file": ("reminders.csv", content.encode("utf-8"), "text/csv")},
+    )
+    listed = client.get("/api/reminders", params={"include_done": True})
+    again = client.post(
+        "/api/reminders/import",
+        files={"file": ("reminders.csv", content.encode("utf-8"), "text/csv")},
+    )
+    empty = client.post(
+        "/api/reminders/import",
+        files={"file": ("empty.csv", b"", "text/csv")},
+    )
+    audit = client.get("/api/audit")
+
+    assert first.status_code == 200
+    assert first.json()["imported"] == 2
+    assert first.json()["skipped"] == 2
+    assert first.json()["invalid"] == 1
+    titles = sorted(item["title"] for item in listed.json()["reminders"])
+    assert titles == ["复查血常规", "接种疫苗"]
+    done = [
+        item["title"] for item in listed.json()["reminders"] if item["done"]
+    ]
+    assert done == ["接种疫苗"]
+    assert again.status_code == 200
+    assert again.json()["imported"] == 0
+    assert again.json()["skipped"] == 4
+    assert empty.status_code == 400
+    actions = [item["action"] for item in audit.json()["actions"]]
+    assert "reminder.import" in actions

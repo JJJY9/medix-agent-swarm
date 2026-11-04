@@ -1666,6 +1666,92 @@ async def export_reminders_ics(
     )
 
 
+@app.post("/api/reminders/import")
+async def import_reminders_csv(file: UploadFile = File(...)):
+    """从导出的 CSV 格式导入随访提醒，重复提醒自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+
+    field_alias = {
+        "到期日": "due_at",
+        "日期": "due_at",
+        "提醒日期": "due_at",
+        "内容": "title",
+        "提醒内容": "title",
+        "标题": "title",
+        "档案": "profile",
+        "患者档案": "profile",
+        "状态": "done",
+        "备注": "note",
+    }
+
+    records = []
+    invalid = 0
+    for row in reader:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            name = key.strip()
+            mapped[field_alias.get(name, name)] = (value or "").strip()
+
+        title = mapped.get("title", "")
+        due_at = mapped.get("due_at", "")
+        if not title or not due_at:
+            invalid += 1
+            continue
+
+        status = mapped.get("done", "")
+        records.append({
+            "title": title,
+            "due_at": due_at,
+            "profile": mapped.get("profile", ""),
+            "note": mapped.get("note", ""),
+            "done": status in ("已完成", "完成", "done", "1", "true", "True"),
+        })
+
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的提醒（无效 {invalid} 行）",
+        )
+
+    result = await asyncio.to_thread(
+        get_session_store().import_data, {"reminders": records}
+    )
+    imported = int(result.get("reminders", 0))
+    await record_audit(
+        "reminder.import",
+        detail=f"imported={imported} invalid={invalid}",
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
 @app.post("/api/reminders/{reminder_id}/complete")
 async def complete_reminder(reminder_id: int):
     """把随访提醒标记为已完成。"""
