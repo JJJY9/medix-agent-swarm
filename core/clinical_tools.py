@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 #: BMI 中国成人分类界值
 BMI_CUTOFFS = (
@@ -139,6 +139,62 @@ def calculate_chads_vasc(
         "score": score,
         "risk": risk,
         "note": "评分只用于风险分层；是否抗凝需医生结合出血风险、肾功能与患者意愿综合评估。",
+    }
+
+
+PHQ9_QUESTIONS = (
+    "做事时提不起劲或没有兴趣",
+    "感到心情低落、沮丧或绝望",
+    "入睡困难、睡不安稳或睡得过多",
+    "感觉疲倦或没有活力",
+    "食欲不振或吃太多",
+    "觉得自己很糟，或觉得自己很失败，或让自己/家人失望",
+    "对事物专注有困难，例如看报纸或看电视时",
+    "动作或说话速度缓慢到别人已经察觉，或正好相反——烦躁或坐立不安、动来动去",
+    "有不如死掉或用某种方式伤害自己的念头",
+)
+
+
+def calculate_phq9(answers: List[int]) -> Dict[str, object]:
+    """PHQ-9 抑郁筛查评分（0–27 分）。
+
+    仅用于近两周的筛查，不用于诊断。第 9 题大于 0 时标记 urgent，
+    提示需要立即获得专业帮助。
+    """
+    if not isinstance(answers, list) or len(answers) != len(PHQ9_QUESTIONS):
+        raise ValueError("PHQ-9 需要 9 个答案。")
+
+    values = []
+    for answer in answers:
+        if isinstance(answer, bool) or not isinstance(answer, int):
+            raise ValueError("PHQ-9 每个答案必须是 0–3 的整数。")
+        if answer < 0 or answer > 3:
+            raise ValueError("PHQ-9 每个答案必须在 0–3 之间。")
+        values.append(answer)
+
+    score = sum(values)
+    if score <= 4:
+        severity = "无或极轻"
+    elif score <= 9:
+        severity = "轻度"
+    elif score <= 14:
+        severity = "中度"
+    elif score <= 19:
+        severity = "中重度"
+    else:
+        severity = "重度"
+
+    self_harm = values[8] > 0
+    note = "PHQ-9 是近两周的筛查工具，不能替代临床诊断；结果需要由医生或心理专业人员结合访谈判断。"
+    if self_harm:
+        note += " 第 9 题提示存在自伤念头，请立即联系家人并寻求精神心理科或急诊帮助。"
+
+    return {
+        "score": score,
+        "severity": severity,
+        "self_harm": self_harm,
+        "urgent": self_harm,
+        "note": note,
     }
 
 

@@ -2235,6 +2235,26 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 .calc-form[hidden] { display: none; }
 .calc-form .btn-quiet { justify-self: start; }
 
+.calc-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+
+.phq9-questions {
+  display: grid;
+  gap: 8px;
+}
+
+.phq9-question span {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.phq9-question select { width: 100%; }
+
 .calc-check {
   display: flex;
   align-items: center;
@@ -2257,6 +2277,15 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   background: var(--paper-2);
 }
 .calc-result[hidden] { display: none; }
+
+.calc-result[data-level="warning"] {
+  border-left-color: var(--triage-1);
+  background: #fdf0ef;
+}
+
+html[data-theme="dark"] .calc-result[data-level="warning"] {
+  background: #331a19;
+}
 
 .calc-result h3 {
   margin: 0 0 4px;

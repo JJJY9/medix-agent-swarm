@@ -558,6 +558,7 @@
         <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
         <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
         <option value="curb65">CURB-65 肺炎严重程度</option>
+        <option value="phq9">PHQ-9 抑郁筛查</option>
       </select>
     </label>
 
@@ -630,6 +631,12 @@
           <input id="calc-curb-dbp" type="number" min="0" max="200" step="1" inputmode="numeric" required>
         </label>
       </div>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-phq9" data-tool="phq9" hidden>
+      <p class="calc-hint">请根据过去两周的实际感受，选择每个问题困扰您的频率。</p>
+      <div class="phq9-questions" id="calc-phq9-questions"></div>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 
