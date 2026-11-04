@@ -405,6 +405,7 @@ const els = {
   medicationLogEmpty: document.getElementById('medication-log-empty'),
   weeklySummarySection: document.getElementById('weekly-summary-section'),
   weeklySummaryRange: document.getElementById('weekly-summary-range'),
+  weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
@@ -5199,6 +5200,7 @@ let metricsOffset = 0;
 let metricItemsCache = [];
 let homeGlanceRequestSeq = 0;
 let weeklySummaryRequestSeq = 0;
+let weeklySummaryCache = null;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -8357,9 +8359,59 @@ async function loadWeeklySummary() {
     if (!res.ok) return;
     const data = await res.json();
     if (requestSeq !== weeklySummaryRequestSeq) return;
+    weeklySummaryCache = data;
     renderWeeklySummary(data);
   } catch {
     // 小结加载失败不影响其他区块
+  }
+}
+
+function weeklySummaryText(data) {
+  const header =
+    `健康小结（${formatReminderDue(data.start)} – `
+    + `${formatReminderDue(data.end)}`
+    + `${data.profile ? ` · ${data.profile}` : ''}）`;
+  return [
+    header,
+    ...weeklySummaryLines(data).map(([label, text]) => `${label}：${text}`),
+  ].join('\n');
+}
+
+async function copyWeeklySummary() {
+  const data = weeklySummaryCache;
+  if (!data) {
+    setMetricsStatus('小结尚未加载，请稍后再试。', true);
+    return;
+  }
+  const text = weeklySummaryText(data);
+  const done = () => {
+    setMetricsStatus('已复制健康小结。');
+    if (els.weeklySummaryCopy) {
+      const original = els.weeklySummaryCopy.textContent;
+      els.weeklySummaryCopy.textContent = '已复制';
+      setTimeout(() => {
+        els.weeklySummaryCopy.textContent = original;
+      }, 1500);
+    }
+  };
+  try {
+    await navigator.clipboard.writeText(text);
+    done();
+  } catch {
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+      done();
+    } catch {
+      setMetricsStatus('复制失败，请手动选择文本。', true);
+    }
   }
 }
 
@@ -10986,6 +11038,7 @@ els.metricType.addEventListener('change', () => {
 els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricRange.addEventListener('change', refreshMetrics);
 els.weeklySummaryRange.addEventListener('change', loadWeeklySummary);
+els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
