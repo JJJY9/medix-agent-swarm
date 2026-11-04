@@ -88,3 +88,27 @@ def test_reminders_api_validates_input(client_and_store):
     assert blank_title.status_code == 400
     assert missing_title.status_code == 422
     assert too_long.status_code == 422
+
+
+def test_reminders_api_snooze(client_and_store):
+    from datetime import date, timedelta
+
+    client, _store = client_and_store
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2020-01-01"},
+    ).json()["reminder"]
+
+    snoozed = client.post(
+        f"/api/reminders/{created['id']}/snooze", params={"days": 7}
+    )
+    missing = client.post("/api/reminders/99999/snooze")
+    audit = client.get("/api/audit")
+
+    assert snoozed.status_code == 200
+    assert snoozed.json()["reminder"]["due_at"] == (
+        date.today() + timedelta(days=7)
+    ).isoformat()
+    assert missing.status_code == 404
+    actions = [item["action"] for item in audit.json()["actions"]]
+    assert "reminder.snooze" in actions

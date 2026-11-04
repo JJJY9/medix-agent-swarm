@@ -4590,6 +4590,7 @@ const AUDIT_LABELS = {
   'metric.delete': '删除健康记录',
   'reminder.create': '添加随访提醒',
   'reminder.complete': '完成随访提醒',
+  'reminder.snooze': '推迟随访提醒',
   'reminder.delete': '删除随访提醒',
 };
 
@@ -5433,6 +5434,14 @@ function renderReminders(items) {
     done.setAttribute('aria-label', `完成提醒：${item.title}`);
     done.addEventListener('click', () => completeReminder(item));
 
+    const snooze = document.createElement('button');
+    snooze.type = 'button';
+    snooze.className = 'metric-edit';
+    snooze.textContent = '推迟';
+    snooze.title = '推迟 7 天';
+    snooze.setAttribute('aria-label', `推迟提醒：${item.title}`);
+    snooze.addEventListener('click', () => snoozeReminder(item));
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'metric-delete';
@@ -5440,7 +5449,7 @@ function renderReminders(items) {
     del.setAttribute('aria-label', `删除提醒：${item.title}`);
     del.addEventListener('click', () => deleteReminder(item));
 
-    actions.append(done, del);
+    actions.append(done, snooze, del);
     li.append(main, actions);
     els.remindersList.appendChild(li);
   }
@@ -5607,6 +5616,21 @@ async function completeReminder(item) {
     await loadReminders();
   } catch (err) {
     window.alert(`完成提醒失败：${err.message || err}`);
+  }
+}
+
+async function snoozeReminder(item) {
+  try {
+    const res = await fetch(`/api/reminders/${item.id}/snooze?days=7`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    const due = data.reminder ? formatReminderDue(data.reminder.due_at) : '';
+    setRemindersStatus(due ? `已推迟到 ${due}。` : '已推迟 7 天。');
+    await loadReminders();
+  } catch (err) {
+    window.alert(`推迟提醒失败：${err.message || err}`);
   }
 }
 

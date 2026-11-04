@@ -1035,6 +1035,23 @@ def test_reminders_crud(store):
         store.add_reminder("复查", "")
 
 
+def test_snooze_reminder(store):
+    from datetime import date, timedelta
+
+    reminder = store.add_reminder("复查", "2020-01-01")
+    snoozed = store.snooze_reminder(reminder["id"], 7)
+
+    assert snoozed["done"] is False
+    assert snoozed["due_at"] == (
+        date.today() + timedelta(days=7)
+    ).isoformat()
+    assert store.snooze_reminder(99999, 7) is None
+
+    future = store.add_reminder("复诊", "2099-01-01")
+    snoozed_future = store.snooze_reminder(future["id"], 7)
+    assert snoozed_future["due_at"] == "2099-01-08"
+
+
 def test_session_profile_filter(store):
     store.save_exchange(
         "s1", "妈妈的头痛", "答复一",
