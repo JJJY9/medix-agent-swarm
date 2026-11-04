@@ -3282,6 +3282,36 @@ html[data-theme="dark"] .reminders-due-hint {
   color: var(--ink-soft);
 }
 
+.weekly-summary {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.weekly-summary summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.weekly-summary-list {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.weekly-summary-list strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .medication-form {
   display: grid;
   gap: 8px;

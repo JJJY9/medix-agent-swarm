@@ -1833,6 +1833,141 @@ async def latest_metrics(profile: Optional[str] = None):
     return {"metrics": items}
 
 
+@app.get("/api/reports/weekly")
+async def weekly_report(profile: Optional[str] = None, days: int = 7):
+    """近 N 天健康小结：指标、症状、用药打卡与待办提醒汇总。"""
+    from datetime import timedelta
+
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 7), 90))
+    store = get_session_store()
+    metrics = await asyncio.to_thread(
+        store.list_metrics, profile, None, 100000, days
+    )
+    symptoms = await asyncio.to_thread(
+        store.list_symptoms, profile, 100000, days
+    )
+    medications = await asyncio.to_thread(
+        store.list_medications, profile, False, 100000
+    )
+    logs = await asyncio.to_thread(
+        store.list_medication_logs, None, profile, 100000, 0, days
+    )
+    reminders = await asyncio.to_thread(
+        store.list_reminders, False, profile
+    )
+
+    grouped: dict = {}
+    for item in metrics:
+        entry = grouped.setdefault(item["metric"], {
+            "metric": item["metric"],
+            "unit": item.get("unit", ""),
+            "count": 0,
+            "sum1": 0.0,
+            "sum2": 0.0,
+            "with_second": 0,
+            "latest": None,
+        })
+        entry["count"] += 1
+        entry["sum1"] += float(item["value1"])
+        if item.get("value2") is not None:
+            entry["sum2"] += float(item["value2"])
+            entry["with_second"] += 1
+        if entry["latest"] is None:
+            entry["latest"] = item
+    metric_rows = [
+        {
+            "metric": entry["metric"],
+            "unit": entry["unit"],
+            "count": entry["count"],
+            "avg_value1": round(entry["sum1"] / entry["count"], 2),
+            "avg_value2": (
+                round(entry["sum2"] / entry["with_second"], 2)
+                if entry["with_second"] else None
+            ),
+            "latest": entry["latest"],
+        }
+        for entry in grouped.values()
+    ]
+    metric_rows.sort(key=lambda row: row["metric"])
+
+    symptom_counts: dict = {}
+    severity_total = 0
+    max_severity = 0
+    for item in symptoms:
+        name = item["symptom"]
+        symptom_counts[name] = symptom_counts.get(name, 0) + 1
+        severity = int(item.get("severity") or 0)
+        severity_total += severity
+        max_severity = max(max_severity, severity)
+    symptom_top = [
+        {"symptom": name, "count": count}
+        for name, count in sorted(
+            symptom_counts.items(), key=lambda pair: (-pair[1], pair[0])
+        )[:5]
+    ]
+
+    active_meds = [item for item in medications if item.get("active")]
+    doses_by_medication: dict = {}
+    for log in logs:
+        key = log["medication_id"]
+        entry = doses_by_medication.setdefault(key, {
+            "name": log.get("medication_name") or "已删除药物",
+            "dose": log.get("medication_dose") or "",
+            "doses": 0,
+        })
+        entry["doses"] += 1
+    medication_rows = sorted(
+        doses_by_medication.values(),
+        key=lambda row: (-row["doses"], row["name"]),
+    )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    horizon = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    overdue = 0
+    due_soon = 0
+    for item in reminders:
+        due = str(item.get("due_at") or "")[:10]
+        if not due:
+            continue
+        if due < today:
+            overdue += 1
+        elif due <= horizon:
+            due_soon += 1
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (
+        datetime.now() - timedelta(days=days - 1)
+    ).strftime("%Y-%m-%d")
+    return {
+        "profile": profile or "",
+        "days": days,
+        "start": start,
+        "end": end,
+        "metrics": {"count": len(metrics), "by_metric": metric_rows},
+        "symptoms": {
+            "count": len(symptoms),
+            "avg_severity": (
+                round(severity_total / len(symptoms), 1)
+                if symptoms else None
+            ),
+            "max_severity": max_severity,
+            "top": symptom_top,
+        },
+        "medications": {
+            "active": len(active_meds),
+            "doses": len(logs),
+            "by_medication": medication_rows,
+        },
+        "reminders": {
+            "pending": len(reminders),
+            "overdue": overdue,
+            "due_in_7_days": due_soon,
+        },
+    }
+
+
 @app.post("/api/metrics")
 async def add_metric(request: MetricRequest):
     """新增血压、体重、血糖或体温记录。"""
