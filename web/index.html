@@ -245,6 +245,7 @@
 
         <div class="rail-actions">
           <button type="button" class="btn-quiet" id="kb-manage" aria-haspopup="dialog" aria-expanded="false" aria-controls="kb-drawer">管理知识库</button>
+          <button type="button" class="btn-quiet" id="calc-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="calc-drawer">临床工具</button>
           <button type="button" class="btn-quiet" id="diagnose" aria-haspopup="dialog" aria-expanded="false" aria-controls="diagnose-drawer">系统自检</button>
         </div>
 
@@ -441,6 +442,91 @@
       <button type="button" class="btn-quiet" id="diag-download">下载诊断信息</button>
     </div>
     <p class="diag-status" id="diag-status" hidden></p>
+  </div>
+</aside>
+
+<!-- 临床计算工具抽屉 -->
+<div class="drawer-backdrop" id="calc-backdrop" hidden></div>
+<aside
+  class="drawer"
+  id="calc-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="calc-title"
+>
+  <div class="drawer-head">
+    <h2 id="calc-title">临床工具</h2>
+    <button type="button" class="drawer-close" id="calc-close" aria-label="关闭临床工具">×</button>
+  </div>
+  <div class="calc-body">
+    <label class="calc-field" for="calc-tool">选择工具
+      <select id="calc-tool">
+        <option value="bmi">BMI 体重指数</option>
+        <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
+        <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
+      </select>
+    </label>
+
+    <form class="calc-form" id="calc-form-bmi" data-tool="bmi">
+      <label class="calc-field">身高（厘米）
+        <input id="calc-bmi-height" type="number" min="51" max="259" step="0.1" inputmode="decimal" required>
+      </label>
+      <label class="calc-field">体重（千克）
+        <input id="calc-bmi-weight" type="number" min="10.1" max="399" step="0.1" inputmode="decimal" required>
+      </label>
+      <button type="submit" class="btn-quiet">计算 BMI</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-egfr" data-tool="egfr" hidden>
+      <label class="calc-field">年龄（岁）
+        <input id="calc-egfr-age" type="number" min="18" max="120" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">性别
+        <select id="calc-egfr-sex">
+          <option value="male">男</option>
+          <option value="female">女</option>
+        </select>
+      </label>
+      <label class="calc-field">血肌酐
+        <input id="calc-egfr-creatinine" type="number" min="0.1" step="0.01" inputmode="decimal" required>
+      </label>
+      <label class="calc-field">肌酐单位
+        <select id="calc-egfr-unit">
+          <option value="umol/L">μmol/L</option>
+          <option value="mg/dL">mg/dL</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-quiet">计算 eGFR</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-chads" data-tool="chads" hidden>
+      <label class="calc-field">年龄（岁）
+        <input id="calc-chads-age" type="number" min="18" max="120" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">性别
+        <select id="calc-chads-sex">
+          <option value="male">男</option>
+          <option value="female">女</option>
+        </select>
+      </label>
+      <label class="calc-check"><input type="checkbox" id="calc-chads-chf"> 充血性心力衰竭</label>
+      <label class="calc-check"><input type="checkbox" id="calc-chads-hypertension"> 高血压</label>
+      <label class="calc-check"><input type="checkbox" id="calc-chads-diabetes"> 糖尿病</label>
+      <label class="calc-check"><input type="checkbox" id="calc-chads-stroke"> 卒中 / TIA 病史（2 分）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-chads-vascular"> 血管疾病（心梗、外周动脉病等）</label>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <section class="calc-result" id="calc-result" hidden aria-live="polite">
+      <h3 id="calc-result-title"></h3>
+      <p class="calc-result-main" id="calc-result-main"></p>
+      <p class="calc-result-detail" id="calc-result-detail"></p>
+      <p class="calc-result-note" id="calc-result-note"></p>
+    </section>
+
+    <p class="calc-status" id="calc-status" hidden></p>
+    <p class="calc-disclaimer">计算结果仅供临床参考，不能替代医生评估。</p>
   </div>
 </aside>
 
