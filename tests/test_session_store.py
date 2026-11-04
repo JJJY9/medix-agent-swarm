@@ -1508,12 +1508,21 @@ def test_reminders_repeat_completion(store):
     assert next_item is not None
     assert next_item["due_at"] > date.today().isoformat()
     assert next_item["repeat_days"] == 7
+    assert next_item["repeats_from"] == reminder["id"]
     assert store.complete_reminder(reminder["id"]) is True
     pendings = store.list_reminders()
     assert [item["title"] for item in pendings] == ["服药"]
     # 已经完成过的提醒再次完成不会重复生成
     again = store.complete_reminder_with_repeat(reminder["id"])
     assert again["next"] is None
+    assert len(store.list_reminders()) == 1
+
+    # 恢复原提醒会删除自动生成的待办，再次完成可重新生成
+    assert store.reopen_reminder(reminder["id"]) is True
+    pending = store.list_reminders()
+    assert [item["id"] for item in pending] == [reminder["id"]]
+    regenerated = store.complete_reminder_with_repeat(reminder["id"])
+    assert regenerated["next"] is not None
     assert len(store.list_reminders()) == 1
 
     limited = store.add_reminder(
@@ -1566,3 +1575,4 @@ def test_reminder_schema_migrates_old_database(tmp_path):
     assert items[0]["advance_days"] == 0
     assert items[0]["repeat_days"] == 0
     assert items[0]["repeat_until"] == ""
+    assert items[0]["repeats_from"] == 0

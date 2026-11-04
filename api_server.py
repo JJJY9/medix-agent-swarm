@@ -1703,7 +1703,7 @@ async def export_reminders_ics(
             "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
         ])
         repeat_days = int(item.get("repeat_days") or 0)
-        if repeat_days > 0:
+        if repeat_days > 0 and not item.get("done"):
             rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
             until = str(item.get("repeat_until") or "")[:10].replace("-", "")
             if until:

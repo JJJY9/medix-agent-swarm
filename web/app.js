@@ -5005,6 +5005,7 @@ let metricSummaryRequestSeq = 0;
 let metricWeeklyRequestSeq = 0;
 let metricsOffset = 0;
 let metricItemsCache = [];
+let homeGlanceRequestSeq = 0;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -6142,7 +6143,6 @@ function syncReminderRepeatFields() {
     0, Math.min(365, Number(els.reminderRepeat.value) || 0)
   ));
   els.reminderUntilWrap.hidden = repeat <= 0;
-  if (repeat <= 0) els.reminderUntil.value = '';
 }
 
 function reminderDueCountdown(item) {
@@ -6618,14 +6618,14 @@ function renderHomeGlance(reminders, metrics) {
   for (const item of metrics || []) {
     if (!latest[item.metric]) latest[item.metric] = item;
   }
-  const metricTypes = [
-    'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
-    'waist', 'phq9', 'gad7',
-  ];
-  const recent = metricTypes
-    .filter((metric) => latest[metric])
+  const recent = Object.values(latest)
+    .sort(
+      (a, b) => String(b.measured_at).localeCompare(String(a.measured_at))
+    )
     .slice(0, 3)
-    .map((metric) => `${METRIC_NAMES[metric]} ${formatMetricValue(latest[metric])}`);
+    .map(
+      (item) => `${METRIC_NAMES[item.metric]} ${formatMetricValue(item)}`
+    );
   const metricValue = recent.length ? recent.join(' · ') : '暂无健康记录';
   const metricSub = recent.length ? '点击打开健康记录' : '点击录入第一条记录';
 
@@ -6640,20 +6640,26 @@ function renderHomeGlance(reminders, metrics) {
 
 async function loadHomeGlance() {
   if (!els.homeGlance) return;
+  const requestSeq = ++homeGlanceRequestSeq;
   try {
     const [remindersRes, metricsRes] = await Promise.all([
       fetch('/api/reminders'),
       fetch('/api/metrics?limit=20'),
     ]);
-    const reminders = remindersRes.ok
-      ? (await remindersRes.json()).reminders || []
-      : [];
-    const metrics = metricsRes.ok
-      ? (await metricsRes.json()).metrics || []
-      : [];
+    if (!remindersRes.ok || !metricsRes.ok) {
+      if (requestSeq === homeGlanceRequestSeq) {
+        els.homeGlance.hidden = true;
+      }
+      return;
+    }
+    const reminders = (await remindersRes.json()).reminders || [];
+    const metrics = (await metricsRes.json()).metrics || [];
+    if (requestSeq !== homeGlanceRequestSeq) return;
     renderHomeGlance(reminders, metrics);
   } catch {
-    els.homeGlance.hidden = true;
+    if (requestSeq === homeGlanceRequestSeq) {
+      els.homeGlance.hidden = true;
+    }
   }
 }
 
@@ -6675,7 +6681,7 @@ async function loadReminders() {
     const data = await res.json();
     if (requestSeq !== remindersRequestSeq) return;
     reminderItemsCache = data.reminders || [];
-    renderFilteredReminders();
+    refreshReminderViews();
     refreshReminderBadge();
     loadHomeGlance();
   } catch (err) {
@@ -6804,6 +6810,10 @@ async function addReminder() {
   }
 
   const editingId = editingReminderId;
+  const repeatDays = Math.trunc(Math.max(
+    0,
+    Math.min(365, Number(els.reminderRepeat.value) || 0)
+  ));
   const payload = {
     title,
     due_at: dueAt,
@@ -6813,11 +6823,8 @@ async function addReminder() {
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
     )),
-    repeat_days: Math.trunc(Math.max(
-      0,
-      Math.min(365, Number(els.reminderRepeat.value) || 0)
-    )),
-    repeat_until: els.reminderUntil.value || '',
+    repeat_days: repeatDays,
+    repeat_until: repeatDays > 0 ? (els.reminderUntil.value || '') : '',
   };
   if (!editingId) payload.session_id = sessionId || '';
 
@@ -7046,6 +7053,10 @@ async function scheduleMetricFollowUp(item) {
   els.reminderNote.value =
     `上次记录：${formatMetricValue(item)}（${formatTime(item.measured_at)}）`;
   if (els.remindersSearch) els.remindersSearch.value = '';
+  if (els.remindersOverdueOnly) {
+    els.remindersOverdueOnly.checked = false;
+  }
+  reminderCalendarDay = '';
   if (els.remindersProfile) {
     els.remindersProfile.value = item.profile || '';
     loadReminders();

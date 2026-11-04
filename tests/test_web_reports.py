@@ -425,3 +425,11 @@ def test_app_js_report_target_direction_and_repeat(client):
 
     assert "const direction = targetIsLowerBound(target.metric)" in app_js
     assert "天重复`" in app_js
+
+
+def test_app_js_home_glance_guards(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "homeGlanceRequestSeq" in app_js
+    assert "Object.values(latest)" in app_js
+    assert "remindersResult.hidden" not in app_js

@@ -505,6 +505,12 @@ def test_reminders_repeat_completion(client_and_store):
     assert again.json()["next"] is None
     assert len(client.get("/api/reminders").json()["reminders"]) == 1
 
+    reopened = client.post(f"/api/reminders/{created['id']}/reopen")
+    pending = client.get("/api/reminders").json()["reminders"]
+    assert reopened.status_code == 200
+    assert [item["id"] for item in pending] == [created["id"]]
+    assert pending[0]["repeats_from"] == 0
+
     limited = client.post(
         "/api/reminders",
         json={
@@ -535,3 +541,20 @@ def test_reminders_ics_repeat_rule(client_and_store):
     text = client.get("/api/reminders/export.ics").content.decode("utf-8")
 
     assert "RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261231" in text
+
+
+def test_reminders_ics_skips_rrule_for_done(client_and_store):
+    client, _store = client_and_store
+
+    created = client.post(
+        "/api/reminders",
+        json={"title": "服药", "due_at": "2026-11-10", "repeat_days": 3},
+    ).json()["reminder"]
+    client.post(f"/api/reminders/{created['id']}/complete")
+
+    text = client.get(
+        "/api/reminders/export.ics", params={"include_done": True}
+    ).content.decode("utf-8")
+
+    assert "STATUS:COMPLETED" in text
+    assert text.count("RRULE:FREQ=DAILY;INTERVAL=3") == 1
