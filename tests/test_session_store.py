@@ -669,6 +669,21 @@ def test_list_session_profiles(store):
     assert profiles == {"母亲": 1, "孩子": 1}
 
 
+def test_list_used_profile_names(store):
+    store.save_profile("档案A", {"age": "30"})
+    store.save_exchange("s1", "问题", "答复")
+    store.ensure_session("s1", "", "档案B")
+    store.add_reminder("复查", "2026-11-10", profile="档案C")
+    store.set_metric_target("档案D", "weight", 70)
+    store.add_metric(
+        "档案E", "weight", 60, measured_at="2026-11-01T08:00"
+    )
+
+    assert set(store.list_used_profile_names()) == {
+        "档案A", "档案B", "档案C", "档案D", "档案E",
+    }
+
+
 def test_profiles_survive_export_and_import(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange("s1", "问题", "答复")

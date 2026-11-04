@@ -1876,6 +1876,17 @@ async def list_session_profiles():
     return {"profiles": profiles}
 
 
+@app.get("/api/profile-names")
+async def list_profile_names():
+    """所有数据表中出现过的档案名（含已删除档案留下的历史名字）。"""
+    from memory import get_session_store
+
+    names = await asyncio.to_thread(
+        get_session_store().list_used_profile_names
+    )
+    return {"profiles": names}
+
+
 @app.patch("/api/sessions/{session_id}/tags")
 async def set_session_tags(session_id: str, request: TagsRequest):
     """覆盖会话标签（最多 5 个，每个最长 20 字）。"""

@@ -458,6 +458,24 @@ class SessionStore:
             for row in rows
         ]
 
+    def list_used_profile_names(self) -> List[str]:
+        """返回所有数据表中出现过的档案名（含已删除档案留下的历史名字）。"""
+        names = set()
+        with self._lock:
+            for table, column in (
+                ("patient_profiles", "name"),
+                ("sessions", "profile"),
+                ("reminders", "profile"),
+                ("metric_targets", "profile"),
+                ("health_metrics", "profile"),
+            ):
+                rows = self._conn.execute(
+                    f"SELECT DISTINCT {column} AS name FROM {table}"
+                    f" WHERE {column} != ''"
+                ).fetchall()
+                names.update(row["name"] for row in rows)
+        return sorted(names)
+
     def save_exchange(
         self,
         session_id: str,
