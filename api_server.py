@@ -86,6 +86,7 @@ class ImportSessionsRequest(BaseModel):
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
     profiles: Optional[List[Dict[str, Any]]] = None
     health_metrics: Optional[List[Dict[str, Any]]] = None
+    metric_targets: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -852,6 +853,82 @@ async def export_sessions():
     return data
 
 
+@app.get("/api/sessions/export.csv")
+async def export_sessions_csv(
+    q: Optional[str] = None,
+    favorite: Optional[bool] = None,
+    days: int = 0,
+    archived: bool = False,
+    tag: Optional[str] = None,
+    profile: Optional[str] = None,
+):
+    """按当前筛选导出会话列表 CSV（带 BOM），用于表格分析。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    store = get_session_store()
+    query = q or ""
+    favorites_only = bool(favorite)
+    days = max(0, min(int(days or 0), 365))
+    profile = " ".join((profile or "").split())[:40] or None
+
+    items: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        batch = await asyncio.to_thread(
+            store.list_sessions,
+            200,
+            query,
+            offset,
+            favorites_only,
+            days,
+            archived,
+            tag,
+            profile,
+        )
+        items.extend(batch)
+        if len(batch) < 200:
+            break
+        offset += len(batch)
+
+    usage = await asyncio.to_thread(
+        store.usage_by_session, [item["id"] for item in items]
+    )
+    rows = [[
+        "会话编号", "标题", "档案", "标签", "收藏", "归档",
+        "消息数", "轮次", "Token", "模型调用", "创建时间", "更新时间",
+    ]]
+    for item in items:
+        stats = usage.get(item["id"], {})
+        rows.append([
+            item.get("id", ""),
+            item.get("title", ""),
+            item.get("profile", ""),
+            "、".join(item.get("tags") or []),
+            "是" if item.get("favorite") else "否",
+            "是" if item.get("archived") else "否",
+            item.get("message_count", 0),
+            stats.get("turns", 0),
+            (stats.get("usage") or {}).get("total_tokens", 0),
+            stats.get("llm_calls", 0),
+            item.get("created_at", ""),
+            item.get("updated_at", ""),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-sessions-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/api/sessions/import")
 async def import_sessions(request: ImportSessionsRequest):
     """导入备份文件；已存在的会话编号会跳过，不覆盖现有记录。"""
@@ -862,6 +939,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "sessions": request.sessions,
         "profiles": request.profiles,
         "health_metrics": request.health_metrics,
+        "metric_targets": request.metric_targets,
     }
     try:
         result = await asyncio.to_thread(
@@ -879,7 +957,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"imported={result.get('imported', 0)} "
             f"skipped={result.get('skipped', 0)} "
             f"profiles={result.get('profiles', 0)} "
-            f"metrics={result.get('metrics', 0)}"
+            f"metrics={result.get('metrics', 0)} "
+            f"targets={result.get('targets', 0)}"
         ),
     )
     return {"ok": True, **result}

@@ -812,3 +812,41 @@ def test_sessions_api_filters_by_profile(tmp_path, monkeypatch):
     assert data["summary"]["sessions"] == 1
     assert missing.status_code == 200
     assert missing.json()["sessions"] == []
+
+
+def test_sessions_csv_export_respects_filters(tmp_path, monkeypatch):
+    import csv
+    import io
+
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "妈妈的头痛", "答复一",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.ensure_session("s1", "", "母亲")
+    store.set_tags("s1", ["复诊"])
+    store.save_exchange("s2", "孩子发烧", "答复二")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get(
+            "/api/sessions/export.csv", params={"profile": "母亲"}
+        )
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    text = response.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0][0] == "会话编号"
+    assert len(rows) == 2
+    row = rows[1]
+    assert row[0] == "s1"
+    assert row[1] == "妈妈的头痛"
+    assert row[2] == "母亲"
+    assert row[3] == "复诊"
+    assert row[6] == "2"
+    assert row[7] == "1"
+    assert row[8] == "10"
+    assert row[9] == "1"
