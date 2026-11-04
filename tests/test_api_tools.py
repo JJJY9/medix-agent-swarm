@@ -466,3 +466,42 @@ def test_new_scores_reject_invalid_values(client):
     assert qsofa.status_code == 422
     assert fib4.status_code == 422
     assert meld.status_code == 422
+
+
+def test_stop_bang_api(client):
+    low = client.post("/api/tools/stop-bang", json={})
+    high = client.post(
+        "/api/tools/stop-bang",
+        json={
+            "snoring": True,
+            "tired": True,
+            "observed_apnea": True,
+            "hypertension": True,
+            "bmi_gt_35": True,
+            "age_gt_50": True,
+            "neck_gt_40cm": True,
+            "male": True,
+        },
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低风险"
+    assert high.status_code == 200
+    assert high.json()["score"] == 8
+    assert high.json()["risk"] == "高风险"
+
+
+def test_padua_api(client):
+    low = client.post("/api/tools/padua", json={})
+    high = client.post(
+        "/api/tools/padua",
+        json={"active_cancer": True, "previous_vte": True, "age_ge_70": True},
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低风险"
+    assert high.status_code == 200
+    assert high.json()["score"] == 7
+    assert high.json()["risk"] == "高风险"

@@ -12,8 +12,10 @@ from core.clinical_tools import (
     calculate_gcs,
     calculate_has_bled,
     calculate_meld,
+    calculate_padua,
     calculate_phq9,
     calculate_qsofa,
+    calculate_stop_bang,
     calculate_wells_dvt,
     calculate_wells_pe,
 )
@@ -382,3 +384,56 @@ def test_meld_score_and_dialysis():
     assert dialysis["meld"] == 20
     assert dialysis["risk"] == "高风险"
     assert "（透析）" in dialysis["criteria"][2]
+
+
+def test_stop_bang_thresholds():
+    low = calculate_stop_bang()
+    assert low["score"] == 0
+    assert low["risk"] == "低风险"
+
+    middle = calculate_stop_bang(
+        snoring=True, tired=True, age_gt_50=True
+    )
+    assert middle["score"] == 3
+    assert middle["risk"] == "中风险"
+
+    high = calculate_stop_bang(
+        snoring=True,
+        tired=True,
+        observed_apnea=True,
+        hypertension=True,
+        bmi_gt_35=True,
+    )
+    assert high["score"] == 5
+    assert high["risk"] == "高风险"
+    assert len(high["criteria"]) == 5
+
+
+def test_padua_scores():
+    low = calculate_padua()
+    assert low["score"] == 0
+    assert low["risk"] == "低风险"
+
+    high = calculate_padua(
+        active_cancer=True, previous_vte=True, age_ge_70=True
+    )
+    assert high["score"] == 7
+    assert high["risk"] == "高风险"
+    assert len(high["criteria"]) == 3
+
+    everything = calculate_padua(
+        active_cancer=True,
+        previous_vte=True,
+        reduced_mobility=True,
+        thrombophilia=True,
+        recent_trauma_surgery=True,
+        age_ge_70=True,
+        heart_respiratory_failure=True,
+        acute_mi_stroke=True,
+        acute_infection_rheumatologic=True,
+        bmi_ge_30=True,
+        hormonal_treatment=True,
+    )
+    assert everything["score"] == 20
+    assert everything["risk"] == "高风险"
+    assert len(everything["criteria"]) == 11

@@ -582,3 +582,91 @@ def calculate_meld(
         ],
         "note": "MELD 用于终末期肝病短期预后评估；不能替代肝移植评估，胆红素与肌酐需按 mg/dL 输入。",
     }
+
+def calculate_stop_bang(
+    snoring: bool = False,
+    tired: bool = False,
+    observed_apnea: bool = False,
+    hypertension: bool = False,
+    bmi_gt_35: bool = False,
+    age_gt_50: bool = False,
+    neck_gt_40cm: bool = False,
+    male: bool = False,
+) -> Dict[str, object]:
+    """STOP-BANG 阻塞性睡眠呼吸暂停筛查（0–8 分）。"""
+    criteria = []
+    if snoring:
+        criteria.append("打鼾（Snoring）")
+    if tired:
+        criteria.append("白天嗜睡/疲乏（Tired）")
+    if observed_apnea:
+        criteria.append("目击呼吸暂停（Observed）")
+    if hypertension:
+        criteria.append("高血压（Pressure）")
+    if bmi_gt_35:
+        criteria.append("BMI > 35 kg/m²（B）")
+    if age_gt_50:
+        criteria.append("年龄 > 50 岁（A）")
+    if neck_gt_40cm:
+        criteria.append("颈围 > 40 cm（N）")
+    if male:
+        criteria.append("男性（G）")
+
+    score = len(criteria)
+    if score >= 5:
+        risk = "高风险"
+    elif score >= 3:
+        risk = "中风险"
+    else:
+        risk = "低风险"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "STOP-BANG 用于阻塞性睡眠呼吸暂停筛查；≥3 分建议进一步睡眠监测，确诊与治疗需专科评估。",
+    }
+
+
+def calculate_padua(
+    active_cancer: bool = False,
+    previous_vte: bool = False,
+    reduced_mobility: bool = False,
+    thrombophilia: bool = False,
+    recent_trauma_surgery: bool = False,
+    age_ge_70: bool = False,
+    heart_respiratory_failure: bool = False,
+    acute_mi_stroke: bool = False,
+    acute_infection_rheumatologic: bool = False,
+    bmi_ge_30: bool = False,
+    hormonal_treatment: bool = False,
+) -> Dict[str, object]:
+    """Padua 内科住院患者静脉血栓风险评分。"""
+    criteria = []
+    score = 0
+
+    def add(points: int, label: str, present: bool) -> None:
+        nonlocal score
+        if present:
+            score += points
+            criteria.append(f"{label}（+{points}）")
+
+    add(3, "活动性肿瘤", active_cancer)
+    add(3, "既往 VTE", previous_vte)
+    add(3, "活动受限", reduced_mobility)
+    add(3, "已知易栓症", thrombophilia)
+    add(2, "近期创伤或手术", recent_trauma_surgery)
+    add(1, "年龄 ≥ 70 岁", age_ge_70)
+    add(1, "心衰或呼吸衰竭", heart_respiratory_failure)
+    add(1, "急性心肌梗死或缺血性卒中", acute_mi_stroke)
+    add(1, "急性感染或风湿性疾病", acute_infection_rheumatologic)
+    add(1, "BMI ≥ 30 kg/m²", bmi_ge_30)
+    add(1, "正在接受激素治疗", hormonal_treatment)
+
+    risk = "高风险" if score >= 4 else "低风险"
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "Padua 评分用于内科住院患者静脉血栓风险分层；≥4 分提示高风险，是否预防性抗凝需医生结合出血风险决定。",
+    }
