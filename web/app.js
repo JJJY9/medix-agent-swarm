@@ -379,6 +379,7 @@ const els = {
   symptomStatus: document.getElementById('symptom-status'),
   symptomList: document.getElementById('symptom-list'),
   symptomEmpty: document.getElementById('symptom-empty'),
+  symptomSearch: document.getElementById('symptom-search'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -7167,6 +7168,7 @@ async function scheduleMetricFollowUp(item) {
 let editingSymptomId = null;
 let symptomSaving = false;
 let symptomRequestSeq = 0;
+let symptomItemsCache = [];
 
 function setSymptomStatus(text, isError = false) {
   if (!els.symptomStatus) return;
@@ -7185,10 +7187,30 @@ function resetSymptomForm() {
   els.symptomCancel.hidden = true;
 }
 
+function filterSymptoms(items) {
+  const query = els.symptomSearch
+    ? String(els.symptomSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [item.symptom, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
 function renderSymptoms(items) {
   if (!els.symptomList) return;
   els.symptomList.replaceChildren();
   els.symptomEmpty.hidden = items.length > 0;
+  const query = els.symptomSearch
+    ? String(els.symptomSearch.value || '').trim()
+    : '';
+  els.symptomEmpty.textContent = query
+    ? `没有匹配「${query}」的症状记录。`
+    : '还没有症状记录。';
   if (
     editingSymptomId
     && !items.some((item) => item.id === editingSymptomId)
@@ -7265,7 +7287,8 @@ async function loadSymptoms() {
     if (!res.ok) return;
     const data = await res.json();
     if (requestSeq !== symptomRequestSeq) return;
-    renderSymptoms(data.symptoms || []);
+    symptomItemsCache = data.symptoms || [];
+    renderSymptoms(filterSymptoms(symptomItemsCache));
   } catch {
     // 症状加载失败不影响健康记录
   }
@@ -9721,6 +9744,9 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
 els.symptomExport.addEventListener('click', exportSymptomsCsv);
+els.symptomSearch.addEventListener('input', () => {
+  renderSymptoms(filterSymptoms(symptomItemsCache));
+});
 els.symptomCancel.addEventListener('click', () => {
   resetSymptomForm();
   setSymptomStatus('已取消编辑。');
