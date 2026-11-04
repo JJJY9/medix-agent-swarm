@@ -631,6 +631,45 @@ async def recent_feedback(limit: int = 10, rating: int = -1):
     return {"feedback": items}
 
 
+@app.get("/api/feedback/export.csv")
+async def export_feedback_csv(rating: int = -1):
+    """导出会诊反馈 CSV（默认待改进），带 BOM。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    if rating not in (-1, 1):
+        raise HTTPException(status_code=400, detail="rating 只能是 1 或 -1")
+
+    items = await asyncio.to_thread(
+        get_session_store().recent_feedback, 100000, rating
+    )
+    rows = [["更新时间", "会话编号", "会话标题", "评分", "反馈原因"]]
+    for item in items:
+        rows.append([
+            item.get("updated_at", ""),
+            item.get("session_id", ""),
+            item.get("session_title", ""),
+            "有用" if item.get("rating") == 1 else "待改进",
+            item.get("comment", ""),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-feedback-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/insights/quality")
 async def quality_insights(days: int = 30):
     """最近一段时间的会诊质量概览（急症、用药提示、反馈与平均用量）。"""
