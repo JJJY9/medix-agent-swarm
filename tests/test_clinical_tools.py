@@ -7,10 +7,13 @@ from core.clinical_tools import (
     calculate_child_pugh,
     calculate_curb65,
     calculate_egfr,
+    calculate_fib4,
     calculate_gad7,
     calculate_gcs,
     calculate_has_bled,
+    calculate_meld,
     calculate_phq9,
+    calculate_qsofa,
     calculate_wells_dvt,
     calculate_wells_pe,
 )
@@ -338,3 +341,44 @@ def test_wells_pe_all_criteria():
     assert result["score"] == 12.5
     assert result["risk"] == "高概率"
     assert len(result["criteria"]) == 7
+
+
+def test_qsofa_thresholds():
+    low = calculate_qsofa(respiratory_rate=18, systolic_bp=120, altered_mentation=False)
+    assert low["score"] == 0
+    assert low["risk"] == "低风险"
+    assert low["criteria"] == []
+
+    high = calculate_qsofa(respiratory_rate=22, systolic_bp=100, altered_mentation=True)
+    assert high["score"] == 3
+    assert high["risk"] == "高风险"
+    assert len(high["criteria"]) == 3
+
+
+def test_fib4_thresholds():
+    low = calculate_fib4(age=30, ast=20, alt=20, platelets=250)
+    assert low["fib4"] == 0.54
+    assert low["risk"] == "低风险"
+
+    middle = calculate_fib4(age=50, ast=40, alt=40, platelets=200)
+    assert middle["fib4"] == 1.58
+    assert middle["risk"] == "中风险"
+
+    high = calculate_fib4(age=70, ast=100, alt=50, platelets=80)
+    assert high["fib4"] == 12.37
+    assert high["risk"] == "高风险"
+
+
+def test_meld_score_and_dialysis():
+    low = calculate_meld(bilirubin=1, inr=1, creatinine=1)
+    assert low["meld"] == 6
+    assert low["risk"] == "低风险"
+
+    high = calculate_meld(bilirubin=3, inr=2, creatinine=2)
+    assert high["meld"] == 25
+    assert high["risk"] == "高风险"
+
+    dialysis = calculate_meld(bilirubin=1, inr=1, creatinine=1, dialysis=True)
+    assert dialysis["meld"] == 20
+    assert dialysis["risk"] == "高风险"
+    assert "（透析）" in dialysis["criteria"][2]

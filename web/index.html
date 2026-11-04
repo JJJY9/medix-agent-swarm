@@ -671,6 +671,9 @@
         <option value="wells">Wells DVT 概率评分</option>
         <option value="wells-pe">Wells PE 概率评分</option>
         <option value="interactions">药物相互作用检查</option>
+        <option value="qsofa">qSOFA 脓毒症筛查</option>
+        <option value="fib4">FIB-4 肝纤维化指数</option>
+        <option value="meld">MELD 终末期肝病评分</option>
       </select>
     </label>
 
@@ -880,6 +883,50 @@
         <input id="calc-interactions-allergies" type="text" maxlength="200" placeholder="如：青霉素">
       </label>
       <button type="submit" class="btn-quiet">检查相互作用</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-qsofa" data-tool="qsofa" hidden>
+      <p class="calc-hint">床旁脓毒症风险筛查，≥2 分提示高风险。</p>
+      <label class="calc-field">呼吸频率（次/分）
+        <input id="calc-qsofa-rr" type="number" min="1" max="80" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">收缩压（mmHg）
+        <input id="calc-qsofa-sbp" type="number" min="1" max="300" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-check"><input type="checkbox" id="calc-qsofa-mentation"> 意识状态改变（GCS &lt; 15）</label>
+      <button type="submit" class="btn-quiet">计算 qSOFA</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-fib4" data-tool="fib4" hidden>
+      <p class="calc-hint">FIB-4 = 年龄 × AST /（血小板 × √ALT），用于慢性肝病纤维化风险分层。</p>
+      <label class="calc-field">年龄（岁）
+        <input id="calc-fib4-age" type="number" min="18" max="120" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">AST（U/L）
+        <input id="calc-fib4-ast" type="number" min="1" max="10000" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">ALT（U/L）
+        <input id="calc-fib4-alt" type="number" min="1" max="10000" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">血小板（×10⁹/L）
+        <input id="calc-fib4-platelets" type="number" min="1" max="2000" step="1" inputmode="numeric" required>
+      </label>
+      <button type="submit" class="btn-quiet">计算 FIB-4</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-meld" data-tool="meld" hidden>
+      <p class="calc-hint">经典 MELD（非 MELD-Na），胆红素与肌酐单位 mg/dL。</p>
+      <label class="calc-field">总胆红素（mg/dL）
+        <input id="calc-meld-bilirubin" type="number" min="0.1" max="100" step="0.1" inputmode="decimal" required>
+      </label>
+      <label class="calc-field">INR
+        <input id="calc-meld-inr" type="number" min="0.1" max="20" step="0.1" inputmode="decimal" required>
+      </label>
+      <label class="calc-field">血肌酐（mg/dL）
+        <input id="calc-meld-creatinine" type="number" min="0.1" max="30" step="0.1" inputmode="decimal" required>
+      </label>
+      <label class="calc-check"><input type="checkbox" id="calc-meld-dialysis"> 近一周规律透析（肌酐按 4.0 计）</label>
+      <button type="submit" class="btn-quiet">计算 MELD</button>
     </form>
 
     <section class="calc-result" id="calc-result" hidden aria-live="polite">
