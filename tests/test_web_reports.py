@@ -604,6 +604,17 @@ def test_app_js_ships_medication_reminder_shortcut(client):
     assert "已代入用药提醒" in app_js
 
 
+def test_app_js_ships_medication_filters(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="medication-search"' in html
+    assert 'id="medication-status-filter"' in html
+    assert "function filterMedications" in app_js
+    assert ".medication-filters" in css
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

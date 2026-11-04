@@ -716,6 +716,15 @@
         </div>
       </div>
       <p class="metrics-status" id="medication-status" role="status" hidden></p>
+      <label class="sr-only" for="medication-search">搜索用药</label>
+      <div class="medication-filters">
+        <input id="medication-search" type="search" placeholder="搜索药名、剂量、备注或档案">
+        <select id="medication-status-filter" aria-label="按用药状态筛选">
+          <option value="">全部状态</option>
+          <option value="active">在用</option>
+          <option value="inactive">停用</option>
+        </select>
+      </div>
       <ul class="metrics-list" id="medication-list"></ul>
       <p class="metrics-empty" id="medication-empty" hidden>还没有用药记录。</p>
     </details>
