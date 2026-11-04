@@ -9291,6 +9291,20 @@ els.reminderNote.addEventListener('keydown', (event) => {
     addReminder();
   }
 });
+for (const input of [
+  els.reminderDue,
+  els.reminderAdvance,
+  els.reminderRepeat,
+  els.reminderUntil,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addReminder();
+    }
+  });
+}
 els.metricType.addEventListener('change', () => {
   setMetricType(els.metricType.value);
   refreshMetrics();
@@ -9314,6 +9328,21 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
   }
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
+for (const input of [
+  els.metricSystolic,
+  els.metricDiastolic,
+  els.metricValue,
+  els.metricTime,
+  els.metricNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addMetricRecord();
+    }
+  });
+}
 els.homeGlanceReminders.addEventListener('click', () => {
   openReminders();
 });
