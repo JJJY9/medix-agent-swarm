@@ -327,3 +327,24 @@ def test_wells_dvt_api(client):
     assert high.json()["score"] == 3
     assert high.json()["risk"] == "高概率"
     assert len(high.json()["criteria"]) == 3
+
+
+def test_wells_pe_api(client):
+    low = client.post("/api/tools/wells-pe", json={})
+    high = client.post(
+        "/api/tools/wells-pe",
+        json={
+            "clinical_signs_dvt": True,
+            "pe_more_likely": True,
+            "heart_rate_gt_100": True,
+        },
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低概率"
+
+    assert high.status_code == 200
+    assert high.json()["score"] == 7.5
+    assert high.json()["risk"] == "高概率"
+    assert len(high.json()["criteria"]) == 3

@@ -178,6 +178,14 @@ const els = {
   calcWellsCollateral: document.getElementById('calc-wells-collateral'),
   calcWellsPrevious: document.getElementById('calc-wells-previous'),
   calcWellsAlternative: document.getElementById('calc-wells-alternative'),
+  calcFormWellsPe: document.getElementById('calc-form-wells-pe'),
+  calcWellsPeDvt: document.getElementById('calc-wellspe-dvt'),
+  calcWellsPeLikely: document.getElementById('calc-wellspe-likely'),
+  calcWellsPeHr: document.getElementById('calc-wellspe-hr'),
+  calcWellsPeImmobilization: document.getElementById('calc-wellspe-immobilization'),
+  calcWellsPePrevious: document.getElementById('calc-wellspe-previous'),
+  calcWellsPeHemoptysis: document.getElementById('calc-wellspe-hemoptysis'),
+  calcWellsPeMalignancy: document.getElementById('calc-wellspe-malignancy'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -4399,6 +4407,7 @@ function setCalcTool(tool) {
     els.calcFormHasBled,
     els.calcFormGcs,
     els.calcFormWells,
+    els.calcFormWellsPe,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -4798,6 +4807,33 @@ function submitChildPugh(event) {
       detail: `分级：Child-Pugh ${data.grade}`,
       note: data.note,
       level: data.grade === 'C' ? 'warning' : '',
+    })
+  );
+}
+
+function submitWellsPe(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/wells-pe',
+    {
+      clinical_signs_dvt: els.calcWellsPeDvt.checked,
+      pe_more_likely: els.calcWellsPeLikely.checked,
+      heart_rate_gt_100: els.calcWellsPeHr.checked,
+      immobilization_or_surgery: els.calcWellsPeImmobilization.checked,
+      previous_dvt_pe: els.calcWellsPePrevious.checked,
+      hemoptysis: els.calcWellsPeHemoptysis.checked,
+      malignancy: els.calcWellsPeMalignancy.checked,
+    },
+    (data) => ({
+      title: 'Wells PE 结果',
+      main: `评分 ${data.score} 分`,
+      detail:
+        `概率分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '高概率' ? 'warning' : '',
     })
   );
 }
@@ -5617,6 +5653,7 @@ els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);
 els.calcFormWells.addEventListener('submit', submitWells);
+els.calcFormWellsPe.addEventListener('submit', submitWellsPe);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;
