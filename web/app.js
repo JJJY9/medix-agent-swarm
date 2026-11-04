@@ -8282,7 +8282,7 @@ async function send(question) {
         question,
         session_id: sid,
         enable_swarm: !els.ctxSingle.checked,
-        context: readPatientContext(),
+        context: await buildConsultContext(),
         patient_profile: els.profileSelect.value || '',
       }),
       signal: controller.signal,
@@ -8567,6 +8567,46 @@ function readPatientContext() {
   const allergies = els.ctxAllergies.value.trim();
   if (allergies) context.allergies = allergies;
 
+  return context;
+}
+
+async function buildConsultContext() {
+  const context = readPatientContext();
+  const profile = els.profileSelect.value || '';
+  try {
+    const [metricsRes, remindersRes] = await Promise.all([
+      fetch(`/api/metrics?limit=6&profile=${encodeURIComponent(profile)}`),
+      fetch('/api/reminders'),
+    ]);
+    if (metricsRes.ok) {
+      const metrics = (await metricsRes.json()).metrics || [];
+      const latest = {};
+      for (const item of metrics) {
+        if (!latest[item.metric]) latest[item.metric] = item;
+      }
+      const recent = Object.values(latest)
+        .slice(0, 4)
+        .map(
+          (item) => `${METRIC_NAMES[item.metric]} ${formatMetricValue(item)}`
+            + `（${formatTime(item.measured_at)}）`
+        );
+      if (recent.length) context.recent_metrics = recent.join('；');
+    }
+    if (remindersRes.ok) {
+      const reminders = (await remindersRes.json()).reminders || [];
+      const scoped = profile
+        ? reminders.filter((item) => (item.profile || '') === profile)
+        : reminders.filter((item) => !item.profile);
+      const pending = scoped
+        .slice(0, 4)
+        .map(
+          (item) => `${item.title}（${formatReminderDue(item.due_at)}）`
+        );
+      if (pending.length) context.pending_reminders = pending.join('；');
+    }
+  } catch {
+    // 辅助信息加载失败时不影响本次会诊
+  }
   return context;
 }
 

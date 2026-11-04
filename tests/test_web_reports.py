@@ -473,3 +473,11 @@ def test_app_js_ships_reminder_due_quick(client):
     assert "reminderDueQuick" in app_js
     assert 'id="reminder-due-quick"' in html
     assert 'data-days="30"' in html
+
+
+def test_app_js_ships_consult_health_context(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "async function buildConsultContext" in app_js
+    assert "context: await buildConsultContext()" in app_js
+    assert "pending_reminders" in app_js
