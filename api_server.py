@@ -742,7 +742,7 @@ async def list_sessions(
     profile = profile or None
 
     store = get_session_store()
-    sessions, total, totals, feedback = await asyncio.gather(
+    sessions, total, combined = await asyncio.gather(
         asyncio.to_thread(
             store.list_sessions,
             limit,
@@ -764,16 +764,7 @@ async def list_sessions(
             profile,
         ),
         asyncio.to_thread(
-            store.usage_totals,
-            query,
-            favorites_only,
-            days,
-            archived,
-            tag,
-            profile,
-        ),
-        asyncio.to_thread(
-            store.feedback_totals,
+            store.session_totals,
             query,
             favorites_only,
             days,
@@ -782,6 +773,12 @@ async def list_sessions(
             profile,
         ),
     )
+    totals = {
+        "usage": combined["usage"],
+        "llm_calls": combined["llm_calls"],
+        "turns": combined["turns"],
+    }
+    feedback = combined["feedback"]
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
     )

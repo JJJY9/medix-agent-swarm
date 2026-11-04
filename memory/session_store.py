@@ -12,7 +12,7 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -255,6 +255,46 @@ def _days_cutoff(days: int) -> Optional[str]:
     if days <= 0:
         return None
     return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _session_filter_conditions(
+    query: str = "",
+    favorites_only: bool = False,
+    days: int = 0,
+    archived: Optional[bool] = None,
+    tag: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> Tuple[List[str], List[Any]]:
+    """构建历史列表/统计共用的 WHERE 条件与参数。"""
+    conditions: List[str] = []
+    params: List[Any] = []
+    if query:
+        conditions.append("""
+            (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
+             OR EXISTS (
+                 SELECT 1 FROM messages mm
+                  WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
+             ))
+        """)
+        like = _like_pattern(query)
+        params.extend([like, like, like])
+    if favorites_only:
+        conditions.append("s.favorite = 1")
+    if archived is not None:
+        conditions.append("s.archived = ?")
+        params.append(1 if archived else 0)
+    if tag:
+        conditions.append("s.tags LIKE ? ESCAPE '\\'")
+        params.append(_tag_like_pattern(tag))
+    profile = _normalize_profile_name(profile)
+    if profile:
+        conditions.append("s.profile = ?")
+        params.append(profile)
+    cutoff = _days_cutoff(days)
+    if cutoff:
+        conditions.append("s.updated_at >= ?")
+        params.append(cutoff)
+    return conditions, params
 
 
 class SessionStore:
@@ -568,34 +608,9 @@ class SessionStore:
                      ORDER BY m.id DESC LIMIT 1) AS last_answer
               FROM sessions s
         """
-        conditions: List[str] = []
-        params: List[Any] = []
-        if query:
-            conditions.append("""
-                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
-                 OR EXISTS (
-                     SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
-                 ))
-            """)
-            like = _like_pattern(query)
-            params.extend([like, like, like])
-        if favorites_only:
-            conditions.append("s.favorite = 1")
-        if archived is not None:
-            conditions.append("s.archived = ?")
-            params.append(1 if archived else 0)
-        if tag:
-            conditions.append("s.tags LIKE ? ESCAPE '\\'")
-            params.append(_tag_like_pattern(tag))
-        profile = _normalize_profile_name(profile)
-        if profile:
-            conditions.append("s.profile = ?")
-            params.append(profile)
-        cutoff = _days_cutoff(days)
-        if cutoff:
-            conditions.append("s.updated_at >= ?")
-            params.append(cutoff)
+        conditions, params = _session_filter_conditions(
+            query, favorites_only, days, archived, tag, profile
+        )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
@@ -649,34 +664,9 @@ class SessionStore:
     ) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
         sql = "SELECT COUNT(*) AS n FROM sessions s"
-        conditions: List[str] = []
-        params: List[Any] = []
-        if query:
-            conditions.append("""
-                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
-                 OR EXISTS (
-                     SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
-                 ))
-            """)
-            like = _like_pattern(query)
-            params.extend([like, like, like])
-        if favorites_only:
-            conditions.append("s.favorite = 1")
-        if archived is not None:
-            conditions.append("s.archived = ?")
-            params.append(1 if archived else 0)
-        if tag:
-            conditions.append("s.tags LIKE ? ESCAPE '\\'")
-            params.append(_tag_like_pattern(tag))
-        profile = _normalize_profile_name(profile)
-        if profile:
-            conditions.append("s.profile = ?")
-            params.append(profile)
-        cutoff = _days_cutoff(days)
-        if cutoff:
-            conditions.append("s.updated_at >= ?")
-            params.append(cutoff)
+        conditions, params = _session_filter_conditions(
+            query, favorites_only, days, archived, tag, profile
+        )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
 
@@ -800,34 +790,9 @@ class SessionStore:
               JOIN sessions s ON s.id = m.session_id
              WHERE m.role = 'assistant'
         """
-        conditions: List[str] = []
-        params: List[Any] = []
-        if query:
-            conditions.append("""
-                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
-                 OR EXISTS (
-                     SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
-                 ))
-            """)
-            like = _like_pattern(query)
-            params.extend([like, like, like])
-        if favorites_only:
-            conditions.append("s.favorite = 1")
-        if archived is not None:
-            conditions.append("s.archived = ?")
-            params.append(1 if archived else 0)
-        if tag:
-            conditions.append("s.tags LIKE ? ESCAPE '\\'")
-            params.append(_tag_like_pattern(tag))
-        profile = _normalize_profile_name(profile)
-        if profile:
-            conditions.append("s.profile = ?")
-            params.append(profile)
-        cutoff = _days_cutoff(days)
-        if cutoff:
-            conditions.append("s.updated_at >= ?")
-            params.append(cutoff)
+        conditions, params = _session_filter_conditions(
+            query, favorites_only, days, archived, tag, profile
+        )
         if conditions:
             sql += " AND " + " AND ".join(conditions)
 
@@ -860,34 +825,9 @@ class SessionStore:
               JOIN sessions s ON s.id = m.session_id
              WHERE m.role = 'assistant'
         """
-        conditions: List[str] = []
-        params: List[Any] = []
-        if query:
-            conditions.append("""
-                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
-                 OR EXISTS (
-                     SELECT 1 FROM messages mm
-                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
-                 ))
-            """)
-            like = _like_pattern(query)
-            params.extend([like, like, like])
-        if favorites_only:
-            conditions.append("s.favorite = 1")
-        if archived is not None:
-            conditions.append("s.archived = ?")
-            params.append(1 if archived else 0)
-        if tag:
-            conditions.append("s.tags LIKE ? ESCAPE '\\'")
-            params.append(_tag_like_pattern(tag))
-        profile = _normalize_profile_name(profile)
-        if profile:
-            conditions.append("s.profile = ?")
-            params.append(profile)
-        cutoff = _days_cutoff(days)
-        if cutoff:
-            conditions.append("s.updated_at >= ?")
-            params.append(cutoff)
+        conditions, params = _session_filter_conditions(
+            query, favorites_only, days, archived, tag, profile
+        )
         if conditions:
             sql += " AND " + " AND ".join(conditions)
 
@@ -921,6 +861,71 @@ class SessionStore:
             "helpful": helpful,
             "unhelpful": unhelpful,
             "rate": round(helpful / total * 100, 1) if total else None,
+        }
+
+    def session_totals(
+        self,
+        query: str = "",
+        favorites_only: bool = False,
+        days: int = 0,
+        archived: Optional[bool] = None,
+        tag: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """一次扫描同时汇总匹配会话的用量与反馈（供历史列表使用）。"""
+        sql = """
+            SELECT m.metadata
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+             WHERE m.role = 'assistant'
+        """
+        conditions, params = _session_filter_conditions(
+            query, favorites_only, days, archived, tag, profile
+        )
+        if conditions:
+            sql += " AND " + " AND ".join(conditions)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        totals = _new_usage_entry()
+        helpful = 0
+        unhelpful = 0
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            _accumulate_usage(totals, metadata)
+
+            feedback = metadata.get("feedback")
+            if not isinstance(feedback, dict):
+                continue
+            try:
+                rating = int(feedback.get("rating"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if rating == 1:
+                helpful += 1
+            elif rating == -1:
+                unhelpful += 1
+
+        feedback_total = helpful + unhelpful
+        return {
+            "usage": totals["usage"],
+            "llm_calls": totals["llm_calls"],
+            "turns": totals["turns"],
+            "feedback": {
+                "total": feedback_total,
+                "helpful": helpful,
+                "unhelpful": unhelpful,
+                "rate": round(helpful / feedback_total * 100, 1)
+                if feedback_total
+                else None,
+            },
         }
 
     def recent_feedback(
