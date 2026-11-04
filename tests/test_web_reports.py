@@ -39,3 +39,13 @@ def test_app_js_ships_reminder_badge_and_notifications(client):
     assert "function enableReminderNotifications" in app_js
     assert "Notification.requestPermission" in app_js
     assert "reminders-count" in app_js
+
+
+def test_app_js_ships_session_compare(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function openCompare" in app_js
+    assert "function renderCompareColumn" in app_js
+    assert "function compareStats" in app_js
+    assert "history-bulk-compare" in app_js
+    assert "compare-drawer" in app_js

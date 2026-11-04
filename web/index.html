@@ -365,6 +365,7 @@
   <div class="history-bulk-bar" id="history-bulk-bar" hidden>
     <span class="history-bulk-count" id="history-bulk-count">已选 0 项</span>
     <button type="button" class="history-export" id="history-bulk-all">全选</button>
+    <button type="button" class="history-export" id="history-bulk-compare" disabled title="选择恰好两份会诊后可对比">对比</button>
     <button type="button" class="history-export" id="history-bulk-archive">归档</button>
     <button type="button" class="history-export" id="history-bulk-unarchive">移出归档</button>
     <button type="button" class="history-export" id="history-bulk-tags">标签</button>
@@ -623,6 +624,23 @@
     <p class="metrics-empty" id="reminders-empty" hidden>还没有随访提醒。</p>
     <p class="calc-disclaimer">提醒仅在页面打开时显示；开启浏览器通知后，到期当天会在页面打开时提示一次。</p>
   </div>
+</aside>
+
+<!-- 会诊对比抽屉 -->
+<div class="drawer-backdrop" id="compare-backdrop" hidden></div>
+<aside
+  class="drawer drawer-wide"
+  id="compare-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="compare-title"
+>
+  <div class="drawer-head">
+    <h2 id="compare-title">会诊对比</h2>
+    <button type="button" class="drawer-close" id="compare-close" aria-label="关闭会诊对比">×</button>
+  </div>
+  <div class="compare-body" id="compare-body"></div>
 </aside>
 
 <div class="drawer-backdrop" id="calc-backdrop" hidden></div>
