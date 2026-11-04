@@ -210,6 +210,33 @@ def test_reminders_csv_export(client_and_store):
     assert all("孩子复诊" not in line for line in lines)
 
 
+def test_reminders_ics_export(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={
+            "title": "复查;血常规",
+            "due_at": "2026-11-10",
+            "note": "空腹,带报告",
+            "profile": "母亲",
+        },
+    )
+
+    response = client.get(
+        "/api/reminders/export.ics", params={"profile": "母亲"}
+    )
+    text = response.content.decode("utf-8")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/calendar")
+    assert "BEGIN:VCALENDAR" in text
+    assert "END:VCALENDAR" in text
+    assert "DTSTART;VALUE=DATE:20261110" in text
+    assert "DTEND;VALUE=DATE:20261111" in text
+    assert "SUMMARY:复查\\;血常规" in text
+    assert "档案：母亲" in text
+
+
 def test_import_backup_preserves_reminders(client_and_store):
     client, _store = client_and_store
 

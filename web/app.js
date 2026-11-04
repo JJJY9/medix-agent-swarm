@@ -277,6 +277,7 @@ const els = {
   reminderNote: document.getElementById('reminder-note'),
   reminderAdd: document.getElementById('reminder-add'),
   remindersExport: document.getElementById('reminders-export'),
+  remindersExportIcs: document.getElementById('reminders-export-ics'),
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
@@ -5966,6 +5967,35 @@ async function exportRemindersCsv() {
   }
 }
 
+async function exportRemindersIcs() {
+  const params = new URLSearchParams();
+  const profile = els.remindersProfile ? els.remindersProfile.value : '';
+  if (profile) params.set('profile', profile);
+  if (els.remindersShowDone && els.remindersShowDone.checked) {
+    params.set('include_done', 'true');
+  }
+
+  try {
+    const res = await fetch(
+      `/api/reminders/export.ics?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/calendar;charset=utf-8' }),
+      `medix-reminders-${stamp}.ics`,
+      'text/calendar;charset=utf-8'
+    );
+    setRemindersStatus('已导出日历文件，可导入手机或桌面日历。');
+  } catch (err) {
+    window.alert(`导出日历时失败：${err.message || err}`);
+  }
+}
+
 function resetMetricForm() {
   editingMetricId = null;
   els.metricSystolic.value = '';
@@ -7963,6 +7993,7 @@ els.remindersNotify.addEventListener('click', enableReminderNotifications);
 els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
 els.remindersExport.addEventListener('click', exportRemindersCsv);
+els.remindersExportIcs.addEventListener('click', exportRemindersIcs);
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
