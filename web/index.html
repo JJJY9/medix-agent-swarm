@@ -168,6 +168,12 @@
       <form class="composer" id="composer" autocomplete="off">
         <label class="sr-only" for="input">您的主诉</label>
         <textarea id="input" rows="1" placeholder="请描述症状及持续时间…" maxlength="2000"></textarea>
+        <button type="button" class="voice" id="voice-toggle" hidden aria-pressed="false" title="语音输入" aria-label="语音输入">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="7.5" y="2.5" width="5" height="9" rx="2.5"/>
+            <path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/>
+          </svg>
+        </button>
         <button type="button" class="stop" id="stop" hidden>停止</button>
         <button type="submit" class="send" id="send">
           <span class="send-label">提交</span>

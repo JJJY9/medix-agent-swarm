@@ -20,3 +20,12 @@ def test_app_js_ships_standalone_html_report(client):
     assert "导出 HTML 报告" in app_js
     assert "medix-report-" in app_js
     assert "window.print()" in app_js
+
+
+def test_app_js_ships_voice_input(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function setupVoiceInput" in app_js
+    assert "function toggleVoice" in app_js
+    assert "webkitSpeechRecognition" in app_js
+    assert "voice-toggle" in app_js
