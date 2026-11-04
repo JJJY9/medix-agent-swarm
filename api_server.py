@@ -221,6 +221,10 @@ class AuditCRequest(BaseModel):
     q3: Literal[0, 1, 2, 3, 4]
 
 
+class MmrcRequest(BaseModel):
+    grade: Literal[0, 1, 2, 3, 4]
+
+
 class HasBledRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     hypertension: bool = False
@@ -2022,6 +2026,18 @@ async def tool_phq9(request: Phq9Request):
 
     try:
         result = calculate_phq9(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/mmrc")
+async def tool_mmrc(request: MmrcRequest):
+    """mMRC 呼吸困难量表分级。"""
+    from core.clinical_tools import calculate_mmrc
+
+    try:
+        result = calculate_mmrc(request.grade)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}

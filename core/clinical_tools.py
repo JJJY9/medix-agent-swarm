@@ -240,6 +240,40 @@ def calculate_gad7(answers: List[int]) -> Dict[str, object]:
     }
 
 
+MMRC_LABELS = {
+    0: "仅在剧烈活动时感到气短",
+    1: "快走或上缓坡时气短",
+    2: "因气短比同龄人走得慢，或按自己的速度行走时需要停下休息",
+    3: "平地行走约 100 米或几分钟后需要停下休息",
+    4: "因气短不能离家，或穿衣时即感气短",
+}
+
+
+def calculate_mmrc(grade: int) -> Dict[str, object]:
+    """mMRC 呼吸困难量表（0–4 级）。
+
+    仅用于呼吸困难程度评估，不能替代肺功能检查与医生诊断。
+    """
+    if isinstance(grade, bool) or not isinstance(grade, int):
+        raise ValueError("mMRC 等级必须是 0–4 的整数。")
+    if grade < 0 or grade > 4:
+        raise ValueError("mMRC 等级必须在 0–4 之间。")
+
+    if grade <= 1:
+        severity = "较轻"
+    elif grade == 2:
+        severity = "中等"
+    else:
+        severity = "较重"
+
+    return {
+        "grade": grade,
+        "label": MMRC_LABELS[grade],
+        "severity": severity,
+        "note": "mMRC 为呼吸困难分级量表，结果需结合肺功能与医生评估，不能替代诊断。",
+    }
+
+
 def calculate_audit_c(q1: int, q2: int, q3: int) -> Dict[str, object]:
     """AUDIT-C 酒精使用筛查评分（0–12 分）。
 

@@ -14,6 +14,7 @@ from core.clinical_tools import (
     calculate_gcs,
     calculate_has_bled,
     calculate_meld,
+    calculate_mmrc,
     calculate_morse_fall,
     calculate_padua,
     calculate_phq9,
@@ -509,3 +510,16 @@ def test_audit_c_thresholds():
         calculate_audit_c(5, 0, 0)
     with pytest.raises(ValueError):
         calculate_audit_c(True, 0, 0)
+
+
+def test_mmrc_grades():
+    assert calculate_mmrc(0)["severity"] == "较轻"
+    assert calculate_mmrc(1)["severity"] == "较轻"
+    assert calculate_mmrc(2)["severity"] == "中等"
+    assert calculate_mmrc(3)["severity"] == "较重"
+    assert calculate_mmrc(4)["label"].startswith("因气短不能离家")
+
+    with pytest.raises(ValueError):
+        calculate_mmrc(5)
+    with pytest.raises(ValueError):
+        calculate_mmrc(True)
