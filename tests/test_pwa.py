@@ -38,6 +38,16 @@ def test_pwa_icons_are_png(client):
         assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_manifest_ships_shortcuts(client):
+    response = client.get("/static/manifest.webmanifest")
+
+    assert response.status_code == 200
+    data = response.json()
+    urls = {item["url"] for item in data["shortcuts"]}
+    assert "/?action=new" in urls
+    assert "/?action=reminders" in urls
+
+
 def test_index_links_manifest_and_registers_worker(client):
     index = client.get("/").text
     app_js = client.get("/static/app.js").text

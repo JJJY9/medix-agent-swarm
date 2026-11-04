@@ -7,6 +7,32 @@
   "display": "standalone",
   "background_color": "#e9eff2",
   "theme_color": "#0b6e9e",
+  "shortcuts": [
+    {
+      "name": "新建会诊",
+      "short_name": "新建",
+      "url": "/?action=new",
+      "icons": [
+        {
+          "src": "/static/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "随访提醒",
+      "short_name": "提醒",
+      "url": "/?action=reminders",
+      "icons": [
+        {
+          "src": "/static/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
   "icons": [
     {
       "src": "/static/icons/icon-192.png",
