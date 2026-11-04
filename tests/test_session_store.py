@@ -976,6 +976,35 @@ def test_audit_log(store):
     assert store.log_action("") == 0
 
 
+def test_audit_log_filters(store, monkeypatch):
+    times = iter([
+        "2026-01-01T09:00:00",
+        "2026-02-15T10:00:00",
+        "2026-03-20T11:30:00",
+    ])
+    monkeypatch.setattr(SessionStore, "_now", staticmethod(lambda: next(times)))
+    store.log_action("session.delete", "s1", "用户删除")
+    store.log_action("session.import", "backup.zip", "imported=2")
+    store.log_action("session.delete", "s2", "批量删除")
+
+    deleted = store.list_audit_log(action="session.delete")
+    assert [item["target"] for item in deleted] == ["s2", "s1"]
+    assert [item["target"] for item in store.list_audit_log(keyword="backup")] == ["backup.zip"]
+    assert [item["target"] for item in store.list_audit_log(keyword="批量")] == ["s2"]
+    assert [
+        item["target"]
+        for item in store.list_audit_log(start="2026-02-01", end="2026-02-28")
+    ] == ["backup.zip"]
+    assert [
+        item["target"]
+        for item in store.list_audit_log(start="2026-03-20T11:00:00")
+    ] == ["s2"]
+    assert [item["target"] for item in store.list_audit_log(end="2026-01-01")] == ["s1"]
+    assert store.list_audit_log(action="missing") == []
+    assert store.list_audit_log(keyword="不存在") == []
+    assert store.list_audit_actions() == ["session.delete", "session.import"]
+
+
 def test_session_tags_and_filter(store):
     store.save_exchange(
         "s1", "高血压复诊", "答复一",

@@ -2251,6 +2251,46 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .diag-actions .btn-quiet { flex: 1; }
 
+.diag-audit-filters {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 14px;
+  padding: 10px 12px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule-soft);
+  border-radius: var(--radius);
+}
+
+.diag-audit-filters .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diag-audit-filters select,
+.diag-audit-filters input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+}
+
+.diag-audit-filters .sep {
+  flex: none;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.diag-audit-filters .row .btn-quiet {
+  flex: none;
+  padding: 6px 10px;
+}
+
 /* ---------- 临床计算工具抽屉 ---------- */
 
 .calc-body {

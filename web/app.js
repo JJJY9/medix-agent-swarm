@@ -112,6 +112,11 @@ const els = {
   diagPackages: document.getElementById('diag-packages'),
   diagAudit: document.getElementById('diag-audit'),
   diagAuditExport: document.getElementById('diag-audit-export'),
+  auditAction: document.getElementById('audit-action'),
+  auditKeyword: document.getElementById('audit-keyword'),
+  auditStart: document.getElementById('audit-start'),
+  auditEnd: document.getElementById('audit-end'),
+  auditFilterApply: document.getElementById('audit-filter-apply'),
   diagRefresh: document.getElementById('diag-refresh'),
   diagLlmTest: document.getElementById('diag-llm-test'),
   diagCopy: document.getElementById('diag-copy'),
@@ -4062,21 +4067,73 @@ const AUDIT_LABELS = {
   'metric.delete': '删除健康记录',
 };
 
+function auditFilterParams(withLimit = true) {
+  const params = new URLSearchParams();
+  const action = (els.auditAction.value || '').trim();
+  const keyword = (els.auditKeyword.value || '').trim();
+  const start = (els.auditStart.value || '').trim();
+  const end = (els.auditEnd.value || '').trim();
+  if (action) params.set('action', action);
+  if (keyword) params.set('q', keyword);
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  if (withLimit) params.set('limit', '20');
+  return params;
+}
+
+function auditFilterActive() {
+  return Boolean(
+    (els.auditAction.value || '').trim()
+    || (els.auditKeyword.value || '').trim()
+    || (els.auditStart.value || '').trim()
+    || (els.auditEnd.value || '').trim()
+  );
+}
+
+function populateAuditActions(actions) {
+  if (!els.auditAction) return;
+  const current = els.auditAction.value || '';
+  els.auditAction.replaceChildren();
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部动作';
+  els.auditAction.appendChild(all);
+
+  for (const action of actions || []) {
+    const option = document.createElement('option');
+    option.value = action;
+    option.textContent = AUDIT_LABELS[action] || action;
+    els.auditAction.appendChild(option);
+  }
+
+  els.auditAction.value = (actions || []).includes(current) ? current : '';
+}
+
 async function loadAuditLog() {
   try {
-    const res = await fetch('/api/audit?limit=10');
+    const res = await fetch(`/api/audit?${auditFilterParams().toString()}`);
     if (!res.ok) return;
     const data = await res.json();
     const actions = data.actions || [];
+    populateAuditActions(data.available_actions || []);
+
     const rows = actions.map((item) => {
       const label = AUDIT_LABELS[item.action] || item.action;
-      const meta = [item.target, formatTime(item.created_at)]
-        .filter(Boolean)
-        .join(' · ');
-      return diagRow(label, meta || '—');
+      const metaParts = [item.target, item.detail, formatTime(item.created_at)]
+        .filter(Boolean);
+      return diagRow(label, metaParts.join(' · ') || '—');
     });
-    if (!rows.length) rows.push(diagRow('暂无操作记录', '—'));
-    renderDiagSection(els.diagAudit, '最近操作', rows);
+    if (!rows.length) {
+      rows.push(diagRow(
+        auditFilterActive() ? '没有符合条件的记录' : '暂无操作记录',
+        '—'
+      ));
+    }
+    renderDiagSection(
+      els.diagAudit,
+      auditFilterActive() ? '筛选结果' : '最近操作',
+      rows
+    );
   } catch {
     // 审计加载失败不影响系统自检
   }
@@ -4089,7 +4146,8 @@ async function exportAuditCsv() {
   button.textContent = '…';
 
   try {
-    const res = await fetch('/api/audit/export.csv');
+    const params = auditFilterParams(false).toString();
+    const res = await fetch(`/api/audit/export.csv${params ? `?${params}` : ''}`);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
@@ -4101,7 +4159,7 @@ async function exportAuditCsv() {
       `medix-audit-${stamp}.csv`,
       'text/csv;charset=utf-8'
     );
-    button.textContent = '已导出';
+    button.textContent = auditFilterActive() ? '已导出筛选' : '已导出';
   } catch (err) {
     button.textContent = '失败';
     window.alert(`导出审计失败：${err.message || err}`);
@@ -6042,6 +6100,16 @@ els.diagLlmTest.addEventListener('click', testModelConnection);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
 els.diagAuditExport.addEventListener('click', exportAuditCsv);
+els.auditAction.addEventListener('change', loadAuditLog);
+els.auditFilterApply.addEventListener('click', loadAuditLog);
+els.auditKeyword.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    loadAuditLog();
+  }
+});
+els.auditStart.addEventListener('change', loadAuditLog);
+els.auditEnd.addEventListener('change', loadAuditLog);
 
 els.calcOpen.addEventListener('click', openCalc);
 els.calcClose.addEventListener('click', () => closeCalc(true));
