@@ -24,6 +24,15 @@ def client(monkeypatch, tmp_path):
     store.close()
 
 
+def test_status_reports_auto_archive_days(client, monkeypatch):
+    monkeypatch.setenv("MEDIX_AUTO_ARCHIVE_DAYS", "30")
+
+    status = client.get("/api/status")
+
+    assert status.status_code == 200
+    assert status.json()["auto_archive_days"] == 30
+
+
 def test_auth_disabled_by_default(client, monkeypatch):
     monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
 

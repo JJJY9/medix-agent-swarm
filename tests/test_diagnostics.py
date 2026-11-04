@@ -45,6 +45,7 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIX_PRICE_INPUT", "2")
     monkeypatch.setenv("MEDIX_PRICE_OUTPUT", "8")
     monkeypatch.setenv("MEDIX_MONTHLY_TOKEN_BUDGET", "100000")
+    monkeypatch.setenv("MEDIX_AUTO_ARCHIVE_DAYS", "14")
 
     runtime = check_runtime(tmp_path)
 
@@ -56,6 +57,7 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     assert runtime["rate_limit"] == 5
     assert runtime["pricing_configured"] is True
     assert runtime["monthly_token_budget"] == 100000
+    assert runtime["auto_archive_days"] == 14
     assert "secret-token" not in str(runtime)
 
 

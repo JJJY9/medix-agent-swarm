@@ -885,6 +885,20 @@ def test_import_metrics_only_backup(store):
     assert store.list_metrics()[0]["value1"] == 38.2
 
 
+def test_archive_older_than(store):
+    store.save_exchange("old", "旧问题", "旧答复")
+    store.save_exchange("new", "新问题", "新答复")
+    old_time = (datetime.now() - timedelta(days=40)).isoformat(timespec="seconds")
+    set_session_time(store, "old", old_time)
+
+    assert store.archive_older_than(30) == 1
+    assert [item["id"] for item in store.list_sessions(archived=True)] == ["old"]
+    assert [item["id"] for item in store.list_sessions(archived=False)] == ["new"]
+
+    assert store.archive_older_than(30) == 0
+    assert store.archive_older_than(0) == 0
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
