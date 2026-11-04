@@ -88,6 +88,7 @@ class ImportSessionsRequest(BaseModel):
     health_metrics: Optional[List[Dict[str, Any]]] = None
     metric_targets: Optional[List[Dict[str, Any]]] = None
     reminders: Optional[List[Dict[str, Any]]] = None
+    symptoms: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -358,6 +359,14 @@ class MetricRequest(BaseModel):
     note: str = Field("", max_length=300)
 
 
+
+
+class SymptomRequest(BaseModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    symptom: str = Field(..., min_length=1, max_length=120)
+    severity: int = Field(..., ge=0, le=10, description="严重程度 0–10")
+    recorded_at: str = Field("", max_length=40, description="记录时间（ISO）")
+    note: str = Field("", max_length=300)
 class MetricTargetRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1061,6 +1070,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "health_metrics": request.health_metrics,
         "metric_targets": request.metric_targets,
         "reminders": request.reminders,
+        "symptoms": request.symptoms,
     }
     try:
         result = await asyncio.to_thread(
@@ -1080,7 +1090,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"profiles={result.get('profiles', 0)} "
             f"metrics={result.get('metrics', 0)} "
             f"targets={result.get('targets', 0)} "
-            f"reminders={result.get('reminders', 0)}"
+            f"reminders={result.get('reminders', 0)} "
+            f"symptoms={result.get('symptoms', 0)}"
         ),
     )
     return {"ok": True, **result}
@@ -1223,6 +1234,84 @@ async def metric_summary(
         get_session_store().metric_summary, profile, metric, days
     )
     return data
+
+
+@app.get("/api/symptoms")
+async def list_symptoms(
+    profile: Optional[str] = None,
+    limit: int = 100,
+    days: int = 0,
+    offset: int = 0,
+):
+    """症状记录（按记录时间倒序，可按档案与最近天数筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 100), 500))
+    days = max(0, min(int(days or 0), 3650))
+    offset = max(0, int(offset or 0))
+    items = await asyncio.to_thread(
+        get_session_store().list_symptoms, profile, limit, days, offset
+    )
+    return {"symptoms": items}
+
+
+@app.post("/api/symptoms")
+async def add_symptom(request: SymptomRequest):
+    """新增一条症状记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().add_symptom,
+        request.profile,
+        request.symptom,
+        request.severity,
+        request.recorded_at,
+        request.note,
+    )
+    if item is None:
+        raise HTTPException(status_code=400, detail="症状内容或程度不正确")
+    await record_audit(
+        "symptom.create", f"{item['id']}·{item['symptom']}", item["recorded_at"]
+    )
+    return {"ok": True, "symptom": item}
+
+
+@app.patch("/api/symptoms/{symptom_id}")
+async def update_symptom(symptom_id: int, request: SymptomRequest):
+    """更新一条症状记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().update_symptom,
+        symptom_id,
+        request.profile,
+        request.symptom,
+        request.severity,
+        request.recorded_at,
+        request.note,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+    await record_audit(
+        "symptom.update", f"{item['id']}·{item['symptom']}"
+    )
+    return {"ok": True, "symptom": item}
+
+
+@app.delete("/api/symptoms/{symptom_id}")
+async def delete_symptom(symptom_id: int):
+    """删除一条症状记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_symptom, symptom_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_symptom, symptom_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("symptom.delete", f"{item['id']}·{item['symptom']}")
+    return {"ok": True, "id": symptom_id}
 
 
 @app.get("/api/metrics/latest")

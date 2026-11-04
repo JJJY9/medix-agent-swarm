@@ -475,6 +475,7 @@ def test_import_data_roundtrip(tmp_path):
             "metrics": 0,
             "targets": 0,
             "reminders": 0,
+            "symptoms": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -1576,3 +1577,38 @@ def test_reminder_schema_migrates_old_database(tmp_path):
     assert items[0]["repeat_days"] == 0
     assert items[0]["repeat_until"] == ""
     assert items[0]["repeats_from"] == 0
+
+
+def test_symptoms_crud_and_export_import(store, tmp_path):
+    item = store.add_symptom(
+        "母亲", "头晕", 6, "2026-11-04T08:00", "起床后"
+    )
+    assert item["severity"] == 6
+    assert item["profile"] == "母亲"
+    assert [row["symptom"] for row in store.list_symptoms(profile="母亲")] == [
+        "头晕"
+    ]
+
+    updated = store.update_symptom(
+        item["id"], "母亲", "头晕", 4, "2026-11-05T08:00", ""
+    )
+    assert updated["severity"] == 4
+
+    data = store.export_data()
+    assert len(data["symptoms"]) == 1
+
+    other = SessionStore(str(tmp_path / "symptoms-copy.db"))
+    try:
+        result = other.import_data({"symptoms": data["symptoms"]})
+        assert result["symptoms"] == 1
+        imported = other.list_symptoms()
+        assert imported[0]["severity"] == 4
+        assert imported[0]["note"] == ""
+    finally:
+        other.close()
+
+    assert store.delete_symptom(item["id"]) is True
+    assert store.delete_symptom(item["id"]) is False
+    assert store.add_symptom("", "  ", 5) is None
+    assert store.add_symptom("", "头晕", 11) is None
+    assert store.add_symptom("", "头晕", 5, "not-a-date") is None

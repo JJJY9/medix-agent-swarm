@@ -542,3 +542,20 @@ def test_context_panel_mentions_health_context(client):
     html = client.get("/").text
 
     assert "会诊时会自动参考当前档案的最近健康指标与待办随访" in html
+
+
+def test_app_js_ships_symptom_diary(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function saveSymptom" in app_js
+    assert "async function loadSymptoms" in app_js
+    assert 'id="symptom-text"' in html
+    assert 'id="symptom-list"' in html
+
+
+def test_app_js_supports_symptom_deeplink(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "params.get('symptoms') === '1'" in app_js
+    assert "symptomSection.open" in app_js

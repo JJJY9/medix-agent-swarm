@@ -116,3 +116,8 @@ def test_format_context_labels_recent_metrics_and_reminders():
 
     assert "近期健康指标：血压 128/82（11-04）" in text
     assert "待办随访提醒：复查（11-10）" in text
+
+
+def test_format_context_labels_recent_symptoms():
+    text = format_context({"recent_symptoms": "头晕 6/10（11-04）"})
+    assert "近期症状：头晕 6/10（11-04）" in text

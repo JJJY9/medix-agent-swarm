@@ -194,6 +194,54 @@ def _normalize_profile_name(value: Any) -> str:
     return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
 
 
+MAX_SYMPTOM_LENGTH = 120
+
+
+def _normalize_symptom(
+    profile: str,
+    symptom: str,
+    severity: Any,
+    recorded_at: str,
+    note: str,
+) -> Optional[Dict[str, Any]]:
+    """校验一条症状记录；无效时返回 None。"""
+    text = " ".join(str(symptom or "").split())[:MAX_SYMPTOM_LENGTH]
+    if not text:
+        return None
+    if isinstance(severity, bool):
+        return None
+    try:
+        level = int(severity)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if level < 0 or level > 10:
+        return None
+
+    recorded_at = str(recorded_at or "").strip()[:40]
+    if not recorded_at:
+        recorded_at = datetime.now().isoformat(timespec="minutes")
+    else:
+        try:
+            parsed = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            recorded_at = (
+                parsed.astimezone().replace(tzinfo=None)
+                .isoformat(timespec="seconds")
+            )
+        elif len(recorded_at) == 10:
+            recorded_at = parsed.isoformat(timespec="minutes")
+
+    return {
+        "profile": _normalize_profile_name(profile),
+        "symptom": text,
+        "severity": level,
+        "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
+        "recorded_at": recorded_at,
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -482,6 +530,17 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_reminders_due
                     ON reminders(done, due_at ASC);
+                CREATE TABLE IF NOT EXISTS symptoms (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile     TEXT NOT NULL DEFAULT '',
+                    symptom     TEXT NOT NULL,
+                    severity    INTEGER NOT NULL,
+                    note        TEXT NOT NULL DEFAULT '',
+                    recorded_at TEXT NOT NULL,
+                    created_at  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_symptoms_profile_time
+                    ON symptoms(profile, recorded_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1414,6 +1473,7 @@ class SessionStore:
             "health_metrics": self.list_metrics(limit=100000),
             "metric_targets": self.list_metric_targets(),
             "reminders": self.list_reminders(include_done=True),
+            "symptoms": self.list_symptoms(limit=100000),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
@@ -1426,10 +1486,12 @@ class SessionStore:
         raw_metrics = data.get("health_metrics")
         raw_targets = data.get("metric_targets")
         raw_reminders = data.get("reminders")
+        raw_symptoms = data.get("symptoms")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
             or isinstance(raw_metrics, list)
             or isinstance(raw_reminders, list)
+            or isinstance(raw_symptoms, list)
         ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
@@ -1439,6 +1501,7 @@ class SessionStore:
             and not isinstance(raw_profiles, list)
             and not isinstance(raw_metrics, list)
             and not isinstance(raw_reminders, list)
+            and not isinstance(raw_symptoms, list)
         ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
@@ -1689,6 +1752,54 @@ class SessionStore:
                     )
                     targets_imported += 1
 
+            symptoms_imported = 0
+            if isinstance(raw_symptoms, list):
+                for raw in raw_symptoms[:10000]:
+                    if not isinstance(raw, dict):
+                        continue
+                    normalized = _normalize_symptom(
+                        raw.get("profile", ""),
+                        raw.get("symptom", ""),
+                        raw.get("severity"),
+                        raw.get("recorded_at", ""),
+                        raw.get("note", ""),
+                    )
+                    if normalized is None:
+                        continue
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM symptoms
+                         WHERE profile = ? AND symptom = ? AND severity = ?
+                           AND recorded_at = ? AND note = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["symptom"],
+                            normalized["severity"],
+                            normalized["recorded_at"],
+                            normalized["note"],
+                        ),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO symptoms(
+                            profile, symptom, severity, note,
+                            recorded_at, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["symptom"],
+                            normalized["severity"],
+                            normalized["note"],
+                            normalized["recorded_at"],
+                            now,
+                        ),
+                    )
+                    symptoms_imported += 1
+
             reminders_imported = 0
             if isinstance(raw_reminders, list):
                 for raw in raw_reminders[:2000]:
@@ -1801,6 +1912,7 @@ class SessionStore:
             "metrics": metrics_imported,
             "targets": targets_imported,
             "reminders": reminders_imported,
+            "symptoms": symptoms_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -2326,6 +2438,155 @@ class SessionStore:
             },
             "within_target": within_target,
         }
+
+    def add_symptom(
+        self,
+        profile: str,
+        symptom: str,
+        severity: Any,
+        recorded_at: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """新增一条症状记录；无效时返回 None。"""
+        normalized = _normalize_symptom(
+            profile, symptom, severity, recorded_at, note
+        )
+        if normalized is None:
+            return None
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO symptoms(
+                    profile, symptom, severity, note, recorded_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"],
+                    normalized["symptom"],
+                    normalized["severity"],
+                    normalized["note"],
+                    normalized["recorded_at"],
+                    now,
+                ),
+            )
+            symptom_id = int(cursor.lastrowid)
+        return {"id": symptom_id, **normalized, "created_at": now}
+
+    def list_symptoms(
+        self,
+        profile: Optional[str] = None,
+        limit: int = 100,
+        days: int = 0,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """按记录时间倒序返回症状，可按档案与最近天数筛选。"""
+        limit = max(1, min(int(limit or 100), 100000))
+        try:
+            offset = max(0, int(offset or 0))
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("recorded_at >= ?")
+            params.append(cutoff)
+            end_of_today = datetime.now().replace(
+                hour=23, minute=59, second=59
+            ).isoformat(timespec="seconds")
+            conditions.append("recorded_at <= ?")
+            params.append(end_of_today)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = f"""
+            SELECT id, profile, symptom, severity, note, recorded_at, created_at
+              FROM symptoms{where}
+             ORDER BY recorded_at DESC, id DESC
+             LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_symptom(self, symptom_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            symptom_id = int(symptom_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, symptom, severity, note,
+                       recorded_at, created_at
+                  FROM symptoms WHERE id = ?
+                """,
+                (symptom_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_symptom(
+        self,
+        symptom_id: int,
+        profile: str,
+        symptom: str,
+        severity: Any,
+        recorded_at: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """更新一条症状记录；不存在或字段无效时返回 None。"""
+        try:
+            symptom_id = int(symptom_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        normalized = _normalize_symptom(
+            profile, symptom, severity, recorded_at, note
+        )
+        if normalized is None:
+            return None
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE symptoms
+                   SET profile = ?, symptom = ?, severity = ?,
+                       note = ?, recorded_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"],
+                    normalized["symptom"],
+                    normalized["severity"],
+                    normalized["note"],
+                    normalized["recorded_at"],
+                    symptom_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                """
+                SELECT id, profile, symptom, severity, note,
+                       recorded_at, created_at
+                  FROM symptoms WHERE id = ?
+                """,
+                (symptom_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_symptom(self, symptom_id: int) -> bool:
+        try:
+            symptom_id = int(symptom_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM symptoms WHERE id = ?", (symptom_id,)
+            )
+            return cursor.rowcount > 0
 
     def update_metric(
         self,

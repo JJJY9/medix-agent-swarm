@@ -641,6 +641,45 @@
     <ul class="metrics-list" id="metrics-list"></ul>
     <button type="button" class="btn-quiet metric-more" id="metric-more" hidden>显示更早记录</button>
     <p class="metrics-empty" id="metrics-empty" hidden>还没有健康记录。</p>
+    <details class="symptom-section" id="symptom-section">
+      <summary>症状日记</summary>
+      <p class="calc-hint">记录每天出现的症状与程度（0 无 – 10 极重），用于就诊与趋势回顾。</p>
+      <div class="symptom-form">
+        <label class="calc-field">症状
+          <input id="symptom-text" type="text" maxlength="120" placeholder="如：头晕、乏力">
+        </label>
+        <label class="calc-field">程度
+          <select id="symptom-severity">
+            <option value="0">0 · 无</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5 · 中等</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10 · 极重</option>
+          </select>
+        </label>
+        <label class="calc-field">记录时间
+          <input id="symptom-time" type="datetime-local">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="symptom-note" type="text" maxlength="300" placeholder="如：起床后、服药后">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="symptom-save">记录症状</button>
+          <button type="button" class="btn-quiet" id="symptom-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="symptom-status" role="status" hidden></p>
+      <ul class="metrics-list" id="symptom-list"></ul>
+      <p class="metrics-empty" id="symptom-empty" hidden>还没有症状记录。</p>
+    </details>
+
+
     <p class="calc-disclaimer">记录仅用于趋势回顾，异常值请及时咨询医生。</p>
   </div>
 </aside>
