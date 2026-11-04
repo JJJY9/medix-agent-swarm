@@ -313,6 +313,7 @@ const els = {
   homeGlanceReminders: document.getElementById('home-glance-reminders'),
   homeGlanceMetrics: document.getElementById('home-glance-metrics'),
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
+  homeGlanceMedications: document.getElementById('home-glance-medications'),
   remindersCalendar: document.getElementById('reminders-calendar'),
   remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
   remindersCalendarTitle: document.getElementById('reminders-calendar-title'),
@@ -6749,7 +6750,7 @@ function homeGlanceLine(label, value, sub) {
   return parts;
 }
 
-function renderHomeGlance(reminders, metrics, symptoms) {
+function renderHomeGlance(reminders, metrics, symptoms, medications) {
   if (!els.homeGlance) return;
 
   const pending = (reminders || []).filter((item) => !item.done);
@@ -6816,6 +6817,24 @@ function renderHomeGlance(reminders, metrics, symptoms) {
       ...homeGlanceLine('症状日记', symptomValue, symptomSub)
     );
   }
+  if (medications === null) {
+    els.homeGlanceMedications.hidden = true;
+  } else {
+    const active = medications.filter((item) => item.active);
+    const medValue = active.length
+      ? `${active.length} 种在用药物`
+      : '暂无在用药物';
+    const medSub = active.length
+      ? active
+        .slice(0, 3)
+        .map((item) => item.name + (item.dose ? ` ${item.dose}` : ''))
+        .join(' · ')
+      : '点击添加用药清单';
+    els.homeGlanceMedications.hidden = false;
+    els.homeGlanceMedications.replaceChildren(
+      ...homeGlanceLine('用药清单', medValue, medSub)
+    );
+  }
   els.homeGlance.hidden = false;
 }
 
@@ -6823,10 +6842,11 @@ async function loadHomeGlance() {
   if (!els.homeGlance) return;
   const requestSeq = ++homeGlanceRequestSeq;
   try {
-    const [remindersRes, metricsRes, symptomsRes] = await Promise.all([
+    const [remindersRes, metricsRes, symptomsRes, medicationsRes] = await Promise.all([
       fetch('/api/reminders'),
       fetch('/api/metrics/latest'),
       fetch('/api/symptoms?limit=1'),
+      fetch('/api/medications?active_only=true&limit=50'),
     ]);
     if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
@@ -6839,8 +6859,11 @@ async function loadHomeGlance() {
     const symptoms = symptomsRes.ok
       ? (await symptomsRes.json()).symptoms || []
       : null;
+    const medications = medicationsRes.ok
+      ? (await medicationsRes.json()).medications || []
+      : null;
     if (requestSeq !== homeGlanceRequestSeq) return;
-    renderHomeGlance(reminders, metrics, symptoms);
+    renderHomeGlance(reminders, metrics, symptoms, medications);
   } catch {
     if (requestSeq === homeGlanceRequestSeq) {
       els.homeGlance.hidden = true;
@@ -10347,6 +10370,10 @@ els.homeGlanceMetrics.addEventListener('click', () => {
 els.homeGlanceSymptoms.addEventListener('click', () => {
   openMetrics();
   if (els.symptomSection) els.symptomSection.open = true;
+});
+els.homeGlanceMedications.addEventListener('click', () => {
+  openMetrics();
+  if (els.medicationSection) els.medicationSection.open = true;
 });
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
