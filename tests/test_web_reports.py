@@ -595,6 +595,19 @@ def test_app_js_ships_home_medications(client):
     assert "种在用药物" in app_js
 
 
+def test_app_js_ships_home_today_meds(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert "function renderTodayMeds" in app_js
+    assert 'id="today-meds"' in html
+    assert 'id="today-meds-list"' in html
+    assert "today-meds-item" in app_js
+    assert "今天还没有打卡" in app_js
+    assert ".today-meds" in css
+
+
 def test_app_js_ships_medication_reminder_shortcut(client):
     app_js = client.get("/static/app.js").text
 

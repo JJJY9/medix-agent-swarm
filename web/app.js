@@ -314,6 +314,9 @@ const els = {
   homeGlanceMetrics: document.getElementById('home-glance-metrics'),
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   homeGlanceMedications: document.getElementById('home-glance-medications'),
+  todayMeds: document.getElementById('today-meds'),
+  todayMedsSummary: document.getElementById('today-meds-summary'),
+  todayMedsList: document.getElementById('today-meds-list'),
   remindersCalendar: document.getElementById('reminders-calendar'),
   remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
   remindersCalendarTitle: document.getElementById('reminders-calendar-title'),
@@ -6848,6 +6851,58 @@ function homeGlanceLine(label, value, sub) {
   return parts;
 }
 
+function renderTodayMeds(medications) {
+  if (!els.todayMeds) return;
+  if (!medications) {
+    els.todayMeds.hidden = true;
+    els.todayMedsList.replaceChildren();
+    return;
+  }
+  const active = medications.filter((item) => item.active);
+  if (!active.length) {
+    els.todayMeds.hidden = true;
+    els.todayMedsList.replaceChildren();
+    return;
+  }
+  const todayDoses = active.reduce(
+    (total, item) => total + Number(item.today_count || 0), 0
+  );
+  els.todayMedsSummary.textContent = todayDoses > 0
+    ? `今日已服 ${todayDoses} 次`
+    : '今天还没有打卡';
+  els.todayMedsList.replaceChildren();
+  for (const item of active) {
+    const li = document.createElement('li');
+    li.className = 'today-meds-item';
+
+    const name = document.createElement('span');
+    name.className = 'today-meds-name';
+    const strong = document.createElement('strong');
+    strong.textContent = item.name;
+    const meta = document.createElement('span');
+    meta.className = 'today-meds-meta';
+    meta.textContent = [
+      item.dose,
+      item.profile,
+      Number(item.today_count) > 0
+        ? `今日 ${Number(item.today_count)} 次`
+        : '',
+    ].filter(Boolean).join(' · ');
+    name.append(strong, meta);
+
+    const log = document.createElement('button');
+    log.type = 'button';
+    log.className = 'btn-quiet today-meds-log';
+    log.textContent = '打卡';
+    log.setAttribute('aria-label', `记录一次用药：${item.name}`);
+    log.addEventListener('click', () => logMedication(item));
+
+    li.append(name, log);
+    els.todayMedsList.appendChild(li);
+  }
+  els.todayMeds.hidden = false;
+}
+
 function renderHomeGlance(reminders, metrics, symptoms, medications) {
   if (!els.homeGlance) return;
 
@@ -6941,6 +6996,7 @@ function renderHomeGlance(reminders, metrics, symptoms, medications) {
       ...homeGlanceLine('用药清单', medValue, medSub)
     );
   }
+  renderTodayMeds(medications);
   els.homeGlance.hidden = false;
 }
 
@@ -6957,6 +7013,7 @@ async function loadHomeGlance() {
     if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
         els.homeGlance.hidden = true;
+        if (els.todayMeds) els.todayMeds.hidden = true;
       }
       return;
     }
