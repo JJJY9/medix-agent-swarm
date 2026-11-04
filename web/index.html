@@ -779,6 +779,7 @@
           <option value="curb65">CURB-65 肺炎严重程度</option>
           <option value="qsofa">qSOFA 脓毒症筛查</option>
           <option value="stopbang">STOP-BANG 睡眠呼吸暂停筛查</option>
+          <option value="mmrc">mMRC 呼吸困难量表</option>
         </optgroup>
         <optgroup label="神经与精神">
           <option value="gcs">GCS 格拉斯哥昏迷评分</option>
@@ -1081,6 +1082,20 @@
       </label>
       <label class="calc-check"><input type="checkbox" id="calc-meld-dialysis"> 近一周规律透析（肌酐按 4.0 计）</label>
       <button type="submit" class="btn-quiet">计算 MELD</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-mmrc" data-tool="mmrc" hidden>
+      <p class="calc-hint">选择最符合目前呼吸困难程度的描述。</p>
+      <label class="calc-field">呼吸困难程度
+        <select id="calc-mmrc-grade">
+          <option value="0">0 级：仅在剧烈活动时感到气短</option>
+          <option value="1">1 级：快走或上缓坡时气短</option>
+          <option value="2">2 级：比同龄人走得慢，或按自己速度行走时需要停下休息</option>
+          <option value="3">3 级：平地行走约 100 米或几分钟后需要停下休息</option>
+          <option value="4">4 级：因气短不能离家，或穿衣时即感气短</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 
     <form class="calc-form" id="calc-form-stopbang" data-tool="stopbang" hidden>

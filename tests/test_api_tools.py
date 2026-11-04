@@ -558,3 +558,13 @@ def test_audit_c_api(client):
     assert ok.json()["score"] == 8
     assert ok.json()["risk"] == "高风险"
     assert invalid.status_code == 422
+
+
+def test_mmrc_api(client):
+    ok = client.post("/api/tools/mmrc", json={"grade": 3})
+    invalid = client.post("/api/tools/mmrc", json={"grade": 5})
+
+    assert ok.status_code == 200
+    assert ok.json()["grade"] == 3
+    assert ok.json()["severity"] == "较重"
+    assert invalid.status_code == 422

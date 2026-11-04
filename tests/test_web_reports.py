@@ -408,3 +408,13 @@ def test_app_js_ships_audit_c(client):
     assert 'id="calc-form-auditc"' in html
     assert "function submitAuditC" in app_js
     assert "/api/tools/audit-c" in app_js
+
+
+def test_app_js_ships_mmrc(client):
+    html = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'value="mmrc"' in html
+    assert 'id="calc-form-mmrc"' in html
+    assert "function submitMmrc" in app_js
+    assert "/api/tools/mmrc" in app_js

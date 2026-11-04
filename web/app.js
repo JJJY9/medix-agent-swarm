@@ -167,6 +167,8 @@ const els = {
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcFormGad7: document.getElementById('calc-form-gad7'),
   calcFormAuditc: document.getElementById('calc-form-auditc'),
+  calcFormMmrc: document.getElementById('calc-form-mmrc'),
+  calcMmrcGrade: document.getElementById('calc-mmrc-grade'),
   calcAuditCQ1: document.getElementById('calc-auditc-q1'),
   calcAuditCQ2: document.getElementById('calc-auditc-q2'),
   calcAuditCQ3: document.getElementById('calc-auditc-q3'),
@@ -7248,6 +7250,7 @@ function setCalcTool(tool) {
     els.calcFormPhq9,
     els.calcFormGad7,
     els.calcFormAuditc,
+    els.calcFormMmrc,
     els.calcFormHasBled,
     els.calcFormGcs,
     els.calcFormWells,
@@ -7546,6 +7549,21 @@ function submitGad7(event) {
         label: '保存 GAD-7 评分',
         run: () => saveScreenerScore('gad7', data.score, 'GAD-7 筛查'),
       },
+    })
+  );
+}
+
+function submitMmrc(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/mmrc',
+    { grade: Number(els.calcMmrcGrade.value) },
+    (data) => ({
+      title: 'mMRC 结果',
+      main: `${data.grade} 级 · ${data.severity}`,
+      detail: data.label,
+      note: data.note,
+      level: data.grade >= 3 ? 'warning' : '',
     })
   );
 }
@@ -9024,6 +9042,7 @@ els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormAuditc.addEventListener('submit', submitAuditC);
+els.calcFormMmrc.addEventListener('submit', submitMmrc);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);
