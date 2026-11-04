@@ -188,6 +188,9 @@ const els = {
   calcWellsPrevious: document.getElementById('calc-wells-previous'),
   calcWellsAlternative: document.getElementById('calc-wells-alternative'),
   calcFormWellsPe: document.getElementById('calc-form-wells-pe'),
+  calcFormInteractions: document.getElementById('calc-form-interactions'),
+  calcInteractionsDrugs: document.getElementById('calc-interactions-drugs'),
+  calcInteractionsAllergies: document.getElementById('calc-interactions-allergies'),
   calcWellsPeDvt: document.getElementById('calc-wellspe-dvt'),
   calcWellsPeLikely: document.getElementById('calc-wellspe-likely'),
   calcWellsPeHr: document.getElementById('calc-wellspe-hr'),
@@ -5351,6 +5354,7 @@ function setCalcTool(tool) {
     els.calcFormGcs,
     els.calcFormWells,
     els.calcFormWellsPe,
+    els.calcFormInteractions,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -5780,6 +5784,43 @@ function submitWellsPe(event) {
       note: data.note,
       level: data.risk === '高概率' ? 'warning' : '',
     })
+  );
+}
+
+function submitInteractions(event) {
+  event.preventDefault();
+  const drugs = (els.calcInteractionsDrugs.value || '').trim();
+  if (!drugs) {
+    setCalcStatus('请至少填写一种药物。', true);
+    return;
+  }
+  runCalc(
+    '/api/tools/interactions',
+    {
+      drugs,
+      allergies: (els.calcInteractionsAllergies.value || '').trim(),
+    },
+    (data) => {
+      const alerts = data.alerts || [];
+      if (!alerts.length) {
+        return {
+          title: '药物相互作用检查',
+          main: '未发现规则覆盖的明确相互作用',
+          detail: data.drugs ? `已检查：${data.drugs}` : '',
+          note: '规则只覆盖常见明确风险，未命中不代表绝对安全；用药调整请咨询医生或药师。',
+          level: 'ok',
+        };
+      }
+      return {
+        title: '药物相互作用检查',
+        main: `发现 ${alerts.length} 条提示`,
+        detail: alerts
+          .map((alert) => `${alert.title}：${alert.detail}`)
+          .join('；'),
+        note: '以上为规则提示，不能替代医生或药师的判断。',
+        level: data.level || 'warning',
+      };
+    }
   );
 }
 
@@ -6745,6 +6786,7 @@ els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);
 els.calcFormWells.addEventListener('submit', submitWells);
 els.calcFormWellsPe.addEventListener('submit', submitWellsPe);
+els.calcFormInteractions.addEventListener('submit', submitInteractions);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;

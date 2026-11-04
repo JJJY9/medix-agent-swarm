@@ -229,6 +229,13 @@ class WellsPeRequest(BaseModel):
     malignancy: bool = False
 
 
+class InteractionsRequest(BaseModel):
+    drugs: str = Field(
+        ..., min_length=1, max_length=1000, description="药物列表，可换行或顿号分隔"
+    )
+    allergies: str = Field("", max_length=200, description="可选过敏史")
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1430,6 +1437,30 @@ async def tool_wells_pe(request: WellsPeRequest):
             hemoptysis=request.hemoptysis,
             malignancy=request.malignancy,
         ),
+    }
+
+
+@app.post("/api/tools/interactions")
+async def tool_interactions(request: InteractionsRequest):
+    """药物相互作用检查（确定性规则，仅提示常见明确风险）。"""
+    from core.medication_safety import check_medication_safety
+
+    drugs = "、".join(
+        part.strip()
+        for part in re.split(r"[\n,，、;；]+", request.drugs)
+        if part.strip()
+    )[:500]
+    if not drugs:
+        raise HTTPException(status_code=400, detail="请至少填写一种药物")
+
+    result = check_medication_safety(
+        "", {"medications": drugs, "allergies": request.allergies}
+    )
+    return {
+        "ok": True,
+        "drugs": drugs,
+        "level": result.get("level", "none"),
+        "alerts": result.get("alerts", []),
     }
 
 
