@@ -693,7 +693,11 @@ def test_app_js_ships_weekly_summary(client):
     assert "/api/reports/weekly" in app_js
     assert 'id="weekly-summary-section"' in html
     assert 'id="weekly-summary-range"' in html
+    assert 'id="weekly-summary-copy"' in html
     assert ".weekly-summary-list" in css
+    assert "async function copyWeeklySummary" in app_js
+    assert "function weeklySummaryText" in app_js
+    assert "已复制健康小结" in app_js
     assert "近 ${days} 天打卡" in app_js
     assert "近 7 天小结" in app_js
     assert "weeklySummaryRequestSeq" in app_js
