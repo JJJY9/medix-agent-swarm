@@ -251,6 +251,7 @@
         <div class="rail-actions">
           <button type="button" class="btn-quiet" id="kb-manage" aria-haspopup="dialog" aria-expanded="false" aria-controls="kb-drawer">管理知识库</button>
           <button type="button" class="btn-quiet" id="metrics-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="metrics-drawer">健康记录</button>
+          <button type="button" class="btn-quiet" id="reminders-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="reminders-drawer">随访提醒</button>
           <button type="button" class="btn-quiet" id="calc-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="calc-drawer">临床工具</button>
           <button type="button" class="btn-quiet" id="diagnose" aria-haspopup="dialog" aria-expanded="false" aria-controls="diagnose-drawer">系统自检</button>
           <button type="button" class="btn-quiet" id="pwa-install" hidden>安装应用</button>
@@ -579,7 +580,44 @@
   </div>
 </aside>
 
-<!-- 临床计算工具抽屉 -->
+<!-- 随访提醒抽屉 -->
+<div class="drawer-backdrop" id="reminders-backdrop" hidden></div>
+<aside
+  class="drawer"
+  id="reminders-drawer"
+  hidden
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="reminders-title"
+>
+  <div class="drawer-head">
+    <h2 id="reminders-title">随访提醒</h2>
+    <button type="button" class="drawer-close" id="reminders-close" aria-label="关闭随访提醒">×</button>
+  </div>
+  <div class="metrics-body">
+    <div class="metrics-form">
+      <label class="calc-field">提醒内容
+        <input id="reminder-title" type="text" maxlength="120" placeholder="如：复查血常规">
+      </label>
+      <label class="calc-field">提醒日期
+        <input id="reminder-due" type="date">
+      </label>
+      <label class="calc-field">备注（可选）
+        <input id="reminder-note" type="text" maxlength="300" placeholder="如：空腹，带上既往报告">
+      </label>
+      <div class="metrics-actions">
+        <button type="button" class="btn-quiet" id="reminder-add">添加提醒</button>
+      </div>
+    </div>
+
+    <p class="metrics-status" id="reminders-status" role="status" hidden></p>
+    <p class="reminders-due-hint" id="reminders-due-hint" hidden></p>
+    <ul class="metrics-list" id="reminders-list"></ul>
+    <p class="metrics-empty" id="reminders-empty" hidden>还没有随访提醒。</p>
+    <p class="calc-disclaimer">提醒仅在打开页面时显示，不会发送系统通知。</p>
+  </div>
+</aside>
+
 <div class="drawer-backdrop" id="calc-backdrop" hidden></div>
 <aside
   class="drawer"

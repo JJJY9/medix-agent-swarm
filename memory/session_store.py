@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -28,6 +29,12 @@ MAX_TAGS = 5
 MAX_TAG_LENGTH = 20
 #: 会诊反馈备注的最大长度
 MAX_FEEDBACK_LENGTH = 500
+#: 随访提醒的字段长度与日期格式
+MAX_REMINDER_TITLE_LENGTH = 120
+MAX_REMINDER_NOTE_LENGTH = 300
+REMINDER_DATE_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
+)
 #: 常用患者档案的名称与字段长度上限
 MAX_PROFILE_NAME_LENGTH = 40
 MAX_PROFILE_FIELD_LENGTH = 2000
@@ -313,6 +320,18 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_created
                     ON audit_log(created_at DESC);
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title      TEXT NOT NULL,
+                    note       TEXT NOT NULL DEFAULT '',
+                    due_at     TEXT NOT NULL,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    done       INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_reminders_due
+                    ON reminders(done, due_at ASC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1789,6 +1808,74 @@ class SessionStore:
                 "SELECT DISTINCT action FROM audit_log ORDER BY action"
             ).fetchall()
         return [row["action"] for row in rows]
+
+    def add_reminder(
+        self, title: str, due_at: str, note: str = "", session_id: str = ""
+    ) -> Dict[str, Any]:
+        """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
+        title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
+        if not title:
+            raise ValueError("提醒内容不能为空")
+        due_at = str(due_at or "").strip()[:32]
+        if not due_at or not REMINDER_DATE_PATTERN.match(due_at):
+            raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
+        session_id = str(session_id or "").strip()[:64]
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO reminders(
+                    title, note, due_at, session_id, done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?)
+                """,
+                (title, note, due_at, session_id, now, now),
+            )
+            reminder_id = int(cursor.lastrowid)
+        return {
+            "id": reminder_id,
+            "title": title,
+            "note": note,
+            "due_at": due_at,
+            "session_id": session_id,
+            "done": False,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def list_reminders(self, include_done: bool = False) -> List[Dict[str, Any]]:
+        """按到期时间升序返回随访提醒，默认只返回未完成的。"""
+        where = "" if include_done else " WHERE done = 0"
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, title, note, due_at, session_id, done,
+                       created_at, updated_at
+                  FROM reminders{where}
+                 ORDER BY done ASC, due_at ASC, id ASC
+                """
+            ).fetchall()
+        return [
+            {**dict(row), "done": bool(row["done"])}
+            for row in rows
+        ]
+
+    def complete_reminder(self, reminder_id: int) -> bool:
+        """把提醒标记为已完成，不存在时返回 False。"""
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE reminders SET done = 1, updated_at = ? WHERE id = ?",
+                (now, int(reminder_id)),
+            )
+            return cursor.rowcount > 0
+
+    def delete_reminder(self, reminder_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM reminders WHERE id = ?", (int(reminder_id),)
+            )
+            return cursor.rowcount > 0
 
     def count(self) -> int:
         with self._lock:

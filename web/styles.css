@@ -2574,6 +2574,40 @@ html[data-theme="dark"] .metric-delete:hover {
   background: #331f1d;
 }
 
+.reminder-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.reminder-badge {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--triage-1);
+  background: #fdf0ef;
+  border-radius: 999px;
+}
+
+html[data-theme="dark"] .reminder-badge {
+  background: #331f1d;
+}
+
+.reminders-due-hint {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--triage-1);
+  background: #fdf0ef;
+  border-radius: var(--radius);
+}
+
+html[data-theme="dark"] .reminders-due-hint {
+  background: #331f1d;
+}
+
 .metrics-empty {
   margin: 0;
   font-size: 12.5px;

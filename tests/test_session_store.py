@@ -1005,6 +1005,35 @@ def test_audit_log_filters(store, monkeypatch):
     assert store.list_audit_actions() == ["session.delete", "session.import"]
 
 
+def test_reminders_crud(store):
+    first = store.add_reminder("复查血常规", "2026-11-10", note="空腹")
+    second = store.add_reminder(
+        "内分泌复诊", "2026-11-05T09:30:00", session_id="s1"
+    )
+
+    assert first["done"] is False
+    assert second["session_id"] == "s1"
+    assert [item["title"] for item in store.list_reminders()] == [
+        "内分泌复诊", "复查血常规",
+    ]
+
+    assert store.complete_reminder(first["id"]) is True
+    assert [item["title"] for item in store.list_reminders()] == ["内分泌复诊"]
+    assert len(store.list_reminders(include_done=True)) == 2
+    assert store.complete_reminder(99999) is False
+
+    assert store.delete_reminder(first["id"]) is True
+    assert store.delete_reminder(first["id"]) is False
+    assert len(store.list_reminders(include_done=True)) == 1
+
+    with pytest.raises(ValueError):
+        store.add_reminder("   ", "2026-11-10")
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "10/11/2026")
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "")
+
+
 def test_session_tags_and_filter(store):
     store.save_exchange(
         "s1", "高血压复诊", "答复一",
