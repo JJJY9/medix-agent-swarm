@@ -297,6 +297,25 @@ class PaduaRequest(BaseModel):
     hormonal_treatment: bool = False
 
 
+class Abcd2Request(BaseModel):
+    age_ge_60: bool = False
+    bp_ge_140_90: bool = False
+    unilateral_weakness: bool = False
+    speech_disturbance: bool = False
+    duration_ge_60: bool = False
+    duration_10_59: bool = False
+    diabetes: bool = False
+
+
+class MorseFallRequest(BaseModel):
+    history_of_falling: Literal[0, 25] = 0
+    secondary_diagnosis: Literal[0, 15] = 0
+    ambulatory_aid: Literal[0, 15, 30] = 0
+    intravenous: Literal[0, 20] = 0
+    gait: Literal[0, 10, 20] = 0
+    mental_status: Literal[0, 15] = 0
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1869,6 +1888,43 @@ async def tool_padua(request: PaduaRequest):
             request.acute_infection_rheumatologic,
             request.bmi_ge_30,
             request.hormonal_treatment,
+        ),
+    }
+
+
+@app.post("/api/tools/abcd2")
+async def tool_abcd2(request: Abcd2Request):
+    """ABCD2 TIA 后短期卒中风险评分。"""
+    from core.clinical_tools import calculate_abcd2
+
+    return {
+        "ok": True,
+        **calculate_abcd2(
+            request.age_ge_60,
+            request.bp_ge_140_90,
+            request.unilateral_weakness,
+            request.speech_disturbance,
+            request.duration_ge_60,
+            request.duration_10_59,
+            request.diabetes,
+        ),
+    }
+
+
+@app.post("/api/tools/morse-fall")
+async def tool_morse_fall(request: MorseFallRequest):
+    """Morse 跌倒风险评分。"""
+    from core.clinical_tools import calculate_morse_fall
+
+    return {
+        "ok": True,
+        **calculate_morse_fall(
+            request.history_of_falling,
+            request.secondary_diagnosis,
+            request.ambulatory_aid,
+            request.intravenous,
+            request.gait,
+            request.mental_status,
         ),
     }
 

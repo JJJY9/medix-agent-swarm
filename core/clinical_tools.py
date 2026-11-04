@@ -670,3 +670,87 @@ def calculate_padua(
         "criteria": criteria,
         "note": "Padua 评分用于内科住院患者静脉血栓风险分层；≥4 分提示高风险，是否预防性抗凝需医生结合出血风险决定。",
     }
+
+def calculate_abcd2(
+    age_ge_60: bool = False,
+    bp_ge_140_90: bool = False,
+    unilateral_weakness: bool = False,
+    speech_disturbance: bool = False,
+    duration_ge_60: bool = False,
+    duration_10_59: bool = False,
+    diabetes: bool = False,
+) -> Dict[str, object]:
+    """ABCD2 TIA 后短期卒中风险评分（0–7 分）。"""
+    criteria = []
+    score = 0
+
+    if age_ge_60:
+        score += 1
+        criteria.append("年龄 ≥ 60 岁（+1）")
+    if bp_ge_140_90:
+        score += 1
+        criteria.append("血压 ≥ 140/90 mmHg（+1）")
+    if unilateral_weakness:
+        score += 2
+        criteria.append("单侧肢体无力（+2）")
+    elif speech_disturbance:
+        score += 1
+        criteria.append("言语障碍不伴肢体无力（+1）")
+    if duration_ge_60:
+        score += 2
+        criteria.append("症状持续 ≥ 60 分钟（+2）")
+    elif duration_10_59:
+        score += 1
+        criteria.append("症状持续 10–59 分钟（+1）")
+    if diabetes:
+        score += 1
+        criteria.append("糖尿病（+1）")
+
+    if score >= 4:
+        risk = "高风险"
+    elif score >= 2:
+        risk = "中风险"
+    else:
+        risk = "低风险"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "ABCD2 用于短暂性脑缺血发作后的短期卒中风险分层；出现 TIA 症状应尽快就医，评分不能替代急诊评估。",
+    }
+
+
+def calculate_morse_fall(
+    history_of_falling: int = 0,
+    secondary_diagnosis: int = 0,
+    ambulatory_aid: int = 0,
+    intravenous: int = 0,
+    gait: int = 0,
+    mental_status: int = 0,
+) -> Dict[str, object]:
+    """Morse 跌倒风险评分（0–125 分）。"""
+    score = int(history_of_falling) + int(secondary_diagnosis) + int(
+        ambulatory_aid
+    ) + int(intravenous) + int(gait) + int(mental_status)
+
+    if score >= 45:
+        risk = "高风险"
+    elif score >= 25:
+        risk = "中风险"
+    else:
+        risk = "低风险"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": [
+            f"既往跌倒 {int(history_of_falling)} 分",
+            f"次要诊断 {int(secondary_diagnosis)} 分",
+            f"行走辅助 {int(ambulatory_aid)} 分",
+            f"静脉输液 {int(intravenous)} 分",
+            f"步态 {int(gait)} 分",
+            f"精神状态 {int(mental_status)} 分",
+        ],
+        "note": "Morse 跌倒风险评分用于住院患者跌倒风险筛查；≥45 分高风险，需采取防跌倒措施并由护理团队评估。",
+    }
