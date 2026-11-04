@@ -247,6 +247,15 @@ const els = {
   metricProfile: document.getElementById('metric-profile'),
   metricType: document.getElementById('metric-type'),
   metricReference: document.getElementById('metric-reference'),
+  metricTargetText: document.getElementById('metric-target-text'),
+  metricTargetEdit: document.getElementById('metric-target-edit'),
+  metricTargetClear: document.getElementById('metric-target-clear'),
+  metricTargetForm: document.getElementById('metric-target-form'),
+  metricTargetValue1: document.getElementById('metric-target-value1'),
+  metricTargetValue2: document.getElementById('metric-target-value2'),
+  metricTargetSep: document.getElementById('metric-target-sep'),
+  metricTargetSave: document.getElementById('metric-target-save'),
+  metricTargetCancel: document.getElementById('metric-target-cancel'),
   metricBpValues: document.getElementById('metric-bp-values'),
   metricSystolic: document.getElementById('metric-systolic'),
   metricDiastolic: document.getElementById('metric-diastolic'),
@@ -4656,6 +4665,123 @@ function setMetricsStatus(text, isError = false) {
   els.metricsStatus.classList.toggle('error', isError);
 }
 
+/* ---------- 健康指标自定义目标 ---------- */
+
+let metricTargets = [];
+
+function findMetricTarget(profile, metric) {
+  return metricTargets.find(
+    (item) => item.metric === metric
+      && (item.profile || '') === (profile || '')
+  ) || null;
+}
+
+function formatMetricTarget(target) {
+  if (!target) return '';
+  const unit = target.unit || '';
+  if (target.metric === 'bp' && target.value2 != null) {
+    return `${target.value1}/${target.value2} ${unit}`.trim();
+  }
+  return `${target.value1} ${unit}`.trim();
+}
+
+async function loadMetricTargets() {
+  try {
+    const res = await fetch('/api/metric-targets');
+    if (!res.ok) return;
+    const data = await res.json();
+    metricTargets = data.targets || [];
+  } catch {
+    // 目标加载失败不影响指标展示
+  }
+}
+
+function updateMetricTargetDisplay() {
+  const target = findMetricTarget(els.metricProfile.value, els.metricType.value);
+  els.metricTargetText.textContent = target
+    ? `目标（上限）：${formatMetricTarget(target)}`
+    : '尚未设置目标';
+  els.metricTargetClear.hidden = !target;
+  els.metricTargetEdit.textContent = target ? '修改目标' : '设置目标';
+  els.metricTargetEdit.hidden = false;
+  els.metricTargetForm.hidden = true;
+}
+
+function startEditMetricTarget() {
+  const metric = els.metricType.value;
+  const target = findMetricTarget(els.metricProfile.value, metric);
+  const isBp = metric === 'bp';
+  els.metricTargetValue1.value = target ? String(target.value1) : '';
+  els.metricTargetValue2.value =
+    target && target.value2 != null ? String(target.value2) : '';
+  els.metricTargetValue2.hidden = !isBp;
+  els.metricTargetSep.hidden = !isBp;
+  els.metricTargetForm.hidden = false;
+  els.metricTargetEdit.hidden = true;
+  els.metricTargetValue1.focus();
+}
+
+async function saveMetricTarget() {
+  const metric = els.metricType.value;
+  const profile = els.metricProfile.value;
+  const value1 = Number(els.metricTargetValue1.value);
+  const value2 = metric === 'bp' ? Number(els.metricTargetValue2.value) : null;
+  if (!Number.isFinite(value1) || value1 <= 0) {
+    setMetricsStatus('请填写有效的目标数值。', true);
+    return;
+  }
+  if (metric === 'bp' && (!Number.isFinite(value2) || value2 <= 0)) {
+    setMetricsStatus('请填写有效的舒张压目标。', true);
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/metric-targets', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile, metric, value1, value2 }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    metricTargets = metricTargets.filter(
+      (item) => !(item.metric === metric
+        && (item.profile || '') === (profile || ''))
+    );
+    metricTargets.push(data.target);
+    setMetricsStatus('已保存目标。');
+    updateMetricTargetDisplay();
+    await loadMetrics();
+  } catch (err) {
+    setMetricsStatus(`保存目标失败：${err.message || err}`, true);
+  }
+}
+
+async function clearMetricTarget() {
+  const metric = els.metricType.value;
+  const profile = els.metricProfile.value;
+  if (!findMetricTarget(profile, metric)) return;
+
+  try {
+    const params = new URLSearchParams();
+    if (profile) params.set('profile', profile);
+    const query = params.toString();
+    const res = await fetch(
+      `/api/metric-targets/${encodeURIComponent(metric)}${query ? `?${query}` : ''}`,
+      { method: 'DELETE' }
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    metricTargets = metricTargets.filter(
+      (item) => !(item.metric === metric
+        && (item.profile || '') === (profile || ''))
+    );
+    setMetricsStatus('已清除目标。');
+    updateMetricTargetDisplay();
+    await loadMetrics();
+  } catch (err) {
+    setMetricsStatus(`清除目标失败：${err.message || err}`, true);
+  }
+}
+
 function metricNowLocal() {
   const now = new Date();
   now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
@@ -4717,6 +4843,21 @@ function renderMetrics(items) {
     const value = document.createElement('strong');
     value.className = 'metric-value';
     value.textContent = formatMetricValue(item);
+
+    const target = findMetricTarget(item.profile || '', item.metric);
+    if (target) {
+      const over = item.metric === 'bp'
+        ? Number(item.value1) > target.value1
+          || (target.value2 != null && Number(item.value2) > target.value2)
+        : Number(item.value1) > target.value1;
+      if (over) {
+        const badge = document.createElement('span');
+        badge.className = 'metric-over-target';
+        badge.textContent = '高于目标';
+        badge.title = `目标上限：${formatMetricTarget(target)}`;
+        value.append(' ', badge);
+      }
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -4968,6 +5109,7 @@ async function loadMetricOverview() {
 }
 
 async function refreshMetrics() {
+  updateMetricTargetDisplay();
   await loadMetrics();
   await loadMetricTrend();
   await loadMetricOverview();
@@ -5011,7 +5153,7 @@ function openMetrics() {
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
-  refreshMetrics();
+  loadMetricTargets().then(() => refreshMetrics());
   els.metricsClose.focus();
 }
 
@@ -7111,6 +7253,22 @@ els.metricType.addEventListener('change', () => {
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
+els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
+els.metricTargetSave.addEventListener('click', saveMetricTarget);
+els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
+els.metricTargetClear.addEventListener('click', clearMetricTarget);
+els.metricTargetValue1.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveMetricTarget();
+  }
+});
+els.metricTargetValue2.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    saveMetricTarget();
+  }
+});
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.metricCancel.addEventListener('click', cancelMetricEdit);
 els.metricExport.addEventListener('click', exportMetricsCsv);

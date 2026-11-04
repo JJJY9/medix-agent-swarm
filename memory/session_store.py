@@ -312,6 +312,14 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_metrics_profile_time
                     ON health_metrics(profile, metric, measured_at DESC);
+                CREATE TABLE IF NOT EXISTS metric_targets (
+                    profile    TEXT NOT NULL DEFAULT '',
+                    metric     TEXT NOT NULL,
+                    value1     REAL NOT NULL,
+                    value2     REAL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (profile, metric)
+                );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     action     TEXT NOT NULL,
@@ -1190,6 +1198,7 @@ class SessionStore:
             "sessions": exported,
             "profiles": self.list_profiles(),
             "health_metrics": self.list_metrics(limit=100000),
+            "metric_targets": self.list_metric_targets(),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
@@ -1200,6 +1209,7 @@ class SessionStore:
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
         raw_metrics = data.get("health_metrics")
+        raw_targets = data.get("metric_targets")
         if raw_sessions is None and (
             isinstance(raw_profiles, list) or isinstance(raw_metrics, list)
         ):
@@ -1410,6 +1420,60 @@ class SessionStore:
                     )
                     metrics_imported += 1
 
+            targets_imported = 0
+            if isinstance(raw_targets, list):
+                for raw in raw_targets[:500]:
+                    if not isinstance(raw, dict):
+                        continue
+                    metric = str(raw.get("metric") or "").strip()
+                    if metric not in METRIC_TYPES:
+                        continue
+                    _, _, (low, high) = METRIC_TYPES[metric]
+                    try:
+                        first = float(raw.get("value1"))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if not (low <= first <= high):
+                        continue
+                    second: Optional[float] = None
+                    if metric == "bp":
+                        try:
+                            second = float(raw.get("value2"))
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if not (30 <= second <= 200) or first <= second:
+                            continue
+                    if metric != "bp":
+                        second = None
+                    profile = " ".join(
+                        str(raw.get("profile") or "").split()
+                    )[:MAX_PROFILE_NAME_LENGTH]
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM metric_targets
+                         WHERE profile = ? AND metric = ?
+                        """,
+                        (profile, metric),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO metric_targets(
+                            profile, metric, value1, value2, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            profile,
+                            metric,
+                            round(first, 2),
+                            round(second, 2) if second is not None else None,
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    targets_imported += 1
+
         return {
             "imported": imported,
             "skipped": skipped,
@@ -1417,6 +1481,7 @@ class SessionStore:
             "messages": messages_imported,
             "profiles": profiles_imported,
             "metrics": metrics_imported,
+            "targets": targets_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -1767,6 +1832,96 @@ class SessionStore:
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM health_metrics WHERE id = ?", (metric_id,)
+            )
+            return cursor.rowcount > 0
+
+    def set_metric_target(
+        self,
+        profile: str,
+        metric: str,
+        value1: Any,
+        value2: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        """设置（或覆盖）某档案某指标的目标上限；无效时返回 None。"""
+        metric = str(metric or "").strip()
+        if metric not in METRIC_TYPES:
+            return None
+        _, unit, (low, high) = METRIC_TYPES[metric]
+        try:
+            first = float(value1)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not (low <= first <= high):
+            return None
+
+        second: Optional[float] = None
+        if metric == "bp":
+            try:
+                second = float(value2)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not (30 <= second <= 200) or first <= second:
+                return None
+
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        now = self._now()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO metric_targets(
+                    profile, metric, value1, value2, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(profile, metric) DO UPDATE SET
+                    value1 = excluded.value1,
+                    value2 = excluded.value2,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    profile,
+                    metric,
+                    round(first, 2),
+                    round(second, 2) if second is not None else None,
+                    now,
+                ),
+            )
+        return {
+            "profile": profile,
+            "metric": metric,
+            "value1": round(first, 2),
+            "value2": round(second, 2) if second is not None else None,
+            "unit": unit,
+            "updated_at": now,
+        }
+
+    def list_metric_targets(
+        self, profile: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """返回自定义指标目标；可按档案筛选。"""
+        sql = "SELECT profile, metric, value1, value2, updated_at FROM metric_targets"
+        params: List[Any] = []
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        if profile:
+            sql += " WHERE profile = ?"
+            params.append(profile)
+        sql += " ORDER BY profile, metric"
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["unit"] = METRIC_TYPES.get(item["metric"], ("", "", (0, 0)))[1]
+            result.append(item)
+        return result
+
+    def delete_metric_target(self, profile: str, metric: str) -> bool:
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM metric_targets WHERE profile = ? AND metric = ?",
+                (profile, str(metric or "").strip()),
             )
             return cursor.rowcount > 0
 

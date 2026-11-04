@@ -270,6 +270,15 @@ class MetricRequest(BaseModel):
     note: str = Field("", max_length=300)
 
 
+class MetricTargetRequest(BaseModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    metric: Literal[
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    ]
+    value1: float = Field(..., description="目标上限（血压为收缩压）")
+    value2: Optional[float] = Field(None, description="血压目标舒张压")
+
+
 class UpdateDocumentRequest(BaseModel):
     content: str = Field(..., min_length=1)
 
@@ -1177,6 +1186,56 @@ async def import_metrics_csv(file: UploadFile = File(...)):
         "skipped": len(records) - imported,
         "invalid": invalid,
     }
+
+
+@app.get("/api/metric-targets")
+async def list_metric_targets(profile: Optional[str] = None):
+    """自定义健康指标目标（默认全部档案）。"""
+    from memory import get_session_store
+
+    targets = await asyncio.to_thread(
+        get_session_store().list_metric_targets, profile
+    )
+    return {"targets": targets}
+
+
+@app.put("/api/metric-targets")
+async def set_metric_target(request: MetricTargetRequest):
+    """设置或覆盖某档案某指标的目标上限。"""
+    from memory import get_session_store
+
+    target = await asyncio.to_thread(
+        get_session_store().set_metric_target,
+        request.profile,
+        request.metric,
+        request.value1,
+        request.value2,
+    )
+    if target is None:
+        raise HTTPException(status_code=400, detail="目标数值无效")
+    await record_audit(
+        "metric_target.set",
+        f"{target['profile'] or '未指定'}·{target['metric']}",
+        f"{target['value1']:g}"
+        + (f"/{target['value2']:g}" if target["value2"] is not None else ""),
+    )
+    return {"ok": True, "target": target}
+
+
+@app.delete("/api/metric-targets/{metric}")
+async def delete_metric_target(metric: str, profile: str = ""):
+    """删除某档案某指标的自定义目标。"""
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().delete_metric_target, profile, metric
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="目标不存在")
+    await record_audit(
+        "metric_target.delete", f"{profile or '未指定'}·{metric}"
+    )
+    return {"ok": True, "metric": metric}
 
 
 @app.get("/api/profiles")
