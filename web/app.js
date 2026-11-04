@@ -152,6 +152,7 @@ const els = {
   calcResultDetail: document.getElementById('calc-result-detail'),
   calcResultNote: document.getElementById('calc-result-note'),
   calcStatus: document.getElementById('calc-status'),
+  pwaInstall: document.getElementById('pwa-install'),
   metricsOpen: document.getElementById('metrics-open'),
   metricsDrawer: document.getElementById('metrics-drawer'),
   metricsBackdrop: document.getElementById('metrics-backdrop'),
@@ -5237,6 +5238,31 @@ setInterval(checkStatus, 20000);
 els.input.focus();
 
 // 可安装 PWA：只缓存静态外壳，API 数据不进入 Service Worker 缓存
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  els.pwaInstall.hidden = false;
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  els.pwaInstall.hidden = true;
+});
+
+els.pwaInstall.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  try {
+    await deferredInstallPrompt.userChoice;
+  } catch {
+    // 用户取消或浏览器不支持时忽略
+  }
+  deferredInstallPrompt = null;
+  els.pwaInstall.hidden = true;
+});
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {
