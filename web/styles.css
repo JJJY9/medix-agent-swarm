@@ -192,8 +192,14 @@ body {
   display: flex;
   gap: 8px;
   margin: 10px 18px 0;
+  flex-wrap: wrap;
 }
-.rail-actions .btn-quiet { flex: 1; }
+.rail-actions .btn-quiet {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+  padding-left: 6px;
+  padding-right: 6px;
+}
 
 .btn-icon {
   display: inline-grid;
@@ -2620,6 +2626,8 @@ html[data-theme="dark"] .calc-status.error {
   flex-wrap: wrap;
 }
 
+.metric-target-form[hidden] { display: none; }
+
 .metric-target-form input {
   width: 78px;
   padding: 5px 7px;
@@ -2798,6 +2806,8 @@ html[data-theme="dark"] .reminder-badge {
   border-radius: 999px;
   text-align: center;
 }
+
+.reminder-count[hidden] { display: none; }
 
 .reminders-due-hint {
   margin: 0 0 8px;
