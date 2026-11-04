@@ -4971,6 +4971,9 @@ const METRIC_UNITS = {
   weight: 'kg',
   glucose: 'mmol/L',
   temperature: '°C',
+  heart_rate: '次/分',
+  spo2: '%',
+  waist: 'cm',
   phq9: '分',
   gad7: '分',
 };
@@ -4979,6 +4982,9 @@ const METRIC_NAMES = {
   weight: '体重',
   glucose: '血糖',
   temperature: '体温',
+  heart_rate: '心率',
+  spo2: '血氧饱和度',
+  waist: '腰围',
   phq9: 'PHQ-9 评分',
   gad7: 'GAD-7 评分',
 };
@@ -4987,6 +4993,9 @@ const METRIC_REFERENCES = {
   weight: '体重需结合身高计算 BMI，单一体重没有统一正常范围。',
   glucose: '血糖参考值需结合空腹/餐后与化验单，本工具不做诊断。',
   temperature: '腋温参考：36.0–37.3 °C。',
+  heart_rate: '静息心率参考：60–100 次/分；运动后或发热时会升高。',
+  spo2: '静息血氧参考：≥95%；持续低于 90% 请尽快就医。',
+  waist: '腰围参考：男性 <90 cm、女性 <85 cm（中国成人中心性肥胖标准）。',
   phq9: '评分越高提示抑郁症状越明显，需结合临床访谈判断。',
   gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
 };
@@ -5575,7 +5584,10 @@ function renderMetricWeekly(summaries) {
   const list = els.metricWeeklyList;
   if (!list) return;
   list.replaceChildren();
-  const order = ['bp', 'weight', 'glucose', 'temperature', 'phq9', 'gad7'];
+  const order = [
+    'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
+    'waist', 'phq9', 'gad7',
+  ];
   const items = (summaries || [])
     .filter((item) => item.count > 0)
     .sort((a, b) => order.indexOf(a.metric) - order.indexOf(b.metric));
@@ -5676,7 +5688,8 @@ async function loadMetricOverview() {
     els.metricOverviewGrid.replaceChildren();
     let count = 0;
     for (const metric of [
-      'bp', 'weight', 'glucose', 'temperature', 'phq9', 'gad7',
+      'bp', 'weight', 'glucose', 'temperature', 'heart_rate',
+      'spo2', 'waist', 'phq9', 'gad7',
     ]) {
       const item = latest[metric];
       if (!item) continue;

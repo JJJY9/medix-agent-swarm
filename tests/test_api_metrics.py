@@ -413,3 +413,36 @@ def test_metrics_summary_target_adherence(client):
     assert all_profiles["within_target"] is None
     assert no_target["target"] is None
     assert no_target["within_target"] is None
+
+
+def test_extended_metric_types(client):
+    for metric, value, unit in (
+        ("heart_rate", 72, "次/分"),
+        ("spo2", 97, "%"),
+        ("waist", 82, "cm"),
+    ):
+        created = client.post(
+            "/api/metrics",
+            json={
+                "metric": metric,
+                "value1": value,
+                "measured_at": "2026-11-01T08:00",
+            },
+        )
+        assert created.status_code == 200
+        assert created.json()["metric"]["unit"] == unit
+
+    summary = client.get(
+        "/api/metrics/summary", params={"metric": "spo2", "profile": ""}
+    )
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "heart_rate"}
+    )
+
+    assert summary.status_code == 200
+    assert summary.json()["count"] == 1
+    assert "心率" in exported.content.decode("utf-8-sig")
+    invalid = client.post(
+        "/api/metrics", json={"metric": "heart_rate", "value1": 5}
+    )
+    assert invalid.status_code == 400
