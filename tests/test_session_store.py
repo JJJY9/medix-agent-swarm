@@ -1526,3 +1526,43 @@ def test_reminders_repeat_completion(store):
         store.add_reminder("复查", "2026-11-10", repeat_days=366)
     with pytest.raises(ValueError):
         store.add_reminder("复查", "2026-11-10", repeat_until="not-a-date")
+
+
+def test_reminder_schema_migrates_old_database(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old-reminders.db"
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                due_at TEXT NOT NULL,
+                session_id TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO reminders(title, due_at, created_at, updated_at)
+            VALUES ('旧提醒', '2026-11-10', '2026-01-01', '2026-01-01');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SessionStore(str(path))
+    try:
+        items = store.list_reminders(include_done=True)
+    finally:
+        store.close()
+
+    assert len(items) == 1
+    assert items[0]["title"] == "旧提醒"
+    assert items[0]["profile"] == ""
+    assert items[0]["advance_days"] == 0
+    assert items[0]["repeat_days"] == 0
+    assert items[0]["repeat_until"] == ""
