@@ -87,6 +87,48 @@ def test_metrics_api_validation(client):
     assert invalid_list_filter.status_code == 400
 
 
+def test_metrics_api_update(client):
+    created = client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈",
+            "metric": "bp",
+            "value1": 138,
+            "value2": 86,
+            "measured_at": "2026-01-02T08:00",
+        },
+    )
+    metric_id = created.json()["metric"]["id"]
+
+    updated = client.patch(
+        f"/api/metrics/{metric_id}",
+        json={
+            "profile": "妈妈",
+            "metric": "weight",
+            "value1": 62.5,
+            "measured_at": "2026-01-03T07:30",
+            "note": "复测",
+        },
+    )
+    listed = client.get("/api/metrics", params={"metric": "weight"})
+    missing = client.patch(
+        "/api/metrics/999999",
+        json={"metric": "weight", "value1": 60},
+    )
+    invalid = client.patch(
+        f"/api/metrics/{metric_id}",
+        json={"metric": "bp", "value1": 80, "value2": 120},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["metric"]["metric"] == "weight"
+    assert updated.json()["metric"]["value1"] == 62.5
+    assert len(listed.json()["metrics"]) == 1
+    assert listed.json()["metrics"][0]["note"] == "复测"
+    assert missing.status_code == 404
+    assert invalid.status_code == 404
+
+
 def test_metrics_csv_export(client):
     client.post(
         "/api/metrics",

@@ -2439,7 +2439,14 @@ html[data-theme="dark"] .metrics-status.error {
   overflow-wrap: anywhere;
 }
 
-.metric-delete {
+.metric-item-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.metric-delete,
+.metric-edit {
   flex: none;
   font: inherit;
   font-size: 11.5px;
@@ -2454,6 +2461,11 @@ html[data-theme="dark"] .metrics-status.error {
 .metric-delete:hover {
   color: var(--triage-1);
   background: #fdf0ef;
+}
+
+.metric-edit:hover {
+  color: var(--clinic);
+  background: var(--clinic-soft);
 }
 
 html[data-theme="dark"] .metric-delete:hover {
