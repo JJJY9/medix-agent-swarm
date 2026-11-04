@@ -2666,6 +2666,40 @@ html[data-theme="dark"] .calc-status.error {
   font-size: 11.5px;
 }
 
+.metric-target-list {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+.metric-target-list[hidden] { display: none; }
+
+.metric-target-list-title {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.metric-target-list ul {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metric-target-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.metric-target-remove {
+  flex: 0 0 auto;
+}
+
 .metric-target-form {
   display: flex;
   align-items: center;

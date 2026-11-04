@@ -311,6 +311,8 @@ const els = {
   metricTargetText: document.getElementById('metric-target-text'),
   metricTargetEdit: document.getElementById('metric-target-edit'),
   metricTargetClear: document.getElementById('metric-target-clear'),
+  metricTargetList: document.getElementById('metric-target-list'),
+  metricTargetListItems: document.getElementById('metric-target-list-items'),
   metricTargetForm: document.getElementById('metric-target-form'),
   metricTargetValue1: document.getElementById('metric-target-value1'),
   metricTargetValue2: document.getElementById('metric-target-value2'),
@@ -5077,6 +5079,7 @@ function updateMetricTargetDisplay() {
   els.metricTargetEdit.textContent = target ? '修改目标' : '设置目标';
   els.metricTargetEdit.hidden = false;
   els.metricTargetForm.hidden = true;
+  renderMetricTargetList();
 }
 
 function startEditMetricTarget() {
@@ -5151,6 +5154,70 @@ async function clearMetricTarget() {
     await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`清除目标失败：${err.message || err}`, true);
+  }
+}
+
+function renderMetricTargetList() {
+  const box = els.metricTargetList;
+  const list = els.metricTargetListItems;
+  if (!box || !list) return;
+
+  const profile = els.metricProfile.value || '';
+  const order = Object.keys(METRIC_UNITS);
+  const items = (Array.isArray(metricTargets) ? metricTargets : [])
+    .filter((target) => (target.profile || '') === profile)
+    .sort((a, b) => order.indexOf(a.metric) - order.indexOf(b.metric));
+
+  list.replaceChildren();
+  if (!items.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+
+  for (const target of items) {
+    const label = METRIC_NAMES[target.metric] || target.metric;
+    const li = document.createElement('li');
+    li.className = 'metric-target-list-item';
+
+    const text = document.createElement('span');
+    text.textContent =
+      `${label} 目标上限 ${formatMetricTarget(target)}`;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'metric-edit metric-target-remove';
+    remove.textContent = '删除';
+    remove.setAttribute('aria-label', `删除${label}目标`);
+    remove.addEventListener('click', () => deleteMetricTargetFor(target));
+
+    li.append(text, remove);
+    list.appendChild(li);
+  }
+}
+
+async function deleteMetricTargetFor(target) {
+  try {
+    const params = new URLSearchParams();
+    if (target.profile) params.set('profile', target.profile);
+    const query = params.toString();
+    const res = await fetch(
+      `/api/metric-targets/${encodeURIComponent(target.metric)}`
+      + (query ? `?${query}` : ''),
+      { method: 'DELETE' }
+    );
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`服务返回 ${res.status}`);
+    }
+    metricTargets = metricTargets.filter(
+      (item) => !(item.metric === target.metric
+        && (item.profile || '') === (target.profile || ''))
+    );
+    setMetricsStatus('已删除目标。');
+    updateMetricTargetDisplay();
+    await refreshMetrics();
+  } catch (err) {
+    setMetricsStatus(`删除目标失败：${err.message || err}`, true);
   }
 }
 
