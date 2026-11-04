@@ -139,6 +139,39 @@ def test_favorite_api_and_filter(tmp_path, monkeypatch):
     assert usage["totals"]["usage"]["total_tokens"] == 10
 
 
+def test_bulk_tags_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    for session_id in ("s1", "s2"):
+        store.save_exchange(session_id, f"问题 {session_id}", "答复")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.patch(
+            "/api/bulk/sessions/tags",
+            json={
+                "ids": ["s1", "s2", "missing"],
+                "tags": [" 高血压 ", "高血压", "复诊"],
+            },
+        )
+        listed = client.get("/api/sessions")
+        tags = client.get("/api/tags")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert response.json()["updated"] == 2
+    assert response.json()["missing"] == ["missing"]
+    assert response.json()["tags"] == ["高血压", "复诊"]
+
+    assert all(
+        item["tags"] == ["高血压", "复诊"]
+        for item in listed.json()["sessions"]
+    )
+    counts = {item["name"]: item["count"] for item in tags.json()["tags"]}
+    assert counts == {"高血压": 2, "复诊": 2}
+
+
 def test_bulk_archive_and_delete(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     for session_id in ("s1", "s2", "s3"):

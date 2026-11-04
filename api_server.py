@@ -104,6 +104,10 @@ class BulkArchiveRequest(BulkSessionsRequest):
     archived: bool
 
 
+class BulkTagsRequest(BulkSessionsRequest):
+    tags: List[str] = Field(default_factory=list)
+
+
 class FeedbackRequest(BaseModel):
     message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
     rating: int = Field(
@@ -1445,6 +1449,40 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
         detail=f"deleted={deleted} missing={len(missing)}",
     )
     return {"ok": True, "deleted": deleted, "missing": missing}
+
+
+@app.patch("/api/bulk/sessions/tags")
+async def bulk_tag_sessions(request: BulkTagsRequest):
+    """批量覆盖会话标签。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    updated = 0
+    missing = []
+    normalized = []
+    for session_id in dict.fromkeys(request.ids):
+        tags = await asyncio.to_thread(
+            store.set_tags, session_id, request.tags
+        )
+        if tags is None:
+            missing.append(session_id)
+        else:
+            updated += 1
+            normalized = tags
+
+    await record_audit(
+        "session.bulk_tags",
+        detail=(
+            f"updated={updated} missing={len(missing)} "
+            f"tags={'、'.join(normalized)}"
+        ),
+    )
+    return {
+        "ok": True,
+        "updated": updated,
+        "missing": missing,
+        "tags": normalized,
+    }
 
 
 @app.patch("/api/sessions/{session_id}/archive")
