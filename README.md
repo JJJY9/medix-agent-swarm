@@ -38,7 +38,7 @@
 - **📉 健康记录**: 记录血压、体重、血糖与体温，可关联患者档案；历史记录按测量时间倒序展示，提供最近记录趋势图与 CSV 导出，随整库备份导出与恢复 ✅
 - **🧾 结构化补充**: 可选填写年龄、性别、病程、既往史、用药与过敏史，支持保存常用档案（保存在服务端 SQLite，可跨浏览器使用；旧版本浏览器本地档案会自动迁移），贯穿分诊、单科与多学科会诊 ✅
 - **🩺 接诊模式**: 可勾选「仅单科接诊」，跳过多学科协作以降低延迟与用量 ✅
-- **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、拖拽上传、在线预览与编辑、检索测试、删除文档、一键重建索引（幂等）✅
+- **📚 知识库管理**: Web 端批量上传 TXT/Markdown/PDF、拖拽上传、在线预览与编辑、检索测试、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
 - **📊 用量统计**: 展示每轮会诊的 Token 消耗与模型调用次数，历史列表汇总总用量，并随 Markdown 导出保留 ✅
 - **📈 用量趋势**: 历史抽屉展示近 7 天 Token 柱状图，支持悬停明细、CSV 导出与数据表 ✅
@@ -175,7 +175,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 ### 知识库管理
 
 - 会诊面板下方「管理知识库」可查看内置/上传文档、向量块数量和存储目录
-- 支持上传 TXT / Markdown / PDF（≤ 5 MB），上传或删除后自动重建索引
+- 支持上传 TXT / Markdown / PDF（单个 ≤ 5 MB），可一次选择多个文件或拖拽多个文件，全部保存后只重建一次索引
 - 重建会先清空旧 collection 再导入，重复执行不会产生重复向量块
 - 用户上传的文档保存在 `knowledge/data/uploads/`（已加入 `.gitignore`，不会提交到仓库）
 - 命令行等价操作：`python knowledge/scripts/import_hardcoded_data.py`（默认重建；`--append` 追加）
@@ -250,6 +250,7 @@ npm install -D playwright
 | PUT | `/api/knowledge/documents/{filename}` | 在线更新上传的 TXT/Markdown 并重建索引 |
 | POST | `/api/knowledge/rebuild` | 重建知识库索引（幂等） |
 | POST | `/api/knowledge/upload` | 上传文档（multipart，TXT/MD/PDF） |
+| POST | `/api/knowledge/upload-batch` | 一次上传最多 10 个文档，全部保存后只重建一次索引 |
 | DELETE | `/api/knowledge/documents/{filename}` | 删除上传文档并重建 |
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库/运行状态） |
 | POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
