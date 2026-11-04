@@ -154,6 +154,13 @@ def test_app_js_filters_reminders_by_profile(client):
     assert "reminders-profile" in app_js
 
 
+def test_app_js_exports_reminders_csv(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function exportRemindersCsv" in app_js
+    assert "/api/reminders/export.csv" in app_js
+
+
 def test_app_js_ships_metric_range_filter(client):
     app_js = client.get("/static/app.js").text
 

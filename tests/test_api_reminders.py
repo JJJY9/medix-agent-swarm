@@ -187,6 +187,29 @@ def test_reminders_api_profile_filter(client_and_store):
     assert len(everything.json()["reminders"]) == 2
 
 
+def test_reminders_csv_export(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={"title": "妈妈复查", "due_at": "2026-11-10", "profile": "母亲"},
+    )
+    client.post(
+        "/api/reminders",
+        json={"title": "孩子复诊", "due_at": "2026-11-11", "profile": "孩子"},
+    )
+
+    response = client.get(
+        "/api/reminders/export.csv", params={"profile": "母亲"}
+    )
+    text = response.content.decode("utf-8-sig")
+    lines = text.strip().splitlines()
+
+    assert response.status_code == 200
+    assert lines[0] == "到期日,内容,档案,状态,备注"
+    assert any("妈妈复查" in line for line in lines)
+    assert all("孩子复诊" not in line for line in lines)
+
+
 def test_import_backup_preserves_reminders(client_and_store):
     client, _store = client_and_store
 
