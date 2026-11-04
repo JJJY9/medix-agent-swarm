@@ -776,6 +776,17 @@ def test_app_js_ships_symptom_search(client):
     assert 'id="symptom-search"' in html
 
 
+def test_app_js_ships_symptom_quick_picks(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="symptom-quick"' in html
+    assert 'data-symptom="头晕"' in html
+    assert "els.symptomQuick.addEventListener" in app_js
+    assert ".symptom-quick" in css
+
+
 def test_app_js_ships_symptom_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

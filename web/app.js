@@ -386,6 +386,7 @@ const els = {
   symptomList: document.getElementById('symptom-list'),
   symptomEmpty: document.getElementById('symptom-empty'),
   symptomSearch: document.getElementById('symptom-search'),
+  symptomQuick: document.getElementById('symptom-quick'),
   symptomSummary: document.getElementById('symptom-summary'),
   symptomTrend: document.getElementById('symptom-trend'),
   symptomTrendChart: document.getElementById('symptom-trend-chart'),
@@ -11005,6 +11006,16 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
+if (els.symptomQuick) {
+  els.symptomQuick.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-symptom]');
+    if (!button) return;
+    const symptom = button.dataset.symptom || '';
+    if (!symptom) return;
+    els.symptomText.value = symptom;
+    els.symptomText.focus();
+  });
+}
 els.medicationSave.addEventListener('click', saveMedication);
 els.medicationExport.addEventListener('click', exportMedicationsCsv);
 els.medicationLogsExport.addEventListener('click', exportMedicationLogsCsv);
