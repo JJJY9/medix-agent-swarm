@@ -190,3 +190,58 @@ def test_weekly_report_uses_calendar_window(client_and_store):
 
     assert report["metrics"]["count"] == 1
     assert report["metrics"]["by_metric"][0]["avg_value1"] == 60.0
+
+
+def test_weekly_report_lower_bound_target(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "母亲", "metric": "spo2", "value1": 95,
+        "measured_at": now,
+    })
+    client.post("/api/metrics", json={
+        "profile": "母亲", "metric": "spo2", "value1": 90,
+        "measured_at": now,
+    })
+    client.put("/api/metric-targets", json={
+        "profile": "母亲", "metric": "spo2", "value1": 95,
+    })
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "母亲"}
+    ).json()
+    row = next(
+        item for item in report["metrics"]["by_metric"]
+        if item["metric"] == "spo2"
+    )
+
+    assert row["within_target"] == 1
+    assert row["target"]["value1"] == 95
+
+
+def test_weekly_report_logs_calendar_window(client_and_store):
+    client, _store = client_and_store
+    from datetime import time
+
+    now = datetime.now()
+    medication = client.post(
+        "/api/medications", json={"name": "二甲双胍"}
+    ).json()["medication"]
+    in_window = (now - timedelta(days=6)).isoformat(timespec="minutes")
+    old_date = (now - timedelta(days=7)).date()
+    out_window = datetime.combine(
+        old_date, time(23, 59)
+    ).isoformat(timespec="minutes")
+
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": in_window},
+    )
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": out_window},
+    )
+
+    report = client.get("/api/reports/weekly").json()
+    assert report["medications"]["doses"] == 1
