@@ -2708,6 +2708,13 @@ html[data-theme="dark"] .calc-status.error {
   font-size: 11.5px;
 }
 
+.metric-target-hint {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.metric-target-hint[hidden] { display: none; }
+
 .metric-target-list {
   margin-top: 6px;
   padding: 6px 8px;
