@@ -3357,6 +3357,28 @@ html[data-theme="dark"] .medication-active-badge.is-inactive {
   border-radius: 8px;
 }
 
+.medication-filters {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.medication-filters input,
+.medication-filters select {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.medication-filters input {
+  flex: 1;
+  min-width: 0;
+}
+
 .symptom-severity {
   display: inline-block;
   margin-left: 4px;

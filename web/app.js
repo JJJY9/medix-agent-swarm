@@ -396,6 +396,8 @@ const els = {
   medicationCancel: document.getElementById('medication-cancel'),
   medicationStatus: document.getElementById('medication-status'),
   medicationList: document.getElementById('medication-list'),
+  medicationSearch: document.getElementById('medication-search'),
+  medicationStatusFilter: document.getElementById('medication-status-filter'),
   medicationEmpty: document.getElementById('medication-empty'),
   medicationExport: document.getElementById('medication-export'),
   medicationImport: document.getElementById('medication-import'),
@@ -7729,10 +7731,44 @@ function resetMedicationForm() {
   els.medicationCancel.hidden = true;
 }
 
+function filterMedications(items) {
+  const query = els.medicationSearch
+    ? String(els.medicationSearch.value || '').trim().toLowerCase()
+    : '';
+  const status = els.medicationStatusFilter
+    ? els.medicationStatusFilter.value
+    : '';
+  return (items || []).filter((item) => {
+    if (status === 'active' && !item.active) return false;
+    if (status === 'inactive' && item.active) return false;
+    if (!query) return true;
+    return [item.name, item.dose, item.frequency, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query);
+  });
+}
+
 function renderMedications(items) {
   if (!els.medicationList) return;
   els.medicationList.replaceChildren();
   els.medicationEmpty.hidden = items.length > 0;
+  const query = els.medicationSearch
+    ? String(els.medicationSearch.value || '').trim()
+    : '';
+  const status = els.medicationStatusFilter
+    ? els.medicationStatusFilter.value
+    : '';
+  if (query) {
+    els.medicationEmpty.textContent = `没有匹配「${query}」的药物。`;
+  } else if (status === 'active') {
+    els.medicationEmpty.textContent = '没有在用的药物。';
+  } else if (status === 'inactive') {
+    els.medicationEmpty.textContent = '没有停用的药物。';
+  } else {
+    els.medicationEmpty.textContent = '还没有用药记录。';
+  }
   if (
     editingMedicationId
     && !items.some((item) => item.id === editingMedicationId)
@@ -7822,7 +7858,7 @@ async function loadMedications() {
     const data = await res.json();
     if (requestSeq !== medicationRequestSeq) return;
     medicationItemsCache = data.medications || [];
-    renderMedications(medicationItemsCache);
+    renderMedications(filterMedications(medicationItemsCache));
   } catch {
     // 用药清单加载失败不影响健康记录
   }
@@ -10372,6 +10408,12 @@ els.symptomImportFile.addEventListener('change', () => {
 });
 els.symptomSearch.addEventListener('input', () => {
   renderSymptoms(filterSymptoms(symptomItemsCache));
+});
+els.medicationSearch.addEventListener('input', () => {
+  renderMedications(filterMedications(medicationItemsCache));
+});
+els.medicationStatusFilter.addEventListener('change', () => {
+  renderMedications(filterMedications(medicationItemsCache));
 });
 els.symptomCancel.addEventListener('click', () => {
   resetSymptomForm();
