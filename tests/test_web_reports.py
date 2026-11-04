@@ -708,6 +708,9 @@ def test_app_js_ships_weekly_summary(client):
     assert "weeklySummaryRequestSeq" in app_js
     assert "medicationLogRequestSeq" in app_js
     assert "function refreshOverview" in app_js
+    assert 'id="home-glance-summary"' in html
+    assert "homeGlanceSummary" in app_js
+    assert "近 ${days} 天：指标" in app_js
 
 
 def test_app_js_links_medication_log_and_reminder(client):
