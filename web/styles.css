@@ -465,6 +465,74 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-soft);
 }
 
+.today-meds[hidden] {
+  display: none;
+}
+
+.today-meds {
+  margin-top: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.today-meds-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.today-meds-head strong {
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.today-meds-list {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-meds-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.today-meds-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.today-meds-name strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.today-meds-meta {
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.today-meds-log {
+  flex: none;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
 .starters {
   display: flex;
   flex-direction: column;
