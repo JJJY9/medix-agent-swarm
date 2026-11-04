@@ -236,6 +236,26 @@ class InteractionsRequest(BaseModel):
     allergies: str = Field("", max_length=200, description="可选过敏史")
 
 
+class QsofaRequest(BaseModel):
+    respiratory_rate: float = Field(..., gt=0, le=80, description="呼吸频率（次/分）")
+    systolic_bp: float = Field(..., gt=0, le=300, description="收缩压（mmHg）")
+    altered_mentation: bool = False
+
+
+class Fib4Request(BaseModel):
+    age: int = Field(..., ge=18, le=120, description="年龄（岁）")
+    ast: float = Field(..., gt=0, le=10000, description="AST（U/L）")
+    alt: float = Field(..., gt=0, le=10000, description="ALT（U/L）")
+    platelets: float = Field(..., gt=0, le=2000, description="血小板（×10⁹/L）")
+
+
+class MeldRequest(BaseModel):
+    bilirubin: float = Field(..., gt=0, le=100, description="总胆红素（mg/dL）")
+    inr: float = Field(..., gt=0, le=20, description="INR")
+    creatinine: float = Field(..., gt=0, le=30, description="血肌酐（mg/dL）")
+    dialysis: bool = False
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1461,6 +1481,53 @@ async def tool_interactions(request: InteractionsRequest):
         "drugs": drugs,
         "level": result.get("level", "none"),
         "alerts": result.get("alerts", []),
+    }
+
+
+@app.post("/api/tools/qsofa")
+async def tool_qsofa(request: QsofaRequest):
+    """qSOFA 脓毒症风险筛查。"""
+    from core.clinical_tools import calculate_qsofa
+
+    return {
+        "ok": True,
+        **calculate_qsofa(
+            request.respiratory_rate,
+            request.systolic_bp,
+            request.altered_mentation,
+        ),
+    }
+
+
+@app.post("/api/tools/fib-4")
+async def tool_fib4(request: Fib4Request):
+    """FIB-4 肝纤维化指数。"""
+    from core.clinical_tools import calculate_fib4
+
+    return {
+        "ok": True,
+        **calculate_fib4(
+            request.age,
+            request.ast,
+            request.alt,
+            request.platelets,
+        ),
+    }
+
+
+@app.post("/api/tools/meld")
+async def tool_meld(request: MeldRequest):
+    """经典 MELD 终末期肝病评分。"""
+    from core.clinical_tools import calculate_meld
+
+    return {
+        "ok": True,
+        **calculate_meld(
+            request.bilirubin,
+            request.inr,
+            request.creatinine,
+            request.dialysis,
+        ),
     }
 
 

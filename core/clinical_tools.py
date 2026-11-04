@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 #: BMI 中国成人分类界值
@@ -489,4 +490,95 @@ def calculate_curb65(
         "risk": risk,
         "criteria": criteria,
         "note": "CURB-65 用于社区获得性肺炎严重程度分层；是否住院或入住 ICU 需医生结合血氧、影像与基础疾病判断。",
+    }
+
+
+def calculate_qsofa(
+    respiratory_rate: float,
+    systolic_bp: float,
+    altered_mentation: bool,
+) -> Dict[str, object]:
+    """qSOFA 脓毒症风险筛查（0–3 分）。"""
+    criteria = []
+    if float(respiratory_rate) >= 22:
+        criteria.append("呼吸频率 ≥ 22 次/分")
+    if float(systolic_bp) <= 100:
+        criteria.append("收缩压 ≤ 100 mmHg")
+    if altered_mentation:
+        criteria.append("意识状态改变（GCS < 15）")
+
+    score = len(criteria)
+    risk = "高风险" if score >= 2 else "低风险"
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "qSOFA ≥ 2 分提示脓毒症风险较高，应尽快由医生评估；qSOFA < 2 不能排除脓毒症。",
+    }
+
+
+def calculate_fib4(
+    age: int,
+    ast: float,
+    alt: float,
+    platelets: float,
+) -> Dict[str, object]:
+    """FIB-4 肝纤维化指数，血小板单位为 ×10⁹/L。"""
+    score = float(age) * float(ast) / (float(platelets) * math.sqrt(float(alt)))
+    if score < 1.3:
+        risk = "低风险"
+        detail = "进展性肝纤维化可能性较低"
+    elif score <= 2.67:
+        risk = "中风险"
+        detail = "结果处于灰区，需结合弹性成像或其他无创指标"
+    else:
+        risk = "高风险"
+        detail = "进展性肝纤维化可能性较高"
+
+    return {
+        "fib4": round(score, 2),
+        "risk": risk,
+        "detail": detail,
+        "note": "FIB-4 适用于成人慢性肝病风险分层；65 岁以上人群阈值需上调，急性肝损伤或血小板/转氨酶异常会影响结果。",
+    }
+
+
+def calculate_meld(
+    bilirubin: float,
+    inr: float,
+    creatinine: float,
+    dialysis: bool = False,
+) -> Dict[str, object]:
+    """经典 MELD 终末期肝病评分（胆红素、肌酐单位 mg/dL）。"""
+    bilirubin = max(1.0, float(bilirubin))
+    inr = max(1.0, float(inr))
+    creatinine = 4.0 if dialysis else max(1.0, float(creatinine))
+    creatinine = min(creatinine, 4.0)
+
+    raw = (
+        3.78 * math.log(bilirubin)
+        + 11.2 * math.log(inr)
+        + 9.57 * math.log(creatinine)
+        + 6.43
+    )
+    score = max(6, min(int(round(raw)), 40))
+
+    if score < 10:
+        risk = "低风险"
+    elif score < 20:
+        risk = "中风险"
+    elif score < 30:
+        risk = "高风险"
+    else:
+        risk = "极高风险"
+
+    return {
+        "meld": score,
+        "risk": risk,
+        "criteria": [
+            f"总胆红素 {bilirubin:g} mg/dL",
+            f"INR {inr:g}",
+            f"血肌酐 {creatinine:g} mg/dL" + ("（透析）" if dialysis else ""),
+        ],
+        "note": "MELD 用于终末期肝病短期预后评估；不能替代肝移植评估，胆红素与肌酐需按 mg/dL 输入。",
     }

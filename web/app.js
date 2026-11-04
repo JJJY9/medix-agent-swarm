@@ -191,6 +191,20 @@ const els = {
   calcFormInteractions: document.getElementById('calc-form-interactions'),
   calcInteractionsDrugs: document.getElementById('calc-interactions-drugs'),
   calcInteractionsAllergies: document.getElementById('calc-interactions-allergies'),
+  calcFormQsofa: document.getElementById('calc-form-qsofa'),
+  calcQsofaRr: document.getElementById('calc-qsofa-rr'),
+  calcQsofaSbp: document.getElementById('calc-qsofa-sbp'),
+  calcQsofaMentation: document.getElementById('calc-qsofa-mentation'),
+  calcFormFib4: document.getElementById('calc-form-fib4'),
+  calcFib4Age: document.getElementById('calc-fib4-age'),
+  calcFib4Ast: document.getElementById('calc-fib4-ast'),
+  calcFib4Alt: document.getElementById('calc-fib4-alt'),
+  calcFib4Platelets: document.getElementById('calc-fib4-platelets'),
+  calcFormMeld: document.getElementById('calc-form-meld'),
+  calcMeldBilirubin: document.getElementById('calc-meld-bilirubin'),
+  calcMeldInr: document.getElementById('calc-meld-inr'),
+  calcMeldCreatinine: document.getElementById('calc-meld-creatinine'),
+  calcMeldDialysis: document.getElementById('calc-meld-dialysis'),
   calcWellsPeDvt: document.getElementById('calc-wellspe-dvt'),
   calcWellsPeLikely: document.getElementById('calc-wellspe-likely'),
   calcWellsPeHr: document.getElementById('calc-wellspe-hr'),
@@ -5355,6 +5369,9 @@ function setCalcTool(tool) {
     els.calcFormWells,
     els.calcFormWellsPe,
     els.calcFormInteractions,
+    els.calcFormQsofa,
+    els.calcFormFib4,
+    els.calcFormMeld,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -5821,6 +5838,69 @@ function submitInteractions(event) {
         level: data.level || 'warning',
       };
     }
+  );
+}
+
+function submitQsofa(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/qsofa',
+    {
+      respiratory_rate: Number(els.calcQsofaRr.value),
+      systolic_bp: Number(els.calcQsofaSbp.value),
+      altered_mentation: els.calcQsofaMentation.checked,
+    },
+    (data) => ({
+      title: 'qSOFA 结果',
+      main: `评分 ${data.score} / 3`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '高风险' ? 'warning' : '',
+    })
+  );
+}
+
+function submitFib4(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/fib-4',
+    {
+      age: Number(els.calcFib4Age.value),
+      ast: Number(els.calcFib4Ast.value),
+      alt: Number(els.calcFib4Alt.value),
+      platelets: Number(els.calcFib4Platelets.value),
+    },
+    (data) => ({
+      title: 'FIB-4 结果',
+      main: `FIB-4 ${data.fib4}`,
+      detail: `${data.risk}：${data.detail}`,
+      note: data.note,
+      level: data.risk === '高风险' ? 'warning' : '',
+    })
+  );
+}
+
+function submitMeld(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/meld',
+    {
+      bilirubin: Number(els.calcMeldBilirubin.value),
+      inr: Number(els.calcMeldInr.value),
+      creatinine: Number(els.calcMeldCreatinine.value),
+      dialysis: els.calcMeldDialysis.checked,
+    },
+    (data) => ({
+      title: 'MELD 结果',
+      main: `MELD ${data.meld} 分`,
+      detail: `风险分层：${data.risk} · ${(data.criteria || []).join('；')}`,
+      note: data.note,
+      level: ['高风险', '极高风险'].includes(data.risk) ? 'warning' : '',
+    })
   );
 }
 
@@ -6787,6 +6867,9 @@ els.calcFormGcs.addEventListener('submit', submitGcs);
 els.calcFormWells.addEventListener('submit', submitWells);
 els.calcFormWellsPe.addEventListener('submit', submitWellsPe);
 els.calcFormInteractions.addEventListener('submit', submitInteractions);
+els.calcFormQsofa.addEventListener('submit', submitQsofa);
+els.calcFormFib4.addEventListener('submit', submitFib4);
+els.calcFormMeld.addEventListener('submit', submitMeld);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;

@@ -396,3 +396,73 @@ def test_interactions_api_validates_input(client):
     assert blank.status_code == 400
     assert missing.status_code == 422
     assert too_long.status_code == 422
+
+
+def test_qsofa_api(client):
+    low = client.post(
+        "/api/tools/qsofa",
+        json={"respiratory_rate": 18, "systolic_bp": 120},
+    )
+    high = client.post(
+        "/api/tools/qsofa",
+        json={
+            "respiratory_rate": 24,
+            "systolic_bp": 90,
+            "altered_mentation": True,
+        },
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低风险"
+    assert high.status_code == 200
+    assert high.json()["score"] == 3
+    assert high.json()["risk"] == "高风险"
+
+
+def test_fib4_api(client):
+    response = client.post(
+        "/api/tools/fib-4",
+        json={"age": 70, "ast": 100, "alt": 50, "platelets": 80},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fib4"] == 12.37
+    assert data["risk"] == "高风险"
+
+
+def test_meld_api(client):
+    response = client.post(
+        "/api/tools/meld",
+        json={"bilirubin": 3, "inr": 2, "creatinine": 2},
+    )
+    dialysis = client.post(
+        "/api/tools/meld",
+        json={"bilirubin": 1, "inr": 1, "creatinine": 1, "dialysis": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["meld"] == 25
+    assert response.json()["risk"] == "高风险"
+    assert dialysis.status_code == 200
+    assert dialysis.json()["meld"] == 20
+
+
+def test_new_scores_reject_invalid_values(client):
+    qsofa = client.post(
+        "/api/tools/qsofa",
+        json={"respiratory_rate": 0, "systolic_bp": 120},
+    )
+    fib4 = client.post(
+        "/api/tools/fib-4",
+        json={"age": 17, "ast": 20, "alt": 20, "platelets": 200},
+    )
+    meld = client.post(
+        "/api/tools/meld",
+        json={"bilirubin": 0, "inr": 1, "creatinine": 1},
+    )
+
+    assert qsofa.status_code == 422
+    assert fib4.status_code == 422
+    assert meld.status_code == 422
