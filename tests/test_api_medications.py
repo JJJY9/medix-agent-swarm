@@ -117,6 +117,48 @@ def test_medication_logs_api_roundtrip(client_and_store):
     assert "medication.log_delete" in actions
 
 
+def test_medication_logs_csv_export(client_and_store):
+    client, _store = client_and_store
+    from datetime import datetime, timedelta
+
+    item = client.post(
+        "/api/medications",
+        json={"profile": "母亲", "name": "氨氯地平", "dose": "5 mg"},
+    ).json()["medication"]
+    recent = datetime.now().isoformat(timespec="minutes")
+    old = (datetime.now() - timedelta(days=10)).isoformat(timespec="minutes")
+    client.post(
+        f"/api/medications/{item['id']}/logs",
+        json={"taken_at": recent, "note": "早餐后"},
+    )
+    client.post(
+        f"/api/medications/{item['id']}/logs",
+        json={"taken_at": old, "note": "旧记录"},
+    )
+
+    export = client.get(
+        "/api/medications/logs/export.csv", params={"profile": "母亲"}
+    )
+    recent_export = client.get(
+        "/api/medications/logs/export.csv",
+        params={"profile": "母亲", "days": 7},
+    )
+
+    assert export.status_code == 200
+    assert export.content.startswith(b"\xef\xbb\xbf")
+    text = export.content.decode("utf-8-sig")
+    assert "药物名称" in text
+    assert "氨氯地平" in text
+    assert "5 mg" in text
+    assert "早餐后" in text
+    assert recent in text
+    assert old in text
+
+    recent_text = recent_export.content.decode("utf-8-sig")
+    assert recent in recent_text
+    assert old not in recent_text
+
+
 def test_medications_import_backup(client_and_store):
     client, _store = client_and_store
 
