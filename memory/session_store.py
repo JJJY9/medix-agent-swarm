@@ -1295,6 +1295,22 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def archive_older_than(self, days: int) -> int:
+        """把最后更新早于 N 天的未归档会话自动归档，返回处理数量。"""
+        cutoff = _days_cutoff(days)
+        if not cutoff:
+            return 0
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE sessions
+                   SET archived = 1
+                 WHERE archived = 0 AND updated_at < ?
+                """,
+                (cutoff,),
+            )
+            return cursor.rowcount
+
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
         if not title:

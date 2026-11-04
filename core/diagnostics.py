@@ -138,6 +138,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
     from core.budget import get_token_budget
     from core.pricing import get_pricing
     from core.ratelimit import get_rate_limit
+    from core.retention import get_auto_archive_days
 
     root = Path(project_root)
     db_path = Path(
@@ -153,6 +154,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "rate_limit": get_rate_limit(),
         "pricing_configured": get_pricing() is not None,
         "monthly_token_budget": get_token_budget(),
+        "auto_archive_days": get_auto_archive_days(),
     }
 
     if info["db_exists"]:

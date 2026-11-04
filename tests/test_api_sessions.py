@@ -201,6 +201,33 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_auto_archive_sessions_archives_old(monkeypatch, tmp_path):
+    import asyncio
+    from datetime import datetime, timedelta
+
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("old", "旧问题", "旧答复")
+    store.save_exchange("new", "新问题", "新答复")
+    old_time = (datetime.now() - timedelta(days=40)).isoformat(timespec="seconds")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET updated_at = ? WHERE id = 'old'",
+            (old_time,),
+        )
+
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    monkeypatch.setenv("MEDIX_AUTO_ARCHIVE_DAYS", "30")
+    try:
+        asyncio.run(api_server.auto_archive_sessions())
+        archived = store.list_sessions(archived=True)
+        active = store.list_sessions(archived=False)
+    finally:
+        store.close()
+
+    assert [item["id"] for item in archived] == ["old"]
+    assert [item["id"] for item in active] == ["new"]
+
+
 def test_quality_insights_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(

@@ -40,6 +40,7 @@ from core.security import install_log_redaction, redact_secrets
 install_log_redaction()
 
 from core.auth import get_access_token, is_authorized
+from core.retention import get_auto_archive_days
 from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
 from core.llm_client import LLMError
@@ -186,6 +187,23 @@ class AppState:
 state = AppState()
 
 
+async def auto_archive_sessions() -> None:
+    """按 MEDIX_AUTO_ARCHIVE_DAYS 自动归档旧会话（不删除）。"""
+    days = get_auto_archive_days()
+    if days <= 0:
+        return
+    try:
+        from memory import get_session_store
+
+        count = await asyncio.to_thread(
+            get_session_store().archive_older_than, days
+        )
+        if count:
+            logger.info(f"自动归档 {count} 个超过 {days} 天的会话")
+    except Exception as e:
+        logger.warning(f"自动归档旧会话失败: {e}")
+
+
 class NoCacheStaticFiles(StaticFiles):
     """静态资源每次用 ETag 校验，避免升级后浏览器继续用旧 CSS/JS。"""
 
@@ -208,6 +226,7 @@ async def lifespan(_: FastAPI):
         return
     # 后台预热知识库，不阻塞服务启动
     asyncio.create_task(state.warm_up())
+    asyncio.create_task(auto_archive_sessions())
     yield
     logger.info("MediX API 服务已停止")
 
@@ -324,6 +343,7 @@ async def get_status():
         "llm_configured": bool(api_key),
         "pricing": get_pricing(),
         "monthly_token_budget": get_token_budget(),
+        "auto_archive_days": get_auto_archive_days(),
         "model_name": LLM_CONFIG.get("model_name"),
         "base_url": LLM_CONFIG.get("base_url"),
         "mem0_enabled": mem0_enabled,
