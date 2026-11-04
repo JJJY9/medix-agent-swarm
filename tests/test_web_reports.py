@@ -264,3 +264,12 @@ def test_app_js_truncates_advance_days(client):
 
     assert "omitEmptyProfile" in app_js
     assert "Math.trunc(Math.max(" in app_js
+
+
+def test_app_js_ships_reminder_profile_select(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "reminderProfile: document.getElementById('reminder-profile')" in app_js
+    assert "els.reminderProfile.value = item.profile" in app_js
+    assert 'id="reminder-profile"' in html
