@@ -291,6 +291,13 @@ const els = {
   remindersDueHint: document.getElementById('reminders-due-hint'),
   remindersProfile: document.getElementById('reminders-profile'),
   remindersShowDone: document.getElementById('reminders-show-done'),
+  remindersCalendar: document.getElementById('reminders-calendar'),
+  remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
+  remindersCalendarTitle: document.getElementById('reminders-calendar-title'),
+  remindersCalendarGrid: document.getElementById('reminders-calendar-grid'),
+  remindersCalendarPrev: document.getElementById('reminders-calendar-prev'),
+  remindersCalendarNext: document.getElementById('reminders-calendar-next'),
+  remindersCalendarClear: document.getElementById('reminders-calendar-clear'),
   remindersList: document.getElementById('reminders-list'),
   remindersEmpty: document.getElementById('reminders-empty'),
   compareDrawer: document.getElementById('compare-drawer'),
@@ -5795,6 +5802,12 @@ let remindersRequestSeq = 0;
 let reminderSaving = false;
 let reminderActionBusy = false;
 let reminderPlanBusy = false;
+let reminderCalendarOpen = false;
+let reminderCalendarMonth = new Date();
+let reminderCalendarDay = '';
+let reminderItemsCache = [];
+
+const REMINDER_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
 function todayLocalDate() {
   const now = new Date();
@@ -5959,6 +5972,107 @@ const REMINDER_GROUP_LABELS = {
   later: '更晚',
   done: '已完成',
 };
+
+function renderReminderCalendar(items) {
+  if (!els.remindersCalendar) return;
+  els.remindersCalendar.hidden = !reminderCalendarOpen;
+  els.remindersCalendarToggle.setAttribute(
+    'aria-expanded', String(reminderCalendarOpen)
+  );
+  els.remindersCalendarToggle.textContent = reminderCalendarOpen
+    ? '收起月历'
+    : '月历';
+  if (!reminderCalendarOpen) return;
+
+  const counts = {};
+  for (const item of items || []) {
+    const due = String(item.due_at || '').slice(0, 10);
+    if (!due) continue;
+    counts[due] = (counts[due] || 0) + 1;
+  }
+
+  const year = reminderCalendarMonth.getFullYear();
+  const month = reminderCalendarMonth.getMonth();
+  els.remindersCalendarTitle.textContent = `${year} 年 ${month + 1} 月`;
+
+  const grid = els.remindersCalendarGrid;
+  grid.replaceChildren();
+  for (const label of REMINDER_WEEKDAYS) {
+    const head = document.createElement('span');
+    head.className = 'reminders-calendar-weekday';
+    head.textContent = label;
+    grid.appendChild(head);
+  }
+
+  const firstDay = new Date(year, month, 1);
+  const offset = (firstDay.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = todayLocalDate();
+  for (let index = 0; index < offset; index += 1) {
+    const blank = document.createElement('span');
+    blank.className = 'reminders-calendar-blank';
+    grid.appendChild(blank);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = `${year}-${String(month + 1).padStart(2, '0')}`
+      + `-${String(day).padStart(2, '0')}`;
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'reminders-calendar-day';
+    if (date === today) cell.classList.add('is-today');
+    if (date === reminderCalendarDay) cell.classList.add('is-selected');
+
+    const number = document.createElement('span');
+    number.textContent = String(day);
+    cell.appendChild(number);
+
+    const count = counts[date] || 0;
+    if (count > 0) {
+      const dot = document.createElement('span');
+      dot.className = 'reminders-calendar-dot';
+      dot.textContent = count > 9 ? '9+' : String(count);
+      cell.appendChild(dot);
+      cell.title = `${date}：${count} 条提醒`;
+      cell.setAttribute('aria-label', `${date}，${count} 条提醒`);
+    } else {
+      cell.title = date;
+      cell.setAttribute('aria-label', date);
+    }
+
+    cell.addEventListener('click', () => {
+      reminderCalendarDay = reminderCalendarDay === date ? '' : date;
+      renderReminderCalendar(reminderItemsCache);
+      renderFilteredReminders();
+    });
+    grid.appendChild(cell);
+  }
+
+  els.remindersCalendarClear.hidden = !reminderCalendarDay;
+}
+
+function renderFilteredReminders() {
+  const items = reminderCalendarDay
+    ? reminderItemsCache.filter(
+        (item) => String(item.due_at || '').slice(0, 10) === reminderCalendarDay
+      )
+    : reminderItemsCache;
+  if (els.remindersEmpty) {
+    els.remindersEmpty.textContent = reminderCalendarDay
+      ? `所选日期（${formatReminderDue(reminderCalendarDay)}）没有提醒。`
+      : '还没有随访提醒。';
+  }
+  renderReminders(items);
+}
+
+function shiftReminderCalendarMonth(delta) {
+  reminderCalendarMonth = new Date(
+    reminderCalendarMonth.getFullYear(),
+    reminderCalendarMonth.getMonth() + delta,
+    1
+  );
+  renderReminderCalendar(reminderItemsCache);
+}
 
 function renderReminders(items) {
   els.remindersList.replaceChildren();
@@ -6214,7 +6328,9 @@ async function loadReminders() {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== remindersRequestSeq) return;
-    renderReminders(data.reminders || []);
+    reminderItemsCache = data.reminders || [];
+    renderReminderCalendar(reminderItemsCache);
+    renderFilteredReminders();
     refreshReminderBadge();
   } catch (err) {
     if (requestSeq !== remindersRequestSeq) return;
@@ -7525,6 +7641,10 @@ async function handleLaunchAction() {
     await startNewSession();
   } else if (action === 'reminders') {
     openReminders();
+    if (params.get('calendar') === '1') {
+      reminderCalendarOpen = true;
+      renderReminderCalendar(reminderItemsCache);
+    }
   } else if (action === 'metrics') {
     openMetrics();
   }
@@ -8564,6 +8684,23 @@ els.remindersImportFile.addEventListener('change', () => {
   if (file) importRemindersCsv(file);
 });
 els.reminderPlanAdd.addEventListener('click', addReminderSeries);
+els.remindersCalendarToggle.addEventListener('click', () => {
+  reminderCalendarOpen = !reminderCalendarOpen;
+  if (!reminderCalendarOpen) reminderCalendarDay = '';
+  renderReminderCalendar(reminderItemsCache);
+  renderFilteredReminders();
+});
+els.remindersCalendarPrev.addEventListener('click', () => {
+  shiftReminderCalendarMonth(-1);
+});
+els.remindersCalendarNext.addEventListener('click', () => {
+  shiftReminderCalendarMonth(1);
+});
+els.remindersCalendarClear.addEventListener('click', () => {
+  reminderCalendarDay = '';
+  renderReminderCalendar(reminderItemsCache);
+  renderFilteredReminders();
+});
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
