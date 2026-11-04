@@ -268,6 +268,32 @@ def test_knowledge_upload_and_rebuild():
     assert body["rebuild"]["chunks"] == 2
 
 
+def test_knowledge_upload_rejects_oversized_file():
+    client = TestClient(api_server.app)
+    big = b"x" * (api_server.MAX_UPLOAD_BYTES + 1)
+
+    response = client.post(
+        "/api/knowledge/upload",
+        files={"file": ("big.md", big, "text/markdown")},
+    )
+
+    assert response.status_code == 413
+    assert "文件过大" in response.json()["detail"]
+
+
+def test_knowledge_batch_reports_oversized_file():
+    client = TestClient(api_server.app)
+    big = b"x" * (api_server.MAX_UPLOAD_BYTES + 1)
+
+    response = client.post(
+        "/api/knowledge/upload-batch",
+        files=[("files", ("big.md", big, "text/markdown"))],
+    )
+
+    assert response.status_code == 400
+    assert "文件过大" in response.json()["detail"]
+
+
 def test_knowledge_delete():
     client = TestClient(api_server.app)
 

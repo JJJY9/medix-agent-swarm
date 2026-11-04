@@ -852,6 +852,32 @@ def test_sessions_csv_export_respects_filters(tmp_path, monkeypatch):
     assert row[9] == "1"
 
 
+def test_sessions_csv_escapes_formula_like_fields(tmp_path, monkeypatch):
+    import csv
+    import io
+
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("=1+1", "可疑会话", "答复")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET created_at = '=2+2', "
+            "updated_at = '=3+3' WHERE id = '=1+1'"
+        )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/sessions/export.csv")
+    finally:
+        store.close()
+
+    text = response.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[1][0] == "'=1+1"
+    assert rows[1][10] == "'=2+2"
+    assert rows[1][11] == "'=3+3"
+
+
 def test_maintenance_purge_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange("s1", "旧问题", "旧答复")

@@ -15,6 +15,24 @@ SECRET_ENV_NAMES = (
     "MEDIX_ACCESS_TOKEN",
 )
 
+_RUNTIME_SECRETS: set[str] = set()
+
+
+def register_secret(value: Optional[str]) -> None:
+    """登记来自 config.py 等非环境变量的密钥，供脱敏使用。"""
+    text = str(value or "").strip()
+    if len(text) >= 6:
+        _RUNTIME_SECRETS.add(text)
+
+
+def _known_secrets() -> list[str]:
+    values = set(_RUNTIME_SECRETS)
+    for name in SECRET_ENV_NAMES:
+        value = (os.getenv(name) or "").strip()
+        if len(value) >= 6:
+            values.add(value)
+    return sorted(values, key=len, reverse=True)
+
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(r"ghp_[A-Za-z0-9]{20,}"),
@@ -44,10 +62,9 @@ def redact_secrets(text: Optional[str]) -> str:
 
     result = str(text)
 
-    # 已知环境变量中的真实密钥优先替换（包括不含 sk- 前缀的令牌）
-    for name in SECRET_ENV_NAMES:
-        value = (os.getenv(name) or "").strip()
-        if len(value) >= 6 and value in result:
+    # 已知环境变量/运行时登记的密钥优先替换（包括不含 sk- 前缀的令牌）
+    for value in _known_secrets():
+        if value in result:
             result = result.replace(value, mask_secret(value))
 
     for pattern in _SECRET_PATTERNS:
