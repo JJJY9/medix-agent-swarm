@@ -7584,6 +7584,7 @@ async function saveScreenerScore(metric, score, note) {
       metric,
       value1: score,
       measured_at: metricNowLocal(),
+      profile: els.profileSelect.value || '',
       note,
     }),
   });
