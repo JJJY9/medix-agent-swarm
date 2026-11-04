@@ -132,6 +132,15 @@ class ProfileRenameRequest(BaseModel):
     new_name: str = Field(..., min_length=1, max_length=40)
 
 
+class ReminderRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120, description="提醒内容")
+    due_at: str = Field(
+        ..., min_length=8, max_length=32, description="YYYY-MM-DD 或 ISO 时间"
+    )
+    note: str = Field("", max_length=300, description="可选备注")
+    session_id: str = Field("", max_length=64, description="关联的会诊编号")
+
+
 class BmiRequest(BaseModel):
     height_cm: float = Field(..., gt=50, lt=260, description="身高（厘米）")
     weight_kg: float = Field(..., gt=10, lt=400, description="体重（千克）")
@@ -1182,6 +1191,64 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
         raise HTTPException(status_code=404, detail="档案不存在")
     await record_audit("profile.rename", name, new_name)
     return {"ok": True, "old_name": name, "name": new_name}
+
+
+@app.get("/api/reminders")
+async def list_reminders(include_done: bool = False):
+    """随访提醒列表，默认只返回未完成的，按到期时间升序。"""
+    from memory import get_session_store
+
+    reminders = await asyncio.to_thread(
+        get_session_store().list_reminders, include_done
+    )
+    return {"reminders": reminders}
+
+
+@app.post("/api/reminders")
+async def add_reminder(request: ReminderRequest):
+    """新增随访提醒。"""
+    from memory import get_session_store
+
+    try:
+        reminder = await asyncio.to_thread(
+            get_session_store().add_reminder,
+            request.title,
+            request.due_at,
+            request.note,
+            request.session_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("reminder.create", reminder["title"], reminder["due_at"])
+    return {"ok": True, "reminder": reminder}
+
+
+@app.post("/api/reminders/{reminder_id}/complete")
+async def complete_reminder(reminder_id: int):
+    """把随访提醒标记为已完成。"""
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().complete_reminder, reminder_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    await record_audit("reminder.complete", str(reminder_id))
+    return {"ok": True, "id": reminder_id}
+
+
+@app.delete("/api/reminders/{reminder_id}")
+async def delete_reminder(reminder_id: int):
+    """删除随访提醒。"""
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().delete_reminder, reminder_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    await record_audit("reminder.delete", str(reminder_id))
+    return {"ok": True, "id": reminder_id}
 
 
 @app.post("/api/tools/bmi")

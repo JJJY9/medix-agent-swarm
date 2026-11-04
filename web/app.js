@@ -205,6 +205,18 @@ const els = {
   metricsDrawer: document.getElementById('metrics-drawer'),
   metricsBackdrop: document.getElementById('metrics-backdrop'),
   metricsClose: document.getElementById('metrics-close'),
+  remindersOpen: document.getElementById('reminders-open'),
+  remindersDrawer: document.getElementById('reminders-drawer'),
+  remindersBackdrop: document.getElementById('reminders-backdrop'),
+  remindersClose: document.getElementById('reminders-close'),
+  reminderTitle: document.getElementById('reminder-title'),
+  reminderDue: document.getElementById('reminder-due'),
+  reminderNote: document.getElementById('reminder-note'),
+  reminderAdd: document.getElementById('reminder-add'),
+  remindersStatus: document.getElementById('reminders-status'),
+  remindersDueHint: document.getElementById('reminders-due-hint'),
+  remindersList: document.getElementById('reminders-list'),
+  remindersEmpty: document.getElementById('reminders-empty'),
   metricProfile: document.getElementById('metric-profile'),
   metricType: document.getElementById('metric-type'),
   metricReference: document.getElementById('metric-reference'),
@@ -277,6 +289,7 @@ let kbOpen = false;
 let diagOpen = false;
 let calcOpen = false;
 let metricsOpen = false;
+let remindersOpen = false;
 let authGateOpen = false;
 let historyQuery = '';
 let historyOffset = 0;
@@ -310,13 +323,14 @@ function activeDrawer() {
   if (diagOpen) return els.diagnoseDrawer;
   if (calcOpen) return els.calcDrawer;
   if (metricsOpen) return els.metricsDrawer;
+  if (remindersOpen) return els.remindersDrawer;
   return null;
 }
 
 function syncPageInert() {
   const shell = document.querySelector('.shell');
   if (!shell) return;
-  if (historyOpen || kbOpen || diagOpen || calcOpen || metricsOpen || authGateOpen) {
+  if (historyOpen || kbOpen || diagOpen || calcOpen || metricsOpen || remindersOpen || authGateOpen) {
     shell.setAttribute('inert', '');
     shell.setAttribute('aria-hidden', 'true');
   } else {
@@ -2118,6 +2132,7 @@ async function startNewSession() {
     closeHistory();
     closeKb();
     closeDiagnose();
+    closeReminders();
     els.input.focus();
   } catch (err) {
     setVitals('warn', '新建会诊失败');
@@ -3085,6 +3100,7 @@ function openHistory() {
   closeDiagnose();
   closeCalc();
   closeMetrics();
+  closeReminders();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -3788,6 +3804,7 @@ function openKb() {
   closeDiagnose();
   closeCalc();
   closeMetrics();
+  closeReminders();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -4065,6 +4082,9 @@ const AUDIT_LABELS = {
   'profile.delete': '删除患者档案',
   'profile.rename': '重命名患者档案',
   'metric.delete': '删除健康记录',
+  'reminder.create': '添加随访提醒',
+  'reminder.complete': '完成随访提醒',
+  'reminder.delete': '删除随访提醒',
 };
 
 function auditFilterParams(withLimit = true) {
@@ -4192,6 +4212,7 @@ function openDiagnose() {
   closeKb();
   closeCalc();
   closeMetrics();
+  closeReminders();
   diagFocused = document.activeElement;
   diagOpen = true;
   els.diagnoseDrawer.hidden = false;
@@ -4589,6 +4610,7 @@ function openMetrics() {
   closeKb();
   closeCalc();
   closeDiagnose();
+  closeReminders();
   metricsFocused = document.activeElement;
   metricsOpen = true;
   els.metricsDrawer.hidden = false;
@@ -4616,6 +4638,215 @@ function closeMetrics(restoreFocus = false) {
   els.metricsOpen.setAttribute('aria-expanded', 'false');
   if (restoreFocus && metricsFocused instanceof HTMLElement) {
     metricsFocused.focus();
+  }
+}
+
+/* ---------- 随访提醒 ---------- */
+
+let remindersFocused = null;
+
+function todayLocalDate() {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function defaultReminderDue() {
+  const now = new Date();
+  now.setDate(now.getDate() + 7);
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function setRemindersStatus(text, isError = false) {
+  els.remindersStatus.hidden = !text;
+  els.remindersStatus.textContent = text || '';
+  els.remindersStatus.classList.toggle('error', Boolean(isError));
+}
+
+function openReminders() {
+  closeHistory();
+  closeKb();
+  closeCalc();
+  closeDiagnose();
+  closeMetrics();
+  remindersFocused = document.activeElement;
+  remindersOpen = true;
+  els.remindersDrawer.hidden = false;
+  els.remindersBackdrop.hidden = false;
+  syncPageInert();
+  els.remindersOpen.setAttribute('aria-expanded', 'true');
+  setRemindersStatus('');
+  if (!els.reminderDue.value) els.reminderDue.value = defaultReminderDue();
+  loadReminders();
+  els.remindersClose.focus();
+}
+
+function closeReminders(restoreFocus = false) {
+  remindersOpen = false;
+  els.remindersDrawer.hidden = true;
+  els.remindersBackdrop.hidden = true;
+  syncPageInert();
+  els.remindersOpen.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && remindersFocused instanceof HTMLElement) {
+    remindersFocused.focus();
+  }
+}
+
+function formatReminderDue(dueAt) {
+  const [date, time] = String(dueAt || '').split('T');
+  const parts = (date || '').split('-');
+  if (parts.length !== 3) return dueAt || '—';
+  const display = `${Number(parts[1])}月${Number(parts[2])}日`;
+  return time ? `${display} ${time.slice(0, 5)}` : display;
+}
+
+function reminderIsDue(dueAt) {
+  return String(dueAt || '').slice(0, 10) <= todayLocalDate();
+}
+
+function renderReminders(items) {
+  els.remindersList.replaceChildren();
+  els.remindersEmpty.hidden = items.length > 0;
+
+  let dueCount = 0;
+  for (const item of items) {
+    const due = reminderIsDue(item.due_at);
+    if (due) dueCount += 1;
+
+    const li = document.createElement('li');
+    li.className = 'metric-item reminder-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'reminder-title';
+    title.textContent = item.title;
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = `到期：${formatReminderDue(item.due_at)}`;
+    if (due) {
+      const badge = document.createElement('span');
+      badge.className = 'reminder-badge';
+      badge.textContent = '已到期';
+      meta.append(' ', badge);
+    }
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'metric-edit';
+    done.textContent = '完成';
+    done.setAttribute('aria-label', `完成提醒：${item.title}`);
+    done.addEventListener('click', () => completeReminder(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除提醒：${item.title}`);
+    del.addEventListener('click', () => deleteReminder(item));
+
+    actions.append(done, del);
+    li.append(main, actions);
+    els.remindersList.appendChild(li);
+  }
+
+  els.remindersDueHint.hidden = dueCount === 0;
+  els.remindersDueHint.textContent = dueCount
+    ? `有 ${dueCount} 条提醒已到期`
+    : '';
+}
+
+async function loadReminders() {
+  try {
+    const res = await fetch('/api/reminders');
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    renderReminders(data.reminders || []);
+  } catch (err) {
+    setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
+  }
+}
+
+async function addReminder() {
+  const title = (els.reminderTitle.value || '').trim();
+  const dueAt = (els.reminderDue.value || '').trim();
+  if (!title) {
+    setRemindersStatus('提醒内容不能为空。', true);
+    els.reminderTitle.focus();
+    return;
+  }
+  if (!dueAt) {
+    setRemindersStatus('请选择提醒日期。', true);
+    els.reminderDue.focus();
+    return;
+  }
+
+  els.reminderAdd.disabled = true;
+  try {
+    const res = await fetch('/api/reminders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        due_at: dueAt,
+        note: (els.reminderNote.value || '').trim(),
+        session_id: sessionId || '',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    els.reminderTitle.value = '';
+    els.reminderNote.value = '';
+    els.reminderDue.value = defaultReminderDue();
+    setRemindersStatus('已添加提醒。');
+    await loadReminders();
+  } catch (err) {
+    setRemindersStatus(`添加提醒失败：${err.message || err}`, true);
+  } finally {
+    els.reminderAdd.disabled = false;
+  }
+}
+
+async function completeReminder(item) {
+  try {
+    const res = await fetch(`/api/reminders/${item.id}/complete`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setRemindersStatus('已完成提醒。');
+    await loadReminders();
+  } catch (err) {
+    window.alert(`完成提醒失败：${err.message || err}`);
+  }
+}
+
+async function deleteReminder(item) {
+  if (!window.confirm(`删除提醒「${item.title}」？`)) return;
+  try {
+    const res = await fetch(`/api/reminders/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setRemindersStatus('已删除提醒。');
+    await loadReminders();
+  } catch (err) {
+    window.alert(`删除提醒失败：${err.message || err}`);
   }
 }
 
@@ -4852,6 +5083,7 @@ function openCalc() {
   closeKb();
   closeDiagnose();
   closeMetrics();
+  closeReminders();
   calcFocused = document.activeElement;
   calcOpen = true;
   els.calcDrawer.hidden = false;
@@ -6145,6 +6377,22 @@ els.calcSave.addEventListener('click', async () => {
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));
 els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
+els.remindersOpen.addEventListener('click', openReminders);
+els.remindersClose.addEventListener('click', () => closeReminders(true));
+els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
+els.reminderAdd.addEventListener('click', addReminder);
+els.reminderTitle.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addReminder();
+  }
+});
+els.reminderNote.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addReminder();
+  }
+});
 els.metricType.addEventListener('change', () => {
   setMetricType(els.metricType.value);
   refreshMetrics();
@@ -6292,6 +6540,7 @@ document.addEventListener('keydown', (e) => {
     if (diagOpen) closeDiagnose(true);
     if (calcOpen) closeCalc(true);
     if (metricsOpen) closeMetrics(true);
+    if (remindersOpen) closeReminders(true);
     return;
   }
 
