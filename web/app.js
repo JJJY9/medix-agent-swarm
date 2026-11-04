@@ -373,6 +373,7 @@ const els = {
   symptomTime: document.getElementById('symptom-time'),
   symptomNote: document.getElementById('symptom-note'),
   symptomSave: document.getElementById('symptom-save'),
+  symptomExport: document.getElementById('symptom-export'),
   symptomCancel: document.getElementById('symptom-cancel'),
   symptomStatus: document.getElementById('symptom-status'),
   symptomList: document.getElementById('symptom-list'),
@@ -7246,6 +7247,34 @@ async function loadSymptoms() {
   }
 }
 
+async function exportSymptomsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile.value,
+  });
+  const days = metricRangeDays();
+  if (days > 0) params.set('days', String(days));
+
+  try {
+    const res = await fetch(
+      `/api/symptoms/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-symptoms-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setSymptomStatus('已导出症状 CSV。');
+  } catch (err) {
+    setSymptomStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
 function editSymptom(item) {
   editingSymptomId = item.id;
   els.symptomText.value = item.symptom || '';
@@ -9665,6 +9694,7 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
+els.symptomExport.addEventListener('click', exportSymptomsCsv);
 els.symptomCancel.addEventListener('click', () => {
   resetSymptomForm();
   setSymptomStatus('已取消编辑。');

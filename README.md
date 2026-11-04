@@ -314,6 +314,7 @@ npm install -D playwright
 | POST | `/api/symptoms` | 新增症状（症状、0–10 程度、记录时间与备注） |
 | PATCH | `/api/symptoms/{id}` | 更新症状记录 |
 | DELETE | `/api/symptoms/{id}` | 删除症状记录 |
+| GET | `/api/symptoms/export.csv` | 导出症状日记 CSV（带 BOM，可按 `profile`/`days` 筛选） |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |
 | DELETE | `/api/metrics/{id}` | 删除健康指标记录 |
 | GET | `/api/metrics/export.csv` | 导出当前患者档案/指标类型的健康记录 CSV（带 BOM） |
