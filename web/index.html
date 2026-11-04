@@ -561,6 +561,7 @@
         <option value="curb65">CURB-65 肺炎严重程度</option>
         <option value="phq9">PHQ-9 抑郁筛查</option>
         <option value="gad7">GAD-7 焦虑筛查</option>
+        <option value="hasbled">HAS-BLED 出血风险</option>
       </select>
     </label>
 
@@ -645,6 +646,21 @@
     <form class="calc-form" id="calc-form-gad7" data-tool="gad7" hidden>
       <p class="calc-hint">请根据过去两周的实际感受，选择每个问题困扰您的频率。</p>
       <div class="phq9-questions" id="calc-gad7-questions"></div>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-hasbled" data-tool="hasbled" hidden>
+      <label class="calc-field">年龄（岁）
+        <input id="calc-hasbled-age" type="number" min="18" max="120" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-hypertension"> 高血压（收缩压 &gt; 160 mmHg）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-renal"> 肾功能异常</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-liver"> 肝功能异常</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-stroke"> 卒中史</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-bleeding"> 出血史或出血倾向</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-inr"> INR 不稳定</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-drugs"> 合用抗血小板药或 NSAIDs</label>
+      <label class="calc-check"><input type="checkbox" id="calc-hasbled-alcohol"> 酒精过量</label>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 

@@ -136,6 +136,16 @@ const els = {
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcFormGad7: document.getElementById('calc-form-gad7'),
   calcGad7Questions: document.getElementById('calc-gad7-questions'),
+  calcFormHasBled: document.getElementById('calc-form-hasbled'),
+  calcHasBledAge: document.getElementById('calc-hasbled-age'),
+  calcHasBledHypertension: document.getElementById('calc-hasbled-hypertension'),
+  calcHasBledRenal: document.getElementById('calc-hasbled-renal'),
+  calcHasBledLiver: document.getElementById('calc-hasbled-liver'),
+  calcHasBledStroke: document.getElementById('calc-hasbled-stroke'),
+  calcHasBledBleeding: document.getElementById('calc-hasbled-bleeding'),
+  calcHasBledInr: document.getElementById('calc-hasbled-inr'),
+  calcHasBledDrugs: document.getElementById('calc-hasbled-drugs'),
+  calcHasBledAlcohol: document.getElementById('calc-hasbled-alcohol'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -3923,6 +3933,7 @@ function setCalcTool(tool) {
     els.calcFormCurb65,
     els.calcFormPhq9,
     els.calcFormGad7,
+    els.calcFormHasBled,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -3950,6 +3961,7 @@ function openCalc() {
     els.calcEgfrAge.value = String(age);
     els.calcChadsAge.value = String(age);
     els.calcCurbAge.value = String(age);
+    els.calcHasBledAge.value = String(age);
   }
   if (context.sex === '女' || context.sex === '男') {
     const sex = context.sex === '女' ? 'female' : 'male';
@@ -4162,6 +4174,34 @@ function submitGad7(event) {
       title: 'GAD-7 结果',
       main: `评分 ${data.score} / 21`,
       detail: `严重程度：${data.severity}`,
+      note: data.note,
+    })
+  );
+}
+
+function submitHasBled(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/has-bled',
+    {
+      age: Number(els.calcHasBledAge.value),
+      hypertension: els.calcHasBledHypertension.checked,
+      abnormal_renal: els.calcHasBledRenal.checked,
+      abnormal_liver: els.calcHasBledLiver.checked,
+      stroke_history: els.calcHasBledStroke.checked,
+      bleeding_history: els.calcHasBledBleeding.checked,
+      labile_inr: els.calcHasBledInr.checked,
+      drugs: els.calcHasBledDrugs.checked,
+      alcohol: els.calcHasBledAlcohol.checked,
+    },
+    (data) => ({
+      title: 'HAS-BLED 结果',
+      main: `评分 ${data.score} / 9`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
       note: data.note,
     })
   );
@@ -4999,6 +5039,7 @@ els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormGad7.addEventListener('submit', submitGad7);
+els.calcFormHasBled.addEventListener('submit', submitHasBled);
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));

@@ -203,3 +203,38 @@ def test_gad7_api(client):
     assert response.json()["severity"] == "中度"
     assert invalid_length.status_code == 422
     assert invalid_value.status_code == 400
+
+
+def test_has_bled_api(client):
+    low = client.post(
+        "/api/tools/has-bled",
+        json={"age": 50},
+    )
+    high = client.post(
+        "/api/tools/has-bled",
+        json={
+            "age": 80,
+            "hypertension": True,
+            "abnormal_renal": True,
+            "abnormal_liver": True,
+            "stroke_history": True,
+            "bleeding_history": True,
+            "labile_inr": True,
+            "drugs": True,
+            "alcohol": True,
+        },
+    )
+    invalid_age = client.post(
+        "/api/tools/has-bled",
+        json={"age": 10},
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低危"
+
+    assert high.status_code == 200
+    assert high.json()["score"] == 9
+    assert high.json()["risk"] == "高危"
+
+    assert invalid_age.status_code == 422
