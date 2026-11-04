@@ -589,6 +589,7 @@
         <option value="phq9">PHQ-9 抑郁筛查</option>
         <option value="gad7">GAD-7 焦虑筛查</option>
         <option value="hasbled">HAS-BLED 出血风险</option>
+        <option value="gcs">GCS 格拉斯哥昏迷评分</option>
       </select>
     </label>
 
@@ -688,6 +689,37 @@
       <label class="calc-check"><input type="checkbox" id="calc-hasbled-inr"> INR 不稳定</label>
       <label class="calc-check"><input type="checkbox" id="calc-hasbled-drugs"> 合用抗血小板药或 NSAIDs</label>
       <label class="calc-check"><input type="checkbox" id="calc-hasbled-alcohol"> 酒精过量</label>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-gcs" data-tool="gcs" hidden>
+      <label class="calc-field">睁眼反应
+        <select id="calc-gcs-eye">
+          <option value="4">4 自发睁眼</option>
+          <option value="3">3 呼唤睁眼</option>
+          <option value="2">2 疼痛刺激睁眼</option>
+          <option value="1">1 无睁眼</option>
+        </select>
+      </label>
+      <label class="calc-field">语言反应
+        <select id="calc-gcs-verbal">
+          <option value="5">5 正常交谈</option>
+          <option value="4">4 言语错乱</option>
+          <option value="3">3 不恰当言语</option>
+          <option value="2">2 无法理解的声音</option>
+          <option value="1">1 无发声</option>
+        </select>
+      </label>
+      <label class="calc-field">运动反应
+        <select id="calc-gcs-motor">
+          <option value="6">6 遵嘱动作</option>
+          <option value="5">5 疼痛定位</option>
+          <option value="4">4 疼痛回撤</option>
+          <option value="3">3 异常屈曲</option>
+          <option value="2">2 异常伸展</option>
+          <option value="1">1 无运动</option>
+        </select>
+      </label>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 

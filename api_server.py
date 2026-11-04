@@ -174,6 +174,12 @@ class HasBledRequest(BaseModel):
     alcohol: bool = False
 
 
+class GcsRequest(BaseModel):
+    eye: int = Field(..., ge=1, le=4, description="睁眼反应")
+    verbal: int = Field(..., ge=1, le=5, description="语言反应")
+    motor: int = Field(..., ge=1, le=6, description="运动反应")
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1183,6 +1189,20 @@ async def tool_has_bled(request: HasBledRequest):
             alcohol=request.alcohol,
         ),
     }
+
+
+@app.post("/api/tools/gcs")
+async def tool_gcs(request: GcsRequest):
+    """GCS 格拉斯哥昏迷评分。"""
+    from core.clinical_tools import calculate_gcs
+
+    try:
+        result = calculate_gcs(
+            request.eye, request.verbal, request.motor
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
 
 
 @app.get("/api/sessions/{session_id}/messages")

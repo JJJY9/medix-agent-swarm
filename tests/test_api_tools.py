@@ -238,3 +238,28 @@ def test_has_bled_api(client):
     assert high.json()["risk"] == "高危"
 
     assert invalid_age.status_code == 422
+
+
+def test_gcs_api(client):
+    normal = client.post(
+        "/api/tools/gcs",
+        json={"eye": 4, "verbal": 5, "motor": 6},
+    )
+    severe = client.post(
+        "/api/tools/gcs",
+        json={"eye": 1, "verbal": 1, "motor": 1},
+    )
+    invalid = client.post(
+        "/api/tools/gcs",
+        json={"eye": 0, "verbal": 5, "motor": 6},
+    )
+
+    assert normal.status_code == 200
+    assert normal.json()["score"] == 15
+    assert normal.json()["severity"] == "轻度"
+
+    assert severe.status_code == 200
+    assert severe.json()["score"] == 3
+    assert severe.json()["severity"] == "重度"
+
+    assert invalid.status_code == 422
