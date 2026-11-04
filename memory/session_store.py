@@ -560,6 +560,7 @@ class SessionStore:
                     repeat_days INTEGER NOT NULL DEFAULT 0,
                     repeat_until TEXT NOT NULL DEFAULT '',
                     repeats_from INTEGER NOT NULL DEFAULT 0,
+                    medication_id INTEGER NOT NULL DEFAULT 0,
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -662,6 +663,16 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN repeats_from INTEGER NOT NULL DEFAULT 0"
                 )
+            if "medication_id" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN medication_id INTEGER NOT NULL DEFAULT 0"
+                )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_reminders_medication
+                    ON reminders(medication_id, done)
+                """
+            )
 
             # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
             for table, column in (
@@ -1948,6 +1959,8 @@ class SessionStore:
                         }
 
             medication_logs_imported = 0
+            existing_log_counts: Dict[tuple, int] = {}
+            imported_log_counts: Dict[tuple, int] = {}
             if isinstance(raw_medication_logs, list):
                 for raw in raw_medication_logs[:100000]:
                     if not isinstance(raw, dict):
@@ -2006,26 +2019,24 @@ class SessionStore:
                     created_at = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    if created_at:
-                        exists = self._conn.execute(
-                            """
-                            SELECT 1 FROM medication_logs
-                             WHERE medication_id = ? AND taken_at = ?
-                               AND note = ? AND created_at = ?
-                            """,
-                            (target["id"], taken_at, note, created_at),
-                        ).fetchone()
-                    else:
+                    if not created_at:
                         created_at = now
-                        exists = self._conn.execute(
+                    log_key = (target["id"], taken_at, note)
+                    if log_key not in existing_log_counts:
+                        count_row = self._conn.execute(
                             """
-                            SELECT 1 FROM medication_logs
+                            SELECT COUNT(*) AS total FROM medication_logs
                              WHERE medication_id = ? AND taken_at = ?
                                AND note = ?
                             """,
                             (target["id"], taken_at, note),
                         ).fetchone()
-                    if exists:
+                        existing_log_counts[log_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_log_counts.get(log_key, 0)
+                    imported_log_counts[log_key] = seen + 1
+                    if seen < existing_log_counts[log_key]:
                         continue
                     self._conn.execute(
                         """
@@ -2084,6 +2095,19 @@ class SessionStore:
                         repeats_from = int(raw.get("repeats_from") or 0)
                     except (TypeError, ValueError, OverflowError):
                         repeats_from = 0
+                    try:
+                        raw_medication_id = int(
+                            raw.get("medication_id") or 0
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        raw_medication_id = 0
+                    mapped_medication = medication_id_map.get(
+                        raw_medication_id
+                    )
+                    medication_id = (
+                        mapped_medication["id"]
+                        if mapped_medication else 0
+                    )
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -2105,14 +2129,15 @@ class SessionStore:
                             INSERT INTO reminders(
                                 id, title, note, due_at, session_id, profile,
                                 advance_days, repeat_days, repeat_until,
-                                repeats_from, done, created_at, updated_at
+                                repeats_from, medication_id, done,
+                                created_at, updated_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 reminder_id, title, note, due_at, session_id,
                                 profile, advance_days, repeat_days,
-                                repeat_until, repeats_from, done,
+                                repeat_until, repeats_from, medication_id, done,
                                 created_at, updated_at,
                             ),
                         )
@@ -2134,14 +2159,16 @@ class SessionStore:
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, done, created_at, updated_at
+                            repeats_from, medication_id, done,
+                            created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, done, created_at, updated_at,
+                            repeats_from, medication_id, done,
+                            created_at, updated_at,
                         ),
                     )
                     reminders_imported += 1
@@ -3023,14 +3050,13 @@ class SessionStore:
                     """
                     UPDATE reminders
                        SET title = ?, profile = ?, updated_at = ?
-                     WHERE title = ? AND profile = ? AND done = 0
+                     WHERE medication_id = ? AND done = 0
                     """,
                     (
                         f"用药：{normalized['name']}",
                         normalized["profile"],
                         now,
-                        f"用药：{previous['name']}",
-                        previous["profile"],
+                        medication_id,
                     ),
                 )
             row = self._conn.execute(
@@ -3060,9 +3086,9 @@ class SessionStore:
             self._conn.execute(
                 """
                 DELETE FROM reminders
-                 WHERE done = 0 AND title = ? AND profile = ?
+                 WHERE done = 0 AND medication_id = ?
                 """,
-                (f"用药：{medication['name']}", medication["profile"]),
+                (medication_id,),
             )
             self._conn.execute(
                 "DELETE FROM medication_logs WHERE medication_id = ?",
@@ -3440,6 +3466,7 @@ class SessionStore:
         advance_days: int = 0,
         repeat_days: int = 0,
         repeat_until: str = "",
+        medication_id: int = 0,
     ) -> Dict[str, Any]:
         """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
@@ -3452,18 +3479,24 @@ class SessionStore:
         advance_days = _normalize_reminder_advance(advance_days)
         repeat_days = _normalize_reminder_repeat_days(repeat_days)
         repeat_until = _normalize_reminder_repeat_until(repeat_until)
+        try:
+            medication_id = max(0, int(medication_id or 0))
+        except (TypeError, ValueError, OverflowError):
+            medication_id = 0
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 INSERT INTO reminders(
                     title, note, due_at, session_id, profile, advance_days,
-                    repeat_days, repeat_until, done, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    repeat_days, repeat_until, medication_id,
+                    done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     title, note, due_at, session_id, profile,
-                    advance_days, repeat_days, repeat_until, now, now,
+                    advance_days, repeat_days, repeat_until,
+                    medication_id, now, now,
                 ),
             )
             reminder_id = int(cursor.lastrowid)
@@ -3477,6 +3510,7 @@ class SessionStore:
             "advance_days": advance_days,
             "repeat_days": repeat_days,
             "repeat_until": repeat_until,
+            "medication_id": medication_id,
             "done": False,
             "created_at": now,
             "updated_at": now,
@@ -3488,8 +3522,8 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
-                       repeat_days, repeat_until, repeats_from, done,
-                       created_at, updated_at
+                       repeat_days, repeat_until, repeats_from, medication_id,
+                       done, created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
@@ -3515,8 +3549,8 @@ class SessionStore:
             rows = self._conn.execute(
                 f"""
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
-                       repeat_days, repeat_until, repeats_from, done,
-                       created_at, updated_at
+                       repeat_days, repeat_until, repeats_from, medication_id,
+                       done, created_at, updated_at
                   FROM reminders{where}
                  ORDER BY done ASC, due_at ASC, id ASC
                 """,
@@ -3545,7 +3579,7 @@ class SessionStore:
                 """
                 SELECT id, title, note, due_at, session_id, profile,
                        advance_days, repeat_days, repeat_until,
-                       repeats_from, done,
+                       repeats_from, medication_id, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -3581,14 +3615,16 @@ class SessionStore:
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, done, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                            repeats_from, medication_id, done,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                         """,
                         (
                             row["title"], row["note"], next_due,
                             row["session_id"], row["profile"],
                             row["advance_days"], repeat_days,
-                            repeat_until, reminder_id, now, now,
+                            repeat_until, reminder_id,
+                            row["medication_id"], now, now,
                         ),
                     )
                     next_id = int(cursor.lastrowid)
@@ -3603,6 +3639,7 @@ class SessionStore:
                         "repeat_days": repeat_days,
                         "repeat_until": repeat_until,
                         "repeats_from": reminder_id,
+                        "medication_id": row["medication_id"],
                         "done": False,
                         "created_at": now,
                         "updated_at": now,
@@ -3722,8 +3759,8 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
-                       repeat_days, repeat_until, repeats_from, done,
-                       created_at, updated_at
+                       repeat_days, repeat_until, repeats_from, medication_id,
+                       done, created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
@@ -3767,8 +3804,8 @@ class SessionStore:
             updated = self._conn.execute(
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
-                       repeat_days, repeat_until, repeats_from, done,
-                       created_at, updated_at
+                       repeat_days, repeat_until, repeats_from, medication_id,
+                       done, created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
