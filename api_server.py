@@ -233,6 +233,18 @@ async def auto_archive_sessions() -> None:
         logger.warning(f"自动归档旧会话失败: {e}")
 
 
+async def record_audit(action: str, target: str = "", detail: str = "") -> None:
+    """记录操作审计；审计失败不影响主流程。"""
+    try:
+        from memory import get_session_store
+
+        await asyncio.to_thread(
+            get_session_store().log_action, action, target, detail
+        )
+    except Exception as e:
+        logger.warning(f"记录操作审计失败: {e}")
+
+
 class NoCacheStaticFiles(StaticFiles):
     """静态资源每次用 ETag 校验，避免升级后浏览器继续用旧 CSS/JS。"""
 
@@ -353,6 +365,18 @@ async def require_access_token(request: Request, call_next):
 async def verify_access_token():
     """受保护的轻量接口，供前端确认访问令牌是否有效。"""
     return {"ok": True}
+
+
+@app.get("/api/audit")
+async def audit_log(limit: int = 50):
+    """最近的操作审计（删除、归档、导入导出等）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 50), 500))
+    actions = await asyncio.to_thread(
+        get_session_store().list_audit_log, limit
+    )
+    return {"actions": actions}
 
 
 @app.get("/api/status")
@@ -610,6 +634,10 @@ async def export_sessions():
     except Exception as e:
         logger.exception("导出会话失败")
         raise HTTPException(status_code=500, detail=f"导出会话失败：{e}")
+    await record_audit(
+        "session.export",
+        detail=f"sessions={data.get('session_count', 0)}",
+    )
     return data
 
 
@@ -634,6 +662,15 @@ async def import_sessions(request: ImportSessionsRequest):
         logger.exception("导入会话失败")
         raise HTTPException(status_code=500, detail=f"导入会话失败：{e}")
 
+    await record_audit(
+        "session.import",
+        detail=(
+            f"imported={result.get('imported', 0)} "
+            f"skipped={result.get('skipped', 0)} "
+            f"profiles={result.get('profiles', 0)} "
+            f"metrics={result.get('metrics', 0)}"
+        ),
+    )
     return {"ok": True, **result}
 
 
@@ -767,6 +804,7 @@ async def delete_metric(metric_id: int):
     )
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("metric.delete", str(metric_id))
     return {"ok": True, "id": metric_id}
 
 
@@ -850,6 +888,7 @@ async def delete_profile(name: str):
     ok = await asyncio.to_thread(get_session_store().delete_profile, name)
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
+    await record_audit("profile.delete", name)
     return {"ok": True, "name": name}
 
 
@@ -1043,6 +1082,10 @@ async def archive_session(session_id: str, request: ArchiveRequest):
     )
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
+    await record_audit(
+        "session.archive" if request.archived else "session.unarchive",
+        session_id,
+    )
     return {"ok": True, "session_id": session_id, "archived": request.archived}
 
 
@@ -1068,7 +1111,11 @@ async def clear_session(session_id: str):
     from memory import ShortTermMemory, get_session_store
 
     ShortTermMemory().clear_session(session_id)
-    await asyncio.to_thread(get_session_store().delete_session, session_id)
+    deleted = await asyncio.to_thread(
+        get_session_store().delete_session, session_id
+    )
+    if deleted:
+        await record_audit("session.delete", session_id)
     return {"ok": True, "session_id": session_id}
 
 

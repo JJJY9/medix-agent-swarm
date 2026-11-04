@@ -99,6 +99,7 @@ const els = {
   diagLlm: document.getElementById('diag-llm'),
   diagKnowledge: document.getElementById('diag-knowledge'),
   diagPackages: document.getElementById('diag-packages'),
+  diagAudit: document.getElementById('diag-audit'),
   diagRefresh: document.getElementById('diag-refresh'),
   diagLlmTest: document.getElementById('diag-llm-test'),
   diagCopy: document.getElementById('diag-copy'),
@@ -3367,6 +3368,36 @@ function renderDiagnostics(report) {
   setDiagStatus('');
 }
 
+const AUDIT_LABELS = {
+  'session.delete': '删除会诊',
+  'session.archive': '归档会诊',
+  'session.unarchive': '恢复会诊',
+  'session.export': '导出备份',
+  'session.import': '导入备份',
+  'profile.delete': '删除患者档案',
+  'metric.delete': '删除健康记录',
+};
+
+async function loadAuditLog() {
+  try {
+    const res = await fetch('/api/audit?limit=10');
+    if (!res.ok) return;
+    const data = await res.json();
+    const actions = data.actions || [];
+    const rows = actions.map((item) => {
+      const label = AUDIT_LABELS[item.action] || item.action;
+      const meta = [item.target, formatTime(item.created_at)]
+        .filter(Boolean)
+        .join(' · ');
+      return diagRow(label, meta || '—');
+    });
+    if (!rows.length) rows.push(diagRow('暂无操作记录', '—'));
+    renderDiagSection(els.diagAudit, '最近操作', rows);
+  } catch {
+    // 审计加载失败不影响系统自检
+  }
+}
+
 async function loadDiagnostics() {
   els.diagSummary.className = 'diag-summary';
   els.diagSummary.textContent = '正在检查…';
@@ -3396,6 +3427,7 @@ function openDiagnose() {
   els.diagnose.setAttribute('aria-expanded', 'true');
   setDiagStatus('');
   loadDiagnostics();
+  loadAuditLog();
   els.diagnoseClose.focus();
 }
 

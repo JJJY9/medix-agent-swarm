@@ -254,6 +254,15 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_metrics_profile_time
                     ON health_metrics(profile, metric, measured_at DESC);
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action     TEXT NOT NULL,
+                    target     TEXT NOT NULL DEFAULT '',
+                    detail     TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_created
+                    ON audit_log(created_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1547,6 +1556,41 @@ class SessionStore:
                 "DELETE FROM health_metrics WHERE id = ?", (metric_id,)
             )
             return cursor.rowcount > 0
+
+    def log_action(
+        self, action: str, target: str = "", detail: str = ""
+    ) -> int:
+        """记录一条操作审计（只保存动作、对象与简短说明）。"""
+        action = " ".join(str(action or "").split())[:80]
+        if not action:
+            return 0
+        target = " ".join(str(target or "").split())[:120]
+        detail = " ".join(str(detail or "").split())[:500]
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO audit_log(action, target, detail, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (action, target, detail, now),
+            )
+            return int(cursor.lastrowid)
+
+    def list_audit_log(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """按时间倒序返回最近的操作审计。"""
+        limit = max(1, min(int(limit or 50), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, action, target, detail, created_at
+                  FROM audit_log
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def count(self) -> int:
         with self._lock:
