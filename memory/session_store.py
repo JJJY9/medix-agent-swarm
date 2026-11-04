@@ -19,10 +19,13 @@ from core.serialization import sanitize_json
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db"
 
-#: 会话标题取第一轮主诉的前 40 个字符
+#: 会诊标题取第一轮主诉的前 40 个字符
 MAX_TITLE_LENGTH = 40
 #: 历史列表里展示的答复预览长度
 PREVIEW_LENGTH = 80
+#: 每个会话最多保存的标签数量与单个标签长度
+MAX_TAGS = 5
+MAX_TAG_LENGTH = 20
 #: 会诊反馈备注的最大长度
 MAX_FEEDBACK_LENGTH = 500
 #: 常用患者档案的名称与字段长度上限
@@ -127,6 +130,50 @@ def _normalize_metric(
     }
 
 
+def _normalize_tags(tags: Any) -> List[str]:
+    """整理标签：去重、去控制字符、限制数量与长度。"""
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        return []
+
+    result: List[str] = []
+    seen = set()
+    for raw in tags:
+        text = " ".join(str(raw or "").split())
+        text = text.replace('"', "").replace("\\", "")
+        text = text[:MAX_TAG_LENGTH]
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+        if len(result) >= MAX_TAGS:
+            break
+    return result
+
+
+def _parse_tags(raw: Any) -> List[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return _normalize_tags(value)
+
+
+def _tag_like_pattern(tag: str) -> str:
+    escaped = (
+        str(tag or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+        .replace('"', "")
+    )
+    return f'%"{escaped}"%'
+
+
 def _new_usage_entry() -> Dict[str, Any]:
     return {
         "usage": {
@@ -221,7 +268,8 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     favorite   INTEGER NOT NULL DEFAULT 0,
-                    archived   INTEGER NOT NULL DEFAULT 0
+                    archived   INTEGER NOT NULL DEFAULT 0,
+                    tags       TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -288,6 +336,10 @@ class SessionStore:
             if "archived" not in session_columns:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+                )
+            if "tags" not in session_columns:
+                self._conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
                 )
 
     @staticmethod
@@ -384,16 +436,18 @@ class SessionStore:
         offset: int = 0,
         favorites_only: bool = False,
         days: int = 0,
-        archived: Optional[bool] = None
+        archived: Optional[bool] = None,
+        tag: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """按最近更新时间倒序返回会话，支持搜索、分页、收藏、时间范围与归档筛选。
+        """按最近更新时间倒序返回会话，支持搜索、分页、收藏、时间范围、归档与标签筛选。
 
         archived 为 None 时返回全部（备份导出用）；False 只看未归档；True 只看已归档。
         """
         limit = max(1, min(int(limit or 50), 200))
         offset = max(0, int(offset or 0))
         sql = """
-            SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite, s.archived,
+            SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
+                   s.archived, s.tags,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
                    (SELECT content FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'assistant'
@@ -417,6 +471,9 @@ class SessionStore:
         if archived is not None:
             conditions.append("s.archived = ?")
             params.append(1 if archived else 0)
+        if tag:
+            conditions.append("s.tags LIKE ? ESCAPE '\\'")
+            params.append(_tag_like_pattern(tag))
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -455,6 +512,7 @@ class SessionStore:
             item = dict(row)
             item["favorite"] = bool(item.get("favorite"))
             item["archived"] = bool(item.get("archived"))
+            item["tags"] = _parse_tags(item.get("tags"))
             preview = (item.pop("last_answer", "") or "").replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
             if query:
@@ -467,7 +525,8 @@ class SessionStore:
         query: str = "",
         favorites_only: bool = False,
         days: int = 0,
-        archived: Optional[bool] = None
+        archived: Optional[bool] = None,
+        tag: Optional[str] = None
     ) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
         sql = "SELECT COUNT(*) AS n FROM sessions s"
@@ -488,6 +547,9 @@ class SessionStore:
         if archived is not None:
             conditions.append("s.archived = ?")
             params.append(1 if archived else 0)
+        if tag:
+            conditions.append("s.tags LIKE ? ESCAPE '\\'")
+            params.append(_tag_like_pattern(tag))
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -600,7 +662,8 @@ class SessionStore:
         query: str = "",
         favorites_only: bool = False,
         days: int = 0,
-        archived: Optional[bool] = None
+        archived: Optional[bool] = None,
+        tag: Optional[str] = None
     ) -> Dict[str, Any]:
         """汇总所有匹配会话的历史用量（不受分页限制）。
 
@@ -630,6 +693,9 @@ class SessionStore:
         if archived is not None:
             conditions.append("s.archived = ?")
             params.append(1 if archived else 0)
+        if tag:
+            conditions.append("s.tags LIKE ? ESCAPE '\\'")
+            params.append(_tag_like_pattern(tag))
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -655,7 +721,8 @@ class SessionStore:
         query: str = "",
         favorites_only: bool = False,
         days: int = 0,
-        archived: Optional[bool] = None
+        archived: Optional[bool] = None,
+        tag: Optional[str] = None
     ) -> Dict[str, Any]:
         """汇总会诊答复的用户反馈，支持与历史列表相同的筛选条件。"""
         sql = """
@@ -681,6 +748,9 @@ class SessionStore:
         if archived is not None:
             conditions.append("s.archived = ?")
             params.append(1 if archived else 0)
+        if tag:
+            conditions.append("s.tags LIKE ? ESCAPE '\\'")
+            params.append(_tag_like_pattern(tag))
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -1165,15 +1235,20 @@ class SessionStore:
                 updated_at = str(raw.get("updated_at") or created_at)[:40]
                 favorite = 1 if raw.get("favorite") in (1, True, "1") else 0
                 archived = 1 if raw.get("archived") in (1, True, "1") else 0
+                tags = _normalize_tags(raw.get("tags") or [])
 
                 self._conn.execute(
                     """
                     INSERT INTO sessions(
-                        id, title, created_at, updated_at, favorite, archived
+                        id, title, created_at, updated_at, favorite, archived, tags
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (session_id, title, created_at, updated_at, favorite, archived),
+                    (
+                        session_id, title, created_at, updated_at,
+                        favorite, archived,
+                        json.dumps(tags, ensure_ascii=False),
+                    ),
                 )
                 self._conn.executemany(
                     """
@@ -1321,6 +1396,45 @@ class SessionStore:
                 (cutoff,),
             )
             return cursor.rowcount
+
+    def set_tags(
+        self, session_id: str, tags: Any
+    ) -> Optional[List[str]]:
+        """覆盖会话标签；会话不存在返回 None。"""
+        normalized = _normalize_tags(tags)
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE sessions SET tags = ? WHERE id = ?",
+                (json.dumps(normalized, ensure_ascii=False), session_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return normalized
+
+    def list_tags(
+        self, archived: Optional[bool] = False
+    ) -> List[Dict[str, Any]]:
+        """统计会话标签及数量，默认只看未归档会话。"""
+        sql = "SELECT tags FROM sessions"
+        params: List[Any] = []
+        if archived is not None:
+            sql += " WHERE archived = ?"
+            params.append(1 if archived else 0)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        counts: Dict[str, int] = {}
+        for row in rows:
+            for tag in _parse_tags(row["tags"]):
+                counts[tag] = counts.get(tag, 0) + 1
+
+        return [
+            {"name": name, "count": count}
+            for name, count in sorted(
+                counts.items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
 
     def rename_session(self, session_id: str, title: str) -> bool:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]

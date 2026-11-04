@@ -1784,6 +1784,21 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   text-overflow: ellipsis;
 }
 
+.history-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.history-tag {
+  font-size: 10.5px;
+  color: var(--clinic);
+  background: var(--clinic-soft);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
 .history-actions {
   flex: none;
   display: flex;

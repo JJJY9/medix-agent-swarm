@@ -139,6 +139,46 @@ def test_favorite_api_and_filter(tmp_path, monkeypatch):
     assert usage["totals"]["usage"]["total_tokens"] == 10
 
 
+def test_tags_api_and_filter(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "高血压复诊", "答复一",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "糖尿病饮食", "答复二",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        updated = client.patch(
+            "/api/sessions/s1/tags",
+            json={"tags": [" 高血压 ", "高血压", "复诊"]},
+        )
+        tags = client.get("/api/tags")
+        filtered = client.get("/api/sessions", params={"tag": "高血压"})
+        missing = client.patch(
+            "/api/sessions/missing/tags", json={"tags": ["x"]}
+        )
+    finally:
+        store.close()
+
+    assert updated.status_code == 200
+    assert updated.json()["tags"] == ["高血压", "复诊"]
+
+    tag_names = {item["name"]: item["count"] for item in tags.json()["tags"]}
+    assert tag_names == {"高血压": 1, "复诊": 1}
+
+    data = filtered.json()
+    assert [item["id"] for item in data["sessions"]] == ["s1"]
+    assert data["sessions"][0]["tags"] == ["高血压", "复诊"]
+    assert data["summary"]["sessions"] == 1
+    assert data["summary"]["usage"]["total_tokens"] == 10
+    assert missing.status_code == 404
+
+
 def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     assistant_id = store.save_exchange(

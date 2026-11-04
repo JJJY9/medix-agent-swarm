@@ -92,6 +92,10 @@ class ArchiveRequest(BaseModel):
     archived: bool
 
 
+class TagsRequest(BaseModel):
+    tags: List[str] = Field(default_factory=list)
+
+
 class FeedbackRequest(BaseModel):
     message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
     rating: int = Field(
@@ -499,9 +503,10 @@ async def list_sessions(
     q: Optional[str] = None,
     favorite: Optional[bool] = None,
     days: int = 0,
-    archived: bool = False
+    archived: bool = False,
+    tag: Optional[str] = None
 ):
-    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围与归档）。
+    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围、归档与标签）。
 
     archived=false（默认）只返回未归档会话；archived=true 只返回已归档会话。
     summary 汇总所有匹配会话的 Token 用量、模型调用次数与反馈，
@@ -525,15 +530,31 @@ async def list_sessions(
             favorites_only,
             days,
             archived,
+            tag,
         ),
         asyncio.to_thread(
-            store.count_sessions, query, favorites_only, days, archived
+            store.count_sessions,
+            query,
+            favorites_only,
+            days,
+            archived,
+            tag,
         ),
         asyncio.to_thread(
-            store.usage_totals, query, favorites_only, days, archived
+            store.usage_totals,
+            query,
+            favorites_only,
+            days,
+            archived,
+            tag,
         ),
         asyncio.to_thread(
-            store.feedback_totals, query, favorites_only, days, archived
+            store.feedback_totals,
+            query,
+            favorites_only,
+            days,
+            archived,
+            tag,
         ),
     )
     stats = await asyncio.to_thread(
@@ -1088,6 +1109,31 @@ async def get_session_messages(session_id: str, limit: int = 50):
         ],
         "source": "memory",
     }
+
+
+@app.get("/api/tags")
+async def list_tags():
+    """未归档会话的标签及数量，供历史筛选。"""
+    from memory import get_session_store
+
+    tags = await asyncio.to_thread(
+        get_session_store().list_tags, False
+    )
+    return {"tags": tags}
+
+
+@app.patch("/api/sessions/{session_id}/tags")
+async def set_session_tags(session_id: str, request: TagsRequest):
+    """覆盖会话标签（最多 5 个，每个最长 20 字）。"""
+    from memory import get_session_store
+
+    tags = await asyncio.to_thread(
+        get_session_store().set_tags, session_id, request.tags
+    )
+    if tags is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    await record_audit("session.tags", session_id, "、".join(tags))
+    return {"ok": True, "session_id": session_id, "tags": tags}
 
 
 @app.patch("/api/sessions/{session_id}")
