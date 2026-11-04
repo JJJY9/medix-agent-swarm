@@ -225,6 +225,10 @@ class MmrcRequest(BaseModel):
     grade: Literal[0, 1, 2, 3, 4]
 
 
+class CatRequest(BaseModel):
+    answers: List[int] = Field(..., min_length=8, max_length=8)
+
+
 class HasBledRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     hypertension: bool = False
@@ -2026,6 +2030,18 @@ async def tool_phq9(request: Phq9Request):
 
     try:
         result = calculate_phq9(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/cat")
+async def tool_cat(request: CatRequest):
+    """CAT 慢阻肺评估测试评分。"""
+    from core.clinical_tools import calculate_cat
+
+    try:
+        result = calculate_cat(request.answers)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}

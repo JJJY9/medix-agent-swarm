@@ -168,6 +168,8 @@ const els = {
   calcFormGad7: document.getElementById('calc-form-gad7'),
   calcFormAuditc: document.getElementById('calc-form-auditc'),
   calcFormMmrc: document.getElementById('calc-form-mmrc'),
+  calcFormCat: document.getElementById('calc-form-cat'),
+  calcCatQuestions: document.getElementById('calc-cat-questions'),
   calcMmrcGrade: document.getElementById('calc-mmrc-grade'),
   calcAuditCQ1: document.getElementById('calc-auditc-q1'),
   calcAuditCQ2: document.getElementById('calc-auditc-q2'),
@@ -7272,6 +7274,7 @@ function setCalcTool(tool) {
     els.calcFormGad7,
     els.calcFormAuditc,
     els.calcFormMmrc,
+    els.calcFormCat,
     els.calcFormHasBled,
     els.calcFormGcs,
     els.calcFormWells,
@@ -7289,6 +7292,7 @@ function setCalcTool(tool) {
   }
   if (tool === 'phq9') ensurePhq9Form();
   if (tool === 'gad7') ensureGad7Form();
+  if (tool === 'cat') ensureCatForm();
   els.calcResult.hidden = true;
   setCalcStatus('');
 }
@@ -7570,6 +7574,62 @@ function submitGad7(event) {
         label: '保存 GAD-7 评分',
         run: () => saveScreenerScore('gad7', data.score, 'GAD-7 筛查'),
       },
+    })
+  );
+}
+
+const CAT_QUESTIONS = [
+  '我从不咳嗽 —— 我总在咳嗽',
+  '我一点痰也没有 —— 我有很多很多痰',
+  '我一点也没有胸闷的感觉 —— 我有很重的胸闷的感觉',
+  '当我爬坡或爬一层楼时，我并不感到喘不过气来 —— 爬坡或爬一层楼时我非常喘不过气',
+  '我在家里的任何劳动都不受慢阻肺影响 —— 家里的任何活动都很受慢阻肺影响',
+  '每当我外出时就外出 —— 因为慢阻肺我很少外出',
+  '我睡得很好 —— 因为慢阻肺我睡眠不好',
+  '我精力旺盛 —— 我一点精力都没有',
+];
+
+function ensureCatForm() {
+  if (els.calcCatQuestions.children.length) return;
+
+  CAT_QUESTIONS.forEach((question, index) => {
+    const label = document.createElement('label');
+    label.className = 'calc-field phq9-question';
+
+    const text = document.createElement('span');
+    text.textContent = `${index + 1}. ${question}`;
+
+    const select = document.createElement('select');
+    select.className = 'phq9-select';
+    select.dataset.index = String(index);
+    for (let value = 0; value <= 5; value += 1) {
+      const option = document.createElement('option');
+      option.value = String(value);
+      option.textContent = String(value);
+      select.appendChild(option);
+    }
+
+    label.append(text, select);
+    els.calcCatQuestions.appendChild(label);
+  });
+}
+
+function submitCat(event) {
+  event.preventDefault();
+  ensureCatForm();
+  const answers = Array.from(
+    els.calcCatQuestions.querySelectorAll('select')
+  ).map((select) => Number(select.value));
+
+  runCalc(
+    '/api/tools/cat',
+    { answers },
+    (data) => ({
+      title: 'CAT 结果',
+      main: `评分 ${data.score} / 40`,
+      detail: `影响程度：${data.impact}`,
+      note: data.note,
+      level: data.score > 30 ? 'warning' : '',
     })
   );
 }
@@ -9064,6 +9124,7 @@ els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormAuditc.addEventListener('submit', submitAuditC);
 els.calcFormMmrc.addEventListener('submit', submitMmrc);
+els.calcFormCat.addEventListener('submit', submitCat);
 els.calcFormGad7.addEventListener('submit', submitGad7);
 els.calcFormHasBled.addEventListener('submit', submitHasBled);
 els.calcFormGcs.addEventListener('submit', submitGcs);

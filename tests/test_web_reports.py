@@ -433,3 +433,14 @@ def test_app_js_home_glance_guards(client):
     assert "homeGlanceRequestSeq" in app_js
     assert "Object.values(latest)" in app_js
     assert "remindersResult.hidden" not in app_js
+
+
+def test_app_js_ships_cat(client):
+    html = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'value="cat"' in html
+    assert 'id="calc-form-cat"' in html
+    assert "function ensureCatForm" in app_js
+    assert "function submitCat" in app_js
+    assert "/api/tools/cat" in app_js

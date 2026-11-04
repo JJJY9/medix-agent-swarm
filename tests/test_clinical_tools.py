@@ -6,6 +6,7 @@ from core.clinical_tools import (
     calculate_audit_c,
     calculate_bmi,
     calculate_chads_vasc,
+    calculate_cat,
     calculate_child_pugh,
     calculate_curb65,
     calculate_egfr,
@@ -523,3 +524,16 @@ def test_mmrc_grades():
         calculate_mmrc(5)
     with pytest.raises(ValueError):
         calculate_mmrc(True)
+
+
+def test_cat_thresholds():
+    assert calculate_cat([0] * 8)["impact"] == "轻微影响"
+    assert calculate_cat([1, 1, 1, 1, 1, 1, 1, 3])["impact"] == "轻微影响"
+    assert calculate_cat([2, 2, 2, 2, 1, 1, 1, 0])["impact"] == "中等影响"
+    assert calculate_cat([3, 3, 3, 3, 3, 3, 3, 0])["impact"] == "严重影响"
+    assert calculate_cat([4, 4, 4, 4, 4, 4, 4, 4])["impact"] == "非常严重影响"
+
+    with pytest.raises(ValueError):
+        calculate_cat([0] * 7)
+    with pytest.raises(ValueError):
+        calculate_cat([6] + [0] * 7)

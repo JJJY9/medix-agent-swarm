@@ -240,6 +240,50 @@ def calculate_gad7(answers: List[int]) -> Dict[str, object]:
     }
 
 
+CAT_QUESTIONS = [
+    "我从不咳嗽 —— 我总在咳嗽",
+    "我一点痰也没有 —— 我有很多很多痰",
+    "我一点也没有胸闷的感觉 —— 我有很重的胸闷的感觉",
+    "当我爬坡或爬一层楼时，我并不感到喘不过气来 —— 爬坡或爬一层楼时我非常喘不过气",
+    "我在家里的任何劳动都不受慢阻肺影响 —— 家里的任何活动都很受慢阻肺影响",
+    "每当我外出时就外出 —— 因为慢阻肺我很少外出",
+    "我睡得很好 —— 因为慢阻肺我睡眠不好",
+    "我精力旺盛 —— 我一点精力都没有",
+]
+
+
+def calculate_cat(answers: List[int]) -> Dict[str, object]:
+    """CAT 慢阻肺评估测试（0–40 分）。
+
+    仅用于症状负担评估，不用于诊断；分数越高提示影响越大。
+    """
+    if not isinstance(answers, list) or len(answers) != len(CAT_QUESTIONS):
+        raise ValueError("CAT 需要 8 个答案。")
+    values = []
+    for answer in answers:
+        if isinstance(answer, bool) or not isinstance(answer, int):
+            raise ValueError("CAT 每个答案必须是 0–5 的整数。")
+        if answer < 0 or answer > 5:
+            raise ValueError("CAT 每个答案必须在 0–5 之间。")
+        values.append(answer)
+
+    score = sum(values)
+    if score <= 10:
+        impact = "轻微影响"
+    elif score <= 20:
+        impact = "中等影响"
+    elif score <= 30:
+        impact = "严重影响"
+    else:
+        impact = "非常严重影响"
+
+    return {
+        "score": score,
+        "impact": impact,
+        "note": "CAT 用于评估慢阻肺对生活的影响，不能替代肺功能检查与医生诊断。",
+    }
+
+
 MMRC_LABELS = {
     0: "仅在剧烈活动时感到气短",
     1: "快走或上缓坡时气短",
