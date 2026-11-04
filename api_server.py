@@ -80,6 +80,7 @@ class ImportSessionsRequest(BaseModel):
     version: Optional[int] = None
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
     profiles: Optional[List[Dict[str, Any]]] = None
+    health_metrics: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -129,6 +130,15 @@ class ChadsVascRequest(BaseModel):
     diabetes: bool = False
     stroke_tia: bool = False
     vascular_disease: bool = False
+
+
+class MetricRequest(BaseModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    metric: Literal["bp", "weight", "glucose", "temperature"]
+    value1: float
+    value2: Optional[float] = None
+    measured_at: str = Field("", max_length=40, description="测量时间（ISO）")
+    note: str = Field("", max_length=300)
 
 
 class UpdateDocumentRequest(BaseModel):
@@ -563,6 +573,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "version": request.version,
         "sessions": request.sessions,
         "profiles": request.profiles,
+        "health_metrics": request.health_metrics,
     }
     try:
         result = await asyncio.to_thread(
@@ -600,6 +611,55 @@ async def quality_insights(days: int = 30):
     return await asyncio.to_thread(
         get_session_store().quality_insights, days
     )
+
+
+@app.get("/api/metrics")
+async def list_metrics(
+    profile: Optional[str] = None,
+    metric: Optional[str] = None,
+    limit: int = 100,
+):
+    """健康指标记录（默认最近 100 条）。"""
+    from memory import get_session_store
+
+    if metric and metric not in ("bp", "weight", "glucose", "temperature"):
+        raise HTTPException(status_code=400, detail="不支持的健康指标类型")
+    limit = max(1, min(int(limit or 100), 500))
+    items = await asyncio.to_thread(
+        get_session_store().list_metrics, profile, metric, limit
+    )
+    return {"metrics": items}
+
+
+@app.post("/api/metrics")
+async def add_metric(request: MetricRequest):
+    """新增血压、体重、血糖或体温记录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().add_metric,
+        request.profile,
+        request.metric,
+        request.value1,
+        request.value2,
+        request.measured_at,
+        request.note,
+    )
+    if item is None:
+        raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
+    return {"ok": True, "metric": item}
+
+
+@app.delete("/api/metrics/{metric_id}")
+async def delete_metric(metric_id: int):
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(
+        get_session_store().delete_metric, metric_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"ok": True, "id": metric_id}
 
 
 @app.get("/api/profiles")

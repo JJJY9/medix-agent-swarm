@@ -129,6 +129,24 @@ const els = {
   calcResultDetail: document.getElementById('calc-result-detail'),
   calcResultNote: document.getElementById('calc-result-note'),
   calcStatus: document.getElementById('calc-status'),
+  metricsOpen: document.getElementById('metrics-open'),
+  metricsDrawer: document.getElementById('metrics-drawer'),
+  metricsBackdrop: document.getElementById('metrics-backdrop'),
+  metricsClose: document.getElementById('metrics-close'),
+  metricProfile: document.getElementById('metric-profile'),
+  metricType: document.getElementById('metric-type'),
+  metricBpValues: document.getElementById('metric-bp-values'),
+  metricSystolic: document.getElementById('metric-systolic'),
+  metricDiastolic: document.getElementById('metric-diastolic'),
+  metricSingleWrap: document.getElementById('metric-single-wrap'),
+  metricUnit: document.getElementById('metric-unit'),
+  metricValue: document.getElementById('metric-value'),
+  metricTime: document.getElementById('metric-time'),
+  metricNote: document.getElementById('metric-note'),
+  metricAdd: document.getElementById('metric-add'),
+  metricsStatus: document.getElementById('metrics-status'),
+  metricsList: document.getElementById('metrics-list'),
+  metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
   authToken: document.getElementById('auth-token'),
@@ -174,6 +192,7 @@ let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
 let calcOpen = false;
+let metricsOpen = false;
 let authGateOpen = false;
 let historyQuery = '';
 let historyOffset = 0;
@@ -203,13 +222,14 @@ function activeDrawer() {
   if (kbOpen) return els.kbDrawer;
   if (diagOpen) return els.diagnoseDrawer;
   if (calcOpen) return els.calcDrawer;
+  if (metricsOpen) return els.metricsDrawer;
   return null;
 }
 
 function syncPageInert() {
   const shell = document.querySelector('.shell');
   if (!shell) return;
-  if (historyOpen || kbOpen || diagOpen || calcOpen || authGateOpen) {
+  if (historyOpen || kbOpen || diagOpen || calcOpen || metricsOpen || authGateOpen) {
     shell.setAttribute('inert', '');
     shell.setAttribute('aria-hidden', 'true');
   } else {
@@ -2345,15 +2365,19 @@ async function importHistoryBackup() {
 
     const count = Array.isArray(data.sessions) ? data.sessions.length : 0;
     const profileCount = Array.isArray(data.profiles) ? data.profiles.length : 0;
-    if (!count && !profileCount) {
-      window.alert('备份文件中没有会话或患者档案。');
+    const metricCount = Array.isArray(data.health_metrics)
+      ? data.health_metrics.length
+      : 0;
+    if (!count && !profileCount && !metricCount) {
+      window.alert('备份文件中没有会话、患者档案或健康记录。');
       return;
     }
     const summary = [
       count ? `${count} 个会话` : '',
       profileCount ? `${profileCount} 个患者档案` : '',
+      metricCount ? `${metricCount} 条健康记录` : '',
     ].filter(Boolean).join('、');
-    if (!window.confirm(`导入 ${summary}？已存在的会话编号与档案名称会跳过。`)) {
+    if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
     }
 
@@ -2370,6 +2394,7 @@ async function importHistoryBackup() {
           version: data.version,
           sessions: data.sessions,
           profiles: data.profiles,
+          health_metrics: data.health_metrics,
         }),
       });
       const result = await res.json().catch(() => ({}));
@@ -2401,6 +2426,7 @@ function openHistory() {
   closeKb();
   closeDiagnose();
   closeCalc();
+  closeMetrics();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -2998,6 +3024,7 @@ function openKb() {
   closeHistory();
   closeDiagnose();
   closeCalc();
+  closeMetrics();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -3251,6 +3278,7 @@ function openDiagnose() {
   closeHistory();
   closeKb();
   closeCalc();
+  closeMetrics();
   diagFocused = document.activeElement;
   diagOpen = true;
   els.diagnoseDrawer.hidden = false;
@@ -3270,6 +3298,234 @@ function closeDiagnose(restoreFocus = false) {
   els.diagnose.setAttribute('aria-expanded', 'false');
   if (restoreFocus && diagFocused instanceof HTMLElement) {
     diagFocused.focus();
+  }
+}
+
+/* ---------- 健康指标记录 ---------- */
+
+let metricsFocused = null;
+
+const METRIC_UNITS = {
+  bp: 'mmHg',
+  weight: 'kg',
+  glucose: 'mmol/L',
+  temperature: '°C',
+};
+const METRIC_NAMES = {
+  bp: '血压',
+  weight: '体重',
+  glucose: '血糖',
+  temperature: '体温',
+};
+
+function setMetricsStatus(text, isError = false) {
+  els.metricsStatus.textContent = text;
+  els.metricsStatus.hidden = !text;
+  els.metricsStatus.classList.toggle('error', isError);
+}
+
+function metricNowLocal() {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  return now.toISOString().slice(0, 16);
+}
+
+function setMetricType(type) {
+  const value = METRIC_UNITS[type] ? type : 'bp';
+  els.metricType.value = value;
+  const isBp = value === 'bp';
+  els.metricBpValues.hidden = !isBp;
+  els.metricSingleWrap.hidden = isBp;
+  els.metricUnit.textContent = METRIC_UNITS[value];
+}
+
+function refreshMetricProfileOptions() {
+  const current = els.metricProfile.value;
+  els.metricProfile.replaceChildren();
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '未指定';
+  els.metricProfile.appendChild(placeholder);
+
+  for (const name of Object.keys(profilesCache).sort()) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    els.metricProfile.appendChild(option);
+  }
+
+  els.metricProfile.value = profilesCache[current] ? current : '';
+}
+
+function formatMetricValue(item) {
+  if (item.metric === 'bp') {
+    return `${item.value1}/${item.value2} ${item.unit}`;
+  }
+  return `${item.value1} ${item.unit}`;
+}
+
+function renderMetrics(items) {
+  els.metricsList.replaceChildren();
+  els.metricsEmpty.hidden = items.length > 0;
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const value = document.createElement('strong');
+    value.className = 'metric-value';
+    value.textContent = formatMetricValue(item);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      METRIC_NAMES[item.metric] || item.metric,
+      item.profile || '未指定档案',
+      formatTime(item.measured_at),
+    ].join(' · ');
+
+    main.append(value, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除记录：${formatMetricValue(item)}`);
+    del.addEventListener('click', () => deleteMetricRecord(item));
+
+    li.append(main, del);
+    els.metricsList.appendChild(li);
+  }
+}
+
+async function loadMetrics() {
+  try {
+    const res = await fetch('/api/metrics?limit=50');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderMetrics(data.metrics || []);
+  } catch {
+    // 读取失败时保留当前列表
+  }
+}
+
+function openMetrics() {
+  closeHistory();
+  closeKb();
+  closeCalc();
+  closeDiagnose();
+  metricsFocused = document.activeElement;
+  metricsOpen = true;
+  els.metricsDrawer.hidden = false;
+  els.metricsBackdrop.hidden = false;
+  syncPageInert();
+  els.metricsOpen.setAttribute('aria-expanded', 'true');
+  setMetricsStatus('');
+  refreshMetricProfileOptions();
+  if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
+  setMetricType(els.metricType.value || 'bp');
+  loadMetrics();
+  els.metricsClose.focus();
+}
+
+function closeMetrics(restoreFocus = false) {
+  metricsOpen = false;
+  els.metricsDrawer.hidden = true;
+  els.metricsBackdrop.hidden = true;
+  syncPageInert();
+  els.metricsOpen.setAttribute('aria-expanded', 'false');
+  if (restoreFocus && metricsFocused instanceof HTMLElement) {
+    metricsFocused.focus();
+  }
+}
+
+async function addMetricRecord() {
+  const type = els.metricType.value;
+  const profile = els.metricProfile.value;
+  const measuredAt = els.metricTime.value || metricNowLocal();
+  const note = els.metricNote.value.trim();
+  let value1;
+  let value2 = null;
+
+  if (type === 'bp') {
+    value1 = Number(els.metricSystolic.value);
+    value2 = Number(els.metricDiastolic.value);
+    if (!Number.isFinite(value1) || !Number.isFinite(value2)) {
+      setMetricsStatus('请填写收缩压和舒张压。', true);
+      return;
+    }
+  } else {
+    value1 = Number(els.metricValue.value);
+    if (!Number.isFinite(value1)) {
+      setMetricsStatus('请填写数值。', true);
+      return;
+    }
+  }
+
+  els.metricAdd.disabled = true;
+  els.metricAdd.textContent = '保存中…';
+
+  try {
+    const res = await fetch('/api/metrics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile,
+        metric: type,
+        value1,
+        value2,
+        measured_at: measuredAt,
+        note,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string'
+        ? data.detail
+        : `请检查输入（${res.status}）`;
+      throw new Error(detail);
+    }
+
+    setMetricsStatus('已保存记录。');
+    els.metricSystolic.value = '';
+    els.metricDiastolic.value = '';
+    els.metricValue.value = '';
+    els.metricNote.value = '';
+    els.metricTime.value = metricNowLocal();
+    await loadMetrics();
+  } catch (err) {
+    setMetricsStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    els.metricAdd.disabled = false;
+    els.metricAdd.textContent = '保存记录';
+  }
+}
+
+async function deleteMetricRecord(item) {
+  if (!window.confirm(`删除这条${METRIC_NAMES[item.metric] || '健康'}记录？`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/metrics/${item.id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && res.status !== 404) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setMetricsStatus('已删除记录。');
+    await loadMetrics();
+  } catch (err) {
+    setMetricsStatus(`删除失败：${err.message || err}`, true);
   }
 }
 
@@ -3296,6 +3552,7 @@ function openCalc() {
   closeHistory();
   closeKb();
   closeDiagnose();
+  closeMetrics();
   calcFocused = document.activeElement;
   calcOpen = true;
   els.calcDrawer.hidden = false;
@@ -4204,6 +4461,12 @@ els.calcFormBmi.addEventListener('submit', submitBmi);
 els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcFormChads.addEventListener('submit', submitChads);
 
+els.metricsOpen.addEventListener('click', openMetrics);
+els.metricsClose.addEventListener('click', () => closeMetrics(true));
+els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
+els.metricType.addEventListener('change', () => setMetricType(els.metricType.value));
+els.metricAdd.addEventListener('click', addMetricRecord);
+
 els.authForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const token = els.authToken.value.trim();
@@ -4319,6 +4582,7 @@ document.addEventListener('keydown', (e) => {
     if (kbOpen) closeKb(true);
     if (diagOpen) closeDiagnose(true);
     if (calcOpen) closeCalc(true);
+    if (metricsOpen) closeMetrics(true);
     return;
   }
 
