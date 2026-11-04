@@ -280,7 +280,7 @@ class SwarmCoordinator:
         logger.info(f"Processing question (session={session_id}): {question[:50]}...")
 
         # 确定性急症预检：命中红旗时立即随结果返回，不依赖模型输出
-        triage = detect_red_flags(question)
+        triage = detect_red_flags(question, context)
 
         # 确定性用药安全预检：过敏史、重复用药与常见相互作用
         medication_safety = check_medication_safety(question, context)
