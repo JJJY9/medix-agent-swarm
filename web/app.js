@@ -5781,6 +5781,13 @@ function renderMetricWeekly(summaries) {
       button.appendChild(delta);
     }
 
+    if (summary.target && Number.isFinite(Number(summary.within_target))) {
+      const target = document.createElement('span');
+      target.className = 'metric-weekly-target';
+      target.textContent = `达标 ${summary.within_target}/${summary.count}`;
+      button.appendChild(target);
+    }
+
     button.addEventListener('click', () => {
       setMetricType(metric);
       refreshMetrics();
@@ -6172,6 +6179,9 @@ function renderReminderCalendar(items) {
     cell.className = 'reminders-calendar-day';
     if (date === today) cell.classList.add('is-today');
     if (date === reminderCalendarDay) cell.classList.add('is-selected');
+    cell.setAttribute(
+      'aria-pressed', String(date === reminderCalendarDay)
+    );
 
     const number = document.createElement('span');
     number.textContent = String(day);
@@ -8945,7 +8955,17 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
   }
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
-els.metricsMore.addEventListener('click', () => loadMetrics(true));
+els.metricsMore.addEventListener('click', async () => {
+  const original = els.metricsMore.textContent;
+  els.metricsMore.disabled = true;
+  els.metricsMore.textContent = '加载中…';
+  try {
+    await loadMetrics(true);
+  } finally {
+    els.metricsMore.disabled = false;
+    els.metricsMore.textContent = original;
+  }
+});
 els.metricCancel.addEventListener('click', cancelMetricEdit);
 els.metricExport.addEventListener('click', exportMetricsCsv);
 els.metricImport.addEventListener('click', () => els.metricImportFile.click());
