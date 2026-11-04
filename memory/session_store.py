@@ -139,12 +139,15 @@ def _normalize_metric(
             return None
         if parsed.tzinfo is not None:
             measured_at = (
-                parsed.astimezone()
-                .replace(tzinfo=None)
+                parsed.astimezone().replace(tzinfo=None)
                 .isoformat(timespec="seconds")
             )
-        elif len(measured_at) == 10:
+        elif len(measured_at) == 10 or (
+            parsed.second == 0 and parsed.microsecond == 0
+        ):
             measured_at = parsed.isoformat(timespec="minutes")
+        else:
+            measured_at = parsed.isoformat(timespec="seconds")
 
     return {
         "profile": " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH],

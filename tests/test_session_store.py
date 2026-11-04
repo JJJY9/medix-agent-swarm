@@ -1626,3 +1626,13 @@ def test_symptom_time_is_canonical(store):
     store.add_symptom("", "乏力", 3, "2026-11-05T01:00")
     items = store.list_symptoms()
     assert [row["symptom"] for row in items] == ["头晕", "乏力"]
+
+
+def test_metric_time_is_canonical(store):
+    first = store.add_metric(
+        "", "weight", 60, measured_at="2026-11-05 23:00"
+    )
+    assert first["measured_at"] == "2026-11-05T23:00"
+
+    store.add_metric("", "weight", 61, measured_at="2026-11-05T01:00")
+    assert [row["value1"] for row in store.list_metrics()] == [60, 61]
