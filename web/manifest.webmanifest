@@ -33,6 +33,18 @@
       ]
     },
     {
+      "name": "提醒月历",
+      "short_name": "月历",
+      "url": "/?action=reminders&calendar=1",
+      "icons": [
+        {
+          "src": "/static/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
       "name": "健康记录",
       "short_name": "健康",
       "url": "/?action=metrics",

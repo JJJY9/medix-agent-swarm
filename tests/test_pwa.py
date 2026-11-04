@@ -46,6 +46,7 @@ def test_manifest_ships_shortcuts(client):
     urls = {item["url"] for item in data["shortcuts"]}
     assert "/?action=new" in urls
     assert "/?action=reminders" in urls
+    assert "/?action=reminders&calendar=1" in urls
     assert "/?action=metrics" in urls
 
 
