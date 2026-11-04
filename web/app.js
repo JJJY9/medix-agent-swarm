@@ -380,6 +380,7 @@ const els = {
   symptomList: document.getElementById('symptom-list'),
   symptomEmpty: document.getElementById('symptom-empty'),
   symptomSearch: document.getElementById('symptom-search'),
+  symptomSummary: document.getElementById('symptom-summary'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -7211,6 +7212,18 @@ function renderSymptoms(items) {
   els.symptomEmpty.textContent = query
     ? `没有匹配「${query}」的症状记录。`
     : '还没有症状记录。';
+  const days = metricRangeDays();
+  if (items.length) {
+    const average = items.reduce(
+      (total, item) => total + Number(item.severity || 0), 0
+    ) / items.length;
+    els.symptomSummary.hidden = false;
+    els.symptomSummary.textContent =
+      `${days > 0 ? `近 ${days} 天 ` : '全部 '}${items.length} 条`
+      + ` · 平均 ${Math.round(average * 10) / 10}/10`;
+  } else {
+    els.symptomSummary.hidden = true;
+  }
   if (
     editingSymptomId
     && !items.some((item) => item.id === editingSymptomId)

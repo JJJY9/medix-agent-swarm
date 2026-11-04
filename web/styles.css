@@ -3262,6 +3262,13 @@ html[data-theme="dark"] .reminders-due-hint {
   margin-top: 8px;
 }
 
+.symptom-summary {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.symptom-summary[hidden] { display: none; }
+
 .symptom-search {
   width: 100%;
   margin: 6px 0;
