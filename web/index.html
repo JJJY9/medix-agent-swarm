@@ -118,6 +118,14 @@
       </div>
 
       <section class="context-panel" id="context-panel" hidden aria-label="补充问诊信息">
+        <div class="profile-bar">
+          <label class="sr-only" for="profile-select">常用档案</label>
+          <select id="profile-select">
+            <option value="">常用档案…</option>
+          </select>
+          <button type="button" class="btn-quiet" id="profile-save">保存当前</button>
+          <button type="button" class="btn-quiet" id="profile-delete">删除</button>
+        </div>
         <div class="context-grid">
           <label>年龄
             <input id="ctx-age" type="number" min="0" max="120" inputmode="numeric" placeholder="如 38">

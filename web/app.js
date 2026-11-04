@@ -22,6 +22,9 @@ const els = {
   ctxMedications: document.getElementById('ctx-medications'),
   ctxAllergies: document.getElementById('ctx-allergies'),
   ctxSingle: document.getElementById('ctx-single'),
+  profileSelect: document.getElementById('profile-select'),
+  profileSave: document.getElementById('profile-save'),
+  profileDelete: document.getElementById('profile-delete'),
   send: document.getElementById('send'),
   newSession: document.getElementById('new-session'),
   themeToggle: document.getElementById('theme-toggle'),
@@ -3163,6 +3166,7 @@ function hideBanner() {
 
 const CONTEXT_STORAGE_KEY = 'medix.context';
 const SINGLE_MODE_KEY = 'medix.singleMode';
+const PROFILES_STORAGE_KEY = 'medix.profiles';
 
 function readPatientContext() {
   const context = {};
@@ -3215,6 +3219,7 @@ function applyPatientContext(context) {
   els.ctxHistory.value = data.history || '';
   els.ctxMedications.value = data.medications || '';
   els.ctxAllergies.value = data.allergies || '';
+  if (els.profileSelect) els.profileSelect.value = '';
   updateContextSummary();
 }
 
@@ -3226,6 +3231,103 @@ function loadSavedContext() {
   } catch {
     // 忽略损坏的缓存
   }
+}
+
+function readProfiles() {
+  try {
+    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === 'object' && !Array.isArray(data)
+      ? data
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeProfiles(profiles) {
+  try {
+    localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(profiles));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function refreshProfileOptions(selected = undefined) {
+  const profiles = readProfiles();
+  const current = selected === undefined
+    ? els.profileSelect.value
+    : selected;
+
+  els.profileSelect.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '常用档案…';
+  els.profileSelect.appendChild(placeholder);
+
+  for (const name of Object.keys(profiles).sort()) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    els.profileSelect.appendChild(option);
+  }
+
+  els.profileSelect.value = profiles[current] ? current : '';
+}
+
+function savePatientProfile() {
+  const context = readPatientContext();
+  if (!Object.keys(context).length) {
+    window.alert('请先填写补充信息，再保存为常用档案。');
+    return;
+  }
+
+  const name = (window.prompt('档案名称（如：妈妈、孩子）') || '')
+    .trim()
+    .slice(0, 20);
+  if (!name) return;
+
+  const profiles = readProfiles();
+  if (profiles[name] && !window.confirm(`档案「${name}」已存在，是否覆盖？`)) {
+    return;
+  }
+
+  profiles[name] = {
+    context,
+    saved_at: new Date().toISOString(),
+  };
+  if (!writeProfiles(profiles)) {
+    window.alert('保存档案失败：浏览器本地存储不可用。');
+    return;
+  }
+  refreshProfileOptions(name);
+}
+
+function deletePatientProfile() {
+  const name = els.profileSelect.value;
+  if (!name) {
+    window.alert('请先选择一个常用档案。');
+    return;
+  }
+  if (!window.confirm(`删除常用档案「${name}」？`)) return;
+
+  const profiles = readProfiles();
+  delete profiles[name];
+  if (!writeProfiles(profiles)) {
+    window.alert('删除档案失败：浏览器本地存储不可用。');
+    return;
+  }
+  refreshProfileOptions('');
+}
+
+function applySelectedProfile() {
+  const name = els.profileSelect.value;
+  if (!name) return;
+  const profiles = readProfiles();
+  if (!profiles[name]) return;
+  applyPatientContext(profiles[name].context || {});
+  els.profileSelect.value = name;
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -3419,8 +3521,13 @@ els.contextPanel.addEventListener('change', updateContextSummary);
 
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});
+  els.profileSelect.value = '';
   els.ctxAge.focus();
 });
+
+els.profileSelect.addEventListener('change', applySelectedProfile);
+els.profileSave.addEventListener('click', savePatientProfile);
+els.profileDelete.addEventListener('click', deletePatientProfile);
 
 els.ctxSingle.addEventListener('change', () => {
   try {
@@ -3538,6 +3645,7 @@ resetRail();
 initTheme();
 renderEcg();
 loadSavedContext();
+refreshProfileOptions('');
 loadDraft();
 restoreCurrentSession();
 checkStatus();
