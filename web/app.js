@@ -399,6 +399,8 @@ const els = {
   medicationLogHistory: document.getElementById('medication-log-history'),
   medicationLogList: document.getElementById('medication-log-list'),
   medicationLogEmpty: document.getElementById('medication-log-empty'),
+  weeklySummarySection: document.getElementById('weekly-summary-section'),
+  weeklySummaryBody: document.getElementById('weekly-summary-body'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
   medicationEmpty: document.getElementById('medication-empty'),
@@ -6095,6 +6097,7 @@ async function refreshMetrics() {
   loadSymptoms();
   loadMedications();
   loadMedicationLogs();
+  loadWeeklySummary();
   loadHomeGlance();
 }
 
@@ -8138,6 +8141,91 @@ async function deleteMedicationLogItem(item) {
     loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`删除打卡记录失败：${err.message || err}`, true);
+  }
+}
+
+function weeklyMetricText(row) {
+  const name = METRIC_NAMES[row.metric] || row.metric;
+  const unit = row.unit ? ` ${row.unit}` : '';
+  const average = row.avg_value2 === null || row.avg_value2 === undefined
+    ? `${row.avg_value1}${unit}`
+    : `${row.avg_value1}/${row.avg_value2}${unit}`;
+  return `${name} ${row.count} 次，平均 ${average}`;
+}
+
+function renderWeeklySummary(data) {
+  if (!els.weeklySummaryBody) return;
+  els.weeklySummaryBody.replaceChildren();
+  const range = document.createElement('p');
+  range.className = 'metric-reference';
+  range.textContent =
+    `${formatReminderDue(data.start)} – ${formatReminderDue(data.end)}`
+    + ` · 档案：${data.profile || '未指定'}`;
+
+  const list = document.createElement('ul');
+  list.className = 'weekly-summary-list';
+  const addLine = (label, text) => {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = label;
+    li.append(strong, document.createTextNode(`：${text}`));
+    list.appendChild(li);
+  };
+
+  const metricRows = data.metrics.by_metric || [];
+  addLine(
+    '健康指标',
+    metricRows.length
+      ? metricRows.map(weeklyMetricText).join('；')
+      : '近 7 天没有记录'
+  );
+
+  const symptoms = data.symptoms;
+  let symptomText = '近 7 天没有记录';
+  if (symptoms.count) {
+    symptomText =
+      `${symptoms.count} 条，平均 ${symptoms.avg_severity}/10`
+      + `，最高 ${symptoms.max_severity}/10`;
+    if (symptoms.top && symptoms.top.length) {
+      symptomText += `；${symptoms.top
+        .map((item) => `${item.symptom} ${item.count} 次`)
+        .join('、')}`;
+    }
+  }
+  addLine('症状日记', symptomText);
+
+  const meds = data.medications;
+  let medicationText = '没有在用药物';
+  if (meds.active) {
+    medicationText = `在用 ${meds.active} 种，近 7 天打卡 ${meds.doses} 次`;
+    if (meds.by_medication && meds.by_medication.length) {
+      medicationText += `（${meds.by_medication
+        .map((item) => `${item.name} ${item.doses} 次`)
+        .join('、')}）`;
+    }
+  }
+  addLine('用药', medicationText);
+
+  addLine(
+    '随访提醒',
+    `待办 ${data.reminders.pending} 条，逾期 ${data.reminders.overdue} 条`
+    + `，7 天内到期 ${data.reminders.due_in_7_days} 条`
+  );
+
+  els.weeklySummaryBody.append(range, list);
+}
+
+async function loadWeeklySummary() {
+  if (!els.weeklySummaryBody) return;
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/reports/weekly?profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) return;
+    renderWeeklySummary(await res.json());
+  } catch {
+    // 小结加载失败不影响其他区块
   }
 }
 
