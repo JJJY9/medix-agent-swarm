@@ -228,3 +228,11 @@ def test_app_js_ships_reminder_advance_notice(client):
     assert "reminder-badge-advance" in app_js
     assert "advance_days" in app_js
     assert 'id="reminder-advance"' in html
+
+
+def test_app_js_ships_visit_summary_metric_overview(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "async function fetchMetricSummaries" in app_js
+    assert "指标概览" in app_js
+    assert "summaryRows" in app_js

@@ -1687,7 +1687,9 @@ function buildReportHtml(item, messages) {
 }
 
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
-function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions, targets }) {
+function buildVisitSummaryHtml({
+  profile, context, metrics, reminders, sessions, targets, summaries,
+}) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
 
@@ -1719,6 +1721,33 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions,
       `<tr><th>${label}</th><td>${escapeHtml(context[key])}</td></tr>`
     ))
     .join('\n');
+
+  const summaryRows = (summaries || []).map((summary) => {
+    const metric = summary.metric;
+    const v1 = summary.value1 || {};
+    const v2 = summary.value2 || {};
+    const pair = (first, second, fmt) => (metric === 'bp'
+      ? `${fmt(first)}/${fmt(second)}`
+      : fmt(first));
+    const unit = METRIC_UNITS[metric] || '';
+    const average = pair(v1.avg, v2.avg, formatStatNumber);
+    const range = pair(v1.min, v2.min, formatStatNumber)
+      + '–'
+      + pair(v1.max, v2.max, formatStatNumber);
+    const targetText = summary.target
+      ? `${summary.within_target}/${summary.count}`
+      : '—';
+    return '<tr>'
+      + `<td>${escapeHtml(METRIC_NAMES[metric] || metric)}</td>`
+      + `<td>${Number(summary.count) || 0}</td>`
+      + `<td>${escapeHtml(
+        summary.latest ? formatMetricValue(summary.latest) : '—'
+      )}</td>`
+      + `<td>${escapeHtml(average)}${unit ? ' ' + escapeHtml(unit) : ''}</td>`
+      + `<td>${escapeHtml(range)}</td>`
+      + `<td>${escapeHtml(targetText)}</td>`
+      + '</tr>';
+  }).join('\n');
 
   const metricRows = metrics.map((item) => {
     const target = findTarget(item.metric);
@@ -1816,6 +1845,14 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions,
   </section>
 
   <section>
+    <h2>指标概览</h2>
+    ${summaryRows
+      ? `<table><thead><tr><th>指标</th><th>记录</th><th>最新</th><th>平均</th><th>最低–最高</th><th>达标</th></tr></thead><tbody>${summaryRows}</tbody></table>
+        <p class="muted">达标列为未超过目标上限的记录数；未设置目标的指标显示「—」。</p>`
+      : '<p class="muted">还没有健康指标记录。</p>'}
+  </section>
+
+  <section>
     <h2>近期健康指标</h2>
     ${targetNotes ? `<ul class="target-notes">${targetNotes}</ul>` : ''}
     ${metricRows
@@ -1847,6 +1884,27 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions,
 <button type="button" class="print-btn" onclick="window.print()">打印 / 保存为 PDF</button>
 </body>
 </html>`;
+}
+
+async function fetchMetricSummaries(profile, metrics) {
+  const types = [...new Set((metrics || []).map((item) => item.metric))];
+  const results = await Promise.all(types.map(async (metric) => {
+    try {
+      const params = new URLSearchParams({
+        metric,
+        profile: profile || '',
+      });
+      const res = await fetch(
+        `/api/metrics/summary?${params.toString()}`
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && data.count > 0 ? data : null;
+    } catch {
+      return null;
+    }
+  }));
+  return results.filter(Boolean);
 }
 
 async function exportVisitSummary() {
@@ -1883,11 +1941,12 @@ async function exportVisitSummary() {
     const targets = targetsRes.ok
       ? (await targetsRes.json()).targets || []
       : [];
+    const summaries = await fetchMetricSummaries(profile, metrics);
 
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
       buildVisitSummaryHtml({
-        profile, context, metrics, reminders, sessions, targets,
+        profile, context, metrics, reminders, sessions, targets, summaries,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
