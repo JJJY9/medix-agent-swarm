@@ -96,6 +96,14 @@ class TagsRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class BulkSessionsRequest(BaseModel):
+    ids: List[str] = Field(..., min_length=1, max_length=200)
+
+
+class BulkArchiveRequest(BulkSessionsRequest):
+    archived: bool
+
+
 class FeedbackRequest(BaseModel):
     message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
     rating: int = Field(
@@ -1159,6 +1167,62 @@ async def favorite_session(session_id: str, request: FavoriteRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"ok": True, "session_id": session_id, "favorite": request.favorite}
+
+
+@app.patch("/api/bulk/sessions/archive")
+async def bulk_archive_sessions(request: BulkArchiveRequest):
+    """批量归档或移出归档，返回成功与缺失数量。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    updated = 0
+    missing = []
+    for session_id in dict.fromkeys(request.ids):
+        ok = await asyncio.to_thread(
+            store.set_archived, session_id, request.archived
+        )
+        if ok:
+            updated += 1
+        else:
+            missing.append(session_id)
+
+    await record_audit(
+        "session.bulk_archive",
+        detail=(
+            f"archived={int(request.archived)} "
+            f"updated={updated} missing={len(missing)}"
+        ),
+    )
+    return {
+        "ok": True,
+        "updated": updated,
+        "missing": missing,
+        "archived": request.archived,
+    }
+
+
+@app.post("/api/bulk/sessions/delete")
+async def bulk_delete_sessions(request: BulkSessionsRequest):
+    """批量删除会诊；返回删除与缺失数量。"""
+    from memory import ShortTermMemory, get_session_store
+
+    store = get_session_store()
+    memory = ShortTermMemory()
+    deleted = 0
+    missing = []
+    for session_id in dict.fromkeys(request.ids):
+        memory.clear_session(session_id)
+        ok = await asyncio.to_thread(store.delete_session, session_id)
+        if ok:
+            deleted += 1
+        else:
+            missing.append(session_id)
+
+    await record_audit(
+        "session.bulk_delete",
+        detail=f"deleted={deleted} missing={len(missing)}",
+    )
+    return {"ok": True, "deleted": deleted, "missing": missing}
 
 
 @app.patch("/api/sessions/{session_id}/archive")

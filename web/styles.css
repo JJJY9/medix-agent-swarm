@@ -1713,6 +1713,32 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .history-filters select:focus { outline: none; border-color: var(--clinic); }
 
+.history-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.history-bulk-bar[hidden] { display: none; }
+.history-bulk-count { margin-right: auto; }
+.history-bulk-bar .history-export { padding: 3px 8px; }
+.history-bulk-bar .history-export.danger { color: var(--triage-1); }
+.history-bulk-bar .history-export:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.history-item.selecting { align-items: center; }
+.history-select {
+  flex: none;
+  margin-left: 6px;
+  accent-color: var(--clinic);
+}
+
 .history-list {
   flex: 1;
   min-height: 0;

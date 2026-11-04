@@ -38,6 +38,14 @@ const els = {
   historyActionStatus: document.getElementById('history-action-status'),
   historyFavoriteFilter: document.getElementById('history-favorite-filter'),
   historyArchiveFilter: document.getElementById('history-archive-filter'),
+  historyBulkToggle: document.getElementById('history-bulk-toggle'),
+  historyBulkBar: document.getElementById('history-bulk-bar'),
+  historyBulkCount: document.getElementById('history-bulk-count'),
+  historyBulkAll: document.getElementById('history-bulk-all'),
+  historyBulkArchive: document.getElementById('history-bulk-archive'),
+  historyBulkUnarchive: document.getElementById('history-bulk-unarchive'),
+  historyBulkDelete: document.getElementById('history-bulk-delete'),
+  historyBulkCancel: document.getElementById('history-bulk-cancel'),
   historyExport: document.getElementById('history-export'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
@@ -239,6 +247,8 @@ let historyLoading = false;
 let favoritesOnly = false;
 let archivedOnly = false;
 let historyTag = '';
+let bulkMode = false;
+let selectedSessions = new Set();
 let historyDays = 0;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
@@ -1845,7 +1855,29 @@ function renderHistoryItems(sessions, summary, append = false) {
   for (const item of sessions) {
     const li = document.createElement('li');
     li.className = 'history-item';
+    li.dataset.sessionId = item.id;
     if (item.id === sessionId) li.dataset.current = '1';
+    if (bulkMode) li.classList.add('selecting');
+
+    let checkbox = null;
+    if (bulkMode) {
+      checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'history-select';
+      checkbox.checked = selectedSessions.has(item.id);
+      checkbox.setAttribute(
+        'aria-label',
+        `选择：${item.title || '未命名会诊'}`
+      );
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+          selectedSessions.add(item.id);
+        } else {
+          selectedSessions.delete(item.id);
+        }
+        updateBulkBar();
+      });
+    }
 
     const open = document.createElement('button');
     open.type = 'button';
@@ -1979,9 +2011,11 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.addEventListener('click', () => deleteHistory(item));
 
     actions.append(favorite, rename, exportBtn, copyLink, tagsBtn, archive, del);
-    li.append(open, actions);
+    li.append(...(checkbox ? [checkbox] : []), open, actions);
     els.historyList.appendChild(li);
   }
+
+  updateBulkBar();
 }
 
 function renderHistorySummary(summary) {
@@ -2195,6 +2229,123 @@ function updateHistoryMore(summary) {
   } else {
     els.historyMore.hidden = true;
     els.historyMore.disabled = false;
+  }
+}
+
+function updateBulkBar() {
+  const count = selectedSessions.size;
+  els.historyBulkCount.textContent = `已选 ${count} 项`;
+
+  const visibleIds = Array.from(
+    document.querySelectorAll('#history-list .history-item')
+  ).map((item) => item.dataset.sessionId);
+  const allSelected = visibleIds.length > 0
+    && visibleIds.every((id) => selectedSessions.has(id));
+  els.historyBulkAll.textContent = allSelected ? '取消全选' : '全选';
+
+  [els.historyBulkArchive, els.historyBulkUnarchive, els.historyBulkDelete]
+    .forEach((button) => {
+      button.disabled = count === 0;
+    });
+}
+
+function setBulkMode(enabled) {
+  bulkMode = enabled;
+  selectedSessions.clear();
+  els.historyBulkBar.hidden = !bulkMode;
+  els.historyBulkToggle.setAttribute(
+    'aria-pressed', String(bulkMode)
+  );
+  els.historyBulkToggle.textContent = bulkMode ? '退出批量' : '批量';
+  updateBulkBar();
+  loadHistory(els.historySearch.value.trim());
+}
+
+function toggleBulkSelectAll() {
+  const items = Array.from(
+    document.querySelectorAll('#history-list .history-item')
+  );
+  const visibleIds = items.map((item) => item.dataset.sessionId);
+  const allSelected = visibleIds.length > 0
+    && visibleIds.every((id) => selectedSessions.has(id));
+
+  if (allSelected) {
+    selectedSessions.clear();
+  } else {
+    visibleIds.forEach((id) => selectedSessions.add(id));
+  }
+
+  items.forEach((item) => {
+    const box = item.querySelector('.history-select');
+    if (box) box.checked = selectedSessions.has(item.dataset.sessionId);
+  });
+  updateBulkBar();
+}
+
+async function bulkArchive(archived) {
+  const ids = Array.from(selectedSessions);
+  if (!ids.length) return;
+
+  try {
+    const res = await fetch('/api/bulk/sessions/archive', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, archived }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    const missing = (data.missing || []).length;
+    selectedSessions.clear();
+    await loadHistory(els.historySearch.value.trim());
+    await loadHistoryTags();
+    els.historyActionStatus.textContent =
+      `${archived ? '已归档' : '已移出归档'} ${data.updated || 0} 次会诊`
+      + (missing ? `（${missing} 个已不存在）` : '');
+  } catch (err) {
+    window.alert(`批量归档失败：${err.message || err}`);
+  }
+}
+
+async function bulkDelete() {
+  const ids = Array.from(selectedSessions);
+  if (!ids.length) return;
+  if (!window.confirm(`删除选中的 ${ids.length} 次会诊？删除后不可恢复。`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/bulk/sessions/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    if (ids.includes(sessionId)) {
+      sessionId = null;
+      localStorage.removeItem('medix.session');
+      setSessionUrl(null);
+      els.thread.replaceChildren(els.empty);
+      els.empty.hidden = false;
+      resetRail();
+      els.readout.session.textContent = '—';
+    }
+
+    const missing = (data.missing || []).length;
+    selectedSessions.clear();
+    await loadHistory(els.historySearch.value.trim());
+    await loadRecentFeedback();
+    await loadQualityInsights();
+    await loadHistoryTags();
+    await loadUsageTrend();
+    await loadUsageBudget();
+    els.historyActionStatus.textContent =
+      `已删除 ${data.deleted || 0} 次会诊`
+      + (missing ? `（${missing} 个已不存在）` : '');
+  } catch (err) {
+    window.alert(`批量删除失败：${err.message || err}`);
   }
 }
 
@@ -3502,6 +3653,8 @@ const AUDIT_LABELS = {
   'session.export': '导出备份',
   'session.import': '导入备份',
   'session.tags': '更新标签',
+  'session.bulk_archive': '批量归档',
+  'session.bulk_delete': '批量删除',
   'profile.delete': '删除患者档案',
   'metric.delete': '删除健康记录',
 };
@@ -5462,6 +5615,15 @@ els.historyTag.addEventListener('change', () => {
   historyTag = els.historyTag.value;
   loadHistory(els.historySearch.value.trim());
 });
+
+els.historyBulkToggle.addEventListener('click', () => {
+  setBulkMode(!bulkMode);
+});
+els.historyBulkAll.addEventListener('click', toggleBulkSelectAll);
+els.historyBulkArchive.addEventListener('click', () => bulkArchive(true));
+els.historyBulkUnarchive.addEventListener('click', () => bulkArchive(false));
+els.historyBulkDelete.addEventListener('click', bulkDelete);
+els.historyBulkCancel.addEventListener('click', () => setBulkMode(false));
 
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {

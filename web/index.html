@@ -297,6 +297,7 @@
     <p class="history-summary" id="history-summary" hidden></p>
     <button type="button" class="history-favorite-filter" id="history-favorite-filter" aria-pressed="false" title="只看收藏" aria-label="只看收藏">☆</button>
     <button type="button" class="history-favorite-filter history-archive-filter" id="history-archive-filter" aria-pressed="false" title="查看已归档" aria-label="查看已归档">归档</button>
+    <button type="button" class="history-export" id="history-bulk-toggle" aria-pressed="false">批量</button>
     <button type="button" class="history-export" id="history-export">导出备份</button>
     <button type="button" class="history-export" id="history-import">导入备份</button>
     <input type="file" id="history-import-file" accept="application/json,.json" hidden>
@@ -351,6 +352,15 @@
     <select id="history-tag">
       <option value="">全部标签</option>
     </select>
+  </div>
+
+  <div class="history-bulk-bar" id="history-bulk-bar" hidden>
+    <span class="history-bulk-count" id="history-bulk-count">已选 0 项</span>
+    <button type="button" class="history-export" id="history-bulk-all">全选</button>
+    <button type="button" class="history-export" id="history-bulk-archive">归档</button>
+    <button type="button" class="history-export" id="history-bulk-unarchive">移出归档</button>
+    <button type="button" class="history-export danger" id="history-bulk-delete">删除</button>
+    <button type="button" class="history-export" id="history-bulk-cancel">取消</button>
   </div>
 
   <details class="history-feedback" id="history-feedback" hidden>
