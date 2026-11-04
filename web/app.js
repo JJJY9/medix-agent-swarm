@@ -6323,6 +6323,16 @@ function localDateAfter(days) {
   return new Date(now.getTime() - offset).toISOString().slice(0, 10);
 }
 
+function frequencyRepeatDays(frequency) {
+  const text = String(frequency || '');
+  if (/(每两周|每2周)/.test(text)) return 14;
+  if (/(每两|隔日|隔天|每隔一天|每2天|每二天)/.test(text)) return 2;
+  if (/(每周|每星期|每礼拜)/.test(text)) return 7;
+  if (/(每月|每个月)/.test(text)) return 30;
+  if (/(每日|每天|每晚|每早|一日|睡前|晨起)/.test(text)) return 1;
+  return 0;
+}
+
 function reminderGroupOf(item) {
   if (item.done) return 'done';
   const due = String(item.due_at || '').slice(0, 10);
@@ -7273,6 +7283,31 @@ async function scheduleMetricFollowUp(item) {
   els.reminderTitle.focus();
 }
 
+async function scheduleMedicationReminder(item) {
+  await openReminders();
+  if (els.reminderProfile) {
+    els.reminderProfile.value = item.profile || '';
+  }
+  els.reminderTitle.value = `用药：${item.name}`;
+  els.reminderDue.value = localDateAfter(0);
+  els.reminderAdvance.value = '0';
+  els.reminderRepeat.value = String(frequencyRepeatDays(item.frequency));
+  syncReminderRepeatFields();
+  const details = [item.dose, item.frequency].filter(Boolean).join(' · ');
+  els.reminderNote.value = details ? `用法：${details}` : '';
+  if (els.remindersSearch) els.remindersSearch.value = '';
+  if (els.remindersOverdueOnly) {
+    els.remindersOverdueOnly.checked = false;
+  }
+  reminderCalendarDay = '';
+  if (els.remindersProfile) {
+    els.remindersProfile.value = item.profile || '';
+    loadReminders();
+  }
+  setRemindersStatus('已代入用药提醒，确认后点击「添加提醒」。');
+  els.reminderTitle.focus();
+}
+
 let editingSymptomId = null;
 let symptomSaving = false;
 let symptomRequestSeq = 0;
@@ -7748,6 +7783,13 @@ function renderMedications(items) {
     toggle.setAttribute('aria-label', `${item.active ? '停用' : '启用'}药物：${item.name}`);
     toggle.addEventListener('click', () => toggleMedication(item));
 
+    const remind = document.createElement('button');
+    remind.type = 'button';
+    remind.className = 'metric-edit';
+    remind.textContent = '设提醒';
+    remind.setAttribute('aria-label', `为药物设置提醒：${item.name}`);
+    remind.addEventListener('click', () => scheduleMedicationReminder(item));
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -7762,7 +7804,7 @@ function renderMedications(items) {
     del.setAttribute('aria-label', `删除药物：${item.name}`);
     del.addEventListener('click', () => deleteMedication(item));
 
-    actions.append(toggle, edit, del);
+    actions.append(toggle, remind, edit, del);
     li.append(main, actions);
     els.medicationList.appendChild(li);
   }

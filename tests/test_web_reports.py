@@ -595,6 +595,15 @@ def test_app_js_ships_home_medications(client):
     assert "种在用药物" in app_js
 
 
+def test_app_js_ships_medication_reminder_shortcut(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function scheduleMedicationReminder" in app_js
+    assert "function frequencyRepeatDays" in app_js
+    assert "为药物设置提醒" in app_js
+    assert "已代入用药提醒" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text
