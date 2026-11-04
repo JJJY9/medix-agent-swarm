@@ -161,3 +161,12 @@ def test_history_metadata_includes_medication_safety():
     })
 
     assert metadata["medication_safety"] == safety
+
+
+def test_active_medications_context_is_checked():
+    result = check_medication_safety(
+        "最近头晕", {"active_medications": "华法林；布洛芬"}
+    )
+
+    assert result["level"] == "warning"
+    assert "华法林与非甾体抗炎药" in titles(result)

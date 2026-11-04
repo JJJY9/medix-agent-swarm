@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
 
+from core.context import medication_context_text
+
 #: 药名 → 组内规范名。别名用于匹配主诉和用药记录里的不同写法。
 DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
     "warfarin": (
@@ -434,7 +436,7 @@ def check_medication_safety(
     """
     question = _flatten(question).lower()
     context = context if isinstance(context, dict) else {}
-    medications = _flatten(context.get("medications")).lower()
+    medications = medication_context_text(context).lower()
     allergies = _allergy_text(context, question)
 
     # 药物相互作用的判断只使用主诉与当前用药，避免把过敏史里的药名当成正在服用。

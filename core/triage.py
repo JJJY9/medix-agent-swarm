@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.context import medication_context_text
+
 #: (匹配短语, 展示标签)。同一个标签只保留一次。
 RED_FLAG_PHRASES = (
     ("胸痛", "胸痛"),
@@ -194,7 +196,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
     medical_text = " ".join(
         part for part in (
             _flatten(context.get("history")).lower(),
-            _flatten(context.get("medications")).lower(),
+            medication_context_text(context).lower(),
         ) if part
     )
     if (

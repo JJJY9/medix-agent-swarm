@@ -1700,3 +1700,18 @@ def test_medications_crud_and_export_import(store, tmp_path):
     assert store.delete_medication(item["id"]) is True
     assert store.delete_medication(item["id"]) is False
     assert store.add_medication("", "  ") is None
+
+
+def test_medication_import_skips_status_change(store):
+    store.add_medication("母亲", "氨氯地平", "5 mg", "每日一次")
+    backup = store.export_data()
+
+    assert store.update_medication(
+        1, "母亲", "氨氯地平", "5 mg", "每日一次", "", False
+    )["active"] is False
+    result = store.import_data(backup)
+
+    assert result["medications"] == 0
+    items = store.list_medications()
+    assert len(items) == 1
+    assert items[0]["active"] is False

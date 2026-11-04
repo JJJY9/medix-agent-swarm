@@ -146,3 +146,11 @@ def test_pregnancy_bleeding_is_flagged():
 def test_new_red_flags_respect_negation():
     assert detect_red_flags("没有少尿，尿量正常")["level"] == "none"
     assert detect_red_flags("没有酮症酸中毒")["level"] == "none"
+
+
+def test_active_medications_trigger_anticoagulant_head_injury():
+    result = detect_red_flags(
+        "今天摔倒撞到头了", {"active_medications": "华法林 3 mg 每日一次"}
+    )
+
+    assert "抗凝治疗期间头部外伤" in result["matches"]

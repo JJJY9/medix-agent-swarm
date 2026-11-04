@@ -673,3 +673,12 @@ def test_app_js_supports_medication_deeplink(client):
 
     assert "params.get('medications') === '1'" in app_js
     assert "medicationSection.open" in app_js
+
+
+def test_app_js_medication_interaction_clears_empty(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "els.calcInteractionsDrugs.value = ''" in app_js
+    assert "els.calcResult.hidden = true" in app_js
+    assert 'html[data-theme="dark"] .medication-active-badge.is-inactive' in css
