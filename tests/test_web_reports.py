@@ -490,3 +490,10 @@ def test_app_js_ships_metric_target_defaults(client):
     assert "METRIC_TARGET_DEFAULTS" in app_js
     assert "已填入常用参考值" in html
     assert 'id="metric-target-hint"' in html
+
+
+def test_app_js_home_glance_labels_profiles(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "（${item.profile}）" in app_js
+    assert "· ${upcoming[0].profile}" in app_js

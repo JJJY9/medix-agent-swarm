@@ -6634,10 +6634,12 @@ function renderHomeGlance(reminders, metrics) {
     reminderValue = `${overdue} 条已逾期`;
     reminderSub = upcoming.length
       ? `下一条：${formatReminderDue(upcoming[0].due_at)}`
+        + (upcoming[0].profile ? `（${upcoming[0].profile}）` : '')
       : '点击打开随访提醒';
   } else if (upcoming.length) {
     reminderValue = `下一条：${formatReminderDue(upcoming[0].due_at)}`;
-    reminderSub = upcoming[0].title || '点击打开随访提醒';
+    reminderSub = (upcoming[0].title || '点击打开随访提醒')
+      + (upcoming[0].profile ? ` · ${upcoming[0].profile}` : '');
   }
 
   const latest = {};
@@ -6651,6 +6653,7 @@ function renderHomeGlance(reminders, metrics) {
     .slice(0, 3)
     .map(
       (item) => `${METRIC_NAMES[item.metric]} ${formatMetricValue(item)}`
+        + (item.profile ? `（${item.profile}）` : '')
     );
   const metricValue = recent.length ? recent.join(' · ') : '暂无健康记录';
   const metricSub = recent.length ? '点击打开健康记录' : '点击录入第一条记录';
