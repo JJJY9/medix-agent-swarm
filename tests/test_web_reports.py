@@ -605,7 +605,8 @@ def test_app_js_ships_home_today_meds(client):
     assert 'id="today-meds-list"' in html
     assert "today-meds-item" in app_js
     assert "今天还没有打卡" in app_js
-    assert "今日已全部打卡" in app_js
+    assert "今日均已打卡" in app_js
+    assert "today-meds-status" in app_js
     assert "is-complete" in app_js
     assert ".today-meds" in css
 
@@ -697,6 +698,7 @@ def test_app_js_ships_weekly_summary(client):
     assert ".weekly-summary-list" in css
     assert "async function copyWeeklySummary" in app_js
     assert "function weeklySummaryText" in app_js
+    assert "const ok = await copyText(weeklySummaryText(cache.data))" in app_js
     assert "已复制健康小结" in app_js
     assert "近 ${days} 天打卡" in app_js
     assert "近 7 天小结" in app_js
@@ -727,9 +729,11 @@ def test_app_js_medication_review_hardening(client):
         "await loadMedications();\n    refreshOverview();"
     ) >= 3
     assert app_js.count(
-        "await loadMedications();\n    loadMedicationLogs();\n"
-        "    refreshOverview();"
-    ) >= 3
+        "loadMedicationLogs();\n    await refreshOverview();"
+    ) >= 2
+    assert app_js.count(
+        "loadMedicationLogs();\n    refreshOverview();"
+    ) >= 1
     # 首页用药卡片标注档案，避免跨档案聚合歧义
     assert "（${item.profile}）" in app_js
     # 备份导入携带打卡记录

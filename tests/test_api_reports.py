@@ -126,6 +126,11 @@ def test_weekly_report_aggregates(client_and_store):
     })
     family = client.get("/api/reports/weekly").json()
     assert family["metrics"]["count"] == 4
+    family_weight = next(
+        row for row in family["metrics"]["by_metric"]
+        if row["metric"] == "weight"
+    )
+    assert family_weight["within_target"] is None
     scoped = client.get(
         "/api/reports/weekly", params={"profile": "母亲"}
     ).json()

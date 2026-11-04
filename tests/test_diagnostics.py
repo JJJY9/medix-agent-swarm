@@ -77,6 +77,30 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     assert "secret-token" not in str(runtime)
 
 
+def test_runtime_marks_unreadable_tables(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.delenv("MEDIX_SESSION_DB", raising=False)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "sessions.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("CREATE TABLE sessions (id TEXT)")
+        conn.execute("CREATE TABLE messages (id INTEGER)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    runtime = check_runtime(tmp_path)
+
+    assert runtime["sessions"] == 0
+    assert runtime["messages"] == 0
+    assert runtime["metrics"] is None
+    assert "health_metrics" in runtime["data_errors"]
+    assert "medication_logs" in runtime["data_errors"]
+
+
 def test_missing_required_is_consistent():
     report = collect_report()
     expected = {
