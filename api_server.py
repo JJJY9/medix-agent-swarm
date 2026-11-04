@@ -101,6 +101,10 @@ class TagsRequest(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class PurgeRequest(BaseModel):
+    days: int = Field(..., ge=1, le=3650, description="删除多少天以前的会诊")
+
+
 class BulkSessionsRequest(BaseModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
@@ -968,6 +972,27 @@ async def import_sessions(request: ImportSessionsRequest):
         ),
     )
     return {"ok": True, **result}
+
+
+@app.post("/api/maintenance/purge")
+async def purge_old_sessions(request: PurgeRequest):
+    """删除指定天数以前的会诊及其消息（不可恢复）。"""
+    from datetime import timedelta
+
+    from memory import get_session_store
+
+    cutoff = (
+        datetime.now() - timedelta(days=request.days)
+    ).isoformat(timespec="seconds")
+    result = await asyncio.to_thread(
+        get_session_store().purge_sessions_before, cutoff
+    )
+    await record_audit(
+        "maintenance.purge",
+        f"days={request.days}",
+        f"sessions={result['sessions']} messages={result['messages']}",
+    )
+    return {"ok": True, **result, "cutoff": cutoff}
 
 
 @app.get("/api/feedback/recent")

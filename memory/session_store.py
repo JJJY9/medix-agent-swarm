@@ -2163,6 +2163,35 @@ class SessionStore:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
         return int(row["n"]) if row else 0
 
+    def purge_sessions_before(self, cutoff: str) -> Dict[str, int]:
+        """删除 cutoff（ISO 时间）之前更新的会话及其消息，返回删除数量。"""
+        cutoff = str(cutoff or "").strip()[:40]
+        empty = {"sessions": 0, "messages": 0}
+        if not cutoff:
+            return empty
+
+        with self._lock, self._conn:
+            ids = [
+                row["id"] for row in self._conn.execute(
+                    "SELECT id FROM sessions WHERE updated_at < ?", (cutoff,)
+                )
+            ]
+            if not ids:
+                return empty
+            placeholders = ",".join("?" for _ in ids)
+            messages_deleted = self._conn.execute(
+                f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+                ids,
+            ).rowcount
+            sessions_deleted = self._conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                ids,
+            ).rowcount
+        return {
+            "sessions": int(sessions_deleted),
+            "messages": int(messages_deleted),
+        }
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

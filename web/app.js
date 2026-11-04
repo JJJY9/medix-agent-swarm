@@ -118,6 +118,7 @@ const els = {
   diagPackages: document.getElementById('diag-packages'),
   diagAudit: document.getElementById('diag-audit'),
   diagAuditExport: document.getElementById('diag-audit-export'),
+  diagPurge: document.getElementById('diag-purge'),
   auditAction: document.getElementById('audit-action'),
   auditKeyword: document.getElementById('audit-keyword'),
   auditStart: document.getElementById('audit-start'),
@@ -4701,6 +4702,52 @@ async function exportAuditCsv() {
   }
 }
 
+async function purgeOldSessions() {
+  const input = window.prompt(
+    '删除多少天以前的会诊？删除后不可恢复。',
+    '90'
+  );
+  if (input === null) return;
+
+  const days = Number(input);
+  if (!Number.isFinite(days) || days < 1 || days > 3650) {
+    window.alert('请输入 1–3650 之间的天数。');
+    return;
+  }
+  if (!window.confirm(
+    `将永久删除 ${days} 天以前的会诊及其消息，确定继续？`
+  )) {
+    return;
+  }
+
+  const button = els.diagPurge;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '清理中…';
+  try {
+    const res = await fetch('/api/maintenance/purge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setDiagStatus(
+      `已清理 ${data.sessions || 0} 次会诊`
+      + `（${data.messages || 0} 条消息）`
+    );
+    await loadHistory(els.historySearch.value.trim());
+    loadAuditLog();
+  } catch (err) {
+    setDiagStatus(`清理失败：${err.message || err}`, true);
+  } finally {
+    button.textContent = original;
+    button.disabled = false;
+  }
+}
+
 async function loadDiagnostics() {
   els.diagSummary.className = 'diag-summary';
   els.diagSummary.textContent = '正在检查…';
@@ -7425,6 +7472,7 @@ els.diagLlmTest.addEventListener('click', testModelConnection);
 els.diagCopy.addEventListener('click', copyDiagnostics);
 els.diagDownload.addEventListener('click', downloadDiagnostics);
 els.diagAuditExport.addEventListener('click', exportAuditCsv);
+els.diagPurge.addEventListener('click', purgeOldSessions);
 els.auditAction.addEventListener('change', loadAuditLog);
 els.auditFilterApply.addEventListener('click', loadAuditLog);
 els.auditKeyword.addEventListener('keydown', (event) => {

@@ -1054,7 +1054,6 @@ def test_snooze_reminder(store):
 
 def test_update_reminder(store):
     reminder = store.add_reminder("复查", "2026-11-10", note="空腹")
-
     updated = store.update_reminder(
         reminder["id"], title="复查肝功", due_at="2026-11-20"
     )
@@ -1072,6 +1071,20 @@ def test_update_reminder(store):
         store.update_reminder(reminder["id"], title="  ")
     with pytest.raises(ValueError):
         store.update_reminder(reminder["id"], due_at="2026/11/20")
+
+
+def test_purge_sessions_before(store, monkeypatch):
+    times = iter(["2026-01-01T09:00:00", "2026-01-02T09:00:00"])
+    monkeypatch.setattr(SessionStore, "_now", staticmethod(lambda: next(times)))
+    store.save_exchange("s1", "旧问题", "旧答复")
+    store.save_exchange("s2", "新问题", "新答复")
+
+    assert store.purge_sessions_before("") == {"sessions": 0, "messages": 0}
+    result = store.purge_sessions_before("2026-01-01T12:00:00")
+
+    assert result == {"sessions": 1, "messages": 2}
+    assert [item["id"] for item in store.list_sessions()] == ["s2"]
+    assert store.get_messages("s1") == []
 
 
 def test_session_profile_filter(store):

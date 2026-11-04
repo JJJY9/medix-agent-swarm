@@ -850,3 +850,36 @@ def test_sessions_csv_export_respects_filters(tmp_path, monkeypatch):
     assert row[7] == "1"
     assert row[8] == "10"
     assert row[9] == "1"
+
+
+def test_maintenance_purge_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("s1", "旧问题", "旧答复")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET updated_at = '2020-01-01T00:00:00' WHERE id = 's1'"
+        )
+    store.save_exchange("s2", "新问题", "新答复")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.post(
+            "/api/maintenance/purge", json={"days": 30}
+        )
+        remaining = client.get("/api/sessions")
+        invalid = client.post(
+            "/api/maintenance/purge", json={"days": 0}
+        )
+        audit = client.get("/api/audit")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["sessions"] == 1
+    assert data["messages"] == 2
+    assert [item["id"] for item in remaining.json()["sessions"]] == ["s2"]
+    assert invalid.status_code == 422
+    actions = [item["action"] for item in audit.json()["actions"]]
+    assert "maintenance.purge" in actions
