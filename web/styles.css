@@ -3498,6 +3498,30 @@ html[data-theme="dark"] .medication-active-badge.is-inactive {
   border-radius: 8px;
 }
 
+.symptom-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 4px;
+}
+
+.symptom-quick button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.symptom-quick button:hover {
+  color: var(--clinic);
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
 .medication-filters {
   display: flex;
   gap: 6px;
