@@ -1800,17 +1800,27 @@ function buildVisitSummaryHtml({
       + '</tr>';
   }).join('\n');
 
-  const targetNotes = targetList.map(
-    (target) => `<li>${escapeHtml(METRIC_NAMES[target.metric] || target.metric)}`
-      + ` 目标上限 ${escapeHtml(formatMetricTarget(target))}</li>`
-  ).join('\n');
+  const targetNotes = targetList.map((target) => {
+    const direction = targetIsLowerBound(target.metric)
+      ? '目标下限'
+      : '目标上限';
+    return `<li>${escapeHtml(METRIC_NAMES[target.metric] || target.metric)}`
+      + ` ${direction} ${escapeHtml(formatMetricTarget(target))}</li>`;
+  }).join('\n');
 
-  const reminderItems = reminders.map((item) => (
-    `<li>${escapeHtml(item.title)} · 到期 ${escapeHtml(formatReminderDue(item.due_at))}`
-    + `${item.note ? `（${escapeHtml(item.note)}）` : ''}`
-    + `${reminderIsDue(item.due_at) ? ' <strong class="overdue">已到期</strong>' : ''}`
-    + '</li>'
-  )).join('\n');
+  const reminderItems = reminders.map((item) => {
+    const repeat = Number(item.repeat_days) > 0
+      ? ` · 每 ${Number(item.repeat_days)} 天重复`
+        + (item.repeat_until
+          ? `（截止 ${formatReminderDue(item.repeat_until)}）`
+          : '')
+      : '';
+    return `<li>${escapeHtml(item.title)} · 到期 ${escapeHtml(formatReminderDue(item.due_at))}`
+      + repeat
+      + `${item.note ? `（${escapeHtml(item.note)}）` : ''}`
+      + `${reminderIsDue(item.due_at) ? ' <strong class="overdue">已到期</strong>' : ''}`
+      + '</li>';
+  }).join('\n');
 
   const sessionItems = sessions.map((item) => (
     `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`

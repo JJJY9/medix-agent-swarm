@@ -418,3 +418,10 @@ def test_app_js_ships_mmrc(client):
     assert 'id="calc-form-mmrc"' in html
     assert "function submitMmrc" in app_js
     assert "/api/tools/mmrc" in app_js
+
+
+def test_app_js_report_target_direction_and_repeat(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "const direction = targetIsLowerBound(target.metric)" in app_js
+    assert "天重复`" in app_js
