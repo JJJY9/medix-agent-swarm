@@ -2438,7 +2438,8 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 }
 
 .calc-field input,
-.calc-field select {
+.calc-field select,
+.calc-field textarea {
   font: inherit;
   font-size: 13px;
   color: var(--ink);
@@ -2446,6 +2447,12 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   padding: 7px 9px;
+}
+
+.calc-field textarea {
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.6;
 }
 .calc-field[hidden] { display: none; }
 

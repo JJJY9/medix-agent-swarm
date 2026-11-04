@@ -670,6 +670,7 @@
         <option value="gcs">GCS 格拉斯哥昏迷评分</option>
         <option value="wells">Wells DVT 概率评分</option>
         <option value="wells-pe">Wells PE 概率评分</option>
+        <option value="interactions">药物相互作用检查</option>
       </select>
     </label>
 
@@ -868,6 +869,17 @@
       <label class="calc-check"><input type="checkbox" id="calc-wellspe-hemoptysis"> 咯血（+1）</label>
       <label class="calc-check"><input type="checkbox" id="calc-wellspe-malignancy"> 活动性肿瘤（+1）</label>
       <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-interactions" data-tool="interactions" hidden>
+      <p class="calc-hint">每行一种药物，也可用顿号或逗号分隔。规则只覆盖常见明确风险，未命中不代表绝对安全。</p>
+      <label class="calc-field">正在使用的药物
+        <textarea id="calc-interactions-drugs" rows="4" maxlength="1000" placeholder="华法林&#10;阿司匹林&#10;克拉霉素"></textarea>
+      </label>
+      <label class="calc-field">过敏史（可选）
+        <input id="calc-interactions-allergies" type="text" maxlength="200" placeholder="如：青霉素">
+      </label>
+      <button type="submit" class="btn-quiet">检查相互作用</button>
     </form>
 
     <section class="calc-result" id="calc-result" hidden aria-live="polite">

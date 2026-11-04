@@ -348,3 +348,51 @@ def test_wells_pe_api(client):
     assert high.json()["score"] == 7.5
     assert high.json()["risk"] == "高概率"
     assert len(high.json()["criteria"]) == 3
+
+
+def test_interactions_api_reports_interactions(client):
+    response = client.post(
+        "/api/tools/interactions",
+        json={"drugs": "华法林\n阿司匹林、克拉霉素"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True
+    assert data["drugs"] == "华法林、阿司匹林、克拉霉素"
+    assert data["level"] == "warning"
+    assert data["alerts"]
+    assert all("title" in alert and "detail" in alert for alert in data["alerts"])
+
+
+def test_interactions_api_returns_empty_for_safe_list(client):
+    response = client.post(
+        "/api/tools/interactions", json={"drugs": "维生素C"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["level"] == "none"
+    assert response.json()["alerts"] == []
+
+
+def test_interactions_api_checks_allergies(client):
+    response = client.post(
+        "/api/tools/interactions",
+        json={"drugs": "阿莫西林", "allergies": "青霉素过敏"},
+    )
+
+    assert response.status_code == 200
+    alerts = response.json()["alerts"]
+    assert any("青霉素" in alert["title"] for alert in alerts)
+
+
+def test_interactions_api_validates_input(client):
+    blank = client.post("/api/tools/interactions", json={"drugs": "   "})
+    missing = client.post("/api/tools/interactions", json={})
+    too_long = client.post(
+        "/api/tools/interactions", json={"drugs": "a" * 1001}
+    )
+
+    assert blank.status_code == 400
+    assert missing.status_code == 422
+    assert too_long.status_code == 422
