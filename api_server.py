@@ -682,6 +682,57 @@ async def delete_metric(metric_id: int):
     return {"ok": True, "id": metric_id}
 
 
+@app.get("/api/metrics/export.csv")
+async def export_metrics_csv(
+    profile: Optional[str] = None,
+    metric: Optional[str] = None,
+):
+    """导出健康指标 CSV（带 BOM，Excel 可直接打开）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    if metric and metric not in ("bp", "weight", "glucose", "temperature"):
+        raise HTTPException(status_code=400, detail="不支持的健康指标类型")
+
+    items = await asyncio.to_thread(
+        get_session_store().list_metrics, profile, metric, 100000
+    )
+    labels = {
+        "bp": "血压",
+        "weight": "体重",
+        "glucose": "血糖",
+        "temperature": "体温",
+    }
+
+    rows = [["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"]]
+    for item in reversed(items):
+        rows.append([
+            item.get("measured_at", ""),
+            item.get("profile", ""),
+            labels.get(item.get("metric"), item.get("metric", "")),
+            item.get("value1", ""),
+            item.get("value2", "") if item.get("value2") is not None else "",
+            item.get("unit", ""),
+            item.get("note", ""),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-metrics-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/profiles")
 async def list_profiles():
     """常用患者档案（服务端持久化，可跨浏览器使用）。"""

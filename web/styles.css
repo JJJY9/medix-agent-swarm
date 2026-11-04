@@ -2322,6 +2322,12 @@ html[data-theme="dark"] .calc-status.error {
 
 .metrics-form .btn-quiet { justify-self: start; }
 
+.metrics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .metrics-values {
   display: grid;
   grid-template-columns: 1fr 1fr;
