@@ -42,6 +42,7 @@ const els = {
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
   historyRange: document.getElementById('history-range'),
+  historyTag: document.getElementById('history-tag'),
   historyFeedback: document.getElementById('history-feedback'),
   historyFeedbackCount: document.getElementById('history-feedback-count'),
   historyFeedbackList: document.getElementById('history-feedback-list'),
@@ -237,6 +238,7 @@ let historyTotal = 0;
 let historyLoading = false;
 let favoritesOnly = false;
 let archivedOnly = false;
+let historyTag = '';
 let historyDays = 0;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
@@ -1825,6 +1827,8 @@ function renderHistoryItems(sessions, summary, append = false) {
     els.historyEmpty.hidden = false;
     if (archivedOnly) {
       els.historyEmpty.textContent = '还没有归档的会诊';
+    } else if (historyTag) {
+      els.historyEmpty.textContent = `标签「${historyTag}」下没有会诊`;
     } else if (favoritesOnly) {
       els.historyEmpty.textContent = '还没有收藏的会诊';
     } else if (historyDays > 0) {
@@ -1870,7 +1874,20 @@ function renderHistoryItems(sessions, summary, append = false) {
       historyQuery
     );
 
-    open.append(title, meta, preview);
+    const tags = Array.isArray(item.tags) ? item.tags : [];
+    if (tags.length) {
+      const tagRow = document.createElement('span');
+      tagRow.className = 'history-tags';
+      for (const tag of tags) {
+        const chip = document.createElement('span');
+        chip.className = 'history-tag';
+        chip.textContent = tag;
+        tagRow.appendChild(chip);
+      }
+      open.append(title, meta, tagRow, preview);
+    } else {
+      open.append(title, meta, preview);
+    }
     open.addEventListener('click', () => openSession(item.id));
 
     const actions = document.createElement('div');
@@ -1925,6 +1942,20 @@ function renderHistoryItems(sessions, summary, append = false) {
         : '复制链接失败';
     });
 
+    const tagsBtn = document.createElement('button');
+    tagsBtn.type = 'button';
+    tagsBtn.className = 'history-action';
+    tagsBtn.textContent = '标签';
+    tagsBtn.title = '编辑这次会诊的标签';
+    tagsBtn.setAttribute(
+      'aria-label',
+      `编辑标签：${item.title || '未命名会诊'}`
+    );
+    tagsBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      editHistoryTags(item);
+    });
+
     const archive = document.createElement('button');
     archive.type = 'button';
     archive.className = 'history-action';
@@ -1947,7 +1978,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
-    actions.append(favorite, rename, exportBtn, copyLink, archive, del);
+    actions.append(favorite, rename, exportBtn, copyLink, tagsBtn, archive, del);
     li.append(open, actions);
     els.historyList.appendChild(li);
   }
@@ -1963,7 +1994,10 @@ function renderHistorySummary(summary) {
   const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
   const llmCalls = Number(summary.llm_calls || 0);
   const scope = archivedOnly ? '已归档' : favoritesOnly ? '收藏' : '';
-  const parts = [`共 ${summary.sessions} 次${scope}会诊`];
+  const title = historyTag
+    ? `标签「${historyTag}」共 ${summary.sessions} 次会诊`
+    : `共 ${summary.sessions} 次${scope}会诊`;
+  const parts = [title];
   if (summary.loaded && summary.loaded < summary.sessions) {
     parts.push(`已加载 ${summary.loaded} 次`);
   }
@@ -2180,6 +2214,7 @@ async function loadHistory(query = '', { append = false } = {}) {
       `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}` +
       (favoritesOnly ? '&favorite=1' : '') +
       (archivedOnly ? '&archived=true' : '') +
+      (historyTag ? `&tag=${encodeURIComponent(historyTag)}` : '') +
       (historyDays > 0 ? `&days=${historyDays}` : '')
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
@@ -2536,6 +2571,7 @@ function openHistory() {
   loadHistory();
   loadRecentFeedback();
   loadQualityInsights();
+  loadHistoryTags();
   loadUsageTrend();
   loadUsageBudget();
   els.historySearch.focus();
@@ -2688,6 +2724,71 @@ async function toggleFavorite(item) {
   }
 }
 
+async function loadHistoryTags() {
+  try {
+    const res = await fetch('/api/tags');
+    if (!res.ok) return;
+    const data = await res.json();
+    const items = data.tags || [];
+    const current = historyTag;
+
+    els.historyTag.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '全部标签';
+    els.historyTag.appendChild(placeholder);
+
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = item.name;
+      option.textContent = `${item.name}（${item.count}）`;
+      els.historyTag.appendChild(option);
+    }
+
+    if (current && items.some((item) => item.name === current)) {
+      els.historyTag.value = current;
+    } else if (current) {
+      historyTag = '';
+      els.historyTag.value = '';
+    }
+  } catch {
+    // 标签加载失败不影响历史列表
+  }
+}
+
+async function editHistoryTags(item) {
+  const current = (item.tags || []).join('、');
+  const input = window.prompt(
+    '标签（用逗号或空格分隔，最多 5 个，每个最长 20 字）',
+    current
+  );
+  if (input === null) return;
+
+  const tags = input.split(/[,，、\s]+/).filter(Boolean);
+
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(item.id)}/tags`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    await loadHistoryTags();
+    await loadHistory(els.historySearch.value.trim());
+    els.historyActionStatus.textContent = data.tags.length
+      ? `已更新标签：${data.tags.join('、')}`
+      : '已清空标签';
+    if (historyOpen) els.historySearch.focus();
+  } catch (err) {
+    window.alert(`更新标签失败：${err.message || err}`);
+  }
+}
+
 async function toggleArchive(item) {
   const archived = !item.archived;
 
@@ -2704,6 +2805,7 @@ async function toggleArchive(item) {
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
 
     await loadHistory(els.historySearch.value.trim());
+    await loadHistoryTags();
     els.historyActionStatus.textContent = archived
       ? '已归档会诊'
       : '已移出归档';
@@ -2739,6 +2841,7 @@ async function deleteHistory(item) {
     await loadHistory(els.historySearch.value.trim());
     await loadRecentFeedback();
     await loadQualityInsights();
+    await loadHistoryTags();
     await loadUsageTrend();
     await loadUsageBudget();
     els.historyActionStatus.textContent = '已删除会诊';
@@ -3398,6 +3501,7 @@ const AUDIT_LABELS = {
   'session.unarchive': '恢复会诊',
   'session.export': '导出备份',
   'session.import': '导入备份',
+  'session.tags': '更新标签',
   'profile.delete': '删除患者档案',
   'metric.delete': '删除健康记录',
 };
@@ -5351,6 +5455,11 @@ els.historyArchiveFilter.addEventListener('click', () => {
 
 els.historyRange.addEventListener('change', () => {
   historyDays = Number(els.historyRange.value) || 0;
+  loadHistory(els.historySearch.value.trim());
+});
+
+els.historyTag.addEventListener('change', () => {
+  historyTag = els.historyTag.value;
   loadHistory(els.historySearch.value.trim());
 });
 

@@ -957,6 +957,61 @@ def test_audit_log(store):
     assert store.log_action("") == 0
 
 
+def test_session_tags_and_filter(store):
+    store.save_exchange(
+        "s1", "高血压复诊", "答复一",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "糖尿病饮食", "答复二",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+
+    assert store.set_tags("s1", ["高血压", "复诊"]) == ["高血压", "复诊"]
+    assert store.set_tags("s2", ["糖尿病"]) == ["糖尿病"]
+    assert store.set_tags("missing", ["x"]) is None
+
+    tags = {item["name"]: item["count"] for item in store.list_tags()}
+    assert tags == {"高血压": 1, "复诊": 1, "糖尿病": 1}
+
+    assert [item["id"] for item in store.list_sessions(tag="高血压")] == ["s1"]
+    assert store.count_sessions(tag="高血压") == 1
+    assert store.usage_totals(tag="高血压")["usage"]["total_tokens"] == 10
+    assert store.feedback_totals(tag="高血压")["total"] == 0
+
+    normalized = store.set_tags(
+        "s1", [" 高血压 ", "高血压", "a" * 30, "复诊", "", "糖尿病", "x", "y"]
+    )
+    assert normalized == ["高血压", "a" * 20, "复诊", "糖尿病", "x"]
+    assert len(normalized) == 5
+    assert len({tag.casefold() for tag in normalized}) == 5
+
+    store.set_archived("s1", True)
+    assert "高血压" not in {item["name"] for item in store.list_tags()}
+    all_tags = {item["name"] for item in store.list_tags(archived=None)}
+    assert "高血压" in all_tags
+    assert [item["id"] for item in store.list_sessions(
+        tag="高血压", archived=True
+    )] == ["s1"]
+
+
+def test_tags_survive_export_and_import(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    source.save_exchange("s1", "问题", "答复")
+    source.set_tags("s1", ["高血压", "复诊"])
+    data = source.export_data()
+    source.close()
+
+    assert data["sessions"][0]["tags"] == ["高血压", "复诊"]
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        target.import_data(data)
+        assert target.list_sessions()[0]["tags"] == ["高血压", "复诊"]
+    finally:
+        target.close()
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
