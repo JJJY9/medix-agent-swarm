@@ -127,6 +127,10 @@ class ProfileRequest(BaseModel):
     )
 
 
+class ProfileRenameRequest(BaseModel):
+    new_name: str = Field(..., min_length=1, max_length=40)
+
+
 class BmiRequest(BaseModel):
     height_cm: float = Field(..., gt=50, lt=260, description="身高（厘米）")
     weight_kg: float = Field(..., gt=10, lt=400, description="体重（千克）")
@@ -1115,6 +1119,23 @@ async def delete_profile(name: str):
         raise HTTPException(status_code=404, detail="档案不存在")
     await record_audit("profile.delete", name)
     return {"ok": True, "name": name}
+
+
+@app.patch("/api/profiles/{name}")
+async def rename_profile(name: str, request: ProfileRenameRequest):
+    """重命名患者档案，并同步健康指标中的档案名。"""
+    from memory import get_session_store
+
+    try:
+        new_name = await asyncio.to_thread(
+            get_session_store().rename_profile, name, request.new_name
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if new_name is None:
+        raise HTTPException(status_code=404, detail="档案不存在")
+    await record_audit("profile.rename", name, new_name)
+    return {"ok": True, "old_name": name, "name": new_name}
 
 
 @app.post("/api/tools/bmi")

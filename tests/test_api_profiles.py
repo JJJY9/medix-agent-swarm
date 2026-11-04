@@ -59,6 +59,54 @@ def test_profiles_api_roundtrip(client):
     assert missing.status_code == 404
 
 
+def test_profiles_api_rename(client):
+    client.post(
+        "/api/profiles",
+        json={"name": "妈妈", "context": {"age": "58"}},
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈",
+            "metric": "weight",
+            "value1": 62.5,
+            "measured_at": "2026-01-02T08:00",
+        },
+    )
+
+    renamed = client.patch(
+        "/api/profiles/%E5%A6%88%E5%A6%88",
+        json={"new_name": "母亲"},
+    )
+    profiles = client.get("/api/profiles")
+    metrics = client.get("/api/metrics", params={"profile": "母亲"})
+    missing = client.patch(
+        "/api/profiles/missing", json={"new_name": "x"}
+    )
+
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "母亲"
+    assert [item["name"] for item in profiles.json()["profiles"]] == ["母亲"]
+    assert [item["profile"] for item in metrics.json()["metrics"]] == ["母亲"]
+    assert missing.status_code == 404
+
+    duplicate = client.patch(
+        "/api/profiles/%E6%AF%8D%E4%BA%B2",
+        json={"new_name": "母亲"},
+    )
+    assert duplicate.status_code == 200
+
+    client.post(
+        "/api/profiles",
+        json={"name": "孩子", "context": {"age": "6"}},
+    )
+    conflict = client.patch(
+        "/api/profiles/%E6%AF%8D%E4%BA%B2",
+        json={"new_name": "孩子"},
+    )
+    assert conflict.status_code == 409
+
+
 def test_profiles_api_validates_payload(client):
     empty_context = client.post(
         "/api/profiles",

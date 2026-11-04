@@ -611,6 +611,25 @@ def test_profile_validation_and_normalization(store):
     assert "早=氨氯地平" in saved["context"]["medications"]
 
 
+def test_rename_profile_updates_metrics(store):
+    store.save_profile("妈妈", {"age": "58"})
+    store.add_metric("妈妈", "weight", 62.5, measured_at="2026-01-02T08:00")
+
+    assert store.rename_profile("妈妈", "母亲") == "母亲"
+    assert [p["name"] for p in store.list_profiles()] == ["母亲"]
+    assert store.list_metrics()[0]["profile"] == "母亲"
+
+    assert store.rename_profile("missing", "x") is None
+    assert store.rename_profile("母亲", "母亲") == "母亲"
+
+    store.save_profile("其他", {"age": "30"})
+    with pytest.raises(ValueError):
+        store.rename_profile("母亲", "其他")
+
+    with pytest.raises(ValueError):
+        store.rename_profile("母亲", "   ")
+
+
 def test_profiles_survive_export_and_import(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange("s1", "问题", "答复")
