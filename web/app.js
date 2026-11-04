@@ -6728,6 +6728,26 @@ function downloadDiagnostics() {
   setDiagStatus('诊断信息已开始下载。');
 }
 
+async function handleLaunchAction() {
+  const params = new URLSearchParams(window.location.search);
+  const action = params.get('action');
+  if (!action) return;
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete('action');
+  window.history.replaceState(
+    {},
+    '',
+    `${url.pathname}${url.search}${url.hash}`
+  );
+
+  if (action === 'new') {
+    await startNewSession();
+  } else if (action === 'reminders') {
+    openReminders();
+  }
+}
+
 async function restoreCurrentSession() {
   if (!sessionId) return;
   const expectedSession = sessionId;
@@ -8091,6 +8111,7 @@ loadSavedContext();
 initProfiles();
 loadDraft();
 restoreCurrentSession();
+handleLaunchAction();
 checkStatus();
 setInterval(checkStatus, 20000);
 els.input.focus();

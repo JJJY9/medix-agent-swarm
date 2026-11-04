@@ -159,3 +159,10 @@ def test_app_js_ships_metric_range_filter(client):
 
     assert "function metricRangeDays" in app_js
     assert "metric-range" in app_js
+
+
+def test_app_js_handles_pwa_launch_actions(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function handleLaunchAction" in app_js
+    assert "action === 'reminders'" in app_js
