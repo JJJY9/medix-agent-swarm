@@ -226,6 +226,7 @@ const els = {
   metricsClose: document.getElementById('metrics-close'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
+  visitSummary: document.getElementById('visit-summary'),
   remindersNotify: document.getElementById('reminders-notify'),
   remindersDrawer: document.getElementById('reminders-drawer'),
   remindersBackdrop: document.getElementById('reminders-backdrop'),
@@ -1622,6 +1623,180 @@ function buildReportHtml(item, messages) {
 <button type="button" class="print-btn" onclick="window.print()">打印 / 保存为 PDF</button>
 </body>
 </html>`;
+}
+
+/** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
+function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions }) {
+  const generatedAt = new Date().toLocaleString();
+  const contextLabels = {
+    age: '年龄',
+    sex: '性别',
+    duration: '病程',
+    history: '既往史',
+    medications: '用药',
+    allergies: '过敏史',
+  };
+  const contextRows = Object.entries(contextLabels)
+    .filter(([key]) => context[key])
+    .map(([key, label]) => (
+      `<tr><th>${label}</th><td>${escapeHtml(context[key])}</td></tr>`
+    ))
+    .join('\n');
+
+  const metricRows = metrics.map((item) => (
+    '<tr>'
+    + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
+    + `<td>${escapeHtml(formatMetricValue(item))}</td>`
+    + `<td>${escapeHtml(formatTime(item.measured_at))}</td>`
+    + `<td>${escapeHtml(item.note || '')}</td>`
+    + '</tr>'
+  )).join('\n');
+
+  const reminderItems = reminders.map((item) => (
+    `<li>${escapeHtml(item.title)} · 到期 ${escapeHtml(formatReminderDue(item.due_at))}`
+    + `${item.note ? `（${escapeHtml(item.note)}）` : ''}`
+    + `${reminderIsDue(item.due_at) ? ' <strong class="overdue">已到期</strong>' : ''}`
+    + '</li>'
+  )).join('\n');
+
+  const sessionItems = sessions.map((item) => (
+    `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`
+    + ` · ${escapeHtml(item.title || '未命名会诊')}</li>`
+  )).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>就诊摘要 · MediX</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px 64px;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+    color: #1f2933; background: #f5f7fa; line-height: 1.7;
+  }
+  .report {
+    max-width: 820px; margin: 0 auto; background: #fff;
+    border-radius: 12px; padding: 40px 44px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  }
+  .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 3px solid #0f766e; padding-bottom: 16px; margin-bottom: 20px; }
+  .brand h1 { margin: 0; font-size: 24px; letter-spacing: 0.5px; }
+  .brand .stamp { color: #64748b; font-size: 12px; text-align: right; }
+  section { margin-top: 22px; }
+  h2 { font-size: 16px; margin: 0 0 8px; color: #0f766e; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  thead th { color: #64748b; font-weight: 600; background: #f8fafc; }
+  tbody th { width: 90px; color: #64748b; font-weight: 600; }
+  ul { margin: 6px 0; padding-left: 22px; font-size: 13px; }
+  li { margin: 3px 0; }
+  .muted { color: #64748b; font-size: 12.5px; }
+  .overdue { color: #d92b2b; }
+  footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e2e8f0; color: #94a3b8; font-size: 12px; }
+  .print-btn {
+    position: fixed; right: 24px; bottom: 24px; padding: 12px 20px;
+    border: 0; border-radius: 999px; background: #0f766e; color: #fff;
+    font-size: 14px; cursor: pointer; box-shadow: 0 8px 20px rgba(15, 118, 110, 0.35);
+  }
+  .print-btn:hover { background: #115e59; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .report { box-shadow: none; border-radius: 0; padding: 0; max-width: none; }
+    .print-btn { display: none; }
+    section { break-inside: avoid-page; }
+  }
+</style>
+</head>
+<body>
+<main class="report">
+  <header class="brand">
+    <h1>就诊摘要</h1>
+    <span class="stamp">生成时间：${escapeHtml(generatedAt)}</span>
+  </header>
+
+  <section>
+    <h2>基本信息</h2>
+    <p class="muted">患者档案：${escapeHtml(profile || '未指定')}</p>
+    ${contextRows
+      ? `<table><tbody>${contextRows}</tbody></table>`
+      : '<p class="muted">还没有填写年龄、既往史、用药或过敏史等补充信息。</p>'}
+  </section>
+
+  <section>
+    <h2>近期健康指标</h2>
+    ${metricRows
+      ? `<table>
+          <thead><tr><th>指标</th><th>数值</th><th>测量时间</th><th>备注</th></tr></thead>
+          <tbody>${metricRows}</tbody>
+        </table>`
+      : '<p class="muted">还没有健康指标记录。</p>'}
+  </section>
+
+  <section>
+    <h2>随访提醒</h2>
+    ${reminderItems
+      ? `<ul>${reminderItems}</ul>`
+      : '<p class="muted">没有待完成的随访提醒。</p>'}
+  </section>
+
+  <section>
+    <h2>近期会诊</h2>
+    ${sessionItems
+      ? `<ul>${sessionItems}</ul>`
+      : '<p class="muted">还没有会诊记录。</p>'}
+  </section>
+
+  <footer>
+    本摘要由 MediX 根据本地记录自动生成，仅供就诊沟通参考，不能替代医生的诊断与治疗。
+  </footer>
+</main>
+<button type="button" class="print-btn" onclick="window.print()">打印 / 保存为 PDF</button>
+</body>
+</html>`;
+}
+
+async function exportVisitSummary() {
+  const profile = els.profileSelect.value || '';
+  const context = readPatientContext();
+  const original = els.visitSummary.textContent;
+  els.visitSummary.disabled = true;
+  els.visitSummary.textContent = '生成中…';
+
+  try {
+    const metricParams = new URLSearchParams({ limit: '30' });
+    if (profile) metricParams.set('profile', profile);
+    const [metricsRes, remindersRes, sessionsRes] = await Promise.all([
+      fetch(`/api/metrics?${metricParams.toString()}`),
+      fetch('/api/reminders'),
+      fetch('/api/sessions?limit=5'),
+    ]);
+    const metrics = metricsRes.ok
+      ? (await metricsRes.json()).metrics || []
+      : [];
+    const reminders = remindersRes.ok
+      ? (await remindersRes.json()).reminders || []
+      : [];
+    const sessions = sessionsRes.ok
+      ? (await sessionsRes.json()).sessions || []
+      : [];
+
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions }),
+      `medix-visit-summary-${stamp}.html`,
+      'text/html;charset=utf-8'
+    );
+    setVitals('idle', '已生成就诊摘要');
+  } catch (err) {
+    window.alert(`生成就诊摘要失败：${err.message || err}`);
+  } finally {
+    els.visitSummary.textContent = original;
+    els.visitSummary.disabled = false;
+  }
 }
 
 function formatUsage(usage, llmCalls = 0) {
@@ -6893,6 +7068,7 @@ els.remindersOpen.addEventListener('click', openReminders);
 els.remindersClose.addEventListener('click', () => closeReminders(true));
 els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
 els.remindersNotify.addEventListener('click', enableReminderNotifications);
+els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
 els.reminderTitle.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
