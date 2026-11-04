@@ -205,7 +205,9 @@ def test_reminders_csv_export(client_and_store):
     lines = text.strip().splitlines()
 
     assert response.status_code == 200
-    assert lines[0] == "到期日,内容,档案,状态,提前天数,备注"
+    assert lines[0] == (
+        "到期日,内容,档案,状态,提前天数,重复天数,重复截止,备注"
+    )
     assert any("妈妈复查" in line for line in lines)
     assert all("孩子复诊" not in line for line in lines)
 
@@ -355,12 +357,12 @@ def test_reminders_csv_import(client_and_store):
     client, _store = client_and_store
 
     lines = [
-        "到期日,内容,档案,状态,提前天数,备注",
-        "2026-11-10,复查血常规,母亲,未完成,3,空腹",
-        "2026-11-10,复查血常规,母亲,未完成,3,空腹",
-        "2026-11-12,接种疫苗,孩子,已完成,0,",
-        "2026-02-30,无效日期,,,,",
-        ",缺少日期,,,,",
+        "到期日,内容,档案,状态,提前天数,重复天数,重复截止,备注",
+        "2026-11-10,复查血常规,母亲,未完成,3,7,2027-01-01,空腹",
+        "2026-11-10,复查血常规,母亲,未完成,3,7,2027-01-01,空腹",
+        "2026-11-12,接种疫苗,孩子,已完成,0,0,,",
+        "2026-02-30,无效日期,,,,,,",
+        ",缺少日期,,,,,,",
     ]
     content = chr(0xFEFF) + "\n".join(lines)
     first = client.post(
@@ -389,6 +391,14 @@ def test_reminders_csv_import(client_and_store):
         for item in listed.json()["reminders"]
     }
     assert advance == {"复查血常规": 3, "接种疫苗": 0}
+    repeat = {
+        item["title"]: (item["repeat_days"], item["repeat_until"])
+        for item in listed.json()["reminders"]
+    }
+    assert repeat == {
+        "复查血常规": (7, "2027-01-01"),
+        "接种疫苗": (0, ""),
+    }
     done = [
         item["title"] for item in listed.json()["reminders"] if item["done"]
     ]
@@ -470,3 +480,58 @@ def test_reminder_update_profile(client_and_store):
     assert [item["id"] for item in listed.json()["reminders"]] == [
         created["id"]
     ]
+
+
+def test_reminders_repeat_completion(client_and_store):
+    from datetime import date
+
+    client, _store = client_and_store
+
+    created = client.post(
+        "/api/reminders",
+        json={"title": "服药", "due_at": "2020-01-01", "repeat_days": 7},
+    ).json()["reminder"]
+    completed = client.post(f"/api/reminders/{created['id']}/complete")
+    next_item = completed.json()["next"]
+    listed = client.get("/api/reminders").json()["reminders"]
+
+    assert completed.status_code == 200
+    assert next_item is not None
+    assert next_item["due_at"] > date.today().isoformat()
+    assert next_item["repeat_days"] == 7
+    assert [item["title"] for item in listed] == ["服药"]
+
+    again = client.post(f"/api/reminders/{created['id']}/complete")
+    assert again.json()["next"] is None
+    assert len(client.get("/api/reminders").json()["reminders"]) == 1
+
+    limited = client.post(
+        "/api/reminders",
+        json={
+            "title": "限时服药",
+            "due_at": "2020-01-01",
+            "repeat_days": 7,
+            "repeat_until": "2020-01-08",
+        },
+    ).json()["reminder"]
+    limited_result = client.post(
+        f"/api/reminders/{limited['id']}/complete"
+    )
+    assert limited_result.json()["next"] is None
+
+
+def test_reminders_ics_repeat_rule(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={
+            "title": "服药",
+            "due_at": "2026-11-10",
+            "repeat_days": 3,
+            "repeat_until": "2026-12-31",
+        },
+    )
+
+    text = client.get("/api/reminders/export.ics").content.decode("utf-8")
+
+    assert "RRULE:FREQ=DAILY;INTERVAL=3;UNTIL=20261231" in text

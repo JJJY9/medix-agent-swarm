@@ -152,6 +152,10 @@ class ReminderRequest(BaseModel):
     advance_days: int = Field(
         0, ge=0, le=30, description="提前提醒天数，0 表示仅到期当天提醒"
     )
+    repeat_days: int = Field(
+        0, ge=0, le=365, description="重复间隔天数，0 表示不重复"
+    )
+    repeat_until: str = Field("", max_length=32, description="重复截止日期")
 
 
 class ReminderUpdateRequest(BaseModel):
@@ -160,6 +164,8 @@ class ReminderUpdateRequest(BaseModel):
     note: Optional[str] = Field(None, max_length=300)
     advance_days: Optional[int] = Field(None, ge=0, le=30)
     profile: Optional[str] = Field(None, max_length=40)
+    repeat_days: Optional[int] = Field(None, ge=0, le=365)
+    repeat_until: Optional[str] = Field(None, max_length=32)
 
 
 class BmiRequest(BaseModel):
@@ -1559,6 +1565,8 @@ async def add_reminder(request: ReminderRequest):
             request.session_id,
             request.profile,
             request.advance_days,
+            request.repeat_days,
+            request.repeat_until,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1582,7 +1590,10 @@ async def export_reminders_csv(
     items = await asyncio.to_thread(
         get_session_store().list_reminders, include_done, profile
     )
-    rows = [["到期日", "内容", "档案", "状态", "提前天数", "备注"]]
+    rows = [[
+        "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
+        "重复截止", "备注",
+    ]]
     for item in items:
         rows.append([
             item.get("due_at", ""),
@@ -1590,6 +1601,8 @@ async def export_reminders_csv(
             csv_safe_cell(item.get("profile", "")),
             "已完成" if item.get("done") else "待完成",
             int(item.get("advance_days") or 0),
+            int(item.get("repeat_days") or 0),
+            item.get("repeat_until", "") or "",
             csv_safe_cell(item.get("note", "")),
         ])
 
@@ -1679,6 +1692,13 @@ async def export_reminders_ics(
             f"DESCRIPTION:{escape_ics(description)}",
             "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
         ])
+        repeat_days = int(item.get("repeat_days") or 0)
+        if repeat_days > 0:
+            rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
+            until = str(item.get("repeat_until") or "")[:10].replace("-", "")
+            if until:
+                rule += f";UNTIL={until}"
+            lines.append(rule)
         advance = int(item.get("advance_days") or 0)
         if advance > 0 and not item.get("done"):
             lines.extend([
@@ -1738,6 +1758,8 @@ async def import_reminders_csv(file: UploadFile = File(...)):
         "患者档案": "profile",
         "状态": "done",
         "提前天数": "advance_days",
+        "重复天数": "repeat_days",
+        "重复截止": "repeat_until",
         "备注": "note",
     }
 
@@ -1764,12 +1786,20 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             )
         except (TypeError, ValueError):
             advance_days = 0
+        try:
+            repeat_days = max(
+                0, min(int(mapped.get("repeat_days") or 0), 365)
+            )
+        except (TypeError, ValueError):
+            repeat_days = 0
         records.append({
             "title": title,
             "due_at": due_at,
             "profile": mapped.get("profile", ""),
             "note": mapped.get("note", ""),
             "advance_days": advance_days,
+            "repeat_days": repeat_days,
+            "repeat_until": mapped.get("repeat_until", ""),
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 
@@ -1804,11 +1834,13 @@ async def complete_reminder(reminder_id: int):
     reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    ok = await asyncio.to_thread(store.complete_reminder, reminder_id)
-    if not ok:
+    result = await asyncio.to_thread(
+        store.complete_reminder_with_repeat, reminder_id
+    )
+    if result is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
     await record_audit("reminder.complete", reminder_audit_target(reminder))
-    return {"ok": True, "id": reminder_id}
+    return {"ok": True, "id": reminder_id, "next": result.get("next")}
 
 
 @app.post("/api/reminders/{reminder_id}/reopen")
@@ -1838,6 +1870,8 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
         and request.note is None
         and request.advance_days is None
         and request.profile is None
+        and request.repeat_days is None
+        and request.repeat_until is None
     ):
         raise HTTPException(status_code=400, detail="没有需要修改的字段")
     try:
@@ -1849,6 +1883,8 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
             request.note,
             request.advance_days,
             request.profile,
+            request.repeat_days,
+            request.repeat_until,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

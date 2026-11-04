@@ -277,6 +277,9 @@ const els = {
   reminderDue: document.getElementById('reminder-due'),
   reminderNote: document.getElementById('reminder-note'),
   reminderAdvance: document.getElementById('reminder-advance'),
+  reminderRepeat: document.getElementById('reminder-repeat'),
+  reminderUntil: document.getElementById('reminder-until'),
+  reminderUntilWrap: document.getElementById('reminder-until-wrap'),
   reminderAdd: document.getElementById('reminder-add'),
   remindersExport: document.getElementById('reminders-export'),
   remindersExportIcs: document.getElementById('reminders-export-ics'),
@@ -5981,6 +5984,9 @@ function resetReminderForm() {
   els.reminderNote.value = '';
   els.reminderDue.value = defaultReminderDue();
   els.reminderAdvance.value = '0';
+  els.reminderRepeat.value = '0';
+  els.reminderUntil.value = '';
+  els.reminderUntilWrap.hidden = true;
   els.reminderAdd.textContent = '添加提醒';
   els.reminderCancel.hidden = true;
 }
@@ -5993,6 +5999,9 @@ function editReminder(item) {
   }
   els.reminderDue.value = String(item.due_at || '').slice(0, 10);
   els.reminderAdvance.value = String(item.advance_days || 0);
+  els.reminderRepeat.value = String(item.repeat_days || 0);
+  els.reminderUntil.value = String(item.repeat_until || '').slice(0, 10);
+  syncReminderRepeatFields();
   els.reminderNote.value = item.note || '';
   els.reminderAdd.textContent = '保存修改';
   els.reminderCancel.hidden = false;
@@ -6104,6 +6113,14 @@ function buildReminderSeries(startDate, interval, unit, count) {
     }
   }
   return dates;
+}
+
+function syncReminderRepeatFields() {
+  const repeat = Math.trunc(Math.max(
+    0, Math.min(365, Number(els.reminderRepeat.value) || 0)
+  ));
+  els.reminderUntilWrap.hidden = repeat <= 0;
+  if (repeat <= 0) els.reminderUntil.value = '';
 }
 
 function localDateAfter(days) {
@@ -6309,6 +6326,12 @@ function renderReminders(items) {
     meta.textContent = `到期：${formatReminderDue(item.due_at)}`
       + (Number(item.advance_days) > 0
         ? ` · 提前 ${Number(item.advance_days)} 天`
+        : '')
+      + (Number(item.repeat_days) > 0
+        ? ` · 每 ${Number(item.repeat_days)} 天重复`
+          + (item.repeat_until
+            ? `（截止 ${formatReminderDue(item.repeat_until)}）`
+            : '')
         : '')
       + (item.profile ? ` · 档案：${item.profile}` : '');
     if (item.done) {
@@ -6655,6 +6678,11 @@ async function addReminder() {
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
     )),
+    repeat_days: Math.trunc(Math.max(
+      0,
+      Math.min(365, Number(els.reminderRepeat.value) || 0)
+    )),
+    repeat_until: els.reminderUntil.value || '',
   };
   if (!editingId) payload.session_id = sessionId || '';
 
@@ -6694,9 +6722,14 @@ async function completeReminder(item) {
     const res = await fetch(`/api/reminders/${item.id}/complete`, {
       method: 'POST',
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     if (editingReminderId === item.id) resetReminderForm();
-    setRemindersStatus('已完成提醒。');
+    setRemindersStatus(
+      data.next && data.next.due_at
+        ? `已完成提醒，下次：${formatReminderDue(data.next.due_at)}。`
+        : '已完成提醒。'
+    );
     await loadReminders();
   } catch (err) {
     window.alert(`完成提醒失败：${err.message || err}`);
@@ -8914,6 +8947,7 @@ els.remindersSearch.addEventListener('input', refreshReminderViews);
 els.reminderProfile.addEventListener('change', () => {
   reminderProfileTouched = true;
 });
+els.reminderRepeat.addEventListener('input', syncReminderRepeatFields);
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
