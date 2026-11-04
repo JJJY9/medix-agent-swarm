@@ -407,6 +407,51 @@ def calculate_child_pugh(
     }
 
 
+def calculate_wells_pe(
+    clinical_signs_dvt: bool = False,
+    pe_more_likely: bool = False,
+    heart_rate_gt_100: bool = False,
+    immobilization_or_surgery: bool = False,
+    previous_dvt_pe: bool = False,
+    hemoptysis: bool = False,
+    malignancy: bool = False,
+) -> Dict[str, object]:
+    """Wells 评分（肺栓塞，PE）概率分层。
+
+    仅用于临床概率评估，不能替代 D-二聚体、CTPA 等检查。
+    """
+    criteria = []
+    score = 0.0
+
+    def add(flag: bool, points: float, label: str) -> None:
+        nonlocal score
+        if flag:
+            score += points
+            criteria.append(f"{label}（{points:g}）")
+
+    add(clinical_signs_dvt, 3, "存在 DVT 临床体征")
+    add(pe_more_likely, 3, "PE 可能性高于其他诊断")
+    add(heart_rate_gt_100, 1.5, "心率 > 100 次/分")
+    add(immobilization_or_surgery, 1.5, "4 周内制动或手术")
+    add(previous_dvt_pe, 1.5, "既往 DVT/PE")
+    add(hemoptysis, 1, "咯血")
+    add(malignancy, 1, "活动性肿瘤")
+
+    if score < 2:
+        risk = "低概率"
+    elif score <= 6:
+        risk = "中概率"
+    else:
+        risk = "高概率"
+
+    return {
+        "score": round(score, 1),
+        "risk": risk,
+        "criteria": criteria,
+        "note": "Wells 评分用于 PE 概率分层，不能替代 D-二聚体、CTPA 等检查；出现呼吸困难加重、晕厥或血氧下降请立即就医。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,

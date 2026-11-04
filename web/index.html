@@ -592,6 +592,7 @@
         <option value="hasbled">HAS-BLED 出血风险</option>
         <option value="gcs">GCS 格拉斯哥昏迷评分</option>
         <option value="wells">Wells DVT 概率评分</option>
+        <option value="wells-pe">Wells PE 概率评分</option>
       </select>
     </label>
 
@@ -777,6 +778,18 @@
           <option value="3">3 分：3–4 级</option>
         </select>
       </label>
+    </form>
+
+    <form class="calc-form" id="calc-form-wells-pe" data-tool="wells-pe" hidden>
+      <p class="calc-hint">用于疑似肺栓塞的临床概率评估。</p>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-dvt"> 存在 DVT 临床体征（+3）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-likely"> PE 可能性高于其他诊断（+3）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-hr"> 心率 &gt;100 次/分（+1.5）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-immobilization"> 4 周内制动或手术（+1.5）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-previous"> 既往 DVT/PE（+1.5）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-hemoptysis"> 咯血（+1）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-wellspe-malignancy"> 活动性肿瘤（+1）</label>
+    </form>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 

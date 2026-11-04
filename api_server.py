@@ -201,6 +201,16 @@ class WellsDvtRequest(BaseModel):
     alternative_diagnosis: bool = False
 
 
+class WellsPeRequest(BaseModel):
+    clinical_signs_dvt: bool = False
+    pe_more_likely: bool = False
+    heart_rate_gt_100: bool = False
+    immobilization_or_surgery: bool = False
+    previous_dvt_pe: bool = False
+    hemoptysis: bool = False
+    malignancy: bool = False
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1262,6 +1272,25 @@ async def tool_wells_dvt(request: WellsDvtRequest):
             collateral_veins=request.collateral_veins,
             previous_dvt=request.previous_dvt,
             alternative_diagnosis=request.alternative_diagnosis,
+        ),
+    }
+
+
+@app.post("/api/tools/wells-pe")
+async def tool_wells_pe(request: WellsPeRequest):
+    """Wells 评分（PE 概率分层）。"""
+    from core.clinical_tools import calculate_wells_pe
+
+    return {
+        "ok": True,
+        **calculate_wells_pe(
+            clinical_signs_dvt=request.clinical_signs_dvt,
+            pe_more_likely=request.pe_more_likely,
+            heart_rate_gt_100=request.heart_rate_gt_100,
+            immobilization_or_surgery=request.immobilization_or_surgery,
+            previous_dvt_pe=request.previous_dvt_pe,
+            hemoptysis=request.hemoptysis,
+            malignancy=request.malignancy,
         ),
     }
 

@@ -12,6 +12,7 @@ from core.clinical_tools import (
     calculate_has_bled,
     calculate_phq9,
     calculate_wells_dvt,
+    calculate_wells_pe,
 )
 
 
@@ -298,3 +299,42 @@ def test_wells_dvt_all_criteria():
     assert result["score"] == 7
     assert result["risk"] == "高概率"
     assert len(result["criteria"]) == 10
+
+
+def test_wells_pe_probability_thresholds():
+    assert calculate_wells_pe()["score"] == 0
+    assert calculate_wells_pe()["risk"] == "低概率"
+
+    dvt = calculate_wells_pe(clinical_signs_dvt=True)
+    assert dvt["score"] == 3
+    assert dvt["risk"] == "中概率"
+
+    six = calculate_wells_pe(
+        clinical_signs_dvt=True, pe_more_likely=True
+    )
+    assert six["score"] == 6
+    assert six["risk"] == "中概率"
+
+    high = calculate_wells_pe(
+        clinical_signs_dvt=True,
+        pe_more_likely=True,
+        heart_rate_gt_100=True,
+    )
+    assert high["score"] == 7.5
+    assert high["risk"] == "高概率"
+
+
+def test_wells_pe_all_criteria():
+    result = calculate_wells_pe(
+        clinical_signs_dvt=True,
+        pe_more_likely=True,
+        heart_rate_gt_100=True,
+        immobilization_or_surgery=True,
+        previous_dvt_pe=True,
+        hemoptysis=True,
+        malignancy=True,
+    )
+
+    assert result["score"] == 12.5
+    assert result["risk"] == "高概率"
+    assert len(result["criteria"]) == 7
