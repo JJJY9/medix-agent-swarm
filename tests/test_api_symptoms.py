@@ -197,3 +197,48 @@ def test_import_backup_accepts_targets_only(client_and_store):
     assert response.status_code == 200
     assert response.json()["targets"] == 1
     assert targets.json()["targets"][0]["value1"] == 70
+
+
+def test_symptoms_api_days_offset_and_csv_injection(client_and_store):
+    from datetime import datetime
+
+    client, _store = client_and_store
+    client.post(
+        "/api/symptoms",
+        json={
+            "symptom": "旧症状",
+            "severity": 3,
+            "recorded_at": "2020-01-01T08:00",
+        },
+    )
+    client.post(
+        "/api/symptoms",
+        json={
+            "symptom": "新症状",
+            "severity": 5,
+            "recorded_at": datetime.now().isoformat(timespec="minutes"),
+            "note": '=HYPERLINK("http://example.com","open")',
+        },
+    )
+    client.post(
+        "/api/symptoms",
+        json={
+            "symptom": "中间症状",
+            "severity": 4,
+            "recorded_at": "2026-01-01T08:00",
+        },
+    )
+
+    recent = client.get("/api/symptoms", params={"days": 30})
+    first_page = client.get("/api/symptoms", params={"limit": 2})
+    second_page = client.get(
+        "/api/symptoms", params={"limit": 2, "offset": 2}
+    )
+    exported = client.get("/api/symptoms/export.csv")
+
+    assert [item["symptom"] for item in recent.json()["symptoms"]] == [
+        "新症状"
+    ]
+    assert len(first_page.json()["symptoms"]) == 2
+    assert len(second_page.json()["symptoms"]) == 1
+    assert "'=HYPERLINK" in exported.content.decode("utf-8-sig")
