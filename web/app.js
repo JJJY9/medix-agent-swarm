@@ -3055,37 +3055,62 @@ function closeKb(restoreFocus = false) {
 }
 
 async function uploadKbDocument(fileOverride = null) {
-  const file = fileOverride || (els.kbFile.files && els.kbFile.files[0]);
-  if (!file) {
+  const files = Array.isArray(fileOverride)
+    ? fileOverride
+    : fileOverride
+    ? [fileOverride]
+    : Array.from(els.kbFile.files || []);
+
+  if (!files.length) {
     setKbStatus('请先选择要上传的文件。', true);
     return;
   }
 
-  if (!/\.(txt|md|markdown|pdf)$/i.test(file.name)) {
-    setKbStatus('仅支持 TXT / Markdown / PDF 文件。', true);
-    return;
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    setKbStatus('文件超过 5 MB 限制。', true);
-    return;
+  for (const file of files) {
+    if (!/\.(txt|md|markdown|pdf)$/i.test(file.name)) {
+      setKbStatus(`「${file.name}」不是支持的格式，仅支持 TXT / Markdown / PDF。`, true);
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setKbStatus(`「${file.name}」超过 5 MB 限制。`, true);
+      return;
+    }
   }
 
   const form = new FormData();
-  form.append('file', file);
+  for (const file of files) form.append('files', file);
 
   setKbBusy(true);
-  setKbStatus('正在上传并重建索引，首次运行可能需要加载模型…');
+  setKbStatus(
+    files.length > 1
+      ? `正在上传 ${files.length} 个文件并重建索引，首次运行可能需要加载模型…`
+      : '正在上传并重建索引，首次运行可能需要加载模型…'
+  );
 
   try {
-    const res = await fetch('/api/knowledge/upload', { method: 'POST', body: form });
+    const res = await fetch('/api/knowledge/upload-batch', {
+      method: 'POST',
+      body: form,
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `上传失败（${res.status}）`);
 
+    const saved = data.documents || [];
+    const failed = data.failed || [];
     const rebuild = data.rebuild || {};
-    setKbStatus(
-      `已上传 ${data.document?.filename || file.name}。` +
-      `重建完成：${rebuild.documents || 0} 个文档、${rebuild.chunks || 0} 个向量块。`
-    );
+    const rebuildText =
+      `重建完成：${rebuild.documents || 0} 个文档、${rebuild.chunks || 0} 个向量块。`;
+
+    if (failed.length) {
+      setKbStatus(
+        `已上传 ${saved.length} 个文件，${failed.length} 个失败：`
+        + `${failed.map((item) => item.filename).join('、')}。${rebuildText}`,
+        true
+      );
+    } else {
+      setKbStatus(`已上传 ${saved.length} 个文件。${rebuildText}`);
+    }
+
     els.kbFile.value = '';
     await loadKnowledge();
     checkStatus();
@@ -4650,11 +4675,12 @@ els.kbBody.addEventListener('dragleave', (event) => {
 els.kbBody.addEventListener('drop', (event) => {
   event.preventDefault();
   els.kbBody.classList.remove('dragging');
-  const file =
+  const files =
     event.dataTransfer &&
-    event.dataTransfer.files &&
-    event.dataTransfer.files[0];
-  if (file) uploadKbDocument(file);
+    event.dataTransfer.files
+      ? Array.from(event.dataTransfer.files)
+      : [];
+  if (files.length) uploadKbDocument(files);
 });
 
 document.addEventListener('drop', (event) => {

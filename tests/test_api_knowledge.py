@@ -30,6 +30,8 @@ class FakeService:
         }
 
     def save_upload(self, filename, content):
+        if filename == "bad.exe":
+            raise ValueError("仅支持 .txt / .md / .markdown / .pdf 文件。")
         return {"filename": "a.md", "size": len(content)}
 
     def delete_document(self, filename):
@@ -92,6 +94,62 @@ def test_knowledge_overview():
 
     assert response.status_code == 200
     assert response.json()["document_count"] == 1
+
+
+def test_knowledge_batch_upload():
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/knowledge/upload-batch",
+        files=[
+            ("files", ("a.md", b"hello", "text/markdown")),
+            ("files", ("b.txt", b"world", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["documents"]) == 2
+    assert data["failed"] == []
+    assert data["rebuild"]["chunks"] == 2
+
+
+def test_knowledge_batch_upload_reports_partial_failure():
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/knowledge/upload-batch",
+        files=[
+            ("files", ("a.md", b"hello", "text/markdown")),
+            ("files", ("bad.exe", b"binary", "application/octet-stream")),
+        ],
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["documents"]) == 1
+    assert data["failed"][0]["filename"] == "bad.exe"
+
+
+def test_knowledge_batch_upload_rejects_all_failed_and_too_many():
+    client = TestClient(api_server.app)
+
+    all_failed = client.post(
+        "/api/knowledge/upload-batch",
+        files=[("files", ("bad.exe", b"x", "application/octet-stream"))],
+    )
+    too_many = client.post(
+        "/api/knowledge/upload-batch",
+        files=[
+            ("files", (f"doc{i}.md", b"x", "text/markdown"))
+            for i in range(11)
+        ],
+    )
+
+    assert all_failed.status_code == 400
+    assert "所有文件均未上传成功" in all_failed.json()["detail"]
+    assert too_many.status_code == 400
+    assert "最多上传 10 个文件" in too_many.json()["detail"]
 
 
 def test_knowledge_search():

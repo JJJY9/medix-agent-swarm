@@ -988,6 +988,70 @@ async def knowledge_upload(
     return {"ok": True, "document": saved, "rebuild": result}
 
 
+@app.post("/api/knowledge/upload-batch")
+async def knowledge_upload_batch(
+    files: List[UploadFile] = File(...),
+    rebuild: bool = True
+):
+    """一次上传多个 TXT / Markdown / PDF 文档，全部保存后只重建一次索引。"""
+    from knowledge.service import get_knowledge_service
+
+    if not files:
+        raise HTTPException(status_code=400, detail="请选择要上传的文件")
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="一次最多上传 10 个文件")
+
+    service = get_knowledge_service()
+    saved: List[Dict[str, Any]] = []
+    failed: List[Dict[str, str]] = []
+
+    for file in files:
+        try:
+            content = await file.read()
+            document = await asyncio.to_thread(
+                service.save_upload, file.filename, content
+            )
+            saved.append(document)
+        except ValueError as e:
+            failed.append({
+                "filename": file.filename or "未命名文件",
+                "error": str(e),
+            })
+        except Exception as e:
+            logger.exception("批量保存知识库文档失败")
+            failed.append({
+                "filename": file.filename or "未命名文件",
+                "error": f"保存失败：{e}",
+            })
+
+    if not saved:
+        detail = "所有文件均未上传成功"
+        if failed:
+            detail += "：" + "；".join(
+                f"{item['filename']}（{item['error']}）" for item in failed
+            )
+        raise HTTPException(status_code=400, detail=detail)
+
+    result = None
+    if rebuild:
+        async with state.lock:
+            try:
+                result = await asyncio.to_thread(service.rebuild)
+            except Exception as e:
+                logger.exception("批量上传后重建知识库失败")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"文档已保存，但重建索引失败：{e}",
+                )
+
+    return {
+        "ok": True,
+        "documents": saved,
+        "failed": failed,
+        "rebuild": result,
+    }
+
+
 @app.get("/api/knowledge/search")
 async def knowledge_search(q: str = "", top_k: int = 5):
     """知识库检索测试：返回来源、相关度与原文片段。"""
