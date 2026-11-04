@@ -2092,6 +2092,16 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   border-radius: var(--radius);
 }
 
+.kb-search-item[role="button"] { cursor: pointer; }
+.kb-search-item[role="button"]:hover {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+.kb-search-item[role="button"]:focus-visible {
+  outline: 2px solid var(--clinic);
+  outline-offset: 1px;
+}
+
 .kb-search-head {
   display: flex;
   align-items: baseline;
