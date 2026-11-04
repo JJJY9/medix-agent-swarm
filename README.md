@@ -104,7 +104,9 @@ Skills (函数) → 直接转换 → OpenAI Format → LLM 调用
 
 ### 测试验证
 
-**所有测试通过（26个测试用例，100% 通过率）**：
+**测试状态**：原始项目的 26 个端到端用例保持通过；本仓库新增的离线测试（`pytest tests`）当前 **420 个用例**全部通过（无需 API Key）。
+
+原始项目验证项：
 
 **核心功能**：
 - ✅ Agent Loop 和 Skill 调用
@@ -550,7 +552,7 @@ medix-agent-swarm/
 ├── core/                              # 核心引擎
 │   ├── __init__.py
 │   ├── agent_loop.py                  # Agent Loop（集成约束验证）
-│   ├── clinical_tools.py              # BMI/eGFR/CHA₂DS₂-VASc/HAS-BLED/CURB-65/PHQ-9/GAD-7
+│   ├── clinical_tools.py              # BMI/eGFR/CHA₂DS₂-VASc/HAS-BLED/CURB-65/GCS/Wells/Child-Pugh/PHQ-9/GAD-7/qSOFA/FIB-4/MELD
 │   ├── context.py                     # 结构化问诊上下文
 │   ├── diagnostics.py                 # 环境自检
 │   ├── llm_client.py                  # LLM 客户端
@@ -610,7 +612,7 @@ medix-agent-swarm/
 │   ├── sw.js                          # Service Worker（只缓存静态外壳）
 │   └── icons/                         # PWA 图标（192/512）
 │
-├── tests/                             # 离线单元测试（无需 API Key）
+├── tests/                             # 离线单元测试（无需 API Key，当前 420 个用例）
 │
 ├── tools/
 │   └── capture_screenshots.js         # 抓运行截图，输出到 docs/screenshots/
