@@ -126,3 +126,23 @@ def test_context_rules_combine_with_keyword_matches():
     assert result["level"] == "emergency"
     assert "抽搐" in result["matches"]
     assert "3 个月以下婴儿发热" in result["matches"]
+
+
+def test_urine_output_and_diabetes_emergencies_are_flagged():
+    assert detect_red_flags("两天没有小便，人都肿了")["matches"] == ["无尿/少尿"]
+    assert detect_red_flags("最近尿量明显减少")["matches"] == ["无尿/少尿"]
+    assert detect_red_flags("医生说可能是糖尿病酮症酸中毒")["matches"] == ["糖尿病急症"]
+    assert "糖尿病急症" in detect_red_flags("出现高渗性昏迷")["matches"]
+
+
+def test_pregnancy_bleeding_is_flagged():
+    result = detect_red_flags("怀孕两个月，突然阴道大量出血")
+
+    assert result["level"] == "emergency"
+    assert "孕产期出血" in result["matches"]
+    assert "大量阴道出血" in result["matches"]
+
+
+def test_new_red_flags_respect_negation():
+    assert detect_red_flags("没有少尿，尿量正常")["level"] == "none"
+    assert detect_red_flags("没有酮症酸中毒")["level"] == "none"
