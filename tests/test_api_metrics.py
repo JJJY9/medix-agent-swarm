@@ -18,6 +18,30 @@ def client(tmp_path, monkeypatch):
         store.close()
 
 
+def test_screener_score_api_and_csv(client):
+    created = client.post(
+        "/api/metrics",
+        json={
+            "metric": "phq9",
+            "value1": 10,
+            "measured_at": "2026-01-05T09:00",
+            "note": "PHQ-9 筛查",
+        },
+    )
+    listed = client.get("/api/metrics", params={"metric": "phq9"})
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "phq9"}
+    )
+
+    assert created.status_code == 200
+    assert created.json()["metric"]["unit"] == "分"
+    assert [item["metric"] for item in listed.json()["metrics"]] == ["phq9"]
+
+    text = exported.content.decode("utf-8-sig")
+    assert "PHQ-9 评分" in text
+    assert "PHQ-9 筛查" in text
+
+
 def test_metrics_api_roundtrip(client):
     created = client.post(
         "/api/metrics",

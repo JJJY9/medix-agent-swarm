@@ -493,6 +493,8 @@
           <option value="weight">体重（kg）</option>
           <option value="glucose">血糖（mmol/L）</option>
           <option value="temperature">体温（°C）</option>
+        <option value="phq9">PHQ-9 评分（分）</option>
+        <option value="gad7">GAD-7 评分（分）</option>
         </select>
       </label>
       <div class="metrics-values" id="metric-bp-values">
@@ -671,6 +673,7 @@
       <p class="calc-result-main" id="calc-result-main"></p>
       <p class="calc-result-detail" id="calc-result-detail"></p>
       <p class="calc-result-note" id="calc-result-note"></p>
+      <button type="button" class="btn-quiet calc-save" id="calc-save" hidden>保存到健康记录</button>
     </section>
 
     <p class="calc-status" id="calc-status" hidden></p>

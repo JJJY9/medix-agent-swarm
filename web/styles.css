@@ -2278,6 +2278,10 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .calc-result[hidden] { display: none; }
 
+.calc-save {
+  margin-top: 10px;
+}
+
 .calc-result[data-level="warning"] {
   border-left-color: var(--triage-1);
   background: #fdf0ef;
