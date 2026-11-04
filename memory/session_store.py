@@ -215,6 +215,53 @@ def _normalize_reminder_advance(value: Any) -> int:
     return days
 
 
+MAX_REMINDER_REPEAT_DAYS = 365
+
+
+def _normalize_reminder_repeat_days(value: Any) -> int:
+    if value is None or value == "":
+        return 0
+    try:
+        days = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("重复间隔应为 0-365 的整数")
+    if days < 0 or days > MAX_REMINDER_REPEAT_DAYS:
+        raise ValueError("重复间隔应为 0-365 的整数")
+    return days
+
+
+def _normalize_reminder_repeat_until(value: Any) -> str:
+    text = str(value or "").strip()[:32]
+    if not text:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("重复截止日期不是有效日期")
+    if parsed.year > 9998:
+        raise ValueError("重复截止日期超出支持范围")
+    return text
+
+
+def _next_repeat_due(due_at: str, days: int) -> str:
+    """在原到期日上按间隔顺延；已错过的周期自动跳到今天之后。"""
+    days = max(1, int(days))
+    try:
+        parsed = datetime.fromisoformat(str(due_at))
+    except ValueError:
+        parsed = datetime.combine(datetime.now().date(), datetime.min.time())
+    target = parsed.date() + timedelta(days=days)
+    today = datetime.now().date()
+    if target <= today:
+        missed = (today - target).days
+        target += timedelta(days=((missed // days) + 1) * days)
+    if "T" in str(due_at):
+        return datetime.combine(
+            target, parsed.time()
+        ).isoformat(timespec="seconds")
+    return target.isoformat()
+
+
 def _tag_like_pattern(tag: str) -> str:
     escaped = (
         str(tag or "")
@@ -422,6 +469,8 @@ class SessionStore:
                     session_id TEXT NOT NULL DEFAULT '',
                     profile    TEXT NOT NULL DEFAULT '',
                     advance_days INTEGER NOT NULL DEFAULT 0,
+                    repeat_days INTEGER NOT NULL DEFAULT 0,
+                    repeat_until TEXT NOT NULL DEFAULT '',
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -477,6 +526,14 @@ class SessionStore:
             if "advance_days" not in reminder_columns:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN advance_days INTEGER NOT NULL DEFAULT 0"
+                )
+            if "repeat_days" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN repeat_days INTEGER NOT NULL DEFAULT 0"
+                )
+            if "repeat_until" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN repeat_until TEXT NOT NULL DEFAULT ''"
                 )
 
     @staticmethod
@@ -1648,6 +1705,18 @@ class SessionStore:
                         )
                     except ValueError:
                         advance_days = 0
+                    try:
+                        repeat_days = _normalize_reminder_repeat_days(
+                            raw.get("repeat_days")
+                        )
+                    except ValueError:
+                        repeat_days = 0
+                    try:
+                        repeat_until = _normalize_reminder_repeat_until(
+                            raw.get("repeat_until")
+                        )
+                    except ValueError:
+                        repeat_until = ""
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -1668,14 +1737,15 @@ class SessionStore:
                             """
                             INSERT INTO reminders(
                                 id, title, note, due_at, session_id, profile,
-                                advance_days, done, created_at, updated_at
+                                advance_days, repeat_days, repeat_until,
+                                done, created_at, updated_at
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 reminder_id, title, note, due_at, session_id,
-                                profile, advance_days, done,
-                                created_at, updated_at,
+                                profile, advance_days, repeat_days,
+                                repeat_until, done, created_at, updated_at,
                             ),
                         )
                         reminders_imported += 1
@@ -1695,13 +1765,15 @@ class SessionStore:
                         """
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
-                            advance_days, done, created_at, updated_at
+                            advance_days, repeat_days, repeat_until,
+                            done, created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             title, note, due_at, session_id, profile,
-                            advance_days, done, created_at, updated_at,
+                            advance_days, repeat_days, repeat_until,
+                            done, created_at, updated_at,
                         ),
                     )
                     reminders_imported += 1
@@ -2447,6 +2519,8 @@ class SessionStore:
         session_id: str = "",
         profile: str = "",
         advance_days: int = 0,
+        repeat_days: int = 0,
+        repeat_until: str = "",
     ) -> Dict[str, Any]:
         """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
@@ -2457,18 +2531,20 @@ class SessionStore:
         session_id = str(session_id or "").strip()[:64]
         profile = _normalize_profile_name(profile)
         advance_days = _normalize_reminder_advance(advance_days)
+        repeat_days = _normalize_reminder_repeat_days(repeat_days)
+        repeat_until = _normalize_reminder_repeat_until(repeat_until)
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
                 INSERT INTO reminders(
                     title, note, due_at, session_id, profile, advance_days,
-                    done, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    repeat_days, repeat_until, done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     title, note, due_at, session_id, profile,
-                    advance_days, now, now,
+                    advance_days, repeat_days, repeat_until, now, now,
                 ),
             )
             reminder_id = int(cursor.lastrowid)
@@ -2480,6 +2556,8 @@ class SessionStore:
             "session_id": session_id,
             "profile": profile,
             "advance_days": advance_days,
+            "repeat_days": repeat_days,
+            "repeat_until": repeat_until,
             "done": False,
             "created_at": now,
             "updated_at": now,
@@ -2490,7 +2568,8 @@ class SessionStore:
         with self._lock:
             row = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days,
+                       repeat_days, repeat_until, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -2516,7 +2595,8 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days,
+                       repeat_days, repeat_until, done,
                        created_at, updated_at
                   FROM reminders{where}
                  ORDER BY done ASC, due_at ASC, id ASC
@@ -2530,13 +2610,84 @@ class SessionStore:
 
     def complete_reminder(self, reminder_id: int) -> bool:
         """把提醒标记为已完成，不存在时返回 False。"""
+        return self.complete_reminder_with_repeat(reminder_id) is not None
+
+    def complete_reminder_with_repeat(
+        self, reminder_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """完成提醒并按重复设置安排下一次；不存在时返回 None。"""
+        try:
+            reminder_id = int(reminder_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
         now = self._now()
         with self._lock, self._conn:
-            cursor = self._conn.execute(
+            row = self._conn.execute(
+                """
+                SELECT id, title, note, due_at, session_id, profile,
+                       advance_days, repeat_days, repeat_until, done,
+                       created_at, updated_at
+                  FROM reminders WHERE id = ?
+                """,
+                (reminder_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            already_done = bool(row["done"])
+            self._conn.execute(
                 "UPDATE reminders SET done = 1, updated_at = ? WHERE id = ?",
-                (now, int(reminder_id)),
+                (now, reminder_id),
             )
-            return cursor.rowcount > 0
+
+            next_item = None
+            repeat_days = int(row["repeat_days"] or 0)
+            if repeat_days > 0 and not already_done:
+                try:
+                    next_due = _next_repeat_due(row["due_at"], repeat_days)
+                except (TypeError, ValueError, OverflowError):
+                    next_due = ""
+                repeat_until = str(row["repeat_until"] or "").strip()
+                in_range = (
+                    next_due
+                    and (
+                        not repeat_until
+                        or next_due[:10] <= repeat_until[:10]
+                    )
+                )
+                if in_range:
+                    cursor = self._conn.execute(
+                        """
+                        INSERT INTO reminders(
+                            title, note, due_at, session_id, profile,
+                            advance_days, repeat_days, repeat_until,
+                            done, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                        """,
+                        (
+                            row["title"], row["note"], next_due,
+                            row["session_id"], row["profile"],
+                            row["advance_days"], repeat_days,
+                            repeat_until, now, now,
+                        ),
+                    )
+                    next_id = int(cursor.lastrowid)
+                    next_item = {
+                        "id": next_id,
+                        "title": row["title"],
+                        "note": row["note"],
+                        "due_at": next_due,
+                        "session_id": row["session_id"],
+                        "profile": row["profile"],
+                        "advance_days": row["advance_days"],
+                        "repeat_days": repeat_days,
+                        "repeat_until": repeat_until,
+                        "done": False,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+
+        return {"completed": True, "next": next_item}
 
     def reopen_reminder(self, reminder_id: int) -> bool:
         """把已完成的提醒恢复为待完成，不存在时返回 False。"""
@@ -2563,8 +2714,10 @@ class SessionStore:
         note: Optional[str] = None,
         advance_days: Optional[int] = None,
         profile: Optional[str] = None,
+        repeat_days: Optional[int] = None,
+        repeat_until: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """修改提醒的标题、日期、备注、提前天数或所属档案。"""
+        """修改提醒的标题、日期、备注、提前天数、档案或重复设置。"""
         updates: List[str] = []
         params: List[Any] = []
 
@@ -2594,6 +2747,16 @@ class SessionStore:
             updates.append("profile = ?")
             params.append(_normalize_profile_name(profile))
 
+        if repeat_days is not None:
+            repeat_days = _normalize_reminder_repeat_days(repeat_days)
+            updates.append("repeat_days = ?")
+            params.append(repeat_days)
+
+        if repeat_until is not None:
+            repeat_until = _normalize_reminder_repeat_until(repeat_until)
+            updates.append("repeat_until = ?")
+            params.append(repeat_until)
+
         if not updates:
             return None
 
@@ -2611,7 +2774,8 @@ class SessionStore:
                 return None
             row = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days,
+                       repeat_days, repeat_until, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
@@ -2655,7 +2819,8 @@ class SessionStore:
             )
             updated = self._conn.execute(
                 """
-                SELECT id, title, note, due_at, session_id, profile, advance_days, done,
+                SELECT id, title, note, due_at, session_id, profile, advance_days,
+                       repeat_days, repeat_until, done,
                        created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,

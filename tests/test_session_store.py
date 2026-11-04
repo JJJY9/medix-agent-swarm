@@ -1160,10 +1160,15 @@ def test_reminders_profile_filter(store):
 
 
 def test_reminders_export_import(store, tmp_path):
-    store.add_reminder("复查", "2026-11-10", profile="母亲", advance_days=2)
+    store.add_reminder(
+        "复查", "2026-11-10", profile="母亲", advance_days=2,
+        repeat_days=7, repeat_until="2027-01-01",
+    )
     data = store.export_data()
     assert data["reminders"][0]["profile"] == "母亲"
     assert data["reminders"][0]["advance_days"] == 2
+    assert data["reminders"][0]["repeat_days"] == 7
+    assert data["reminders"][0]["repeat_until"] == "2027-01-01"
 
     other = SessionStore(str(tmp_path / "copy-reminders.db"))
     try:
@@ -1173,6 +1178,8 @@ def test_reminders_export_import(store, tmp_path):
         assert reminders[0]["title"] == "复查"
         assert reminders[0]["due_at"] == "2026-11-10"
         assert reminders[0]["advance_days"] == 2
+        assert reminders[0]["repeat_days"] == 7
+        assert reminders[0]["repeat_until"] == "2027-01-01"
 
         again = other.import_data(data)
         assert again["reminders"] == 0
@@ -1487,3 +1494,35 @@ def test_reminders_advance_days(store):
             store.add_reminder("复查", "2026-11-10", advance_days=bad)
     with pytest.raises(ValueError):
         store.update_reminder(item["id"], advance_days=31)
+
+
+def test_reminders_repeat_completion(store):
+    from datetime import date
+
+    reminder = store.add_reminder(
+        "服药", "2020-01-01", repeat_days=7
+    )
+    result = store.complete_reminder_with_repeat(reminder["id"])
+    assert result["completed"] is True
+    next_item = result["next"]
+    assert next_item is not None
+    assert next_item["due_at"] > date.today().isoformat()
+    assert next_item["repeat_days"] == 7
+    assert store.complete_reminder(reminder["id"]) is True
+    pendings = store.list_reminders()
+    assert [item["title"] for item in pendings] == ["服药"]
+    # 已经完成过的提醒再次完成不会重复生成
+    again = store.complete_reminder_with_repeat(reminder["id"])
+    assert again["next"] is None
+    assert len(store.list_reminders()) == 1
+
+    limited = store.add_reminder(
+        "限时", "2020-01-01", repeat_days=7, repeat_until="2020-01-08"
+    )
+    limited_result = store.complete_reminder_with_repeat(limited["id"])
+    assert limited_result["next"] is None
+
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "2026-11-10", repeat_days=366)
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "2026-11-10", repeat_until="not-a-date")

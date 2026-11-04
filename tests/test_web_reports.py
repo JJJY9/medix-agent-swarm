@@ -359,3 +359,14 @@ def test_app_js_ships_weekly_adherence_and_a11y(client):
     assert "aria-pressed" in app_js
     assert 'aria-live="polite"' in html
     assert 'id="reminders-empty" role="status"' in html
+
+
+def test_app_js_ships_repeating_reminders(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function syncReminderRepeatFields" in app_js
+    assert "repeat_days" in app_js
+    assert "每次都" not in app_js
+    assert 'id="reminder-repeat"' in html
+    assert 'id="reminder-until"' in html
