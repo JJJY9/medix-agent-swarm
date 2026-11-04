@@ -315,3 +315,40 @@ def test_chat_returns_structured_llm_error():
     detail = response.json()["detail"]
     assert detail["code"] == "llm_balance"
     assert "余额不足" in detail["message"]
+
+
+def test_stream_saves_patient_profile(tmp_path, monkeypatch):
+    import memory
+    from memory.session_store import SessionStore
+
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    api_server.state.coordinator = FakeCoordinator()
+    client = TestClient(api_server.app)
+
+    try:
+        first = client.post(
+            "/api/chat/stream",
+            json={
+                "question": "我头痛怎么办",
+                "session_id": "profile-stream-test",
+                "patient_profile": "母亲",
+            },
+        )
+        second = client.post(
+            "/api/chat/stream",
+            json={
+                "question": "还是头痛",
+                "session_id": "profile-stream-test",
+                "patient_profile": "孩子",
+            },
+        )
+        saved = store.get_session("profile-stream-test")
+    finally:
+        store.close()
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert saved is not None
+    assert saved["profile"] == "母亲"

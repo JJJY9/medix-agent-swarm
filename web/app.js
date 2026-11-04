@@ -54,6 +54,7 @@ const els = {
   historyImportFile: document.getElementById('history-import-file'),
   historyRange: document.getElementById('history-range'),
   historyTag: document.getElementById('history-tag'),
+  historyProfile: document.getElementById('history-profile'),
   historyFeedback: document.getElementById('history-feedback'),
   historyFeedbackCount: document.getElementById('history-feedback-count'),
   historyFeedbackList: document.getElementById('history-feedback-list'),
@@ -324,6 +325,7 @@ let historyLoading = false;
 let favoritesOnly = false;
 let archivedOnly = false;
 let historyTag = '';
+let historyProfile = '';
 let bulkMode = false;
 let selectedSessions = new Set();
 let historyItemMap = new Map();
@@ -1769,10 +1771,12 @@ async function exportVisitSummary() {
   try {
     const metricParams = new URLSearchParams({ limit: '30' });
     if (profile) metricParams.set('profile', profile);
+    const sessionParams = new URLSearchParams({ limit: '5' });
+    if (profile) sessionParams.set('profile', profile);
     const [metricsRes, remindersRes, sessionsRes] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch('/api/reminders'),
-      fetch('/api/sessions?limit=5'),
+      fetch(`/api/sessions?${sessionParams.toString()}`),
     ]);
     const metrics = metricsRes.ok
       ? (await metricsRes.json()).metrics || []
@@ -2450,6 +2454,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     const meta = document.createElement('span');
     meta.className = 'history-meta';
     const metaParts = [
+      item.profile ? `档案：${item.profile}` : '',
       formatTime(item.updated_at),
       `${item.message_count || 0} 条`,
     ];
@@ -3140,6 +3145,7 @@ async function loadHistory(query = '', { append = false } = {}) {
       (favoritesOnly ? '&favorite=1' : '') +
       (archivedOnly ? '&archived=true' : '') +
       (historyTag ? `&tag=${encodeURIComponent(historyTag)}` : '') +
+      (historyProfile ? `&profile=${encodeURIComponent(historyProfile)}` : '') +
       (historyDays > 0 ? `&days=${historyDays}` : '')
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
@@ -6234,6 +6240,7 @@ async function send(question) {
         session_id: sid,
         enable_swarm: !els.ctxSingle.checked,
         context: readPatientContext(),
+        patient_profile: els.profileSelect.value || '',
       }),
       signal: controller.signal,
     });
@@ -6658,6 +6665,23 @@ function refreshProfileOptions(selected = undefined) {
   }
 
   els.profileSelect.value = profiles[current] ? current : '';
+
+  if (els.historyProfile) {
+    const historyCurrent = historyProfile || els.historyProfile.value || '';
+    els.historyProfile.replaceChildren();
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = '全部档案';
+    els.historyProfile.appendChild(all);
+    for (const name of Object.keys(profiles).sort()) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      els.historyProfile.appendChild(option);
+    }
+    els.historyProfile.value = profiles[historyCurrent] ? historyCurrent : '';
+    historyProfile = els.historyProfile.value;
+  }
 }
 
 async function savePatientProfile() {
@@ -7195,6 +7219,11 @@ els.historyRange.addEventListener('change', () => {
 
 els.historyTag.addEventListener('change', () => {
   historyTag = els.historyTag.value;
+  loadHistory(els.historySearch.value.trim());
+});
+
+els.historyProfile.addEventListener('change', () => {
+  historyProfile = els.historyProfile.value;
   loadHistory(els.historySearch.value.trim());
 });
 

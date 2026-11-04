@@ -276,7 +276,8 @@ class SessionStore:
                     updated_at TEXT NOT NULL,
                     favorite   INTEGER NOT NULL DEFAULT 0,
                     archived   INTEGER NOT NULL DEFAULT 0,
-                    tags       TEXT NOT NULL DEFAULT '[]'
+                    tags       TEXT NOT NULL DEFAULT '[]',
+                    profile    TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,6 +361,10 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "profile" not in session_columns:
+                self._conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT ''"
+                )
 
     @staticmethod
     def _now() -> str:
@@ -370,17 +375,28 @@ class SessionStore:
         title = " ".join(question.split())
         return title[:MAX_TITLE_LENGTH] or "未命名会诊"
 
-    def ensure_session(self, session_id: str, title: str = "") -> None:
-        """确保会话存在；已有会话不会被覆盖。"""
+    def ensure_session(
+        self, session_id: str, title: str = "", profile: str = ""
+    ) -> None:
+        """确保会话存在；已有会话不会被覆盖，档案只在为空时补上。"""
         now = self._now()
+        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
         with self._lock, self._conn:
             self._conn.execute(
                 """
-                INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO sessions(id, title, profile, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, title, now, now),
+                (session_id, title, profile, now, now),
             )
+            if profile:
+                self._conn.execute(
+                    """
+                    UPDATE sessions SET profile = ?
+                     WHERE id = ? AND profile = ''
+                    """,
+                    (profile, session_id),
+                )
 
     def save_exchange(
         self,
@@ -456,9 +472,10 @@ class SessionStore:
         favorites_only: bool = False,
         days: int = 0,
         archived: Optional[bool] = None,
-        tag: Optional[str] = None
+        tag: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """按最近更新时间倒序返回会话，支持搜索、分页、收藏、时间范围、归档与标签筛选。
+        """按最近更新时间倒序返回会话，支持搜索、分页、收藏、时间范围、归档、标签与档案筛选。
 
         archived 为 None 时返回全部（备份导出用）；False 只看未归档；True 只看已归档。
         """
@@ -466,7 +483,7 @@ class SessionStore:
         offset = max(0, int(offset or 0))
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
-                   s.archived, s.tags,
+                   s.archived, s.tags, s.profile,
                    (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
                    (SELECT content FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'assistant'
@@ -493,6 +510,9 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        if profile:
+            conditions.append("s.profile = ?")
+            params.append(profile)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -545,7 +565,8 @@ class SessionStore:
         favorites_only: bool = False,
         days: int = 0,
         archived: Optional[bool] = None,
-        tag: Optional[str] = None
+        tag: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
         sql = "SELECT COUNT(*) AS n FROM sessions s"
@@ -569,6 +590,9 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        if profile:
+            conditions.append("s.profile = ?")
+            params.append(profile)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -583,7 +607,7 @@ class SessionStore:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, title, created_at, updated_at FROM sessions WHERE id = ?",
+                "SELECT id, title, profile, created_at, updated_at FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
         return dict(row) if row else None
@@ -682,7 +706,8 @@ class SessionStore:
         favorites_only: bool = False,
         days: int = 0,
         archived: Optional[bool] = None,
-        tag: Optional[str] = None
+        tag: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """汇总所有匹配会话的历史用量（不受分页限制）。
 
@@ -715,6 +740,9 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        if profile:
+            conditions.append("s.profile = ?")
+            params.append(profile)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -741,7 +769,8 @@ class SessionStore:
         favorites_only: bool = False,
         days: int = 0,
         archived: Optional[bool] = None,
-        tag: Optional[str] = None
+        tag: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """汇总会诊答复的用户反馈，支持与历史列表相同的筛选条件。"""
         sql = """
@@ -770,6 +799,9 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        if profile:
+            conditions.append("s.profile = ?")
+            params.append(profile)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("s.updated_at >= ?")
@@ -1255,18 +1287,23 @@ class SessionStore:
                 favorite = 1 if raw.get("favorite") in (1, True, "1") else 0
                 archived = 1 if raw.get("archived") in (1, True, "1") else 0
                 tags = _normalize_tags(raw.get("tags") or [])
+                profile = " ".join(
+                    str(raw.get("profile") or "").split()
+                )[:MAX_PROFILE_NAME_LENGTH]
 
                 self._conn.execute(
                     """
                     INSERT INTO sessions(
-                        id, title, created_at, updated_at, favorite, archived, tags
+                        id, title, created_at, updated_at, favorite, archived, tags,
+                        profile
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id, title, created_at, updated_at,
                         favorite, archived,
                         json.dumps(tags, ensure_ascii=False),
+                        profile,
                     ),
                 )
                 self._conn.executemany(

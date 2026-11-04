@@ -68,6 +68,9 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     context: Optional[Dict[str, Any]] = Field(None, description="额外上下文（年龄、既往史等）")
     enable_swarm: bool = Field(True, description="是否允许群体智能协作")
+    patient_profile: str = Field(
+        "", max_length=40, description="关联的常用患者档案名称"
+    )
 
 
 class SessionResponse(BaseModel):
@@ -639,9 +642,10 @@ async def list_sessions(
     favorite: Optional[bool] = None,
     days: int = 0,
     archived: bool = False,
-    tag: Optional[str] = None
+    tag: Optional[str] = None,
+    profile: Optional[str] = None
 ):
-    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围、归档与标签）。
+    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围、归档、标签与档案）。
 
     archived=false（默认）只返回未归档会话；archived=true 只返回已归档会话。
     summary 汇总所有匹配会话的 Token 用量、模型调用次数与反馈，
@@ -654,6 +658,7 @@ async def list_sessions(
     days = max(0, min(int(days or 0), 365))
     query = q or ""
     favorites_only = bool(favorite)
+    profile = " ".join((profile or "").split())[:40] or None
 
     store = get_session_store()
     sessions, total, totals, feedback = await asyncio.gather(
@@ -666,6 +671,7 @@ async def list_sessions(
             days,
             archived,
             tag,
+            profile,
         ),
         asyncio.to_thread(
             store.count_sessions,
@@ -674,6 +680,7 @@ async def list_sessions(
             days,
             archived,
             tag,
+            profile,
         ),
         asyncio.to_thread(
             store.usage_totals,
@@ -682,6 +689,7 @@ async def list_sessions(
             days,
             archived,
             tag,
+            profile,
         ),
         asyncio.to_thread(
             store.feedback_totals,
@@ -690,6 +698,7 @@ async def list_sessions(
             days,
             archived,
             tag,
+            profile,
         ),
     )
     stats = await asyncio.to_thread(
@@ -2097,6 +2106,14 @@ async def chat(request: ChatRequest):
     if not (payload["answer"] or "").strip():
         raise HTTPException(status_code=502, detail=_empty_answer_reason())
 
+    profile = " ".join(request.patient_profile.split())[:40]
+    if profile:
+        from memory import get_session_store
+
+        await asyncio.to_thread(
+            get_session_store().ensure_session, session_id, "", profile
+        )
+
     return payload
 
 
@@ -2242,6 +2259,14 @@ async def chat_stream(request: ChatRequest):
         if not (payload["answer"] or "").strip():
             yield sse({"type": "error", "message": _empty_answer_reason()})
             return
+
+        profile = " ".join(request.patient_profile.split())[:40]
+        if profile:
+            from memory import get_session_store
+
+            await asyncio.to_thread(
+                get_session_store().ensure_session, session_id, "", profile
+            )
 
         yield sse({"type": "result", **payload})
 
