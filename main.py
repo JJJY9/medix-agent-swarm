@@ -18,6 +18,7 @@ from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
 
+from core.security import install_log_redaction, redact_secrets
 from swarm import process_with_swarm
 from core.llm_client import LLMError
 
@@ -37,6 +38,7 @@ def setup_logger(verbose: bool = False):
             format="<level>{level: <8}</level> | <level>{message}</level>",
             level="INFO"
         )
+    install_log_redaction()
 
 
 async def interactive_mode():
@@ -149,7 +151,10 @@ async def interactive_mode():
             print(f"\n❌ {e.user_message}\n")
         except Exception as e:
             logger.error(f"处理请求时出错: {e}")
-            print(f"\n❌ 抱歉，处理您的问题时出现错误：{e}\n")
+            print(
+                "\n❌ 抱歉，处理您的问题时出现错误："
+                f"{redact_secrets(str(e))}\n"
+            )
 
 
 def main():

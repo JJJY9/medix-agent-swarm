@@ -21,10 +21,12 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -33,6 +35,9 @@ sys.path.insert(0, str(project_root))
 from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
+
+from core.security import install_log_redaction, redact_secrets
+install_log_redaction()
 
 from core.auth import get_access_token, is_authorized
 from core.triage import detect_red_flags
@@ -110,7 +115,7 @@ class AppState:
             logger.info("知识库预热完成")
         except Exception as e:
             self.kb_status = "failed"
-            self.kb_error = str(e)
+            self.kb_error = redact_secrets(str(e))
             logger.error(f"知识库预热失败: {e}")
 
     @staticmethod
@@ -140,7 +145,7 @@ async def lifespan(_: FastAPI):
     try:
         state.get_coordinator()
     except Exception as e:
-        state.startup_error = str(e)
+        state.startup_error = redact_secrets(str(e))
         logger.error(f"初始化失败: {e}")
         yield
         return
@@ -183,6 +188,22 @@ def add_security_headers(
     if include_csp:
         response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
     return response
+
+
+@app.exception_handler(StarletteHTTPException)
+async def redacting_http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> Response:
+    """统一对 HTTP 错误详情脱敏，避免任何端点把密钥带回前端。"""
+    detail = exc.detail
+    if isinstance(detail, str):
+        exc.detail = redact_secrets(detail)
+    elif isinstance(detail, dict):
+        exc.detail = {
+            key: redact_secrets(value) if isinstance(value, str) else value
+            for key, value in detail.items()
+        }
+    return await http_exception_handler(request, exc)
 
 
 @app.middleware("http")
@@ -277,7 +298,7 @@ async def diagnose_llm():
     except LLMError as e:
         return {"ok": False, "code": e.code, "error": e.user_message}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": redact_secrets(str(e))}
 
     return {
         "ok": True,
@@ -807,7 +828,10 @@ async def chat(request: ChatRequest):
             )
         except Exception as e:
             logger.exception("处理请求失败")
-            raise HTTPException(status_code=500, detail=f"处理失败：{e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"处理失败：{redact_secrets(str(e))}",
+            )
 
     payload = _serialize_result(result, AGENT_LABELS)
     if not (payload["answer"] or "").strip():
@@ -843,7 +867,7 @@ async def chat_stream(request: ChatRequest):
             try:
                 coordinator = state.get_coordinator()
             except Exception as e:
-                yield sse({"type": "error", "message": f"初始化失败：{e}"})
+                yield sse({"type": "error", "message": f"初始化失败：{redact_secrets(str(e))}"})
                 return
 
             # 记下请求开始前 worker 上挂着的 SharedContext。
@@ -939,7 +963,10 @@ async def chat_stream(request: ChatRequest):
                     return
                 except Exception as e:
                     logger.exception("流式处理失败")
-                    yield sse({"type": "error", "message": str(e)})
+                    yield sse({
+                        "type": "error",
+                        "message": redact_secrets(str(e)),
+                    })
                     return
             finally:
                 # 客户端断开时生成器被关闭，别让任务继续空转

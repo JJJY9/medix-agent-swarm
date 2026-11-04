@@ -1,5 +1,19 @@
-# 环境变量
+# 环境变量：所有 .env 变体都不入库，只保留示例文件
 .env
+.env.*
+!.env.example
+
+# 证书与私钥
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# 其他常见密钥文件
+secrets.json
+credentials.json
 
 # Python
 __pycache__/
