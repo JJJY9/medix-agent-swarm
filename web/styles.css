@@ -2422,6 +2422,68 @@ html[data-theme="dark"] .metric-delete:hover {
 }
 .metrics-empty[hidden] { display: none; }
 
+.metric-trend {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+.metric-trend[hidden] { display: none; }
+
+.metric-trend-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.metric-trend-head strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+#metric-trend-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.trend-grid {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+}
+
+.trend-axis {
+  fill: var(--ink-faint);
+  font-size: 9px;
+  font-family: var(--mono);
+}
+
+.trend-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.trend-line.systolic,
+.trend-line.single { stroke: var(--clinic); }
+.trend-line.diastolic { stroke: var(--triage-4); }
+
+.trend-dot {
+  fill: var(--paper);
+  stroke: var(--clinic);
+  stroke-width: 1.5;
+}
+.trend-dot.diastolic { stroke: var(--triage-4); }
+
+.metric-trend-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
 .diag-status {
   margin: 10px 0 0;
   padding: 8px 10px;
