@@ -518,3 +518,10 @@ def test_app_js_screener_saves_active_profile(client):
 
     assert match is not None
     assert "profile: els.profileSelect.value" in match.group(0)
+
+
+def test_metric_select_is_grouped(client):
+    html = client.get("/").text
+
+    assert '<optgroup label="生命体征">' in html
+    assert '<optgroup label="量表评分">' in html
