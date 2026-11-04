@@ -204,6 +204,40 @@ def _normalize_profile_name(value: Any) -> str:
     return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
 
 
+MAX_MEDICATION_NAME_LENGTH = 120
+MAX_MEDICATION_TEXT_LENGTH = 60
+
+
+def _normalize_medication(
+    profile: str,
+    name: str,
+    dose: str,
+    frequency: str,
+    note: str,
+    active: Any = True,
+) -> Optional[Dict[str, Any]]:
+    """校验一条用药记录；无效时返回 None。"""
+    name = " ".join(str(name or "").split())[:MAX_MEDICATION_NAME_LENGTH]
+    if not name:
+        return None
+    if isinstance(active, bool):
+        active_flag = 1 if active else 0
+    else:
+        active_flag = 1 if str(active).strip().lower() in {
+            "1", "true", "on", "yes"
+        } else 0
+    return {
+        "profile": _normalize_profile_name(profile),
+        "name": name,
+        "dose": " ".join(str(dose or "").split())[:MAX_MEDICATION_TEXT_LENGTH],
+        "frequency": " ".join(
+            str(frequency or "").split()
+        )[:MAX_MEDICATION_TEXT_LENGTH],
+        "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
+        "active": bool(active_flag),
+    }
+
+
 MAX_SYMPTOM_LENGTH = 120
 
 
@@ -543,6 +577,19 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_symptoms_profile_time
                     ON symptoms(profile, recorded_at DESC);
+                CREATE TABLE IF NOT EXISTS medications (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile    TEXT NOT NULL DEFAULT '',
+                    name       TEXT NOT NULL,
+                    dose       TEXT NOT NULL DEFAULT '',
+                    frequency  TEXT NOT NULL DEFAULT '',
+                    note       TEXT NOT NULL DEFAULT '',
+                    active     INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_medications_profile
+                    ON medications(profile, active, name);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -698,6 +745,7 @@ class SessionStore:
                 ("metric_targets", "profile"),
                 ("health_metrics", "profile"),
                 ("symptoms", "profile"),
+                ("medications", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -1493,6 +1541,7 @@ class SessionStore:
             "metric_targets": self.list_metric_targets(),
             "reminders": self.list_reminders(include_done=True),
             "symptoms": self.list_symptoms(limit=100000),
+            "medications": self.list_medications(limit=100000),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
@@ -1506,12 +1555,14 @@ class SessionStore:
         raw_targets = data.get("metric_targets")
         raw_reminders = data.get("reminders")
         raw_symptoms = data.get("symptoms")
+        raw_medications = data.get("medications")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
             or isinstance(raw_metrics, list)
             or isinstance(raw_targets, list)
             or isinstance(raw_reminders, list)
             or isinstance(raw_symptoms, list)
+            or isinstance(raw_medications, list)
         ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
@@ -1523,6 +1574,7 @@ class SessionStore:
             and not isinstance(raw_targets, list)
             and not isinstance(raw_reminders, list)
             and not isinstance(raw_symptoms, list)
+            and not isinstance(raw_medications, list)
         ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
@@ -1823,6 +1875,51 @@ class SessionStore:
                     )
                     symptoms_imported += 1
 
+            medications_imported = 0
+            if isinstance(raw_medications, list):
+                for raw in raw_medications[:10000]:
+                    if not isinstance(raw, dict):
+                        continue
+                    normalized = _normalize_medication(
+                        raw.get("profile", ""),
+                        raw.get("name", ""),
+                        raw.get("dose", ""),
+                        raw.get("frequency", ""),
+                        raw.get("note", ""),
+                        raw.get("active", True),
+                    )
+                    if normalized is None:
+                        continue
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM medications
+                         WHERE profile = ? AND name = ? AND dose = ?
+                           AND frequency = ? AND note = ? AND active = ?
+                        """,
+                        (
+                            normalized["profile"], normalized["name"],
+                            normalized["dose"], normalized["frequency"],
+                            normalized["note"], normalized["active"],
+                        ),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO medications(
+                            profile, name, dose, frequency, note, active,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"], normalized["name"],
+                            normalized["dose"], normalized["frequency"],
+                            normalized["note"], normalized["active"],
+                            now, now,
+                        ),
+                    )
+                    medications_imported += 1
+
             reminders_imported = 0
             if isinstance(raw_reminders, list):
                 for raw in raw_reminders[:2000]:
@@ -1936,6 +2033,7 @@ class SessionStore:
             "targets": targets_imported,
             "reminders": reminders_imported,
             "symptoms": symptoms_imported,
+            "medications": medications_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -2170,6 +2268,7 @@ class SessionStore:
                 "metric_targets",
                 "reminders",
                 "symptoms",
+                "medications",
                 "sessions",
             ):
                 self._conn.execute(
@@ -2609,6 +2708,162 @@ class SessionStore:
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM symptoms WHERE id = ?", (symptom_id,)
+            )
+            return cursor.rowcount > 0
+
+    def add_medication(
+        self,
+        profile: str,
+        name: str,
+        dose: str = "",
+        frequency: str = "",
+        note: str = "",
+        active: Any = True,
+    ) -> Optional[Dict[str, Any]]:
+        """新增一条用药记录；无效时返回 None。"""
+        normalized = _normalize_medication(
+            profile, name, dose, frequency, note, active
+        )
+        if normalized is None:
+            return None
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO medications(
+                    profile, name, dose, frequency, note, active,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"],
+                    normalized["name"],
+                    normalized["dose"],
+                    normalized["frequency"],
+                    normalized["note"],
+                    normalized["active"],
+                    now,
+                    now,
+                ),
+            )
+            medication_id = int(cursor.lastrowid)
+        return {"id": medication_id, **normalized, "created_at": now,
+                "updated_at": now}
+
+    def list_medications(
+        self,
+        profile: Optional[str] = None,
+        active_only: bool = False,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """按名称返回用药清单，可按档案与在用状态筛选。"""
+        limit = max(1, min(int(limit or 1000), 100000))
+        try:
+            offset = max(0, int(offset or 0))
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        if active_only:
+            conditions.append("active = 1")
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, name, dose, frequency, note, active,
+                       created_at, updated_at
+                  FROM medications{where}
+                 ORDER BY active DESC, name ASC, id ASC
+                 LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            ).fetchall()
+        return [{**dict(row), "active": bool(row["active"])} for row in rows]
+
+    def get_medication(self, medication_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            medication_id = int(medication_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, name, dose, frequency, note, active,
+                       created_at, updated_at
+                  FROM medications WHERE id = ?
+                """,
+                (medication_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "active": bool(row["active"])}
+
+    def update_medication(
+        self,
+        medication_id: int,
+        profile: str,
+        name: str,
+        dose: str = "",
+        frequency: str = "",
+        note: str = "",
+        active: Any = True,
+    ) -> Optional[Dict[str, Any]]:
+        """更新一条用药记录；不存在或无效时返回 None。"""
+        try:
+            medication_id = int(medication_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        normalized = _normalize_medication(
+            profile, name, dose, frequency, note, active
+        )
+        if normalized is None:
+            return None
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE medications
+                   SET profile = ?, name = ?, dose = ?, frequency = ?,
+                       note = ?, active = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"],
+                    normalized["name"],
+                    normalized["dose"],
+                    normalized["frequency"],
+                    normalized["note"],
+                    normalized["active"],
+                    now,
+                    medication_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = self._conn.execute(
+                """
+                SELECT id, profile, name, dose, frequency, note, active,
+                       created_at, updated_at
+                  FROM medications WHERE id = ?
+                """,
+                (medication_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "active": bool(row["active"])}
+
+    def delete_medication(self, medication_id: int) -> bool:
+        try:
+            medication_id = int(medication_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM medications WHERE id = ?", (medication_id,)
             )
             return cursor.rowcount > 0
 

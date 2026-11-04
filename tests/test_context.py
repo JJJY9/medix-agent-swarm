@@ -121,3 +121,8 @@ def test_format_context_labels_recent_metrics_and_reminders():
 def test_format_context_labels_recent_symptoms():
     text = format_context({"recent_symptoms": "头晕 6/10（11-04）"})
     assert "近期症状：头晕 6/10（11-04）" in text
+
+
+def test_format_context_labels_active_medications():
+    text = format_context({"active_medications": "氨氯地平 5 mg 每日一次"})
+    assert "用药清单：氨氯地平 5 mg 每日一次" in text

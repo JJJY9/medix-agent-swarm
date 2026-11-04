@@ -476,6 +476,7 @@ def test_import_data_roundtrip(tmp_path):
             "targets": 0,
             "reminders": 0,
             "symptoms": 0,
+            "medications": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -1665,3 +1666,37 @@ def test_legacy_times_are_migrated(tmp_path):
         assert store.list_symptoms()[0]["recorded_at"] == "2026-11-05T23:00"
     finally:
         store.close()
+
+
+def test_medications_crud_and_export_import(store, tmp_path):
+    item = store.add_medication(
+        "母亲", "氨氯地平", "5 mg", "每日一次", "早餐后", True
+    )
+    assert item["active"] is True
+    assert [row["name"] for row in store.list_medications(profile="母亲")] == [
+        "氨氯地平"
+    ]
+
+    updated = store.update_medication(
+        item["id"], "母亲", "氨氯地平", "5 mg", "每日一次", "", False
+    )
+    assert updated["active"] is False
+    assert store.list_medications(active_only=True) == []
+    assert len(store.list_medications(active_only=False)) == 1
+
+    data = store.export_data()
+    assert len(data["medications"]) == 1
+
+    other = SessionStore(str(tmp_path / "medications-copy.db"))
+    try:
+        result = other.import_data(data)
+        assert result["medications"] == 1
+        imported = other.list_medications()
+        assert imported[0]["name"] == "氨氯地平"
+        assert imported[0]["active"] is False
+    finally:
+        other.close()
+
+    assert store.delete_medication(item["id"]) is True
+    assert store.delete_medication(item["id"]) is False
+    assert store.add_medication("", "  ") is None

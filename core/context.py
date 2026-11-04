@@ -14,6 +14,7 @@ CONTEXT_LABELS = {
     "recent_metrics": "近期健康指标",
     "pending_reminders": "待办随访提醒",
     "recent_symptoms": "近期症状",
+    "active_medications": "用药清单",
 }
 
 #: 由记忆系统注入的内部字段，不写入患者的公开上下文

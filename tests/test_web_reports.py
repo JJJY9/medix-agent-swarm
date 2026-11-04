@@ -541,7 +541,7 @@ def test_app_js_metric_save_guards_and_latest(client):
 def test_context_panel_mentions_health_context(client):
     html = client.get("/").text
 
-    assert "会诊时会自动参考当前档案的最近健康指标与待办随访" in html
+    assert "会诊时会自动参考当前档案的最近健康指标、症状、用药清单与待办随访" in html
 
 
 def test_app_js_ships_symptom_diary(client):
@@ -648,3 +648,28 @@ def test_app_js_ships_dark_symptom_severity(client):
 
     assert 'html[data-theme="dark"] .symptom-severity.is-low' in css
     assert 'html[data-theme="dark"] .symptom-severity.is-high' in css
+
+
+def test_app_js_ships_medications(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function saveMedication" in app_js
+    assert "async function loadMedicationsIntoInteractions" in app_js
+    assert 'id="medication-name"' in html
+    assert 'id="calc-interactions-load"' in html
+
+
+def test_app_js_ships_medication_context_and_report(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "active_medications" in app_js
+    assert "const medicationItems = (medications || [])" in app_js
+    assert "medications: data.medications" in app_js
+
+
+def test_app_js_supports_medication_deeplink(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "params.get('medications') === '1'" in app_js
+    assert "medicationSection.open" in app_js
