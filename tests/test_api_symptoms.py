@@ -138,3 +138,41 @@ def test_symptoms_csv_export(client_and_store):
     assert text.splitlines()[0] == "记录时间,患者档案,症状,程度,备注"
     assert "头晕" in text
     assert "咳嗽" not in text
+
+
+def test_symptoms_csv_import(client_and_store):
+    client, _store = client_and_store
+
+    lines = [
+        "记录时间,患者档案,症状,程度,备注",
+        "2026-11-04T08:00,母亲,头晕,6,起床后",
+        "2026-11-04T08:00,母亲,头晕,6,起床后",
+        "2026-11-03T20:00,孩子,咳嗽,3,",
+        "2026-11-03T20:00,,咳嗽,11,",
+        "2026-11-04T08:00,母亲,,6,",
+    ]
+    content = chr(0xFEFF) + "\n".join(lines)
+    first = client.post(
+        "/api/symptoms/import",
+        files={"file": ("symptoms.csv", content.encode("utf-8"), "text/csv")},
+    )
+    listed = client.get("/api/symptoms")
+    again = client.post(
+        "/api/symptoms/import",
+        files={"file": ("symptoms.csv", content.encode("utf-8"), "text/csv")},
+    )
+    empty = client.post(
+        "/api/symptoms/import",
+        files={"file": ("empty.csv", b"", "text/csv")},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["imported"] == 2
+    assert first.json()["skipped"] == 1
+    assert first.json()["invalid"] == 2
+    titles = sorted(item["symptom"] for item in listed.json()["symptoms"])
+    assert titles == ["咳嗽", "头晕"]
+    assert again.status_code == 200
+    assert again.json()["imported"] == 0
+    assert again.json()["skipped"] == 3
+    assert empty.status_code == 400

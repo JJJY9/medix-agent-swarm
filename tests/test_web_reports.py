@@ -616,3 +616,12 @@ def test_app_js_backup_import_includes_all_data(client):
     assert "reminders: data.reminders" in app_js
     assert "metric_targets: data.metric_targets" in app_js
     assert "editingSymptomProfile" in app_js
+
+
+def test_app_js_ships_symptom_import(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function importSymptomsCsv" in app_js
+    assert "/api/symptoms/import" in app_js
+    assert 'id="symptom-import"' in html
