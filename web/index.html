@@ -493,8 +493,8 @@
           <option value="weight">体重（kg）</option>
           <option value="glucose">血糖（mmol/L）</option>
           <option value="temperature">体温（°C）</option>
-        <option value="phq9">PHQ-9 评分（分）</option>
-        <option value="gad7">GAD-7 评分（分）</option>
+          <option value="phq9">PHQ-9 评分（分）</option>
+          <option value="gad7">GAD-7 评分（分）</option>
         </select>
       </label>
       <div class="metrics-values" id="metric-bp-values">
@@ -520,6 +520,11 @@
         <button type="button" class="btn-quiet" id="metric-export">导出 CSV</button>
       </div>
     </div>
+
+    <section class="metric-overview" id="metric-overview" hidden aria-label="最近健康指标">
+      <h3>最近指标</h3>
+      <div class="metric-overview-grid" id="metric-overview-grid"></div>
+    </section>
 
     <section class="metric-trend" id="metric-trend" hidden aria-label="健康指标趋势">
       <div class="metric-trend-head">
