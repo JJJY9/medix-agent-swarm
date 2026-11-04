@@ -682,3 +682,14 @@ def test_app_js_medication_interaction_clears_empty(client):
     assert "els.calcInteractionsDrugs.value = ''" in app_js
     assert "els.calcResult.hidden = true" in app_js
     assert 'html[data-theme="dark"] .medication-active-badge.is-inactive' in css
+
+
+def test_app_js_ships_medication_csv_and_toggle(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function exportMedicationsCsv" in app_js
+    assert "async function importMedicationsCsv" in app_js
+    assert "async function toggleMedication" in app_js
+    assert 'id="medication-export"' in html
+    assert 'id="medication-import"' in html

@@ -320,6 +320,8 @@ npm install -D playwright
 | POST | `/api/medications` | 新增药物（名称、剂量、频次、备注、在用状态） |
 | PATCH | `/api/medications/{id}` | 更新药物记录 |
 | DELETE | `/api/medications/{id}` | 删除药物记录 |
+| GET | `/api/medications/export.csv` | 导出用药清单 CSV（带 BOM，可按 `profile`/`active_only` 筛选） |
+| POST | `/api/medications/import` | 从导出的 CSV 格式导入用药，重复记录自动跳过 |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |
 | DELETE | `/api/metrics/{id}` | 删除健康指标记录 |
 | GET | `/api/metrics/export.csv` | 导出当前患者档案/指标类型的健康记录 CSV（带 BOM） |

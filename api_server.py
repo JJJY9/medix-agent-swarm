@@ -1267,6 +1267,132 @@ async def list_medications(
     return {"medications": items}
 
 
+@app.get("/api/medications/export.csv")
+async def export_medications_csv(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+):
+    """导出用药清单 CSV（带 BOM），可按档案与在用状态筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_medications,
+        profile, active_only, 100000,
+    )
+    rows = [["药物名称", "剂量", "频次", "患者档案", "状态", "备注"]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(item.get("dose", "")),
+            csv_safe_cell(item.get("frequency", "")),
+            csv_safe_cell(item.get("profile", "")),
+            "在用" if item.get("active") else "停用",
+            csv_safe_cell(item.get("note", "")),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "\ufeff" + buffer.getvalue()
+    filename = f"medix-medications-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/medications/import")
+async def import_medications_csv(file: UploadFile = File(...)):
+    """从导出的 CSV 格式导入用药清单，重复记录自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+
+    field_alias = {
+        "药物名称": "name",
+        "名称": "name",
+        "药名": "name",
+        "剂量": "dose",
+        "频次": "frequency",
+        "频率": "frequency",
+        "患者档案": "profile",
+        "档案": "profile",
+        "状态": "active",
+        "备注": "note",
+    }
+
+    records = []
+    invalid = 0
+    for row in reader:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            name = key.strip()
+            mapped[field_alias.get(name, name)] = (value or "").strip()
+
+        name = mapped.get("name", "")
+        if not name:
+            invalid += 1
+            continue
+        active = mapped.get("active", "")
+        records.append({
+            "profile": mapped.get("profile", ""),
+            "name": name,
+            "dose": mapped.get("dose", ""),
+            "frequency": mapped.get("frequency", ""),
+            "note": mapped.get("note", ""),
+            "active": active not in ("停用", "0", "false", "False", "否"),
+        })
+
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的用药记录（无效 {invalid} 行）",
+        )
+
+    result = await asyncio.to_thread(
+        get_session_store().import_data, {"medications": records}
+    )
+    imported = int(result.get("medications", 0))
+    await record_audit(
+        "medication.import",
+        detail=f"imported={imported} invalid={invalid}",
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
 @app.post("/api/medications")
 async def add_medication(request: MedicationRequest):
     """新增一条用药记录。"""
