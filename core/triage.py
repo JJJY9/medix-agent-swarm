@@ -57,10 +57,24 @@ RED_FLAG_PHRASES = (
     ("药物过量", "中毒/服药过量"),
     ("自杀", "自伤风险"),
     ("自伤", "自伤风险"),
+    ("无尿", "无尿/少尿"),
+    ("没有小便", "无尿/少尿"),
+    ("尿量明显减少", "无尿/少尿"),
+    ("少尿", "无尿/少尿"),
+    ("糖尿病酮症", "糖尿病急症"),
+    ("酮症酸中毒", "糖尿病急症"),
+    ("高渗性昏迷", "糖尿病急症"),
+    ("产后出血", "孕产期出血"),
+    ("孕期出血", "孕产期出血"),
+    ("怀孕出血", "孕产期出血"),
+    ("阴道大量出血", "大量阴道出血"),
 )
 
 #: 短语前 4 个字符内出现这些词时视为否定描述（"没有胸痛""无呼吸困难"）
 NEGATIONS = ("没有", "无", "不", "未", "否认")
+
+#: 出现这些词时，同一句里的「出血」按孕产期出血处理
+PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
 
 #: 分句标点：否定判断只在同一分句内进行，避免上一句的「不」误伤下一句
 CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
@@ -72,6 +86,17 @@ def _clause_prefix(text: str, start: int, lookback: int = 6) -> str:
     while boundary > 0 and text[boundary - 1] not in CLAUSE_DELIMITERS:
         boundary -= 1
     return text[max(boundary, start - lookback):start]
+
+
+def _positive_mention(text: str, phrase: str) -> bool:
+    """短语是否在同一分句内以非否定形式出现。"""
+    start = text.find(phrase)
+    while start != -1:
+        prefix = _clause_prefix(text, start)
+        if not any(negation in prefix for negation in NEGATIONS):
+            return True
+        start = text.find(phrase, start + len(phrase))
+    return False
 
 EMERGENCY_MESSAGE = (
     "描述中包含急症警示信号，请立即拨打 120 或前往急诊科，"
@@ -224,6 +249,13 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                     matches.append(label)
                 break
             start = text.find(phrase, start + len(phrase))
+
+    if (
+        any(term in text for term in PREGNANCY_TERMS)
+        and _positive_mention(text, "出血")
+        and "孕产期出血" not in matches
+    ):
+        matches.append("孕产期出血")
 
     context_flags = _context_flags(text, context)
     for label, _ in context_flags:
