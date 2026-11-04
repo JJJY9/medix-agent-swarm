@@ -585,6 +585,16 @@ def test_app_js_ships_home_symptoms(client):
     assert "症状日记'" in app_js
 
 
+def test_app_js_ships_home_medications(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "homeGlanceMedications" in app_js
+    assert 'id="home-glance-medications"' in html
+    assert "/api/medications?active_only=true&limit=50" in app_js
+    assert "种在用药物" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text
