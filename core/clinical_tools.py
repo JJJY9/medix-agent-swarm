@@ -240,6 +240,35 @@ def calculate_gad7(answers: List[int]) -> Dict[str, object]:
     }
 
 
+def calculate_audit_c(q1: int, q2: int, q3: int) -> Dict[str, object]:
+    """AUDIT-C 酒精使用筛查评分（0–12 分）。
+
+    仅用于筛查风险饮酒，不用于诊断；男性 ≥4 分、女性 ≥3 分通常提示
+    需要进一步评估，结果应结合医生判断。
+    """
+    values = []
+    for value in (q1, q2, q3):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("AUDIT-C 每个答案必须是 0–4 的整数。")
+        if value < 0 or value > 4:
+            raise ValueError("AUDIT-C 每个答案必须在 0–4 之间。")
+        values.append(value)
+
+    score = sum(values)
+    if score <= 3:
+        risk = "低风险"
+    elif score <= 7:
+        risk = "偏高"
+    else:
+        risk = "高风险"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "note": "AUDIT-C 是酒精使用筛查工具，不能替代临床诊断；男性 ≥4 分、女性 ≥3 分通常提示风险饮酒，请结合医生判断。",
+    }
+
+
 def calculate_has_bled(
     age: int,
     hypertension: bool = False,

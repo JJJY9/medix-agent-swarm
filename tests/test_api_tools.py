@@ -542,3 +542,19 @@ def test_morse_fall_api(client):
     assert high.json()["score"] == 60
     assert high.json()["risk"] == "高风险"
     assert invalid.status_code == 422
+
+
+def test_audit_c_api(client):
+    ok = client.post(
+        "/api/tools/audit-c",
+        json={"q1": 4, "q2": 4, "q3": 0},
+    )
+    invalid = client.post(
+        "/api/tools/audit-c",
+        json={"q1": 5, "q2": 0, "q3": 0},
+    )
+
+    assert ok.status_code == 200
+    assert ok.json()["score"] == 8
+    assert ok.json()["risk"] == "高风险"
+    assert invalid.status_code == 422

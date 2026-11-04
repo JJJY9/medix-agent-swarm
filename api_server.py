@@ -215,6 +215,12 @@ class Gad7Request(BaseModel):
     answers: List[int] = Field(..., min_length=7, max_length=7)
 
 
+class AuditCRequest(BaseModel):
+    q1: Literal[0, 1, 2, 3, 4]
+    q2: Literal[0, 1, 2, 3, 4]
+    q3: Literal[0, 1, 2, 3, 4]
+
+
 class HasBledRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     hypertension: bool = False
@@ -2016,6 +2022,18 @@ async def tool_phq9(request: Phq9Request):
 
     try:
         result = calculate_phq9(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/audit-c")
+async def tool_audit_c(request: AuditCRequest):
+    """AUDIT-C 酒精使用筛查评分。"""
+    from core.clinical_tools import calculate_audit_c
+
+    try:
+        result = calculate_audit_c(request.q1, request.q2, request.q3)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}
