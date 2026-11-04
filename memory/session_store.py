@@ -750,6 +750,136 @@ class SessionStore:
 
         return {"message_id": message_id, "rating": rating, "comment": comment}
 
+    def quality_insights(self, days: int = 30) -> Dict[str, Any]:
+        """汇总最近一段时间的会诊质量信号。
+
+        只做统计，不包含完整会话正文；用于历史抽屉的质量概览。
+        """
+        days = max(1, min(int(days or 30), 365))
+        cutoff = _days_cutoff(days)
+        sql = """
+            SELECT m.session_id, m.metadata, m.created_at
+              FROM messages m
+             WHERE m.role = 'assistant'
+        """
+        params: List[Any] = []
+        if cutoff:
+            sql += " AND m.created_at >= ?"
+            params.append(cutoff)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        sessions = set()
+        turns = 0
+        emergency = 0
+        medication_sessions = set()
+        medication_alerts = 0
+        helpful = 0
+        unhelpful = 0
+        swarm_turns = 0
+        total_time = 0.0
+        timed_turns = 0
+        total_tokens = 0
+        risk_counts: Dict[str, int] = {}
+        alert_counts: Dict[str, int] = {}
+
+        for row in rows:
+            turns += 1
+            sessions.add(row["session_id"])
+
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            if metadata.get("swarm_enabled") is True:
+                swarm_turns += 1
+
+            triage = metadata.get("triage")
+            if isinstance(triage, dict) and triage.get("level") == "emergency":
+                emergency += 1
+                matches = triage.get("matches")
+                if isinstance(matches, list):
+                    for label in matches:
+                        text = str(label or "").strip()
+                        if text:
+                            risk_counts[text] = risk_counts.get(text, 0) + 1
+
+            safety = metadata.get("medication_safety")
+            if isinstance(safety, dict):
+                alerts = safety.get("alerts")
+                if isinstance(alerts, list) and alerts:
+                    medication_sessions.add(row["session_id"])
+                    for alert in alerts:
+                        if not isinstance(alert, dict):
+                            continue
+                        title = str(alert.get("title") or "").strip()
+                        if not title:
+                            continue
+                        medication_alerts += 1
+                        alert_counts[title] = alert_counts.get(title, 0) + 1
+
+            feedback = metadata.get("feedback")
+            if isinstance(feedback, dict):
+                try:
+                    rating = int(feedback.get("rating"))
+                except (TypeError, ValueError, OverflowError):
+                    rating = 0
+                if rating == 1:
+                    helpful += 1
+                elif rating == -1:
+                    unhelpful += 1
+
+            try:
+                value = float(metadata.get("total_time"))
+            except (TypeError, ValueError, OverflowError):
+                value = 0.0
+            if value > 0:
+                total_time += value
+                timed_turns += 1
+
+            usage = metadata.get("usage")
+            if isinstance(usage, dict):
+                try:
+                    total_tokens += int(usage.get("total_tokens") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+        feedback_total = helpful + unhelpful
+        top_risks = sorted(
+            risk_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:5]
+        top_alerts = sorted(
+            alert_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:5]
+
+        return {
+            "days": days,
+            "sessions": len(sessions),
+            "turns": turns,
+            "emergency": emergency,
+            "medication_sessions": len(medication_sessions),
+            "medication_alerts": medication_alerts,
+            "feedback_total": feedback_total,
+            "helpful": helpful,
+            "unhelpful": unhelpful,
+            "rate": round(helpful / feedback_total * 100, 1) if feedback_total else None,
+            "swarm_turns": swarm_turns,
+            "avg_time": round(total_time / timed_turns, 1) if timed_turns else None,
+            "avg_tokens": round(total_tokens / turns) if turns else 0,
+            "top_risks": [
+                {"label": label, "count": count}
+                for label, count in top_risks
+            ],
+            "top_medication_alerts": [
+                {"title": title, "count": count}
+                for title, count in top_alerts
+            ],
+        }
+
     def daily_usage(
         self, days: int = 7, favorites_only: bool = False
     ) -> Dict[str, Any]:

@@ -201,6 +201,43 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_quality_insights_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "s1", "胸痛", "答复",
+        metadata={
+            "triage": {
+                "level": "emergency",
+                "matches": ["胸痛"],
+                "message": "",
+            },
+            "medication_safety": {
+                "level": "warning",
+                "alerts": [{"title": "示例提示", "detail": "示例"}],
+            },
+            "feedback": {"rating": 1},
+            "total_time": 2.0,
+            "usage": {"total_tokens": 10},
+        },
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/insights/quality", params={"days": 30})
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["days"] == 30
+    assert data["sessions"] == 1
+    assert data["emergency"] == 1
+    assert data["medication_alerts"] == 1
+    assert data["rate"] == 100.0
+    assert data["top_risks"] == [{"label": "胸痛", "count": 1}]
+
+
 def test_recent_feedback_api(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     first = store.save_exchange("s1", "问题一", "答复一")

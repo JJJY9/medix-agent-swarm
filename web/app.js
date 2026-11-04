@@ -59,6 +59,8 @@ const els = {
   usageBudgetText: document.getElementById('usage-budget-text'),
   usageBudgetBar: document.getElementById('usage-budget-bar'),
   usageBudgetHint: document.getElementById('usage-budget-hint'),
+  historyQuality: document.getElementById('history-quality'),
+  historyQualityBody: document.getElementById('history-quality-body'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
   jumpLatest: document.getElementById('jump-latest'),
@@ -771,7 +773,10 @@ function renderFeedback(payload) {
           ? `已记录：${savedComment}`
           : '已记录，我们会继续改进'
         : '已取消反馈';
-      if (historyOpen) loadRecentFeedback();
+      if (historyOpen) {
+        loadRecentFeedback();
+        loadQualityInsights();
+      }
     } catch (err) {
       current = previous;
       savedComment = previousComment;
@@ -1953,6 +1958,88 @@ async function loadRecentFeedback() {
   }
 }
 
+function renderQualityInsights(data) {
+  if (!data || !data.turns) {
+    els.historyQuality.hidden = true;
+    els.historyQualityBody.replaceChildren();
+    return;
+  }
+
+  els.historyQuality.hidden = false;
+  els.historyQualityBody.replaceChildren();
+
+  const rows = [
+    ['会诊 / 轮次', `${data.sessions} 次 / ${data.turns} 轮`],
+    ['急症警示', `${data.emergency} 次`],
+    [
+      '用药提示',
+      `${data.medication_sessions} 次会诊 · ${data.medication_alerts} 条`,
+    ],
+    [
+      '反馈',
+      data.feedback_total
+        ? `${data.feedback_total} 条 · 好评率 ${data.rate}%`
+        : '暂无',
+    ],
+    ['平均用时', data.avg_time == null ? '—' : `${data.avg_time} s`],
+    ['平均 Token', `${Number(data.avg_tokens || 0).toLocaleString()} / 轮`],
+  ];
+
+  for (const [label, value] of rows) {
+    const row = document.createElement('div');
+    row.className = 'quality-row';
+    const key = document.createElement('span');
+    key.textContent = label;
+    const val = document.createElement('span');
+    val.textContent = value;
+    row.append(key, val);
+    els.historyQualityBody.appendChild(row);
+  }
+
+  if (data.top_risks && data.top_risks.length) {
+    const block = document.createElement('div');
+    block.className = 'quality-block';
+    const title = document.createElement('h4');
+    title.textContent = '常见急症标签';
+    const chips = document.createElement('div');
+    chips.className = 'quality-chips';
+    for (const item of data.top_risks) {
+      const chip = document.createElement('span');
+      chip.className = 'quality-chip';
+      chip.textContent = `${item.label} ×${item.count}`;
+      chips.appendChild(chip);
+    }
+    block.append(title, chips);
+    els.historyQualityBody.appendChild(block);
+  }
+
+  if (data.top_medication_alerts && data.top_medication_alerts.length) {
+    const block = document.createElement('div');
+    block.className = 'quality-block';
+    const title = document.createElement('h4');
+    title.textContent = '常见用药提示';
+    const list = document.createElement('ul');
+    list.className = 'quality-list';
+    for (const item of data.top_medication_alerts) {
+      const li = document.createElement('li');
+      li.textContent = `${item.title} ×${item.count}`;
+      list.appendChild(li);
+    }
+    block.append(title, list);
+    els.historyQualityBody.appendChild(block);
+  }
+}
+
+async function loadQualityInsights() {
+  try {
+    const res = await fetch('/api/insights/quality?days=30');
+    if (!res.ok) return;
+    renderQualityInsights(await res.json());
+  } catch {
+    // 质量概览加载失败不影响历史列表
+  }
+}
+
 function updateHistoryMore(summary) {
   const total = Number(summary && summary.sessions || 0);
   const loaded = Number(summary && summary.loaded || 0);
@@ -2293,6 +2380,7 @@ async function importHistoryBackup() {
       await loadUsageTrend();
       await loadUsageBudget();
       if (result.profiles) await initProfiles();
+      await loadQualityInsights();
     } catch (err) {
       btn.textContent = '导入失败';
       window.alert(`导入备份失败：${err.message || err}`);
@@ -2333,6 +2421,7 @@ function openHistory() {
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
   loadRecentFeedback();
+  loadQualityInsights();
   loadUsageTrend();
   loadUsageBudget();
   els.historySearch.focus();
@@ -2535,6 +2624,7 @@ async function deleteHistory(item) {
     }
     await loadHistory(els.historySearch.value.trim());
     await loadRecentFeedback();
+    await loadQualityInsights();
     await loadUsageTrend();
     await loadUsageBudget();
     els.historyActionStatus.textContent = '已删除会诊';
@@ -3603,6 +3693,7 @@ async function send(question) {
       loadHistory(els.historySearch.value.trim());
       loadUsageTrend();
       loadUsageBudget();
+      loadQualityInsights();
     }
   } catch (err) {
     if (streamTurn) {

@@ -723,6 +723,78 @@ def test_recent_feedback_returns_latest_by_rating(store):
     assert store.recent_feedback(rating=5) == []
 
 
+def test_quality_insights_aggregates(store):
+    store.save_exchange(
+        "s1", "胸痛", "答复一",
+        metadata={
+            "swarm_enabled": True,
+            "triage": {
+                "level": "emergency",
+                "matches": ["胸痛", "呼吸困难"],
+                "message": "",
+            },
+            "medication_safety": {
+                "level": "warning",
+                "alerts": [{
+                    "title": "华法林与非甾体抗炎药",
+                    "detail": "增加出血风险",
+                }],
+            },
+            "feedback": {"rating": -1, "comment": "依据不足"},
+            "total_time": 4.0,
+            "usage": {"total_tokens": 100},
+        },
+    )
+    store.save_exchange(
+        "s2", "头痛", "答复二",
+        metadata={
+            "swarm_enabled": False,
+            "triage": {"level": "none", "matches": []},
+            "medication_safety": {"level": "none", "alerts": []},
+            "feedback": {"rating": 1},
+            "total_time": 2.0,
+            "usage": {"total_tokens": 50},
+        },
+    )
+
+    data = store.quality_insights(days=30)
+
+    assert data["sessions"] == 2
+    assert data["turns"] == 2
+    assert data["emergency"] == 1
+    assert data["medication_sessions"] == 1
+    assert data["medication_alerts"] == 1
+    assert data["feedback_total"] == 2
+    assert data["helpful"] == 1
+    assert data["unhelpful"] == 1
+    assert data["rate"] == 50.0
+    assert data["swarm_turns"] == 1
+    assert data["avg_time"] == 3.0
+    assert data["avg_tokens"] == 75
+    assert {item["label"] for item in data["top_risks"]} == {"胸痛", "呼吸困难"}
+    assert data["top_medication_alerts"] == [
+        {"title": "华法林与非甾体抗炎药", "count": 1},
+    ]
+
+
+def test_quality_insights_empty_and_time_filter(store):
+    empty = store.quality_insights(days=7)
+    assert empty["sessions"] == 0
+    assert empty["turns"] == 0
+    assert empty["rate"] is None
+    assert empty["top_risks"] == []
+    assert empty["top_medication_alerts"] == []
+
+    store.save_exchange("s1", "旧问题", "旧答复")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = 's1'",
+            ("2026-01-01T00:00:00",),
+        )
+
+    assert store.quality_insights(days=7)["turns"] == 0
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 

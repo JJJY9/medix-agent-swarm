@@ -591,6 +591,17 @@ async def recent_feedback(limit: int = 10, rating: int = -1):
     return {"feedback": items}
 
 
+@app.get("/api/insights/quality")
+async def quality_insights(days: int = 30):
+    """最近一段时间的会诊质量概览（急症、用药提示、反馈与平均用量）。"""
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 30), 365))
+    return await asyncio.to_thread(
+        get_session_store().quality_insights, days
+    )
+
+
 @app.get("/api/profiles")
 async def list_profiles():
     """常用患者档案（服务端持久化，可跨浏览器使用）。"""
