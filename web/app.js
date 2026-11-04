@@ -177,6 +177,8 @@ const els = {
   metricTrendLatest: document.getElementById('metric-trend-latest'),
   metricTrendChart: document.getElementById('metric-trend-chart'),
   metricTrendHint: document.getElementById('metric-trend-hint'),
+  metricOverview: document.getElementById('metric-overview'),
+  metricOverviewGrid: document.getElementById('metric-overview-grid'),
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
   metricsEmpty: document.getElementById('metrics-empty'),
@@ -3740,9 +3742,51 @@ async function loadMetricTrend() {
   }
 }
 
+async function loadMetricOverview() {
+  const profile = els.metricProfile.value;
+  try {
+    const res = await fetch(
+      `/api/metrics?limit=500&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) return;
+    const items = (await res.json()).metrics || [];
+
+    const latest = {};
+    for (const item of items) {
+      if (!latest[item.metric]) latest[item.metric] = item;
+    }
+
+    els.metricOverviewGrid.replaceChildren();
+    let count = 0;
+    for (const metric of [
+      'bp', 'weight', 'glucose', 'temperature', 'phq9', 'gad7',
+    ]) {
+      const item = latest[metric];
+      if (!item) continue;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'metric-overview-chip';
+      chip.textContent =
+        `${METRIC_NAMES[metric]} ${formatMetricValue(item)}`;
+      chip.title = `${formatTime(item.measured_at)}${item.note ? ` · ${item.note}` : ''}`;
+      chip.addEventListener('click', () => {
+        setMetricType(metric);
+        refreshMetrics();
+      });
+      els.metricOverviewGrid.appendChild(chip);
+      count += 1;
+    }
+
+    els.metricOverview.hidden = count === 0;
+  } catch {
+    // 概览加载失败不影响表单与列表
+  }
+}
+
 async function refreshMetrics() {
   await loadMetrics();
   await loadMetricTrend();
+  await loadMetricOverview();
 }
 
 async function loadMetrics() {
