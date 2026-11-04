@@ -210,6 +210,27 @@ const els = {
   calcMeldInr: document.getElementById('calc-meld-inr'),
   calcMeldCreatinine: document.getElementById('calc-meld-creatinine'),
   calcMeldDialysis: document.getElementById('calc-meld-dialysis'),
+  calcFormStopBang: document.getElementById('calc-form-stopbang'),
+  calcStopBangSnoring: document.getElementById('calc-stopbang-snoring'),
+  calcStopBangTired: document.getElementById('calc-stopbang-tired'),
+  calcStopBangApnea: document.getElementById('calc-stopbang-apnea'),
+  calcStopBangHypertension: document.getElementById('calc-stopbang-hypertension'),
+  calcStopBangBmi: document.getElementById('calc-stopbang-bmi'),
+  calcStopBangAge: document.getElementById('calc-stopbang-age'),
+  calcStopBangNeck: document.getElementById('calc-stopbang-neck'),
+  calcStopBangMale: document.getElementById('calc-stopbang-male'),
+  calcFormPadua: document.getElementById('calc-form-padua'),
+  calcPaduaCancer: document.getElementById('calc-padua-cancer'),
+  calcPaduaVte: document.getElementById('calc-padua-vte'),
+  calcPaduaMobility: document.getElementById('calc-padua-mobility'),
+  calcPaduaThrombophilia: document.getElementById('calc-padua-thrombophilia'),
+  calcPaduaTrauma: document.getElementById('calc-padua-trauma'),
+  calcPaduaAge: document.getElementById('calc-padua-age'),
+  calcPaduaHeart: document.getElementById('calc-padua-heart'),
+  calcPaduaMi: document.getElementById('calc-padua-mi'),
+  calcPaduaInfection: document.getElementById('calc-padua-infection'),
+  calcPaduaBmi: document.getElementById('calc-padua-bmi'),
+  calcPaduaHormonal: document.getElementById('calc-padua-hormonal'),
   calcWellsPeDvt: document.getElementById('calc-wellspe-dvt'),
   calcWellsPeLikely: document.getElementById('calc-wellspe-likely'),
   calcWellsPeHr: document.getElementById('calc-wellspe-hr'),
@@ -6120,6 +6141,8 @@ function setCalcTool(tool) {
     els.calcFormQsofa,
     els.calcFormFib4,
     els.calcFormMeld,
+    els.calcFormStopBang,
+    els.calcFormPadua,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -6586,6 +6609,65 @@ function submitInteractions(event) {
         level: data.level || 'warning',
       };
     }
+  );
+}
+
+function submitStopBang(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/stop-bang',
+    {
+      snoring: els.calcStopBangSnoring.checked,
+      tired: els.calcStopBangTired.checked,
+      observed_apnea: els.calcStopBangApnea.checked,
+      hypertension: els.calcStopBangHypertension.checked,
+      bmi_gt_35: els.calcStopBangBmi.checked,
+      age_gt_50: els.calcStopBangAge.checked,
+      neck_gt_40cm: els.calcStopBangNeck.checked,
+      male: els.calcStopBangMale.checked,
+    },
+    (data) => ({
+      title: 'STOP-BANG 结果',
+      main: `评分 ${data.score} / 8`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 符合：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '低风险' ? '' : 'warning',
+    })
+  );
+}
+
+function submitPadua(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/padua',
+    {
+      active_cancer: els.calcPaduaCancer.checked,
+      previous_vte: els.calcPaduaVte.checked,
+      reduced_mobility: els.calcPaduaMobility.checked,
+      thrombophilia: els.calcPaduaThrombophilia.checked,
+      recent_trauma_surgery: els.calcPaduaTrauma.checked,
+      age_ge_70: els.calcPaduaAge.checked,
+      heart_respiratory_failure: els.calcPaduaHeart.checked,
+      acute_mi_stroke: els.calcPaduaMi.checked,
+      acute_infection_rheumatologic: els.calcPaduaInfection.checked,
+      bmi_ge_30: els.calcPaduaBmi.checked,
+      hormonal_treatment: els.calcPaduaHormonal.checked,
+    },
+    (data) => ({
+      title: 'Padua 结果',
+      main: `评分 ${data.score} 分`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 得分项：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '高风险' ? 'warning' : '',
+    })
   );
 }
 
@@ -7735,6 +7817,8 @@ els.calcFormInteractions.addEventListener('submit', submitInteractions);
 els.calcFormQsofa.addEventListener('submit', submitQsofa);
 els.calcFormFib4.addEventListener('submit', submitFib4);
 els.calcFormMeld.addEventListener('submit', submitMeld);
+els.calcFormStopBang.addEventListener('submit', submitStopBang);
+els.calcFormPadua.addEventListener('submit', submitPadua);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;

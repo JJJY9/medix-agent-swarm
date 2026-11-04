@@ -272,6 +272,31 @@ class MeldRequest(BaseModel):
     dialysis: bool = False
 
 
+class StopBangRequest(BaseModel):
+    snoring: bool = False
+    tired: bool = False
+    observed_apnea: bool = False
+    hypertension: bool = False
+    bmi_gt_35: bool = False
+    age_gt_50: bool = False
+    neck_gt_40cm: bool = False
+    male: bool = False
+
+
+class PaduaRequest(BaseModel):
+    active_cancer: bool = False
+    previous_vte: bool = False
+    reduced_mobility: bool = False
+    thrombophilia: bool = False
+    recent_trauma_surgery: bool = False
+    age_ge_70: bool = False
+    heart_respiratory_failure: bool = False
+    acute_mi_stroke: bool = False
+    acute_infection_rheumatologic: bool = False
+    bmi_ge_30: bool = False
+    hormonal_treatment: bool = False
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1801,6 +1826,49 @@ async def tool_meld(request: MeldRequest):
             request.inr,
             request.creatinine,
             request.dialysis,
+        ),
+    }
+
+
+@app.post("/api/tools/stop-bang")
+async def tool_stop_bang(request: StopBangRequest):
+    """STOP-BANG 阻塞性睡眠呼吸暂停筛查。"""
+    from core.clinical_tools import calculate_stop_bang
+
+    return {
+        "ok": True,
+        **calculate_stop_bang(
+            request.snoring,
+            request.tired,
+            request.observed_apnea,
+            request.hypertension,
+            request.bmi_gt_35,
+            request.age_gt_50,
+            request.neck_gt_40cm,
+            request.male,
+        ),
+    }
+
+
+@app.post("/api/tools/padua")
+async def tool_padua(request: PaduaRequest):
+    """Padua 内科住院患者静脉血栓风险评分。"""
+    from core.clinical_tools import calculate_padua
+
+    return {
+        "ok": True,
+        **calculate_padua(
+            request.active_cancer,
+            request.previous_vte,
+            request.reduced_mobility,
+            request.thrombophilia,
+            request.recent_trauma_surgery,
+            request.age_ge_70,
+            request.heart_respiratory_failure,
+            request.acute_mi_stroke,
+            request.acute_infection_rheumatologic,
+            request.bmi_ge_30,
+            request.hormonal_treatment,
         ),
     }
 
