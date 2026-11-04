@@ -225,7 +225,8 @@ def check_llm() -> Dict[str, Any]:
         reply = (response.choices[0].message.content or "").strip()
         return {"ok": True, "reply": reply[:50]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        from core.security import redact_secrets
+        return {"ok": False, "error": redact_secrets(str(e))}
 
 
 def check_api(base_url: str) -> Dict[str, Any]:

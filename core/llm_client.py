@@ -20,6 +20,12 @@ from openai import (
 )
 from loguru import logger
 
+from .security import install_log_redaction, redact_secrets
+
+# 所有模型调用路径都会经过这里，导入时即开启日志脱敏，
+# 避免脚本或 CLI 绕过 api_server 时把 SDK 报错里的 Key 原样打出来。
+install_log_redaction()
+
 # 加载项目根目录的 .env（可选，用于配置 API Key 而不改动 config.py）
 try:
     from dotenv import load_dotenv
@@ -135,9 +141,10 @@ class LLMError(Exception):
         retryable: bool = False,
         status_code: Optional[int] = None
     ):
-        super().__init__(user_message)
+        safe_message = redact_secrets(user_message)
+        super().__init__(safe_message)
         self.code = code
-        self.user_message = user_message
+        self.user_message = safe_message
         self.retryable = retryable
         self.status_code = status_code
 
@@ -156,7 +163,7 @@ def classify_llm_error(exc: Exception) -> LLMError:
     except (TypeError, ValueError, OverflowError):
         status = None
 
-    message = str(exc)
+    message = redact_secrets(str(exc))
     lowered = message.lower()
     type_name = type(exc).__name__.lower()
 

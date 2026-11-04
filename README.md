@@ -304,6 +304,15 @@ MEM0_CONFIG = {"api_key": "m0-your-api-key-here"}   # 可选，不填则自动�
 
 环境变量优先级高于 `config.py`。任何 OpenAI 兼容接口都可以，改 `base_url` 和 `model_name` 即可。
 
+#### 保护 API Key
+
+- `.env` 已被 `.gitignore` 忽略，仓库里只保留空占位符的 `.env.example`；`.env.*` 变体、`*.pem`、`*.key`、`id_rsa*` 等密钥文件同样不会入库。
+- 日志、异常提示和接口错误响应统一经过 `core/security.py` 脱敏：完整 Key 只会显示为 `sk-a***k1L2` 这样的首尾形式，即使模型 SDK 在报错文本里带出 Key 也不会原样输出。
+- `tests/test_secret_hygiene.py` 会在 CI 中扫描所有已跟踪文件，发现 `sk-`、`ghp_`、`AKIA` 或私钥头等疑似密钥时直接失败；同时校验 `.env` 被忽略且未被跟踪。
+- 如果 Key 已经进入 Git 历史，仅删除文件不够：请立即在服务商控制台轮换 Key，再用 `git filter-repo` 清理历史并强制推送（私有仓库同样建议处理）。
+- 通过 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`，避免任何人直接消耗你的模型额度。
+
+
 ### 4. 初始化知识库
 
 ```bash
