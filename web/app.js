@@ -294,6 +294,8 @@ const els = {
   remindersDueHint: document.getElementById('reminders-due-hint'),
   remindersProfile: document.getElementById('reminders-profile'),
   remindersShowDone: document.getElementById('reminders-show-done'),
+  remindersOverdueOnly: document.getElementById('reminders-overdue-only'),
+  remindersCalendarToday: document.getElementById('reminders-calendar-today'),
   remindersSearch: document.getElementById('reminders-search'),
   remindersCalendar: document.getElementById('reminders-calendar'),
   remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
@@ -6240,14 +6242,27 @@ function searchFilteredReminders() {
   const query = els.remindersSearch
     ? String(els.remindersSearch.value || '').trim().toLowerCase()
     : '';
-  if (!query) return reminderItemsCache;
-  return reminderItemsCache.filter((item) => (
-    [item.title, item.note, item.profile]
-      .map((value) => String(value || ''))
-      .join(' ')
-      .toLowerCase()
-      .includes(query)
-  ));
+  let items = reminderItemsCache;
+  if (query) {
+    items = items.filter((item) => (
+      [item.title, item.note, item.profile]
+        .map((value) => String(value || ''))
+        .join(' ')
+        .toLowerCase()
+        .includes(query)
+    ));
+  }
+  const overdueOnly = Boolean(
+    els.remindersOverdueOnly && els.remindersOverdueOnly.checked
+  );
+  if (overdueOnly) {
+    items = items.filter((item) => {
+      if (item.done) return false;
+      const days = reminderDaysUntil(item.due_at);
+      return days !== null && days < 0;
+    });
+  }
+  return items;
 }
 
 function refreshReminderViews() {
@@ -6269,6 +6284,12 @@ function renderFilteredReminders() {
   if (els.remindersEmpty) {
     if (query && !searched.length) {
       els.remindersEmpty.textContent = `没有匹配「${query}」的提醒。`;
+    } else if (
+      els.remindersOverdueOnly
+      && els.remindersOverdueOnly.checked
+      && !searched.length
+    ) {
+      els.remindersEmpty.textContent = '没有逾期的提醒。';
     } else if (reminderCalendarDay) {
       els.remindersEmpty.textContent =
         `所选日期（${formatReminderDue(reminderCalendarDay)}）没有提醒。`;
@@ -8953,6 +8974,17 @@ els.remindersCalendarClear.addEventListener('click', () => {
   refreshReminderViews();
 });
 els.remindersSearch.addEventListener('input', refreshReminderViews);
+els.remindersOverdueOnly.addEventListener(
+  'change', refreshReminderViews
+);
+els.remindersCalendarToday.addEventListener('click', () => {
+  const now = new Date();
+  reminderCalendarMonth = new Date(
+    now.getFullYear(), now.getMonth(), 1
+  );
+  reminderCalendarDay = '';
+  refreshReminderViews();
+});
 els.reminderProfile.addEventListener('change', () => {
   reminderProfileTouched = true;
 });

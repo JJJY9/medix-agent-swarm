@@ -708,12 +708,14 @@
       <label class="sr-only" for="reminders-profile">按档案筛选提醒</label>
       <select id="reminders-profile"><option value="">全部档案</option></select>
       <label class="reminders-show-done"><input type="checkbox" id="reminders-show-done"> 显示已完成</label>
+      <label class="reminders-show-done"><input type="checkbox" id="reminders-overdue-only"> 只看逾期</label>
       <button type="button" class="btn-quiet" id="reminders-calendar-toggle" aria-expanded="false" aria-controls="reminders-calendar">月历</button>
     </div>
     <section class="reminders-calendar" id="reminders-calendar" hidden aria-label="提醒月历">
       <div class="reminders-calendar-head">
         <button type="button" class="btn-quiet" id="reminders-calendar-prev" aria-label="上个月">‹</button>
         <strong id="reminders-calendar-title" aria-live="polite"></strong>
+        <button type="button" class="btn-quiet" id="reminders-calendar-today">今天</button>
         <button type="button" class="btn-quiet" id="reminders-calendar-next" aria-label="下个月">›</button>
       </div>
       <div class="reminders-calendar-grid" id="reminders-calendar-grid"></div>
