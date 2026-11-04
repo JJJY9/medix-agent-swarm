@@ -78,3 +78,11 @@ def test_styles_keep_hidden_overrides(client):
 
     assert ".reminder-count[hidden]" in css
     assert ".metric-target-form[hidden]" in css
+
+
+def test_app_js_ships_bulk_export(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function bulkExportMarkdown" in app_js
+    assert "history-bulk-export" in app_js
+    assert "medix-sessions-" in app_js
