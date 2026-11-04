@@ -931,6 +931,118 @@ async def export_metrics_csv(
     )
 
 
+@app.post("/api/metrics/import")
+async def import_metrics_csv(file: UploadFile = File(...)):
+    """从导出的 CSV 格式导入健康指标，重复记录自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+
+    field_alias = {
+        "测量时间": "measured_at",
+        "时间": "measured_at",
+        "患者档案": "profile",
+        "档案": "profile",
+        "指标": "metric",
+        "数值1": "value1",
+        "数值2": "value2",
+        "单位": "unit",
+        "备注": "note",
+    }
+    metric_alias = {
+        "血压": "bp",
+        "体重": "weight",
+        "血糖": "glucose",
+        "体温": "temperature",
+        "PHQ-9 评分": "phq9",
+        "PHQ-9评分": "phq9",
+        "GAD-7 评分": "gad7",
+        "GAD-7评分": "gad7",
+    }
+    allowed = {
+        "bp", "weight", "glucose", "temperature", "phq9", "gad7"
+    }
+
+    records = []
+    invalid = 0
+    for row in reader:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            name = key.strip()
+            mapped[field_alias.get(name, name)] = (value or "").strip()
+
+        metric = mapped.get("metric", "")
+        metric = metric_alias.get(metric, metric)
+        if metric not in allowed:
+            invalid += 1
+            continue
+
+        try:
+            value1 = float(mapped.get("value1", ""))
+        except (TypeError, ValueError):
+            invalid += 1
+            continue
+
+        value2 = None
+        if mapped.get("value2"):
+            try:
+                value2 = float(mapped["value2"])
+            except (TypeError, ValueError):
+                invalid += 1
+                continue
+
+        records.append({
+            "profile": mapped.get("profile", ""),
+            "metric": metric,
+            "value1": value1,
+            "value2": value2,
+            "measured_at": mapped.get("measured_at", ""),
+            "note": mapped.get("note", ""),
+        })
+
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的健康记录（无效 {invalid} 行）",
+        )
+
+    result = await asyncio.to_thread(
+        get_session_store().import_data, {"health_metrics": records}
+    )
+    imported = int(result.get("metrics", 0))
+    await record_audit(
+        "metric.import",
+        detail=f"imported={imported} invalid={invalid}",
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
 @app.get("/api/profiles")
 async def list_profiles():
     """常用患者档案（服务端持久化，可跨浏览器使用）。"""

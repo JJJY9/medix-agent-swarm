@@ -153,6 +153,37 @@ def test_metrics_api_update(client):
     assert invalid.status_code == 404
 
 
+def test_metrics_csv_import(client):
+    content = "﻿" + (
+        "测量时间,患者档案,指标,数值1,数值2,单位,备注\r\n"
+        "2026-01-02T08:00,妈妈,血压,138,86,mmHg,晨起\r\n"
+        "2026-01-03T07:30,妈妈,体重,62.5,,kg,复测\r\n"
+        "2026-01-04T09:00,,未知,1,,,无效\r\n"
+    )
+    first = client.post(
+        "/api/metrics/import",
+        files={"file": ("metrics.csv", content.encode("utf-8"), "text/csv")},
+    )
+    listed = client.get("/api/metrics", params={"limit": 10})
+    again = client.post(
+        "/api/metrics/import",
+        files={"file": ("metrics.csv", content.encode("utf-8"), "text/csv")},
+    )
+    empty = client.post(
+        "/api/metrics/import",
+        files={"file": ("empty.csv", b"", "text/csv")},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["imported"] == 2
+    assert first.json()["invalid"] == 1
+    assert len(listed.json()["metrics"]) == 2
+    assert again.status_code == 200
+    assert again.json()["imported"] == 0
+    assert again.json()["skipped"] == 2
+    assert empty.status_code == 400
+
+
 def test_metrics_csv_export(client):
     client.post(
         "/api/metrics",
