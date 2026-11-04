@@ -3339,6 +3339,12 @@ function renderDiagnostics(report) {
         ? `${Number(runtime.monthly_token_budget).toLocaleString()} tokens`
         : '未配置'
     ),
+    diagRow(
+      '自动归档',
+      Number(runtime.auto_archive_days || 0) > 0
+        ? `${Number(runtime.auto_archive_days)} 天未更新`
+        : '未启用'
+    ),
   ]);
   if (runtime.db_error) {
     els.diagRuntime.appendChild(
