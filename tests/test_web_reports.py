@@ -678,6 +678,15 @@ def test_app_js_ships_weekly_summary(client):
     assert "近 7 天打卡" in app_js
 
 
+def test_app_js_links_medication_log_and_reminder(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "async function completeDueMedicationReminder" in app_js
+    assert "已完成今日用药提醒" in app_js
+    assert "days >= -1 && days <= 0" in app_js
+    assert "readPatientContext().allergies" in app_js
+
+
 def test_app_js_medication_review_hardening(client):
     app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
     css = client.get("/static/styles.css").text

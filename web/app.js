@@ -8252,6 +8252,32 @@ async function toggleMedication(item) {
   }
 }
 
+async function completeDueMedicationReminder(item) {
+  try {
+    const res = await fetch('/api/reminders');
+    if (!res.ok) return null;
+    const reminders = (await res.json()).reminders || [];
+    const title = `用药：${item.name}`;
+    const due = reminders.find((reminder) => {
+      if (reminder.done || reminder.title !== title) return false;
+      if ((reminder.profile || '') !== (item.profile || '')) return false;
+      const days = reminderDaysUntil(reminder.due_at);
+      return days !== null && days >= -1 && days <= 0;
+    });
+    if (!due) return null;
+    const completeRes = await fetch(`/api/reminders/${due.id}/complete`, {
+      method: 'POST',
+    });
+    if (!completeRes.ok) return null;
+    const data = await completeRes.json().catch(() => ({}));
+    return data.next && data.next.due_at
+      ? `已完成今日用药提醒，下次：${formatReminderDue(data.next.due_at)}。`
+      : '已完成今日用药提醒。';
+  } catch {
+    return null;
+  }
+}
+
 async function logMedication(item) {
   if (medicationLogBusy.has(item.id)) return;
   medicationLogBusy.add(item.id);
@@ -8264,10 +8290,12 @@ async function logMedication(item) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const takenAt = data.log ? formatTime(data.log.taken_at) : '';
+    const reminderNote = await completeDueMedicationReminder(item);
     setMedicationStatus(
-      takenAt
+      (takenAt
         ? `已记录用药：${item.name}（${takenAt}）。`
-        : `已记录用药：${item.name}。`
+        : `已记录用药：${item.name}。`)
+      + (reminderNote ? ` ${reminderNote}` : '')
     );
     await loadMedications();
     loadMedicationLogs();
@@ -8392,6 +8420,15 @@ async function deleteMedication(item) {
 
 async function loadMedicationsIntoInteractions() {
   const profile = els.metricProfile.value || els.profileSelect.value || '';
+  if (
+    els.calcInteractionsAllergies
+    && !els.calcInteractionsAllergies.value.trim()
+  ) {
+    const allergies = String(
+      readPatientContext().allergies || ''
+    ).trim();
+    if (allergies) els.calcInteractionsAllergies.value = allergies;
+  }
   try {
     const res = await fetch(
       `/api/medications?active_only=true&limit=100`
