@@ -176,6 +176,7 @@ const els = {
   calcAuditCQ1: document.getElementById('calc-auditc-q1'),
   calcAuditCQ2: document.getElementById('calc-auditc-q2'),
   calcAuditCQ3: document.getElementById('calc-auditc-q3'),
+  calcAuditCSex: document.getElementById('calc-auditc-sex'),
   calcGad7Questions: document.getElementById('calc-gad7-questions'),
   calcFormHasBled: document.getElementById('calc-form-hasbled'),
   calcHasBledAge: document.getElementById('calc-hasbled-age'),
@@ -5004,6 +5005,7 @@ function closeDiagnose(restoreFocus = false) {
 
 let metricsFocused = null;
 let editingMetricId = null;
+let metricSaving = false;
 let metricsRequestSeq = 0;
 let metricTrendRequestSeq = 0;
 let metricOverviewRequestSeq = 0;
@@ -6687,7 +6689,7 @@ async function loadHomeGlance() {
   try {
     const [remindersRes, metricsRes] = await Promise.all([
       fetch('/api/reminders'),
-      fetch('/api/metrics?limit=20'),
+      fetch('/api/metrics/latest'),
     ]);
     if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
@@ -7137,6 +7139,7 @@ function editMetricRecord(item) {
 }
 
 async function addMetricRecord() {
+  if (metricSaving) return;
   const type = els.metricType.value;
   const profile = els.metricProfile.value;
   const measuredAt = els.metricTime.value || metricNowLocal();
@@ -7146,20 +7149,27 @@ async function addMetricRecord() {
   let value2 = null;
 
   if (type === 'bp') {
-    value1 = Number(els.metricSystolic.value);
-    value2 = Number(els.metricDiastolic.value);
-    if (!Number.isFinite(value1) || !Number.isFinite(value2)) {
+    const systolicRaw = els.metricSystolic.value.trim();
+    const diastolicRaw = els.metricDiastolic.value.trim();
+    value1 = Number(systolicRaw);
+    value2 = Number(diastolicRaw);
+    if (
+      !systolicRaw || !diastolicRaw
+      || !Number.isFinite(value1) || !Number.isFinite(value2)
+    ) {
       setMetricsStatus('请填写收缩压和舒张压。', true);
       return;
     }
   } else {
-    value1 = Number(els.metricValue.value);
-    if (!Number.isFinite(value1)) {
+    const rawValue = els.metricValue.value.trim();
+    value1 = Number(rawValue);
+    if (!rawValue || !Number.isFinite(value1)) {
       setMetricsStatus('请填写数值。', true);
       return;
     }
   }
 
+  metricSaving = true;
   els.metricAdd.disabled = true;
   els.metricAdd.textContent = editing ? '更新中…' : '保存中…';
 
@@ -7193,6 +7203,7 @@ async function addMetricRecord() {
   } catch (err) {
     setMetricsStatus(`${editing ? '更新' : '保存'}失败：${err.message || err}`, true);
   } finally {
+    metricSaving = false;
     els.metricAdd.disabled = false;
     els.metricAdd.textContent = editingMetricId ? '保存修改' : '保存记录';
   }
@@ -7776,6 +7787,7 @@ function submitAuditC(event) {
       q1: Number(els.calcAuditCQ1.value),
       q2: Number(els.calcAuditCQ2.value),
       q3: Number(els.calcAuditCQ3.value),
+      sex: els.calcAuditCSex.value,
     },
     (data) => ({
       title: 'AUDIT-C 结果',
@@ -8630,16 +8642,12 @@ async function buildConsultContext() {
   const profile = els.profileSelect.value || '';
   try {
     const [metricsRes, remindersRes] = await Promise.all([
-      fetch(`/api/metrics?limit=6&profile=${encodeURIComponent(profile)}`),
+      fetch(`/api/metrics/latest?profile=${encodeURIComponent(profile)}`),
       fetch('/api/reminders'),
     ]);
     if (metricsRes.ok) {
       const metrics = (await metricsRes.json()).metrics || [];
-      const latest = {};
-      for (const item of metrics) {
-        if (!latest[item.metric]) latest[item.metric] = item;
-      }
-      const recent = Object.values(latest)
+      const recent = metrics
         .slice(0, 4)
         .map(
           (item) => `${METRIC_NAMES[item.metric]} ${formatMetricValue(item)}`
@@ -9384,12 +9392,14 @@ els.reminderCancel.addEventListener('click', () => {
   setRemindersStatus('已取消编辑。');
 });
 els.reminderTitle.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     addReminder();
   }
 });
 els.reminderNote.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     addReminder();
@@ -9403,6 +9413,7 @@ for (const input of [
 ]) {
   if (!input) continue;
   input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       addReminder();
@@ -9420,12 +9431,14 @@ els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
 els.metricTargetClear.addEventListener('click', clearMetricTarget);
 els.metricTargetValue1.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     saveMetricTarget();
   }
 });
 els.metricTargetValue2.addEventListener('keydown', (event) => {
+  if (event.isComposing) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     saveMetricTarget();
@@ -9441,6 +9454,7 @@ for (const input of [
 ]) {
   if (!input) continue;
   input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       addMetricRecord();

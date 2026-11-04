@@ -219,6 +219,7 @@ class AuditCRequest(BaseModel):
     q1: Literal[0, 1, 2, 3, 4]
     q2: Literal[0, 1, 2, 3, 4]
     q3: Literal[0, 1, 2, 3, 4]
+    sex: Literal["", "male", "female"] = ""
 
 
 class MmrcRequest(BaseModel):
@@ -1224,6 +1225,17 @@ async def metric_summary(
     return data
 
 
+@app.get("/api/metrics/latest")
+async def latest_metrics(profile: Optional[str] = None):
+    """每种指标类型最新的一条记录。"""
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().latest_metrics, profile
+    )
+    return {"metrics": items}
+
+
 @app.post("/api/metrics")
 async def add_metric(request: MetricRequest):
     """新增血压、体重、血糖或体温记录。"""
@@ -1622,7 +1634,7 @@ async def export_reminders_csv(
     )
     rows = [[
         "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
-        "重复截止", "备注",
+        "重复截止", "重复来源ID", "备注",
     ]]
     for item in items:
         rows.append([
@@ -1633,6 +1645,7 @@ async def export_reminders_csv(
             int(item.get("advance_days") or 0),
             int(item.get("repeat_days") or 0),
             item.get("repeat_until", "") or "",
+            int(item.get("repeats_from") or 0) or "",
             csv_safe_cell(item.get("note", "")),
         ])
 
@@ -1790,6 +1803,7 @@ async def import_reminders_csv(file: UploadFile = File(...)):
         "提前天数": "advance_days",
         "重复天数": "repeat_days",
         "重复截止": "repeat_until",
+        "重复来源ID": "repeats_from",
         "备注": "note",
     }
 
@@ -1822,6 +1836,10 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             )
         except (TypeError, ValueError):
             repeat_days = 0
+        try:
+            repeats_from = max(0, int(mapped.get("repeats_from") or 0))
+        except (TypeError, ValueError):
+            repeats_from = 0
         records.append({
             "title": title,
             "due_at": due_at,
@@ -1830,6 +1848,7 @@ async def import_reminders_csv(file: UploadFile = File(...)):
             "advance_days": advance_days,
             "repeat_days": repeat_days,
             "repeat_until": mapped.get("repeat_until", ""),
+            "repeats_from": repeats_from,
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 
@@ -2093,7 +2112,9 @@ async def tool_audit_c(request: AuditCRequest):
     from core.clinical_tools import calculate_audit_c
 
     try:
-        result = calculate_audit_c(request.q1, request.q2, request.q3)
+        result = calculate_audit_c(
+            request.q1, request.q2, request.q3, request.sex
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}

@@ -364,7 +364,9 @@ def calculate_mmrc(grade: int) -> Dict[str, object]:
     }
 
 
-def calculate_audit_c(q1: int, q2: int, q3: int) -> Dict[str, object]:
+def calculate_audit_c(
+    q1: int, q2: int, q3: int, sex: str = ""
+) -> Dict[str, object]:
     """AUDIT-C 酒精使用筛查评分（0–12 分）。
 
     仅用于筛查风险饮酒，不用于诊断；男性 ≥4 分、女性 ≥3 分通常提示
@@ -378,18 +380,35 @@ def calculate_audit_c(q1: int, q2: int, q3: int) -> Dict[str, object]:
             raise ValueError("AUDIT-C 每个答案必须在 0–4 之间。")
         values.append(value)
 
+    sex = str(sex or "").strip().lower()
+    if sex not in ("", "male", "female"):
+        raise ValueError("性别参数必须是 male 或 female。")
+
     score = sum(values)
-    if score <= 3:
+    cutoff = 3 if sex == "female" else 4
+    if score < cutoff:
         risk = "低风险"
-    elif score <= 7:
+    elif score < 8:
         risk = "偏高"
     else:
         risk = "高风险"
 
+    if sex == "female":
+        threshold_note = "按女性阈值（≥3 分）分层"
+    elif sex == "male":
+        threshold_note = "按男性阈值（≥4 分）分层"
+    else:
+        threshold_note = (
+            "未填写性别时按 ≥4 分提示；女性 ≥3 分建议进一步评估"
+        )
+
     return {
         "score": score,
         "risk": risk,
-        "note": "AUDIT-C 是酒精使用筛查工具，不能替代临床诊断；男性 ≥4 分、女性 ≥3 分通常提示风险饮酒，请结合医生判断。",
+        "note": (
+            "AUDIT-C 是酒精使用筛查工具，不能替代临床诊断；"
+            f"{threshold_note}，请结合医生判断。"
+        ),
     }
 
 

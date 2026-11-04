@@ -2135,6 +2135,34 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def latest_metrics(self, profile: Optional[str] = None) -> List[Dict[str, Any]]:
+        """返回每种指标类型最新的一条记录（可按档案筛选）。"""
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = f"""
+            WITH ranked AS (
+                SELECT id, profile, metric, value1, value2, unit,
+                       measured_at, note, created_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY metric
+                           ORDER BY measured_at DESC, id DESC
+                       ) AS rn
+                  FROM health_metrics{where}
+            )
+            SELECT id, profile, metric, value1, value2, unit,
+                   measured_at, note, created_at
+              FROM ranked
+             WHERE rn = 1
+             ORDER BY measured_at DESC
+        """
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
     def metric_summary(
         self,
         profile: Optional[str] = None,

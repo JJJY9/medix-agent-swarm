@@ -518,3 +518,36 @@ def test_screener_metrics_roundtrip(client):
         "/api/metrics/summary", params={"metric": "ess", "profile": ""}
     )
     assert summary.json()["count"] == 1
+
+
+def test_latest_metrics_api(client):
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 60,
+            "measured_at": "2026-01-01T08:00",
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 62,
+            "measured_at": "2026-01-02T08:00",
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "spo2",
+            "value1": 97,
+            "measured_at": "2026-01-01T08:00",
+        },
+    )
+
+    response = client.get("/api/metrics/latest")
+
+    assert response.status_code == 200
+    latest = {item["metric"]: item["value1"] for item in response.json()["metrics"]}
+    assert latest == {"weight": 62, "spo2": 97}
