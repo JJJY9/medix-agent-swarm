@@ -1848,10 +1848,9 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
 
     days = max(1, min(int(days or 7), 90))
     store = get_session_store()
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (
-        datetime.now() - timedelta(days=days - 1)
-    ).strftime("%Y-%m-%d")
+    now = datetime.now()
+    end = now.strftime("%Y-%m-%d")
+    start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
         store.list_metrics, profile, None, 100000, days
     )
@@ -1993,8 +1992,8 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         key=lambda row: (-row["doses"], row["name"]),
     )
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    horizon = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+    today = end
+    horizon = (now + timedelta(days=7)).strftime("%Y-%m-%d")
     overdue = 0
     due_soon = 0
     for item in reminders:
