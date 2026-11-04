@@ -583,3 +583,11 @@ def test_app_js_ships_home_symptoms(client):
     assert "homeGlanceSymptoms" in app_js
     assert 'id="home-glance-symptoms"' in html
     assert "症状日记'" in app_js
+
+
+def test_app_js_ships_symptom_severity_styles(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "is-high" in app_js
+    assert ".symptom-severity.is-high" in css

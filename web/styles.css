@@ -3273,6 +3273,21 @@ html[data-theme="dark"] .reminders-due-hint {
   border-radius: 999px;
 }
 
+.symptom-severity.is-low {
+  color: #1f7a4d;
+  background: #e7f5ec;
+}
+
+.symptom-severity.is-mid {
+  color: #8a5a00;
+  background: #fff3d6;
+}
+
+.symptom-severity.is-high {
+  color: var(--triage-1);
+  background: #fdf0ef;
+}
+
 .metric-more {
   display: block;
   width: 100%;

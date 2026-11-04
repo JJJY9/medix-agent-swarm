@@ -7189,6 +7189,12 @@ function renderSymptoms(items) {
   if (!els.symptomList) return;
   els.symptomList.replaceChildren();
   els.symptomEmpty.hidden = items.length > 0;
+  if (
+    editingSymptomId
+    && !items.some((item) => item.id === editingSymptomId)
+  ) {
+    resetSymptomForm();
+  }
 
   for (const item of items) {
     const li = document.createElement('li');
@@ -7201,7 +7207,10 @@ function renderSymptoms(items) {
     title.className = 'metric-value';
     title.textContent = item.symptom;
     const severity = document.createElement('span');
-    severity.className = 'symptom-severity';
+    severity.className = 'symptom-severity '
+      + (item.severity >= 7
+        ? 'is-high'
+        : item.severity >= 4 ? 'is-mid' : 'is-low');
     severity.textContent = `${item.severity} / 10`;
     title.append(' ', severity);
 
@@ -7336,6 +7345,7 @@ async function saveSymptom() {
     resetSymptomForm();
     setSymptomStatus(editingId ? '已保存修改。' : '已记录症状。');
     await loadSymptoms();
+    loadHomeGlance();
   } catch (err) {
     setSymptomStatus(`保存失败：${err.message || err}`, true);
   } finally {
@@ -7352,6 +7362,7 @@ async function deleteSymptom(item) {
     if (editingSymptomId === item.id) resetSymptomForm();
     setSymptomStatus('已删除症状。');
     await loadSymptoms();
+    loadHomeGlance();
   } catch (err) {
     setSymptomStatus(`删除失败：${err.message || err}`, true);
   }
