@@ -140,3 +140,43 @@ def calculate_chads_vasc(
         "risk": risk,
         "note": "评分只用于风险分层；是否抗凝需医生结合出血风险、肾功能与患者意愿综合评估。",
     }
+
+
+def calculate_curb65(
+    age: int,
+    confusion: bool,
+    urea: float,
+    respiratory_rate: float,
+    systolic_bp: float,
+    diastolic_bp: float,
+) -> Dict[str, object]:
+    """CURB-65 社区获得性肺炎严重程度评分（0–5 分）。
+
+    仅做严重程度分层，不能替代血氧、影像学与合并症评估。
+    """
+    criteria = []
+    if confusion:
+        criteria.append("意识障碍")
+    if float(urea) > 7:
+        criteria.append("尿素氮 > 7 mmol/L")
+    if float(respiratory_rate) >= 30:
+        criteria.append("呼吸频率 ≥ 30 次/分")
+    if float(systolic_bp) < 90 or float(diastolic_bp) <= 60:
+        criteria.append("低血压（收缩压 < 90 或舒张压 ≤ 60 mmHg）")
+    if int(age) >= 65:
+        criteria.append("年龄 ≥ 65 岁")
+
+    score = len(criteria)
+    if score <= 1:
+        risk = "低危"
+    elif score == 2:
+        risk = "中危"
+    else:
+        risk = "高危"
+
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "CURB-65 用于社区获得性肺炎严重程度分层；是否住院或入住 ICU 需医生结合血氧、影像与基础疾病判断。",
+    }

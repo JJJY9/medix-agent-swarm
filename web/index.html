@@ -544,6 +544,7 @@
         <option value="bmi">BMI 体重指数</option>
         <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
         <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
+        <option value="curb65">CURB-65 肺炎严重程度</option>
       </select>
     </label>
 
@@ -594,6 +595,28 @@
       <label class="calc-check"><input type="checkbox" id="calc-chads-diabetes"> 糖尿病</label>
       <label class="calc-check"><input type="checkbox" id="calc-chads-stroke"> 卒中 / TIA 病史（2 分）</label>
       <label class="calc-check"><input type="checkbox" id="calc-chads-vascular"> 血管疾病（心梗、外周动脉病等）</label>
+      <button type="submit" class="btn-quiet">计算评分</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-curb65" data-tool="curb65" hidden>
+      <label class="calc-field">年龄（岁）
+        <input id="calc-curb-age" type="number" min="18" max="120" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-check"><input type="checkbox" id="calc-curb-confusion"> 意识障碍</label>
+      <label class="calc-field">尿素氮（mmol/L）
+        <input id="calc-curb-urea" type="number" min="0" max="100" step="0.1" inputmode="decimal" required>
+      </label>
+      <label class="calc-field">呼吸频率（次/分）
+        <input id="calc-curb-rr" type="number" min="0" max="100" step="1" inputmode="numeric" required>
+      </label>
+      <div class="metrics-values">
+        <label class="calc-field">收缩压（mmHg）
+          <input id="calc-curb-sbp" type="number" min="0" max="300" step="1" inputmode="numeric" required>
+        </label>
+        <label class="calc-field">舒张压（mmHg）
+          <input id="calc-curb-dbp" type="number" min="0" max="200" step="1" inputmode="numeric" required>
+        </label>
+      </div>
       <button type="submit" class="btn-quiet">计算评分</button>
     </form>
 

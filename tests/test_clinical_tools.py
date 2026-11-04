@@ -2,6 +2,7 @@
 from core.clinical_tools import (
     calculate_bmi,
     calculate_chads_vasc,
+    calculate_curb65,
     calculate_egfr,
 )
 
@@ -85,3 +86,36 @@ def test_chads_vasc_age_weighting():
     assert calculate_chads_vasc(65, "male")["score"] == 1
     assert calculate_chads_vasc(75, "male")["score"] == 2
     assert calculate_chads_vasc(66, "male", hypertension=True)["risk"] == "高危"
+
+
+def test_curb65_low_risk_and_boundaries():
+    result = calculate_curb65(
+        age=40,
+        confusion=False,
+        urea=7,
+        respiratory_rate=29,
+        systolic_bp=100,
+        diastolic_bp=70,
+    )
+
+    assert result["score"] == 0
+    assert result["risk"] == "低危"
+    assert result["criteria"] == []
+
+
+def test_curb65_moderate_risk():
+    result = calculate_curb65(70, False, 8, 20, 120, 80)
+
+    assert result["score"] == 2
+    assert result["risk"] == "中危"
+    assert "年龄 ≥ 65 岁" in result["criteria"]
+    assert "尿素氮 > 7 mmol/L" in result["criteria"]
+
+
+def test_curb65_all_criteria_high_risk():
+    result = calculate_curb65(80, True, 10, 32, 85, 55)
+
+    assert result["score"] == 5
+    assert result["risk"] == "高危"
+    assert len(result["criteria"]) == 5
+    assert "低血压（收缩压 < 90 或舒张压 ≤ 60 mmHg）" in result["criteria"]
