@@ -3788,14 +3788,29 @@ async function importHistoryBackup() {
     const metricCount = Array.isArray(data.health_metrics)
       ? data.health_metrics.length
       : 0;
-    if (!count && !profileCount && !metricCount) {
-      window.alert('备份文件中没有会话、患者档案或健康记录。');
+    const reminderCount = Array.isArray(data.reminders)
+      ? data.reminders.length
+      : 0;
+    const targetCount = Array.isArray(data.metric_targets)
+      ? data.metric_targets.length
+      : 0;
+    const symptomCount = Array.isArray(data.symptoms)
+      ? data.symptoms.length
+      : 0;
+    if (
+      !count && !profileCount && !metricCount
+      && !reminderCount && !targetCount && !symptomCount
+    ) {
+      window.alert('备份文件中没有可导入的数据。');
       return;
     }
     const summary = [
       count ? `${count} 个会话` : '',
       profileCount ? `${profileCount} 个患者档案` : '',
       metricCount ? `${metricCount} 条健康记录` : '',
+      reminderCount ? `${reminderCount} 条随访提醒` : '',
+      targetCount ? `${targetCount} 个指标目标` : '',
+      symptomCount ? `${symptomCount} 条症状记录` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
@@ -3815,6 +3830,9 @@ async function importHistoryBackup() {
           sessions: data.sessions,
           profiles: data.profiles,
           health_metrics: data.health_metrics,
+          metric_targets: data.metric_targets,
+          reminders: data.reminders,
+          symptoms: data.symptoms,
         }),
       });
       const result = await res.json().catch(() => ({}));
@@ -3825,6 +3843,11 @@ async function importHistoryBackup() {
       await loadUsageTrend();
       await loadUsageBudget();
       if (result.profiles) await initProfiles();
+      if (result.targets) loadMetricTargets();
+      if (result.symptoms || result.reminders) {
+        loadSymptoms();
+        loadHomeGlance();
+      }
       await loadQualityInsights();
     } catch (err) {
       btn.textContent = '导入失败';
@@ -6731,9 +6754,14 @@ function renderHomeGlance(reminders, metrics, symptoms) {
   els.homeGlanceMetrics.replaceChildren(
     ...homeGlanceLine('健康记录', metricValue, metricSub)
   );
-  els.homeGlanceSymptoms.replaceChildren(
-    ...homeGlanceLine('症状日记', symptomValue, symptomSub)
-  );
+  if (symptoms === null) {
+    els.homeGlanceSymptoms.hidden = true;
+  } else {
+    els.homeGlanceSymptoms.hidden = false;
+    els.homeGlanceSymptoms.replaceChildren(
+      ...homeGlanceLine('症状日记', symptomValue, symptomSub)
+    );
+  }
   els.homeGlance.hidden = false;
 }
 
@@ -6746,7 +6774,7 @@ async function loadHomeGlance() {
       fetch('/api/metrics/latest'),
       fetch('/api/symptoms?limit=1'),
     ]);
-    if (!remindersRes.ok || !metricsRes.ok || !symptomsRes.ok) {
+    if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
         els.homeGlance.hidden = true;
       }
@@ -6754,7 +6782,9 @@ async function loadHomeGlance() {
     }
     const reminders = (await remindersRes.json()).reminders || [];
     const metrics = (await metricsRes.json()).metrics || [];
-    const symptoms = (await symptomsRes.json()).symptoms || [];
+    const symptoms = symptomsRes.ok
+      ? (await symptomsRes.json()).symptoms || []
+      : null;
     if (requestSeq !== homeGlanceRequestSeq) return;
     renderHomeGlance(reminders, metrics, symptoms);
   } catch {
@@ -7170,6 +7200,7 @@ let editingSymptomId = null;
 let symptomSaving = false;
 let symptomRequestSeq = 0;
 let symptomItemsCache = [];
+let editingSymptomProfile = '';
 
 function setSymptomStatus(text, isError = false) {
   if (!els.symptomStatus) return;
@@ -7180,6 +7211,7 @@ function setSymptomStatus(text, isError = false) {
 
 function resetSymptomForm() {
   editingSymptomId = null;
+  editingSymptomProfile = '';
   els.symptomText.value = '';
   els.symptomSeverity.value = '0';
   els.symptomNote.value = '';
@@ -7337,6 +7369,10 @@ async function exportSymptomsCsv() {
 
 function editSymptom(item) {
   editingSymptomId = item.id;
+  editingSymptomProfile = item.profile || '';
+  const hasProfile = Array.from(els.metricProfile.options)
+    .some((option) => option.value === item.profile);
+  if (hasProfile) els.metricProfile.value = item.profile;
   els.symptomText.value = item.symptom || '';
   els.symptomSeverity.value = String(item.severity || 0);
   els.symptomNote.value = item.note || '';
@@ -7354,14 +7390,16 @@ async function saveSymptom() {
     els.symptomText.focus();
     return;
   }
+  const editingId = editingSymptomId;
   const payload = {
-    profile: els.metricProfile.value,
+    profile: editingId
+      ? editingSymptomProfile
+      : (els.metricProfile.value || ''),
     symptom,
     severity: Number(els.symptomSeverity.value),
     recorded_at: els.symptomTime.value || metricNowLocal(),
     note: (els.symptomNote.value || '').trim(),
   };
-  const editingId = editingSymptomId;
 
   symptomSaving = true;
   els.symptomSave.disabled = true;
