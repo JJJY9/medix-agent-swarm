@@ -201,6 +201,32 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_recent_feedback_api(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    first = store.save_exchange("s1", "问题一", "答复一")
+    second = store.save_exchange("s2", "问题二", "答复二")
+    store.set_message_feedback("s1", first, -1, "依据不足")
+    store.set_message_feedback("s2", second, 1)
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        unhelpful = client.get("/api/feedback/recent")
+        helpful = client.get("/api/feedback/recent", params={"rating": 1})
+        invalid = client.get("/api/feedback/recent", params={"rating": 5})
+    finally:
+        store.close()
+
+    assert unhelpful.status_code == 200
+    items = unhelpful.json()["feedback"]
+    assert [item["session_id"] for item in items] == ["s1"]
+    assert items[0]["comment"] == "依据不足"
+    assert items[0]["message_id"] == first
+
+    assert [item["session_id"] for item in helpful.json()["feedback"]] == ["s2"]
+    assert invalid.status_code == 400
+
+
 def test_archive_api_and_filter(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     store.save_exchange(

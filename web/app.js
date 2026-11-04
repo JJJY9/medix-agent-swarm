@@ -42,6 +42,9 @@ const els = {
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
   historyRange: document.getElementById('history-range'),
+  historyFeedback: document.getElementById('history-feedback'),
+  historyFeedbackCount: document.getElementById('history-feedback-count'),
+  historyFeedbackList: document.getElementById('history-feedback-list'),
   historyMore: document.getElementById('history-more'),
   usageTrend: document.getElementById('usage-trend'),
   usageTrendTotal: document.getElementById('usage-trend-total'),
@@ -680,6 +683,8 @@ function renderFeedback(payload) {
   status.setAttribute('role', 'status');
 
   let current = Number((payload.feedback && payload.feedback.rating) || 0);
+  let savedComment = String((payload.feedback && payload.feedback.comment) || '');
+  let form = null;
   const buttons = {};
 
   const paint = () => {
@@ -690,10 +695,19 @@ function renderFeedback(payload) {
     }
   };
 
-  const submit = async (rating) => {
-    const next = current === rating ? 0 : rating;
+  const closeForm = () => {
+    if (form) {
+      form.remove();
+      form = null;
+    }
+  };
+
+  const submit = async (next, comment = '') => {
+    closeForm();
     const previous = current;
+    const previousComment = savedComment;
     current = next;
+    savedComment = comment;
     paint();
     Object.values(buttons).forEach((btn) => { btn.disabled = true; });
 
@@ -706,6 +720,7 @@ function renderFeedback(payload) {
           body: JSON.stringify({
             message_id: messageId,
             rating: next,
+            comment,
           }),
         }
       );
@@ -715,17 +730,22 @@ function renderFeedback(payload) {
       }
       const data = await res.json();
       current = Number(data.rating || 0);
+      savedComment = String(data.comment || '');
       payload.feedback = current
-        ? { rating: current, comment: data.comment || '' }
+        ? { rating: current, comment: savedComment }
         : null;
       paint();
       status.textContent = current === 1
         ? '已标记有用，感谢反馈'
         : current === -1
-        ? '已记录，我们会继续改进'
+        ? savedComment
+          ? `已记录：${savedComment}`
+          : '已记录，我们会继续改进'
         : '已取消反馈';
+      if (historyOpen) loadRecentFeedback();
     } catch (err) {
       current = previous;
+      savedComment = previousComment;
       paint();
       status.textContent = `反馈失败：${err.message || err}`;
     } finally {
@@ -733,8 +753,57 @@ function renderFeedback(payload) {
     }
   };
 
+  const showCommentForm = () => {
+    if (form) {
+      form.querySelector('input').focus();
+      return;
+    }
+
+    form = document.createElement('div');
+    form.className = 'feedback-comment-form';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'feedback-comment-input';
+    input.maxLength = 200;
+    input.placeholder = '可选：哪里需要改进？';
+    input.setAttribute('aria-label', '反馈原因（可选）');
+
+    const commit = () => submit(-1, input.value.trim().slice(0, 200));
+    const sendBtn = makeAction('提交', commit);
+    const skipBtn = makeAction('跳过', () => submit(-1, ''));
+    sendBtn.setAttribute('aria-label', '提交待改进反馈');
+    skipBtn.setAttribute('aria-label', '不填写原因，直接提交待改进');
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeForm();
+      }
+    });
+
+    form.append(input, sendBtn, skipBtn);
+    box.appendChild(form);
+    input.focus();
+  };
+
   for (const rating of [1, -1]) {
-    const btn = makeAction(rating === 1 ? '有用' : '待改进', () => submit(rating));
+    const btn = makeAction(rating === 1 ? '有用' : '待改进', () => {
+      if (rating === 1) {
+        closeForm();
+        submit(current === 1 ? 0 : 1, '');
+        return;
+      }
+      if (current === -1) {
+        closeForm();
+        submit(0, '');
+        return;
+      }
+      showCommentForm();
+    });
     btn.classList.add('feedback-btn');
     btn.dataset.rating = String(rating);
     btn.setAttribute(
@@ -746,6 +815,9 @@ function renderFeedback(payload) {
   }
 
   paint();
+  if (current === -1 && savedComment) {
+    status.textContent = `已记录：${savedComment}`;
+  }
   box.appendChild(status);
   return box;
 }
@@ -1803,6 +1875,55 @@ function renderHistorySummary(summary) {
   els.historySummary.hidden = false;
 }
 
+function renderRecentFeedback(items) {
+  if (!els.historyFeedback) return;
+  els.historyFeedbackList.replaceChildren();
+
+  if (!items.length) {
+    els.historyFeedback.hidden = true;
+    els.historyFeedbackCount.textContent = '';
+    return;
+  }
+
+  els.historyFeedback.hidden = false;
+  els.historyFeedbackCount.textContent = `（${items.length}）`;
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'history-feedback-item';
+    btn.addEventListener('click', () => openSession(item.session_id));
+
+    const title = document.createElement('strong');
+    title.textContent = item.session_title || item.session_id;
+
+    const comment = document.createElement('span');
+    comment.className = 'history-feedback-comment';
+    comment.textContent = item.comment || '未填写原因';
+
+    const meta = document.createElement('span');
+    meta.className = 'history-feedback-meta';
+    meta.textContent = `待改进 · ${formatTime(item.updated_at)}`;
+
+    btn.append(title, comment, meta);
+    li.appendChild(btn);
+    els.historyFeedbackList.appendChild(li);
+  }
+}
+
+async function loadRecentFeedback() {
+  if (!els.historyFeedback) return;
+  try {
+    const res = await fetch('/api/feedback/recent?limit=8&rating=-1');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderRecentFeedback(data.feedback || []);
+  } catch {
+    // 反馈区加载失败不影响历史列表
+  }
+}
+
 function updateHistoryMore(summary) {
   const total = Number(summary && summary.sessions || 0);
   const loaded = Number(summary && summary.loaded || 0);
@@ -2181,6 +2302,7 @@ function openHistory() {
   els.historyEmpty.hidden = false;
   els.historyEmpty.textContent = '正在加载会诊记录…';
   loadHistory();
+  loadRecentFeedback();
   loadUsageTrend();
   loadUsageBudget();
   els.historySearch.focus();
@@ -2382,6 +2504,7 @@ async function deleteHistory(item) {
       els.readout.session.textContent = '—';
     }
     await loadHistory(els.historySearch.value.trim());
+    await loadRecentFeedback();
     await loadUsageTrend();
     await loadUsageBudget();
     els.historyActionStatus.textContent = '已删除会诊';

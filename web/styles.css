@@ -796,6 +796,31 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-soft);
 }
 
+.feedback-comment-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.feedback-comment-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 5px 11px;
+}
+
+.feedback-comment-input:focus {
+  outline: 2px solid var(--clinic);
+  outline-offset: 1px;
+}
+
 /* 各科室意见与参考来源 */
 .contributions,
 .sources {
@@ -1359,6 +1384,58 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   width: auto;
   padding: 0 8px;
   font-size: 12px;
+}
+
+.history-feedback {
+  margin: 0 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+  overflow: hidden;
+}
+
+.history-feedback summary {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.history-feedback ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+}
+
+.history-feedback-item {
+  display: block;
+  width: 100%;
+  padding: 7px 4px;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--rule-soft);
+  cursor: pointer;
+}
+
+.history-feedback-item:hover { background: var(--clinic-soft); }
+.history-feedback-item strong { display: block; font-size: 12.5px; }
+
+.history-feedback-comment {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.history-feedback-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
 }
 
 .usage-trend {
