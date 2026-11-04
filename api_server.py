@@ -1923,21 +1923,32 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         if prev_start <= str(item.get("measured_at") or "")[:10] < start
     ]
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, days
+        store.list_symptoms, profile, 100000, days * 2
     )
     symptoms = [
         item for item in raw_symptoms
         if start <= str(item.get("recorded_at") or "")[:10] <= end
     ]
+    previous_symptoms = [
+        item for item in raw_symptoms
+        if prev_start <= str(item.get("recorded_at") or "")[:10] < start
+    ]
+    previous_severity_total = sum(
+        int(item.get("severity") or 0) for item in previous_symptoms
+    )
     medications = await asyncio.to_thread(
         store.list_medications, profile, False, 100000
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, days
+        store.list_medication_logs, None, profile, 100000, 0, days * 2
     )
     logs = [
         item for item in raw_logs
         if start <= str(item.get("taken_at") or "")[:10] <= end
+    ]
+    previous_logs = [
+        item for item in raw_logs
+        if prev_start <= str(item.get("taken_at") or "")[:10] < start
     ]
     pending_reminders = await asyncio.to_thread(
         store.list_reminders, False, None
@@ -2114,11 +2125,19 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             ),
             "max_severity": max_severity,
             "top": symptom_top,
+            "prev_count": len(previous_symptoms),
+            "prev_avg_severity": (
+                round(
+                    previous_severity_total / len(previous_symptoms), 1
+                )
+                if previous_symptoms else None
+            ),
         },
         "medications": {
             "active": len(active_meds),
             "doses": len(logs),
             "by_medication": medication_rows,
+            "prev_doses": len(previous_logs),
         },
         "reminders": {
             "pending": len(reminders),

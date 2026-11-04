@@ -55,6 +55,10 @@ def test_weekly_report_aggregates(client_and_store):
         "profile": "母亲", "symptom": "乏力", "severity": 3,
         "recorded_at": recent,
     })
+    client.post("/api/symptoms", json={
+        "profile": "母亲", "symptom": "乏力", "severity": 2,
+        "recorded_at": older,
+    })
 
     medication = client.post("/api/medications", json={
         "profile": "母亲", "name": "氨氯地平", "dose": "5 mg",
@@ -96,8 +100,11 @@ def test_weekly_report_aggregates(client_and_store):
     assert data["symptoms"]["avg_severity"] == 4.3
     assert data["symptoms"]["max_severity"] == 6
     assert data["symptoms"]["top"][0] == {"symptom": "头晕", "count": 2}
+    assert data["symptoms"]["prev_count"] == 1
+    assert data["symptoms"]["prev_avg_severity"] == 2.0
     assert data["medications"]["active"] == 1
     assert data["medications"]["doses"] == 1
+    assert data["medications"]["prev_doses"] == 1
     assert data["medications"]["by_medication"][0]["name"] == "氨氯地平"
     assert data["medications"]["by_medication"][0]["dose"] == "5 mg"
     assert data["reminders"]["pending"] == 2

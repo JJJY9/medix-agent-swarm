@@ -8428,6 +8428,12 @@ function weeklySummaryLines(data) {
         .map((item) => `${item.symptom} ${item.count} 次`)
         .join('、')}`;
     }
+    if (symptoms.prev_count !== null && symptoms.prev_count !== undefined) {
+      const diff = symptoms.count - symptoms.prev_count;
+      symptomText += diff === 0
+        ? '；较上期持平'
+        : `；较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 条`;
+    }
   }
   lines.push(['症状日记', symptomText]);
 
@@ -8435,10 +8441,22 @@ function weeklySummaryLines(data) {
   let medicationText = '没有在用药物';
   if (meds.active) {
     medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${meds.doses} 次`;
+    const details = [];
     if (meds.by_medication && meds.by_medication.length) {
-      medicationText += `（${meds.by_medication
-        .map((item) => `${item.name} ${item.doses} 次`)
-        .join('、')}）`;
+      details.push(
+        meds.by_medication
+          .map((item) => `${item.name} ${item.doses} 次`)
+          .join('、')
+      );
+    }
+    if (meds.prev_doses !== null && meds.prev_doses !== undefined) {
+      const diff = meds.doses - meds.prev_doses;
+      details.push(diff === 0
+        ? '较上期持平'
+        : `较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 次`);
+    }
+    if (details.length) {
+      medicationText += `（${details.join('；')}）`;
     }
   }
   lines.push(['用药', medicationText]);
