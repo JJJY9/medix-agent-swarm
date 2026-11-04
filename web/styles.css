@@ -2857,6 +2857,29 @@ html[data-theme="dark"] .metric-delete:hover {
   border-radius: 999px;
 }
 
+.reminder-badge-done {
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+html[data-theme="dark"] .reminder-badge-done {
+  background: #22313a;
+}
+
+.reminder-item-done .reminder-title {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+.reminders-show-done {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
 html[data-theme="dark"] .reminder-badge {
   background: #331f1d;
 }

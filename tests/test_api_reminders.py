@@ -90,6 +90,28 @@ def test_reminders_api_validates_input(client_and_store):
     assert too_long.status_code == 422
 
 
+def test_reminders_api_reopen(client_and_store):
+    client, _store = client_and_store
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10"},
+    ).json()["reminder"]
+    client.post(f"/api/reminders/{created['id']}/complete")
+
+    reopened = client.post(f"/api/reminders/{created['id']}/reopen")
+    listed = client.get("/api/reminders")
+    missing = client.post("/api/reminders/99999/reopen")
+    audit = client.get("/api/audit")
+
+    assert reopened.status_code == 200
+    assert [item["id"] for item in listed.json()["reminders"]] == [
+        created["id"]
+    ]
+    assert missing.status_code == 404
+    actions = [item["action"] for item in audit.json()["actions"]]
+    assert "reminder.reopen" in actions
+
+
 def test_reminders_api_snooze(client_and_store):
     from datetime import date, timedelta
 

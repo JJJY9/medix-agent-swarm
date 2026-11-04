@@ -243,6 +243,7 @@ const els = {
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
+  remindersShowDone: document.getElementById('reminders-show-done'),
   remindersList: document.getElementById('reminders-list'),
   remindersEmpty: document.getElementById('reminders-empty'),
   compareDrawer: document.getElementById('compare-drawer'),
@@ -5540,11 +5541,12 @@ function renderReminders(items) {
 
   let dueCount = 0;
   for (const item of items) {
-    const due = reminderIsDue(item.due_at);
+    const due = !item.done && reminderIsDue(item.due_at);
     if (due) dueCount += 1;
 
     const li = document.createElement('li');
     li.className = 'metric-item reminder-item';
+    if (item.done) li.classList.add('reminder-item-done');
 
     const main = document.createElement('div');
     main.className = 'metric-main';
@@ -5557,7 +5559,12 @@ function renderReminders(items) {
     meta.className = 'metric-meta';
     meta.textContent = `到期：${formatReminderDue(item.due_at)}`
       + (item.profile ? ` · 档案：${item.profile}` : '');
-    if (due) {
+    if (item.done) {
+      const badge = document.createElement('span');
+      badge.className = 'reminder-badge reminder-badge-done';
+      badge.textContent = '已完成';
+      meta.append(' ', badge);
+    } else if (due) {
       const badge = document.createElement('span');
       badge.className = 'reminder-badge';
       badge.textContent = '已到期';
@@ -5575,28 +5582,6 @@ function renderReminders(items) {
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
 
-    const done = document.createElement('button');
-    done.type = 'button';
-    done.className = 'metric-edit';
-    done.textContent = '完成';
-    done.setAttribute('aria-label', `完成提醒：${item.title}`);
-    done.addEventListener('click', () => completeReminder(item));
-
-    const snooze = document.createElement('button');
-    snooze.type = 'button';
-    snooze.className = 'metric-edit';
-    snooze.textContent = '推迟';
-    snooze.title = '推迟 7 天';
-    snooze.setAttribute('aria-label', `推迟提醒：${item.title}`);
-    snooze.addEventListener('click', () => snoozeReminder(item));
-
-    const edit = document.createElement('button');
-    edit.type = 'button';
-    edit.className = 'metric-edit';
-    edit.textContent = '编辑';
-    edit.setAttribute('aria-label', `编辑提醒：${item.title}`);
-    edit.addEventListener('click', () => editReminder(item));
-
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'metric-delete';
@@ -5604,7 +5589,40 @@ function renderReminders(items) {
     del.setAttribute('aria-label', `删除提醒：${item.title}`);
     del.addEventListener('click', () => deleteReminder(item));
 
-    actions.append(done, snooze, edit, del);
+    if (item.done) {
+      const reopen = document.createElement('button');
+      reopen.type = 'button';
+      reopen.className = 'metric-edit';
+      reopen.textContent = '恢复';
+      reopen.setAttribute('aria-label', `恢复提醒：${item.title}`);
+      reopen.addEventListener('click', () => reopenReminder(item));
+      actions.append(reopen, del);
+    } else {
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'metric-edit';
+      done.textContent = '完成';
+      done.setAttribute('aria-label', `完成提醒：${item.title}`);
+      done.addEventListener('click', () => completeReminder(item));
+
+      const snooze = document.createElement('button');
+      snooze.type = 'button';
+      snooze.className = 'metric-edit';
+      snooze.textContent = '推迟';
+      snooze.title = '推迟 7 天';
+      snooze.setAttribute('aria-label', `推迟提醒：${item.title}`);
+      snooze.addEventListener('click', () => snoozeReminder(item));
+
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'metric-edit';
+      edit.textContent = '编辑';
+      edit.setAttribute('aria-label', `编辑提醒：${item.title}`);
+      edit.addEventListener('click', () => editReminder(item));
+
+      actions.append(done, snooze, edit, del);
+    }
+
     li.append(main, actions);
     els.remindersList.appendChild(li);
   }
@@ -5692,7 +5710,9 @@ function maybeNotifyDueReminders(dueCount, items) {
   } catch {
     return;
   }
-  const dueItems = (items || []).filter((item) => reminderIsDue(item.due_at));
+  const dueItems = (items || []).filter(
+    (item) => !item.done && reminderIsDue(item.due_at)
+  );
   const count = dueItems.length || Number(dueCount) || 0;
   if (count <= 0) return;
 
@@ -5710,7 +5730,12 @@ function maybeNotifyDueReminders(dueCount, items) {
 
 async function loadReminders() {
   try {
-    const res = await fetch('/api/reminders');
+    const includeDone = Boolean(
+      els.remindersShowDone && els.remindersShowDone.checked
+    );
+    const res = await fetch(
+      `/api/reminders${includeDone ? '?include_done=true' : ''}`
+    );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     renderReminders(data.reminders || []);
@@ -5779,6 +5804,19 @@ async function completeReminder(item) {
     await loadReminders();
   } catch (err) {
     window.alert(`完成提醒失败：${err.message || err}`);
+  }
+}
+
+async function reopenReminder(item) {
+  try {
+    const res = await fetch(`/api/reminders/${item.id}/reopen`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    setRemindersStatus('已恢复为待完成。');
+    await loadReminders();
+  } catch (err) {
+    window.alert(`恢复提醒失败：${err.message || err}`);
   }
 }
 
@@ -7651,6 +7689,7 @@ els.remindersBackdrop.addEventListener('click', () => closeReminders(true));
 els.remindersNotify.addEventListener('click', enableReminderNotifications);
 els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
+els.remindersShowDone.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
   resetReminderForm();
   setRemindersStatus('已取消编辑。');

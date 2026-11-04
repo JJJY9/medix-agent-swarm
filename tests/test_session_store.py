@@ -1061,6 +1061,11 @@ def test_reminders_crud(store):
     assert len(store.list_reminders(include_done=True)) == 2
     assert store.complete_reminder(99999) is False
 
+    assert store.reopen_reminder(first["id"]) is True
+    assert len(store.list_reminders()) == 2
+    assert store.reopen_reminder(99999) is False
+
+    assert store.complete_reminder(first["id"]) is True
     assert store.delete_reminder(first["id"]) is True
     assert store.delete_reminder(first["id"]) is False
     assert len(store.list_reminders(include_done=True)) == 1
