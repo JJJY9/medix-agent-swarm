@@ -159,6 +159,7 @@ class ReminderUpdateRequest(BaseModel):
     due_at: Optional[str] = Field(None, max_length=32)
     note: Optional[str] = Field(None, max_length=300)
     advance_days: Optional[int] = Field(None, ge=0, le=30)
+    profile: Optional[str] = Field(None, max_length=40)
 
 
 class BmiRequest(BaseModel):
@@ -1836,6 +1837,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
         and request.due_at is None
         and request.note is None
         and request.advance_days is None
+        and request.profile is None
     ):
         raise HTTPException(status_code=400, detail="没有需要修改的字段")
     try:
@@ -1846,6 +1848,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
             request.due_at,
             request.note,
             request.advance_days,
+            request.profile,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -451,3 +451,22 @@ def test_reminders_ics_skips_alarm_for_done(client_and_store):
 
     assert "STATUS:COMPLETED" in text
     assert "BEGIN:VALARM" not in text
+
+
+def test_reminder_update_profile(client_and_store):
+    client, _store = client_and_store
+
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10", "profile": "甲"},
+    ).json()["reminder"]
+    updated = client.patch(
+        f"/api/reminders/{created['id']}", json={"profile": "乙"}
+    )
+    listed = client.get("/api/reminders", params={"profile": "乙"})
+
+    assert updated.status_code == 200
+    assert updated.json()["reminder"]["profile"] == "乙"
+    assert [item["id"] for item in listed.json()["reminders"]] == [
+        created["id"]
+    ]
