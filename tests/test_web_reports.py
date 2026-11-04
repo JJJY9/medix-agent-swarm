@@ -313,3 +313,12 @@ def test_app_js_ships_metric_followup(client):
     assert "async function scheduleMetricFollowUp" in app_js
     assert "安排复查" in app_js
     assert "上次记录：" in app_js
+
+
+def test_app_js_ships_reminder_search(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function searchFilteredReminders" in app_js
+    assert "function refreshReminderViews" in app_js
+    assert 'id="reminders-search"' in html
