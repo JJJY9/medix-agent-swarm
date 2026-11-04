@@ -7111,6 +7111,8 @@ async function handleLaunchAction() {
     await startNewSession();
   } else if (action === 'reminders') {
     openReminders();
+  } else if (action === 'metrics') {
+    openMetrics();
   }
 }
 
