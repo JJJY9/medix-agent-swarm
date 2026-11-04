@@ -170,6 +170,10 @@ def _parse_tags(raw: Any) -> List[str]:
     return _normalize_tags(value)
 
 
+def _normalize_profile_name(value: Any) -> str:
+    return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
+
+
 def _tag_like_pattern(tag: str) -> str:
     escaped = (
         str(tag or "")
@@ -374,6 +378,12 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN profile TEXT NOT NULL DEFAULT ''"
                 )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sessions_profile_updated
+                    ON sessions(profile, updated_at DESC)
+                """
+            )
             reminder_columns = {
                 row["name"]
                 for row in self._conn.execute("PRAGMA table_info(reminders)")
@@ -397,7 +407,7 @@ class SessionStore:
     ) -> None:
         """确保会话存在；已有会话不会被覆盖，档案只在为空时补上。"""
         now = self._now()
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         with self._lock, self._conn:
             self._conn.execute(
                 """
@@ -414,6 +424,39 @@ class SessionStore:
                     """,
                     (profile, session_id),
                 )
+
+    def set_session_profile(self, session_id: str, profile: str) -> bool:
+        """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
+        session_id = str(session_id or "").strip()
+        profile = _normalize_profile_name(profile)
+        if not session_id or not profile:
+            return False
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE sessions SET profile = ?
+                 WHERE id = ? AND profile = ''
+                """,
+                (profile, session_id),
+            )
+            return cursor.rowcount > 0
+
+    def list_session_profiles(self) -> List[Dict[str, Any]]:
+        """返回会话中出现过的档案名及数量（含已删除档案留下的历史名字）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT profile, COUNT(*) AS count
+                  FROM sessions
+                 WHERE profile != ''
+                 GROUP BY profile
+                 ORDER BY profile
+                """
+            ).fetchall()
+        return [
+            {"name": row["profile"], "count": int(row["count"])}
+            for row in rows
+        ]
 
     def save_exchange(
         self,
@@ -527,6 +570,7 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        profile = _normalize_profile_name(profile)
         if profile:
             conditions.append("s.profile = ?")
             params.append(profile)
@@ -607,6 +651,7 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        profile = _normalize_profile_name(profile)
         if profile:
             conditions.append("s.profile = ?")
             params.append(profile)
@@ -757,6 +802,7 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        profile = _normalize_profile_name(profile)
         if profile:
             conditions.append("s.profile = ?")
             params.append(profile)
@@ -816,6 +862,7 @@ class SessionStore:
         if tag:
             conditions.append("s.tags LIKE ? ESCAPE '\\'")
             params.append(_tag_like_pattern(tag))
+        profile = _normalize_profile_name(profile)
         if profile:
             conditions.append("s.profile = ?")
             params.append(profile)
@@ -859,7 +906,10 @@ class SessionStore:
         }
 
     def recent_feedback(
-        self, limit: int = 10, rating: int = -1
+        self,
+        limit: int = 10,
+        rating: int = -1,
+        profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """返回最近带指定评分的会诊反馈，供质量复核。"""
         try:
@@ -868,16 +918,21 @@ class SessionStore:
             return []
         limit = max(1, min(int(limit or 10), 100000))
 
+        sql = """
+            SELECT m.id AS message_id, m.session_id, m.metadata,
+                   m.created_at, s.title AS session_title
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+             WHERE m.role = 'assistant'
+        """
+        params: List[Any] = []
+        profile = _normalize_profile_name(profile)
+        if profile:
+            sql += " AND s.profile = ?"
+            params.append(profile)
+
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT m.id AS message_id, m.session_id, m.metadata,
-                       m.created_at, s.title AS session_title
-                  FROM messages m
-                  JOIN sessions s ON s.id = m.session_id
-                 WHERE m.role = 'assistant'
-                """
-            ).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
 
         items: List[Dict[str, Any]] = []
         for row in rows:
@@ -972,7 +1027,9 @@ class SessionStore:
 
         return {"message_id": message_id, "rating": rating, "comment": comment}
 
-    def quality_insights(self, days: int = 30) -> Dict[str, Any]:
+    def quality_insights(
+        self, days: int = 30, profile: Optional[str] = None
+    ) -> Dict[str, Any]:
         """汇总最近一段时间的会诊质量信号。
 
         只做统计，不包含完整会话正文；用于历史抽屉的质量概览。
@@ -982,12 +1039,17 @@ class SessionStore:
         sql = """
             SELECT m.session_id, m.metadata, m.created_at
               FROM messages m
+              JOIN sessions s ON s.id = m.session_id
              WHERE m.role = 'assistant'
         """
         params: List[Any] = []
         if cutoff:
             sql += " AND m.created_at >= ?"
             params.append(cutoff)
+        profile = _normalize_profile_name(profile)
+        if profile:
+            sql += " AND s.profile = ?"
+            params.append(profile)
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -1103,7 +1165,10 @@ class SessionStore:
         }
 
     def daily_usage(
-        self, days: int = 7, favorites_only: bool = False
+        self,
+        days: int = 7,
+        favorites_only: bool = False,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """按自然日汇总用量，返回最近 days 天（含没有记录的日期）。"""
         days = max(1, min(int(days or 7), 30))
@@ -1117,11 +1182,16 @@ class SessionStore:
               JOIN sessions s ON s.id = m.session_id
              WHERE m.role = 'assistant' AND m.created_at >= ?
         """
+        params: List[Any] = [start_text]
         if favorites_only:
             sql += " AND s.favorite = 1"
+        profile = _normalize_profile_name(profile)
+        if profile:
+            sql += " AND s.profile = ?"
+            params.append(profile)
 
         with self._lock:
-            rows = self._conn.execute(sql, (start_text,)).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
 
         buckets: Dict[str, Dict[str, Any]] = {}
         for offset in range(days):
@@ -1308,9 +1378,7 @@ class SessionStore:
                 favorite = 1 if raw.get("favorite") in (1, True, "1") else 0
                 archived = 1 if raw.get("archived") in (1, True, "1") else 0
                 tags = _normalize_tags(raw.get("tags") or [])
-                profile = " ".join(
-                    str(raw.get("profile") or "").split()
-                )[:MAX_PROFILE_NAME_LENGTH]
+                profile = _normalize_profile_name(raw.get("profile"))
 
                 self._conn.execute(
                     """
@@ -1456,9 +1524,7 @@ class SessionStore:
                             continue
                     if metric != "bp":
                         second = None
-                    profile = " ".join(
-                        str(raw.get("profile") or "").split()
-                    )[:MAX_PROFILE_NAME_LENGTH]
+                    profile = _normalize_profile_name(raw.get("profile"))
                     exists = self._conn.execute(
                         """
                         SELECT 1 FROM metric_targets
@@ -1499,9 +1565,7 @@ class SessionStore:
                     note = " ".join(
                         str(raw.get("note") or "").split()
                     )[:MAX_REMINDER_NOTE_LENGTH]
-                    profile = " ".join(
-                        str(raw.get("profile") or "").split()
-                    )[:MAX_PROFILE_NAME_LENGTH]
+                    profile = _normalize_profile_name(raw.get("profile"))
                     session_id = str(raw.get("session_id") or "").strip()[:64]
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     exists = self._conn.execute(
@@ -1590,14 +1654,23 @@ class SessionStore:
         return normalized
 
     def list_tags(
-        self, archived: Optional[bool] = False
+        self,
+        archived: Optional[bool] = False,
+        profile: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """统计会话标签及数量，默认只看未归档会话。"""
+        """统计会话标签及数量，默认只看未归档会话，可按档案筛选。"""
         sql = "SELECT tags FROM sessions"
         params: List[Any] = []
+        conditions: List[str] = []
         if archived is not None:
-            sql += " WHERE archived = ?"
+            conditions.append("archived = ?")
             params.append(1 if archived else 0)
+        profile = _normalize_profile_name(profile)
+        if profile:
+            conditions.append("profile = ?")
+            params.append(profile)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
@@ -1716,7 +1789,7 @@ class SessionStore:
     def rename_profile(
         self, old_name: str, new_name: str
     ) -> Optional[str]:
-        """重命名患者档案，并同步健康指标里的档案名。
+        """重命名患者档案，并同步所有以档案名为键的数据。
 
         旧档案不存在返回 None；新名称已被占用时抛出 ValueError。
         """
@@ -1748,10 +1821,16 @@ class SessionStore:
                 """,
                 (new_name, now, old_name),
             )
-            self._conn.execute(
-                "UPDATE health_metrics SET profile = ? WHERE profile = ?",
-                (new_name, old_name),
-            )
+            for table in (
+                "health_metrics",
+                "metric_targets",
+                "reminders",
+                "sessions",
+            ):
+                self._conn.execute(
+                    f"UPDATE {table} SET profile = ? WHERE profile = ?",
+                    (new_name, old_name),
+                )
         return new_name
 
     def add_metric(
@@ -1815,7 +1894,7 @@ class SessionStore:
         conditions: List[str] = []
         params: List[Any] = []
         if profile is not None:
-            normalized_profile = " ".join(str(profile).split())[:MAX_PROFILE_NAME_LENGTH]
+            normalized_profile = _normalize_profile_name(profile)
             conditions.append("profile = ?")
             params.append(normalized_profile)
         if metric:
@@ -1920,7 +1999,7 @@ class SessionStore:
             if not (30 <= second <= 200) or first <= second:
                 return None
 
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         now = self._now()
         with self._lock, self._conn:
             self._conn.execute(
@@ -1957,7 +2036,7 @@ class SessionStore:
         """返回自定义指标目标；可按档案筛选。"""
         sql = "SELECT profile, metric, value1, value2, updated_at FROM metric_targets"
         params: List[Any] = []
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         if profile:
             sql += " WHERE profile = ?"
             params.append(profile)
@@ -1974,7 +2053,7 @@ class SessionStore:
         return result
 
     def delete_metric_target(self, profile: str, metric: str) -> bool:
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM metric_targets WHERE profile = ? AND metric = ?",
@@ -2075,7 +2154,7 @@ class SessionStore:
             raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
         note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
         session_id = str(session_id or "").strip()[:64]
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
@@ -2110,7 +2189,7 @@ class SessionStore:
         params: List[Any] = []
         if not include_done:
             clauses.append("done = 0")
-        profile = " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        profile = _normalize_profile_name(profile)
         if profile:
             clauses.append("profile = ?")
             params.append(profile)

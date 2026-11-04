@@ -136,3 +136,12 @@ def test_app_js_ships_reminder_from_note(client):
 
     assert "设随访提醒" in app_js
     assert "来自会诊建议" in app_js
+
+
+def test_app_js_scopes_profile_state(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "/api/session-profiles" in app_js
+    assert "medix.activeProfile" in app_js
+    assert "function setActiveProfile" in app_js
+    assert "切换患者档案会开始新的会诊记录" in app_js

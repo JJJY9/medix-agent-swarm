@@ -179,7 +179,8 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 ### 会话历史与意见导出
 
 - 会诊记录保存在 `data/sessions.db`（SQLite，首次运行自动创建，已加入 `.gitignore`），服务重启后不会丢失
-- 会诊时选择了常用档案，本次会诊会自动关联到该档案（只补全一次）；历史抽屉的「档案」筛选可只看某位患者的会诊，就诊摘要也按档案汇总
+- 会诊时选择了常用档案，本次会诊会自动关联到该档案（只补全一次）；历史抽屉的「档案」筛选可只看某位患者的会诊，用量/质量/反馈/tag 统计也会同步按档案筛选，就诊摘要按档案汇总
+- 重命名档案会同步迁移历史会诊、随访提醒、指标目标与健康记录；删除档案后历史会诊仍保留，可在「档案」筛选中以「（已删除）」形式查看
 - 右上角「会诊记录」支持搜索、打开、重命名、导出和删除历史会诊，点击条目可恢复完整问诊记录
 - 在会诊记录抽屉点「批量」，勾选会诊后可「导出选中」为合并的 Markdown 文件
 - 历史抽屉的「列表 CSV」按当前搜索与筛选条件导出会话列表（含档案、标签、Token 与调用次数），便于表格分析
@@ -265,6 +266,7 @@ npm install -D playwright
 | POST | `/api/sessions` | 新建会话 |
 | GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、`profile=档案` 患者档案筛选、用量与反馈汇总 |
 | GET | `/api/tags` | 未归档会话的标签与数量 |
+| GET | `/api/session-profiles` | 会话中出现过的档案名及数量（含已删除档案留下的历史名字） |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile` 筛选导出会话列表 CSV（带 BOM） |
 | POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息（不可恢复，写入审计） |
@@ -312,13 +314,13 @@ npm install -D playwright
 | POST | `/api/bulk/sessions/delete` | 批量删除会诊（最多 200 个） |
 | PATCH | `/api/bulk/sessions/tags` | 批量覆盖会话标签（最多 200 个） |
 | POST | `/api/sessions/{id}/feedback` | 记录会诊意见反馈（`message_id`、`rating`：1 有用 / -1 待改进 / 0 清除、可选 `comment`） |
-| GET | `/api/feedback/recent` | 最近的会诊反馈（默认 `rating=-1` 待改进），用于质量复核 |
+| GET | `/api/feedback/recent` | 最近的会诊反馈（默认 `rating=-1` 待改进，`profile` 按档案筛选），用于质量复核 |
 | GET | `/api/feedback/export.csv` | 导出反馈 CSV（带 BOM，可按 `rating` 筛选） |
-| GET | `/api/insights/quality` | 近 N 天质量概览（急症、用药提示、反馈、平均用时与 Token） |
+| GET | `/api/insights/quality` | 近 N 天质量概览（急症、用药提示、反馈、平均用时与 Token，`profile` 按档案筛选） |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
-| GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
+| GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1`/`profile` 筛选） |
 | GET | `/api/usage/month` | 本月用量、预算进度与是否超限 |
-| GET | `/api/usage/export.csv` | 导出近 N 天按日用量 CSV（含 BOM 与合计行） |
+| GET | `/api/usage/export.csv` | 导出近 N 天按日用量 CSV（含 BOM 与合计行，支持 `favorite`/`profile` 筛选） |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |
 | GET | `/api/knowledge/search` | 知识库检索测试（返回来源、相关度与片段，可用 `filter_type` 按文档类型过滤） |
 | GET | `/api/knowledge/documents/{filename}/preview` | 预览内置/上传文档前 4000 字（`full=1` 返回全文） |

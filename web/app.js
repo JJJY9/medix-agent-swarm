@@ -2468,6 +2468,8 @@ function renderHistoryItems(sessions, summary, append = false) {
       els.historyEmpty.textContent = '还没有归档的会诊';
     } else if (historyTag) {
       els.historyEmpty.textContent = `标签「${historyTag}」下没有会诊`;
+    } else if (historyProfile) {
+      els.historyEmpty.textContent = `档案「${historyProfile}」下没有会诊`;
     } else if (favoritesOnly) {
       els.historyEmpty.textContent = '还没有收藏的会诊';
     } else if (historyDays > 0) {
@@ -2527,7 +2529,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     if (sessionTokens > 0) {
       metaParts.push(`${sessionTokens.toLocaleString()} tokens`);
     }
-    meta.textContent = metaParts.join(' · ');
+    meta.textContent = metaParts.filter(Boolean).join(' · ');
 
     const preview = document.createElement('span');
     preview.className = 'history-preview';
@@ -2673,9 +2675,17 @@ function renderHistorySummary(summary) {
   const totalTokens = Number(summary.usage && summary.usage.total_tokens || 0);
   const llmCalls = Number(summary.llm_calls || 0);
   const scope = archivedOnly ? '已归档' : favoritesOnly ? '收藏' : '';
-  const title = historyTag
-    ? `标签「${historyTag}」共 ${summary.sessions} 次会诊`
-    : `共 ${summary.sessions} 次${scope}会诊`;
+  let title;
+  if (historyProfile) {
+    title =
+      `档案「${historyProfile}」`
+      + (historyTag ? `·标签「${historyTag}」` : '')
+      + `共 ${summary.sessions} 次${scope}会诊`;
+  } else if (historyTag) {
+    title = `标签「${historyTag}」共 ${summary.sessions} 次会诊`;
+  } else {
+    title = `共 ${summary.sessions} 次${scope}会诊`;
+  }
   const parts = [title];
   if (summary.loaded && summary.loaded < summary.sessions) {
     parts.push(`已加载 ${summary.loaded} 次`);
@@ -2738,7 +2748,12 @@ function renderRecentFeedback(items) {
 async function loadRecentFeedback() {
   if (!els.historyFeedback) return;
   try {
-    const res = await fetch('/api/feedback/recent?limit=8&rating=-1');
+    const scope = historyProfile
+      ? `&profile=${encodeURIComponent(historyProfile)}`
+      : '';
+    const res = await fetch(
+      `/api/feedback/recent?limit=8&rating=-1${scope}`
+    );
     if (!res.ok) return;
     const data = await res.json();
     renderRecentFeedback(data.feedback || []);
@@ -2754,7 +2769,10 @@ async function exportFeedbackCsv() {
   button.textContent = '…';
 
   try {
-    const res = await fetch('/api/feedback/export.csv?rating=-1');
+    const scope = historyProfile
+      ? `&profile=${encodeURIComponent(historyProfile)}`
+      : '';
+    const res = await fetch(`/api/feedback/export.csv?rating=-1${scope}`);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
@@ -2853,7 +2871,10 @@ function renderQualityInsights(data) {
 
 async function loadQualityInsights() {
   try {
-    const res = await fetch('/api/insights/quality?days=30');
+    const scope = historyProfile
+      ? `&profile=${encodeURIComponent(historyProfile)}`
+      : '';
+    const res = await fetch(`/api/insights/quality?days=30${scope}`);
     if (!res.ok) return;
     renderQualityInsights(await res.json());
   } catch {
@@ -3368,9 +3389,12 @@ function renderUsageTrend(data) {
 
 async function loadUsageTrend() {
   const requestSeq = ++usageTrendRequestSeq;
+  const scope = historyProfile
+    ? `&profile=${encodeURIComponent(historyProfile)}`
+    : '';
   try {
     const res = await fetch(
-      `/api/usage/daily?days=7${favoritesOnly ? '&favorite=1' : ''}`
+      `/api/usage/daily?days=7${favoritesOnly ? '&favorite=1' : ''}${scope}`
     );
     const data = await res.json().catch(() => ({}));
     if (requestSeq !== usageTrendRequestSeq) return;
@@ -3440,8 +3464,11 @@ async function exportUsageCsv() {
   button.textContent = '…';
 
   try {
+    const scope = historyProfile
+      ? `&profile=${encodeURIComponent(historyProfile)}`
+      : '';
     const res = await fetch(
-      `/api/usage/export.csv?days=7${favoritesOnly ? '&favorite=1' : ''}`
+      `/api/usage/export.csv?days=7${favoritesOnly ? '&favorite=1' : ''}${scope}`
     );
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -3647,6 +3674,7 @@ function openHistory() {
   loadHistoryTags();
   loadUsageTrend();
   loadUsageBudget();
+  refreshHistoryProfileOptions();
   els.historySearch.focus();
 }
 
@@ -3662,7 +3690,7 @@ function closeHistory(restoreFocus = false) {
   }
 }
 
-function renderStoredMessages(messages, activeSessionId = sessionId) {
+function renderStoredMessages(messages, activeSessionId = sessionId, profile = '') {
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = messages.length > 0;
 
@@ -3740,9 +3768,10 @@ function renderStoredMessages(messages, activeSessionId = sessionId) {
     updateCostDisplay();
   }
 
-  if (lastMetadata && lastMetadata.patient_context) {
-    applyPatientContext(lastMetadata.patient_context);
-  }
+  applyPatientContext(
+    (lastMetadata && lastMetadata.patient_context) || {}
+  );
+  setActiveProfile(profile || '');
 
   scrollThreadToBottom(true);
 }
@@ -3761,7 +3790,7 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
-    renderStoredMessages(data.messages || [], id);
+    renderStoredMessages(data.messages || [], id, data.profile || '');
     setVitals('idle', '历史会诊');
     els.input.focus();
   } catch (err) {
@@ -3799,7 +3828,10 @@ async function toggleFavorite(item) {
 
 async function loadHistoryTags() {
   try {
-    const res = await fetch('/api/tags');
+    const scope = historyProfile
+      ? `?profile=${encodeURIComponent(historyProfile)}`
+      : '';
+    const res = await fetch(`/api/tags${scope}`);
     if (!res.ok) return;
     const data = await res.json();
     const items = data.tags || [];
@@ -6627,7 +6659,7 @@ async function restoreCurrentSession() {
     if (!messages.length) return;
 
     els.readout.session.textContent = shortSession(expectedSession);
-    renderStoredMessages(messages, expectedSession);
+    renderStoredMessages(messages, expectedSession, data.profile || '');
     setVitals('idle', '已恢复上次会诊');
   } catch {
     // 服务未启动或尚无记录时保持空状态
@@ -6954,7 +6986,9 @@ function hideBanner() {
 const CONTEXT_STORAGE_KEY = 'medix.context';
 const SINGLE_MODE_KEY = 'medix.singleMode';
 const PROFILES_STORAGE_KEY = 'medix.profiles';
+const PROFILE_STORAGE_KEY = 'medix.activeProfile';
 let profilesCache = {};
+let activeProfileName = '';
 
 function readPatientContext() {
   const context = {};
@@ -7088,16 +7122,75 @@ async function initProfiles() {
   try {
     await fetchProfiles();
     await migrateLegacyProfiles();
-    refreshProfileOptions('');
+    refreshProfileOptions();
   } catch {
     // 服务暂不可用时不阻塞主界面；恢复后刷新页面即可重新加载
   }
 }
 
+function readStoredProfile() {
+  try {
+    return sessionStorage.getItem(PROFILE_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function setActiveProfile(name) {
+  activeProfileName = profilesCache[name] ? name : '';
+  if (els.profileSelect) els.profileSelect.value = activeProfileName;
+  try {
+    if (activeProfileName) {
+      sessionStorage.setItem(PROFILE_STORAGE_KEY, activeProfileName);
+    } else {
+      sessionStorage.removeItem(PROFILE_STORAGE_KEY);
+    }
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
+}
+
+async function refreshHistoryProfileOptions() {
+  if (!els.historyProfile) return;
+
+  let items = [];
+  try {
+    const res = await fetch('/api/session-profiles');
+    if (res.ok) {
+      const data = await res.json();
+      items = data.profiles || [];
+    }
+  } catch {
+    // 会话档案加载失败时退回档案列表
+  }
+
+  const names = new Set(Object.keys(readProfiles()));
+  for (const item of items) {
+    if (item && item.name) names.add(item.name);
+  }
+
+  const current = historyProfile || els.historyProfile.value || '';
+  els.historyProfile.replaceChildren();
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部档案';
+  els.historyProfile.appendChild(all);
+  for (const name of [...names].sort()) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = readProfiles()[name]
+      ? name
+      : `${name}（已删除）`;
+    els.historyProfile.appendChild(option);
+  }
+  els.historyProfile.value = names.has(current) ? current : '';
+  historyProfile = els.historyProfile.value;
+}
+
 function refreshProfileOptions(selected = undefined) {
   const profiles = readProfiles();
   const current = selected === undefined
-    ? els.profileSelect.value
+    ? (els.profileSelect.value || activeProfileName || readStoredProfile())
     : selected;
 
   els.profileSelect.replaceChildren();
@@ -7113,24 +7206,8 @@ function refreshProfileOptions(selected = undefined) {
     els.profileSelect.appendChild(option);
   }
 
-  els.profileSelect.value = profiles[current] ? current : '';
-
-  if (els.historyProfile) {
-    const historyCurrent = historyProfile || els.historyProfile.value || '';
-    els.historyProfile.replaceChildren();
-    const all = document.createElement('option');
-    all.value = '';
-    all.textContent = '全部档案';
-    els.historyProfile.appendChild(all);
-    for (const name of Object.keys(profiles).sort()) {
-      const option = document.createElement('option');
-      option.value = name;
-      option.textContent = name;
-      els.historyProfile.appendChild(option);
-    }
-    els.historyProfile.value = profiles[historyCurrent] ? historyCurrent : '';
-    historyProfile = els.historyProfile.value;
-  }
+  setActiveProfile(profiles[current] ? current : '');
+  refreshHistoryProfileOptions();
 }
 
 async function savePatientProfile() {
@@ -7141,6 +7218,7 @@ async function savePatientProfile() {
   }
 
   const name = (window.prompt('档案名称（如：妈妈、孩子）') || '')
+    .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 20);
   if (!name) return;
@@ -7173,7 +7251,9 @@ async function renamePatientProfile() {
     return;
   }
 
-  const nextName = (window.prompt('新的档案名称', name) || '').trim();
+  const nextName = (window.prompt('新的档案名称', name) || '')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!nextName || nextName === name) return;
 
   try {
@@ -7191,7 +7271,7 @@ async function renamePatientProfile() {
     }
 
     await initProfiles();
-    els.profileSelect.value = data.name;
+    setActiveProfile(data.name);
     setVitals('idle', '档案已重命名');
   } catch (err) {
     window.alert(`重命名档案失败：${err.message || err}`);
@@ -7221,13 +7301,40 @@ async function deletePatientProfile() {
   }
 }
 
-function applySelectedProfile() {
+async function applySelectedProfile() {
   const name = els.profileSelect.value;
-  if (!name) return;
-  const profiles = readProfiles();
-  if (!profiles[name]) return;
-  applyPatientContext(profiles[name].context || {});
-  els.profileSelect.value = name;
+  const previous = activeProfileName;
+
+  if (name === previous) {
+    if (name && readProfiles()[name]) {
+      applyPatientContext(readProfiles()[name].context || {});
+      els.profileSelect.value = name;
+    }
+    return;
+  }
+
+  const hasTurns = els.thread.querySelectorAll('.turn').length > 0;
+  if (sessionId && hasTurns) {
+    const ok = window.confirm(
+      '切换患者档案会开始新的会诊记录，是否继续？'
+    );
+    if (!ok) {
+      els.profileSelect.value = previous;
+      return;
+    }
+    const before = sessionId;
+    await startNewSession();
+    if (sessionId === before) {
+      els.profileSelect.value = previous;
+      return;
+    }
+  }
+
+  setActiveProfile(name);
+  if (name && readProfiles()[name]) {
+    applyPatientContext(readProfiles()[name].context || {});
+    els.profileSelect.value = name;
+  }
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -7693,10 +7800,16 @@ els.historyTag.addEventListener('change', () => {
   loadHistory(els.historySearch.value.trim());
 });
 
-els.historyProfile.addEventListener('change', () => {
-  historyProfile = els.historyProfile.value;
-  loadHistory(els.historySearch.value.trim());
-});
+if (els.historyProfile) {
+  els.historyProfile.addEventListener('change', () => {
+    historyProfile = els.historyProfile.value;
+    loadHistory(els.historySearch.value.trim());
+    loadUsageTrend();
+    loadQualityInsights();
+    loadRecentFeedback();
+    loadHistoryTags();
+  });
+}
 
 els.historyBulkToggle.addEventListener('click', () => {
   setBulkMode(!bulkMode);
