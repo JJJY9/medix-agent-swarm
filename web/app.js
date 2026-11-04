@@ -43,6 +43,7 @@ const els = {
   historyBulkBar: document.getElementById('history-bulk-bar'),
   historyBulkCount: document.getElementById('history-bulk-count'),
   historyBulkAll: document.getElementById('history-bulk-all'),
+  historyBulkCompare: document.getElementById('history-bulk-compare'),
   historyBulkArchive: document.getElementById('history-bulk-archive'),
   historyBulkUnarchive: document.getElementById('history-bulk-unarchive'),
   historyBulkTags: document.getElementById('history-bulk-tags'),
@@ -220,6 +221,10 @@ const els = {
   remindersDueHint: document.getElementById('reminders-due-hint'),
   remindersList: document.getElementById('reminders-list'),
   remindersEmpty: document.getElementById('reminders-empty'),
+  compareDrawer: document.getElementById('compare-drawer'),
+  compareBackdrop: document.getElementById('compare-backdrop'),
+  compareClose: document.getElementById('compare-close'),
+  compareBody: document.getElementById('compare-body'),
   metricProfile: document.getElementById('metric-profile'),
   metricType: document.getElementById('metric-type'),
   metricReference: document.getElementById('metric-reference'),
@@ -303,6 +308,8 @@ let archivedOnly = false;
 let historyTag = '';
 let bulkMode = false;
 let selectedSessions = new Set();
+let historyItemMap = new Map();
+let compareOpen = false;
 let historyDays = 0;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
@@ -327,13 +334,14 @@ function activeDrawer() {
   if (calcOpen) return els.calcDrawer;
   if (metricsOpen) return els.metricsDrawer;
   if (remindersOpen) return els.remindersDrawer;
+  if (compareOpen) return els.compareDrawer;
   return null;
 }
 
 function syncPageInert() {
   const shell = document.querySelector('.shell');
   if (!shell) return;
-  if (historyOpen || kbOpen || diagOpen || calcOpen || metricsOpen || remindersOpen || authGateOpen) {
+  if (historyOpen || kbOpen || diagOpen || calcOpen || metricsOpen || remindersOpen || compareOpen || authGateOpen) {
     shell.setAttribute('inert', '');
     shell.setAttribute('aria-hidden', 'true');
   } else {
@@ -2136,6 +2144,7 @@ async function startNewSession() {
     closeKb();
     closeDiagnose();
     closeReminders();
+    closeCompare();
     els.input.focus();
   } catch (err) {
     setVitals('warn', '新建会诊失败');
@@ -2186,7 +2195,10 @@ function setHighlightedText(element, text, query) {
 }
 
 function renderHistoryItems(sessions, summary, append = false) {
-  if (!append) els.historyList.replaceChildren();
+  if (!append) {
+    els.historyList.replaceChildren();
+    historyItemMap.clear();
+  }
   renderHistorySummary(summary);
 
   if (!sessions.length && !els.historyList.children.length) {
@@ -2209,6 +2221,7 @@ function renderHistoryItems(sessions, summary, append = false) {
   els.historyEmpty.hidden = true;
 
   for (const item of sessions) {
+    historyItemMap.set(item.id, item);
     const li = document.createElement('li');
     li.className = 'history-item';
     li.dataset.sessionId = item.id;
@@ -2618,6 +2631,7 @@ function updateBulkBar() {
     .forEach((button) => {
       button.disabled = count === 0;
     });
+  els.historyBulkCompare.disabled = count !== 2;
 }
 
 function setBulkMode(enabled) {
@@ -2749,6 +2763,172 @@ async function bulkDelete() {
   } catch (err) {
     window.alert(`批量删除失败：${err.message || err}`);
   }
+}
+
+/* ---------- 会诊对比 ---------- */
+
+function compareTurns(messages) {
+  const turns = [];
+  let question = '';
+  for (const message of messages) {
+    if (message.role === 'user') {
+      question = message.content || '';
+    } else if (message.role === 'assistant' && message.content) {
+      turns.push({
+        question,
+        content: message.content,
+        metadata: message.metadata || {},
+      });
+      question = '';
+    }
+  }
+  return turns;
+}
+
+function compareStats(turns) {
+  let emergency = 0;
+  let medication = 0;
+  let sources = 0;
+  let contributions = 0;
+  for (const turn of turns) {
+    const meta = turn.metadata;
+    if (meta.triage && meta.triage.level === 'emergency') emergency += 1;
+    if (meta.medication_safety && Array.isArray(meta.medication_safety.alerts)) {
+      medication += meta.medication_safety.alerts.length;
+    }
+    if (Array.isArray(meta.sources)) sources += meta.sources.length;
+    if (Array.isArray(meta.agent_contributions)) {
+      contributions += meta.agent_contributions.length;
+    }
+  }
+  return [
+    `急症预检命中 ${emergency} 次`,
+    `用药安全提示 ${medication} 条`,
+    `参考来源 ${sources} 条`,
+    `各科室意见 ${contributions} 条`,
+  ];
+}
+
+function renderCompareColumn(item, messages) {
+  const turns = compareTurns(messages);
+  const column = document.createElement('section');
+  column.className = 'compare-column';
+
+  const title = document.createElement('h3');
+  title.textContent = item.title || '未命名会诊';
+  column.appendChild(title);
+
+  const totalTokens = Number(item.usage && item.usage.total_tokens || 0);
+  const meta = document.createElement('p');
+  meta.className = 'compare-meta';
+  meta.textContent = [
+    formatTime(item.updated_at || item.created_at),
+    `${messages.length} 条消息`,
+    totalTokens > 0 ? `${totalTokens.toLocaleString()} tokens` : '',
+  ].filter(Boolean).join(' · ');
+  column.appendChild(meta);
+
+  const tags = Array.isArray(item.tags) ? item.tags : [];
+  if (tags.length) {
+    const tagRow = document.createElement('div');
+    tagRow.className = 'compare-tags';
+    for (const tag of tags) {
+      const chip = document.createElement('span');
+      chip.className = 'history-tag';
+      chip.textContent = tag;
+      tagRow.appendChild(chip);
+    }
+    column.appendChild(tagRow);
+  }
+
+  const stats = document.createElement('ul');
+  stats.className = 'compare-stats';
+  for (const line of compareStats(turns)) {
+    const li = document.createElement('li');
+    li.textContent = line;
+    stats.appendChild(li);
+  }
+  column.appendChild(stats);
+
+  if (!turns.length) {
+    const empty = document.createElement('p');
+    empty.className = 'compare-meta';
+    empty.textContent = '这次会诊还没有会诊意见。';
+    column.appendChild(empty);
+    return column;
+  }
+
+  turns.forEach((turn, index) => {
+    const article = document.createElement('article');
+    article.className = 'compare-turn';
+
+    const head = document.createElement('h4');
+    head.textContent = `第 ${index + 1} 轮`;
+    article.appendChild(head);
+
+    if (turn.question) {
+      const question = document.createElement('p');
+      question.className = 'compare-question';
+      question.textContent = turn.question;
+      article.appendChild(question);
+    }
+
+    const answer = document.createElement('div');
+    answer.className = 'compare-answer';
+    appendBody(answer, turn.content);
+    article.appendChild(answer);
+
+    column.appendChild(article);
+  });
+
+  return column;
+}
+
+function renderCompare(left, right) {
+  els.compareBody.replaceChildren();
+  els.compareBody.appendChild(renderCompareColumn(left.item, left.messages));
+  els.compareBody.appendChild(renderCompareColumn(right.item, right.messages));
+}
+
+async function openCompare(ids) {
+  if (ids.length !== 2) return;
+  closeHistory();
+  closeKb();
+  closeCalc();
+  closeDiagnose();
+  closeMetrics();
+  closeReminders();
+  compareOpen = true;
+  els.compareDrawer.hidden = false;
+  els.compareBackdrop.hidden = false;
+  syncPageInert();
+  const status = document.createElement('p');
+  status.className = 'compare-status';
+  status.textContent = '正在加载两份会诊…';
+  els.compareBody.replaceChildren(status);
+  els.compareClose.focus();
+
+  try {
+    const results = await Promise.all(ids.map(async (id) => {
+      const item = historyItemMap.get(id) || { id, title: '未命名会诊' };
+      const messages = await fetchSessionMessages({ id });
+      return { item, messages };
+    }));
+    if (!compareOpen) return;
+    renderCompare(results[0], results[1]);
+  } catch (err) {
+    if (!compareOpen) return;
+    status.textContent = `加载会诊失败：${err.message || err}`;
+    status.classList.add('error');
+  }
+}
+
+function closeCompare(restoreFocus = false) {
+  compareOpen = false;
+  els.compareDrawer.hidden = true;
+  els.compareBackdrop.hidden = true;
+  syncPageInert();
+  if (restoreFocus) els.historyToggle.focus();
 }
 
 async function loadHistory(query = '', { append = false } = {}) {
@@ -3104,6 +3284,7 @@ function openHistory() {
   closeCalc();
   closeMetrics();
   closeReminders();
+  closeCompare();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -3808,6 +3989,7 @@ function openKb() {
   closeCalc();
   closeMetrics();
   closeReminders();
+  closeCompare();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -4216,6 +4398,7 @@ function openDiagnose() {
   closeCalc();
   closeMetrics();
   closeReminders();
+  closeCompare();
   diagFocused = document.activeElement;
   diagOpen = true;
   els.diagnoseDrawer.hidden = false;
@@ -4614,6 +4797,7 @@ function openMetrics() {
   closeCalc();
   closeDiagnose();
   closeReminders();
+  closeCompare();
   metricsFocused = document.activeElement;
   metricsOpen = true;
   els.metricsDrawer.hidden = false;
@@ -4673,6 +4857,7 @@ function openReminders() {
   closeCalc();
   closeDiagnose();
   closeMetrics();
+  closeCompare();
   remindersFocused = document.activeElement;
   remindersOpen = true;
   els.remindersDrawer.hidden = false;
@@ -5181,6 +5366,7 @@ function openCalc() {
   closeDiagnose();
   closeMetrics();
   closeReminders();
+  closeCompare();
   calcFocused = document.activeElement;
   calcOpen = true;
   els.calcDrawer.hidden = false;
@@ -6720,6 +6906,11 @@ els.historyBulkUnarchive.addEventListener('click', () => bulkArchive(false));
 els.historyBulkTags.addEventListener('click', bulkTagSessions);
 els.historyBulkDelete.addEventListener('click', bulkDelete);
 els.historyBulkCancel.addEventListener('click', () => setBulkMode(false));
+els.historyBulkCompare.addEventListener('click', () => {
+  openCompare(Array.from(selectedSessions));
+});
+els.compareClose.addEventListener('click', () => closeCompare(true));
+els.compareBackdrop.addEventListener('click', () => closeCompare(true));
 
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -6743,6 +6934,7 @@ document.addEventListener('keydown', (e) => {
     if (calcOpen) closeCalc(true);
     if (metricsOpen) closeMetrics(true);
     if (remindersOpen) closeReminders(true);
+    if (compareOpen) closeCompare(true);
     return;
   }
 
