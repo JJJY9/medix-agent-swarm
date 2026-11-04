@@ -183,6 +183,8 @@ const els = {
   metricAdd: document.getElementById('metric-add'),
   metricCancel: document.getElementById('metric-cancel'),
   metricExport: document.getElementById('metric-export'),
+  metricImport: document.getElementById('metric-import'),
+  metricImportFile: document.getElementById('metric-import-file'),
   metricTrend: document.getElementById('metric-trend'),
   metricTrendTitle: document.getElementById('metric-trend-title'),
   metricTrendLatest: document.getElementById('metric-trend-latest'),
@@ -4283,6 +4285,35 @@ async function deleteMetricRecord(item) {
   }
 }
 
+async function importMetricsCsv(file) {
+  if (!file) return;
+  setMetricsStatus('正在导入健康记录…');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/api/metrics/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    setMetricsStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetrics();
+  } catch (err) {
+    setMetricsStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.metricImportFile.value = '';
+  }
+}
+
 async function exportMetricsCsv() {
   const button = els.metricExport;
   const original = button.textContent;
@@ -5514,6 +5545,11 @@ els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricAdd.addEventListener('click', addMetricRecord);
 els.metricCancel.addEventListener('click', cancelMetricEdit);
 els.metricExport.addEventListener('click', exportMetricsCsv);
+els.metricImport.addEventListener('click', () => els.metricImportFile.click());
+els.metricImportFile.addEventListener('change', () => {
+  const file = els.metricImportFile.files && els.metricImportFile.files[0];
+  if (file) importMetricsCsv(file);
+});
 
 els.authForm.addEventListener('submit', async (event) => {
   event.preventDefault();
