@@ -566,3 +566,11 @@ def test_app_js_report_includes_symptoms(client):
 
     assert "const symptomItems = (symptoms || [])" in app_js
     assert "<h2>近期症状</h2>" in app_js
+
+
+def test_app_js_ships_symptom_csv(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function exportSymptomsCsv" in app_js
+    assert 'id="symptom-export"' in html

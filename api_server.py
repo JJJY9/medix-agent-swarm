@@ -1255,6 +1255,47 @@ async def list_symptoms(
     return {"symptoms": items}
 
 
+@app.get("/api/symptoms/export.csv")
+async def export_symptoms_csv(
+    profile: Optional[str] = None,
+    days: int = 0,
+):
+    """导出症状日记 CSV（带 BOM），可按档案与最近天数筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    days = max(0, min(int(days or 0), 3650))
+    items = await asyncio.to_thread(
+        get_session_store().list_symptoms, profile, 100000, days
+    )
+
+    rows = [["记录时间", "患者档案", "症状", "程度", "备注"]]
+    for item in reversed(items):
+        rows.append([
+            item.get("recorded_at", ""),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("symptom", "")),
+            int(item.get("severity") or 0),
+            csv_safe_cell(item.get("note", "")),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "\ufeff" + buffer.getvalue()
+    filename = f"medix-symptoms-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.post("/api/symptoms")
 async def add_symptom(request: SymptomRequest):
     """新增一条症状记录。"""

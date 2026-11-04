@@ -104,3 +104,37 @@ def test_symptoms_import_backup(client_and_store):
     assert response.status_code == 200
     assert response.json()["symptoms"] == 1
     assert listed.json()["symptoms"][0]["symptom"] == "咳嗽"
+
+
+def test_symptoms_csv_export(client_and_store):
+    client, _store = client_and_store
+
+    client.post(
+        "/api/symptoms",
+        json={
+            "profile": "母亲",
+            "symptom": "头晕",
+            "severity": 6,
+            "recorded_at": "2026-11-04T08:00",
+            "note": "起床后",
+        },
+    )
+    client.post(
+        "/api/symptoms",
+        json={
+            "profile": "孩子",
+            "symptom": "咳嗽",
+            "severity": 3,
+            "recorded_at": "2026-11-03T20:00",
+        },
+    )
+
+    response = client.get(
+        "/api/symptoms/export.csv", params={"profile": "母亲"}
+    )
+    text = response.content.decode("utf-8-sig")
+
+    assert response.status_code == 200
+    assert text.splitlines()[0] == "记录时间,患者档案,症状,程度,备注"
+    assert "头晕" in text
+    assert "咳嗽" not in text
