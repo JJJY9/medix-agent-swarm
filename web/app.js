@@ -1718,6 +1718,9 @@ function buildVisitSummaryHtml({
 
   const isOverTarget = (item, target) => {
     if (!target) return false;
+    if (targetIsLowerBound(item.metric)) {
+      return Number(item.value1) < target.value1;
+    }
     if (item.metric === 'bp') {
       return Number(item.value1) > target.value1
         || (target.value2 != null && Number(item.value2) > target.value2);
@@ -1775,7 +1778,9 @@ function buildVisitSummaryHtml({
       + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
       + `<td>${escapeHtml(formatMetricValue(item))}`
       + `${grade ? ` <span class="muted">（${escapeHtml(grade.label)}）</span>` : ''}`
-      + `${over ? ' <span class="overdue">（高于目标）</span>' : ''}</td>`
+      + `${over
+        ? ` <span class="overdue">（${targetIsLowerBound(item.metric) ? '低于目标' : '高于目标'}）</span>`
+        : ''}</td>`
       + `<td>${escapeHtml(formatTime(item.measured_at))}</td>`
       + `<td>${escapeHtml(item.note || '')}</td>`
       + '</tr>';
@@ -1864,7 +1869,7 @@ function buildVisitSummaryHtml({
     <h2>指标概览</h2>
     ${summaryRows
       ? `<table><thead><tr><th>指标</th><th>记录</th><th>最新</th><th>平均</th><th>最低–最高</th><th>达标</th></tr></thead><tbody>${summaryRows}</tbody></table>
-        <p class="muted">达标列为未超过目标上限的记录数；未设置目标的指标显示「—」。</p>`
+        <p class="muted">达标列为未超过目标上限（血氧为不低于目标下限）的记录数；未设置目标的指标显示「—」。</p>`
       : '<p class="muted">还没有健康指标记录。</p>'}
   </section>
 
@@ -5088,6 +5093,10 @@ function findMetricTarget(profile, metric) {
   ) || null;
 }
 
+function targetIsLowerBound(metric) {
+  return metric === 'spo2';
+}
+
 function formatMetricTarget(target) {
   if (!target) return '';
   const unit = target.unit || '';
@@ -5111,7 +5120,7 @@ async function loadMetricTargets() {
 function updateMetricTargetDisplay() {
   const target = findMetricTarget(els.metricProfile.value, els.metricType.value);
   els.metricTargetText.textContent = target
-    ? `目标（上限）：${formatMetricTarget(target)}`
+    ? `目标（${targetIsLowerBound(els.metricType.value) ? '下限' : '上限'}）：${formatMetricTarget(target)}`
     : '尚未设置目标';
   els.metricTargetClear.hidden = !target;
   els.metricTargetEdit.textContent = target ? '修改目标' : '设置目标';
@@ -5129,6 +5138,10 @@ function startEditMetricTarget() {
     target && target.value2 != null ? String(target.value2) : '';
   els.metricTargetValue2.hidden = !isBp;
   els.metricTargetSep.hidden = !isBp;
+  els.metricTargetValue1.setAttribute(
+    'aria-label',
+    targetIsLowerBound(metric) ? '目标下限' : '目标上限'
+  );
   els.metricTargetForm.hidden = false;
   els.metricTargetEdit.hidden = true;
   els.metricTargetValue1.focus();
@@ -5220,7 +5233,8 @@ function renderMetricTargetList() {
 
     const text = document.createElement('span');
     text.textContent =
-      `${label} 目标上限 ${formatMetricTarget(target)}`;
+      `${label} 目标${targetIsLowerBound(target.metric) ? '下限' : '上限'} `
+      + formatMetricTarget(target);
 
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -5332,15 +5346,21 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
     const target = findMetricTarget(item.profile || '', item.metric);
     let overTarget = false;
     if (target) {
-      overTarget = item.metric === 'bp'
-        ? Number(item.value1) > target.value1
-          || (target.value2 != null && Number(item.value2) > target.value2)
-        : Number(item.value1) > target.value1;
+      overTarget = targetIsLowerBound(item.metric)
+        ? Number(item.value1) < target.value1
+        : item.metric === 'bp'
+          ? Number(item.value1) > target.value1
+            || (target.value2 != null && Number(item.value2) > target.value2)
+          : Number(item.value1) > target.value1;
       if (overTarget) {
         const badge = document.createElement('span');
         badge.className = 'metric-over-target';
-        badge.textContent = '高于目标';
-        badge.title = `目标上限：${formatMetricTarget(target)}`;
+        badge.textContent = targetIsLowerBound(item.metric)
+          ? '低于目标'
+          : '高于目标';
+        badge.title =
+          `目标${targetIsLowerBound(item.metric) ? '下限' : '上限'}：`
+          + formatMetricTarget(target);
         value.append(' ', badge);
       }
     }
@@ -5930,6 +5950,7 @@ let remindersRequestSeq = 0;
 let reminderSaving = false;
 let reminderActionBusy = false;
 let reminderPlanBusy = false;
+let reminderProfileTouched = false;
 let reminderCalendarOpen = false;
 let reminderCalendarMonth = new Date();
 let reminderCalendarDay = '';
@@ -5993,8 +6014,9 @@ async function openReminders() {
   setRemindersStatus('');
   syncNotifyButton();
   resetReminderForm();
+  reminderProfileTouched = false;
   await refreshReminderProfileOptions();
-  if (els.reminderProfile) {
+  if (els.reminderProfile && !reminderProfileTouched) {
     els.reminderProfile.value = els.profileSelect.value || '';
   }
   loadReminders();
@@ -6199,6 +6221,9 @@ function refreshReminderViews() {
 }
 
 function renderFilteredReminders() {
+  const query = els.remindersSearch
+    ? String(els.remindersSearch.value || '').trim()
+    : '';
   const searched = searchFilteredReminders();
   const items = reminderCalendarDay
     ? searched.filter(
@@ -6206,10 +6231,7 @@ function renderFilteredReminders() {
       )
     : searched;
   if (els.remindersEmpty) {
-    const query = els.remindersSearch
-      ? String(els.remindersSearch.value || '').trim()
-      : '';
-    if (query) {
+    if (query && !searched.length) {
       els.remindersEmpty.textContent = `没有匹配「${query}」的提醒。`;
     } else if (reminderCalendarDay) {
       els.remindersEmpty.textContent =
@@ -6227,7 +6249,8 @@ function shiftReminderCalendarMonth(delta) {
     reminderCalendarMonth.getMonth() + delta,
     1
   );
-  renderReminderCalendar(searchFilteredReminders());
+  reminderCalendarDay = '';
+  refreshReminderViews();
 }
 
 function renderReminders(items) {
@@ -6844,8 +6867,9 @@ async function scheduleMetricFollowUp(item) {
   els.reminderAdvance.value = '1';
   els.reminderNote.value =
     `上次记录：${formatMetricValue(item)}（${formatTime(item.measured_at)}）`;
-  if (els.remindersProfile && item.profile) {
-    els.remindersProfile.value = item.profile;
+  if (els.remindersSearch) els.remindersSearch.value = '';
+  if (els.remindersProfile) {
+    els.remindersProfile.value = item.profile || '';
     loadReminders();
   }
   setRemindersStatus('已代入复查提醒，确认后点击「添加提醒」。');
@@ -8877,6 +8901,9 @@ els.remindersCalendarClear.addEventListener('click', () => {
   refreshReminderViews();
 });
 els.remindersSearch.addEventListener('input', refreshReminderViews);
+els.reminderProfile.addEventListener('change', () => {
+  reminderProfileTouched = true;
+});
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {

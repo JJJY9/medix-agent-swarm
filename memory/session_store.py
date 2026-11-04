@@ -89,6 +89,9 @@ METRIC_TYPES = {
 }
 MAX_METRIC_NOTE_LENGTH = 300
 
+#: 目标为下限的指标（数值越高越好，低于目标视为未达标）。
+LOWER_BOUND_TARGET_METRICS = {"spo2"}
+
 
 def _normalize_metric(
     profile: str,
@@ -2150,7 +2153,10 @@ class SessionStore:
         if target_row is not None and count:
             target_conditions = list(conditions)
             target_params = list(params)
-            target_conditions.append("value1 <= ?")
+            target_conditions.append(
+                "value1 >= ?" if metric in LOWER_BOUND_TARGET_METRICS
+                else "value1 <= ?"
+            )
             target_params.append(float(target_row["value1"]))
             if metric == "bp" and target_row["value2"] is not None:
                 target_conditions.append("value2 <= ?")
@@ -2556,8 +2562,9 @@ class SessionStore:
         due_at: Optional[str] = None,
         note: Optional[str] = None,
         advance_days: Optional[int] = None,
+        profile: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """修改提醒的标题、日期、备注或提前天数。"""
+        """修改提醒的标题、日期、备注、提前天数或所属档案。"""
         updates: List[str] = []
         params: List[Any] = []
 
@@ -2582,6 +2589,10 @@ class SessionStore:
             advance_days = _normalize_reminder_advance(advance_days)
             updates.append("advance_days = ?")
             params.append(advance_days)
+
+        if profile is not None:
+            updates.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
 
         if not updates:
             return None

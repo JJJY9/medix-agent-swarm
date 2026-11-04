@@ -341,3 +341,11 @@ def test_app_js_ships_metrics_paging(client):
     assert "METRICS_PAGE_SIZE" in app_js
     assert "metricsOffset" in app_js
     assert 'id="metric-more"' in html
+
+
+def test_app_js_ships_target_direction_and_guards(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function targetIsLowerBound" in app_js
+    assert "reminderProfileTouched" in app_js
+    assert "低于目标" in app_js

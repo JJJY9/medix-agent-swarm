@@ -469,3 +469,27 @@ def test_metrics_api_offset(client):
 
     assert [item["value1"] for item in first.json()["metrics"]] == [62, 61]
     assert [item["value1"] for item in second.json()["metrics"]] == [60]
+
+
+def test_metrics_summary_spo2_lower_bound_target(client):
+    for value, at in ((97, "2026-01-02T08:00"), (89, "2026-01-03T08:00")):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "spo2",
+                "value1": value,
+                "measured_at": at,
+            },
+        )
+    client.put(
+        "/api/metric-targets",
+        json={"profile": "妈妈", "metric": "spo2", "value1": 95},
+    )
+
+    body = client.get(
+        "/api/metrics/summary", params={"metric": "spo2", "profile": "妈妈"}
+    ).json()
+
+    assert body["target"] == {"value1": 95.0, "value2": None}
+    assert body["within_target"] == 1
