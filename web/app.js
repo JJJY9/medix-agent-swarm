@@ -1293,6 +1293,290 @@ function buildSessionMarkdown(item, messages) {
   return lines.join('\n');
 }
 
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** 把会诊意见里的轻量 Markdown 转成 HTML，供独立报告使用（全程转义）。 */
+function renderMarkdownLite(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let list = null;
+  let paragraph = [];
+
+  const inline = (value) => escapeHtml(value)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    out.push(`<p>${paragraph.join('<br>')}</p>`);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    const items = list.items.map((item) => `<li>${item}</li>`).join('');
+    out.push(`<${list.type}>${items}</${list.type}>`);
+    list = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(5, Math.max(2, heading[1].length + 1));
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      flushParagraph();
+      if (!list || list.type !== 'ul') {
+        flushList();
+        list = { type: 'ul', items: [] };
+      }
+      list.items.push(inline(bullet[1]));
+      continue;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ordered) {
+      flushParagraph();
+      if (!list || list.type !== 'ol') {
+        flushList();
+        list = { type: 'ol', items: [] };
+      }
+      list.items.push(inline(ordered[1]));
+      continue;
+    }
+
+    const quote = line.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      out.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(inline(line));
+  }
+
+  flushParagraph();
+  flushList();
+  return out.join('\n');
+}
+
+/** 生成可独立打开、可打印为 PDF 的会诊报告（单文件、无外部依赖）。 */
+function buildReportHtml(item, messages) {
+  const title = item.title || 'MediX 会诊报告';
+  const generatedAt = new Date().toLocaleString();
+  const updatedAt = formatTime(item.updated_at || item.created_at);
+
+  const turns = [];
+  let question = '';
+  for (const message of messages) {
+    if (message.role === 'user') {
+      question = message.content || '';
+    } else if (message.role === 'assistant' && message.content) {
+      turns.push({
+        question,
+        metadata: message.metadata || {},
+        content: message.content,
+      });
+      question = '';
+    }
+  }
+
+  const sections = [];
+  turns.forEach((turn, index) => {
+    const meta = turn.metadata;
+    const parts = [`<section class="turn">`, `<h2>第 ${index + 1} 轮会诊</h2>`];
+
+    if (turn.question) {
+      parts.push('<h3>主诉</h3>', `<p>${escapeHtml(turn.question)}</p>`);
+    }
+
+    const contextText = formatPatientContext(meta.patient_context || {});
+    if (contextText) {
+      parts.push('<h3>补充信息</h3>', `<p>${escapeHtml(contextText)}</p>`);
+    }
+
+    if (meta.triage && meta.triage.level === 'emergency') {
+      const matched = (meta.triage.matches || []).join('、');
+      parts.push(
+        '<div class="callout danger">',
+        '<strong>急症预检</strong>',
+        `<p>${escapeHtml((matched ? `命中：${matched}。` : '')
+          + (meta.triage.message || '请立即拨打 120 或前往急诊科。'))}</p>`,
+        '</div>'
+      );
+    }
+
+    const safety = meta.medication_safety;
+    if (safety && safety.alerts && safety.alerts.length) {
+      const alerts = safety.alerts
+        .map((alert) => `<li><strong>${escapeHtml(alert.title)}</strong>：${escapeHtml(alert.detail)}</li>`)
+        .join('');
+      parts.push(
+        '<div class="callout warn">',
+        '<strong>用药安全提示</strong>',
+        `<ul>${alerts}</ul>`,
+        '<p class="muted">以上为规则提示，不能替代医生或药师的判断。</p>',
+        '</div>'
+      );
+    }
+
+    parts.push('<h3>会诊意见</h3>', `<div class="answer">${renderMarkdownLite(turn.content)}</div>`);
+
+    if (meta.suggestions && meta.suggestions.length) {
+      const items = meta.suggestions
+        .map((suggestion) => `<li>${escapeHtml(suggestion)}</li>`)
+        .join('');
+      parts.push('<h3>诊疗建议</h3>', `<ol>${items}</ol>`);
+    }
+
+    if (meta.agent_contributions && meta.agent_contributions.length) {
+      parts.push('<h3>各科室意见</h3>');
+      for (const contribution of meta.agent_contributions) {
+        const name = contribution.agent_name
+          || AGENT_NAMES[contribution.agent_id]
+          || contribution.agent_id;
+        const stats = contributionStats(contribution);
+        parts.push(
+          `<div class="contribution"><h4>${escapeHtml(name)}`
+          + `${stats.length ? ` <span class="muted">（${escapeHtml(stats.join(' · '))}）</span>` : ''}</h4>`,
+          `<div class="answer">${renderMarkdownLite(contribution.content || '')}</div></div>`
+        );
+      }
+    }
+
+    if (meta.sources && meta.sources.length) {
+      parts.push('<h3>参考来源</h3>', '<ol class="sources">');
+      meta.sources.forEach((source) => {
+        const sourceMeta = [
+          source.source,
+          source.filename,
+          typeof source.score === 'number' ? `${Math.round(source.score * 100)}%` : '',
+        ].filter(Boolean).join(' · ');
+        parts.push(
+          `<li>${escapeHtml(source.title || source.filename || '医学知识库')}`
+          + `${sourceMeta ? ` <span class="muted">（${escapeHtml(sourceMeta)}）</span>` : ''}`
+          + `${source.snippet ? `<br><span class="muted">${escapeHtml(String(source.snippet).replace(/\n/g, ' '))}</span>` : ''}`
+          + '</li>'
+        );
+      });
+      parts.push('</ol>');
+    }
+
+    const usageText = formatUsage(meta.usage, meta.llm_calls);
+    if (usageText !== '—') {
+      parts.push(`<p class="muted">模型用量：${escapeHtml(usageText)}</p>`);
+    }
+
+    if (meta.disclaimer) {
+      parts.push(`<p class="disclaimer">${escapeHtml(meta.disclaimer)}</p>`);
+    }
+
+    parts.push('</section>');
+    sections.push(parts.join('\n'));
+  });
+
+  const empty = '<p class="muted">这次会诊还没有可导出的内容。</p>';
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} · MediX 会诊报告</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 16px 64px;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+    color: #1f2933; background: #f5f7fa; line-height: 1.7;
+  }
+  .report {
+    max-width: 820px; margin: 0 auto; background: #fff;
+    border-radius: 12px; padding: 40px 44px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  }
+  .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 3px solid #0f766e; padding-bottom: 16px; margin-bottom: 24px; }
+  .brand h1 { margin: 0; font-size: 24px; letter-spacing: 0.5px; }
+  .brand .stamp { color: #64748b; font-size: 12px; text-align: right; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 24px; margin: 0 0 24px; padding: 14px 16px; background: #f0fdfa; border-radius: 8px; font-size: 13px; }
+  .meta dt { color: #64748b; margin: 0; }
+  .meta dd { margin: 0 0 6px; font-weight: 600; }
+  .turn { border-top: 1px solid #e2e8f0; padding-top: 20px; margin-top: 20px; }
+  .turn:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  h2 { font-size: 18px; margin: 0 0 12px; color: #0f766e; }
+  h3 { font-size: 15px; margin: 20px 0 8px; color: #334155; }
+  h4 { font-size: 14px; margin: 14px 0 6px; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  blockquote { margin: 10px 0; padding: 8px 14px; border-left: 3px solid #94a3b8; background: #f8fafc; color: #475569; }
+  .callout { border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 14px; }
+  .callout p, .callout ul { margin: 6px 0 0; }
+  .callout.danger { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+  .callout.warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+  .muted { color: #64748b; font-size: 12px; }
+  .contribution { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 16px; margin: 10px 0; }
+  .contribution h4 { margin: 4px 0 8px; }
+  .disclaimer { margin-top: 16px; padding: 10px 14px; background: #f8fafc; border-radius: 8px; color: #64748b; font-size: 12px; }
+  footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e2e8f0; color: #94a3b8; font-size: 12px; }
+  .print-btn {
+    position: fixed; right: 24px; bottom: 24px; padding: 12px 20px;
+    border: 0; border-radius: 999px; background: #0f766e; color: #fff;
+    font-size: 14px; cursor: pointer; box-shadow: 0 8px 20px rgba(15, 118, 110, 0.35);
+  }
+  .print-btn:hover { background: #115e59; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .report { box-shadow: none; border-radius: 0; padding: 0; max-width: none; }
+    .print-btn { display: none; }
+    .turn { break-inside: avoid-page; }
+  }
+</style>
+</head>
+<body>
+<main class="report">
+  <header class="brand">
+    <h1>MediX 多智能体会诊报告</h1>
+    <span class="stamp">生成时间：${escapeHtml(generatedAt)}</span>
+  </header>
+  <dl class="meta">
+    <div><dt>报告标题</dt><dd>${escapeHtml(title)}</dd></div>
+    <div><dt>会话编号</dt><dd>${escapeHtml(item.id || '—')}</dd></div>
+    <div><dt>最近更新</dt><dd>${escapeHtml(updatedAt)}</dd></div>
+    <div><dt>会诊轮次</dt><dd>${turns.length}</dd></div>
+  </dl>
+  ${sections.length ? sections.join('\n') : empty}
+  <footer>
+    本报告由 MediX 自动生成，仅供参考，不能替代执业医师的诊断与治疗。
+    如症状加重或出现新的不适，请及时就医。
+  </footer>
+</main>
+<button type="button" class="print-btn" onclick="window.print()">打印 / 保存为 PDF</button>
+</body>
+</html>`;
+}
+
 function formatUsage(usage, llmCalls = 0) {
   const total = Number(usage && usage.total_tokens || 0);
   const calls = Number(llmCalls || 0);
@@ -1572,6 +1856,22 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
 
   actions.appendChild(makeAction('导出 Markdown', () => {
     downloadMarkdown(payload, question);
+  }));
+
+  actions.appendChild(makeAction('导出 HTML 报告', () => {
+    const stamp = (sessionId || String(Date.now())).slice(-12);
+    const reportTitle = (question || 'MediX 会诊报告').trim().slice(0, 40);
+    downloadFile(
+      buildReportHtml(
+        { id: sessionId, title: reportTitle, updated_at: new Date().toISOString() },
+        [
+          { role: 'user', content: question },
+          { role: 'assistant', content: payload.answer || '', metadata: payload },
+        ]
+      ),
+      `medix-report-${stamp}.html`,
+      'text/html;charset=utf-8'
+    );
   }));
 
   actions.appendChild(makeAction('打印 / PDF', () => {
@@ -1988,6 +2288,20 @@ function renderHistoryItems(sessions, summary, append = false) {
     exportBtn.setAttribute('aria-label', `导出：${item.title || '未命名会诊'}`);
     exportBtn.addEventListener('click', () => exportHistory(item));
 
+    const reportBtn = document.createElement('button');
+    reportBtn.type = 'button';
+    reportBtn.className = 'history-action';
+    reportBtn.textContent = 'HTML';
+    reportBtn.title = '导出为可打印的 HTML 报告';
+    reportBtn.setAttribute(
+      'aria-label',
+      `导出 HTML 报告：${item.title || '未命名会诊'}`
+    );
+    reportBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      exportHistoryHtml(item);
+    });
+
     const copyLink = document.createElement('button');
     copyLink.type = 'button';
     copyLink.className = 'history-action';
@@ -2043,7 +2357,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
-    actions.append(favorite, rename, exportBtn, copyLink, tagsBtn, archive, del);
+    actions.append(favorite, rename, exportBtn, reportBtn, copyLink, tagsBtn, archive, del);
     li.append(...(checkbox ? [checkbox] : []), open, actions);
     els.historyList.appendChild(li);
   }
@@ -3090,14 +3404,18 @@ async function renameHistory(item) {
   }
 }
 
+async function fetchSessionMessages(item) {
+  const res = await fetch(
+    `/api/sessions/${encodeURIComponent(item.id)}/messages?limit=0`
+  );
+  if (!res.ok) throw new Error(`读取会诊记录失败（${res.status}）`);
+  const data = await res.json();
+  return data.messages || [];
+}
+
 async function exportHistory(item) {
   try {
-    const res = await fetch(
-      `/api/sessions/${encodeURIComponent(item.id)}/messages?limit=0`
-    );
-    if (!res.ok) throw new Error(`读取会诊记录失败（${res.status}）`);
-    const data = await res.json();
-    const messages = data.messages || [];
+    const messages = await fetchSessionMessages(item);
     if (!messages.length) {
       window.alert('这次会诊还没有可导出的内容。');
       return;
@@ -3106,6 +3424,24 @@ async function exportHistory(item) {
       buildSessionMarkdown(item, messages),
       `medix-session-${item.id}.md`
     );
+  } catch (err) {
+    window.alert(err.message || String(err));
+  }
+}
+
+async function exportHistoryHtml(item) {
+  try {
+    const messages = await fetchSessionMessages(item);
+    if (!messages.length) {
+      window.alert('这次会诊还没有可导出的内容。');
+      return;
+    }
+    downloadFile(
+      buildReportHtml(item, messages),
+      `medix-report-${item.id}.html`,
+      'text/html;charset=utf-8'
+    );
+    els.historyActionStatus.textContent = '已导出 HTML 报告';
   } catch (err) {
     window.alert(err.message || String(err));
   }
