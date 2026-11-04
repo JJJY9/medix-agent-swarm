@@ -235,3 +235,28 @@ def test_import_api_accepts_metrics_only(client):
     assert response.status_code == 200
     assert response.json()["metrics"] == 1
     assert listed.json()["metrics"][0]["value1"] == 38.2
+
+
+def test_metrics_api_days_filter(client):
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 60,
+            "measured_at": "2020-01-01T08:00",
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 61,
+            "measured_at": "2099-01-01T08:00",
+        },
+    )
+
+    all_items = client.get("/api/metrics")
+    recent = client.get("/api/metrics", params={"days": 30})
+
+    assert len(all_items.json()["metrics"]) == 2
+    assert [item["value1"] for item in recent.json()["metrics"]] == [61]

@@ -1883,8 +1883,9 @@ class SessionStore:
         profile: Optional[str] = None,
         metric: Optional[str] = None,
         limit: int = 100,
+        days: int = 0,
     ) -> List[Dict[str, Any]]:
-        """按测量时间倒序返回健康指标记录。"""
+        """按测量时间倒序返回健康指标记录，可按最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
         sql = """
             SELECT id, profile, metric, value1, value2, unit,
@@ -1902,6 +1903,10 @@ class SessionStore:
                 return []
             conditions.append("metric = ?")
             params.append(metric)
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("measured_at >= ?")
+            params.append(cutoff)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY measured_at DESC, id DESC LIMIT ?"

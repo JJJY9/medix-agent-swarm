@@ -152,3 +152,10 @@ def test_app_js_filters_reminders_by_profile(client):
 
     assert "function refreshReminderProfileOptions" in app_js
     assert "reminders-profile" in app_js
+
+
+def test_app_js_ships_metric_range_filter(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function metricRangeDays" in app_js
+    assert "metric-range" in app_js
