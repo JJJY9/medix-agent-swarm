@@ -436,6 +436,7 @@ def test_import_data_roundtrip(tmp_path):
             "invalid": 0,
             "messages": 2,
             "profiles": 0,
+            "metrics": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -793,6 +794,95 @@ def test_quality_insights_empty_and_time_filter(store):
         )
 
     assert store.quality_insights(days=7)["turns"] == 0
+
+
+def test_health_metrics_crud_and_filters(store):
+    bp = store.add_metric(
+        "妈妈", "bp", 138, 86,
+        measured_at="2026-01-02T08:00", note="晨起",
+    )
+    weight = store.add_metric(
+        "妈妈", "weight", 62.5,
+        measured_at="2026-01-01T07:30",
+    )
+    temperature = store.add_metric("", "temperature", 36.7)
+
+    assert bp["unit"] == "mmHg"
+    assert weight["unit"] == "kg"
+    assert temperature["measured_at"]
+
+    all_items = store.list_metrics()
+    assert [item["id"] for item in all_items] == [
+        temperature["id"], bp["id"], weight["id"],
+    ]
+    assert [item["metric"] for item in store.list_metrics(profile="妈妈")] == [
+        "bp", "weight",
+    ]
+    assert [item["metric"] for item in store.list_metrics(metric="bp")] == ["bp"]
+    assert store.list_metrics(profile="不存在") == []
+    assert store.list_metrics(metric="unknown") == []
+
+    assert store.delete_metric(bp["id"]) is True
+    assert store.delete_metric(bp["id"]) is False
+    assert all(item["id"] != bp["id"] for item in store.list_metrics())
+
+
+def test_health_metrics_validation(store):
+    assert store.add_metric("", "bp", 120, None) is None
+    assert store.add_metric("", "bp", 90, 100) is None
+    assert store.add_metric("", "bp", 400, 90) is None
+    assert store.add_metric("", "weight", 5) is None
+    assert store.add_metric("", "glucose", 100) is None
+    assert store.add_metric("", "temperature", 50) is None
+    assert store.add_metric("", "unknown", 1) is None
+    assert store.add_metric(
+        "", "weight", 60, measured_at="not-a-date"
+    ) is None
+    assert store.list_metrics() == []
+
+
+def test_health_metrics_survive_export_and_import(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    source.save_exchange("s1", "问题", "答复")
+    source.add_metric(
+        "妈妈", "bp", 130, 80,
+        measured_at="2026-01-03T08:00", note="服药后",
+    )
+    data = source.export_data()
+    source.close()
+
+    assert data["health_metrics"][0]["metric"] == "bp"
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        result = target.import_data(data)
+        assert result["metrics"] == 1
+        items = target.list_metrics()
+        assert items[0]["profile"] == "妈妈"
+        assert items[0]["value1"] == 130
+        assert items[0]["value2"] == 80
+
+        again = target.import_data(data)
+        assert again["metrics"] == 0
+        assert len(target.list_metrics()) == 1
+    finally:
+        target.close()
+
+
+def test_import_metrics_only_backup(store):
+    result = store.import_data({
+        "health_metrics": [
+            {
+                "profile": "孩子",
+                "metric": "temperature",
+                "value1": 38.2,
+                "measured_at": "2026-02-01T20:00",
+            }
+        ]
+    })
+
+    assert result["metrics"] == 1
+    assert store.list_metrics()[0]["value1"] == 38.2
 
 
 def test_legacy_messages_table_is_migrated(tmp_path):

@@ -65,6 +65,66 @@ def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
     return cleaned or None
 
 
+#: 健康指标类型 → (标签, 单位, 取值范围)
+METRIC_TYPES = {
+    "bp": ("血压", "mmHg", (50, 300)),
+    "weight": ("体重", "kg", (10, 400)),
+    "glucose": ("血糖", "mmol/L", (1, 50)),
+    "temperature": ("体温", "°C", (30, 45)),
+}
+MAX_METRIC_NOTE_LENGTH = 300
+
+
+def _normalize_metric(
+    profile: str,
+    metric: str,
+    value1: Any,
+    value2: Any,
+    measured_at: str,
+    note: str,
+) -> Optional[Dict[str, Any]]:
+    """校验一条健康指标记录；无效时返回 None。"""
+    metric = str(metric or "").strip()
+    if metric not in METRIC_TYPES:
+        return None
+
+    _, unit, (low, high) = METRIC_TYPES[metric]
+    try:
+        first = float(value1)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (low <= first <= high):
+        return None
+
+    second: Optional[float] = None
+    if metric == "bp":
+        try:
+            second = float(value2)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not (30 <= second <= 200) or first <= second:
+            return None
+
+    measured_at = str(measured_at or "").strip()[:40]
+    if not measured_at:
+        measured_at = datetime.now().isoformat(timespec="minutes")
+    else:
+        try:
+            datetime.fromisoformat(measured_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    return {
+        "profile": " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH],
+        "metric": metric,
+        "value1": round(first, 2),
+        "value2": round(second, 2) if second is not None else None,
+        "unit": unit,
+        "measured_at": measured_at,
+        "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
+    }
+
+
 def _new_usage_entry() -> Dict[str, Any]:
     return {
         "usage": {
@@ -181,6 +241,19 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_profiles_updated
                     ON patient_profiles(updated_at DESC);
+                CREATE TABLE IF NOT EXISTS health_metrics (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile     TEXT NOT NULL DEFAULT '',
+                    metric      TEXT NOT NULL,
+                    value1      REAL NOT NULL,
+                    value2      REAL,
+                    unit        TEXT NOT NULL DEFAULT '',
+                    measured_at TEXT NOT NULL,
+                    note        TEXT NOT NULL DEFAULT '',
+                    created_at  TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_metrics_profile_time
+                    ON health_metrics(profile, metric, measured_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -984,6 +1057,7 @@ class SessionStore:
             "session_count": len(exported),
             "sessions": exported,
             "profiles": self.list_profiles(),
+            "health_metrics": self.list_metrics(limit=100000),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
@@ -993,11 +1067,18 @@ class SessionStore:
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
-        if raw_sessions is None and isinstance(raw_profiles, list):
+        raw_metrics = data.get("health_metrics")
+        if raw_sessions is None and (
+            isinstance(raw_profiles, list) or isinstance(raw_metrics, list)
+        ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
             raise ValueError("备份文件中没有会话。")
-        if not raw_sessions and not isinstance(raw_profiles, list):
+        if (
+            not raw_sessions
+            and not isinstance(raw_profiles, list)
+            and not isinstance(raw_metrics, list)
+        ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
             raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
@@ -1133,12 +1214,67 @@ class SessionStore:
                     )
                     profiles_imported += 1
 
+            metrics_imported = 0
+            if isinstance(raw_metrics, list):
+                for raw in raw_metrics[:10000]:
+                    if not isinstance(raw, dict):
+                        continue
+                    normalized = _normalize_metric(
+                        raw.get("profile", ""),
+                        raw.get("metric", ""),
+                        raw.get("value1"),
+                        raw.get("value2"),
+                        raw.get("measured_at", ""),
+                        raw.get("note", ""),
+                    )
+                    if normalized is None:
+                        continue
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM health_metrics
+                         WHERE profile = ? AND metric = ? AND measured_at = ?
+                           AND value1 = ? AND IFNULL(value2, -1) = IFNULL(?, -1)
+                           AND note = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["metric"],
+                            normalized["measured_at"],
+                            normalized["value1"],
+                            normalized["value2"],
+                            normalized["note"],
+                        ),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO health_metrics(
+                            profile, metric, value1, value2, unit,
+                            measured_at, note, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["metric"],
+                            normalized["value1"],
+                            normalized["value2"],
+                            normalized["unit"],
+                            normalized["measured_at"],
+                            normalized["note"],
+                            now,
+                        ),
+                    )
+                    metrics_imported += 1
+
         return {
             "imported": imported,
             "skipped": skipped,
             "invalid": invalid,
             "messages": messages_imported,
             "profiles": profiles_imported,
+            "metrics": metrics_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -1255,6 +1391,95 @@ class SessionStore:
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM patient_profiles WHERE name = ?", (name,)
+            )
+            return cursor.rowcount > 0
+
+    def add_metric(
+        self,
+        profile: str,
+        metric: str,
+        value1: Any,
+        value2: Any = None,
+        measured_at: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """新增一条健康指标记录；字段无效时返回 None。"""
+        normalized = _normalize_metric(
+            profile, metric, value1, value2, measured_at, note
+        )
+        if normalized is None:
+            return None
+
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO health_metrics(
+                    profile, metric, value1, value2, unit,
+                    measured_at, note, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"],
+                    normalized["metric"],
+                    normalized["value1"],
+                    normalized["value2"],
+                    normalized["unit"],
+                    normalized["measured_at"],
+                    normalized["note"],
+                    now,
+                ),
+            )
+            metric_id = int(cursor.lastrowid)
+
+        return {
+            "id": metric_id,
+            **normalized,
+            "created_at": now,
+        }
+
+    def list_metrics(
+        self,
+        profile: Optional[str] = None,
+        metric: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """按测量时间倒序返回健康指标记录。"""
+        limit = max(1, min(int(limit or 100), 100000))
+        sql = """
+            SELECT id, profile, metric, value1, value2, unit,
+                   measured_at, note, created_at
+              FROM health_metrics
+        """
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            normalized_profile = " ".join(str(profile).split())[:MAX_PROFILE_NAME_LENGTH]
+            conditions.append("profile = ?")
+            params.append(normalized_profile)
+        if metric:
+            if metric not in METRIC_TYPES:
+                return []
+            conditions.append("metric = ?")
+            params.append(metric)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY measured_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_metric(self, metric_id: int) -> bool:
+        try:
+            metric_id = int(metric_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM health_metrics WHERE id = ?", (metric_id,)
             )
             return cursor.rowcount > 0
 
