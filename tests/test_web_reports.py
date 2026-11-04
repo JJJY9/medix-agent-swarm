@@ -672,10 +672,12 @@ def test_app_js_ships_weekly_summary(client):
 
     assert "async function loadWeeklySummary" in app_js
     assert "function renderWeeklySummary" in app_js
+    assert "function weeklySummaryLines" in app_js
     assert "/api/reports/weekly" in app_js
     assert 'id="weekly-summary-section"' in html
     assert ".weekly-summary-list" in css
     assert "近 7 天打卡" in app_js
+    assert "近 7 天小结" in app_js
 
 
 def test_app_js_links_medication_log_and_reminder(client):
