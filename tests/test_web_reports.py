@@ -837,6 +837,7 @@ def test_app_js_ships_medication_context_and_report(client):
     app_js = client.get("/static/app.js").text
 
     assert "active_medications" in app_js
+    assert "近 7 天打卡 ${Number(item.week_count)} 次" in app_js
     assert "const medicationItems = (medications || [])" in app_js
     assert "medications: data.medications" in app_js
 
