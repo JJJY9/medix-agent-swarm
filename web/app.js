@@ -2078,28 +2078,23 @@ async function exportVisitSummary() {
   els.visitSummary.textContent = '生成中…';
 
   try {
-    const metricParams = new URLSearchParams({ limit: '30' });
-    if (profile) metricParams.set('profile', profile);
-    const sessionParams = new URLSearchParams({ limit: '5' });
-    if (profile) sessionParams.set('profile', profile);
-    const targetParams = new URLSearchParams();
-    if (profile) targetParams.set('profile', profile);
-    const reminderParams = new URLSearchParams();
-    if (profile) reminderParams.set('profile', profile);
-    const symptomParams = new URLSearchParams({ limit: '30', days: '30' });
-    if (profile) symptomParams.set('profile', profile);
-    const medicationParams = new URLSearchParams({
-      active_only: 'true', limit: '100',
+    const metricParams = new URLSearchParams({ limit: '30', profile });
+    const sessionParams = new URLSearchParams({ limit: '5', profile });
+    const targetParams = new URLSearchParams({ profile });
+    const reminderParams = new URLSearchParams({ profile });
+    const symptomParams = new URLSearchParams({
+      limit: '30', days: '30', profile,
     });
-    if (profile) medicationParams.set('profile', profile);
-    const weeklyParams = new URLSearchParams();
-    if (profile) weeklyParams.set('profile', profile);
+    const medicationParams = new URLSearchParams({
+      active_only: 'true', limit: '100', profile,
+    });
+    const weeklyParams = new URLSearchParams({ profile });
     const [
       metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
       medicationsRes, weeklyRes,
     ] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
-      fetch(`/api/reminders${reminderParams.toString() ? `?${reminderParams}` : ''}`),
+      fetch(`/api/reminders?${reminderParams.toString()}`),
       fetch(`/api/sessions?${sessionParams.toString()}`),
       fetch(`/api/metric-targets?${targetParams.toString()}`),
       fetch(`/api/symptoms?${symptomParams.toString()}`),
@@ -2110,10 +2105,14 @@ async function exportVisitSummary() {
       ? (await metricsRes.json()).metrics || []
       : [];
     const reminders = remindersRes.ok
-      ? (await remindersRes.json()).reminders || []
+      ? ((await remindersRes.json()).reminders || []).filter(
+        (item) => (item.profile || '') === profile
+      )
       : [];
     const sessions = sessionsRes.ok
-      ? (await sessionsRes.json()).sessions || []
+      ? ((await sessionsRes.json()).sessions || []).filter(
+        (item) => (item.profile || '') === profile
+      )
       : [];
     const targets = targetsRes.ok
       ? (await targetsRes.json()).targets || []
@@ -3957,6 +3956,7 @@ async function importHistoryBackup() {
         loadSymptoms();
         if (result.medications || result.medication_logs) loadMedications();
         if (result.medication_logs) loadMedicationLogs();
+        refreshReminderBadge();
         refreshOverview();
       }
       await loadQualityInsights();
@@ -7067,7 +7067,7 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
       ...homeGlanceLine(
         '健康小结',
         `近 ${days} 天：指标 ${metricCount} 条`,
-        `症状 ${symptomCount} 条 · 打卡 ${doseCount} 次`
+        `全部档案 · 症状 ${symptomCount} 条 · 打卡 ${doseCount} 次`
       )
     );
   } else {
@@ -7674,6 +7674,7 @@ async function scheduleAllMedicationReminders() {
       parts.join('，') + '。', created === 0 && failed > 0
     );
     if (created) refreshOverview();
+    refreshReminderBadge();
   } finally {
     medicationReminderBusy = false;
     if (els.medicationReminders) els.medicationReminders.disabled = false;
@@ -8016,6 +8017,7 @@ async function importMedicationsCsv(file) {
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
     if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
     setMedicationStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetricProfileOptions();
     await loadMedications();
     refreshOverview();
   } catch (err) {
@@ -8438,9 +8440,14 @@ function weeklySummaryLines(data) {
   lines.push(['症状日记', symptomText]);
 
   const meds = data.medications;
+  const doses = Number(meds.doses) || 0;
   let medicationText = '没有在用药物';
   if (meds.active) {
-    medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${meds.doses} 次`;
+    medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${doses} 次`;
+  } else if (doses > 0) {
+    medicationText = `没有在用药物，近 ${days} 天打卡 ${doses} 次`;
+  }
+  if (meds.active || doses > 0) {
     const details = [];
     if (meds.by_medication && meds.by_medication.length) {
       details.push(
@@ -8450,7 +8457,7 @@ function weeklySummaryLines(data) {
       );
     }
     if (meds.prev_doses !== null && meds.prev_doses !== undefined) {
-      const diff = meds.doses - meds.prev_doses;
+      const diff = doses - meds.prev_doses;
       details.push(diff === 0
         ? '较上期持平'
         : `较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 次`);
@@ -10739,8 +10746,10 @@ async function deletePatientProfile() {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
+    const wasSelected = els.profileSelect.value === name;
     delete profilesCache[name];
     refreshProfileOptions('');
+    if (wasSelected) applyPatientContext({});
   } catch (err) {
     window.alert(`删除档案失败：${err.message || err}`);
   }
@@ -10754,6 +10763,8 @@ async function applySelectedProfile() {
     if (name && readProfiles()[name]) {
       applyPatientContext(readProfiles()[name].context || {});
       els.profileSelect.value = name;
+    } else {
+      applyPatientContext({});
     }
     return;
   }
@@ -10779,6 +10790,8 @@ async function applySelectedProfile() {
   if (name && readProfiles()[name]) {
     applyPatientContext(readProfiles()[name].context || {});
     els.profileSelect.value = name;
+  } else {
+    applyPatientContext({});
   }
 }
 

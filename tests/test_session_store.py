@@ -1816,6 +1816,53 @@ def test_import_medication_logs_fallback_by_name(store, tmp_path):
         other.close()
 
 
+def test_backup_keeps_same_minute_medication_logs(store, tmp_path):
+    item = store.add_medication("父亲", "二甲双胍")
+    store.add_medication_log(item["id"], "2026-11-05T10:30")
+    store.add_medication_log(item["id"], "2026-11-05T10:30")
+
+    data = store.export_data()
+    other = SessionStore(str(tmp_path / "same-minute.db"))
+    try:
+        result = other.import_data(data)
+        assert result["medication_logs"] == 2
+        assert len(other.list_medication_logs()) == 2
+        again = other.import_data(data)
+        assert again["medication_logs"] == 0
+    finally:
+        other.close()
+
+
+def test_update_medication_syncs_reminder_titles(store):
+    item = store.add_medication("母亲", "氨氯地平", "5 mg")
+    store.add_reminder("用药：氨氯地平", "2026-11-06", profile="母亲")
+
+    updated = store.update_medication(
+        item["id"], "母亲", "苯磺酸氨氯地平", "5 mg"
+    )
+
+    assert updated["name"] == "苯磺酸氨氯地平"
+    titles = [
+        reminder["title"]
+        for reminder in store.list_reminders(profile="母亲")
+    ]
+    assert titles == ["用药：苯磺酸氨氯地平"]
+
+
+def test_delete_medication_removes_pending_reminders(store):
+    item = store.add_medication("母亲", "氨氯地平")
+    store.add_reminder("用药：氨氯地平", "2026-11-06", profile="母亲")
+    store.add_reminder("继续观察", "2026-11-07", profile="母亲")
+
+    assert store.delete_medication(item["id"]) is True
+
+    titles = [
+        reminder["title"]
+        for reminder in store.list_reminders(profile="母亲")
+    ]
+    assert titles == ["继续观察"]
+
+
 def test_medication_import_skips_status_change(store):
     store.add_medication("母亲", "氨氯地平", "5 mg", "每日一次")
     backup = store.export_data()

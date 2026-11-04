@@ -2003,13 +2003,28 @@ class SessionStore:
                             "name": row["name"],
                         }
                     note = " ".join(str(raw.get("note") or "").split())[:300]
-                    exists = self._conn.execute(
-                        """
-                        SELECT 1 FROM medication_logs
-                         WHERE medication_id = ? AND taken_at = ? AND note = ?
-                        """,
-                        (target["id"], taken_at, note),
-                    ).fetchone()
+                    created_at = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_at:
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM medication_logs
+                             WHERE medication_id = ? AND taken_at = ?
+                               AND note = ? AND created_at = ?
+                            """,
+                            (target["id"], taken_at, note, created_at),
+                        ).fetchone()
+                    else:
+                        created_at = now
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM medication_logs
+                             WHERE medication_id = ? AND taken_at = ?
+                               AND note = ?
+                            """,
+                            (target["id"], taken_at, note),
+                        ).fetchone()
                     if exists:
                         continue
                     self._conn.execute(
@@ -2018,7 +2033,13 @@ class SessionStore:
                             medication_id, profile, taken_at, note, created_at
                         ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        (target["id"], target["profile"], taken_at, note, now),
+                        (
+                            target["id"],
+                            target["profile"],
+                            taken_at,
+                            note,
+                            created_at,
+                        ),
                     )
                     medication_logs_imported += 1
 
@@ -2956,6 +2977,12 @@ class SessionStore:
             return None
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                "SELECT profile, name FROM medications WHERE id = ?",
+                (medication_id,),
+            ).fetchone()
+            if previous is None:
+                return None
             cursor = self._conn.execute(
                 """
                 UPDATE medications
@@ -2988,6 +3015,24 @@ class SessionStore:
                     normalized["profile"],
                 ),
             )
+            if (
+                previous["name"] != normalized["name"]
+                or previous["profile"] != normalized["profile"]
+            ):
+                self._conn.execute(
+                    """
+                    UPDATE reminders
+                       SET title = ?, profile = ?, updated_at = ?
+                     WHERE title = ? AND profile = ? AND done = 0
+                    """,
+                    (
+                        f"用药：{normalized['name']}",
+                        normalized["profile"],
+                        now,
+                        f"用药：{previous['name']}",
+                        previous["profile"],
+                    ),
+                )
             row = self._conn.execute(
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
@@ -3006,14 +3051,27 @@ class SessionStore:
         except (TypeError, ValueError, OverflowError):
             return False
         with self._lock, self._conn:
+            medication = self._conn.execute(
+                "SELECT name, profile FROM medications WHERE id = ?",
+                (medication_id,),
+            ).fetchone()
+            if medication is None:
+                return False
+            self._conn.execute(
+                """
+                DELETE FROM reminders
+                 WHERE done = 0 AND title = ? AND profile = ?
+                """,
+                (f"用药：{medication['name']}", medication["profile"]),
+            )
             self._conn.execute(
                 "DELETE FROM medication_logs WHERE medication_id = ?",
                 (medication_id,),
             )
-            cursor = self._conn.execute(
+            self._conn.execute(
                 "DELETE FROM medications WHERE id = ?", (medication_id,)
             )
-            return cursor.rowcount > 0
+            return True
 
     def add_medication_log(
         self,
@@ -3022,8 +3080,9 @@ class SessionStore:
         note: str = "",
     ) -> Optional[Dict[str, Any]]:
         """记录一次用药；药物不存在或时间无效时返回 None。"""
-        medication = self.get_medication(medication_id)
-        if medication is None:
+        try:
+            medication_id = int(medication_id)
+        except (TypeError, ValueError, OverflowError):
             return None
         taken_at = str(taken_at or "").strip()[:40]
         if not taken_at:
@@ -3033,13 +3092,13 @@ class SessionStore:
             if taken_at is None:
                 return None
         note = " ".join(str(note or "").split())[:300]
-        now = self._now()
+        now = datetime.now().isoformat(timespec="microseconds")
         with self._lock, self._conn:
-            exists = self._conn.execute(
-                "SELECT 1 FROM medications WHERE id = ?",
-                (medication["id"],),
+            medication = self._conn.execute(
+                "SELECT id, profile FROM medications WHERE id = ?",
+                (medication_id,),
             ).fetchone()
-            if exists is None:
+            if medication is None:
                 return None
             cursor = self._conn.execute(
                 """
@@ -3047,7 +3106,13 @@ class SessionStore:
                     medication_id, profile, taken_at, note, created_at
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (medication["id"], medication["profile"], taken_at, note, now),
+                (
+                    medication["id"],
+                    medication["profile"],
+                    taken_at,
+                    note,
+                    now,
+                ),
             )
             log_id = int(cursor.lastrowid)
         return {
