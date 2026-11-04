@@ -367,6 +367,16 @@ const els = {
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
   metricsMore: document.getElementById('metric-more'),
+  symptomSection: document.getElementById('symptom-section'),
+  symptomText: document.getElementById('symptom-text'),
+  symptomSeverity: document.getElementById('symptom-severity'),
+  symptomTime: document.getElementById('symptom-time'),
+  symptomNote: document.getElementById('symptom-note'),
+  symptomSave: document.getElementById('symptom-save'),
+  symptomCancel: document.getElementById('symptom-cancel'),
+  symptomStatus: document.getElementById('symptom-status'),
+  symptomList: document.getElementById('symptom-list'),
+  symptomEmpty: document.getElementById('symptom-empty'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -5939,6 +5949,7 @@ async function refreshMetrics() {
   await loadMetricSummary();
   await loadMetricWeekly();
   await loadMetricOverview();
+  loadSymptoms();
   loadHomeGlance();
 }
 
@@ -6000,6 +6011,9 @@ async function openMetrics() {
     els.metricProfile.value = activeProfile;
   }
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
+  if (els.symptomTime && !els.symptomTime.value) {
+    els.symptomTime.value = metricNowLocal();
+  }
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
   loadMetricTargets().then(() => refreshMetrics());
@@ -7108,6 +7122,171 @@ async function scheduleMetricFollowUp(item) {
   }
   setRemindersStatus('已代入复查提醒，确认后点击「添加提醒」。');
   els.reminderTitle.focus();
+}
+
+let editingSymptomId = null;
+let symptomSaving = false;
+let symptomRequestSeq = 0;
+
+function setSymptomStatus(text, isError = false) {
+  if (!els.symptomStatus) return;
+  els.symptomStatus.textContent = text || '';
+  els.symptomStatus.hidden = !text;
+  els.symptomStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetSymptomForm() {
+  editingSymptomId = null;
+  els.symptomText.value = '';
+  els.symptomSeverity.value = '0';
+  els.symptomNote.value = '';
+  els.symptomTime.value = metricNowLocal();
+  els.symptomSave.textContent = '记录症状';
+  els.symptomCancel.hidden = true;
+}
+
+function renderSymptoms(items) {
+  if (!els.symptomList) return;
+  els.symptomList.replaceChildren();
+  els.symptomEmpty.hidden = items.length > 0;
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.symptom;
+    const severity = document.createElement('span');
+    severity.className = 'symptom-severity';
+    severity.textContent = `${item.severity} / 10`;
+    title.append(' ', severity);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      formatTime(item.recorded_at),
+    ].join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑症状：${item.symptom}`);
+    edit.addEventListener('click', () => editSymptom(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除症状：${item.symptom}`);
+    del.addEventListener('click', () => deleteSymptom(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.symptomList.appendChild(li);
+  }
+}
+
+async function loadSymptoms() {
+  if (!els.symptomList) return;
+  const requestSeq = ++symptomRequestSeq;
+  const profile = els.metricProfile.value;
+  const days = metricRangeDays();
+  try {
+    const res = await fetch(
+      `/api/symptoms?limit=100&profile=${encodeURIComponent(profile)}`
+      + (days > 0 ? `&days=${days}` : '')
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    if (requestSeq !== symptomRequestSeq) return;
+    renderSymptoms(data.symptoms || []);
+  } catch {
+    // 症状加载失败不影响健康记录
+  }
+}
+
+function editSymptom(item) {
+  editingSymptomId = item.id;
+  els.symptomText.value = item.symptom || '';
+  els.symptomSeverity.value = String(item.severity || 0);
+  els.symptomNote.value = item.note || '';
+  els.symptomTime.value = String(item.recorded_at || '').slice(0, 16);
+  els.symptomSave.textContent = '保存修改';
+  els.symptomCancel.hidden = false;
+  els.symptomText.focus();
+}
+
+async function saveSymptom() {
+  if (symptomSaving) return;
+  const symptom = (els.symptomText.value || '').trim();
+  if (!symptom) {
+    setSymptomStatus('请填写症状。', true);
+    els.symptomText.focus();
+    return;
+  }
+  const payload = {
+    profile: els.metricProfile.value,
+    symptom,
+    severity: Number(els.symptomSeverity.value),
+    recorded_at: els.symptomTime.value || metricNowLocal(),
+    note: (els.symptomNote.value || '').trim(),
+  };
+  const editingId = editingSymptomId;
+
+  symptomSaving = true;
+  els.symptomSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/symptoms/${editingId}` : '/api/symptoms',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetSymptomForm();
+    setSymptomStatus(editingId ? '已保存修改。' : '已记录症状。');
+    await loadSymptoms();
+  } catch (err) {
+    setSymptomStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    symptomSaving = false;
+    els.symptomSave.disabled = false;
+  }
+}
+
+async function deleteSymptom(item) {
+  if (!window.confirm(`删除症状「${item.symptom}」？`)) return;
+  try {
+    const res = await fetch(`/api/symptoms/${item.id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingSymptomId === item.id) resetSymptomForm();
+    setSymptomStatus('已删除症状。');
+    await loadSymptoms();
+  } catch (err) {
+    setSymptomStatus(`删除失败：${err.message || err}`, true);
+  }
 }
 
 function editMetricRecord(item) {
@@ -8268,6 +8447,9 @@ async function handleLaunchAction() {
     }
   } else if (action === 'metrics') {
     openMetrics();
+    if (params.get('symptoms') === '1' && els.symptomSection) {
+      els.symptomSection.open = true;
+    }
   }
 }
 
@@ -8641,9 +8823,12 @@ async function buildConsultContext() {
   const context = readPatientContext();
   const profile = els.profileSelect.value || '';
   try {
-    const [metricsRes, remindersRes] = await Promise.all([
+    const [metricsRes, remindersRes, symptomsRes] = await Promise.all([
       fetch(`/api/metrics/latest?profile=${encodeURIComponent(profile)}`),
       fetch('/api/reminders'),
+      fetch(
+        `/api/symptoms?limit=3&days=7&profile=${encodeURIComponent(profile)}`
+      ),
     ]);
     if (metricsRes.ok) {
       const metrics = (await metricsRes.json()).metrics || [];
@@ -8666,6 +8851,16 @@ async function buildConsultContext() {
           (item) => `${item.title}（${formatReminderDue(item.due_at)}）`
         );
       if (pending.length) context.pending_reminders = pending.join('；');
+    }
+    if (symptomsRes.ok) {
+      const symptoms = (await symptomsRes.json()).symptoms || [];
+      const recent = symptoms
+        .slice(0, 3)
+        .map(
+          (item) => `${item.symptom} ${item.severity}/10`
+            + `（${formatTime(item.recorded_at)}）`
+        );
+      if (recent.length) context.recent_symptoms = recent.join('；');
     }
   } catch {
     // 辅助信息加载失败时不影响本次会诊
@@ -9445,6 +9640,21 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
   }
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
+els.symptomSave.addEventListener('click', saveSymptom);
+els.symptomCancel.addEventListener('click', () => {
+  resetSymptomForm();
+  setSymptomStatus('已取消编辑。');
+});
+for (const input of [els.symptomText, els.symptomNote]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveSymptom();
+    }
+  });
+}
 for (const input of [
   els.metricSystolic,
   els.metricDiastolic,

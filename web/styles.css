@@ -3241,6 +3241,38 @@ html[data-theme="dark"] .reminders-due-hint {
   font-weight: 500;
 }
 
+.symptom-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.symptom-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.symptom-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.symptom-severity {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--clinic);
+  background: var(--clinic-soft);
+  border-radius: 999px;
+}
+
 .metric-more {
   display: block;
   width: 100%;
