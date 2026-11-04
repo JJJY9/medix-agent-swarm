@@ -655,6 +655,26 @@
         <button type="button" class="btn-quiet" id="reminder-cancel" hidden>取消编辑</button>
         <button type="button" class="btn-quiet" id="reminders-notify" hidden>开启到期通知</button>
       </div>
+      <details class="reminder-plan" id="reminder-plan">
+        <summary>按周期安排多次随访</summary>
+        <div class="reminder-plan-body">
+          <p class="metric-reference">用上面的提醒内容与首次日期作为起点，按间隔连续创建多次提醒。</p>
+          <label class="calc-field">间隔
+            <span class="reminder-plan-row">
+              <input id="reminder-plan-interval" type="number" min="1" max="12" step="1" inputmode="numeric" value="1" aria-label="间隔数值">
+              <select id="reminder-plan-unit" aria-label="间隔单位">
+                <option value="week">周</option>
+                <option value="month">月</option>
+                <option value="day">天</option>
+              </select>
+            </span>
+          </label>
+          <label class="calc-field">次数
+            <input id="reminder-plan-count" type="number" min="2" max="24" step="1" inputmode="numeric" value="4">
+          </label>
+          <button type="button" class="btn-quiet" id="reminder-plan-add">批量添加</button>
+        </div>
+      </details>
     </div>
 
     <p class="metrics-status" id="reminders-status" role="status" hidden></p>

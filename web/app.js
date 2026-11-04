@@ -281,6 +281,10 @@ const els = {
   remindersExportIcs: document.getElementById('reminders-export-ics'),
   remindersImport: document.getElementById('reminders-import'),
   remindersImportFile: document.getElementById('reminders-import-file'),
+  reminderPlanInterval: document.getElementById('reminder-plan-interval'),
+  reminderPlanUnit: document.getElementById('reminder-plan-unit'),
+  reminderPlanCount: document.getElementById('reminder-plan-count'),
+  reminderPlanAdd: document.getElementById('reminder-plan-add'),
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
@@ -5683,6 +5687,7 @@ let editingReminderId = null;
 let remindersRequestSeq = 0;
 let reminderSaving = false;
 let reminderActionBusy = false;
+let reminderPlanBusy = false;
 
 function todayLocalDate() {
   const now = new Date();
@@ -5780,6 +5785,42 @@ function reminderIsAdvanceDue(item) {
   if (advance <= 0) return false;
   const days = reminderDaysUntil(item.due_at);
   return days !== null && days > 0 && days <= advance;
+}
+
+function shiftLocalDate(dateStr, days) {
+  const [year, month, day] = String(dateStr || '').split('-').map(Number);
+  if (!year || !month || !day) return dateStr;
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + Number(days || 0));
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function addMonthsToDate(dateStr, months) {
+  const [year, month, day] = String(dateStr || '').split('-').map(Number);
+  if (!year || !month || !day) return dateStr;
+  const target = new Date(year, month - 1 + Number(months || 0), 1);
+  const lastDay = new Date(
+    target.getFullYear(), target.getMonth() + 1, 0
+  ).getDate();
+  target.setDate(Math.min(day, lastDay));
+  const offset = target.getTimezoneOffset() * 60000;
+  return new Date(target.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function buildReminderSeries(startDate, interval, unit, count) {
+  const dates = [];
+  const step = Math.max(1, Number(interval) || 1);
+  const total = Math.max(1, Math.min(Number(count) || 1, 24));
+  for (let index = 0; index < total; index += 1) {
+    if (unit === 'month') {
+      dates.push(addMonthsToDate(startDate, step * index));
+    } else {
+      const days = unit === 'week' ? step * 7 : step;
+      dates.push(shiftLocalDate(startDate, days * index));
+    }
+  }
+  return dates;
 }
 
 function localDateAfter(days) {
@@ -6089,6 +6130,71 @@ async function refreshReminderProfileOptions() {
     els.remindersProfile.appendChild(option);
   }
   els.remindersProfile.value = names.has(current) ? current : '';
+}
+
+async function addReminderSeries() {
+  if (reminderPlanBusy) return;
+  const title = (els.reminderTitle.value || '').trim();
+  const startDate = (els.reminderDue.value || '').trim();
+  if (!title) {
+    setRemindersStatus('提醒内容不能为空。', true);
+    els.reminderTitle.focus();
+    return;
+  }
+  if (!startDate) {
+    setRemindersStatus('请选择首次提醒日期。', true);
+    els.reminderDue.focus();
+    return;
+  }
+
+  const interval = Math.max(
+    1, Math.min(Number(els.reminderPlanInterval.value) || 1, 12)
+  );
+  const unit = els.reminderPlanUnit.value;
+  const count = Math.max(
+    2, Math.min(Number(els.reminderPlanCount.value) || 2, 24)
+  );
+  const dates = buildReminderSeries(startDate, interval, unit, count);
+  const base = {
+    title,
+    note: (els.reminderNote.value || '').trim(),
+    profile: els.profileSelect.value || '',
+    advance_days: Math.max(
+      0,
+      Math.min(30, Number(els.reminderAdvance.value) || 0)
+    ),
+  };
+
+  reminderPlanBusy = true;
+  els.reminderPlanAdd.disabled = true;
+  setRemindersStatus(`正在创建 ${dates.length} 条提醒…`);
+  let created = 0;
+  try {
+    for (const dueAt of dates) {
+      const res = await fetch('/api/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base, due_at: dueAt }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `服务返回 ${res.status}`);
+      }
+      created += 1;
+    }
+    setRemindersStatus(`已创建 ${created} 条随访提醒。`);
+    resetReminderForm();
+    await loadReminders();
+  } catch (err) {
+    setRemindersStatus(
+      `已创建 ${created} 条，后续失败：${err.message || err}`,
+      true
+    );
+    await loadReminders();
+  } finally {
+    reminderPlanBusy = false;
+    els.reminderPlanAdd.disabled = false;
+  }
 }
 
 async function addReminder() {
@@ -8328,6 +8434,7 @@ els.remindersImportFile.addEventListener('change', () => {
     && els.remindersImportFile.files[0];
   if (file) importRemindersCsv(file);
 });
+els.reminderPlanAdd.addEventListener('click', addReminderSeries);
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
