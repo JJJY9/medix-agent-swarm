@@ -239,6 +239,51 @@ def calculate_gad7(answers: List[int]) -> Dict[str, object]:
     }
 
 
+def calculate_has_bled(
+    age: int,
+    hypertension: bool = False,
+    abnormal_renal: bool = False,
+    abnormal_liver: bool = False,
+    stroke_history: bool = False,
+    bleeding_history: bool = False,
+    labile_inr: bool = False,
+    drugs: bool = False,
+    alcohol: bool = False,
+) -> Dict[str, object]:
+    """HAS-BLED 房颤抗凝出血风险评分（0–9 分）。
+
+    仅用于出血风险分层；高分不是抗凝禁忌，需医生结合卒中风险综合判断。
+    """
+    criteria = []
+    if hypertension:
+        criteria.append("高血压（收缩压 > 160 mmHg）")
+    if abnormal_renal:
+        criteria.append("肾功能异常")
+    if abnormal_liver:
+        criteria.append("肝功能异常")
+    if stroke_history:
+        criteria.append("卒中史")
+    if bleeding_history:
+        criteria.append("出血史或出血倾向")
+    if labile_inr:
+        criteria.append("INR 不稳定")
+    if int(age) > 65:
+        criteria.append("年龄 > 65 岁")
+    if drugs:
+        criteria.append("合用抗血小板药或 NSAIDs")
+    if alcohol:
+        criteria.append("酒精过量")
+
+    score = len(criteria)
+    risk = "低危" if score <= 2 else "高危"
+    return {
+        "score": score,
+        "risk": risk,
+        "criteria": criteria,
+        "note": "HAS-BLED 用于出血风险分层，评分高不等于不能抗凝；请医生结合 CHA₂DS₂-VASc、肾功能与患者意愿综合评估。",
+    }
+
+
 def calculate_curb65(
     age: int,
     confusion: bool,

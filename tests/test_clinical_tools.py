@@ -7,6 +7,7 @@ from core.clinical_tools import (
     calculate_curb65,
     calculate_egfr,
     calculate_gad7,
+    calculate_has_bled,
     calculate_phq9,
 )
 
@@ -167,3 +168,45 @@ def test_gad7_validation():
         calculate_gad7([0] * 6 + [4])
     with pytest.raises(ValueError):
         calculate_gad7([0] * 6 + [True])
+
+
+def test_has_bled_score_and_thresholds():
+    low = calculate_has_bled(50)
+    assert low["score"] == 0
+    assert low["risk"] == "低危"
+
+    assert calculate_has_bled(65)["score"] == 0
+    assert calculate_has_bled(66)["score"] == 1
+
+    moderate = calculate_has_bled(
+        80, hypertension=True, bleeding_history=True
+    )
+    assert moderate["score"] == 3
+    assert moderate["risk"] == "高危"
+
+    all_positive = calculate_has_bled(
+        80,
+        hypertension=True,
+        abnormal_renal=True,
+        abnormal_liver=True,
+        stroke_history=True,
+        bleeding_history=True,
+        labile_inr=True,
+        drugs=True,
+        alcohol=True,
+    )
+    assert all_positive["score"] == 9
+    assert all_positive["risk"] == "高危"
+    assert len(all_positive["criteria"]) == 9
+
+
+def test_has_bled_boundary_low_risk():
+    result = calculate_has_bled(
+        80, hypertension=True, bleeding_history=True
+    )
+    # 年龄 + 高血压 + 出血史 = 3，仍为高危
+    assert result["risk"] == "高危"
+
+    two_points = calculate_has_bled(80, hypertension=True)
+    assert two_points["score"] == 2
+    assert two_points["risk"] == "低危"

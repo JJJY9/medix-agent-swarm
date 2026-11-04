@@ -150,6 +150,18 @@ class Gad7Request(BaseModel):
     answers: List[int] = Field(..., min_length=7, max_length=7)
 
 
+class HasBledRequest(BaseModel):
+    age: int = Field(..., ge=18, le=120, description="年龄（岁）")
+    hypertension: bool = False
+    abnormal_renal: bool = False
+    abnormal_liver: bool = False
+    stroke_history: bool = False
+    bleeding_history: bool = False
+    labile_inr: bool = False
+    drugs: bool = False
+    alcohol: bool = False
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal["bp", "weight", "glucose", "temperature"]
@@ -927,6 +939,27 @@ async def tool_gad7(request: Gad7Request):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True, **result}
+
+
+@app.post("/api/tools/has-bled")
+async def tool_has_bled(request: HasBledRequest):
+    """HAS-BLED 房颤抗凝出血风险评分。"""
+    from core.clinical_tools import calculate_has_bled
+
+    return {
+        "ok": True,
+        **calculate_has_bled(
+            request.age,
+            hypertension=request.hypertension,
+            abnormal_renal=request.abnormal_renal,
+            abnormal_liver=request.abnormal_liver,
+            stroke_history=request.stroke_history,
+            bleeding_history=request.bleeding_history,
+            labile_inr=request.labile_inr,
+            drugs=request.drugs,
+            alcohol=request.alcohol,
+        ),
+    }
 
 
 @app.get("/api/sessions/{session_id}/messages")
