@@ -1057,6 +1057,40 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 }
 .stop:hover { border-color: var(--triage-1); background: #fbe6e3; }
 
+.voice {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  color: var(--clinic);
+  background: var(--clinic-soft);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.voice:hover { border-color: var(--clinic); }
+.voice svg { width: 20px; height: 20px; }
+
+.voice.listening {
+  color: #fff;
+  background: var(--triage-1);
+  border-color: var(--triage-1);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 43, 43, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(217, 43, 43, 0.08); }
+}
+
+html[data-theme="dark"] .voice { background: #1d3644; }
+html[data-theme="dark"] .voice.listening { background: #b53333; }
+
 /* ---------- 会诊科室面板 ---------- */
 
 .rail { min-height: 0; }

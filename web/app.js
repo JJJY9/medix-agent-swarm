@@ -75,6 +75,7 @@ const els = {
   historyQualityBody: document.getElementById('history-quality-body'),
   historyEmpty: document.getElementById('history-empty'),
   stop: document.getElementById('stop'),
+  voiceToggle: document.getElementById('voice-toggle'),
   jumpLatest: document.getElementById('jump-latest'),
   kbManage: document.getElementById('kb-manage'),
   kbDrawer: document.getElementById('kb-drawer'),
@@ -6224,6 +6225,102 @@ function loadDraft() {
   }
 }
 
+/* ---------- 语音输入（Web Speech API，不支持时隐藏按钮） ---------- */
+
+let voiceRecognition = null;
+let voiceListening = false;
+let voicePrefix = '';
+let voiceFinal = '';
+
+function setVoiceListening(state) {
+  voiceListening = state;
+  if (!els.voiceToggle) return;
+  els.voiceToggle.classList.toggle('listening', state);
+  els.voiceToggle.setAttribute('aria-pressed', state ? 'true' : 'false');
+  els.voiceToggle.title = state
+    ? '停止语音输入'
+    : '语音输入（多数浏览器需联网识别）';
+}
+
+function stopVoice() {
+  if (voiceRecognition && voiceListening) {
+    try {
+      voiceRecognition.stop();
+    } catch {
+      // 已停止时忽略
+    }
+  }
+  setVoiceListening(false);
+}
+
+function setupVoiceInput() {
+  const SpeechRecognition =
+    window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition || !els.voiceToggle) return;
+
+  voiceRecognition = new SpeechRecognition();
+  voiceRecognition.lang = 'zh-CN';
+  voiceRecognition.continuous = false;
+  voiceRecognition.interimResults = true;
+  voiceRecognition.maxAlternatives = 1;
+
+  voiceRecognition.addEventListener('start', () => {
+    voicePrefix = els.input.value.trim();
+    voiceFinal = '';
+    setVoiceListening(true);
+    setVitals('active', '正在听写…');
+  });
+
+  voiceRecognition.addEventListener('result', (event) => {
+    let interim = '';
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        voiceFinal += result[0].transcript;
+      } else {
+        interim += result[0].transcript;
+      }
+    }
+    const spoken = `${voiceFinal}${interim}`.trim();
+    if (!spoken) return;
+    els.input.value =
+      `${voicePrefix}${voicePrefix ? ' ' : ''}${spoken}`.slice(0, 2000);
+    els.input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
+  voiceRecognition.addEventListener('end', () => {
+    setVoiceListening(false);
+    if (voiceFinal.trim()) setVitals('idle', '语音已转成文字');
+  });
+
+  voiceRecognition.addEventListener('error', (event) => {
+    setVoiceListening(false);
+    const code = event.error || '';
+    if (code === 'not-allowed' || code === 'service-not-allowed') {
+      setVitals('warn', '麦克风不可用');
+    } else if (code === 'no-speech') {
+      setVitals('idle', '没有听到语音');
+    } else if (code !== 'aborted') {
+      setVitals('warn', '语音识别失败');
+    }
+  });
+
+  els.voiceToggle.hidden = false;
+}
+
+function toggleVoice() {
+  if (!voiceRecognition) return;
+  if (voiceListening) {
+    stopVoice();
+    return;
+  }
+  try {
+    voiceRecognition.start();
+  } catch {
+    // 重复 start 等异常时忽略
+  }
+}
+
 els.input.addEventListener('input', () => {
   autoGrow();
   saveDraft();
@@ -6238,6 +6335,7 @@ els.input.addEventListener('keydown', (e) => {
 
 els.composer.addEventListener('submit', (e) => {
   e.preventDefault();
+  stopVoice();
   if (busy) {
     setVitals('active', '会诊进行中');
     return;
@@ -6249,6 +6347,11 @@ els.composer.addEventListener('submit', (e) => {
   clearDraft();
   send(q);
 });
+
+if (els.voiceToggle) {
+  els.voiceToggle.addEventListener('click', toggleVoice);
+}
+setupVoiceInput();
 
 els.newSession.addEventListener('click', startNewSession);
 
