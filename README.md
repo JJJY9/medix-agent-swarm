@@ -34,7 +34,7 @@
 - **📡 实时进度**: 科室开始接诊即点亮，完成时更新状态并写入接诊时间线 ✅
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120；结合年龄、免疫状态与抗凝用药补充高危规则（如 3 个月以下婴儿发热），并覆盖无尿/少尿、糖尿病急症与孕产期出血 ✅
 - **💊 用药安全提示**: 根据主诉、正在使用的药物与过敏史，规则化筛查重复用药、常见相互作用和过敏交叉风险（华法林、他汀、左甲状腺素、喹诺酮/四环素、SSRI、甲氨蝶呤、别嘌醇/硫唑嘌呤、阿片/苯二氮䓬等），在模型回复前先行提示 ✅
-- **🧮 临床工具**: BMI（中国成人分类）、CKD-EPI 2021 eGFR、CHA₂DS₂-VASc、HAS-BLED、CURB-65、GCS、Wells DVT/PE、Child-Pugh、PHQ-9 抑郁筛查、GAD-7 焦虑筛查、qSOFA、FIB-4、MELD、STOP-BANG 睡眠呼吸暂停筛查、Padua 静脉血栓风险与药物相互作用检查，自动带入年龄与性别，结果附适用范围说明；PHQ-9 第 9 题阳性时提示立即寻求专业帮助，评分可保存到健康记录 ✅
+- **🧮 临床工具**: BMI（中国成人分类）、CKD-EPI 2021 eGFR、CHA₂DS₂-VASc、HAS-BLED、CURB-65、GCS、Wells DVT/PE、Child-Pugh、PHQ-9 抑郁筛查、GAD-7 焦虑筛查、qSOFA、FIB-4、MELD、STOP-BANG 睡眠呼吸暂停筛查、Padua 静脉血栓风险、ABCD2 TIA 卒中风险、Morse 跌倒风险与药物相互作用检查，自动带入年龄与性别，结果附适用范围说明；PHQ-9 第 9 题阳性时提示立即寻求专业帮助，评分可保存到健康记录 ✅
 - **📉 健康记录**: 记录并编辑血压、体重、血糖、体温与 PHQ-9/GAD-7 评分，可关联患者档案；提供最近指标概览、参考范围提示、历史列表与趋势图，血压按指南分级（正常 / 正常高值 / 1–3 级），支持按时间范围查看、为每位患者设置指标目标上限、超标标记与趋势图目标线，支持 CSV 导入/导出，随整库备份导出与恢复 ✅
 - **⏰ 随访提醒**: 为复查、复诊创建带日期的提醒，到期自动标记「已到期」并按时间排序；支持编辑、完成、推迟 7 天与删除，关键操作写入审计日志；入口徽标显示到期数量，可选开启浏览器到期通知 ✅
 - **🩺 就诊摘要**: 一键导出患者档案、近期健康指标（含自定义目标与超标标记）、待完成随访与近期会诊的一页式 HTML 摘要，可打印后带去门诊 ✅
@@ -161,7 +161,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 | 知识库管理 | 会诊面板下方「管理知识库」：查看文档与向量块、上传 TXT/MD/PDF、删除、重建索引 |
 | 会诊依据 | 多学科会诊可展开各科室原始意见；使用知识库时展示来源、文件名、相关度与原文片段 |
 | 系统自检 | 会诊面板下方「系统自检」：Python、依赖版本、LLM 配置、知识库状态与操作审计，可复制诊断信息、清理旧会诊 |
-| 临床工具 | 会诊面板下方「临床工具」：BMI、eGFR（CKD-EPI 2021）、CHA₂DS₂-VASc、HAS-BLED、CURB-65、GCS、Wells DVT/PE、Child-Pugh、PHQ-9、GAD-7、qSOFA、FIB-4、MELD、STOP-BANG、Padua 与药物相互作用检查，自动带入补充信息中的年龄与性别 |
+| 临床工具 | 会诊面板下方「临床工具」：BMI、eGFR（CKD-EPI 2021）、CHA₂DS₂-VASc、HAS-BLED、CURB-65、GCS、Wells DVT/PE、Child-Pugh、PHQ-9、GAD-7、qSOFA、FIB-4、MELD、STOP-BANG、Padua、ABCD2、Morse 与药物相互作用检查，自动带入补充信息中的年龄与性别 |
 | 健康记录 | 会诊面板下方「健康记录」：录入血压、体重、血糖、体温与 PHQ-9/GAD-7 评分，可关联患者档案（档案下拉包含已删除档案的历史记录），按 7/30/90 天范围查看最近指标概览、历史记录与趋势图，血压自动分级，可设置自定义目标上限，导出/导入 CSV |
 | 随访提醒 | 会诊面板下方「随访提醒」：为复查、复诊创建带日期的提醒，到期标记「已到期」，支持完成与删除；入口显示到期数量徽标，可选开启浏览器通知 |
 | 就诊摘要 | 会诊面板下方「就诊摘要」：导出档案信息、近期指标、待办随访与近期会诊的一页式 HTML，可打印为 PDF |
@@ -297,6 +297,8 @@ npm install -D playwright
 | POST | `/api/tools/meld` | 经典 MELD 终末期肝病评分（胆红素、INR、肌酐、透析） |
 | POST | `/api/tools/stop-bang` | STOP-BANG 阻塞性睡眠呼吸暂停筛查（8 项） |
 | POST | `/api/tools/padua` | Padua 内科住院患者静脉血栓风险评分 |
+| POST | `/api/tools/abcd2` | ABCD2 TIA 后短期卒中风险评分 |
+| POST | `/api/tools/morse-fall` | Morse 跌倒风险评分 |
 | GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选，默认最近 100 条） |
 | POST | `/api/metrics` | 新增血压、体重、血糖或体温记录 |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |
@@ -555,7 +557,7 @@ medix-agent-swarm/
 ├── core/                              # 核心引擎
 │   ├── __init__.py
 │   ├── agent_loop.py                  # Agent Loop（集成约束验证）
-│   ├── clinical_tools.py              # BMI/eGFR/CHA₂DS₂-VASc/HAS-BLED/CURB-65/GCS/Wells/Child-Pugh/PHQ-9/GAD-7/qSOFA/FIB-4/MELD/STOP-BANG/Padua
+│   ├── clinical_tools.py              # BMI/eGFR/CHA₂DS₂-VASc/HAS-BLED/CURB-65/GCS/Wells/Child-Pugh/PHQ-9/GAD-7/qSOFA/FIB-4/MELD/STOP-BANG/Padua/ABCD2/Morse
 │   ├── context.py                     # 结构化问诊上下文
 │   ├── diagnostics.py                 # 环境自检
 │   ├── llm_client.py                  # LLM 客户端

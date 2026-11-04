@@ -712,6 +712,8 @@
         <option value="meld">MELD 终末期肝病评分</option>
         <option value="stopbang">STOP-BANG 睡眠呼吸暂停筛查</option>
         <option value="padua">Padua 静脉血栓风险</option>
+        <option value="abcd2">ABCD2 TIA 卒中风险</option>
+        <option value="morse">Morse 跌倒风险</option>
       </select>
     </label>
 
@@ -994,6 +996,61 @@
       <label class="calc-check"><input type="checkbox" id="calc-padua-bmi"> BMI ≥ 30 kg/m²（+1）</label>
       <label class="calc-check"><input type="checkbox" id="calc-padua-hormonal"> 正在接受激素治疗（+1）</label>
       <button type="submit" class="btn-quiet">计算 Padua</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-abcd2" data-tool="abcd2" hidden>
+      <p class="calc-hint">用于短暂性脑缺血发作后的短期卒中风险分层，出现症状应尽快就医。</p>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-age"> 年龄 ≥ 60 岁（+1）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-bp"> 血压 ≥ 140/90 mmHg（+1）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-weakness"> 单侧肢体无力（+2）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-speech"> 言语障碍不伴肢体无力（+1）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-duration60"> 症状持续 ≥ 60 分钟（+2）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-duration10"> 症状持续 10–59 分钟（+1）</label>
+      <label class="calc-check"><input type="checkbox" id="calc-abcd2-diabetes"> 糖尿病（+1）</label>
+      <button type="submit" class="btn-quiet">计算 ABCD2</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-morse" data-tool="morse" hidden>
+      <p class="calc-hint">住院患者跌倒风险筛查，≥45 分高风险。</p>
+      <label class="calc-field">既往跌倒
+        <select id="calc-morse-history">
+          <option value="0">无（0）</option>
+          <option value="25">有（25）</option>
+        </select>
+      </label>
+      <label class="calc-field">次要诊断
+        <select id="calc-morse-secondary">
+          <option value="0">无（0）</option>
+          <option value="15">有（15）</option>
+        </select>
+      </label>
+      <label class="calc-field">行走辅助
+        <select id="calc-morse-aid">
+          <option value="0">无 / 卧床 / 护士协助（0）</option>
+          <option value="15">拐杖 / 手杖 / 助行器（15）</option>
+          <option value="30">扶家具行走（30）</option>
+        </select>
+      </label>
+      <label class="calc-field">静脉输液
+        <select id="calc-morse-iv">
+          <option value="0">无（0）</option>
+          <option value="20">有（20）</option>
+        </select>
+      </label>
+      <label class="calc-field">步态
+        <select id="calc-morse-gait">
+          <option value="0">正常 / 卧床 / 无法行走（0）</option>
+          <option value="10">虚弱（10）</option>
+          <option value="20">步态异常（20）</option>
+        </select>
+      </label>
+      <label class="calc-field">精神状态
+        <select id="calc-morse-mental">
+          <option value="0">正确认识自身能力（0）</option>
+          <option value="15">高估能力或忘记限制（15）</option>
+        </select>
+      </label>
+      <button type="submit" class="btn-quiet">计算 Morse</button>
     </form>
 
     <section class="calc-result" id="calc-result" hidden aria-live="polite">

@@ -2,6 +2,7 @@
 import pytest
 
 from core.clinical_tools import (
+    calculate_abcd2,
     calculate_bmi,
     calculate_chads_vasc,
     calculate_child_pugh,
@@ -12,6 +13,7 @@ from core.clinical_tools import (
     calculate_gcs,
     calculate_has_bled,
     calculate_meld,
+    calculate_morse_fall,
     calculate_padua,
     calculate_phq9,
     calculate_qsofa,
@@ -437,3 +439,59 @@ def test_padua_scores():
     assert everything["score"] == 20
     assert everything["risk"] == "高风险"
     assert len(everything["criteria"]) == 11
+
+def test_abcd2_thresholds():
+    low = calculate_abcd2()
+    assert low["score"] == 0
+    assert low["risk"] == "低风险"
+
+    middle = calculate_abcd2(age_ge_60=True, diabetes=True)
+    assert middle["score"] == 2
+    assert middle["risk"] == "中风险"
+
+    high = calculate_abcd2(
+        unilateral_weakness=True, duration_ge_60=True
+    )
+    assert high["score"] == 4
+    assert high["risk"] == "高风险"
+    assert len(high["criteria"]) == 2
+
+    speech_only = calculate_abcd2(speech_disturbance=True)
+    assert speech_only["score"] == 1
+    assert speech_only["risk"] == "低风险"
+
+    both = calculate_abcd2(
+        unilateral_weakness=True, speech_disturbance=True
+    )
+    assert both["score"] == 2
+    assert len(both["criteria"]) == 1
+
+
+def test_morse_fall_thresholds():
+    low = calculate_morse_fall()
+    assert low["score"] == 0
+    assert low["risk"] == "低风险"
+
+    middle = calculate_morse_fall(history_of_falling=25)
+    assert middle["score"] == 25
+    assert middle["risk"] == "中风险"
+
+    high = calculate_morse_fall(
+        history_of_falling=25,
+        secondary_diagnosis=15,
+        intravenous=20,
+    )
+    assert high["score"] == 60
+    assert high["risk"] == "高风险"
+
+    maximum = calculate_morse_fall(
+        history_of_falling=25,
+        secondary_diagnosis=15,
+        ambulatory_aid=30,
+        intravenous=20,
+        gait=20,
+        mental_status=15,
+    )
+    assert maximum["score"] == 125
+    assert maximum["risk"] == "高风险"
+    assert len(maximum["criteria"]) == 6

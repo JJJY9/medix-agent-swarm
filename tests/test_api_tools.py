@@ -505,3 +505,40 @@ def test_padua_api(client):
     assert high.status_code == 200
     assert high.json()["score"] == 7
     assert high.json()["risk"] == "高风险"
+
+def test_abcd2_api(client):
+    low = client.post("/api/tools/abcd2", json={})
+    high = client.post(
+        "/api/tools/abcd2",
+        json={"unilateral_weakness": True, "duration_ge_60": True},
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低风险"
+    assert high.status_code == 200
+    assert high.json()["score"] == 4
+    assert high.json()["risk"] == "高风险"
+
+
+def test_morse_fall_api(client):
+    low = client.post("/api/tools/morse-fall", json={})
+    high = client.post(
+        "/api/tools/morse-fall",
+        json={
+            "history_of_falling": 25,
+            "secondary_diagnosis": 15,
+            "intravenous": 20,
+        },
+    )
+    invalid = client.post(
+        "/api/tools/morse-fall", json={"history_of_falling": 10}
+    )
+
+    assert low.status_code == 200
+    assert low.json()["score"] == 0
+    assert low.json()["risk"] == "低风险"
+    assert high.status_code == 200
+    assert high.json()["score"] == 60
+    assert high.json()["risk"] == "高风险"
+    assert invalid.status_code == 422

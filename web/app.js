@@ -231,6 +231,21 @@ const els = {
   calcPaduaInfection: document.getElementById('calc-padua-infection'),
   calcPaduaBmi: document.getElementById('calc-padua-bmi'),
   calcPaduaHormonal: document.getElementById('calc-padua-hormonal'),
+  calcFormAbcd2: document.getElementById('calc-form-abcd2'),
+  calcAbcd2Age: document.getElementById('calc-abcd2-age'),
+  calcAbcd2Bp: document.getElementById('calc-abcd2-bp'),
+  calcAbcd2Weakness: document.getElementById('calc-abcd2-weakness'),
+  calcAbcd2Speech: document.getElementById('calc-abcd2-speech'),
+  calcAbcd2Duration60: document.getElementById('calc-abcd2-duration60'),
+  calcAbcd2Duration10: document.getElementById('calc-abcd2-duration10'),
+  calcAbcd2Diabetes: document.getElementById('calc-abcd2-diabetes'),
+  calcFormMorse: document.getElementById('calc-form-morse'),
+  calcMorseHistory: document.getElementById('calc-morse-history'),
+  calcMorseSecondary: document.getElementById('calc-morse-secondary'),
+  calcMorseAid: document.getElementById('calc-morse-aid'),
+  calcMorseIv: document.getElementById('calc-morse-iv'),
+  calcMorseGait: document.getElementById('calc-morse-gait'),
+  calcMorseMental: document.getElementById('calc-morse-mental'),
   calcWellsPeDvt: document.getElementById('calc-wellspe-dvt'),
   calcWellsPeLikely: document.getElementById('calc-wellspe-likely'),
   calcWellsPeHr: document.getElementById('calc-wellspe-hr'),
@@ -6143,6 +6158,8 @@ function setCalcTool(tool) {
     els.calcFormMeld,
     els.calcFormStopBang,
     els.calcFormPadua,
+    els.calcFormAbcd2,
+    els.calcFormMorse,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
@@ -6667,6 +6684,56 @@ function submitPadua(event) {
           : ' · 未命中评分项'),
       note: data.note,
       level: data.risk === '高风险' ? 'warning' : '',
+    })
+  );
+}
+
+function submitAbcd2(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/abcd2',
+    {
+      age_ge_60: els.calcAbcd2Age.checked,
+      bp_ge_140_90: els.calcAbcd2Bp.checked,
+      unilateral_weakness: els.calcAbcd2Weakness.checked,
+      speech_disturbance: els.calcAbcd2Speech.checked,
+      duration_ge_60: els.calcAbcd2Duration60.checked,
+      duration_10_59: els.calcAbcd2Duration10.checked,
+      diabetes: els.calcAbcd2Diabetes.checked,
+    },
+    (data) => ({
+      title: 'ABCD2 结果',
+      main: `评分 ${data.score} / 7`,
+      detail:
+        `风险分层：${data.risk}`
+        + (data.criteria && data.criteria.length
+          ? ` · 得分项：${data.criteria.join('、')}`
+          : ' · 未命中评分项'),
+      note: data.note,
+      level: data.risk === '低风险' ? '' : 'warning',
+    })
+  );
+}
+
+function submitMorse(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/morse-fall',
+    {
+      history_of_falling: Number(els.calcMorseHistory.value),
+      secondary_diagnosis: Number(els.calcMorseSecondary.value),
+      ambulatory_aid: Number(els.calcMorseAid.value),
+      intravenous: Number(els.calcMorseIv.value),
+      gait: Number(els.calcMorseGait.value),
+      mental_status: Number(els.calcMorseMental.value),
+    },
+    (data) => ({
+      title: 'Morse 跌倒风险结果',
+      main: `评分 ${data.score} 分`,
+      detail:
+        `风险分层：${data.risk} · ${(data.criteria || []).join('；')}`,
+      note: data.note,
+      level: data.risk === '低风险' ? '' : 'warning',
     })
   );
 }
@@ -7819,6 +7886,8 @@ els.calcFormFib4.addEventListener('submit', submitFib4);
 els.calcFormMeld.addEventListener('submit', submitMeld);
 els.calcFormStopBang.addEventListener('submit', submitStopBang);
 els.calcFormPadua.addEventListener('submit', submitPadua);
+els.calcFormAbcd2.addEventListener('submit', submitAbcd2);
+els.calcFormMorse.addEventListener('submit', submitMorse);
 els.calcSave.addEventListener('click', async () => {
   if (!currentCalcAction) return;
   const original = els.calcSave.textContent;
