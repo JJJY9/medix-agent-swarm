@@ -44,6 +44,7 @@ const els = {
   historyBulkAll: document.getElementById('history-bulk-all'),
   historyBulkArchive: document.getElementById('history-bulk-archive'),
   historyBulkUnarchive: document.getElementById('history-bulk-unarchive'),
+  historyBulkTags: document.getElementById('history-bulk-tags'),
   historyBulkDelete: document.getElementById('history-bulk-delete'),
   historyBulkCancel: document.getElementById('history-bulk-cancel'),
   historyExport: document.getElementById('history-export'),
@@ -2274,7 +2275,8 @@ function updateBulkBar() {
     && visibleIds.every((id) => selectedSessions.has(id));
   els.historyBulkAll.textContent = allSelected ? '取消全选' : '全选';
 
-  [els.historyBulkArchive, els.historyBulkUnarchive, els.historyBulkDelete]
+  [els.historyBulkArchive, els.historyBulkUnarchive,
+   els.historyBulkTags, els.historyBulkDelete]
     .forEach((button) => {
       button.disabled = count === 0;
     });
@@ -2335,6 +2337,37 @@ async function bulkArchive(archived) {
       + (missing ? `（${missing} 个已不存在）` : '');
   } catch (err) {
     window.alert(`批量归档失败：${err.message || err}`);
+  }
+}
+
+async function bulkTagSessions() {
+  const ids = Array.from(selectedSessions);
+  if (!ids.length) return;
+
+  const input = window.prompt(
+    `为选中的 ${ids.length} 次会诊设置标签（逗号/空格分隔，留空清除）`,
+    ''
+  );
+  if (input === null) return;
+  const tags = input.split(/[,，、\s]+/).filter(Boolean);
+
+  try {
+    const res = await fetch('/api/bulk/sessions/tags', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, tags }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    selectedSessions.clear();
+    await loadHistory(els.historySearch.value.trim());
+    await loadHistoryTags();
+    els.historyActionStatus.textContent = data.tags.length
+      ? `已为 ${data.updated || 0} 次会诊设置标签：${data.tags.join('、')}`
+      : `已清空 ${data.updated || 0} 次会诊的标签`;
+  } catch (err) {
+    window.alert(`批量设置标签失败：${err.message || err}`);
   }
 }
 
@@ -3686,6 +3719,7 @@ const AUDIT_LABELS = {
   'session.tags': '更新标签',
   'session.bulk_archive': '批量归档',
   'session.bulk_delete': '批量删除',
+  'session.bulk_tags': '批量设置标签',
   'profile.delete': '删除患者档案',
   'metric.delete': '删除健康记录',
 };
@@ -5794,6 +5828,7 @@ els.historyBulkToggle.addEventListener('click', () => {
 els.historyBulkAll.addEventListener('click', toggleBulkSelectAll);
 els.historyBulkArchive.addEventListener('click', () => bulkArchive(true));
 els.historyBulkUnarchive.addEventListener('click', () => bulkArchive(false));
+els.historyBulkTags.addEventListener('click', bulkTagSessions);
 els.historyBulkDelete.addEventListener('click', bulkDelete);
 els.historyBulkCancel.addEventListener('click', () => setBulkMode(false));
 
