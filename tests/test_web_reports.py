@@ -633,3 +633,11 @@ def test_app_js_ships_symptom_trend(client):
 
     assert "function renderSymptomTrend" in app_js
     assert 'id="symptom-trend-chart"' in html
+
+
+def test_app_js_symptom_cards_can_hide(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "limit=100000" in app_js
+    assert ".home-glance-card[hidden]" in css

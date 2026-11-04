@@ -1246,7 +1246,7 @@ async def list_symptoms(
     """症状记录（按记录时间倒序，可按档案与最近天数筛选）。"""
     from memory import get_session_store
 
-    limit = max(1, min(int(limit or 100), 500))
+    limit = max(1, min(int(limit or 100), 100000))
     days = max(0, min(int(days or 0), 3650))
     offset = max(0, int(offset or 0))
     items = await asyncio.to_thread(
@@ -1359,12 +1359,16 @@ async def import_symptoms_csv(file: UploadFile = File(...)):
         if severity < 0 or severity > 10:
             invalid += 1
             continue
+        recorded_at = mapped.get("recorded_at", "")
+        if not recorded_at:
+            invalid += 1
+            continue
 
         records.append({
             "profile": mapped.get("profile", ""),
             "symptom": symptom,
             "severity": severity,
-            "recorded_at": mapped.get("recorded_at", ""),
+            "recorded_at": recorded_at,
             "note": mapped.get("note", ""),
         })
 

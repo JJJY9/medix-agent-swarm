@@ -97,6 +97,27 @@ MAX_METRIC_NOTE_LENGTH = 300
 LOWER_BOUND_TARGET_METRICS = {"spo2"}
 
 
+def _canonical_local_time(value: Any) -> Optional[str]:
+    """把合法 ISO 时间规范化为本地 T 分隔格式；无效返回 None。"""
+    text = str(value or "").strip()[:40]
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return (
+            parsed.astimezone().replace(tzinfo=None)
+            .isoformat(timespec="seconds")
+        )
+    if len(text) == 10 or (
+        parsed.second == 0 and parsed.microsecond == 0
+    ):
+        return parsed.isoformat(timespec="minutes")
+    return parsed.isoformat(timespec="seconds")
+
+
 def _normalize_metric(
     profile: str,
     metric: str,
@@ -131,23 +152,9 @@ def _normalize_metric(
     if not measured_at:
         measured_at = datetime.now().isoformat(timespec="minutes")
     else:
-        try:
-            parsed = datetime.fromisoformat(
-                measured_at.replace("Z", "+00:00")
-            )
-        except ValueError:
+        measured_at = _canonical_local_time(measured_at)
+        if measured_at is None:
             return None
-        if parsed.tzinfo is not None:
-            measured_at = (
-                parsed.astimezone().replace(tzinfo=None)
-                .isoformat(timespec="seconds")
-            )
-        elif len(measured_at) == 10 or (
-            parsed.second == 0 and parsed.microsecond == 0
-        ):
-            measured_at = parsed.isoformat(timespec="minutes")
-        else:
-            measured_at = parsed.isoformat(timespec="seconds")
 
     return {
         "profile": " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH],
@@ -224,18 +231,9 @@ def _normalize_symptom(
     if not recorded_at:
         recorded_at = datetime.now().isoformat(timespec="minutes")
     else:
-        try:
-            parsed = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
-        except ValueError:
+        recorded_at = _canonical_local_time(recorded_at)
+        if recorded_at is None:
             return None
-        if parsed.tzinfo is not None:
-            parsed = parsed.astimezone().replace(tzinfo=None)
-        if len(recorded_at) == 10 or (
-            parsed.second == 0 and parsed.microsecond == 0
-        ):
-            recorded_at = parsed.isoformat(timespec="minutes")
-        else:
-            recorded_at = parsed.isoformat(timespec="seconds")
 
     return {
         "profile": _normalize_profile_name(profile),
@@ -607,6 +605,22 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN repeats_from INTEGER NOT NULL DEFAULT 0"
                 )
+
+            # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
+            for table, column in (
+                ("health_metrics", "measured_at"),
+                ("symptoms", "recorded_at"),
+            ):
+                rows = self._conn.execute(
+                    f"SELECT id, {column} AS value FROM {table}"
+                ).fetchall()
+                for row in rows:
+                    canonical = _canonical_local_time(row["value"])
+                    if canonical and canonical != row["value"]:
+                        self._conn.execute(
+                            f"UPDATE {table} SET {column} = ? WHERE id = ?",
+                            (canonical, row["id"]),
+                        )
 
     @staticmethod
     def _now() -> str:
@@ -1495,6 +1509,7 @@ class SessionStore:
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
             or isinstance(raw_metrics, list)
+            or isinstance(raw_targets, list)
             or isinstance(raw_reminders, list)
             or isinstance(raw_symptoms, list)
         ):
@@ -1505,6 +1520,7 @@ class SessionStore:
             not raw_sessions
             and not isinstance(raw_profiles, list)
             and not isinstance(raw_metrics, list)
+            and not isinstance(raw_targets, list)
             and not isinstance(raw_reminders, list)
             and not isinstance(raw_symptoms, list)
         ):
@@ -1761,6 +1777,8 @@ class SessionStore:
             if isinstance(raw_symptoms, list):
                 for raw in raw_symptoms[:10000]:
                     if not isinstance(raw, dict):
+                        continue
+                    if not str(raw.get("recorded_at") or "").strip():
                         continue
                     normalized = _normalize_symptom(
                         raw.get("profile", ""),

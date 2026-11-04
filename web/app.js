@@ -7318,8 +7318,11 @@ function renderSymptoms(items) {
       (total, item) => total + Number(item.severity || 0), 0
     ) / items.length;
     els.symptomSummary.hidden = false;
+    const scope = query
+      ? '筛选'
+      : (days > 0 ? `近 ${days} 天 ` : '全部 ');
     els.symptomSummary.textContent =
-      `${days > 0 ? `近 ${days} 天 ` : '全部 '}${items.length} 条`
+      `${scope}${items.length} 条`
       + ` · 平均 ${Math.round(average * 10) / 10}/10`;
   } else {
     els.symptomSummary.hidden = true;
@@ -7395,7 +7398,7 @@ async function loadSymptoms() {
   const days = metricRangeDays();
   try {
     const res = await fetch(
-      `/api/symptoms?limit=100&profile=${encodeURIComponent(profile)}`
+      `/api/symptoms?limit=100000&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
     if (!res.ok) return;

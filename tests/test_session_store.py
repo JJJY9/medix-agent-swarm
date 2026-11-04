@@ -1636,3 +1636,32 @@ def test_metric_time_is_canonical(store):
 
     store.add_metric("", "weight", 61, measured_at="2026-11-05T01:00")
     assert [row["value1"] for row in store.list_metrics()] == [60, 61]
+
+
+def test_legacy_times_are_migrated(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy-times.db"
+    store = SessionStore(str(path))
+    store.add_metric("", "weight", 60, measured_at="2026-11-01T08:00")
+    store.add_symptom("", "头晕", 5, "2026-11-01T08:00")
+    store.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE health_metrics SET measured_at = '2026-11-05 23:00'"
+        )
+        conn.execute(
+            "UPDATE symptoms SET recorded_at = '2026-11-05 23:00'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = SessionStore(str(path))
+    try:
+        assert store.list_metrics()[0]["measured_at"] == "2026-11-05T23:00"
+        assert store.list_symptoms()[0]["recorded_at"] == "2026-11-05T23:00"
+    finally:
+        store.close()
