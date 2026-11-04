@@ -6657,7 +6657,7 @@ async function checkStatus() {
 
     if (!data.ok) {
       setVitals('bad', '服务异常');
-      showBanner(`服务初始化失败：${data.startup_error || '未知错误'}`);
+      showBanner(`服务初始化失败：${escapeHtml(data.startup_error || '未知错误')}`);
       return;
     }
 
@@ -6669,7 +6669,7 @@ async function checkStatus() {
       );
     } else if (data.knowledge_base.status === 'failed') {
       setVitals('warn', '知识库异常');
-      showBanner(`知识库加载失败：${data.knowledge_base.error}。检索类问题会返回空结果。`);
+      showBanner(`知识库加载失败：${escapeHtml(data.knowledge_base.error)}。检索类问题会返回空结果。`);
     } else {
       hideBanner();
       if (busy) {
@@ -6693,7 +6693,7 @@ async function checkStatus() {
     }
   } catch (err) {
     setVitals('bad', '无法连接服务');
-    showBanner(`无法连接后端服务：${err.message}`);
+    showBanner(`无法连接后端服务：${escapeHtml(err.message)}`);
   }
 }
 
