@@ -4931,6 +4931,9 @@ const AUDIT_LABELS = {
   'profile.rename': '重命名患者档案',
   'metric.delete': '删除健康记录',
   'metric.import': '导入健康记录',
+  'metric_target.set': '设置指标目标',
+  'metric_target.delete': '删除指标目标',
+  'maintenance.purge': '维护清理',
   'symptom.create': '添加症状记录',
   'symptom.update': '修改症状记录',
   'symptom.delete': '删除症状记录',
@@ -6355,8 +6358,15 @@ function localDateAfter(days) {
 
 function frequencyRepeatDays(frequency) {
   const text = String(frequency || '');
-  if (/(每两周|每2周)/.test(text)) return 14;
-  if (/(每两|隔日|隔天|每隔一天|每2天|每二天)/.test(text)) return 2;
+  if (/(每两月|每2月|每两个月)/.test(text)) return 60;
+  if (/(每两周|每2周|每两星期|每两个星期|每隔一周|隔周)/.test(text)) {
+    return 14;
+  }
+  const everyDays = text.match(/每\s*隔?\s*(\d+)\s*天/);
+  if (everyDays) {
+    return Math.max(1, Math.min(365, Number(everyDays[1]) || 1));
+  }
+  if (/(隔日|隔天|每隔一天|每隔1天|每两天|每二天)/.test(text)) return 2;
   if (/(每周|每星期|每礼拜)/.test(text)) return 7;
   if (/(每月|每个月)/.test(text)) return 30;
   if (/(每日|每天|每晚|每早|一日|睡前|晨起)/.test(text)) return 1;
@@ -6654,6 +6664,7 @@ function renderReminders(items) {
       snooze.value = '';
       snooze.addEventListener('change', () => {
         const days = Number(snooze.value);
+        snooze.value = '';
         if (days > 0) snoozeReminder(item, days);
       });
 
@@ -6883,7 +6894,11 @@ function renderHomeGlance(reminders, metrics, symptoms, medications) {
       ? (todayDoses > 0 ? `今日已服 ${todayDoses} 次 · ` : '')
         + active
           .slice(0, 3)
-          .map((item) => item.name + (item.dose ? ` ${item.dose}` : ''))
+          .map((item) => (
+            item.name
+            + (item.dose ? ` ${item.dose}` : '')
+            + (item.profile ? `（${item.profile}）` : '')
+          ))
           .join(' · ')
       : '点击添加用药清单';
     els.homeGlanceMedications.hidden = false;
@@ -6901,8 +6916,8 @@ async function loadHomeGlance() {
     const [remindersRes, metricsRes, symptomsRes, medicationsRes] = await Promise.all([
       fetch('/api/reminders'),
       fetch('/api/metrics/latest'),
-      fetch('/api/symptoms?limit=1'),
-      fetch('/api/medications?active_only=true&limit=50'),
+      fetch('/api/symptoms?limit=1').catch(() => null),
+      fetch('/api/medications?active_only=true&limit=50').catch(() => null),
     ]);
     if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
@@ -6912,11 +6927,17 @@ async function loadHomeGlance() {
     }
     const reminders = (await remindersRes.json()).reminders || [];
     const metrics = (await metricsRes.json()).metrics || [];
-    const symptoms = symptomsRes.ok
-      ? (await symptomsRes.json()).symptoms || []
+    const symptomsPayload = symptomsRes && symptomsRes.ok
+      ? await symptomsRes.json().catch(() => null)
       : null;
-    const medications = medicationsRes.ok
-      ? (await medicationsRes.json()).medications || []
+    const symptoms = symptomsPayload
+      ? symptomsPayload.symptoms || []
+      : null;
+    const medicationsPayload = medicationsRes && medicationsRes.ok
+      ? await medicationsRes.json().catch(() => null)
+      : null;
+    const medications = medicationsPayload
+      ? medicationsPayload.medications || []
       : null;
     if (requestSeq !== homeGlanceRequestSeq) return;
     renderHomeGlance(reminders, metrics, symptoms, medications);
@@ -7162,7 +7183,10 @@ async function reopenReminder(item) {
 }
 
 async function snoozeReminder(item, days = 7) {
-  if (reminderActionBusy) return;
+  if (reminderActionBusy) {
+    setRemindersStatus('正在处理上一条提醒操作，请稍候。');
+    return;
+  }
   const snoozeDays = Math.max(1, Math.min(365, Number(days) || 7));
   reminderActionBusy = true;
   try {
@@ -7695,6 +7719,7 @@ async function importMedicationsCsv(file) {
     if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
     setMedicationStatus(parts.join('，') + '。', data.imported === 0);
     await loadMedications();
+    loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`导入失败：${err.message || err}`, true);
   } finally {
@@ -7782,7 +7807,7 @@ let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
 let medicationItemsCache = [];
-let medicationLogBusy = false;
+let medicationLogBusy = new Set();
 
 function setMedicationStatus(text, isError = false) {
   if (!els.medicationStatus) return;
@@ -7843,7 +7868,9 @@ function renderMedications(items) {
   }
   if (
     editingMedicationId
-    && !items.some((item) => item.id === editingMedicationId)
+    && !medicationItemsCache.some(
+      (item) => item.id === editingMedicationId
+    )
   ) {
     resetMedicationForm();
   }
@@ -7977,14 +8004,15 @@ async function toggleMedication(item) {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     setMedicationStatus(item.active ? '已停用药物。' : '已启用药物。');
     await loadMedications();
+    loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`更新状态失败：${err.message || err}`, true);
   }
 }
 
 async function logMedication(item) {
-  if (medicationLogBusy) return;
-  medicationLogBusy = true;
+  if (medicationLogBusy.has(item.id)) return;
+  medicationLogBusy.add(item.id);
   try {
     const res = await fetch(`/api/medications/${item.id}/logs`, {
       method: 'POST',
@@ -8004,14 +8032,14 @@ async function logMedication(item) {
   } catch (err) {
     setMedicationStatus(`记录用药失败：${err.message || err}`, true);
   } finally {
-    medicationLogBusy = false;
+    medicationLogBusy.delete(item.id);
   }
 }
 
 async function undoMedicationLog(item) {
-  if (medicationLogBusy) return;
+  if (medicationLogBusy.has(item.id)) return;
   if (!window.confirm(`撤销「${item.name}」最近一次用药记录？`)) return;
-  medicationLogBusy = true;
+  medicationLogBusy.add(item.id);
   try {
     const listRes = await fetch(
       `/api/medications/${item.id}/logs?limit=1`
@@ -8034,7 +8062,7 @@ async function undoMedicationLog(item) {
   } catch (err) {
     setMedicationStatus(`撤销用药记录失败：${err.message || err}`, true);
   } finally {
-    medicationLogBusy = false;
+    medicationLogBusy.delete(item.id);
   }
 }
 
@@ -8092,6 +8120,7 @@ async function saveMedication() {
     resetMedicationForm();
     setMedicationStatus(editingId ? '已保存修改。' : '已添加药物。');
     await loadMedications();
+    loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`保存失败：${err.message || err}`, true);
   } finally {
@@ -8110,6 +8139,7 @@ async function deleteMedication(item) {
     if (editingMedicationId === item.id) resetMedicationForm();
     setMedicationStatus('已删除药物。');
     await loadMedications();
+    loadHomeGlance();
   } catch (err) {
     setMedicationStatus(`删除失败：${err.message || err}`, true);
   }

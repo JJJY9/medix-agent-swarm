@@ -1327,6 +1327,7 @@ async def export_medication_logs_csv(
 
     from memory import get_session_store
 
+    days = max(0, min(int(days or 0), 3650))
     logs = await asyncio.to_thread(
         get_session_store().list_medication_logs,
         None,
@@ -1526,6 +1527,7 @@ async def list_medication_logs(
         raise HTTPException(status_code=404, detail="药物不存在")
     limit = max(1, min(int(limit or 100), 1000))
     offset = max(0, int(offset or 0))
+    days = max(0, min(int(days or 0), 3650))
     logs = await asyncio.to_thread(
         store.list_medication_logs,
         medication_id,

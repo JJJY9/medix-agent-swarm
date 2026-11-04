@@ -93,6 +93,9 @@ def test_medication_logs_api_roundtrip(client_and_store):
         json={"taken_at": taken_at, "note": "早餐后"},
     )
     logs = client.get(f"/api/medications/{item['id']}/logs")
+    huge_days = client.get(
+        f"/api/medications/{item['id']}/logs", params={"days": 4000000}
+    )
     listed = client.get("/api/medications").json()["medications"][0]
     undone = client.delete(
         f"/api/medication-logs/{logged.json()['log']['id']}"
@@ -106,6 +109,8 @@ def test_medication_logs_api_roundtrip(client_and_store):
     assert logs.status_code == 200
     assert logs.json()["logs"][0]["medication_name"] == "二甲双胍"
     assert logs.json()["logs"][0]["note"] == "早餐后"
+    assert huge_days.status_code == 200
+    assert len(huge_days.json()["logs"]) == 1
     assert listed["today_count"] == 1
     assert listed["week_count"] == 1
     assert listed["last_taken_at"] == taken_at
@@ -158,29 +163,58 @@ def test_medication_logs_csv_export(client_and_store):
     assert recent in recent_text
     assert old not in recent_text
 
+    clamped = client.get(
+        "/api/medications/logs/export.csv",
+        params={"profile": "母亲", "days": 4000000},
+    )
+    assert clamped.status_code == 200
+    assert recent in clamped.content.decode("utf-8-sig")
+
 
 def test_medications_import_backup(client_and_store):
     client, _store = client_and_store
+    from datetime import datetime
 
+    taken_at = datetime.now().isoformat(timespec="minutes")
     response = client.post(
         "/api/sessions/import",
         json={
             "medications": [
                 {
+                    "id": 7,
                     "profile": "孩子",
                     "name": "布洛芬",
                     "dose": "100 mg",
                     "frequency": "必要时",
                     "active": True,
                 }
-            ]
+            ],
+            "medication_logs": [
+                {
+                    "medication_id": 7,
+                    "profile": "孩子",
+                    "medication_name": "布洛芬",
+                    "medication_dose": "100 mg",
+                    "taken_at": taken_at,
+                    "note": "发热",
+                }
+            ],
         },
     )
     listed = client.get("/api/medications")
 
     assert response.status_code == 200
     assert response.json()["medications"] == 1
-    assert listed.json()["medications"][0]["name"] == "布洛芬"
+    assert response.json()["medication_logs"] == 1
+    medication = listed.json()["medications"][0]
+    assert medication["name"] == "布洛芬"
+    assert medication["today_count"] == 1
+    logs = client.get(
+        f"/api/medications/{medication['id']}/logs"
+    ).json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["note"] == "发热"
+    assert logs[0]["medication_id"] == medication["id"]
 
 
 def test_medications_csv_export_and_import(client_and_store):

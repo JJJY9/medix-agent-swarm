@@ -756,6 +756,7 @@ class SessionStore:
                 ("health_metrics", "profile"),
                 ("symptoms", "profile"),
                 ("medications", "profile"),
+                ("medication_logs", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -1892,7 +1893,7 @@ class SessionStore:
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
             if isinstance(raw_medications, list):
-                for raw in raw_medications[:10000]:
+                for raw in raw_medications[:100000]:
                     if not isinstance(raw, dict):
                         continue
                     normalized = _normalize_medication(
@@ -1948,7 +1949,7 @@ class SessionStore:
 
             medication_logs_imported = 0
             if isinstance(raw_medication_logs, list):
-                for raw in raw_medication_logs[:20000]:
+                for raw in raw_medication_logs[:100000]:
                     if not isinstance(raw, dict):
                         continue
                     taken_at = _canonical_local_time(raw.get("taken_at"))
@@ -1968,14 +1969,32 @@ class SessionStore:
                         if not name:
                             continue
                         profile = _normalize_profile_name(raw.get("profile"))
-                        row = self._conn.execute(
-                            """
-                            SELECT id, profile, name FROM medications
-                             WHERE profile = ? AND name = ?
-                             ORDER BY id LIMIT 1
-                            """,
-                            (profile, name),
-                        ).fetchone()
+                        dose = " ".join(
+                            str(
+                                raw.get("medication_dose")
+                                or raw.get("dose")
+                                or ""
+                            ).split()
+                        )[:MAX_MEDICATION_TEXT_LENGTH]
+                        row = None
+                        if dose:
+                            row = self._conn.execute(
+                                """
+                                SELECT id, profile, name FROM medications
+                                 WHERE profile = ? AND name = ? AND dose = ?
+                                 ORDER BY id LIMIT 1
+                                """,
+                                (profile, name, dose),
+                            ).fetchone()
+                        if row is None:
+                            row = self._conn.execute(
+                                """
+                                SELECT id, profile, name FROM medications
+                                 WHERE profile = ? AND name = ?
+                                 ORDER BY id LIMIT 1
+                                """,
+                                (profile, name),
+                            ).fetchone()
                         if row is None:
                             continue
                         target = {
@@ -2353,6 +2372,7 @@ class SessionStore:
                 "reminders",
                 "symptoms",
                 "medications",
+                "medication_logs",
                 "sessions",
             ):
                 self._conn.execute(
@@ -2866,6 +2886,7 @@ class SessionStore:
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
                             WHERE l.medication_id = medications.id
+                              AND substr(l.taken_at, 1, 10) <= ?
                        ) AS last_taken_at,
                        (
                            SELECT COUNT(*) FROM medication_logs l
@@ -2876,12 +2897,13 @@ class SessionStore:
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND substr(l.taken_at, 1, 10) >= ?
+                              AND substr(l.taken_at, 1, 10) <= ?
                        ) AS week_count
                   FROM medications{where}
                  ORDER BY active DESC, name ASC, id ASC
                  LIMIT ? OFFSET ?
                 """,
-                [today, week_cutoff] + params + [limit, offset],
+                [today, today, week_cutoff, today] + params + [limit, offset],
             ).fetchall()
         return [
             {
@@ -2954,6 +2976,18 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            self._conn.execute(
+                """
+                UPDATE medication_logs
+                   SET profile = ?
+                 WHERE medication_id = ? AND profile != ?
+                """,
+                (
+                    normalized["profile"],
+                    medication_id,
+                    normalized["profile"],
+                ),
+            )
             row = self._conn.execute(
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
@@ -3001,6 +3035,12 @@ class SessionStore:
         note = " ".join(str(note or "").split())[:300]
         now = self._now()
         with self._lock, self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM medications WHERE id = ?",
+                (medication["id"],),
+            ).fetchone()
+            if exists is None:
+                return None
             cursor = self._conn.execute(
                 """
                 INSERT INTO medication_logs(
