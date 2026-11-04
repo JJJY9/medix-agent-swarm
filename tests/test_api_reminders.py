@@ -256,3 +256,86 @@ def test_import_backup_preserves_reminders(client_and_store):
     assert response.status_code == 200
     assert response.json()["reminders"] == 1
     assert listed.json()["reminders"][0]["title"] == "复查"
+
+
+def test_reminders_api_rejects_invalid_dates(client_and_store):
+    client, _store = client_and_store
+
+    invalid = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-02-30"},
+    )
+    overflow = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "9999-12-31"},
+    )
+
+    assert invalid.status_code == 400
+    assert overflow.status_code == 400
+
+
+def test_reminders_csv_escapes_formulas(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={
+            "title": '=HYPERLINK("http://example.com","open")',
+            "due_at": "2026-11-10",
+        },
+    )
+
+    text = client.get("/api/reminders/export.csv").content.decode(
+        "utf-8-sig"
+    )
+
+    assert "'=HYPERLINK" in text
+
+
+def test_reminders_only_import_is_accepted(client_and_store):
+    client, _store = client_and_store
+
+    response = client.post(
+        "/api/sessions/import",
+        json={
+            "reminders": [
+                {"title": "复查", "due_at": "2026-11-10"}
+            ]
+        },
+    )
+    listed = client.get("/api/reminders")
+
+    assert response.status_code == 200
+    assert response.json()["reminders"] == 1
+    assert listed.json()["reminders"][0]["title"] == "复查"
+
+
+def test_reminder_audit_targets_share_id(client_and_store):
+    client, _store = client_and_store
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10"},
+    ).json()["reminder"]
+    client.post(f"/api/reminders/{created['id']}/complete")
+    audit = client.get("/api/audit").json()["actions"]
+
+    by_action = {item["action"]: item["target"] for item in audit}
+    prefix = f"{created['id']}·"
+    assert by_action["reminder.create"].startswith(prefix)
+    assert by_action["reminder.complete"].startswith(prefix)
+
+
+def test_reminders_ics_folds_long_lines(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={
+            "title": "复查" * 20,
+            "due_at": "2026-11-10",
+            "note": "备注" * 30,
+        },
+    )
+
+    text = client.get("/api/reminders/export.ics").content.decode("utf-8")
+
+    for line in text.split("\r\n"):
+        assert len(line.encode("utf-8")) <= 75, line

@@ -937,10 +937,16 @@ def test_health_metrics_crud_and_filters(store):
 
 
 def test_list_metrics_days_filter(store):
-    store.add_metric("", "weight", 60, measured_at="2020-01-01T08:00")
-    store.add_metric("", "weight", 61, measured_at="2099-01-01T08:00")
+    from datetime import datetime
 
-    assert len(store.list_metrics()) == 2
+    store.add_metric("", "weight", 60, measured_at="2020-01-01T08:00")
+    store.add_metric(
+        "", "weight", 61,
+        measured_at=datetime.now().isoformat(timespec="minutes"),
+    )
+    store.add_metric("", "weight", 62, measured_at="2099-01-01T08:00")
+
+    assert len(store.list_metrics()) == 3
     recent = store.list_metrics(days=30)
     assert [item["value1"] for item in recent] == [61]
 
@@ -1394,3 +1400,72 @@ def test_legacy_messages_table_is_migrated(tmp_path):
         assert migrated.get_messages("s1")[-1]["metadata"]["sources"][0]["title"] == "x"
     finally:
         migrated.close()
+
+def test_reminder_rejects_invalid_dates(store):
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "2026-02-30")
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "9999-12-31")
+    with pytest.raises(ValueError):
+        store.add_reminder("复查", "2026-13-01")
+
+    reminder = store.add_reminder("复查", "2026-11-10T09:30:00")
+    with pytest.raises(ValueError):
+        store.update_reminder(reminder["id"], due_at="2026-02-30")
+
+
+def test_snooze_preserves_time_of_day(store):
+    reminder = store.add_reminder("复查", "2026-11-10T09:30:00")
+
+    snoozed = store.snooze_reminder(reminder["id"], 7)
+
+    assert snoozed["due_at"] == "2026-11-17T09:30:00"
+
+
+def test_reminder_import_uses_stable_id(store, tmp_path):
+    created = store.add_reminder("复查", "2026-11-10")
+    data = store.export_data()
+
+    other = SessionStore(str(tmp_path / "copy-reminder-id.db"))
+    try:
+        first = other.import_data(data)
+        assert first["reminders"] == 1
+        imported = other.list_reminders()[0]
+        assert imported["id"] == created["id"]
+
+        other.snooze_reminder(created["id"], 7)
+        again = other.import_data(data)
+        assert again["reminders"] == 0
+        assert len(other.list_reminders()) == 1
+    finally:
+        other.close()
+
+
+def test_rename_profile_conflicting_targets(store):
+    store.save_profile("妈妈", {"age": "58"})
+    store.set_metric_target("妈妈", "weight", 70)
+    assert store.delete_profile("妈妈") is True
+
+    store.save_profile("父亲", {"age": "60"})
+    store.set_metric_target("父亲", "weight", 80)
+
+    assert store.rename_profile("父亲", "妈妈") == "妈妈"
+    targets = store.list_metric_targets("妈妈")
+    assert len(targets) == 1
+    assert targets[0]["value1"] == 80
+
+
+def test_metric_timezone_is_normalized(store):
+    from datetime import datetime
+
+    item = store.add_metric(
+        "", "weight", 60, measured_at="2026-01-01T00:00:00Z"
+    )
+    expected = (
+        datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+        .astimezone()
+        .replace(tzinfo=None)
+        .isoformat(timespec="seconds")
+    )
+    assert item["measured_at"] == expected
+    assert "+" not in item["measured_at"]

@@ -425,6 +425,18 @@ async def _link_patient_profile(session_id: str, raw_profile: str) -> None:
         logger.warning(f"关联患者档案失败（忽略）: {redact_secrets(str(e))}")
 
 
+def csv_safe_cell(value: Any) -> str:
+    """防止 CSV 单元格被表格软件当作公式执行。"""
+    text = str(value if value is not None else "")
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
+def reminder_audit_target(reminder: Dict[str, Any]) -> str:
+    return f"{reminder.get('id')}·{reminder.get('title', '')}"[:120]
+
+
 class NoCacheStaticFiles(StaticFiles):
     """静态资源每次用 ETag 校验，避免升级后浏览器继续用旧 CSS/JS。"""
 
@@ -620,8 +632,8 @@ async def export_audit_csv(
         rows.append([
             item.get("created_at", ""),
             item.get("action", ""),
-            item.get("target", ""),
-            item.get("detail", ""),
+            csv_safe_cell(item.get("target", "")),
+            csv_safe_cell(item.get("detail", "")),
         ])
 
     buffer = io.StringIO()
@@ -980,9 +992,9 @@ async def export_sessions_csv(
         stats = usage.get(item["id"], {})
         rows.append([
             item.get("id", ""),
-            item.get("title", ""),
-            item.get("profile", ""),
-            "、".join(item.get("tags") or []),
+            csv_safe_cell(item.get("title", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell("、".join(item.get("tags") or [])),
             "是" if item.get("favorite") else "否",
             "是" if item.get("archived") else "否",
             item.get("message_count", 0),
@@ -1102,9 +1114,9 @@ async def export_feedback_csv(
         rows.append([
             item.get("updated_at", ""),
             item.get("session_id", ""),
-            item.get("session_title", ""),
+            csv_safe_cell(item.get("session_title", "")),
             "有用" if item.get("rating") == 1 else "待改进",
-            item.get("comment", ""),
+            csv_safe_cell(item.get("comment", "")),
         ])
 
     buffer = io.StringIO()
@@ -1241,12 +1253,12 @@ async def export_metrics_csv(
     for item in reversed(items):
         rows.append([
             item.get("measured_at", ""),
-            item.get("profile", ""),
+            csv_safe_cell(item.get("profile", "")),
             labels.get(item.get("metric"), item.get("metric", "")),
             item.get("value1", ""),
             item.get("value2", "") if item.get("value2") is not None else "",
             item.get("unit", ""),
-            item.get("note", ""),
+            csv_safe_cell(item.get("note", "")),
         ])
 
     buffer = io.StringIO()
@@ -1505,7 +1517,9 @@ async def add_reminder(request: ReminderRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await record_audit("reminder.create", reminder["title"], reminder["due_at"])
+    await record_audit(
+        "reminder.create", reminder_audit_target(reminder), reminder["due_at"]
+    )
     return {"ok": True, "reminder": reminder}
 
 
@@ -1527,10 +1541,10 @@ async def export_reminders_csv(
     for item in items:
         rows.append([
             item.get("due_at", ""),
-            item.get("title", ""),
-            item.get("profile", ""),
+            csv_safe_cell(item.get("title", "")),
+            csv_safe_cell(item.get("profile", "")),
             "已完成" if item.get("done") else "待完成",
-            item.get("note", ""),
+            csv_safe_cell(item.get("note", "")),
         ])
 
     buffer = io.StringIO()
@@ -1569,6 +1583,25 @@ async def export_reminders_ics(
             .replace("\n", "\\n")
         )
 
+    def fold_line(line: str) -> str:
+        """按 RFC 5545 将超过 75 字节的行折行（不拆分 UTF-8 字符）。"""
+        if len(line.encode("utf-8")) <= 75:
+            return line
+        parts = []
+        current = []
+        current_len = 0
+        for char in line:
+            char_len = len(char.encode("utf-8"))
+            if current_len + char_len > 75:
+                parts.append("".join(current))
+                current = [" "]
+                current_len = 1
+            current.append(char)
+            current_len += char_len
+        if current:
+            parts.append("".join(current))
+        return "\r\n".join(parts)
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR",
@@ -1583,7 +1616,10 @@ async def export_reminders_ics(
             start = datetime.fromisoformat(due)
         except ValueError:
             continue
-        end = start + timedelta(days=1)
+        try:
+            end = start + timedelta(days=1)
+        except OverflowError:
+            end = start
         description = item.get("note") or ""
         if item.get("profile"):
             description = f"档案：{item['profile']}。{description}".strip()
@@ -1600,7 +1636,7 @@ async def export_reminders_ics(
         ])
     lines.append("END:VCALENDAR")
 
-    content = "\r\n".join(lines) + "\r\n"
+    content = "\r\n".join(fold_line(line) for line in lines) + "\r\n"
     filename = f"medix-reminders-{datetime.now().strftime('%Y%m%d')}.ics"
 
     return Response(
@@ -1615,12 +1651,14 @@ async def complete_reminder(reminder_id: int):
     """把随访提醒标记为已完成。"""
     from memory import get_session_store
 
-    ok = await asyncio.to_thread(
-        get_session_store().complete_reminder, reminder_id
-    )
+    store = get_session_store()
+    reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    ok = await asyncio.to_thread(store.complete_reminder, reminder_id)
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    await record_audit("reminder.complete", str(reminder_id))
+    await record_audit("reminder.complete", reminder_audit_target(reminder))
     return {"ok": True, "id": reminder_id}
 
 
@@ -1629,12 +1667,14 @@ async def reopen_reminder(reminder_id: int):
     """把已完成的随访提醒恢复为待完成。"""
     from memory import get_session_store
 
-    ok = await asyncio.to_thread(
-        get_session_store().reopen_reminder, reminder_id
-    )
+    store = get_session_store()
+    reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    ok = await asyncio.to_thread(store.reopen_reminder, reminder_id)
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    await record_audit("reminder.reopen", str(reminder_id))
+    await record_audit("reminder.reopen", reminder_audit_target(reminder))
     return {"ok": True, "id": reminder_id}
 
 
@@ -1661,7 +1701,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
         raise HTTPException(status_code=400, detail=str(e))
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    await record_audit("reminder.update", str(reminder_id))
+    await record_audit("reminder.update", reminder_audit_target(reminder))
     return {"ok": True, "reminder": reminder}
 
 
@@ -1676,7 +1716,9 @@ async def snooze_reminder(reminder_id: int, days: int = 7):
     )
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    await record_audit("reminder.snooze", str(reminder_id), f"days={days}")
+    await record_audit(
+        "reminder.snooze", reminder_audit_target(reminder), f"days={days}"
+    )
     return {"ok": True, "reminder": reminder}
 
 
@@ -1685,12 +1727,14 @@ async def delete_reminder(reminder_id: int):
     """删除随访提醒。"""
     from memory import get_session_store
 
-    ok = await asyncio.to_thread(
-        get_session_store().delete_reminder, reminder_id
-    )
+    store = get_session_store()
+    reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
+    if reminder is None:
+        raise HTTPException(status_code=404, detail="提醒不存在")
+    ok = await asyncio.to_thread(store.delete_reminder, reminder_id)
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    await record_audit("reminder.delete", str(reminder_id))
+    await record_audit("reminder.delete", reminder_audit_target(reminder))
     return {"ok": True, "id": reminder_id}
 
 

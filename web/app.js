@@ -4885,6 +4885,9 @@ function closeDiagnose(restoreFocus = false) {
 
 let metricsFocused = null;
 let editingMetricId = null;
+let metricsRequestSeq = 0;
+let metricTrendRequestSeq = 0;
+let metricOverviewRequestSeq = 0;
 
 const METRIC_UNITS = {
   bp: 'mmHg',
@@ -5026,7 +5029,7 @@ async function saveMetricTarget() {
     metricTargets.push(data.target);
     setMetricsStatus('已保存目标。');
     updateMetricTargetDisplay();
-    await loadMetrics();
+    await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`保存目标失败：${err.message || err}`, true);
   }
@@ -5052,7 +5055,7 @@ async function clearMetricTarget() {
     );
     setMetricsStatus('已清除目标。');
     updateMetricTargetDisplay();
-    await loadMetrics();
+    await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`清除目标失败：${err.message || err}`, true);
   }
@@ -5078,9 +5081,10 @@ function setMetricType(type) {
 }
 
 async function refreshMetricProfileOptions() {
+  const usedNames = await fetchUsedProfileNames();
   const current = els.metricProfile.value;
   const names = new Set(Object.keys(profilesCache));
-  for (const name of await fetchUsedProfileNames()) names.add(name);
+  for (const name of usedNames) names.add(name);
 
   els.metricProfile.replaceChildren();
 
@@ -5108,11 +5112,11 @@ function formatMetricValue(item) {
   return `${item.value1} ${item.unit}`;
 }
 
-function renderMetrics(items) {
+function renderMetrics(items, days = 0, metric = els.metricType.value) {
   els.metricsList.replaceChildren();
   els.metricsEmpty.hidden = items.length > 0;
-  const metricName = METRIC_NAMES[els.metricType.value] || '该类';
-  els.metricsEmpty.textContent = metricRangeDays() > 0
+  const metricName = METRIC_NAMES[metric] || '该类';
+  els.metricsEmpty.textContent = days > 0
     ? `所选时间范围内还没有${metricName}记录。`
     : `还没有${metricName}记录。`;
 
@@ -5376,6 +5380,7 @@ function renderMetricTrend(items, metric) {
 }
 
 async function loadMetricTrend() {
+  const requestSeq = ++metricTrendRequestSeq;
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
@@ -5387,6 +5392,7 @@ async function loadMetricTrend() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    if (requestSeq !== metricTrendRequestSeq) return;
     renderMetricTrend(data.metrics || [], metric);
   } catch {
     // 趋势加载失败不影响记录列表
@@ -5394,6 +5400,7 @@ async function loadMetricTrend() {
 }
 
 async function loadMetricOverview() {
+  const requestSeq = ++metricOverviewRequestSeq;
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
   try {
@@ -5403,6 +5410,7 @@ async function loadMetricOverview() {
     );
     if (!res.ok) return;
     const items = (await res.json()).metrics || [];
+    if (requestSeq !== metricOverviewRequestSeq) return;
 
     const latest = {};
     for (const item of items) {
@@ -5452,6 +5460,7 @@ function metricRangeDays() {
 }
 
 async function loadMetrics() {
+  const requestSeq = ++metricsRequestSeq;
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
@@ -5463,7 +5472,8 @@ async function loadMetrics() {
     );
     if (!res.ok) return;
     const data = await res.json();
-    renderMetrics(data.metrics || []);
+    if (requestSeq !== metricsRequestSeq) return;
+    renderMetrics(data.metrics || [], days, metric);
   } catch {
     // 读取失败时保留当前列表
   }
@@ -5510,6 +5520,9 @@ function closeMetrics(restoreFocus = false) {
 
 let remindersFocused = null;
 let editingReminderId = null;
+let remindersRequestSeq = 0;
+let reminderSaving = false;
+let reminderActionBusy = false;
 
 function todayLocalDate() {
   const now = new Date();
@@ -5549,7 +5562,7 @@ function setRemindersStatus(text, isError = false) {
   els.remindersStatus.classList.toggle('error', Boolean(isError));
 }
 
-function openReminders() {
+async function openReminders() {
   closeHistory();
   closeKb();
   closeCalc();
@@ -5565,7 +5578,7 @@ function openReminders() {
   setRemindersStatus('');
   syncNotifyButton();
   resetReminderForm();
-  refreshReminderProfileOptions();
+  await refreshReminderProfileOptions();
   loadReminders();
   els.remindersClose.focus();
 }
@@ -5689,8 +5702,12 @@ function renderReminders(items) {
   els.remindersDueHint.textContent = dueCount
     ? `有 ${dueCount} 条提醒已到期`
     : '';
-  updateReminderBadge(dueCount);
-  maybeNotifyDueReminders(dueCount, items);
+  if (
+    editingReminderId
+    && !items.some((item) => item.id === editingReminderId)
+  ) {
+    resetReminderForm();
+  }
 }
 
 function updateReminderBadge(count) {
@@ -5709,9 +5726,12 @@ async function refreshReminderBadge() {
     const res = await fetch('/api/reminders');
     if (!res.ok) return;
     const data = await res.json();
-    const due = (data.reminders || [])
-      .filter((item) => reminderIsDue(item.due_at)).length;
-    updateReminderBadge(due);
+    const reminders = data.reminders || [];
+    const dueItems = reminders.filter(
+      (item) => !item.done && reminderIsDue(item.due_at)
+    );
+    updateReminderBadge(dueItems.length);
+    maybeNotifyDueReminders(dueItems.length, reminders);
   } catch {
     // 徽标加载失败不影响主流程
   }
@@ -5787,6 +5807,7 @@ function maybeNotifyDueReminders(dueCount, items) {
 }
 
 async function loadReminders() {
+  const requestSeq = ++remindersRequestSeq;
   try {
     const includeDone = Boolean(
       els.remindersShowDone && els.remindersShowDone.checked
@@ -5801,8 +5822,11 @@ async function loadReminders() {
     const res = await fetch(`/api/reminders${query ? `?${query}` : ''}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
+    if (requestSeq !== remindersRequestSeq) return;
     renderReminders(data.reminders || []);
+    refreshReminderBadge();
   } catch (err) {
+    if (requestSeq !== remindersRequestSeq) return;
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
   }
 }
@@ -5831,6 +5855,7 @@ async function refreshReminderProfileOptions() {
 }
 
 async function addReminder() {
+  if (reminderSaving) return;
   const title = (els.reminderTitle.value || '').trim();
   const dueAt = (els.reminderDue.value || '').trim();
   if (!title) {
@@ -5854,6 +5879,7 @@ async function addReminder() {
   if (!editingId) payload.session_id = sessionId || '';
 
   els.reminderAdd.disabled = true;
+  reminderSaving = true;
   try {
     const res = await fetch(
       editingId ? `/api/reminders/${editingId}` : '/api/reminders',
@@ -5877,23 +5903,31 @@ async function addReminder() {
     );
   } finally {
     els.reminderAdd.disabled = false;
+    reminderSaving = false;
   }
 }
 
 async function completeReminder(item) {
+  if (reminderActionBusy) return;
+  reminderActionBusy = true;
   try {
     const res = await fetch(`/api/reminders/${item.id}/complete`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingReminderId === item.id) resetReminderForm();
     setRemindersStatus('已完成提醒。');
     await loadReminders();
   } catch (err) {
     window.alert(`完成提醒失败：${err.message || err}`);
+  } finally {
+    reminderActionBusy = false;
   }
 }
 
 async function reopenReminder(item) {
+  if (reminderActionBusy) return;
+  reminderActionBusy = true;
   try {
     const res = await fetch(`/api/reminders/${item.id}/reopen`, {
       method: 'POST',
@@ -5903,10 +5937,14 @@ async function reopenReminder(item) {
     await loadReminders();
   } catch (err) {
     window.alert(`恢复提醒失败：${err.message || err}`);
+  } finally {
+    reminderActionBusy = false;
   }
 }
 
 async function snoozeReminder(item) {
+  if (reminderActionBusy) return;
+  reminderActionBusy = true;
   try {
     const res = await fetch(`/api/reminders/${item.id}/snooze?days=7`, {
       method: 'POST',
@@ -5918,20 +5956,27 @@ async function snoozeReminder(item) {
     await loadReminders();
   } catch (err) {
     window.alert(`推迟提醒失败：${err.message || err}`);
+  } finally {
+    reminderActionBusy = false;
   }
 }
 
 async function deleteReminder(item) {
+  if (reminderActionBusy) return;
   if (!window.confirm(`删除提醒「${item.title}」？`)) return;
+  reminderActionBusy = true;
   try {
     const res = await fetch(`/api/reminders/${item.id}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingReminderId === item.id) resetReminderForm();
     setRemindersStatus('已删除提醒。');
     await loadReminders();
   } catch (err) {
     window.alert(`删除提醒失败：${err.message || err}`);
+  } finally {
+    reminderActionBusy = false;
   }
 }
 
@@ -6142,6 +6187,7 @@ async function importMetricsCsv(file) {
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setMetricsStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetricProfileOptions();
     await refreshMetrics();
   } catch (err) {
     setMetricsStatus(`导入失败：${err.message || err}`, true);
@@ -7487,9 +7533,16 @@ function setActiveProfile(name) {
 async function fetchUsedProfileNames() {
   const names = new Set();
   try {
-    const res = await fetch('/api/profile-names');
-    if (res.ok) {
-      const data = await res.json();
+    const [namesRes, profilesRes] = await Promise.all([
+      fetch('/api/profile-names'),
+      fetch('/api/profiles'),
+    ]);
+    if (profilesRes.ok) {
+      const data = await profilesRes.json();
+      setProfiles(data.profiles || []);
+    }
+    if (namesRes.ok) {
+      const data = await namesRes.json();
       for (const name of data.profiles || []) {
         if (typeof name === 'string' && name) names.add(name);
       }
@@ -8342,10 +8395,11 @@ resetRail();
 initTheme();
 renderEcg();
 loadSavedContext();
-initProfiles();
 loadDraft();
-restoreCurrentSession();
-handleLaunchAction();
+initProfiles().finally(() => {
+  restoreCurrentSession();
+  handleLaunchAction();
+});
 checkStatus();
 setInterval(checkStatus, 20000);
 els.input.focus();

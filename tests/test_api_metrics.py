@@ -238,6 +238,8 @@ def test_import_api_accepts_metrics_only(client):
 
 
 def test_metrics_api_days_filter(client):
+    from datetime import datetime
+
     client.post(
         "/api/metrics",
         json={
@@ -251,6 +253,14 @@ def test_metrics_api_days_filter(client):
         json={
             "metric": "weight",
             "value1": 61,
+            "measured_at": datetime.now().isoformat(timespec="minutes"),
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 62,
             "measured_at": "2099-01-01T08:00",
         },
     )
@@ -258,5 +268,5 @@ def test_metrics_api_days_filter(client):
     all_items = client.get("/api/metrics")
     recent = client.get("/api/metrics", params={"days": 30})
 
-    assert len(all_items.json()["metrics"]) == 2
+    assert len(all_items.json()["metrics"]) == 3
     assert [item["value1"] for item in recent.json()["metrics"]] == [61]

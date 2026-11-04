@@ -122,9 +122,19 @@ def _normalize_metric(
         measured_at = datetime.now().isoformat(timespec="minutes")
     else:
         try:
-            datetime.fromisoformat(measured_at.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(
+                measured_at.replace("Z", "+00:00")
+            )
         except ValueError:
             return None
+        if parsed.tzinfo is not None:
+            measured_at = (
+                parsed.astimezone()
+                .replace(tzinfo=None)
+                .isoformat(timespec="seconds")
+            )
+        elif len(measured_at) == 10:
+            measured_at = parsed.isoformat(timespec="minutes")
 
     return {
         "profile": " ".join(str(profile or "").split())[:MAX_PROFILE_NAME_LENGTH],
@@ -172,6 +182,19 @@ def _parse_tags(raw: Any) -> List[str]:
 
 def _normalize_profile_name(value: Any) -> str:
     return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
+
+
+def _normalize_reminder_due(value: Any) -> str:
+    due = str(value or "").strip()[:32]
+    if not due or not REMINDER_DATE_PATTERN.match(due):
+        raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
+    try:
+        parsed = datetime.fromisoformat(due)
+    except ValueError:
+        raise ValueError("提醒日期不是有效日期")
+    if parsed.year > 9998:
+        raise ValueError("提醒日期超出支持范围")
+    return due
 
 
 def _tag_like_pattern(tag: str) -> str:
@@ -1315,7 +1338,9 @@ class SessionStore:
         raw_targets = data.get("metric_targets")
         raw_reminders = data.get("reminders")
         if raw_sessions is None and (
-            isinstance(raw_profiles, list) or isinstance(raw_metrics, list)
+            isinstance(raw_profiles, list)
+            or isinstance(raw_metrics, list)
+            or isinstance(raw_reminders, list)
         ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
@@ -1324,6 +1349,7 @@ class SessionStore:
             not raw_sessions
             and not isinstance(raw_profiles, list)
             and not isinstance(raw_metrics, list)
+            and not isinstance(raw_reminders, list)
         ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
@@ -1582,8 +1608,11 @@ class SessionStore:
                     title = " ".join(
                         str(raw.get("title") or "").split()
                     )[:MAX_REMINDER_TITLE_LENGTH]
-                    due_at = str(raw.get("due_at") or "").strip()[:32]
-                    if not title or not REMINDER_DATE_PATTERN.match(due_at):
+                    if not title:
+                        continue
+                    try:
+                        due_at = _normalize_reminder_due(raw.get("due_at"))
+                    except ValueError:
                         continue
                     note = " ".join(
                         str(raw.get("note") or "").split()
@@ -1591,17 +1620,47 @@ class SessionStore:
                     profile = _normalize_profile_name(raw.get("profile"))
                     session_id = str(raw.get("session_id") or "").strip()[:64]
                     done = 1 if raw.get("done") in (1, True, "1") else 0
+                    created_at = str(raw.get("created_at") or now)[:40]
+                    updated_at = str(raw.get("updated_at") or created_at)[:40]
+
+                    try:
+                        reminder_id = int(raw.get("id") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        reminder_id = 0
+
+                    if reminder_id > 0:
+                        exists = self._conn.execute(
+                            "SELECT 1 FROM reminders WHERE id = ?",
+                            (reminder_id,),
+                        ).fetchone()
+                        if exists:
+                            continue
+                        self._conn.execute(
+                            """
+                            INSERT INTO reminders(
+                                id, title, note, due_at, session_id, profile,
+                                done, created_at, updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                reminder_id, title, note, due_at, session_id,
+                                profile, done, created_at, updated_at,
+                            ),
+                        )
+                        reminders_imported += 1
+                        continue
+
                     exists = self._conn.execute(
                         """
                         SELECT 1 FROM reminders
                          WHERE title = ? AND due_at = ? AND profile = ?
+                           AND note = ? AND session_id = ?
                         """,
-                        (title, due_at, profile),
+                        (title, due_at, profile, note, session_id),
                     ).fetchone()
                     if exists:
                         continue
-                    created_at = str(raw.get("created_at") or now)[:40]
-                    updated_at = str(raw.get("updated_at") or created_at)[:40]
                     self._conn.execute(
                         """
                         INSERT INTO reminders(
@@ -1844,6 +1903,17 @@ class SessionStore:
                 """,
                 (new_name, now, old_name),
             )
+            # 目标表以 (profile, metric) 为主键：先清掉与新名称冲突的旧目标
+            self._conn.execute(
+                """
+                DELETE FROM metric_targets
+                 WHERE profile = ?
+                   AND metric IN (
+                       SELECT metric FROM metric_targets WHERE profile = ?
+                   )
+                """,
+                (new_name, old_name),
+            )
             for table in (
                 "health_metrics",
                 "metric_targets",
@@ -1930,6 +2000,11 @@ class SessionStore:
         if cutoff:
             conditions.append("measured_at >= ?")
             params.append(cutoff)
+            end_of_today = datetime.now().replace(
+                hour=23, minute=59, second=59
+            ).isoformat(timespec="seconds")
+            conditions.append("measured_at <= ?")
+            params.append(end_of_today)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY measured_at DESC, id DESC LIMIT ?"
@@ -2177,9 +2252,7 @@ class SessionStore:
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
         if not title:
             raise ValueError("提醒内容不能为空")
-        due_at = str(due_at or "").strip()[:32]
-        if not due_at or not REMINDER_DATE_PATTERN.match(due_at):
-            raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        due_at = _normalize_reminder_due(due_at)
         note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
         session_id = str(session_id or "").strip()[:64]
         profile = _normalize_profile_name(profile)
@@ -2206,6 +2279,19 @@ class SessionStore:
             "created_at": now,
             "updated_at": now,
         }
+
+    def get_reminder(self, reminder_id: int) -> Optional[Dict[str, Any]]:
+        """按 id 返回单条提醒，不存在时返回 None。"""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, title, note, due_at, session_id, profile, done,
+                       created_at, updated_at
+                  FROM reminders WHERE id = ?
+                """,
+                (int(reminder_id),),
+            ).fetchone()
+        return {**dict(row), "done": bool(row["done"])} if row else None
 
     def list_reminders(
         self,
@@ -2283,9 +2369,7 @@ class SessionStore:
             params.append(title)
 
         if due_at is not None:
-            due_at = str(due_at).strip()[:32]
-            if not due_at or not REMINDER_DATE_PATTERN.match(due_at):
-                raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
+            due_at = _normalize_reminder_due(due_at)
             updates.append("due_at = ?")
             params.append(due_at)
 
@@ -2331,14 +2415,24 @@ class SessionStore:
             ).fetchone()
             if row is None:
                 return None
+            raw_due = str(row["due_at"] or "").strip()
             try:
-                current = datetime.fromisoformat(
-                    str(row["due_at"])[:10]
-                ).date()
+                current_dt = datetime.fromisoformat(raw_due)
             except ValueError:
-                current = datetime.now().date()
-            base = max(current, datetime.now().date())
-            new_due = (base + timedelta(days=days)).isoformat()
+                current_dt = datetime.combine(
+                    datetime.now().date(), datetime.min.time()
+                )
+            base = max(current_dt.date(), datetime.now().date())
+            try:
+                target = base + timedelta(days=days)
+            except OverflowError:
+                return None
+            if "T" in raw_due:
+                new_due = datetime.combine(
+                    target, current_dt.time()
+                ).isoformat(timespec="seconds")
+            else:
+                new_due = target.isoformat()
             self._conn.execute(
                 "UPDATE reminders SET due_at = ?, updated_at = ? WHERE id = ?",
                 (new_due, now, int(reminder_id)),
