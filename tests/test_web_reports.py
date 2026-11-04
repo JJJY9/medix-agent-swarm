@@ -625,3 +625,11 @@ def test_app_js_ships_symptom_import(client):
     assert "async function importSymptomsCsv" in app_js
     assert "/api/symptoms/import" in app_js
     assert 'id="symptom-import"' in html
+
+
+def test_app_js_ships_symptom_trend(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function renderSymptomTrend" in app_js
+    assert 'id="symptom-trend-chart"' in html

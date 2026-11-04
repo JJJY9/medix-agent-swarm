@@ -383,6 +383,8 @@ const els = {
   symptomEmpty: document.getElementById('symptom-empty'),
   symptomSearch: document.getElementById('symptom-search'),
   symptomSummary: document.getElementById('symptom-summary'),
+  symptomTrend: document.getElementById('symptom-trend'),
+  symptomTrendChart: document.getElementById('symptom-trend-chart'),
   metricsEmpty: document.getElementById('metrics-empty'),
   authGate: document.getElementById('auth-gate'),
   authForm: document.getElementById('auth-form'),
@@ -7236,6 +7238,69 @@ function filterSymptoms(items) {
   ));
 }
 
+function renderSymptomTrend(items) {
+  const chart = els.symptomTrendChart;
+  if (!chart) return;
+  chart.replaceChildren();
+  if (!items || items.length < 2) {
+    els.symptomTrend.hidden = true;
+    return;
+  }
+  els.symptomTrend.hidden = false;
+
+  const chronological = items.slice().reverse();
+  const width = 320;
+  const height = 80;
+  const left = 24;
+  const right = 8;
+  const top = 8;
+  const bottom = 14;
+  const plotW = width - left - right;
+  const plotH = height - top - bottom;
+  const x = (index) => left + (plotW * index) / (chronological.length - 1);
+  const y = (value) => top + plotH * (1 - Number(value) / 10);
+
+  for (const value of [0, 5, 10]) {
+    chart.appendChild(svgEl('line', {
+      x1: left,
+      y1: y(value),
+      x2: width - right,
+      y2: y(value),
+      class: 'symptom-trend-grid',
+    }));
+    const label = svgEl('text', {
+      x: left - 4,
+      y: y(value) + 3,
+      class: 'symptom-trend-axis',
+      'text-anchor': 'end',
+    });
+    label.textContent = String(value);
+    chart.appendChild(label);
+  }
+
+  const points = chronological
+    .map((item, index) => `${x(index).toFixed(1)},${y(item.severity).toFixed(1)}`)
+    .join(' ');
+  chart.appendChild(svgEl('polyline', {
+    points,
+    class: 'symptom-trend-line',
+  }));
+
+  chronological.forEach((item, index) => {
+    const dot = svgEl('circle', {
+      cx: x(index),
+      cy: y(item.severity),
+      r: 2.6,
+      class: 'symptom-trend-dot',
+    });
+    const title = svgEl('title');
+    title.textContent =
+      `${item.symptom} ${item.severity}/10 · ${formatTime(item.recorded_at)}`;
+    dot.appendChild(title);
+    chart.appendChild(dot);
+  });
+}
+
 function renderSymptoms(items) {
   if (!els.symptomList) return;
   els.symptomList.replaceChildren();
@@ -7258,6 +7323,7 @@ function renderSymptoms(items) {
   } else {
     els.symptomSummary.hidden = true;
   }
+  renderSymptomTrend(items);
   if (
     editingSymptomId
     && !items.some((item) => item.id === editingSymptomId)

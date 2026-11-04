@@ -3269,6 +3269,32 @@ html[data-theme="dark"] .reminders-due-hint {
 }
 .symptom-summary[hidden] { display: none; }
 
+.symptom-trend {
+  margin: 4px 0 8px;
+}
+.symptom-trend[hidden] { display: none; }
+.symptom-trend svg {
+  display: block;
+  width: 100%;
+  height: 80px;
+}
+.symptom-trend-grid {
+  stroke: var(--rule-soft);
+  stroke-width: 1;
+}
+.symptom-trend-axis {
+  font-size: 9px;
+  fill: var(--ink-faint);
+}
+.symptom-trend-line {
+  fill: none;
+  stroke: var(--triage-1);
+  stroke-width: 2;
+}
+.symptom-trend-dot {
+  fill: var(--triage-1);
+}
+
 .symptom-search {
   width: 100%;
   margin: 6px 0;
