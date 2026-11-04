@@ -5283,6 +5283,22 @@ window.addEventListener('appinstalled', () => {
   els.pwaInstall.hidden = true;
 });
 
+function updateConnectivity() {
+  if (navigator.onLine === false) {
+    setVitals('warn', '离线');
+    showBanner(
+      '当前网络不可用：会诊与历史数据需要本地后端服务，恢复连接后会自动重试。'
+    );
+  } else {
+    hideBanner();
+    checkStatus();
+  }
+}
+
+window.addEventListener('offline', updateConnectivity);
+window.addEventListener('online', updateConnectivity);
+if (navigator.onLine === false) updateConnectivity();
+
 els.pwaInstall.addEventListener('click', async () => {
   if (!deferredInstallPrompt) return;
   deferredInstallPrompt.prompt();
