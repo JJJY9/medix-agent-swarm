@@ -538,6 +538,16 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   padding: 2px 8px;
 }
 
+.today-meds-status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.today-meds-status.error {
+  color: var(--triage-1);
+}
+
 .starters {
   display: flex;
   flex-direction: column;

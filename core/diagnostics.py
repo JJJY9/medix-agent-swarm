@@ -167,6 +167,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                 info["messages"] = int(
                     conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
                 )
+                data_errors = []
                 for key, table in (
                     ("profiles", "patient_profiles"),
                     ("metrics", "health_metrics"),
@@ -183,7 +184,10 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
                             ).fetchone()[0]
                         )
                     except Exception:
-                        info[key] = 0
+                        info[key] = None
+                        data_errors.append(table)
+                if data_errors:
+                    info["data_errors"] = data_errors
             finally:
                 conn.close()
         except Exception as e:

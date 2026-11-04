@@ -1889,19 +1889,16 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         reminders = pending_reminders
 
     raw_targets = await asyncio.to_thread(store.list_metric_targets, None)
+    target_map: dict = {}
     if profile is not None:
         profile_key = str(profile).strip()
-        targets = [
-            item for item in raw_targets
+        target_map = {
+            (item.get("profile") or "", item["metric"]): item
+            for item in raw_targets
             if (item.get("profile") or "") == profile_key
-        ]
-    else:
-        targets = raw_targets
-    target_map = {
-        (item.get("profile") or "", item["metric"]): item
-        for item in targets
-        if isinstance(item, dict) and item.get("metric")
-    }
+            and isinstance(item, dict)
+            and item.get("metric")
+        }
 
     from memory.session_store import LOWER_BOUND_TARGET_METRICS
 
