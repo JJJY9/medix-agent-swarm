@@ -31,6 +31,18 @@
           "type": "image/png"
         }
       ]
+    },
+    {
+      "name": "健康记录",
+      "short_name": "健康",
+      "url": "/?action=metrics",
+      "icons": [
+        {
+          "src": "/static/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ],
   "icons": [
