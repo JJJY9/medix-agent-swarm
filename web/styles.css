@@ -3335,6 +3335,21 @@ html[data-theme="dark"] .reminders-due-hint {
   background: #fdf0ef;
 }
 
+html[data-theme="dark"] .symptom-severity.is-low {
+  color: #7ee2a8;
+  background: #14301f;
+}
+
+html[data-theme="dark"] .symptom-severity.is-mid {
+  color: #f2c66d;
+  background: #3a2f14;
+}
+
+html[data-theme="dark"] .symptom-severity.is-high {
+  color: #ff9c92;
+  background: #331f1d;
+}
+
 .metric-more {
   display: block;
   width: 100%;
