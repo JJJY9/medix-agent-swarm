@@ -153,16 +153,21 @@ class SwarmCoordinator:
         question: str,
         answer: str,
         metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
-        """把一轮问答写入 SQLite，供历史列表和重启恢复使用。"""
+    ) -> Optional[int]:
+        """把一轮问答写入 SQLite，供历史列表和重启恢复使用。
+
+        Returns:
+            assistant 消息 id；保存失败或答复为空时返回 None。
+        """
         if not (answer or "").strip():
-            return
+            return None
         try:
-            self.session_store.save_exchange(
+            return self.session_store.save_exchange(
                 session_id, question, answer, metadata=metadata
             )
         except Exception as e:
             logger.error(f"保存会话记录失败（session={session_id}）: {e}")
+            return None
 
     @staticmethod
     def _history_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -387,7 +392,7 @@ class SwarmCoordinator:
             # Swarm 的长期记忆已在 _process_with_swarm 中保存；这里补齐 triage 后
             # 再把会诊依据写入 SQLite
             result['triage'] = triage
-            self._save_exchange(
+            result['assistant_message_id'] = self._save_exchange(
                 session_id,
                 question,
                 final_answer,
@@ -443,7 +448,7 @@ class SwarmCoordinator:
             logger.error(f"Failed to save to long-term memory: {e}")
 
         # 持久化到 SQLite，供历史列表与重启恢复使用
-        self._save_exchange(
+        result['assistant_message_id'] = self._save_exchange(
             session_id,
             question,
             final_answer,

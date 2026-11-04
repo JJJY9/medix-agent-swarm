@@ -125,12 +125,13 @@ def test_coordinator_saves_exchange(store):
     coordinator = SwarmCoordinator.__new__(SwarmCoordinator)
     coordinator.session_store = store
 
-    coordinator._save_exchange("save-test", "主诉", "答复")
+    assistant_id = coordinator._save_exchange("save-test", "主诉", "答复")
 
+    assert isinstance(assistant_id, int)
     assert store.get_messages("save-test")[-1]["content"] == "答复"
 
     # 空答复不落库，避免把失败请求写成历史记录
-    coordinator._save_exchange("save-empty", "主诉", "   ")
+    assert coordinator._save_exchange("save-empty", "主诉", "   ") is None
     assert store.get_messages("save-empty") == []
 
 
@@ -443,6 +444,102 @@ def test_import_data_rejects_invalid_payload(store):
     })
     assert result["imported"] == 0
     assert result["invalid"] == 3
+
+
+def test_save_exchange_returns_assistant_message_id(store):
+    assistant_id = store.save_exchange("s1", "问题", "答复")
+
+    messages = store.get_messages("s1")
+    assert isinstance(assistant_id, int)
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["id"] == assistant_id
+    assert messages[0]["id"] != assistant_id
+
+    assert store.save_exchange("s2", "只有问题", "") is None
+
+
+def test_message_feedback_roundtrip(store):
+    assistant_id = store.save_exchange(
+        "s1", "最近头痛", "建议测量血压并充分休息。",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+
+    first = store.set_message_feedback("s1", assistant_id, 1)
+    assert first["rating"] == 1
+    feedback = store.get_messages("s1")[1]["metadata"]["feedback"]
+    assert feedback["rating"] == 1
+    assert feedback["comment"] == ""
+    assert store.feedback_totals() == {
+        "total": 1,
+        "helpful": 1,
+        "unhelpful": 0,
+        "rate": 100.0,
+    }
+
+    store.set_message_feedback("s1", assistant_id, -1, "  需要更多   依据 ")
+    feedback = store.get_messages("s1")[1]["metadata"]["feedback"]
+    assert feedback["rating"] == -1
+    assert feedback["comment"] == "需要更多 依据"
+    assert store.feedback_totals()["unhelpful"] == 1
+
+    assert store.set_message_feedback("s1", assistant_id, 0)["rating"] == 0
+    assert "feedback" not in store.get_messages("s1")[1]["metadata"]
+    assert store.feedback_totals() == {
+        "total": 0,
+        "helpful": 0,
+        "unhelpful": 0,
+        "rate": None,
+    }
+
+
+def test_feedback_rejects_unknown_or_user_message(store):
+    assistant_id = store.save_exchange("s1", "问题", "答复")
+    user_id = store.get_messages("s1")[0]["id"]
+
+    assert store.set_message_feedback("s1", 999999, 1) is None
+    assert store.set_message_feedback("s1", user_id, 1) is None
+    assert store.set_message_feedback("other-session", assistant_id, 1) is None
+    assert store.set_message_feedback("s1", assistant_id, 2) is None
+
+
+def test_feedback_totals_respect_filters(store):
+    diabetic = store.save_exchange("s1", "糖尿病怎么控制饮食？", "控制碳水。")
+    hypertension = store.save_exchange("s2", "高血压怎么运动？", "适量有氧。")
+    store.set_message_feedback("s1", diabetic, 1)
+    store.set_message_feedback("s2", hypertension, -1)
+    store.set_favorite("s1", True)
+
+    assert store.feedback_totals()["total"] == 2
+    assert store.feedback_totals(query="糖尿病")["helpful"] == 1
+    assert store.feedback_totals(query="糖尿病")["unhelpful"] == 0
+    assert store.feedback_totals(query="适量有氧")["unhelpful"] == 1
+    assert store.feedback_totals(favorites_only=True) == {
+        "total": 1,
+        "helpful": 1,
+        "unhelpful": 0,
+        "rate": 100.0,
+    }
+
+
+def test_feedback_survives_export_and_import(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    assistant_id = source.save_exchange("s1", "问题", "答复")
+    source.set_message_feedback("s1", assistant_id, -1, "缺少剂量说明")
+    data = source.export_data()
+    source.close()
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        result = target.import_data(data)
+
+        assert result["imported"] == 1
+        feedback = target.get_messages("s1")[1]["metadata"]["feedback"]
+        assert feedback["rating"] == -1
+        assert feedback["comment"] == "缺少剂量说明"
+        assert target.feedback_totals()["unhelpful"] == 1
+    finally:
+        target.close()
 
 
 def test_legacy_messages_table_is_migrated(tmp_path):

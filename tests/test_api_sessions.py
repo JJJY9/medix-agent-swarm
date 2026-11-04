@@ -52,6 +52,12 @@ def test_sessions_api_includes_usage_summary(tmp_path, monkeypatch):
             "completion_tokens": 10,
             "total_tokens": 40,
         },
+        "feedback": {
+            "total": 0,
+            "helpful": 0,
+            "unhelpful": 0,
+            "rate": None,
+        },
     }
 
 
@@ -131,6 +137,77 @@ def test_favorite_api_and_filter(tmp_path, monkeypatch):
 
     usage = daily.json()
     assert usage["totals"]["usage"]["total_tokens"] == 10
+
+
+def test_feedback_api_roundtrip(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    assistant_id = store.save_exchange(
+        "s1", "最近头痛", "建议先测量血压并充分休息。",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        created = client.post(
+            "/api/sessions/s1/feedback",
+            json={"message_id": assistant_id, "rating": 1},
+        )
+        messages = client.get("/api/sessions/s1/messages")
+        summary = client.get("/api/sessions").json()["summary"]
+        changed = client.post(
+            "/api/sessions/s1/feedback",
+            json={
+                "message_id": assistant_id,
+                "rating": -1,
+                "comment": "依据不足",
+            },
+        )
+        cleared = client.post(
+            "/api/sessions/s1/feedback",
+            json={"message_id": assistant_id, "rating": 0},
+        )
+        after_clear = client.get("/api/sessions/s1/messages").json()
+        missing = client.post(
+            "/api/sessions/s1/feedback",
+            json={"message_id": 999999, "rating": 1},
+        )
+        invalid = client.post(
+            "/api/sessions/s1/feedback",
+            json={"message_id": assistant_id, "rating": 5},
+        )
+    finally:
+        store.close()
+
+    assert created.status_code == 200
+    assert created.json()["rating"] == 1
+
+    assistant = messages.json()["messages"][1]
+    assert assistant["id"] == assistant_id
+    assert assistant["feedback"]["rating"] == 1
+
+    assert summary["feedback"] == {
+        "total": 1,
+        "helpful": 1,
+        "unhelpful": 0,
+        "rate": 100.0,
+    }
+
+    assert changed.status_code == 200
+    assert changed.json()["comment"] == "依据不足"
+    assert cleared.status_code == 200
+    assert after_clear["messages"][1]["feedback"] is None
+    assert missing.status_code == 404
+    assert invalid.status_code == 422
+
+
+def test_serialize_result_keeps_assistant_message_id():
+    payload = api_server._serialize_result(
+        {"answer": "答复", "assistant_message_id": 42, "session_id": "s1"},
+        api_server.AGENT_LABELS,
+    )
+
+    assert payload["assistant_message_id"] == 42
 
 
 def test_usage_daily_api(tmp_path, monkeypatch):

@@ -23,6 +23,8 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db
 MAX_TITLE_LENGTH = 40
 #: 历史列表里展示的答复预览长度
 PREVIEW_LENGTH = 80
+#: 会诊反馈备注的最大长度
+MAX_FEEDBACK_LENGTH = 500
 
 
 def _new_usage_entry() -> Dict[str, Any]:
@@ -180,16 +182,19 @@ class SessionStore:
         question: str,
         answer: str,
         metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    ) -> Optional[int]:
         """保存一轮问答。标题取第一轮主诉。
 
         Args:
             metadata: 附加到 assistant 消息上的元数据（来源、科室意见等）
+
+        Returns:
+            assistant 消息的数据库 id；没有答复时返回 None。
         """
         question = (question or "").strip()
         answer = (answer or "").strip()
         if not session_id or not question:
-            return
+            return None
 
         now = self._now()
         title = self._make_title(question)
@@ -198,6 +203,7 @@ class SessionStore:
             ensure_ascii=False,
             allow_nan=False,
         )
+        assistant_id: Optional[int] = None
 
         with self._lock, self._conn:
             self._conn.execute(
@@ -225,13 +231,16 @@ class SessionStore:
                 (session_id, question, now),
             )
             if answer:
-                self._conn.execute(
+                cursor = self._conn.execute(
                     """
                     INSERT INTO messages(session_id, role, content, metadata, created_at)
                     VALUES (?, 'assistant', ?, ?, ?)
                     """,
                     (session_id, answer, metadata_json, now),
                 )
+                assistant_id = int(cursor.lastrowid)
+
+        return assistant_id
 
     def list_sessions(
         self,
@@ -354,7 +363,7 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT role, content, metadata, created_at
+                SELECT id, role, content, metadata, created_at
                   FROM messages
                  WHERE session_id = ?
                  ORDER BY id DESC
@@ -380,7 +389,7 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT role, content, metadata, created_at
+                SELECT id, role, content, metadata, created_at
                   FROM messages
                  WHERE session_id = ?
                  ORDER BY id
@@ -483,6 +492,133 @@ class SessionStore:
             _accumulate_usage(totals, metadata)
 
         return totals
+
+    def feedback_totals(
+        self, query: str = "", favorites_only: bool = False, days: int = 0
+    ) -> Dict[str, Any]:
+        """汇总会诊答复的用户反馈，支持与历史列表相同的筛选条件。"""
+        sql = """
+            SELECT m.metadata
+              FROM messages m
+              JOIN sessions s ON s.id = m.session_id
+             WHERE m.role = 'assistant'
+        """
+        conditions: List[str] = []
+        params: List[Any] = []
+        if query:
+            conditions.append("""
+                (s.title LIKE ? ESCAPE '\\' OR s.id LIKE ? ESCAPE '\\'
+                 OR EXISTS (
+                     SELECT 1 FROM messages mm
+                      WHERE mm.session_id = s.id AND mm.content LIKE ? ESCAPE '\\'
+                 ))
+            """)
+            like = _like_pattern(query)
+            params.extend([like, like, like])
+        if favorites_only:
+            conditions.append("s.favorite = 1")
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("s.updated_at >= ?")
+            params.append(cutoff)
+        if conditions:
+            sql += " AND " + " AND ".join(conditions)
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+
+        helpful = 0
+        unhelpful = 0
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(metadata, dict):
+                continue
+            feedback = metadata.get("feedback")
+            if not isinstance(feedback, dict):
+                continue
+            try:
+                rating = int(feedback.get("rating"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if rating == 1:
+                helpful += 1
+            elif rating == -1:
+                unhelpful += 1
+
+        total = helpful + unhelpful
+        return {
+            "total": total,
+            "helpful": helpful,
+            "unhelpful": unhelpful,
+            "rate": round(helpful / total * 100, 1) if total else None,
+        }
+
+    def set_message_feedback(
+        self,
+        session_id: str,
+        message_id: int,
+        rating: int,
+        comment: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """记录或清除某条会诊答复的反馈。
+
+        rating: 1 有用，-1 待改进，0 清除反馈。
+        消息不存在、不属于该会话或不是 assistant 消息时返回 None。
+        """
+        try:
+            message_id = int(message_id)
+            rating = int(rating)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if rating not in (-1, 0, 1):
+            return None
+
+        comment = " ".join((comment or "").split())[:MAX_FEEDBACK_LENGTH]
+        now = self._now()
+
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                """
+                SELECT metadata FROM messages
+                 WHERE id = ? AND session_id = ? AND role = 'assistant'
+                """,
+                (message_id, session_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            if rating == 0:
+                metadata.pop("feedback", None)
+            else:
+                metadata["feedback"] = {
+                    "rating": rating,
+                    "comment": comment,
+                    "updated_at": now,
+                }
+
+            self._conn.execute(
+                "UPDATE messages SET metadata = ? WHERE id = ?",
+                (
+                    json.dumps(
+                        sanitize_json(metadata),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ),
+                    message_id,
+                ),
+            )
+
+        return {"message_id": message_id, "rating": rating, "comment": comment}
 
     def daily_usage(
         self, days: int = 7, favorites_only: bool = False

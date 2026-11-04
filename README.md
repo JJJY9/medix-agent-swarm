@@ -42,6 +42,7 @@
 - **💴 费用估算**: 可选配置每百万 Token 单价，在会诊面板、历史汇总与趋势中显示预估值 ✅
 - **🎯 月度预算**: 可选设置每月 Token 预算，历史抽屉展示本月进度、剩余额度与超限提醒 ✅
 - **⭐ 收藏会诊**: 标记重要会诊并只看收藏，列表、用量汇总与趋势同步过滤 ✅
+- **👍 会诊反馈**: 每条意见可标记「有用 / 待改进」，再次点击取消；历史抽屉汇总反馈数与好评率，反馈随备份导出与恢复 ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
 - **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、重命名、导出、整库备份与恢复、删除；支持 `?session=` 链接直接打开 ✅
@@ -160,6 +161,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 - 会诊记录保存在 `data/sessions.db`（SQLite，首次运行自动创建，已加入 `.gitignore`），服务重启后不会丢失
 - 右上角「会诊记录」支持搜索、打开、重命名、导出和删除历史会诊，点击条目可恢复完整问诊记录
 - 每条会诊意见下方提供「复制意见」「导出 Markdown」「再次会诊」
+- 每条会诊意见下方可标记「有用 / 待改进」，再次点击同一按钮可取消；反馈保存在该条消息的元数据中，随整库备份导出与恢复
 - 多学科会诊的汇总阶段，以及单 Agent 使用工具后的强制收尾，都支持流式输出；直接作答仍为一次性返回
 - 生成过程中点「停止」会中断本次请求；服务端在客户端断开后取消后台任务
 
@@ -217,6 +219,7 @@ npm install -D playwright
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
+| POST | `/api/sessions/{id}/feedback` | 记录会诊意见反馈（`message_id`、`rating`：1 有用 / -1 待改进 / 0 清除、可选 `comment`） |
 | DELETE | `/api/sessions/{id}` | 删除会话 |
 | GET | `/api/usage/daily` | 近 N 天 Token 用量与调用次数（默认 7 天，可用 `favorite=1` 筛选） |
 | GET | `/api/usage/month` | 本月用量、预算进度与是否超限 |
@@ -231,7 +234,7 @@ npm install -D playwright
 | GET | `/api/diagnose` | 轻量环境自检（Python/依赖/配置/知识库/运行状态） |
 | POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
 
-`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数），每条会话也带有各自的 `usage` 与 `llm_calls`。
+`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。
 
 设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
 
