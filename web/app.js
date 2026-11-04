@@ -1637,8 +1637,24 @@ function buildReportHtml(item, messages) {
 }
 
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
-function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions }) {
+function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions, targets }) {
   const generatedAt = new Date().toLocaleString();
+  const targetList = Array.isArray(targets) ? targets : [];
+
+  const findTarget = (metric) => targetList.find(
+    (target) => target.metric === metric
+      && (target.profile || '') === (profile || '')
+  ) || null;
+
+  const isOverTarget = (item, target) => {
+    if (!target) return false;
+    if (item.metric === 'bp') {
+      return Number(item.value1) > target.value1
+        || (target.value2 != null && Number(item.value2) > target.value2);
+    }
+    return Number(item.value1) > target.value1;
+  };
+
   const contextLabels = {
     age: '年龄',
     sex: '性别',
@@ -1654,14 +1670,22 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions 
     ))
     .join('\n');
 
-  const metricRows = metrics.map((item) => (
-    '<tr>'
-    + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
-    + `<td>${escapeHtml(formatMetricValue(item))}</td>`
-    + `<td>${escapeHtml(formatTime(item.measured_at))}</td>`
-    + `<td>${escapeHtml(item.note || '')}</td>`
-    + '</tr>'
-  )).join('\n');
+  const metricRows = metrics.map((item) => {
+    const target = findTarget(item.metric);
+    const over = isOverTarget(item, target);
+    return '<tr>'
+      + `<td>${escapeHtml(METRIC_NAMES[item.metric] || item.metric)}</td>`
+      + `<td>${escapeHtml(formatMetricValue(item))}`
+      + `${over ? ' <span class="overdue">（高于目标）</span>' : ''}</td>`
+      + `<td>${escapeHtml(formatTime(item.measured_at))}</td>`
+      + `<td>${escapeHtml(item.note || '')}</td>`
+      + '</tr>';
+  }).join('\n');
+
+  const targetNotes = targetList.map(
+    (target) => `<li>${escapeHtml(METRIC_NAMES[target.metric] || target.metric)}`
+      + ` 目标上限 ${escapeHtml(formatMetricTarget(target))}</li>`
+  ).join('\n');
 
   const reminderItems = reminders.map((item) => (
     `<li>${escapeHtml(item.title)} · 到期 ${escapeHtml(formatReminderDue(item.due_at))}`
@@ -1739,6 +1763,7 @@ function buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions 
 
   <section>
     <h2>近期健康指标</h2>
+    ${targetNotes ? `<ul class="target-notes">${targetNotes}</ul>` : ''}
     ${metricRows
       ? `<table>
           <thead><tr><th>指标</th><th>数值</th><th>测量时间</th><th>备注</th></tr></thead>
@@ -1782,10 +1807,13 @@ async function exportVisitSummary() {
     if (profile) metricParams.set('profile', profile);
     const sessionParams = new URLSearchParams({ limit: '5' });
     if (profile) sessionParams.set('profile', profile);
-    const [metricsRes, remindersRes, sessionsRes] = await Promise.all([
+    const targetParams = new URLSearchParams();
+    if (profile) targetParams.set('profile', profile);
+    const [metricsRes, remindersRes, sessionsRes, targetsRes] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch('/api/reminders'),
       fetch(`/api/sessions?${sessionParams.toString()}`),
+      fetch(`/api/metric-targets?${targetParams.toString()}`),
     ]);
     const metrics = metricsRes.ok
       ? (await metricsRes.json()).metrics || []
@@ -1796,10 +1824,15 @@ async function exportVisitSummary() {
     const sessions = sessionsRes.ok
       ? (await sessionsRes.json()).sessions || []
       : [];
+    const targets = targetsRes.ok
+      ? (await targetsRes.json()).targets || []
+      : [];
 
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
-      buildVisitSummaryHtml({ profile, context, metrics, reminders, sessions }),
+      buildVisitSummaryHtml({
+        profile, context, metrics, reminders, sessions, targets,
+      }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
     );
