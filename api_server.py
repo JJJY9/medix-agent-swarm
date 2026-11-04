@@ -1474,6 +1474,21 @@ async def index():
     return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    sw_file = WEB_DIR / "sw.js"
+    if not sw_file.exists():
+        raise HTTPException(status_code=404, detail="Service Worker 不存在")
+    return FileResponse(
+        sw_file,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache",
+            "Service-Worker-Allowed": "/",
+        },
+    )
+
+
 if WEB_DIR.exists():
     app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR)), name="static")
 
