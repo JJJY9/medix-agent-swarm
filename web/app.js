@@ -10213,6 +10213,9 @@ async function buildConsultContext() {
         item.name
         + (item.dose ? ` ${item.dose}` : '')
         + (item.frequency ? ` ${item.frequency}` : '')
+        + (Number(item.week_count) > 0
+          ? `（近 7 天打卡 ${Number(item.week_count)} 次）`
+          : '')
       ));
       if (activeMeds.length) {
         context.active_medications = activeMeds.join('；');
