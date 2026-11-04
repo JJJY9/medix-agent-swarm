@@ -2014,6 +2014,134 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
+    def metric_summary(
+        self,
+        profile: Optional[str] = None,
+        metric: str = "",
+        days: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """统计所选范围内的指标，并给出上一等长周期的均值用于对比。"""
+        metric = str(metric or "").strip()
+        if metric not in METRIC_TYPES:
+            return None
+        try:
+            days = max(0, min(int(days or 0), 3650))
+        except (TypeError, ValueError, OverflowError):
+            days = 0
+
+        base_conditions: List[str] = []
+        base_params: List[Any] = []
+        if profile is not None:
+            base_conditions.append("profile = ?")
+            base_params.append(_normalize_profile_name(profile))
+        base_conditions.append("metric = ?")
+        base_params.append(metric)
+
+        now = datetime.now()
+        end_of_today = now.replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds")
+        conditions = list(base_conditions)
+        params = list(base_params)
+        prev_conditions: Optional[List[str]] = None
+        prev_params: List[Any] = []
+        if days > 0:
+            current_start = now - timedelta(days=days)
+            current_cutoff = current_start.isoformat(timespec="seconds")
+            conditions.append("measured_at >= ?")
+            params.append(current_cutoff)
+            conditions.append("measured_at <= ?")
+            params.append(end_of_today)
+            prev_start = current_start - timedelta(days=days)
+            prev_conditions = base_conditions + [
+                "measured_at >= ?",
+                "measured_at < ?",
+            ]
+            prev_params = base_params + [
+                prev_start.isoformat(timespec="seconds"),
+                current_cutoff,
+            ]
+        else:
+            conditions.append("measured_at <= ?")
+            params.append(end_of_today)
+
+        where = " AND ".join(conditions)
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT COUNT(*) AS count,
+                       AVG(value1) AS avg1,
+                       MIN(value1) AS min1,
+                       MAX(value1) AS max1,
+                       AVG(value2) AS avg2,
+                       MIN(value2) AS min2,
+                       MAX(value2) AS max2
+                  FROM health_metrics
+                 WHERE {where}
+                """,
+                params,
+            ).fetchone()
+            latest_row = self._conn.execute(
+                f"""
+                SELECT id, profile, metric, value1, value2, unit,
+                       measured_at, note, created_at
+                  FROM health_metrics
+                 WHERE {where}
+                 ORDER BY measured_at DESC, id DESC
+                 LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            prev_row = None
+            if prev_conditions:
+                prev_row = self._conn.execute(
+                    f"""
+                    SELECT AVG(value1) AS avg1, AVG(value2) AS avg2
+                      FROM health_metrics
+                     WHERE {' AND '.join(prev_conditions)}
+                    """,
+                    prev_params,
+                ).fetchone()
+
+        count = int(row["count"] or 0) if row else 0
+
+        def stat(value):
+            return round(float(value), 1) if value is not None else None
+
+        def build(avg, low, high, prev_avg):
+            if avg is None and low is None and high is None:
+                return None
+            return {
+                "avg": stat(avg),
+                "min": stat(low),
+                "max": stat(high),
+                "prev_avg": stat(prev_avg),
+            }
+
+        value1 = build(
+            row["avg1"] if row else None,
+            row["min1"] if row else None,
+            row["max1"] if row else None,
+            prev_row["avg1"] if prev_row else None,
+        )
+        value2 = None
+        if metric == "bp":
+            value2 = build(
+                row["avg2"] if row else None,
+                row["min2"] if row else None,
+                row["max2"] if row else None,
+                prev_row["avg2"] if prev_row else None,
+            )
+
+        return {
+            "metric": metric,
+            "count": count,
+            "days": days,
+            "value1": value1,
+            "value2": value2,
+            "latest": dict(latest_row) if latest_row else None,
+        }
+
     def update_metric(
         self,
         metric_id: int,

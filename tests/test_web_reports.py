@@ -189,3 +189,14 @@ def test_app_js_handles_pwa_launch_actions(client):
 
     assert "function handleLaunchAction" in app_js
     assert "action === 'reminders'" in app_js
+
+
+
+def test_app_js_ships_metric_summary(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "function renderMetricSummary" in app_js
+    assert "async function loadMetricSummary" in app_js
+    assert "/api/metrics/summary" in app_js
+    assert 'id="metric-stat-grid"' in html

@@ -270,3 +270,101 @@ def test_metrics_api_days_filter(client):
 
     assert len(all_items.json()["metrics"]) == 3
     assert [item["value1"] for item in recent.json()["metrics"]] == [61]
+
+
+
+def test_metrics_summary_api(client):
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    recent = [
+        (now - timedelta(days=1)).isoformat(timespec="minutes"),
+        (now - timedelta(days=2)).isoformat(timespec="minutes"),
+    ]
+    older = [
+        (now - timedelta(days=9)).isoformat(timespec="minutes"),
+        (now - timedelta(days=10)).isoformat(timespec="minutes"),
+    ]
+    for value, measured_at in ((70, recent[0]), (72, recent[1])):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": value,
+                "measured_at": measured_at,
+            },
+        )
+    for value, measured_at in ((60, older[0]), (62, older[1])):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": value,
+                "measured_at": measured_at,
+            },
+        )
+
+    summary = client.get(
+        "/api/metrics/summary",
+        params={"profile": "妈妈", "metric": "weight", "days": 7},
+    )
+    overall = client.get(
+        "/api/metrics/summary", params={"profile": "妈妈", "metric": "weight"}
+    )
+    invalid = client.get(
+        "/api/metrics/summary", params={"metric": "unknown"}
+    )
+    other_profile = client.get(
+        "/api/metrics/summary", params={"profile": "孩子", "metric": "weight"}
+    )
+
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["count"] == 2
+    assert body["value1"]["avg"] == 71.0
+    assert body["value1"]["max"] == 72.0
+    assert body["value1"]["min"] == 70.0
+    assert body["value1"]["prev_avg"] == 61.0
+    assert body["latest"]["value1"] == 70.0
+    assert body["value2"] is None
+
+    assert overall.json()["count"] == 4
+    assert overall.json()["value1"]["prev_avg"] is None
+    assert invalid.status_code == 400
+    assert other_profile.json()["count"] == 0
+
+
+def test_metrics_summary_bp_series(client):
+    client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈",
+            "metric": "bp",
+            "value1": 140,
+            "value2": 90,
+            "measured_at": "2026-01-02T08:00",
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈",
+            "metric": "bp",
+            "value1": 120,
+            "value2": 80,
+            "measured_at": "2026-01-03T08:00",
+        },
+    )
+
+    body = client.get(
+        "/api/metrics/summary", params={"metric": "bp", "profile": "妈妈"}
+    ).json()
+
+    assert body["count"] == 2
+    assert body["value1"]["avg"] == 130.0
+    assert body["value2"]["avg"] == 85.0
+    assert body["value1"]["max"] == 140.0
+    assert body["value2"]["min"] == 80.0
+    assert body["latest"]["value1"] == 120.0
