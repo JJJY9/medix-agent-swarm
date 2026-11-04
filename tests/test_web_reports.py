@@ -86,3 +86,11 @@ def test_app_js_ships_bulk_export(client):
     assert "function bulkExportMarkdown" in app_js
     assert "history-bulk-export" in app_js
     assert "medix-sessions-" in app_js
+
+
+def test_app_js_escapes_banner_error_text(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "escapeHtml(data.startup_error" in app_js
+    assert "escapeHtml(data.knowledge_base.error)" in app_js
+    assert "escapeHtml(err.message)" in app_js
