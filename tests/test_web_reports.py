@@ -677,8 +677,9 @@ def test_app_js_ships_weekly_summary(client):
     assert "function weeklySummaryLines" in app_js
     assert "/api/reports/weekly" in app_js
     assert 'id="weekly-summary-section"' in html
+    assert 'id="weekly-summary-range"' in html
     assert ".weekly-summary-list" in css
-    assert "近 7 天打卡" in app_js
+    assert "近 ${days} 天打卡" in app_js
     assert "近 7 天小结" in app_js
     assert "weeklySummaryRequestSeq" in app_js
     assert "medicationLogRequestSeq" in app_js

@@ -737,7 +737,15 @@
     </details>
 
     <details class="weekly-summary" id="weekly-summary-section">
-      <summary>本周小结</summary>
+      <summary>健康小结</summary>
+      <div class="weekly-summary-toolbar">
+        <label class="sr-only" for="weekly-summary-range">小结范围</label>
+        <select id="weekly-summary-range" aria-label="小结时间范围">
+          <option value="7" selected>近 7 天</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+      </div>
       <div class="weekly-summary-body" id="weekly-summary-body"></div>
     </details>
 
