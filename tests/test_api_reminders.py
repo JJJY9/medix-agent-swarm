@@ -434,3 +434,20 @@ def test_reminders_advance_days(client_and_store):
     assert cleared.status_code == 200
     assert cleared.json()["reminder"]["advance_days"] == 0
     assert listed.json()["reminders"][0]["advance_days"] == 0
+
+
+def test_reminders_ics_skips_alarm_for_done(client_and_store):
+    client, _store = client_and_store
+
+    created = client.post(
+        "/api/reminders",
+        json={"title": "复查", "due_at": "2026-11-10", "advance_days": 2},
+    ).json()["reminder"]
+    client.post(f"/api/reminders/{created['id']}/complete")
+
+    text = client.get(
+        "/api/reminders/export.ics", params={"include_done": True}
+    ).content.decode("utf-8")
+
+    assert "STATUS:COMPLETED" in text
+    assert "BEGIN:VALARM" not in text

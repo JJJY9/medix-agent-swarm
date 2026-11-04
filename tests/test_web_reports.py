@@ -257,3 +257,10 @@ def test_app_js_ships_metric_weekly_overview(client):
     assert "function renderMetricWeekly" in app_js
     assert "近 7 天变化" in html
     assert 'id="metric-weekly"' in html
+
+
+def test_app_js_truncates_advance_days(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "omitEmptyProfile" in app_js
+    assert "Math.trunc(Math.max(" in app_js

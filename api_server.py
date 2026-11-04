@@ -1660,7 +1660,7 @@ async def export_reminders_ics(
             "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
         ])
         advance = int(item.get("advance_days") or 0)
-        if advance > 0:
+        if advance > 0 and not item.get("done"):
             lines.extend([
                 "BEGIN:VALARM",
                 f"TRIGGER:-P{advance}D",
