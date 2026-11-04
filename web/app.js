@@ -3047,6 +3047,19 @@ function renderKbSearchResults(data) {
     snippet.textContent = item.snippet || '（无片段）';
 
     row.append(head, meta, snippet);
+    if (item.filename) {
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.title = `预览 ${item.filename}`;
+      const open = () => previewKbDocument(item.filename);
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open();
+        }
+      });
+    }
     els.kbSearchResults.appendChild(row);
   }
 }
