@@ -1796,6 +1796,26 @@ def test_update_medication_syncs_log_profile(store):
     assert logs[0]["profile"] == "新档案"
 
 
+def test_import_medication_logs_fallback_by_name(store, tmp_path):
+    item = store.add_medication("父亲", "氨氯地平", "5 mg")
+    store.add_medication_log(
+        item["id"], "2026-11-05T08:30:00", "早餐后"
+    )
+
+    data = store.export_data()
+    data["medication_logs"][0]["medication_id"] = 99999
+
+    other = SessionStore(str(tmp_path / "log-fallback.db"))
+    try:
+        result = other.import_data(data)
+        assert result["medication_logs"] == 1
+        logs = other.list_medication_logs()
+        assert logs[0]["medication_name"] == "氨氯地平"
+        assert logs[0]["medication_id"] == other.list_medications()[0]["id"]
+    finally:
+        other.close()
+
+
 def test_medication_import_skips_status_change(store):
     store.add_medication("母亲", "氨氯地平", "5 mg", "每日一次")
     backup = store.export_data()
