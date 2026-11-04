@@ -3297,6 +3297,20 @@ html[data-theme="dark"] .reminders-due-hint {
   color: var(--ink-soft);
 }
 
+.weekly-summary-toolbar {
+  margin-top: 6px;
+}
+
+.weekly-summary-toolbar select {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 3px 8px;
+}
+
 .weekly-summary-list {
   display: grid;
   gap: 4px;

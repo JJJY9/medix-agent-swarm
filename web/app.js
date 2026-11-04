@@ -400,6 +400,7 @@ const els = {
   medicationLogList: document.getElementById('medication-log-list'),
   medicationLogEmpty: document.getElementById('medication-log-empty'),
   weeklySummarySection: document.getElementById('weekly-summary-section'),
+  weeklySummaryRange: document.getElementById('weekly-summary-range'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
@@ -8212,16 +8213,18 @@ function weeklyMetricText(row) {
 }
 
 function weeklySummaryLines(data) {
+  const days = Number(data.days) || 7;
+  const emptyText = `近 ${days} 天没有记录`;
   const metricRows = data.metrics.by_metric || [];
   const lines = [[
     '健康指标',
     metricRows.length
       ? metricRows.map(weeklyMetricText).join('；')
-      : '近 7 天没有记录',
+      : emptyText,
   ]];
 
   const symptoms = data.symptoms;
-  let symptomText = '近 7 天没有记录';
+  let symptomText = emptyText;
   if (symptoms.count) {
     symptomText =
       `${symptoms.count} 条，平均 ${symptoms.avg_severity}/10`
@@ -8237,7 +8240,7 @@ function weeklySummaryLines(data) {
   const meds = data.medications;
   let medicationText = '没有在用药物';
   if (meds.active) {
-    medicationText = `在用 ${meds.active} 种，近 7 天打卡 ${meds.doses} 次`;
+    medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${meds.doses} 次`;
     if (meds.by_medication && meds.by_medication.length) {
       medicationText += `（${meds.by_medication
         .map((item) => `${item.name} ${item.doses} 次`)
@@ -8280,9 +8283,11 @@ async function loadWeeklySummary() {
   if (!els.weeklySummaryBody) return;
   const requestSeq = ++weeklySummaryRequestSeq;
   const profile = els.metricProfile.value;
+  const days = Number(els.weeklySummaryRange.value) || 7;
   try {
     const res = await fetch(
       `/api/reports/weekly?profile=${encodeURIComponent(profile)}`
+      + `&days=${days}`
     );
     if (!res.ok) return;
     const data = await res.json();
@@ -10912,6 +10917,7 @@ els.metricType.addEventListener('change', () => {
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricRange.addEventListener('change', refreshMetrics);
+els.weeklySummaryRange.addEventListener('change', loadWeeklySummary);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
