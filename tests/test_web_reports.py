@@ -536,3 +536,9 @@ def test_app_js_metric_save_guards_and_latest(client):
     assert "event.isComposing" in app_js
     assert "/api/metrics/latest" in app_js
     assert 'id="calc-auditc-sex"' in html
+
+
+def test_context_panel_mentions_health_context(client):
+    html = client.get("/").text
+
+    assert "会诊时会自动参考当前档案的最近健康指标与待办随访" in html

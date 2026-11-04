@@ -3699,6 +3699,12 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
 }
 .single-mode input { accent-color: var(--clinic); }
 
+.context-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
 .context-actions {
   display: flex;
   justify-content: flex-end;
