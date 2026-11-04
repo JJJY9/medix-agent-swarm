@@ -142,3 +142,45 @@ def test_reminders_api_update(client_and_store):
     assert missing.status_code == 404
     actions = [item["action"] for item in audit.json()["actions"]]
     assert "reminder.update" in actions
+
+
+def test_reminders_api_profile_filter(client_and_store):
+    client, _store = client_and_store
+    client.post(
+        "/api/reminders",
+        json={"title": "妈妈复查", "due_at": "2026-11-10", "profile": "母亲"},
+    )
+    client.post(
+        "/api/reminders",
+        json={"title": "孩子复诊", "due_at": "2026-11-11", "profile": "孩子"},
+    )
+
+    filtered = client.get("/api/reminders", params={"profile": "母亲"})
+    everything = client.get("/api/reminders")
+
+    assert [
+        item["title"] for item in filtered.json()["reminders"]
+    ] == ["妈妈复查"]
+    assert filtered.json()["reminders"][0]["profile"] == "母亲"
+    assert len(everything.json()["reminders"]) == 2
+
+
+def test_import_backup_preserves_reminders(client_and_store):
+    client, _store = client_and_store
+
+    response = client.post(
+        "/api/sessions/import",
+        json={
+            "sessions": [],
+            "profiles": [],
+            "health_metrics": [],
+            "reminders": [
+                {"title": "复查", "due_at": "2026-11-10", "profile": "母亲"}
+            ],
+        },
+    )
+    listed = client.get("/api/reminders", params={"profile": "母亲"})
+
+    assert response.status_code == 200
+    assert response.json()["reminders"] == 1
+    assert listed.json()["reminders"][0]["title"] == "复查"

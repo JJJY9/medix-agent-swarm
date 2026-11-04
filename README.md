@@ -193,7 +193,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 - 会诊面板下方「随访提醒」：填写提醒内容与日期即可创建，日期默认一周后
 - 到期（含当天）的提醒会显示「已到期」标记，并在列表顶部汇总数量
 - 提醒支持「编辑」「完成」「推迟」（+7 天）与「删除」，新增/修改/完成/推迟/删除都会写入操作审计
-- 提醒与当前会诊编号关联保存
+- 提醒与当前会诊编号关联保存；创建时会记录当前选中的患者档案，列表显示所属档案
 - 入口按钮显示已到期数量；在抽屉中可开启浏览器通知，到期当天打开页面时提示一次（依赖浏览器通知权限）
 
 ### 健康指标目标
@@ -210,7 +210,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 
 ### 就诊摘要
 
-- 会诊面板下方「就诊摘要」：按当前患者档案汇总基本信息、近期 30 条健康指标（列出目标并标注超标）、待完成随访与最近 5 次会诊
+- 会诊面板下方「就诊摘要」：按当前患者档案汇总基本信息、近期 30 条健康指标（列出目标并标注超标）、该档案的待完成随访与最近 5 次会诊
 - 摘要为单文件 HTML，可离线打开并一键打印或另存为 PDF，方便就诊时与医生沟通
 - 摘要只读取本机记录，不会上传到任何第三方
 
@@ -298,8 +298,8 @@ npm install -D playwright
 | GET | `/api/metric-targets` | 自定义健康指标目标（可按 `profile` 筛选） |
 | PUT | `/api/metric-targets` | 设置或覆盖目标上限（血压需同时提供舒张压） |
 | DELETE | `/api/metric-targets/{metric}` | 删除某档案某指标的目标（`profile` 查询参数） |
-| GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成） |
-| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，日期支持 `YYYY-MM-DD` 或 ISO 时间） |
+| GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
+| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile` 关联档案；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
 | POST | `/api/reminders/{id}/complete` | 把随访提醒标记为完成 |
 | PATCH | `/api/reminders/{id}` | 修改随访提醒的内容、日期或备注 |
 | POST | `/api/reminders/{id}/snooze` | 把随访提醒推迟 N 天（`days` 查询参数，默认 7） |
@@ -338,7 +338,7 @@ npm install -D playwright
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 
-`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标与归档状态。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同健康记录会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标、随访提醒与归档状态。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同健康记录会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 

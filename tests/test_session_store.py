@@ -438,6 +438,7 @@ def test_import_data_roundtrip(tmp_path):
             "profiles": 0,
             "metrics": 0,
             "targets": 0,
+            "reminders": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"
@@ -1033,6 +1034,40 @@ def test_reminders_crud(store):
         store.add_reminder("复查", "10/11/2026")
     with pytest.raises(ValueError):
         store.add_reminder("复查", "")
+
+
+def test_reminders_profile_filter(store):
+    store.add_reminder("妈妈复查", "2026-11-10", profile="母亲")
+    store.add_reminder("孩子复诊", "2026-11-11", profile="孩子")
+    store.add_reminder("通用提醒", "2026-11-12")
+
+    assert [
+        item["title"] for item in store.list_reminders(profile="母亲")
+    ] == ["妈妈复查"]
+    assert [
+        item["title"] for item in store.list_reminders(profile="孩子")
+    ] == ["孩子复诊"]
+    assert len(store.list_reminders()) == 3
+    assert store.list_reminders(profile="不存在") == []
+
+
+def test_reminders_export_import(store, tmp_path):
+    store.add_reminder("复查", "2026-11-10", profile="母亲")
+    data = store.export_data()
+    assert data["reminders"][0]["profile"] == "母亲"
+
+    other = SessionStore(str(tmp_path / "copy-reminders.db"))
+    try:
+        result = other.import_data(data)
+        assert result["reminders"] == 1
+        reminders = other.list_reminders(profile="母亲")
+        assert reminders[0]["title"] == "复查"
+        assert reminders[0]["due_at"] == "2026-11-10"
+
+        again = other.import_data(data)
+        assert again["reminders"] == 0
+    finally:
+        other.close()
 
 
 def test_snooze_reminder(store):
