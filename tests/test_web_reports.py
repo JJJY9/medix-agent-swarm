@@ -559,3 +559,10 @@ def test_app_js_supports_symptom_deeplink(client):
 
     assert "params.get('symptoms') === '1'" in app_js
     assert "symptomSection.open" in app_js
+
+
+def test_app_js_report_includes_symptoms(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "const symptomItems = (symptoms || [])" in app_js
+    assert "<h2>近期症状</h2>" in app_js

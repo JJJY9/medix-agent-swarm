@@ -1738,6 +1738,7 @@ function buildReportHtml(item, messages) {
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
 function buildVisitSummaryHtml({
   profile, context, metrics, reminders, sessions, targets, summaries,
+  symptoms,
 }) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
@@ -1839,6 +1840,13 @@ function buildVisitSummaryHtml({
       + '</li>';
   }).join('\n');
 
+  const symptomItems = (symptoms || []).map((item) => (
+    `<li>${escapeHtml(item.symptom)} · <strong>${Number(item.severity)}/10</strong>`
+    + ` · ${escapeHtml(formatTime(item.recorded_at))}`
+    + `${item.note ? `（${escapeHtml(item.note)}）` : ''}`
+    + '</li>'
+  )).join('\n');
+
   const sessionItems = sessions.map((item) => (
     `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`
     + ` · ${escapeHtml(item.title || '未命名会诊')}</li>`
@@ -1926,6 +1934,13 @@ function buildVisitSummaryHtml({
   </section>
 
   <section>
+    <h2>近期症状</h2>
+    ${symptomItems
+      ? `<ul>${symptomItems}</ul>`
+      : '<p class="muted">近 30 天没有症状记录。</p>'}
+  </section>
+
+  <section>
     <h2>随访提醒</h2>
     ${reminderItems
       ? `<ul>${reminderItems}</ul>`
@@ -1988,11 +2003,16 @@ async function exportVisitSummary() {
     if (profile) targetParams.set('profile', profile);
     const reminderParams = new URLSearchParams();
     if (profile) reminderParams.set('profile', profile);
-    const [metricsRes, remindersRes, sessionsRes, targetsRes] = await Promise.all([
+    const symptomParams = new URLSearchParams({ limit: '30', days: '30' });
+    if (profile) symptomParams.set('profile', profile);
+    const [
+      metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
+    ] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch(`/api/reminders${reminderParams.toString() ? `?${reminderParams}` : ''}`),
       fetch(`/api/sessions?${sessionParams.toString()}`),
       fetch(`/api/metric-targets?${targetParams.toString()}`),
+      fetch(`/api/symptoms?${symptomParams.toString()}`),
     ]);
     const metrics = metricsRes.ok
       ? (await metricsRes.json()).metrics || []
@@ -2006,6 +2026,9 @@ async function exportVisitSummary() {
     const targets = targetsRes.ok
       ? (await targetsRes.json()).targets || []
       : [];
+    const symptoms = symptomsRes.ok
+      ? (await symptomsRes.json()).symptoms || []
+      : [];
     const summaries = await fetchMetricSummaries(
       profile, metrics, 0, true
     );
@@ -2013,7 +2036,8 @@ async function exportVisitSummary() {
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
       buildVisitSummaryHtml({
-        profile, context, metrics, reminders, sessions, targets, summaries,
+        profile, context, metrics, reminders, sessions, targets,
+        summaries, symptoms,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
