@@ -2153,6 +2153,18 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
     );
   }));
 
+  actions.appendChild(makeAction('设随访提醒', () => {
+    openReminders();
+    const title = (question || '复诊随访')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 40);
+    els.reminderTitle.value = title;
+    els.reminderNote.value = '来自会诊建议';
+    els.reminderDue.value = defaultReminderDue();
+    els.reminderTitle.focus();
+  }));
+
   actions.appendChild(makeAction('打印 / PDF', () => {
     printAnswer();
   }));
