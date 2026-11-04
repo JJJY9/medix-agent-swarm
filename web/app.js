@@ -132,6 +132,8 @@ const els = {
   calcCurbRr: document.getElementById('calc-curb-rr'),
   calcCurbSbp: document.getElementById('calc-curb-sbp'),
   calcCurbDbp: document.getElementById('calc-curb-dbp'),
+  calcFormPhq9: document.getElementById('calc-form-phq9'),
+  calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcResult: document.getElementById('calc-result'),
   calcResultTitle: document.getElementById('calc-result-title'),
   calcResultMain: document.getElementById('calc-result-main'),
@@ -3858,9 +3860,11 @@ function setCalcTool(tool) {
     els.calcFormEgfr,
     els.calcFormChads,
     els.calcFormCurb65,
+    els.calcFormPhq9,
   ]) {
     form.hidden = form.dataset.tool !== tool;
   }
+  if (tool === 'phq9') ensurePhq9Form();
   els.calcResult.hidden = true;
   setCalcStatus('');
 }
@@ -3928,6 +3932,7 @@ async function runCalc(url, body, build) {
     els.calcResultMain.textContent = view.main;
     els.calcResultDetail.textContent = view.detail || '';
     els.calcResultNote.textContent = view.note || data.note || '';
+    els.calcResult.dataset.level = view.level || '';
     els.calcResult.hidden = false;
     setCalcStatus('');
   } catch (err) {
@@ -3993,6 +3998,72 @@ function submitChads(event) {
       main: `评分 ${data.score} / 9`,
       detail: `风险分层：${data.risk}`,
       note: data.note,
+    })
+  );
+}
+
+const PHQ9_QUESTIONS = [
+  '做事时提不起劲或没有兴趣',
+  '感到心情低落、沮丧或绝望',
+  '入睡困难、睡不安稳或睡得过多',
+  '感觉疲倦或没有活力',
+  '食欲不振或吃太多',
+  '觉得自己很糟，或觉得自己很失败，或让自己/家人失望',
+  '对事物专注有困难，例如看报纸或看电视时',
+  '动作或说话速度缓慢到别人已经察觉，或正好相反——烦躁或坐立不安、动来动去',
+  '有不如死掉或用某种方式伤害自己的念头',
+];
+
+const PHQ9_OPTIONS = [
+  ['0', '完全不会'],
+  ['1', '几天'],
+  ['2', '一半以上天数'],
+  ['3', '几乎每天'],
+];
+
+function ensurePhq9Form() {
+  if (els.calcPhq9Questions.children.length) return;
+
+  PHQ9_QUESTIONS.forEach((question, index) => {
+    const label = document.createElement('label');
+    label.className = 'calc-field phq9-question';
+
+    const text = document.createElement('span');
+    text.textContent = `${index + 1}. ${question}`;
+
+    const select = document.createElement('select');
+    select.className = 'phq9-select';
+    select.dataset.index = String(index);
+    for (const [value, optionLabel] of PHQ9_OPTIONS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = optionLabel;
+      select.appendChild(option);
+    }
+
+    label.append(text, select);
+    els.calcPhq9Questions.appendChild(label);
+  });
+}
+
+function submitPhq9(event) {
+  event.preventDefault();
+  ensurePhq9Form();
+  const answers = Array.from(
+    els.calcPhq9Questions.querySelectorAll('select')
+  ).map((select) => Number(select.value));
+
+  runCalc(
+    '/api/tools/phq9',
+    { answers },
+    (data) => ({
+      title: 'PHQ-9 结果',
+      main: `评分 ${data.score} / 27`,
+      detail:
+        `严重程度：${data.severity}`
+        + (data.self_harm ? ' · 第 9 题提示需要立即获得专业帮助' : ''),
+      note: data.note,
+      level: data.urgent ? 'warning' : '',
     })
   );
 }
@@ -4805,6 +4876,7 @@ els.calcFormBmi.addEventListener('submit', submitBmi);
 els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
+els.calcFormPhq9.addEventListener('submit', submitPhq9);
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));

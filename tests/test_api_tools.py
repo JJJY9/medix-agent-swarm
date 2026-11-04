@@ -152,3 +152,33 @@ def test_curb65_api_validates_ranges(client):
 
     assert below_adult.status_code == 422
     assert negative_urea.status_code == 422
+
+
+def test_phq9_api(client):
+    response = client.post(
+        "/api/tools/phq9",
+        json={"answers": [0] * 7 + [5 // 3, 0]},
+    )
+    self_harm = client.post(
+        "/api/tools/phq9",
+        json={"answers": [0] * 8 + [2]},
+    )
+    invalid_length = client.post(
+        "/api/tools/phq9",
+        json={"answers": [0] * 8},
+    )
+    invalid_value = client.post(
+        "/api/tools/phq9",
+        json={"answers": [0] * 8 + [4]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["score"] == 1
+    assert response.json()["severity"] == "无或极轻"
+
+    assert self_harm.status_code == 200
+    assert self_harm.json()["urgent"] is True
+    assert self_harm.json()["self_harm"] is True
+
+    assert invalid_length.status_code == 422
+    assert invalid_value.status_code == 400

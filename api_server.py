@@ -142,6 +142,10 @@ class Curb65Request(BaseModel):
     diastolic_bp: float = Field(..., ge=0, le=200, description="舒张压（mmHg）")
 
 
+class Phq9Request(BaseModel):
+    answers: List[int] = Field(..., min_length=9, max_length=9)
+
+
 class MetricRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal["bp", "weight", "glucose", "temperature"]
@@ -875,6 +879,18 @@ async def tool_curb65(request: Curb65Request):
             request.diastolic_bp,
         ),
     }
+
+
+@app.post("/api/tools/phq9")
+async def tool_phq9(request: Phq9Request):
+    """PHQ-9 抑郁筛查评分；第 9 题阳性时标记 urgent。"""
+    from core.clinical_tools import calculate_phq9
+
+    try:
+        result = calculate_phq9(request.answers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
 
 
 @app.get("/api/sessions/{session_id}/messages")

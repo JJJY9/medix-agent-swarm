@@ -1,9 +1,12 @@
 """临床计算工具的单元测试。"""
+import pytest
+
 from core.clinical_tools import (
     calculate_bmi,
     calculate_chads_vasc,
     calculate_curb65,
     calculate_egfr,
+    calculate_phq9,
 )
 
 
@@ -119,3 +122,30 @@ def test_curb65_all_criteria_high_risk():
     assert result["risk"] == "高危"
     assert len(result["criteria"]) == 5
     assert "低血压（收缩压 < 90 或舒张压 ≤ 60 mmHg）" in result["criteria"]
+
+
+def test_phq9_severity_thresholds():
+    assert calculate_phq9([0] * 9)["severity"] == "无或极轻"
+    assert calculate_phq9([1] * 4 + [0] * 5)["severity"] == "无或极轻"
+    assert calculate_phq9([1] * 5 + [0] * 4)["severity"] == "轻度"
+    assert calculate_phq9([2] * 5 + [0] * 4)["severity"] == "中度"
+    assert calculate_phq9([3] * 5 + [0] * 4)["severity"] == "中重度"
+    assert calculate_phq9([3] * 7 + [0] * 2)["severity"] == "重度"
+
+
+def test_phq9_self_harm_flag():
+    result = calculate_phq9([0] * 8 + [1])
+
+    assert result["score"] == 1
+    assert result["self_harm"] is True
+    assert result["urgent"] is True
+    assert "自伤" in result["note"]
+
+
+def test_phq9_validation():
+    with pytest.raises(ValueError):
+        calculate_phq9([0] * 8)
+    with pytest.raises(ValueError):
+        calculate_phq9([0] * 8 + [4])
+    with pytest.raises(ValueError):
+        calculate_phq9([0] * 8 + [True])
