@@ -106,3 +106,13 @@ def test_process_subtask_passes_patient_context_to_workers():
     assert result == {"answer": "ok"}
     assert captured["question"] == "分析头痛"
     assert captured["context"] == {"age": 38, "sex": "女"}
+
+
+def test_format_context_labels_recent_metrics_and_reminders():
+    text = format_context({
+        "recent_metrics": "血压 128/82（11-04）",
+        "pending_reminders": "复查（11-10）",
+    })
+
+    assert "近期健康指标：血压 128/82（11-04）" in text
+    assert "待办随访提醒：复查（11-10）" in text

@@ -11,6 +11,8 @@ CONTEXT_LABELS = {
     "history": "既往病史",
     "medications": "正在使用的药物",
     "allergies": "过敏史",
+    "recent_metrics": "近期健康指标",
+    "pending_reminders": "待办随访提醒",
 }
 
 #: 由记忆系统注入的内部字段，不写入患者的公开上下文
