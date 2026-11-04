@@ -119,3 +119,13 @@ def test_app_js_draws_metric_target_line(client):
     assert "trend-target" in app_js
     assert "目标 " in app_js
     assert ".trend-target" in css
+
+
+def test_app_js_ships_custom_starters(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "function addCustomStarter" in app_js
+    assert "medix.customStarters" in app_js
+    assert "starter-add" in app_js
+    assert ".starter-wrap" in css

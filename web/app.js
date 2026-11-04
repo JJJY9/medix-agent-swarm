@@ -8,6 +8,7 @@ const els = {
   thread: document.getElementById('thread'),
   empty: document.getElementById('empty-state'),
   starters: document.getElementById('starters'),
+  starterAdd: document.getElementById('starter-add'),
   composer: document.getElementById('composer'),
   input: document.getElementById('input'),
   skipLink: document.getElementById('skip-link'),
@@ -7720,12 +7721,99 @@ els.thread.addEventListener('touchmove', () => {
   userPausedFollow = true;
 }, { passive: true });
 
+/* ---------- 自定义常用问题（保存在浏览器本地） ---------- */
+
+const CUSTOM_STARTERS_KEY = 'medix.customStarters';
+const MAX_CUSTOM_STARTERS = 8;
+let customStarters = [];
+
+function loadCustomStartersFromStorage() {
+  try {
+    const raw = JSON.parse(
+      localStorage.getItem(CUSTOM_STARTERS_KEY) || '[]'
+    );
+    customStarters = Array.isArray(raw)
+      ? raw
+        .filter((item) => typeof item === 'string' && item.trim())
+        .map((item) => item.trim().slice(0, 60))
+        .slice(0, MAX_CUSTOM_STARTERS)
+      : [];
+  } catch {
+    customStarters = [];
+  }
+}
+
+function persistCustomStarters() {
+  try {
+    localStorage.setItem(
+      CUSTOM_STARTERS_KEY, JSON.stringify(customStarters)
+    );
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
+}
+
+function renderCustomStarters() {
+  if (!els.starters) return;
+  els.starters.querySelectorAll('.starter-wrap').forEach((el) => el.remove());
+  customStarters.forEach((text, index) => {
+    const wrap = document.createElement('span');
+    wrap.className = 'starter-wrap';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'starter';
+    btn.textContent = text;
+    btn.dataset.q = text;
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'starter-remove';
+    del.textContent = '×';
+    del.title = '删除这条常用问题';
+    del.setAttribute('aria-label', `删除常用问题：${text}`);
+    del.addEventListener('click', () => {
+      customStarters.splice(index, 1);
+      persistCustomStarters();
+      renderCustomStarters();
+    });
+
+    wrap.append(btn, del);
+    els.starters.appendChild(wrap);
+  });
+}
+
+function addCustomStarter() {
+  let text = (els.input.value || '').trim();
+  if (!text) {
+    text = (window.prompt('输入要保存的常用问题') || '').trim();
+  }
+  if (!text) return;
+  text = text.slice(0, 60);
+
+  if (customStarters.includes(text)) {
+    setVitals('idle', '这条问题已在常用中');
+    return;
+  }
+  if (customStarters.length >= MAX_CUSTOM_STARTERS) {
+    setVitals('warn', `最多保存 ${MAX_CUSTOM_STARTERS} 条常用问题`);
+    return;
+  }
+  customStarters.push(text);
+  persistCustomStarters();
+  renderCustomStarters();
+  setVitals('idle', '已添加常用问题');
+}
+
 els.starters.addEventListener('click', (e) => {
   const btn = e.target.closest('.starter');
   if (!btn) return;
   els.empty.hidden = true;
   send(btn.dataset.q);
 });
+els.starterAdd.addEventListener('click', addCustomStarter);
+loadCustomStartersFromStorage();
+renderCustomStarters();
 
 resetRail();
 initTheme();
