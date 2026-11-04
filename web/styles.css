@@ -421,6 +421,48 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   letter-spacing: 0.05em;
 }
 
+.home-glance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+  text-align: left;
+}
+.home-glance[hidden] { display: none; }
+
+.home-glance-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.home-glance-card:hover {
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
+.home-glance-label {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.home-glance-value {
+  font-size: 14px;
+}
+
+.home-glance-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
 .starters {
   display: flex;
   flex-direction: column;

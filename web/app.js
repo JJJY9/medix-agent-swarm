@@ -297,6 +297,9 @@ const els = {
   remindersOverdueOnly: document.getElementById('reminders-overdue-only'),
   remindersCalendarToday: document.getElementById('reminders-calendar-today'),
   remindersSearch: document.getElementById('reminders-search'),
+  homeGlance: document.getElementById('home-glance'),
+  homeGlanceReminders: document.getElementById('home-glance-reminders'),
+  homeGlanceMetrics: document.getElementById('home-glance-metrics'),
   remindersCalendar: document.getElementById('reminders-calendar'),
   remindersCalendarToggle: document.getElementById('reminders-calendar-toggle'),
   remindersCalendarTitle: document.getElementById('reminders-calendar-title'),
@@ -5877,6 +5880,7 @@ async function refreshMetrics() {
   await loadMetricSummary();
   await loadMetricWeekly();
   await loadMetricOverview();
+  loadHomeGlance();
 }
 
 function metricRangeDays() {
@@ -6553,6 +6557,90 @@ function maybeNotifyDueReminders(items) {
   }
 }
 
+function homeGlanceLine(label, value, sub) {
+  const parts = [];
+  const head = document.createElement('span');
+  head.className = 'home-glance-label';
+  head.textContent = label;
+  const main = document.createElement('strong');
+  main.className = 'home-glance-value';
+  main.textContent = value;
+  const extra = document.createElement('span');
+  extra.className = 'home-glance-sub';
+  extra.textContent = sub;
+  parts.push(head, main, extra);
+  return parts;
+}
+
+function renderHomeGlance(reminders, metrics) {
+  if (!els.homeGlance) return;
+
+  const pending = (reminders || []).filter((item) => !item.done);
+  const overdue = pending.filter(
+    (item) => Number(reminderDaysUntil(item.due_at)) < 0
+  ).length;
+  const upcoming = pending
+    .filter((item) => {
+      const days = reminderDaysUntil(item.due_at);
+      return days !== null && days >= 0;
+    })
+    .sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)));
+
+  let reminderValue = '暂无待办提醒';
+  let reminderSub = '点击打开随访提醒';
+  if (overdue > 0) {
+    reminderValue = `${overdue} 条已逾期`;
+    reminderSub = upcoming.length
+      ? `下一条：${formatReminderDue(upcoming[0].due_at)}`
+      : '点击打开随访提醒';
+  } else if (upcoming.length) {
+    reminderValue = `下一条：${formatReminderDue(upcoming[0].due_at)}`;
+    reminderSub = upcoming[0].title || '点击打开随访提醒';
+  }
+
+  const latest = {};
+  for (const item of metrics || []) {
+    if (!latest[item.metric]) latest[item.metric] = item;
+  }
+  const metricTypes = [
+    'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
+    'waist', 'phq9', 'gad7',
+  ];
+  const recent = metricTypes
+    .filter((metric) => latest[metric])
+    .slice(0, 3)
+    .map((metric) => `${METRIC_NAMES[metric]} ${formatMetricValue(latest[metric])}`);
+  const metricValue = recent.length ? recent.join(' · ') : '暂无健康记录';
+  const metricSub = recent.length ? '点击打开健康记录' : '点击录入第一条记录';
+
+  els.homeGlanceReminders.replaceChildren(
+    ...homeGlanceLine('随访提醒', reminderValue, reminderSub)
+  );
+  els.homeGlanceMetrics.replaceChildren(
+    ...homeGlanceLine('健康记录', metricValue, metricSub)
+  );
+  els.homeGlance.hidden = false;
+}
+
+async function loadHomeGlance() {
+  if (!els.homeGlance) return;
+  try {
+    const [remindersRes, metricsRes] = await Promise.all([
+      fetch('/api/reminders'),
+      fetch('/api/metrics?limit=20'),
+    ]);
+    const reminders = remindersRes.ok
+      ? (await remindersRes.json()).reminders || []
+      : [];
+    const metrics = metricsRes.ok
+      ? (await metricsRes.json()).metrics || []
+      : [];
+    renderHomeGlance(reminders, metrics);
+  } catch {
+    els.homeGlance.hidden = true;
+  }
+}
+
 async function loadReminders() {
   const requestSeq = ++remindersRequestSeq;
   try {
@@ -6571,8 +6659,9 @@ async function loadReminders() {
     const data = await res.json();
     if (requestSeq !== remindersRequestSeq) return;
     reminderItemsCache = data.reminders || [];
-    refreshReminderViews();
+    renderFilteredReminders();
     refreshReminderBadge();
+    loadHomeGlance();
   } catch (err) {
     if (requestSeq !== remindersRequestSeq) return;
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
@@ -8803,6 +8892,7 @@ if (els.voiceToggle) {
 }
 setupVoiceInput();
 refreshReminderBadge();
+loadHomeGlance();
 syncNotifyButton();
 
 els.newSession.addEventListener('click', startNewSession);
@@ -9030,6 +9120,12 @@ els.metricTargetValue2.addEventListener('keydown', (event) => {
   }
 });
 els.metricAdd.addEventListener('click', addMetricRecord);
+els.homeGlanceReminders.addEventListener('click', () => {
+  openReminders();
+});
+els.homeGlanceMetrics.addEventListener('click', () => {
+  openMetrics();
+});
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
   els.metricsMore.disabled = true;
