@@ -1316,6 +1316,52 @@ async def export_medications_csv(
     )
 
 
+@app.get("/api/medications/logs/export.csv")
+async def export_medication_logs_csv(
+    profile: Optional[str] = None,
+    days: int = 0,
+):
+    """导出用药打卡记录 CSV（带 BOM），可按档案与最近天数筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    logs = await asyncio.to_thread(
+        get_session_store().list_medication_logs,
+        None,
+        profile,
+        100000,
+        0,
+        days,
+    )
+    rows = [["药物名称", "剂量", "服用时间", "患者档案", "备注"]]
+    for item in logs:
+        rows.append([
+            csv_safe_cell(item.get("medication_name", "")),
+            csv_safe_cell(item.get("medication_dose", "")),
+            csv_safe_cell(item.get("taken_at", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("note", "")),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "\ufeff" + buffer.getvalue()
+    filename = (
+        f"medix-medication-logs-{datetime.now().strftime('%Y%m%d')}.csv"
+    )
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.post("/api/medications/import")
 async def import_medications_csv(file: UploadFile = File(...)):
     """从导出的 CSV 格式导入用药清单，重复记录自动跳过。"""
@@ -1469,6 +1515,7 @@ async def list_medication_logs(
     medication_id: int,
     limit: int = 100,
     offset: int = 0,
+    days: int = 0,
 ):
     """某个药物的到药记录（按服用时间倒序）。"""
     from memory import get_session_store
@@ -1485,6 +1532,7 @@ async def list_medication_logs(
         None,
         limit,
         offset,
+        days,
     )
     return {"logs": logs}
 

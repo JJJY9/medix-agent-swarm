@@ -400,6 +400,7 @@ const els = {
   medicationStatusFilter: document.getElementById('medication-status-filter'),
   medicationEmpty: document.getElementById('medication-empty'),
   medicationExport: document.getElementById('medication-export'),
+  medicationLogsExport: document.getElementById('medication-logs-export'),
   medicationImport: document.getElementById('medication-import'),
   medicationImportFile: document.getElementById('medication-import-file'),
   calcInteractionsLoad: document.getElementById('calc-interactions-load'),
@@ -4929,11 +4930,24 @@ const AUDIT_LABELS = {
   'profile.delete': '删除患者档案',
   'profile.rename': '重命名患者档案',
   'metric.delete': '删除健康记录',
+  'metric.import': '导入健康记录',
+  'symptom.create': '添加症状记录',
+  'symptom.update': '修改症状记录',
+  'symptom.delete': '删除症状记录',
+  'symptom.import': '导入症状记录',
+  'medication.create': '添加药物',
+  'medication.update': '修改药物',
+  'medication.delete': '删除药物',
+  'medication.import': '导入用药清单',
+  'medication.log': '用药打卡',
+  'medication.log_delete': '撤销用药打卡',
   'reminder.create': '添加随访提醒',
   'reminder.complete': '完成随访提醒',
+  'reminder.reopen': '恢复随访提醒',
   'reminder.update': '修改随访提醒',
   'reminder.snooze': '推迟随访提醒',
   'reminder.delete': '删除随访提醒',
+  'reminder.import': '导入随访提醒',
 };
 
 function auditFilterParams(withLimit = true) {
@@ -7633,6 +7647,29 @@ async function exportMedicationsCsv() {
     setMedicationStatus('已导出用药清单 CSV。');
   } catch (err) {
     setMedicationStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+async function exportMedicationLogsCsv() {
+  const params = new URLSearchParams({ profile: els.metricProfile.value });
+  try {
+    const res = await fetch(
+      `/api/medications/logs/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-medication-logs-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setMedicationStatus('已导出用药打卡 CSV。');
+  } catch (err) {
+    setMedicationStatus(`导出打卡失败：${err.message || err}`, true);
   }
 }
 
@@ -10484,6 +10521,7 @@ els.metricAdd.addEventListener('click', addMetricRecord);
 els.symptomSave.addEventListener('click', saveSymptom);
 els.medicationSave.addEventListener('click', saveMedication);
 els.medicationExport.addEventListener('click', exportMedicationsCsv);
+els.medicationLogsExport.addEventListener('click', exportMedicationLogsCsv);
 els.medicationImport.addEventListener('click', () => {
   els.medicationImportFile.click();
 });

@@ -638,6 +638,23 @@ def test_app_js_ships_medication_intake_log(client):
     assert "已记录用药" in app_js
 
 
+def test_app_js_ships_medication_logs_export(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function exportMedicationLogsCsv" in app_js
+    assert "/api/medications/logs/export.csv" in app_js
+    assert 'id="medication-logs-export"' in html
+
+
+def test_app_js_ships_audit_labels_for_records(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "'medication.log': '用药打卡'" in app_js
+    assert "'symptom.create': '添加症状记录'" in app_js
+    assert "'reminder.import': '导入随访提醒'" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

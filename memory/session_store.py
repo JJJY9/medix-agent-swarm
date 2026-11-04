@@ -3025,8 +3025,9 @@ class SessionStore:
         profile: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        days: int = 0,
     ) -> List[Dict[str, Any]]:
-        """按服用时间倒序返回到药记录，可按药物与档案筛选。"""
+        """按服用时间倒序返回到药记录，可按药物、档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
         try:
             offset = max(0, int(offset or 0))
@@ -3044,12 +3045,22 @@ class SessionStore:
         if profile is not None:
             conditions.append("l.profile = ?")
             params.append(_normalize_profile_name(profile))
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("l.taken_at >= ?")
+            params.append(cutoff)
+            end_of_today = datetime.now().replace(
+                hour=23, minute=59, second=59
+            ).isoformat(timespec="seconds")
+            conditions.append("l.taken_at <= ?")
+            params.append(end_of_today)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
                 f"""
                 SELECT l.id, l.medication_id, l.profile, l.taken_at, l.note,
-                       l.created_at, m.name AS medication_name
+                       l.created_at, m.name AS medication_name,
+                       m.dose AS medication_dose
                   FROM medication_logs l
                   LEFT JOIN medications m ON m.id = l.medication_id{where}
                  ORDER BY l.taken_at DESC, l.id DESC
