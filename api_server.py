@@ -79,6 +79,10 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
+class UpdateDocumentRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
 # ===== 应用状态 =====
 
 class AppState:
@@ -641,13 +645,17 @@ async def knowledge_search(q: str = "", top_k: int = 5):
 
 
 @app.get("/api/knowledge/documents/{filename}/preview")
-async def knowledge_preview(filename: str):
-    """预览内置或上传文档的前 4000 个字符。"""
+async def knowledge_preview(filename: str, full: bool = False):
+    """预览内置或上传文档；full=1 时返回全文供编辑。"""
     from knowledge.service import get_knowledge_service
 
     service = get_knowledge_service()
     try:
-        result = await asyncio.to_thread(service.preview_document, filename)
+        result = await asyncio.to_thread(
+            service.preview_document,
+            filename,
+            None if full else 4000,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -657,6 +665,42 @@ async def knowledge_preview(filename: str):
     if not result:
         raise HTTPException(status_code=404, detail="文档不存在")
     return result
+
+
+@app.put("/api/knowledge/documents/{filename}")
+async def knowledge_update(
+    filename: str,
+    request: UpdateDocumentRequest,
+    rebuild: bool = True
+):
+    """在线更新上传的 TXT / Markdown 文档，可选立即重建索引。"""
+    from knowledge.service import get_knowledge_service
+
+    service = get_knowledge_service()
+    content = request.content.encode("utf-8")
+    try:
+        saved = await asyncio.to_thread(
+            service.update_document, filename, content
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("更新知识库文档失败")
+        raise HTTPException(status_code=500, detail=f"保存文档失败：{e}")
+
+    result = None
+    if rebuild:
+        async with state.lock:
+            try:
+                result = await asyncio.to_thread(service.rebuild)
+            except Exception as e:
+                logger.exception("更新后重建知识库失败")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"文档已保存，但重建索引失败：{e}",
+                )
+
+    return {"ok": True, "document": saved, "rebuild": result}
 
 
 @app.delete("/api/knowledge/documents/{filename}")

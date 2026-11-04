@@ -73,6 +73,10 @@ const els = {
   kbPreviewMeta: document.getElementById('kb-preview-meta'),
   kbPreviewBody: document.getElementById('kb-preview-body'),
   kbPreviewClose: document.getElementById('kb-preview-close'),
+  kbPreviewEdit: document.getElementById('kb-preview-edit'),
+  kbPreviewSave: document.getElementById('kb-preview-save'),
+  kbPreviewCancel: document.getElementById('kb-preview-cancel'),
+  kbPreviewEditor: document.getElementById('kb-preview-editor'),
   diagnose: document.getElementById('diagnose'),
   diagnoseDrawer: document.getElementById('diagnose-drawer'),
   diagnoseBackdrop: document.getElementById('diagnose-backdrop'),
@@ -2182,6 +2186,9 @@ async function exportHistory(item) {
 /* ---------- 知识库管理 ---------- */
 
 let kbFocused = null;
+let previewFilename = '';
+let previewEditable = false;
+let previewEditing = false;
 
 function setKbStatus(text, isError = false) {
   els.kbStatus.hidden = !text;
@@ -2251,14 +2258,36 @@ function renderKbDocuments(documents) {
   }
 }
 
+function exitKbPreviewEdit() {
+  previewEditing = false;
+  els.kbPreviewEditor.hidden = true;
+  els.kbPreviewBody.hidden = false;
+  els.kbPreviewSave.hidden = true;
+  els.kbPreviewCancel.hidden = true;
+  els.kbPreviewEdit.hidden = !previewEditable;
+  els.kbPreviewEdit.disabled = false;
+  els.kbPreviewEdit.textContent = '编辑';
+  els.kbPreviewSave.disabled = false;
+  els.kbPreviewSave.textContent = '保存';
+}
+
 function closeKbPreview() {
+  exitKbPreviewEdit();
+  previewFilename = '';
+  previewEditable = false;
   els.kbPreview.hidden = true;
   els.kbPreviewTitle.textContent = '文档预览';
   els.kbPreviewMeta.textContent = '';
   els.kbPreviewBody.textContent = '';
+  els.kbPreviewEditor.value = '';
+  els.kbPreviewEdit.hidden = true;
 }
 
 async function previewKbDocument(filename) {
+  exitKbPreviewEdit();
+  previewFilename = filename;
+  previewEditable = false;
+  els.kbPreviewEdit.hidden = true;
   els.kbPreview.hidden = false;
   els.kbPreviewTitle.textContent = filename;
   els.kbPreviewMeta.textContent = '正在读取…';
@@ -2283,8 +2312,92 @@ async function previewKbDocument(filename) {
     els.kbPreviewTitle.textContent = data.filename || filename;
     els.kbPreviewMeta.textContent = meta.join(' · ');
     els.kbPreviewBody.textContent = data.content || '（文档内容为空）';
+    previewFilename = data.filename || filename;
+    previewEditable = !data.builtin
+      && ['.txt', '.md', '.markdown'].includes(
+        String(data.suffix || '').toLowerCase()
+      );
+    els.kbPreviewEdit.hidden = !previewEditable;
   } catch (err) {
     els.kbPreviewMeta.textContent = `读取失败：${err.message || err}`;
+  }
+}
+
+async function startKbPreviewEdit() {
+  if (!previewEditable || previewEditing || !previewFilename) return;
+
+  const button = els.kbPreviewEdit;
+  button.disabled = true;
+  button.textContent = '读取中…';
+
+  try {
+    const res = await fetch(
+      `/api/knowledge/documents/${encodeURIComponent(previewFilename)}/preview?full=1`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    els.kbPreviewEditor.value = data.content || '';
+    previewEditing = true;
+    els.kbPreviewBody.hidden = true;
+    els.kbPreviewEditor.hidden = false;
+    els.kbPreviewEdit.hidden = true;
+    els.kbPreviewSave.hidden = false;
+    els.kbPreviewCancel.hidden = false;
+    els.kbPreviewEditor.focus();
+  } catch (err) {
+    els.kbPreviewMeta.textContent = `读取全文失败：${err.message || err}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = '编辑';
+  }
+}
+
+async function saveKbPreviewEdit() {
+  if (!previewEditing || !previewFilename) return;
+
+  const filename = previewFilename;
+  const content = els.kbPreviewEditor.value;
+  if (!content.trim()) {
+    setKbStatus('文档内容不能为空。', true);
+    return;
+  }
+  if (new Blob([content]).size > 5 * 1024 * 1024) {
+    setKbStatus('文件超过 5 MB 限制。', true);
+    return;
+  }
+
+  const button = els.kbPreviewSave;
+  button.disabled = true;
+  button.textContent = '保存中…';
+  setKbStatus('正在保存并重建索引…');
+
+  try {
+    const res = await fetch(
+      `/api/knowledge/documents/${encodeURIComponent(filename)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `保存失败（${res.status}）`);
+    if (!kbOpen || previewFilename !== filename) return;
+
+    const rebuild = data.rebuild || {};
+    setKbStatus(
+      `已保存 ${data.document?.filename || filename}。` +
+      `重建完成：${rebuild.documents || 0} 个文档、${rebuild.chunks || 0} 个向量块。`
+    );
+    exitKbPreviewEdit();
+    await loadKnowledge();
+    await previewKbDocument(filename);
+  } catch (err) {
+    setKbStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = '保存';
   }
 }
 
@@ -3214,6 +3327,9 @@ els.kbBackdrop.addEventListener('click', () => closeKb(true));
 els.kbUpload.addEventListener('click', () => uploadKbDocument());
 els.kbRebuild.addEventListener('click', rebuildKb);
 els.kbPreviewClose.addEventListener('click', closeKbPreview);
+els.kbPreviewEdit.addEventListener('click', startKbPreviewEdit);
+els.kbPreviewSave.addEventListener('click', saveKbPreviewEdit);
+els.kbPreviewCancel.addEventListener('click', exitKbPreviewEdit);
 els.kbSearchButton.addEventListener('click', searchKnowledgeBase);
 els.kbSearchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.isComposing) {

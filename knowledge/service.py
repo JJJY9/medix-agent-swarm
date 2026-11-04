@@ -122,8 +122,10 @@ class KnowledgeService:
         logger.info(f"Deleted knowledge upload: {safe_name}")
         return True
 
-    def preview_document(self, filename: str, max_chars: int = 4000) -> Optional[Dict[str, Any]]:
-        """读取文档前 max_chars 个字符，供知识库抽屉预览。"""
+    def preview_document(
+        self, filename: str, max_chars: Optional[int] = 4000
+    ) -> Optional[Dict[str, Any]]:
+        """读取文档内容，供知识库抽屉预览；max_chars 为 None 时返回全文。"""
         safe_name = self._safe_filename(filename)
         candidates = (self.upload_dir / safe_name, self.docs_dir / safe_name)
         path = next((candidate for candidate in candidates if candidate.is_file()), None)
@@ -139,6 +141,14 @@ class KnowledgeService:
             raise ValueError("文档内容为空或无法解析。")
 
         content = document["content"]
+        if max_chars is None:
+            preview = content
+            truncated = False
+        else:
+            max_chars = max(1, int(max_chars))
+            preview = content[:max_chars]
+            truncated = len(content) > max_chars
+
         return {
             "filename": path.name,
             "builtin": builtin,
@@ -146,10 +156,42 @@ class KnowledgeService:
             "suffix": path.suffix.lower(),
             "type": document["metadata"].get("type", ""),
             "source": document["metadata"].get("source", ""),
-            "content": content[:max_chars],
-            "truncated": len(content) > max_chars,
+            "content": preview,
+            "truncated": truncated,
             "total_length": len(content),
         }
+
+    def update_document(self, filename: str, content: bytes) -> Dict[str, Any]:
+        """在线更新上传的 TXT / Markdown 文档；内置文档与 PDF 不允许编辑。"""
+        safe_name = self._safe_filename(filename)
+        path = self.upload_dir / safe_name
+
+        with self._lock:
+            if not path.is_file():
+                if (self.docs_dir / safe_name).exists():
+                    raise ValueError("内置文档请通过仓库更新，不能在线编辑。")
+                raise ValueError("文档不存在。")
+
+            suffix = path.suffix.lower()
+            if suffix not in {".txt", ".md", ".markdown"}:
+                raise ValueError("仅支持在线编辑 TXT / Markdown 文档。")
+            if not content:
+                raise ValueError("文件内容为空。")
+            if len(content) > MAX_UPLOAD_BYTES:
+                raise ValueError("文件超过 5 MB 限制。")
+
+            original = path.read_bytes()
+            path.write_bytes(content)
+            try:
+                document = load_document(path)
+                if not document:
+                    raise ValueError("文档内容为空或无法解析。")
+            except Exception:
+                path.write_bytes(original)
+                raise
+
+        logger.info(f"Updated knowledge upload: {path.name} ({len(content)} bytes)")
+        return {"filename": path.name, "size": len(content)}
 
     def search(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         """执行一次知识库检索，返回来源卡片，用于管理页的检索测试。"""
