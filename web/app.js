@@ -5623,10 +5623,7 @@ function todayLocalDate() {
 }
 
 function defaultReminderDue() {
-  const now = new Date();
-  now.setDate(now.getDate() + 7);
-  const offset = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+  return localDateAfter(7);
 }
 
 function resetReminderForm() {
@@ -5698,12 +5695,57 @@ function reminderIsDue(dueAt) {
   return String(dueAt || '').slice(0, 10) <= todayLocalDate();
 }
 
+function localDateAfter(days) {
+  const now = new Date();
+  now.setDate(now.getDate() + Number(days || 0));
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function reminderGroupOf(item) {
+  if (item.done) return 'done';
+  const due = String(item.due_at || '').slice(0, 10);
+  const today = todayLocalDate();
+  if (due < today) return 'overdue';
+  if (due === today) return 'today';
+  return due <= localDateAfter(7) ? 'soon' : 'later';
+}
+
+const REMINDER_GROUP_LABELS = {
+  overdue: '已逾期',
+  today: '今天到期',
+  soon: '未来 7 天',
+  later: '更晚',
+  done: '已完成',
+};
+
 function renderReminders(items) {
   els.remindersList.replaceChildren();
   els.remindersEmpty.hidden = items.length > 0;
 
   let dueCount = 0;
+  const groupCounts = {};
   for (const item of items) {
+    const key = reminderGroupOf(item);
+    groupCounts[key] = (groupCounts[key] || 0) + 1;
+  }
+
+  let lastGroup = null;
+  for (const item of items) {
+    const group = reminderGroupOf(item);
+    if (group !== lastGroup) {
+      lastGroup = group;
+      const head = document.createElement('li');
+      head.className = 'reminder-group-head';
+      head.setAttribute('role', 'presentation');
+      const label = document.createElement('span');
+      label.textContent = REMINDER_GROUP_LABELS[group] || '';
+      const count = document.createElement('span');
+      count.className = 'reminder-group-count';
+      count.textContent = `${groupCounts[group]} 条`;
+      head.append(label, count);
+      els.remindersList.appendChild(head);
+    }
     const due = !item.done && reminderIsDue(item.due_at);
     if (due) dueCount += 1;
 

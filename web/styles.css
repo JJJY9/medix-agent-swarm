@@ -2979,6 +2979,27 @@ html[data-theme="dark"] .reminders-due-hint {
   background: var(--clinic-soft);
 }
 
+.reminder-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin: 12px 0 2px;
+  padding: 0 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  list-style: none;
+}
+
+.reminder-group-head:first-child {
+  margin-top: 0;
+}
+
+.reminder-group-count {
+  font-weight: 500;
+}
+
 .metric-stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
