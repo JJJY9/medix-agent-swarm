@@ -1882,6 +1882,25 @@ function renderHistoryItems(sessions, summary, append = false) {
     exportBtn.setAttribute('aria-label', `导出：${item.title || '未命名会诊'}`);
     exportBtn.addEventListener('click', () => exportHistory(item));
 
+    const copyLink = document.createElement('button');
+    copyLink.type = 'button';
+    copyLink.className = 'history-action';
+    copyLink.textContent = '链接';
+    copyLink.title = '复制这次会诊的直达链接';
+    copyLink.setAttribute(
+      'aria-label',
+      `复制链接：${item.title || '未命名会诊'}`
+    );
+    copyLink.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const url = new URL('/', window.location.origin);
+      url.searchParams.set('session', item.id);
+      const ok = await copyText(url.href);
+      els.historyActionStatus.textContent = ok
+        ? '已复制会诊链接'
+        : '复制链接失败';
+    });
+
     const archive = document.createElement('button');
     archive.type = 'button';
     archive.className = 'history-action';
@@ -1904,7 +1923,7 @@ function renderHistoryItems(sessions, summary, append = false) {
     del.setAttribute('aria-label', `删除：${item.title || '未命名会诊'}`);
     del.addEventListener('click', () => deleteHistory(item));
 
-    actions.append(favorite, rename, exportBtn, archive, del);
+    actions.append(favorite, rename, exportBtn, copyLink, archive, del);
     li.append(open, actions);
     els.historyList.appendChild(li);
   }
