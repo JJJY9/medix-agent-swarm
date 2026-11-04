@@ -1842,21 +1842,45 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
 
     days = max(1, min(int(days or 7), 90))
     store = get_session_store()
-    metrics = await asyncio.to_thread(
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (
+        datetime.now() - timedelta(days=days - 1)
+    ).strftime("%Y-%m-%d")
+    raw_metrics = await asyncio.to_thread(
         store.list_metrics, profile, None, 100000, days
     )
-    symptoms = await asyncio.to_thread(
+    metrics = [
+        item for item in raw_metrics
+        if start <= str(item.get("measured_at") or "")[:10] <= end
+    ]
+    raw_symptoms = await asyncio.to_thread(
         store.list_symptoms, profile, 100000, days
     )
+    symptoms = [
+        item for item in raw_symptoms
+        if start <= str(item.get("recorded_at") or "")[:10] <= end
+    ]
     medications = await asyncio.to_thread(
         store.list_medications, profile, False, 100000
     )
-    logs = await asyncio.to_thread(
+    raw_logs = await asyncio.to_thread(
         store.list_medication_logs, None, profile, 100000, 0, days
     )
-    reminders = await asyncio.to_thread(
-        store.list_reminders, False, profile
+    logs = [
+        item for item in raw_logs
+        if start <= str(item.get("taken_at") or "")[:10] <= end
+    ]
+    pending_reminders = await asyncio.to_thread(
+        store.list_reminders, False, None
     )
+    if profile is not None:
+        profile_key = str(profile).strip()
+        reminders = [
+            item for item in pending_reminders
+            if (item.get("profile") or "") == profile_key
+        ]
+    else:
+        reminders = pending_reminders
 
     grouped: dict = {}
     for item in metrics:
@@ -1936,10 +1960,6 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         elif due <= horizon:
             due_soon += 1
 
-    end = datetime.now().strftime("%Y-%m-%d")
-    start = (
-        datetime.now() - timedelta(days=days - 1)
-    ).strftime("%Y-%m-%d")
     return {
         "profile": profile or "",
         "days": days,

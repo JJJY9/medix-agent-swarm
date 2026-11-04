@@ -3948,7 +3948,7 @@ async function importHistoryBackup() {
         loadSymptoms();
         if (result.medications || result.medication_logs) loadMedications();
         if (result.medication_logs) loadMedicationLogs();
-        loadHomeGlance();
+        refreshOverview();
       }
       await loadQualityInsights();
     } catch (err) {
@@ -5193,6 +5193,7 @@ let metricWeeklyRequestSeq = 0;
 let metricsOffset = 0;
 let metricItemsCache = [];
 let homeGlanceRequestSeq = 0;
+let weeklySummaryRequestSeq = 0;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -6981,6 +6982,11 @@ async function loadHomeGlance() {
   }
 }
 
+function refreshOverview() {
+  loadHomeGlance();
+  loadWeeklySummary();
+}
+
 async function loadReminders() {
   const requestSeq = ++remindersRequestSeq;
   try {
@@ -7001,7 +7007,7 @@ async function loadReminders() {
     reminderItemsCache = data.reminders || [];
     refreshReminderViews();
     refreshReminderBadge();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     if (requestSeq !== remindersRequestSeq) return;
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
@@ -7416,69 +7422,88 @@ async function scheduleMedicationReminder(item) {
 }
 
 async function scheduleAllMedicationReminders() {
+  if (medicationReminderBusy) return;
   const active = medicationItemsCache.filter((item) => item.active);
   if (!active.length) {
     setMedicationStatus('用药清单中没有在用药物。', true);
     return;
   }
-  let reminders = [];
+  medicationReminderBusy = true;
+  if (els.medicationReminders) els.medicationReminders.disabled = true;
   try {
-    const res = await fetch('/api/reminders');
-    if (res.ok) reminders = (await res.json()).reminders || [];
-  } catch {
-    reminders = [];
-  }
-  if (!window.confirm(
-    `为 ${active.length} 种在用药物各创建一条用药提醒？`
-    + '已存在或频次无法识别的会跳过。'
-  )) {
-    return;
-  }
-  let created = 0;
-  let skipped = 0;
-  let invalid = 0;
-  let failed = 0;
-  for (const item of active) {
-    const repeatDays = frequencyRepeatDays(item.frequency);
-    if (!repeatDays) {
-      invalid += 1;
-      continue;
-    }
-    const title = `用药：${item.name}`;
-    const exists = reminders.some((reminder) => (
-      !reminder.done
-      && reminder.title === title
-      && (reminder.profile || '') === (item.profile || '')
-    ));
-    if (exists) {
-      skipped += 1;
-      continue;
-    }
+    let reminders = null;
     try {
-      const res = await fetch('/api/reminders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          note: [item.dose, item.frequency].filter(Boolean).join(' · '),
-          due_at: localDateAfter(0),
-          profile: item.profile || '',
-          advance_days: 0,
-          repeat_days: repeatDays,
-        }),
-      });
+      const res = await fetch('/api/reminders');
       if (!res.ok) throw new Error(`服务返回 ${res.status}`);
-      created += 1;
-    } catch {
-      failed += 1;
+      reminders = (await res.json()).reminders || [];
+    } catch (err) {
+      setMedicationStatus(
+        `读取现有提醒失败：${err.message || err}`, true
+      );
+      return;
     }
+    if (!window.confirm(
+      `为 ${active.length} 种在用药物各创建一条用药提醒？`
+      + '已存在或频次无法识别的会跳过。'
+    )) {
+      return;
+    }
+    let created = 0;
+    let skipped = 0;
+    let invalid = 0;
+    let failed = 0;
+    for (const item of active) {
+      const repeatDays = frequencyRepeatDays(item.frequency);
+      if (!repeatDays) {
+        invalid += 1;
+        continue;
+      }
+      const title = `用药：${item.name}`;
+      const exists = reminders.some((reminder) => (
+        !reminder.done
+        && reminder.title === title
+        && (reminder.profile || '') === (item.profile || '')
+      ));
+      if (exists) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const res = await fetch('/api/reminders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title,
+            note: [item.dose, item.frequency].filter(Boolean).join(' · '),
+            due_at: localDateAfter(0),
+            profile: item.profile || '',
+            advance_days: 0,
+            repeat_days: repeatDays,
+          }),
+        });
+        if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+        reminders.push({
+          title,
+          profile: item.profile || '',
+          done: false,
+        });
+        created += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    const parts = [`已创建 ${created} 条用药提醒`];
+    if (skipped) parts.push(`跳过 ${skipped} 条已存在`);
+    if (invalid) parts.push(`${invalid} 条频次无法识别`);
+    if (failed) parts.push(`${failed} 条创建失败`);
+    setMedicationStatus(
+      parts.join('，') + '。', created === 0 && failed > 0
+    );
+    if (created) refreshOverview();
+  } finally {
+    medicationReminderBusy = false;
+    if (els.medicationReminders) els.medicationReminders.disabled = false;
   }
-  const parts = [`已创建 ${created} 条用药提醒`];
-  if (skipped) parts.push(`跳过 ${skipped} 条已存在`);
-  if (invalid) parts.push(`${invalid} 条频次无法识别`);
-  if (failed) parts.push(`${failed} 条创建失败`);
-  setMedicationStatus(parts.join('，') + '。', created === 0 && failed > 0);
-  if (created) loadHomeGlance();
 }
 
 let editingSymptomId = null;
@@ -7714,7 +7739,7 @@ async function importSymptomsCsv(file) {
     setSymptomStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await loadSymptoms();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setSymptomStatus(`导入失败：${err.message || err}`, true);
   } finally {
@@ -7818,7 +7843,7 @@ async function importMedicationsCsv(file) {
     if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
     setMedicationStatus(parts.join('，') + '。', data.imported === 0);
     await loadMedications();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`导入失败：${err.message || err}`, true);
   } finally {
@@ -7878,7 +7903,7 @@ async function saveSymptom() {
     resetSymptomForm();
     setSymptomStatus(editingId ? '已保存修改。' : '已记录症状。');
     await loadSymptoms();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setSymptomStatus(`保存失败：${err.message || err}`, true);
   } finally {
@@ -7895,7 +7920,7 @@ async function deleteSymptom(item) {
     if (editingSymptomId === item.id) resetSymptomForm();
     setSymptomStatus('已删除症状。');
     await loadSymptoms();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setSymptomStatus(`删除失败：${err.message || err}`, true);
   }
@@ -7905,9 +7930,11 @@ let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
+let medicationLogRequestSeq = 0;
 let medicationItemsCache = [];
 let medicationLogItemsCache = [];
 let medicationLogBusy = new Set();
+let medicationReminderBusy = false;
 
 function setMedicationStatus(text, isError = false) {
   if (!els.medicationStatus) return;
@@ -8138,6 +8165,7 @@ function renderMedicationLogs(items) {
 
 async function loadMedicationLogs() {
   if (!els.medicationLogList) return;
+  const requestSeq = ++medicationLogRequestSeq;
   const profile = els.metricProfile.value;
   try {
     const res = await fetch(
@@ -8145,6 +8173,7 @@ async function loadMedicationLogs() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    if (requestSeq !== medicationLogRequestSeq) return;
     medicationLogItemsCache = data.logs || [];
     renderMedicationLogs(medicationLogItemsCache);
   } catch {
@@ -8160,9 +8189,14 @@ async function deleteMedicationLogItem(item) {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
-    setMedicationStatus('已删除打卡记录。');
+    const reopenNote = await reopenLinkedMedicationReminder(
+      item.medication_name || '', item.profile || '', item.taken_at
+    );
+    setMedicationStatus(
+      '已删除打卡记录。' + (reopenNote ? ` ${reopenNote}` : '')
+    );
     await Promise.all([loadMedications(), loadMedicationLogs()]);
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`删除打卡记录失败：${err.message || err}`, true);
   }
@@ -8244,13 +8278,16 @@ function renderWeeklySummary(data) {
 
 async function loadWeeklySummary() {
   if (!els.weeklySummaryBody) return;
+  const requestSeq = ++weeklySummaryRequestSeq;
   const profile = els.metricProfile.value;
   try {
     const res = await fetch(
       `/api/reports/weekly?profile=${encodeURIComponent(profile)}`
     );
     if (!res.ok) return;
-    renderWeeklySummary(await res.json());
+    const data = await res.json();
+    if (requestSeq !== weeklySummaryRequestSeq) return;
+    renderWeeklySummary(data);
   } catch {
     // 小结加载失败不影响其他区块
   }
@@ -8273,7 +8310,7 @@ async function toggleMedication(item) {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     setMedicationStatus(item.active ? '已停用药物。' : '已启用药物。');
     await loadMedications();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`更新状态失败：${err.message || err}`, true);
   }
@@ -8285,12 +8322,20 @@ async function completeDueMedicationReminder(item) {
     if (!res.ok) return null;
     const reminders = (await res.json()).reminders || [];
     const title = `用药：${item.name}`;
-    const due = reminders.find((reminder) => {
+    const candidates = reminders.filter((reminder) => {
       if (reminder.done || reminder.title !== title) return false;
       if ((reminder.profile || '') !== (item.profile || '')) return false;
       const days = reminderDaysUntil(reminder.due_at);
       return days !== null && days >= -1 && days <= 0;
     });
+    const dose = String(item.dose || '').trim();
+    const due = (
+      dose
+        ? candidates.find(
+          (reminder) => String(reminder.note || '').includes(dose)
+        )
+        : null
+    ) || candidates[0];
     if (!due) return null;
     const completeRes = await fetch(`/api/reminders/${due.id}/complete`, {
       method: 'POST',
@@ -8300,6 +8345,29 @@ async function completeDueMedicationReminder(item) {
     return data.next && data.next.due_at
       ? `已完成今日用药提醒，下次：${formatReminderDue(data.next.due_at)}。`
       : '已完成今日用药提醒。';
+  } catch {
+    return null;
+  }
+}
+
+async function reopenLinkedMedicationReminder(name, profile, takenAt) {
+  if (String(takenAt || '').slice(0, 10) !== todayLocalDate()) return null;
+  try {
+    const res = await fetch('/api/reminders?include_done=true');
+    if (!res.ok) return null;
+    const reminders = (await res.json()).reminders || [];
+    const title = `用药：${name}`;
+    const done = reminders.find((reminder) => (
+      reminder.done
+      && reminder.title === title
+      && (reminder.profile || '') === (profile || '')
+      && String(reminder.due_at || '').slice(0, 10) === todayLocalDate()
+    ));
+    if (!done) return null;
+    const reopen = await fetch(`/api/reminders/${done.id}/reopen`, {
+      method: 'POST',
+    });
+    return reopen.ok ? '已恢复当天的用药提醒。' : null;
   } catch {
     return null;
   }
@@ -8326,7 +8394,7 @@ async function logMedication(item) {
     );
     await loadMedications();
     loadMedicationLogs();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`记录用药失败：${err.message || err}`, true);
   } finally {
@@ -8352,12 +8420,16 @@ async function undoMedicationLog(item) {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const reopenNote = await reopenLinkedMedicationReminder(
+      item.name, item.profile || '', logs[0].taken_at
+    );
     setMedicationStatus(
       `已撤销 ${formatTime(logs[0].taken_at)} 的用药记录。`
+      + (reopenNote ? ` ${reopenNote}` : '')
     );
     await loadMedications();
     loadMedicationLogs();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`撤销用药记录失败：${err.message || err}`, true);
   } finally {
@@ -8419,7 +8491,7 @@ async function saveMedication() {
     resetMedicationForm();
     setMedicationStatus(editingId ? '已保存修改。' : '已添加药物。');
     await loadMedications();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`保存失败：${err.message || err}`, true);
   } finally {
@@ -8439,7 +8511,7 @@ async function deleteMedication(item) {
     setMedicationStatus('已删除药物。');
     await loadMedications();
     loadMedicationLogs();
-    loadHomeGlance();
+    refreshOverview();
   } catch (err) {
     setMedicationStatus(`删除失败：${err.message || err}`, true);
   }
@@ -8447,9 +8519,11 @@ async function deleteMedication(item) {
 
 async function loadMedicationsIntoInteractions() {
   const profile = els.metricProfile.value || els.profileSelect.value || '';
+  const mainProfile = els.profileSelect.value || '';
   if (
     els.calcInteractionsAllergies
     && !els.calcInteractionsAllergies.value.trim()
+    && (!els.metricProfile.value || els.metricProfile.value === mainProfile)
   ) {
     const allergies = String(
       readPatientContext().allergies || ''

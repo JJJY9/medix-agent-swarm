@@ -124,3 +124,46 @@ def test_weekly_report_days_clamped(client_and_store):
     assert huge.json()["days"] == 90
     assert small.status_code == 200
     assert small.json()["days"] == 7
+
+
+def test_weekly_report_empty_profile_scopes_reminders(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/reminders", json={
+        "title": "未指定档案提醒", "due_at": "2026-11-06",
+    })
+    client.post("/api/reminders", json={
+        "profile": "母亲", "title": "妈妈提醒", "due_at": "2026-11-06",
+    })
+
+    scoped = client.get(
+        "/api/reports/weekly", params={"profile": ""}
+    ).json()
+    family = client.get("/api/reports/weekly").json()
+
+    assert scoped["reminders"]["pending"] == 1
+    assert family["reminders"]["pending"] == 2
+
+
+def test_weekly_report_uses_calendar_window(client_and_store):
+    client, _store = client_and_store
+    from datetime import time
+
+    now = datetime.now()
+    in_window = (now - timedelta(days=6)).isoformat(timespec="minutes")
+    old_date = (now - timedelta(days=7)).date()
+    out_window = datetime.combine(
+        old_date, time(23, 59)
+    ).isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "metric": "weight", "value1": 60, "measured_at": in_window,
+    })
+    client.post("/api/metrics", json={
+        "metric": "weight", "value1": 70, "measured_at": out_window,
+    })
+
+    report = client.get("/api/reports/weekly", params={"days": 7}).json()
+
+    assert report["metrics"]["count"] == 1
+    assert report["metrics"]["by_metric"][0]["avg_value1"] == 60.0
