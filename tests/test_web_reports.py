@@ -71,3 +71,10 @@ def test_app_js_ships_visit_summary(client):
     assert "function exportVisitSummary" in app_js
     assert "medix-visit-summary-" in app_js
     assert "visit-summary" in app_js
+
+
+def test_styles_keep_hidden_overrides(client):
+    css = client.get("/static/styles.css").text
+
+    assert ".reminder-count[hidden]" in css
+    assert ".metric-target-form[hidden]" in css
