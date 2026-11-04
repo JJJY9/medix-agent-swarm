@@ -656,6 +656,98 @@ function makeAction(label, onClick) {
   return btn;
 }
 
+/**
+ * 会诊意见反馈：同一按钮再次点击可取消。
+ * 必须带上 message_id 与所属 session_id，避免切换会话后写错记录。
+ */
+function renderFeedback(payload) {
+  const messageId = Number(payload.assistant_message_id);
+  const targetSession = payload.session_id || sessionId;
+  if (!messageId || !targetSession) return null;
+
+  const box = document.createElement('div');
+  box.className = 'note-feedback';
+
+  const label = document.createElement('span');
+  label.className = 'feedback-label';
+  label.textContent = '这条意见有帮助吗？';
+  box.appendChild(label);
+
+  const status = document.createElement('span');
+  status.className = 'feedback-status';
+  status.setAttribute('role', 'status');
+
+  let current = Number((payload.feedback && payload.feedback.rating) || 0);
+  const buttons = {};
+
+  const paint = () => {
+    for (const [rating, btn] of Object.entries(buttons)) {
+      const active = Number(rating) === current;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+  };
+
+  const submit = async (rating) => {
+    const next = current === rating ? 0 : rating;
+    const previous = current;
+    current = next;
+    paint();
+    Object.values(buttons).forEach((btn) => { btn.disabled = true; });
+
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(targetSession)}/feedback`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message_id: messageId,
+            rating: next,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `服务返回 ${res.status}`);
+      }
+      const data = await res.json();
+      current = Number(data.rating || 0);
+      payload.feedback = current
+        ? { rating: current, comment: data.comment || '' }
+        : null;
+      paint();
+      status.textContent = current === 1
+        ? '已标记有用，感谢反馈'
+        : current === -1
+        ? '已记录，我们会继续改进'
+        : '已取消反馈';
+    } catch (err) {
+      current = previous;
+      paint();
+      status.textContent = `反馈失败：${err.message || err}`;
+    } finally {
+      Object.values(buttons).forEach((btn) => { btn.disabled = false; });
+    }
+  };
+
+  for (const rating of [1, -1]) {
+    const btn = makeAction(rating === 1 ? '有用' : '待改进', () => submit(rating));
+    btn.classList.add('feedback-btn');
+    btn.dataset.rating = String(rating);
+    btn.setAttribute(
+      'aria-label',
+      rating === 1 ? '这条会诊意见有帮助' : '这条会诊意见需要改进'
+    );
+    buttons[rating] = btn;
+    box.appendChild(btn);
+  }
+
+  paint();
+  box.appendChild(status);
+  return box;
+}
+
 async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
@@ -1238,6 +1330,9 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
 
   note.appendChild(actions);
 
+  const feedback = renderFeedback(payload);
+  if (feedback) note.appendChild(feedback);
+
   turn.appendChild(note);
   els.thread.appendChild(turn);
   scrollThreadToBottom();
@@ -1595,6 +1690,12 @@ function renderHistorySummary(summary) {
   const summaryCost = estimateCost(summary.usage);
   if (summaryCost != null && totalTokens > 0) {
     parts.push(formatCost(summaryCost));
+  }
+
+  const feedback = summary.feedback;
+  if (feedback && feedback.total > 0) {
+    const rate = feedback.rate == null ? '—' : `${feedback.rate}%`;
+    parts.push(`反馈 ${feedback.total} 条 · 好评率 ${rate}`);
   }
 
   els.historySummary.textContent = parts.join(' · ');
@@ -1985,7 +2086,7 @@ function closeHistory(restoreFocus = false) {
   }
 }
 
-function renderStoredMessages(messages) {
+function renderStoredMessages(messages, activeSessionId = sessionId) {
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = messages.length > 0;
 
@@ -2018,6 +2119,9 @@ function renderStoredMessages(messages) {
           agent_contributions: metadata.agent_contributions || [],
           patient_context: metadata.patient_context || {},
           triage: metadata.triage || {},
+          assistant_message_id: message.id,
+          feedback: message.feedback || metadata.feedback || null,
+          session_id: activeSessionId,
           historical: true,
         },
         null,
@@ -2078,7 +2182,7 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
-    renderStoredMessages(data.messages || []);
+    renderStoredMessages(data.messages || [], id);
     setVitals('idle', '历史会诊');
     els.input.focus();
   } catch (err) {
@@ -2852,7 +2956,7 @@ async function restoreCurrentSession() {
     if (!messages.length) return;
 
     els.readout.session.textContent = shortSession(expectedSession);
-    renderStoredMessages(messages);
+    renderStoredMessages(messages, expectedSession);
     setVitals('idle', '已恢复上次会诊');
   } catch {
     // 服务未启动或尚无记录时保持空状态

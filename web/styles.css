@@ -740,6 +740,34 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   background: var(--clinic-soft);
 }
 
+/* 会诊意见反馈 */
+.note-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 18px 16px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.note-feedback .feedback-btn.is-active {
+  color: var(--clinic);
+  border-color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
+.note-feedback .feedback-btn[data-rating="-1"].is-active {
+  color: var(--triage-2);
+  border-color: var(--triage-2);
+  background: transparent;
+}
+
+.feedback-status {
+  min-height: 1em;
+  color: var(--ink-soft);
+}
+
 /* 各科室意见与参考来源 */
 .contributions,
 .sources {
@@ -2321,6 +2349,7 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .vitals-state { font-size: 12px; }
   .note-body { padding: 4px 14px 14px; }
   .note-actions { padding: 0 14px 14px; }
+  .note-feedback { padding: 0 14px 14px; }
   .advice, .disclaimer { margin-left: 14px; margin-right: 14px; }
   .contributions, .sources { margin-left: 14px; margin-right: 14px; }
   .risk { margin-left: 14px; }
@@ -2371,6 +2400,7 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .jump-latest,
   .footnote,
   .note-actions,
+  .note-feedback,
   .working,
   .drawer,
   .drawer-backdrop,

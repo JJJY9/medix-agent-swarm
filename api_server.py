@@ -84,6 +84,17 @@ class FavoriteRequest(BaseModel):
     favorite: bool
 
 
+class FeedbackRequest(BaseModel):
+    message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
+    rating: int = Field(
+        ...,
+        ge=-1,
+        le=1,
+        description="1 有用，-1 待改进，0 清除反馈",
+    )
+    comment: str = Field("", max_length=500, description="可选反馈备注")
+
+
 class UpdateDocumentRequest(BaseModel):
     content: str = Field(..., min_length=1)
 
@@ -347,12 +358,13 @@ async def list_sessions(
     favorites_only = bool(favorite)
 
     store = get_session_store()
-    sessions, total, totals = await asyncio.gather(
+    sessions, total, totals, feedback = await asyncio.gather(
         asyncio.to_thread(
             store.list_sessions, limit, query, offset, favorites_only, days
         ),
         asyncio.to_thread(store.count_sessions, query, favorites_only, days),
         asyncio.to_thread(store.usage_totals, query, favorites_only, days),
+        asyncio.to_thread(store.feedback_totals, query, favorites_only, days),
     )
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
@@ -366,6 +378,7 @@ async def list_sessions(
         "turns": totals["turns"],
         "llm_calls": totals["llm_calls"],
         "usage": totals["usage"],
+        "feedback": feedback,
     }
     for item in sessions:
         stat = stats.get(item["id"])
@@ -524,10 +537,12 @@ async def get_session_messages(session_id: str, limit: int = 50):
             "session_id": session_id,
             "messages": [
                 {
+                    "id": m.get("id"),
                     "role": m["role"],
                     "content": m["content"],
                     "timestamp": m["created_at"],
                     "metadata": m.get("metadata") or {},
+                    "feedback": (m.get("metadata") or {}).get("feedback"),
                 }
                 for m in stored
                 if m["role"] in ("user", "assistant")
@@ -541,10 +556,12 @@ async def get_session_messages(session_id: str, limit: int = 50):
         "session_id": session_id,
         "messages": [
             {
+                "id": None,
                 "role": m.get("role"),
                 "content": m.get("content"),
                 "timestamp": m.get("timestamp"),
                 "metadata": {},
+                "feedback": None,
             }
             for m in messages
         ],
@@ -575,6 +592,23 @@ async def favorite_session(session_id: str, request: FavoriteRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"ok": True, "session_id": session_id, "favorite": request.favorite}
+
+
+@app.post("/api/sessions/{session_id}/feedback")
+async def submit_feedback(session_id: str, request: FeedbackRequest):
+    """记录会诊答复的「有用 / 待改进」反馈，rating=0 时清除。"""
+    from memory import get_session_store
+
+    result = await asyncio.to_thread(
+        get_session_store().set_message_feedback,
+        session_id,
+        request.message_id,
+        request.rating,
+        request.comment,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="消息不存在或不是会诊答复")
+    return {"ok": True, "session_id": session_id, **result}
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -800,6 +834,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "total_time": result.get("total_time"),
         "timeout_occurred": result.get("timeout_occurred", False),
         "session_id": result.get("session_id"),
+        "assistant_message_id": result.get("assistant_message_id"),
         "route_reason": result.get("route_reason"),
     })
 
