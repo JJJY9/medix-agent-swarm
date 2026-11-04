@@ -633,6 +633,8 @@ def test_app_js_ships_medication_intake_log(client):
     assert "/api/medications/${item.id}/logs" in app_js
     assert "/api/medication-logs/" in app_js
     assert "今日已服" in app_js
+    assert "近 7 天" in app_js
+    assert "今日未打卡" in app_js
     assert "已记录用药" in app_js
 
 

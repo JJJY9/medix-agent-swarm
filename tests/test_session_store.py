@@ -1724,6 +1724,7 @@ def test_medication_logs_crud_and_counts(store):
 
     listed = store.list_medications()[0]
     assert listed["today_count"] == 2
+    assert listed["week_count"] == 2
     assert listed["last_taken_at"] == f"{today}T20:00"
 
     assert store.get_medication_log(first["id"])["note"] == "早餐后"

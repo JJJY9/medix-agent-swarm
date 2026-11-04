@@ -107,6 +107,7 @@ def test_medication_logs_api_roundtrip(client_and_store):
     assert logs.json()["logs"][0]["medication_name"] == "二甲双胍"
     assert logs.json()["logs"][0]["note"] == "早餐后"
     assert listed["today_count"] == 1
+    assert listed["week_count"] == 1
     assert listed["last_taken_at"] == taken_at
     assert undone.status_code == 200
     assert missing_log.status_code == 404

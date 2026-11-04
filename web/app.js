@@ -1873,12 +1873,21 @@ function buildVisitSummaryHtml({
     + '</li>'
   )).join('\n');
 
-  const medicationItems = (medications || []).map((item) => (
-    `<li>${escapeHtml(item.name)}`
-    + `${item.dose ? ` · ${escapeHtml(item.dose)}` : ''}`
-    + `${item.frequency ? ` · ${escapeHtml(item.frequency)}` : ''}`
-    + `${item.note ? `（${escapeHtml(item.note)}）` : ''}</li>`
-  )).join('\n');
+  const medicationItems = (medications || []).map((item) => {
+    const stats = [];
+    const todayCount = Number(item.today_count || 0);
+    const weekCount = Number(item.week_count || 0);
+    stats.push(todayCount > 0 ? `今日已服 ${todayCount} 次` : '今日未打卡');
+    if (weekCount > 0) stats.push(`近 7 天 ${weekCount} 次`);
+    if (item.last_taken_at) {
+      stats.push(`最近 ${escapeHtml(formatTime(item.last_taken_at))}`);
+    }
+    return `<li>${escapeHtml(item.name)}`
+      + `${item.dose ? ` · ${escapeHtml(item.dose)}` : ''}`
+      + `${item.frequency ? ` · ${escapeHtml(item.frequency)}` : ''}`
+      + `（${stats.join(' · ')}）`
+      + `${item.note ? ` · ${escapeHtml(item.note)}` : ''}</li>`;
+  }).join('\n');
 
   const sessionItems = sessions.map((item) => (
     `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`
@@ -6850,14 +6859,18 @@ function renderHomeGlance(reminders, metrics, symptoms, medications) {
     els.homeGlanceMedications.hidden = true;
   } else {
     const active = medications.filter((item) => item.active);
+    const todayDoses = active.reduce(
+      (total, item) => total + Number(item.today_count || 0), 0
+    );
     const medValue = active.length
       ? `${active.length} 种在用药物`
       : '暂无在用药物';
     const medSub = active.length
-      ? active
-        .slice(0, 3)
-        .map((item) => item.name + (item.dose ? ` ${item.dose}` : ''))
-        .join(' · ')
+      ? (todayDoses > 0 ? `今日已服 ${todayDoses} 次 · ` : '')
+        + active
+          .slice(0, 3)
+          .map((item) => item.name + (item.dose ? ` ${item.dose}` : ''))
+          .join(' · ')
       : '点击添加用药清单';
     els.homeGlanceMedications.hidden = false;
     els.homeGlanceMedications.replaceChildren(
