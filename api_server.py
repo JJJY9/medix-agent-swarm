@@ -96,6 +96,14 @@ class FeedbackRequest(BaseModel):
     comment: str = Field("", max_length=500, description="可选反馈备注")
 
 
+class ProfileRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=40, description="档案名称")
+    context: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="年龄、性别、病程、既往史、用药与过敏史",
+    )
+
+
 class UpdateDocumentRequest(BaseModel):
     content: str = Field(..., min_length=1)
 
@@ -522,6 +530,38 @@ async def import_sessions(request: ImportSessionsRequest):
         raise HTTPException(status_code=500, detail=f"导入会话失败：{e}")
 
     return {"ok": True, **result}
+
+
+@app.get("/api/profiles")
+async def list_profiles():
+    """常用患者档案（服务端持久化，可跨浏览器使用）。"""
+    from memory import get_session_store
+
+    profiles = await asyncio.to_thread(get_session_store().list_profiles)
+    return {"profiles": profiles}
+
+
+@app.post("/api/profiles")
+async def save_profile(request: ProfileRequest):
+    """新增或覆盖常用患者档案。"""
+    from memory import get_session_store
+
+    profile = await asyncio.to_thread(
+        get_session_store().save_profile, request.name, request.context
+    )
+    if profile is None:
+        raise HTTPException(status_code=400, detail="档案名称或内容为空")
+    return {"ok": True, "profile": profile}
+
+
+@app.delete("/api/profiles/{name}")
+async def delete_profile(name: str):
+    from memory import get_session_store
+
+    ok = await asyncio.to_thread(get_session_store().delete_profile, name)
+    if not ok:
+        raise HTTPException(status_code=404, detail="档案不存在")
+    return {"ok": True, "name": name}
 
 
 @app.get("/api/sessions/{session_id}/messages")

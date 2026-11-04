@@ -3319,6 +3319,7 @@ function hideBanner() {
 const CONTEXT_STORAGE_KEY = 'medix.context';
 const SINGLE_MODE_KEY = 'medix.singleMode';
 const PROFILES_STORAGE_KEY = 'medix.profiles';
+let profilesCache = {};
 
 function readPatientContext() {
   const context = {};
@@ -3386,23 +3387,75 @@ function loadSavedContext() {
 }
 
 function readProfiles() {
-  try {
-    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
-    const data = raw ? JSON.parse(raw) : {};
-    return data && typeof data === 'object' && !Array.isArray(data)
-      ? data
-      : {};
-  } catch {
-    return {};
+  return profilesCache;
+}
+
+function setProfiles(profiles) {
+  profilesCache = {};
+  for (const profile of profiles || []) {
+    if (profile && profile.name) profilesCache[profile.name] = profile;
   }
 }
 
-function writeProfiles(profiles) {
+async function fetchProfiles() {
+  const res = await fetch('/api/profiles');
+  if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+  const data = await res.json();
+  setProfiles(data.profiles || []);
+}
+
+/**
+ * 把旧版本存在 localStorage 的档案迁移到服务端。
+ * 同名档案已在服务端时跳过；全部成功后删除本地副本，失败则保留以便下次重试。
+ */
+async function migrateLegacyProfiles() {
+  let legacy;
   try {
-    localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-    return true;
+    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
+    legacy = raw ? JSON.parse(raw) : null;
   } catch {
-    return false;
+    legacy = null;
+  }
+  if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return;
+
+  let migrated = 0;
+  let failed = 0;
+  for (const [name, entry] of Object.entries(legacy)) {
+    if (!name || profilesCache[name]) continue;
+    const context = entry && typeof entry === 'object' && entry.context
+      ? entry.context
+      : entry;
+    try {
+      const res = await fetch('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, context }),
+      });
+      if (res.ok) {
+        migrated += 1;
+      } else {
+        failed += 1;
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+
+  try {
+    if (failed === 0) localStorage.removeItem(PROFILES_STORAGE_KEY);
+  } catch {
+    // 隐私模式下 localStorage 不可用时忽略
+  }
+  if (migrated) await fetchProfiles();
+}
+
+async function initProfiles() {
+  try {
+    await fetchProfiles();
+    await migrateLegacyProfiles();
+    refreshProfileOptions('');
+  } catch {
+    // 服务暂不可用时不阻塞主界面；恢复后刷新页面即可重新加载
   }
 }
 
@@ -3428,7 +3481,7 @@ function refreshProfileOptions(selected = undefined) {
   els.profileSelect.value = profiles[current] ? current : '';
 }
 
-function savePatientProfile() {
+async function savePatientProfile() {
   const context = readPatientContext();
   if (!Object.keys(context).length) {
     window.alert('请先填写补充信息，再保存为常用档案。');
@@ -3440,23 +3493,28 @@ function savePatientProfile() {
     .slice(0, 20);
   if (!name) return;
 
-  const profiles = readProfiles();
-  if (profiles[name] && !window.confirm(`档案「${name}」已存在，是否覆盖？`)) {
+  if (readProfiles()[name] && !window.confirm(`档案「${name}」已存在，是否覆盖？`)) {
     return;
   }
 
-  profiles[name] = {
-    context,
-    saved_at: new Date().toISOString(),
-  };
-  if (!writeProfiles(profiles)) {
-    window.alert('保存档案失败：浏览器本地存储不可用。');
-    return;
+  try {
+    const res = await fetch('/api/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, context }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    if (data.profile) profilesCache[data.profile.name] = data.profile;
+    refreshProfileOptions(name);
+  } catch (err) {
+    window.alert(`保存档案失败：${err.message || err}`);
   }
-  refreshProfileOptions(name);
 }
 
-function deletePatientProfile() {
+async function deletePatientProfile() {
   const name = els.profileSelect.value;
   if (!name) {
     window.alert('请先选择一个常用档案。');
@@ -3464,13 +3522,19 @@ function deletePatientProfile() {
   }
   if (!window.confirm(`删除常用档案「${name}」？`)) return;
 
-  const profiles = readProfiles();
-  delete profiles[name];
-  if (!writeProfiles(profiles)) {
-    window.alert('删除档案失败：浏览器本地存储不可用。');
-    return;
+  try {
+    const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && res.status !== 404) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    delete profilesCache[name];
+    refreshProfileOptions('');
+  } catch (err) {
+    window.alert(`删除档案失败：${err.message || err}`);
   }
-  refreshProfileOptions('');
 }
 
 function applySelectedProfile() {
@@ -3802,7 +3866,7 @@ resetRail();
 initTheme();
 renderEcg();
 loadSavedContext();
-refreshProfileOptions('');
+initProfiles();
 loadDraft();
 restoreCurrentSession();
 checkStatus();

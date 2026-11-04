@@ -25,6 +25,44 @@ MAX_TITLE_LENGTH = 40
 PREVIEW_LENGTH = 80
 #: 会诊反馈备注的最大长度
 MAX_FEEDBACK_LENGTH = 500
+#: 常用患者档案的名称与字段长度上限
+MAX_PROFILE_NAME_LENGTH = 40
+MAX_PROFILE_FIELD_LENGTH = 2000
+#: 档案只保存结构化补充信息里的已知字段
+PROFILE_CONTEXT_KEYS = (
+    "age",
+    "sex",
+    "duration",
+    "history",
+    "medications",
+    "allergies",
+)
+
+
+def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
+    """校验并收敛档案字段；没有有效内容时返回 None。"""
+    if not isinstance(context, dict):
+        return None
+
+    cleaned: Dict[str, str] = {}
+    for key in PROFILE_CONTEXT_KEYS:
+        value = context.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (list, tuple)):
+            text = "；".join(str(item).strip() for item in value if str(item).strip())
+        elif isinstance(value, dict):
+            text = "；".join(
+                f"{item_key}={str(item_value).strip()}"
+                for item_key, item_value in value.items()
+                if str(item_value).strip()
+            )
+        else:
+            text = str(value).strip()
+        if text:
+            cleaned[key] = text[:MAX_PROFILE_FIELD_LENGTH]
+
+    return cleaned or None
 
 
 def _new_usage_entry() -> Dict[str, Any]:
@@ -134,6 +172,14 @@ class SessionStore:
                     ON messages(session_id, id);
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated
                     ON sessions(updated_at DESC);
+                CREATE TABLE IF NOT EXISTS patient_profiles (
+                    name       TEXT PRIMARY KEY,
+                    context    TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_profiles_updated
+                    ON patient_profiles(updated_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -723,15 +769,21 @@ class SessionStore:
             "exported_at": self._now(),
             "session_count": len(exported),
             "sessions": exported,
+            "profiles": self.list_profiles(),
         }
 
     def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
-        """导入备份数据；已存在的会话编号直接跳过，不覆盖现有记录。"""
+        """导入备份数据；已存在的会话编号与档案名称直接跳过，不覆盖现有记录。"""
         if not isinstance(data, dict):
             raise ValueError("备份文件格式不正确。")
 
         raw_sessions = data.get("sessions")
-        if not isinstance(raw_sessions, list) or not raw_sessions:
+        raw_profiles = data.get("profiles")
+        if raw_sessions is None and isinstance(raw_profiles, list):
+            raw_sessions = []
+        if not isinstance(raw_sessions, list):
+            raise ValueError("备份文件中没有会话。")
+        if not raw_sessions and not isinstance(raw_profiles, list):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
             raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
@@ -827,11 +879,49 @@ class SessionStore:
                 imported += 1
                 messages_imported += len(prepared)
 
+            profiles_imported = 0
+            if isinstance(raw_profiles, list):
+                for raw in raw_profiles[:500]:
+                    if not isinstance(raw, dict):
+                        continue
+                    name = " ".join(
+                        str(raw.get("name") or "").split()
+                    )[:MAX_PROFILE_NAME_LENGTH]
+                    cleaned = _normalize_profile_context(raw.get("context"))
+                    if not name or cleaned is None:
+                        continue
+                    exists = self._conn.execute(
+                        "SELECT 1 FROM patient_profiles WHERE name = ?",
+                        (name,),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    created_at = str(raw.get("created_at") or now)[:40]
+                    updated_at = str(raw.get("updated_at") or created_at)[:40]
+                    self._conn.execute(
+                        """
+                        INSERT INTO patient_profiles(name, context, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            name,
+                            json.dumps(
+                                sanitize_json(cleaned),
+                                ensure_ascii=False,
+                                allow_nan=False,
+                            ),
+                            created_at,
+                            updated_at,
+                        ),
+                    )
+                    profiles_imported += 1
+
         return {
             "imported": imported,
             "skipped": skipped,
             "invalid": invalid,
             "messages": messages_imported,
+            "profiles": profiles_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:
@@ -861,6 +951,84 @@ class SessionStore:
             )
             self._conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            return cursor.rowcount > 0
+
+    def list_profiles(self) -> List[Dict[str, Any]]:
+        """按名称返回全部常用患者档案。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT name, context, created_at, updated_at
+                  FROM patient_profiles
+                 ORDER BY name
+                """
+            ).fetchall()
+
+        profiles = []
+        for row in rows:
+            item = dict(row)
+            try:
+                context = sanitize_json(json.loads(item.get("context") or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                context = {}
+            item["context"] = context if isinstance(context, dict) else {}
+            profiles.append(item)
+        return profiles
+
+    def save_profile(
+        self, name: str, context: Any
+    ) -> Optional[Dict[str, Any]]:
+        """新增或覆盖常用档案；名称或内容无效时返回 None。"""
+        name = " ".join(str(name or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        cleaned = _normalize_profile_context(context)
+        if not name or cleaned is None:
+            return None
+
+        now = self._now()
+        context_json = json.dumps(
+            sanitize_json(cleaned),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT created_at FROM patient_profiles WHERE name = ?",
+                (name,),
+            ).fetchone()
+            created_at = row["created_at"] if row else now
+            if row:
+                self._conn.execute(
+                    """
+                    UPDATE patient_profiles
+                       SET context = ?, updated_at = ?
+                     WHERE name = ?
+                    """,
+                    (context_json, now, name),
+                )
+            else:
+                self._conn.execute(
+                    """
+                    INSERT INTO patient_profiles(name, context, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (name, context_json, now, now),
+                )
+
+        return {
+            "name": name,
+            "context": cleaned,
+            "created_at": created_at,
+            "updated_at": now,
+        }
+
+    def delete_profile(self, name: str) -> bool:
+        name = " ".join(str(name or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        if not name:
+            return False
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM patient_profiles WHERE name = ?", (name,)
             )
             return cursor.rowcount > 0
 

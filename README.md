@@ -34,7 +34,7 @@
 - **📡 实时进度**: 科室开始接诊即点亮，完成时更新状态并写入接诊时间线 ✅
 - **🚨 急症预检**: 调用模型前先做红旗症状筛查，命中立即提示拨打 120 ✅
 - **💊 用药安全提示**: 根据主诉、正在使用的药物与过敏史，规则化筛查重复用药、常见相互作用和过敏交叉风险，在模型回复前先行提示 ✅
-- **🧾 结构化补充**: 可选填写年龄、性别、病程、既往史、用药与过敏史，支持保存常用档案（仅浏览器本地），贯穿分诊、单科与多学科会诊 ✅
+- **🧾 结构化补充**: 可选填写年龄、性别、病程、既往史、用药与过敏史，支持保存常用档案（保存在服务端 SQLite，可跨浏览器使用；旧版本浏览器本地档案会自动迁移），贯穿分诊、单科与多学科会诊 ✅
 - **🩺 接诊模式**: 可勾选「仅单科接诊」，跳过多学科协作以降低延迟与用量 ✅
 - **📚 知识库管理**: Web 端上传 TXT/Markdown/PDF、拖拽上传、在线预览与编辑、检索测试、删除文档、一键重建索引（幂等）✅
 - **🧾 意见透明化**: 展示各科室原始意见与知识库参考来源 ✅
@@ -219,6 +219,9 @@ npm install -D playwright
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
+| GET | `/api/profiles` | 常用患者档案列表（服务端持久化） |
+| POST | `/api/profiles` | 新增或覆盖患者档案（`name`、`context`） |
+| DELETE | `/api/profiles/{name}` | 删除患者档案 |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
 | PATCH | `/api/sessions/{id}/favorite` | 收藏或取消收藏 |
 | POST | `/api/sessions/{id}/feedback` | 记录会诊意见反馈（`message_id`、`rating`：1 有用 / -1 待改进 / 0 清除、可选 `comment`） |
@@ -242,7 +245,7 @@ npm install -D playwright
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 
-`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导入时只接受 user/assistant 消息，已存在的会话编号会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案。导入时只接受 user/assistant 消息，已存在的会话编号与档案名称会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
