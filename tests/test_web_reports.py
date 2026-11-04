@@ -209,3 +209,12 @@ def test_app_js_ships_reminder_groups(client):
     assert "reminder-group-head" in app_js
     assert "已逾期" in app_js
     assert "未来 7 天" in app_js
+
+
+def test_app_js_ships_reminder_csv_import(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function importRemindersCsv" in app_js
+    assert "/api/reminders/import" in app_js
+    assert 'id="reminders-import"' in html

@@ -278,6 +278,8 @@ const els = {
   reminderAdd: document.getElementById('reminder-add'),
   remindersExport: document.getElementById('reminders-export'),
   remindersExportIcs: document.getElementById('reminders-export-ics'),
+  remindersImport: document.getElementById('reminders-import'),
+  remindersImportFile: document.getElementById('reminders-import-file'),
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
@@ -6146,6 +6148,36 @@ async function exportRemindersCsv() {
   }
 }
 
+async function importRemindersCsv(file) {
+  if (!file) return;
+  setRemindersStatus('正在导入随访提醒…');
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res = await fetch('/api/reminders/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或日期无效`);
+    if (data.invalid) parts.push(`缺少内容或日期 ${data.invalid} 行`);
+    setRemindersStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshReminderProfileOptions();
+    await loadReminders();
+  } catch (err) {
+    setRemindersStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.remindersImportFile.value = '';
+  }
+}
+
 async function exportRemindersIcs() {
   const params = new URLSearchParams();
   const profile = els.remindersProfile ? els.remindersProfile.value : '';
@@ -8183,6 +8215,14 @@ els.visitSummary.addEventListener('click', exportVisitSummary);
 els.reminderAdd.addEventListener('click', addReminder);
 els.remindersExport.addEventListener('click', exportRemindersCsv);
 els.remindersExportIcs.addEventListener('click', exportRemindersIcs);
+els.remindersImport.addEventListener('click', () => {
+  els.remindersImportFile.click();
+});
+els.remindersImportFile.addEventListener('change', () => {
+  const file = els.remindersImportFile.files
+    && els.remindersImportFile.files[0];
+  if (file) importRemindersCsv(file);
+});
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
 els.reminderCancel.addEventListener('click', () => {
