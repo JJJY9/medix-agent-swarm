@@ -86,6 +86,17 @@ def _like_pattern(query: str) -> str:
     return f"%{escaped}%"
 
 
+def _days_cutoff(days: int) -> Optional[str]:
+    """把“最近 N 天”转换成 updated_at 的下限。"""
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        return None
+    if days <= 0:
+        return None
+    return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
 class SessionStore:
     """基于 SQLite 的会话与消息存储。"""
 
@@ -227,9 +238,10 @@ class SessionStore:
         limit: int = 50,
         query: str = "",
         offset: int = 0,
-        favorites_only: bool = False
+        favorites_only: bool = False,
+        days: int = 0
     ) -> List[Dict[str, Any]]:
-        """按最近更新时间倒序返回会话，支持标题/编号模糊搜索与分页。"""
+        """按最近更新时间倒序返回会话，支持搜索、分页、收藏与时间范围。"""
         limit = max(1, min(int(limit or 50), 200))
         offset = max(0, int(offset or 0))
         sql = """
@@ -254,6 +266,10 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("s.updated_at >= ?")
+            params.append(cutoff)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
@@ -294,7 +310,9 @@ class SessionStore:
             sessions.append(item)
         return sessions
 
-    def count_sessions(self, query: str = "", favorites_only: bool = False) -> int:
+    def count_sessions(
+        self, query: str = "", favorites_only: bool = False, days: int = 0
+    ) -> int:
         """返回匹配搜索条件的会话总数，供分页展示。"""
         sql = "SELECT COUNT(*) AS n FROM sessions s"
         conditions: List[str] = []
@@ -311,6 +329,10 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("s.updated_at >= ?")
+            params.append(cutoff)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
 
@@ -415,7 +437,7 @@ class SessionStore:
         return stats
 
     def usage_totals(
-        self, query: str = "", favorites_only: bool = False
+        self, query: str = "", favorites_only: bool = False, days: int = 0
     ) -> Dict[str, Any]:
         """汇总所有匹配会话的历史用量（不受分页限制）。
 
@@ -442,6 +464,10 @@ class SessionStore:
             params.extend([like, like, like])
         if favorites_only:
             conditions.append("s.favorite = 1")
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("s.updated_at >= ?")
+            params.append(cutoff)
         if conditions:
             sql += " AND " + " AND ".join(conditions)
 

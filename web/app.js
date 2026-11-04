@@ -40,6 +40,7 @@ const els = {
   historyExport: document.getElementById('history-export'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
+  historyRange: document.getElementById('history-range'),
   historyMore: document.getElementById('history-more'),
   usageTrend: document.getElementById('usage-trend'),
   usageTrendTotal: document.getElementById('usage-trend-total'),
@@ -145,6 +146,7 @@ let historyOffset = 0;
 let historyTotal = 0;
 let historyLoading = false;
 let favoritesOnly = false;
+let historyDays = 0;
 let historyRequestSeq = 0;
 let usageTrendRequestSeq = 0;
 let usageBudgetRequestSeq = 0;
@@ -1481,6 +1483,8 @@ function renderHistoryItems(sessions, summary, append = false) {
     els.historyEmpty.hidden = false;
     if (favoritesOnly) {
       els.historyEmpty.textContent = '还没有收藏的会诊';
+    } else if (historyDays > 0) {
+      els.historyEmpty.textContent = '所选时间范围内没有会诊记录';
     } else {
       els.historyEmpty.textContent = els.historySearch.value.trim()
         ? '没有匹配的会诊记录'
@@ -1627,7 +1631,8 @@ async function loadHistory(query = '', { append = false } = {}) {
   try {
     const res = await fetch(
       `/api/sessions?limit=50&offset=${historyOffset}&q=${encodeURIComponent(historyQuery)}` +
-      (favoritesOnly ? '&favorite=1' : '')
+      (favoritesOnly ? '&favorite=1' : '') +
+      (historyDays > 0 ? `&days=${historyDays}` : '')
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
@@ -3565,6 +3570,11 @@ els.historyFavoriteFilter.addEventListener('click', () => {
   els.historyFavoriteFilter.textContent = favoritesOnly ? '★' : '☆';
   loadHistory(els.historySearch.value.trim());
   loadUsageTrend();
+});
+
+els.historyRange.addEventListener('change', () => {
+  historyDays = Number(els.historyRange.value) || 0;
+  loadHistory(els.historySearch.value.trim());
 });
 
 document.addEventListener('keydown', (e) => {

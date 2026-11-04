@@ -200,6 +200,40 @@ def test_sessions_import_api(tmp_path, monkeypatch):
     assert empty.status_code == 400
 
 
+def test_sessions_api_filters_by_days(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "recent", "最近问题", "最近答复",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "older", "较早问题", "较早答复",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+    from datetime import datetime, timedelta
+
+    old_time = (datetime.now() - timedelta(days=10)).isoformat(timespec="seconds")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET updated_at = ? WHERE id = 'older'",
+            (old_time,),
+        )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        week = client.get("/api/sessions", params={"days": 7}).json()
+        month = client.get("/api/sessions", params={"days": 30}).json()
+    finally:
+        store.close()
+
+    assert [item["id"] for item in week["sessions"]] == ["recent"]
+    assert week["summary"]["sessions"] == 1
+    assert week["summary"]["usage"]["total_tokens"] == 10
+    assert {item["id"] for item in month["sessions"]} == {"recent", "older"}
+    assert month["summary"]["usage"]["total_tokens"] == 30
+
+
 def test_messages_limit_zero_returns_all(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     for index in range(3):

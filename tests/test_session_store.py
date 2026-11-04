@@ -365,6 +365,31 @@ def test_favorite_filter_and_usage(store):
     assert store.list_sessions(favorites_only=True) == []
 
 
+def test_list_sessions_filters_by_days(store):
+    store.save_exchange(
+        "s1", "最近问题", "最近答复",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.save_exchange(
+        "s2", "较早问题", "较早答复",
+        metadata={"usage": {"total_tokens": 20}, "llm_calls": 2},
+    )
+    now = datetime.now()
+    set_session_time(store, "s1", now.isoformat(timespec="seconds"))
+    set_session_time(
+        store, "s2", (now - timedelta(days=10)).isoformat(timespec="seconds")
+    )
+
+    week = store.list_sessions(days=7)
+    month = store.list_sessions(days=30)
+
+    assert [item["id"] for item in week] == ["s1"]
+    assert {item["id"] for item in month} == {"s1", "s2"}
+    assert store.count_sessions(days=7) == 1
+    assert store.usage_totals(days=7)["usage"]["total_tokens"] == 10
+    assert store.usage_totals(days=30)["usage"]["total_tokens"] == 30
+
+
 def test_import_data_roundtrip(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     source.save_exchange(

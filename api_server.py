@@ -309,9 +309,10 @@ async def list_sessions(
     limit: int = 50,
     offset: int = 0,
     q: Optional[str] = None,
-    favorite: Optional[bool] = None
+    favorite: Optional[bool] = None,
+    days: int = 0
 ):
-    """历史会诊列表（按最近更新时间倒序，支持标题/编号搜索、分页与收藏筛选）。
+    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏与时间范围）。
 
     summary 汇总所有匹配会话的 Token 用量与模型调用次数，
     不受当前分页影响；每条会话附带自身用量。
@@ -320,14 +321,17 @@ async def list_sessions(
 
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
+    days = max(0, min(int(days or 0), 365))
     query = q or ""
     favorites_only = bool(favorite)
 
     store = get_session_store()
     sessions, total, totals = await asyncio.gather(
-        asyncio.to_thread(store.list_sessions, limit, query, offset, favorites_only),
-        asyncio.to_thread(store.count_sessions, query, favorites_only),
-        asyncio.to_thread(store.usage_totals, query, favorites_only),
+        asyncio.to_thread(
+            store.list_sessions, limit, query, offset, favorites_only, days
+        ),
+        asyncio.to_thread(store.count_sessions, query, favorites_only, days),
+        asyncio.to_thread(store.usage_totals, query, favorites_only, days),
     )
     stats = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in sessions]
