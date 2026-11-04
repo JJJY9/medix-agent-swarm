@@ -2925,6 +2925,17 @@ html[data-theme="dark"] .metric-delete:hover {
   background: #331f1d;
 }
 
+.reminder-snooze {
+  width: auto;
+  padding: 2px 0 2px 2px;
+  cursor: pointer;
+}
+
+.reminder-snooze:focus-visible {
+  color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
 .reminder-title {
   font-size: 13.5px;
   font-weight: 600;

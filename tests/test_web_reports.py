@@ -615,6 +615,16 @@ def test_app_js_ships_medication_filters(client):
     assert ".medication-filters" in css
 
 
+def test_app_js_ships_reminder_snooze_days(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "function snoozeReminder(item, days = 7)" in app_js
+    assert "reminder-snooze" in app_js
+    assert "推迟…" in app_js
+    assert ".reminder-snooze" in css
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

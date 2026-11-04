@@ -6609,13 +6609,25 @@ function renderReminders(items) {
       done.setAttribute('aria-label', `完成提醒：${item.title}`);
       done.addEventListener('click', () => completeReminder(item));
 
-      const snooze = document.createElement('button');
-      snooze.type = 'button';
-      snooze.className = 'metric-edit';
-      snooze.textContent = '推迟';
-      snooze.title = '推迟 7 天';
+      const snooze = document.createElement('select');
+      snooze.className = 'metric-edit reminder-snooze';
+      snooze.title = '选择推迟天数';
       snooze.setAttribute('aria-label', `推迟提醒：${item.title}`);
-      snooze.addEventListener('click', () => snoozeReminder(item));
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '推迟…';
+      snooze.appendChild(placeholder);
+      for (const days of [1, 3, 7, 14]) {
+        const option = document.createElement('option');
+        option.value = String(days);
+        option.textContent = `${days} 天`;
+        snooze.appendChild(option);
+      }
+      snooze.value = '';
+      snooze.addEventListener('change', () => {
+        const days = Number(snooze.value);
+        if (days > 0) snoozeReminder(item, days);
+      });
 
       const edit = document.createElement('button');
       edit.type = 'button';
@@ -7117,17 +7129,21 @@ async function reopenReminder(item) {
   }
 }
 
-async function snoozeReminder(item) {
+async function snoozeReminder(item, days = 7) {
   if (reminderActionBusy) return;
+  const snoozeDays = Math.max(1, Math.min(365, Number(days) || 7));
   reminderActionBusy = true;
   try {
-    const res = await fetch(`/api/reminders/${item.id}/snooze?days=7`, {
-      method: 'POST',
-    });
+    const res = await fetch(
+      `/api/reminders/${item.id}/snooze?days=${snoozeDays}`,
+      { method: 'POST' }
+    );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json().catch(() => ({}));
     const due = data.reminder ? formatReminderDue(data.reminder.due_at) : '';
-    setRemindersStatus(due ? `已推迟到 ${due}。` : '已推迟 7 天。');
+    setRemindersStatus(
+      due ? `已推迟 ${snoozeDays} 天到 ${due}。` : `已推迟 ${snoozeDays} 天。`
+    );
     await loadReminders();
   } catch (err) {
     window.alert(`推迟提醒失败：${err.message || err}`);
