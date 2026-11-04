@@ -2989,6 +2989,41 @@ html[data-theme="dark"] .reminders-due-hint {
   background: var(--clinic-soft);
 }
 
+.reminder-plan {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.reminder-plan summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.reminder-plan-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.reminder-plan-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.reminder-plan-row input {
+  flex: 1 1 auto;
+}
+
+.reminder-plan-row select {
+  flex: 0 0 84px;
+}
+
 .reminder-group-head {
   display: flex;
   justify-content: space-between;

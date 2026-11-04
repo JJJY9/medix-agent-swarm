@@ -236,3 +236,14 @@ def test_app_js_ships_visit_summary_metric_overview(client):
     assert "async function fetchMetricSummaries" in app_js
     assert "指标概览" in app_js
     assert "summaryRows" in app_js
+
+
+def test_app_js_ships_reminder_series(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function addReminderSeries" in app_js
+    assert "function buildReminderSeries" in app_js
+    assert "function addMonthsToDate" in app_js
+    assert "按周期安排多次随访" in html
+    assert 'id="reminder-plan-add"' in html
