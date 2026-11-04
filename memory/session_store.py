@@ -1581,7 +1581,7 @@ class SessionStore:
 
     def list_audit_log(self, limit: int = 50) -> List[Dict[str, Any]]:
         """按时间倒序返回最近的操作审计。"""
-        limit = max(1, min(int(limit or 50), 500))
+        limit = max(1, min(int(limit or 50), 100000))
         with self._lock:
             rows = self._conn.execute(
                 """
