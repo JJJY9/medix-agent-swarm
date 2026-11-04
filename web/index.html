@@ -696,25 +696,37 @@
   <div class="calc-body">
     <label class="calc-field" for="calc-tool">选择工具
       <select id="calc-tool">
-        <option value="bmi">BMI 体重指数</option>
-        <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
-        <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
-        <option value="curb65">CURB-65 肺炎严重程度</option>
-        <option value="child-pugh">Child-Pugh 肝硬化分级</option>
-        <option value="phq9">PHQ-9 抑郁筛查</option>
-        <option value="gad7">GAD-7 焦虑筛查</option>
-        <option value="hasbled">HAS-BLED 出血风险</option>
-        <option value="gcs">GCS 格拉斯哥昏迷评分</option>
-        <option value="wells">Wells DVT 概率评分</option>
-        <option value="wells-pe">Wells PE 概率评分</option>
-        <option value="interactions">药物相互作用检查</option>
-        <option value="qsofa">qSOFA 脓毒症筛查</option>
-        <option value="fib4">FIB-4 肝纤维化指数</option>
-        <option value="meld">MELD 终末期肝病评分</option>
-        <option value="stopbang">STOP-BANG 睡眠呼吸暂停筛查</option>
-        <option value="padua">Padua 静脉血栓风险</option>
-        <option value="abcd2">ABCD2 TIA 卒中风险</option>
-        <option value="morse">Morse 跌倒风险</option>
+        <optgroup label="常用">
+          <option value="bmi">BMI 体重指数</option>
+          <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
+        </optgroup>
+        <optgroup label="心血管与血栓">
+          <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
+          <option value="hasbled">HAS-BLED 出血风险</option>
+          <option value="wells">Wells DVT 概率评分</option>
+          <option value="wells-pe">Wells PE 概率评分</option>
+          <option value="padua">Padua 静脉血栓风险</option>
+        </optgroup>
+        <optgroup label="呼吸与感染">
+          <option value="curb65">CURB-65 肺炎严重程度</option>
+          <option value="qsofa">qSOFA 脓毒症筛查</option>
+          <option value="stopbang">STOP-BANG 睡眠呼吸暂停筛查</option>
+        </optgroup>
+        <optgroup label="神经与精神">
+          <option value="gcs">GCS 格拉斯哥昏迷评分</option>
+          <option value="abcd2">ABCD2 TIA 卒中风险</option>
+          <option value="phq9">PHQ-9 抑郁筛查</option>
+          <option value="gad7">GAD-7 焦虑筛查</option>
+          <option value="morse">Morse 跌倒风险</option>
+        </optgroup>
+        <optgroup label="肝病">
+          <option value="child-pugh">Child-Pugh 肝硬化分级</option>
+          <option value="fib4">FIB-4 肝纤维化指数</option>
+          <option value="meld">MELD 终末期肝病评分</option>
+        </optgroup>
+        <optgroup label="用药">
+          <option value="interactions">药物相互作用检查</option>
+        </optgroup>
       </select>
     </label>
 
