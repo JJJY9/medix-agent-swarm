@@ -404,6 +404,7 @@ const els = {
   medicationEmpty: document.getElementById('medication-empty'),
   medicationExport: document.getElementById('medication-export'),
   medicationLogsExport: document.getElementById('medication-logs-export'),
+  medicationReminders: document.getElementById('medication-reminders'),
   medicationImport: document.getElementById('medication-import'),
   medicationImportFile: document.getElementById('medication-import-file'),
   calcInteractionsLoad: document.getElementById('calc-interactions-load'),
@@ -7387,6 +7388,72 @@ async function scheduleMedicationReminder(item) {
   els.reminderTitle.focus();
 }
 
+async function scheduleAllMedicationReminders() {
+  const active = medicationItemsCache.filter((item) => item.active);
+  if (!active.length) {
+    setMedicationStatus('用药清单中没有在用药物。', true);
+    return;
+  }
+  let reminders = [];
+  try {
+    const res = await fetch('/api/reminders');
+    if (res.ok) reminders = (await res.json()).reminders || [];
+  } catch {
+    reminders = [];
+  }
+  if (!window.confirm(
+    `为 ${active.length} 种在用药物各创建一条用药提醒？`
+    + '已存在或频次无法识别的会跳过。'
+  )) {
+    return;
+  }
+  let created = 0;
+  let skipped = 0;
+  let invalid = 0;
+  let failed = 0;
+  for (const item of active) {
+    const repeatDays = frequencyRepeatDays(item.frequency);
+    if (!repeatDays) {
+      invalid += 1;
+      continue;
+    }
+    const title = `用药：${item.name}`;
+    const exists = reminders.some((reminder) => (
+      !reminder.done
+      && reminder.title === title
+      && (reminder.profile || '') === (item.profile || '')
+    ));
+    if (exists) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const res = await fetch('/api/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          note: [item.dose, item.frequency].filter(Boolean).join(' · '),
+          due_at: localDateAfter(0),
+          profile: item.profile || '',
+          advance_days: 0,
+          repeat_days: repeatDays,
+        }),
+      });
+      if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+      created += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  const parts = [`已创建 ${created} 条用药提醒`];
+  if (skipped) parts.push(`跳过 ${skipped} 条已存在`);
+  if (invalid) parts.push(`${invalid} 条频次无法识别`);
+  if (failed) parts.push(`${failed} 条创建失败`);
+  setMedicationStatus(parts.join('，') + '。', created === 0 && failed > 0);
+  if (created) loadHomeGlance();
+}
+
 let editingSymptomId = null;
 let symptomSaving = false;
 let symptomRequestSeq = 0;
@@ -10642,6 +10709,9 @@ els.symptomSave.addEventListener('click', saveSymptom);
 els.medicationSave.addEventListener('click', saveMedication);
 els.medicationExport.addEventListener('click', exportMedicationsCsv);
 els.medicationLogsExport.addEventListener('click', exportMedicationLogsCsv);
+els.medicationReminders.addEventListener(
+  'click', scheduleAllMedicationReminders
+);
 els.medicationImport.addEventListener('click', () => {
   els.medicationImportFile.click();
 });

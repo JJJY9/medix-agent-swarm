@@ -654,6 +654,17 @@ def test_app_js_ships_medication_intake_log_history(client):
     assert 'id="medication-log-empty"' in html
 
 
+def test_app_js_ships_batch_medication_reminders(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "async function scheduleAllMedicationReminders" in app_js
+    assert 'id="medication-reminders"' in html
+    assert "已创建 ${created} 条用药提醒" in app_js
+    assert "repeat_days: repeatDays" in app_js
+    assert "条频次无法识别" in app_js
+
+
 def test_app_js_medication_review_hardening(client):
     app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
     css = client.get("/static/styles.css").text
