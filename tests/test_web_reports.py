@@ -772,6 +772,16 @@ def test_app_js_ships_diag_data_stats(client):
     assert "个指标目标" in app_js
 
 
+def test_app_js_marks_medication_hints(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "reminder-badge-med" in app_js
+    assert "startsWith('用药：')" in app_js
+    assert ".reminder-badge-med" in css
+    assert "今日未打卡" in app_js
+
+
 def test_app_js_ships_symptom_severity_styles(client):
     app_js = client.get("/static/app.js").text
     css = client.get("/static/styles.css").text

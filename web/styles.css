@@ -3034,6 +3034,11 @@ html[data-theme="dark"] .metric-delete:hover {
   background: #fff3d6;
 }
 
+.reminder-badge-med {
+  color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
 html[data-theme="dark"] .reminder-badge.reminder-badge-advance {
   color: #f2c66d;
   background: #3a2f14;

@@ -6650,6 +6650,12 @@ function renderReminders(items) {
             : '')
         : '')
       + (item.profile ? ` · 档案：${item.profile}` : '');
+    if (String(item.title || '').startsWith('用药：')) {
+      const medBadge = document.createElement('span');
+      medBadge.className = 'reminder-badge reminder-badge-med';
+      medBadge.textContent = '用药';
+      meta.append(' ', medBadge);
+    }
     if (item.done) {
       const badge = document.createElement('span');
       badge.className = 'reminder-badge reminder-badge-done';
@@ -8106,6 +8112,8 @@ function renderMedications(items) {
     ].filter(Boolean);
     if (Number(item.today_count) > 0) {
       metaParts.push(`今日已服 ${Number(item.today_count)} 次`);
+    } else if (item.active) {
+      metaParts.push('今日未打卡');
     }
     if (item.last_taken_at) {
       metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
