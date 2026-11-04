@@ -272,6 +272,7 @@ const els = {
   remindersDrawer: document.getElementById('reminders-drawer'),
   remindersBackdrop: document.getElementById('reminders-backdrop'),
   remindersClose: document.getElementById('reminders-close'),
+  reminderProfile: document.getElementById('reminder-profile'),
   reminderTitle: document.getElementById('reminder-title'),
   reminderDue: document.getElementById('reminder-due'),
   reminderNote: document.getElementById('reminder-note'),
@@ -5805,6 +5806,9 @@ function resetReminderForm() {
 function editReminder(item) {
   editingReminderId = item.id;
   els.reminderTitle.value = item.title || '';
+  if (els.reminderProfile) {
+    els.reminderProfile.value = item.profile || '';
+  }
   els.reminderDue.value = String(item.due_at || '').slice(0, 10);
   els.reminderAdvance.value = String(item.advance_days || 0);
   els.reminderNote.value = item.note || '';
@@ -5836,6 +5840,9 @@ async function openReminders() {
   syncNotifyButton();
   resetReminderForm();
   await refreshReminderProfileOptions();
+  if (els.reminderProfile) {
+    els.reminderProfile.value = els.profileSelect.value || '';
+  }
   loadReminders();
   els.remindersClose.focus();
 }
@@ -6223,6 +6230,22 @@ async function refreshReminderProfileOptions() {
     els.remindersProfile.appendChild(option);
   }
   els.remindersProfile.value = names.has(current) ? current : '';
+
+  if (els.reminderProfile) {
+    const formCurrent = els.reminderProfile.value || '';
+    els.reminderProfile.replaceChildren();
+    const unassigned = document.createElement('option');
+    unassigned.value = '';
+    unassigned.textContent = '未指定';
+    els.reminderProfile.appendChild(unassigned);
+    for (const name of [...names].sort()) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      els.reminderProfile.appendChild(option);
+    }
+    els.reminderProfile.value = names.has(formCurrent) ? formCurrent : '';
+  }
 }
 
 async function addReminderSeries() {
@@ -6251,7 +6274,7 @@ async function addReminderSeries() {
   const base = {
     title,
     note: (els.reminderNote.value || '').trim(),
-    profile: els.profileSelect.value || '',
+    profile: els.reminderProfile.value || '',
     advance_days: Math.trunc(Math.max(
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
@@ -6310,7 +6333,7 @@ async function addReminder() {
     title,
     due_at: dueAt,
     note: (els.reminderNote.value || '').trim(),
-    profile: els.profileSelect.value || '',
+    profile: els.reminderProfile.value || '',
     advance_days: Math.trunc(Math.max(
       0,
       Math.min(30, Number(els.reminderAdvance.value) || 0)
