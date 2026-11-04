@@ -286,6 +286,42 @@ def test_usage_totals_cover_all_matching_sessions(store):
     assert content_filtered["usage"]["total_tokens"] == 11
 
 
+def test_session_totals_combines_usage_and_feedback(store):
+    store.save_exchange(
+        "s1", "问题一", "答复一",
+        metadata={
+            "usage": {"total_tokens": 10},
+            "llm_calls": 2,
+            "feedback": {"rating": 1},
+        },
+    )
+    store.save_exchange(
+        "s2", "问题二", "答复二",
+        metadata={
+            "usage": {"total_tokens": 20},
+            "llm_calls": 1,
+            "feedback": {"rating": -1, "comment": "需要补充"},
+        },
+    )
+
+    combined = store.session_totals()
+
+    assert combined["turns"] == 2
+    assert combined["llm_calls"] == 3
+    assert combined["usage"]["total_tokens"] == 30
+    assert combined["feedback"] == {
+        "total": 2,
+        "helpful": 1,
+        "unhelpful": 1,
+        "rate": 50.0,
+    }
+
+    filtered = store.session_totals(query="问题一")
+    assert filtered["turns"] == 1
+    assert filtered["usage"]["total_tokens"] == 10
+    assert filtered["feedback"]["total"] == 1
+
+
 def test_daily_usage_groups_by_date(store):
     store.save_exchange(
         "s1", "昨天的问题", "昨天的答复",
