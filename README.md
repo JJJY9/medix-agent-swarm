@@ -289,6 +289,10 @@ npm install -D playwright
 | POST | `/api/tools/curb65` | CURB-65 评分（年龄、意识、尿素氮、呼吸频率与血压） |
 | POST | `/api/tools/phq9` | PHQ-9 抑郁筛查评分（9 个 0–3 答案，第 9 题阳性时 urgent） |
 | POST | `/api/tools/gad7` | GAD-7 焦虑筛查评分（7 个 0–3 答案） |
+| POST | `/api/tools/audit-c` | AUDIT-C 酒精使用筛查（3 个 0–4 答案） |
+| POST | `/api/tools/mmrc` | mMRC 呼吸困难量表（0–4 级） |
+| POST | `/api/tools/cat` | CAT 慢阻肺评估测试（8 个 0–5 答案） |
+| POST | `/api/tools/ess` | Epworth 嗜睡量表（8 个 0–3 答案） |
 | POST | `/api/tools/has-bled` | HAS-BLED 房颤抗凝出血风险评分（年龄与危险因素） |
 | POST | `/api/tools/gcs` | GCS 格拉斯哥昏迷评分（睁眼/语言/运动） |
 | POST | `/api/tools/wells-dvt` | Wells 深静脉血栓概率评分 |
@@ -302,22 +306,24 @@ npm install -D playwright
 | POST | `/api/tools/padua` | Padua 内科住院患者静脉血栓风险评分 |
 | POST | `/api/tools/abcd2` | ABCD2 TIA 后短期卒中风险评分 |
 | POST | `/api/tools/morse-fall` | Morse 跌倒风险评分 |
-| GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选，默认最近 100 条） |
-| POST | `/api/metrics` | 新增血压、体重、血糖或体温记录 |
+| GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选；`limit`/`offset` 分页，默认最近 100 条） |
+| GET | `/api/metrics/summary` | 指定指标在范围内的条数、平均/最高/最低、最新值、上一周期均值、目标与达标条数（`profile`/`metric`/`days`） |
+| POST | `/api/metrics` | 新增血压、体重、血糖、体温、心率、血氧、腰围或 PHQ-9/GAD-7 评分 |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |
 | DELETE | `/api/metrics/{id}` | 删除健康指标记录 |
 | GET | `/api/metrics/export.csv` | 导出当前患者档案/指标类型的健康记录 CSV（带 BOM） |
 | POST | `/api/metrics/import` | 从导出的 CSV 格式导入健康记录，重复记录自动跳过 |
 | GET | `/api/metric-targets` | 自定义健康指标目标（可按 `profile` 筛选） |
-| PUT | `/api/metric-targets` | 设置或覆盖目标上限（血压需同时提供舒张压） |
+| PUT | `/api/metric-targets` | 设置或覆盖目标上限（血氧为下限；血压需同时提供舒张压） |
 | DELETE | `/api/metric-targets/{metric}` | 删除某档案某指标的目标（`profile` 查询参数） |
 | GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
+| POST | `/api/reminders/import` | 从导出的 CSV 格式导入随访提醒，重复提醒自动跳过 |
 | GET | `/api/reminders/export.csv` | 按筛选导出随访提醒 CSV（带 BOM） |
-| GET | `/api/reminders/export.ics` | 按筛选导出随访提醒 iCalendar（.ics） |
-| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile` 关联档案；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
-| POST | `/api/reminders/{id}/complete` | 把随访提醒标记为完成 |
+| GET | `/api/reminders/export.ics` | 按筛选导出随访提醒 iCalendar（.ics，重复提醒输出 RRULE） |
+| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile`、`advance_days` 提前天数、`repeat_days`/`repeat_until` 重复设置；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
+| POST | `/api/reminders/{id}/complete` | 完成提醒；重复提醒会返回自动生成的 `next` |
 | POST | `/api/reminders/{id}/reopen` | 把已完成的随访提醒恢复为待完成 |
-| PATCH | `/api/reminders/{id}` | 修改随访提醒的内容、日期或备注 |
+| PATCH | `/api/reminders/{id}` | 修改随访提醒的内容、日期、备注、档案、提前天数或重复设置 |
 | POST | `/api/reminders/{id}/snooze` | 把随访提醒推迟 N 天（`days` 查询参数，默认 7） |
 | DELETE | `/api/reminders/{id}` | 删除随访提醒 |
 | PATCH | `/api/sessions/{id}` | 重命名会话 |
