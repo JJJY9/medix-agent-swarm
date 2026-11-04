@@ -102,3 +102,11 @@ def test_app_js_ships_sessions_csv_export(client):
     assert "function exportHistoryCsv" in app_js
     assert "history-export-csv" in app_js
     assert "/api/sessions/export.csv" in app_js
+
+
+def test_app_js_ships_blood_pressure_grading(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function classifyBloodPressure" in app_js
+    assert "正常高值" in app_js
+    assert "bp-grade-" in app_js
