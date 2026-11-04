@@ -551,3 +551,13 @@ def test_ess_thresholds():
         calculate_ess([0] * 7)
     with pytest.raises(ValueError):
         calculate_ess([4] + [0] * 7)
+
+
+def test_audit_c_sex_thresholds():
+    assert calculate_audit_c(2, 1, 0, "male")["risk"] == "低风险"
+    assert calculate_audit_c(2, 1, 0, "female")["risk"] == "偏高"
+    assert calculate_audit_c(1, 1, 1, "female")["risk"] == "偏高"
+    assert calculate_audit_c(2, 1, 0)["risk"] == "低风险"
+
+    with pytest.raises(ValueError):
+        calculate_audit_c(0, 0, 0, "unknown")

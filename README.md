@@ -289,7 +289,7 @@ npm install -D playwright
 | POST | `/api/tools/curb65` | CURB-65 评分（年龄、意识、尿素氮、呼吸频率与血压） |
 | POST | `/api/tools/phq9` | PHQ-9 抑郁筛查评分（9 个 0–3 答案，第 9 题阳性时 urgent） |
 | POST | `/api/tools/gad7` | GAD-7 焦虑筛查评分（7 个 0–3 答案） |
-| POST | `/api/tools/audit-c` | AUDIT-C 酒精使用筛查（3 个 0–4 答案） |
+| POST | `/api/tools/audit-c` | AUDIT-C 酒精使用筛查（3 个 0–4 答案，可选 `sex` 使用男女阈值） |
 | POST | `/api/tools/mmrc` | mMRC 呼吸困难量表（0–4 级） |
 | POST | `/api/tools/cat` | CAT 慢阻肺评估测试（8 个 0–5 答案） |
 | POST | `/api/tools/ess` | Epworth 嗜睡量表（8 个 0–3 答案） |
@@ -307,6 +307,7 @@ npm install -D playwright
 | POST | `/api/tools/abcd2` | ABCD2 TIA 后短期卒中风险评分 |
 | POST | `/api/tools/morse-fall` | Morse 跌倒风险评分 |
 | GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选；`limit`/`offset` 分页，默认最近 100 条） |
+| GET | `/api/metrics/latest` | 每种指标类型最新的一条记录（可按 `profile` 筛选，用于首页速览与会诊上下文） |
 | GET | `/api/metrics/summary` | 指定指标在范围内的条数、平均/最高/最低、最新值、上一周期均值、目标与达标条数（`profile`/`metric`/`days`） |
 | POST | `/api/metrics` | 新增血压、体重、血糖、体温、心率、血氧、腰围或 PHQ-9/GAD-7 评分 |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |

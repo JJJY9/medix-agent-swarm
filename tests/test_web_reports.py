@@ -525,3 +525,14 @@ def test_metric_select_is_grouped(client):
 
     assert '<optgroup label="生命体征">' in html
     assert '<optgroup label="量表评分">' in html
+
+
+def test_app_js_metric_save_guards_and_latest(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert "let metricSaving = false;" in app_js
+    assert "if (metricSaving) return;" in app_js
+    assert "event.isComposing" in app_js
+    assert "/api/metrics/latest" in app_js
+    assert 'id="calc-auditc-sex"' in html
