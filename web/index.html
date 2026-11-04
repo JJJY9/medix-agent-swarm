@@ -497,7 +497,10 @@
       <label class="calc-field">备注（可选）
         <input id="metric-note" type="text" maxlength="300" placeholder="如：晨起、服药后">
       </label>
-      <button type="button" class="btn-quiet" id="metric-add">保存记录</button>
+      <div class="metrics-actions">
+        <button type="button" class="btn-quiet" id="metric-add">保存记录</button>
+        <button type="button" class="btn-quiet" id="metric-export">导出 CSV</button>
+      </div>
     </div>
 
     <section class="metric-trend" id="metric-trend" hidden aria-label="健康指标趋势">

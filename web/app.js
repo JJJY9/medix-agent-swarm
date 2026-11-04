@@ -144,6 +144,7 @@ const els = {
   metricTime: document.getElementById('metric-time'),
   metricNote: document.getElementById('metric-note'),
   metricAdd: document.getElementById('metric-add'),
+  metricExport: document.getElementById('metric-export'),
   metricTrend: document.getElementById('metric-trend'),
   metricTrendTitle: document.getElementById('metric-trend-title'),
   metricTrendLatest: document.getElementById('metric-trend-latest'),
@@ -3708,6 +3709,44 @@ async function deleteMetricRecord(item) {
   }
 }
 
+async function exportMetricsCsv() {
+  const button = els.metricExport;
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '…';
+
+  const profile = els.metricProfile.value;
+  const metric = els.metricType.value;
+
+  try {
+    const res = await fetch(
+      `/api/metrics/export.csv?profile=${encodeURIComponent(profile)}`
+      + `&metric=${encodeURIComponent(metric)}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+
+    const buffer = await res.arrayBuffer();
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-metrics-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    button.textContent = '已导出';
+  } catch (err) {
+    button.textContent = '失败';
+    window.alert(`导出健康记录失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      button.textContent = original;
+      button.disabled = false;
+    }, 1600);
+  }
+}
+
 /* ---------- 临床计算工具 ---------- */
 
 let calcFocused = null;
@@ -4649,6 +4688,7 @@ els.metricType.addEventListener('change', () => {
 });
 els.metricProfile.addEventListener('change', loadMetricTrend);
 els.metricAdd.addEventListener('click', addMetricRecord);
+els.metricExport.addEventListener('click', exportMetricsCsv);
 
 els.authForm.addEventListener('submit', async (event) => {
   event.preventDefault();

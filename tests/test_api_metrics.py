@@ -87,6 +87,38 @@ def test_metrics_api_validation(client):
     assert invalid_list_filter.status_code == 400
 
 
+def test_metrics_csv_export(client):
+    client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈",
+            "metric": "bp",
+            "value1": 138,
+            "value2": 86,
+            "measured_at": "2026-01-02T08:00",
+            "note": "晨起",
+        },
+    )
+    client.post(
+        "/api/metrics",
+        json={"profile": "妈妈", "metric": "weight", "value1": 62.5},
+    )
+
+    response = client.get("/api/metrics/export.csv", params={"metric": "bp"})
+    invalid = client.get(
+        "/api/metrics/export.csv", params={"metric": "unknown"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    text = response.content.decode("utf-8-sig")
+    assert text.startswith("测量时间")
+    assert "血压" in text
+    assert "138" in text and "86" in text
+    assert "62.5" not in text
+    assert invalid.status_code == 400
+
+
 def test_import_api_accepts_metrics_only(client):
     response = client.post(
         "/api/sessions/import",
