@@ -201,6 +201,32 @@ def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     assert invalid.status_code == 422
 
 
+def test_audit_log_api_records_session_actions(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("s1", "删除问题", "答复一")
+    store.save_exchange("s2", "归档问题", "答复二")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        deleted = client.delete("/api/sessions/s1")
+        archived = client.patch(
+            "/api/sessions/s2/archive", json={"archived": True}
+        )
+        audit = client.get("/api/audit")
+    finally:
+        store.close()
+
+    assert deleted.status_code == 200
+    assert archived.status_code == 200
+    actions = audit.json()["actions"]
+    assert [item["action"] for item in actions] == [
+        "session.archive", "session.delete",
+    ]
+    assert actions[0]["target"] == "s2"
+    assert actions[1]["target"] == "s1"
+
+
 def test_auto_archive_sessions_archives_old(monkeypatch, tmp_path):
     import asyncio
     from datetime import datetime, timedelta

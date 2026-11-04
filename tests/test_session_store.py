@@ -925,6 +925,25 @@ def test_archive_older_than(store):
     assert store.archive_older_than(0) == 0
 
 
+def test_audit_log(store):
+    assert store.list_audit_log() == []
+
+    first = store.log_action("session.delete", "s1", "用户删除")
+    second = store.log_action("session.import", detail="imported=2")
+
+    assert first > 0
+    assert second > first
+
+    actions = store.list_audit_log()
+    assert [item["action"] for item in actions] == [
+        "session.import", "session.delete",
+    ]
+    assert actions[0]["detail"] == "imported=2"
+    assert actions[1]["target"] == "s1"
+    assert len(store.list_audit_log(limit=1)) == 1
+    assert store.log_action("") == 0
+
+
 def test_legacy_messages_table_is_migrated(tmp_path):
     import sqlite3
 
