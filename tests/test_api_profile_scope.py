@@ -97,3 +97,18 @@ def test_feedback_csv_respects_profile(client_and_store):
     assert response.status_code == 200
     assert "s1" in text
     assert "s2" not in text
+
+
+def test_profile_names_include_all_sources(client_and_store):
+    client, store = client_and_store
+    store.save_profile("护士", {"age": "30"})
+    store.add_reminder("复查", "2026-11-10", profile="外婆")
+    store.add_metric(
+        "外公", "weight", 70, measured_at="2026-11-01T08:00"
+    )
+
+    data = client.get("/api/profile-names").json()
+
+    assert set(data["profiles"]) >= {
+        "母亲", "孩子", "护士", "外婆", "外公",
+    }

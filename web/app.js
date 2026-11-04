@@ -5766,21 +5766,9 @@ async function loadReminders() {
 
 async function refreshReminderProfileOptions() {
   if (!els.remindersProfile) return;
-  let items = [];
-  try {
-    const res = await fetch('/api/session-profiles');
-    if (res.ok) {
-      const data = await res.json();
-      items = data.profiles || [];
-    }
-  } catch {
-    // 会话档案加载失败时退回档案列表
-  }
 
-  const names = new Set(Object.keys(readProfiles()));
-  for (const item of items) {
-    if (item && item.name) names.add(item.name);
-  }
+  const names = await fetchUsedProfileNames();
+  for (const name of Object.keys(readProfiles())) names.add(name);
 
   const current = els.remindersProfile.value || '';
   els.remindersProfile.replaceChildren();
@@ -7243,24 +7231,27 @@ function setActiveProfile(name) {
   }
 }
 
+async function fetchUsedProfileNames() {
+  const names = new Set();
+  try {
+    const res = await fetch('/api/profile-names');
+    if (res.ok) {
+      const data = await res.json();
+      for (const name of data.profiles || []) {
+        if (typeof name === 'string' && name) names.add(name);
+      }
+    }
+  } catch {
+    // 档案名加载失败时退回档案列表
+  }
+  return names;
+}
+
 async function refreshHistoryProfileOptions() {
   if (!els.historyProfile) return;
 
-  let items = [];
-  try {
-    const res = await fetch('/api/session-profiles');
-    if (res.ok) {
-      const data = await res.json();
-      items = data.profiles || [];
-    }
-  } catch {
-    // 会话档案加载失败时退回档案列表
-  }
-
-  const names = new Set(Object.keys(readProfiles()));
-  for (const item of items) {
-    if (item && item.name) names.add(item.name);
-  }
+  const names = await fetchUsedProfileNames();
+  for (const name of Object.keys(readProfiles())) names.add(name);
 
   const current = historyProfile || els.historyProfile.value || '';
   els.historyProfile.replaceChildren();

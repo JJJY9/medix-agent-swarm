@@ -270,6 +270,7 @@ npm install -D playwright
 | GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、`profile=档案` 患者档案筛选、用量与反馈汇总 |
 | GET | `/api/tags` | 未归档会话的标签与数量 |
 | GET | `/api/session-profiles` | 会话中出现过的档案名及数量（含已删除档案留下的历史名字） |
+| GET | `/api/profile-names` | 所有数据表中出现过的档案名（含已删除档案留下的历史名字） |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile` 筛选导出会话列表 CSV（带 BOM） |
 | POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息（不可恢复，写入审计） |
