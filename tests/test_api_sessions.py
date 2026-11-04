@@ -788,3 +788,27 @@ def test_sessions_api_paginates_with_global_summary(tmp_path, monkeypatch):
     # 汇总覆盖全部匹配会话，而不是当前页
     assert second["summary"]["sessions"] == 3
     assert second["summary"]["usage"]["total_tokens"] == 60
+
+
+def test_sessions_api_filters_by_profile(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("s1", "妈妈的头痛", "答复一")
+    store.ensure_session("s1", "", "母亲")
+    store.save_exchange("s2", "孩子发烧", "答复二")
+    store.ensure_session("s2", "", "孩子")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        filtered = client.get("/api/sessions", params={"profile": "母亲"})
+        missing = client.get("/api/sessions", params={"profile": "不存在"})
+    finally:
+        store.close()
+
+    assert filtered.status_code == 200
+    data = filtered.json()
+    assert [item["id"] for item in data["sessions"]] == ["s1"]
+    assert data["sessions"][0]["profile"] == "母亲"
+    assert data["summary"]["sessions"] == 1
+    assert missing.status_code == 200
+    assert missing.json()["sessions"] == []

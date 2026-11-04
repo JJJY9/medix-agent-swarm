@@ -52,7 +52,7 @@
 - **🧾 操作审计**: 记录删除会诊、归档/恢复、导入导出、删除患者档案与健康记录等关键操作，可在系统自检中按动作、关键字与日期范围筛选查看，并按当前筛选导出 CSV ✅
 - **🩺 系统自检**: Web 端查看 Python/依赖/配置/知识库、会话数据库与访问保护/限流状态，可一键测试模型连通性，并查看最近操作审计 ✅
 - **🧠 记忆系统**: 短期记忆（会话级对话历史）+ 长期记忆（Mem0跨会话记忆）+ **多轮对话上下文利用** ✅
-- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、标签分类与筛选、归档/恢复、批量归档/删除/设置标签、重命名、复制直达链接、导出、整库备份与恢复、删除；支持按 `MEDIX_AUTO_ARCHIVE_DAYS` 自动归档旧会话，支持 `?session=` 链接直接打开 ✅
+- **🗂️ 会话历史**: SQLite 持久化会诊记录，服务重启后可分页浏览、搜索（命中高亮与正文片段）、时间范围筛选、标签分类与筛选、患者档案筛选、归档/恢复、批量归档/删除/设置标签、重命名、复制直达链接、导出、整库备份与恢复、删除；支持按 `MEDIX_AUTO_ARCHIVE_DAYS` 自动归档旧会话，支持 `?session=` 链接直接打开 ✅
 - **💬 会诊操作**: 复制意见、复制 SOAP、导出 Markdown、导出独立 HTML 报告（单文件可打印为 PDF）、打印 / PDF、失败重试、再次会诊、停止生成、草稿自动保存 ✅
 - **🆚 会诊对比**: 在会诊记录中勾选任意两次会诊即可并排对比标题、标签、用量、急症/用药/来源统计与每轮意见 ✅
 - **🎙️ 语音输入**: 支持 Web Speech API 的浏览器可在输入框旁语音听写，实时转成文字并自动保存草稿；不支持时按钮自动隐藏 ✅
@@ -178,6 +178,7 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 ### 会话历史与意见导出
 
 - 会诊记录保存在 `data/sessions.db`（SQLite，首次运行自动创建，已加入 `.gitignore`），服务重启后不会丢失
+- 会诊时选择了常用档案，本次会诊会自动关联到该档案（只补全一次）；历史抽屉的「档案」筛选可只看某位患者的会诊，就诊摘要也按档案汇总
 - 右上角「会诊记录」支持搜索、打开、重命名、导出和删除历史会诊，点击条目可恢复完整问诊记录
 - 每条会诊意见下方提供「复制意见」「导出 Markdown」「导出 HTML 报告」「再次会诊」
 - 每条会诊意见下方可标记「有用 / 待改进」，再次点击同一按钮可取消；反馈保存在该条消息的元数据中，随整库备份导出与恢复
@@ -253,7 +254,7 @@ npm install -D playwright
 | POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、用药安全提示、科室开始/完成、汇总 Token 与最终结果 |
 | GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
-| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、用量与反馈汇总 |
+| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、`profile=档案` 患者档案筛选、用量与反馈汇总 |
 | GET | `/api/tags` | 未归档会话的标签与数量 |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | POST | `/api/sessions/import` | 导入备份 JSON（已存在的会话编号跳过） |
@@ -315,7 +316,7 @@ npm install -D playwright
 | GET | `/api/audit/export.csv` | 按同样筛选条件导出操作审计 CSV（带 BOM） |
 | POST | `/api/diagnose/llm` | 用一次最小请求测试模型连通性 |
 
-`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。流式接口会在模型调用前额外推送 `triage` 与 `medication_safety` 事件，最终结果的 `medication_safety.alerts` 会随会诊记录保存。
+`/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。流式接口会在模型调用前额外推送 `triage` 与 `medication_safety` 事件，最终结果的 `medication_safety.alerts` 会随会诊记录保存。`/api/chat` 与 `/api/chat/stream` 支持 `patient_profile`（常用档案名称），成功后会把会话关联到该档案，供历史筛选与就诊摘要使用。
 
 设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
 

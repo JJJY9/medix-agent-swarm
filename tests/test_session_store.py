@@ -1034,6 +1034,32 @@ def test_reminders_crud(store):
         store.add_reminder("复查", "")
 
 
+def test_session_profile_filter(store):
+    store.save_exchange(
+        "s1", "妈妈的头痛", "答复一",
+        metadata={"usage": {"total_tokens": 10}},
+    )
+    store.ensure_session("s1", "", "母亲")
+    store.save_exchange(
+        "s2", "孩子发烧", "答复二",
+        metadata={"usage": {"total_tokens": 20}},
+    )
+    store.ensure_session("s2", "", "孩子")
+
+    assert [item["id"] for item in store.list_sessions(profile="母亲")] == ["s1"]
+    assert [item["id"] for item in store.list_sessions(profile="孩子")] == ["s2"]
+    assert store.list_sessions(profile="不存在") == []
+    assert store.count_sessions(profile="母亲") == 1
+    assert store.usage_totals(profile="孩子")["usage"]["total_tokens"] == 20
+    assert store.feedback_totals(profile="母亲")["total"] == 0
+    assert store.get_session("s1")["profile"] == "母亲"
+
+    # 已有档案不会被后续会诊覆盖
+    store.ensure_session("s1", "", "其他")
+    assert store.get_session("s1")["profile"] == "母亲"
+    assert [item["id"] for item in store.list_sessions(profile="母亲")] == ["s1"]
+
+
 def test_session_tags_and_filter(store):
     store.save_exchange(
         "s1", "高血压复诊", "答复一",
