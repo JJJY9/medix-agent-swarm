@@ -713,6 +713,7 @@ def test_app_js_ships_weekly_summary(client):
     assert "const ok = await copyText(weeklySummaryText(cache.data))" in app_js
     assert "已复制健康小结" in app_js
     assert "近 ${days} 天打卡" in app_js
+    assert "较上期" in app_js
     assert "近 7 天小结" in app_js
     assert "weeklySummaryRequestSeq" in app_js
     assert "medicationLogRequestSeq" in app_js
