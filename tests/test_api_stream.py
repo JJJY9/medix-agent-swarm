@@ -130,6 +130,27 @@ def test_stream_emits_agent_started_before_result():
     assert types.index("agent_started") < types.index("result")
 
 
+def test_stream_emits_context_aware_triage():
+    api_server.state.coordinator = FakeCoordinator()
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "question": "宝宝发烧到 38 度",
+            "session_id": "api-infant-fever-test",
+            "context": {"age": "2个月"},
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    triage = next(event for event in events if event["type"] == "triage")
+
+    assert triage["level"] == "emergency"
+    assert "3 个月以下婴儿发热" in triage["matches"]
+
+
 def test_stream_emits_medication_safety_before_result():
     api_server.state.coordinator = FakeCoordinator()
     client = TestClient(api_server.app)

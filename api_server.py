@@ -929,7 +929,7 @@ async def chat_stream(request: ChatRequest):
       前端据此渐进渲染会诊意见。
     """
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
-    triage = detect_red_flags(request.question)
+    triage = detect_red_flags(request.question, request.context)
     medication_safety = check_medication_safety(request.question, request.context)
 
     async def event_stream() -> AsyncIterator[str]:
