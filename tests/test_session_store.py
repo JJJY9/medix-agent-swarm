@@ -962,9 +962,11 @@ def test_list_metrics_days_filter(store):
         "", "weight", 61,
         measured_at=datetime.now().isoformat(timespec="minutes"),
     )
-    store.add_metric("", "weight", 62, measured_at="2099-01-01T08:00")
+    assert store.add_metric(
+        "", "weight", 62, measured_at="2099-01-01T08:00"
+    ) is None
 
-    assert len(store.list_metrics()) == 3
+    assert len(store.list_metrics()) == 2
     recent = store.list_metrics(days=30)
     assert [item["value1"] for item in recent] == [61]
 
@@ -1678,21 +1680,21 @@ def test_symptoms_crud_and_export_import(store, tmp_path):
 
 
 def test_symptom_time_is_canonical(store):
-    item = store.add_symptom("", "头晕", 5, "2026-11-05 23:00")
-    assert item["recorded_at"] == "2026-11-05T23:00"
+    item = store.add_symptom("", "头晕", 5, "2026-11-04 23:00")
+    assert item["recorded_at"] == "2026-11-04T23:00"
 
-    store.add_symptom("", "乏力", 3, "2026-11-05T01:00")
+    store.add_symptom("", "乏力", 3, "2026-11-04T01:00")
     items = store.list_symptoms()
     assert [row["symptom"] for row in items] == ["头晕", "乏力"]
 
 
 def test_metric_time_is_canonical(store):
     first = store.add_metric(
-        "", "weight", 60, measured_at="2026-11-05 23:00"
+        "", "weight", 60, measured_at="2026-11-04 23:00"
     )
-    assert first["measured_at"] == "2026-11-05T23:00"
+    assert first["measured_at"] == "2026-11-04T23:00"
 
-    store.add_metric("", "weight", 61, measured_at="2026-11-05T01:00")
+    store.add_metric("", "weight", 61, measured_at="2026-11-04T01:00")
     assert [row["value1"] for row in store.list_metrics()] == [60, 61]
 
 
@@ -1820,7 +1822,7 @@ def test_medication_logs_ignore_future_dates_in_stats(store):
     item = store.add_medication("", "测试药")
     today = datetime.now().strftime("%Y-%m-%d")
     store.add_medication_log(item["id"], f"{today}T08:00")
-    store.add_medication_log(item["id"], "2099-01-01T09:00")
+    assert store.add_medication_log(item["id"], "2099-01-01T09:00") is None
 
     listed = store.list_medications()[0]
     assert listed["today_count"] == 1

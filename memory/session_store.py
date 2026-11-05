@@ -167,6 +167,19 @@ def _canonical_local_time(value: Any) -> Optional[str]:
     return parsed.isoformat(timespec="seconds")
 
 
+#: 允许的时钟偏差；超过该时间的“未来记录”视为无效
+FUTURE_TIME_TOLERANCE = timedelta(minutes=5)
+
+
+def _is_future_timestamp(value: str) -> bool:
+    """判断规范化后的时间是否明显晚于当前时间。"""
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return False
+    return parsed > datetime.now() + FUTURE_TIME_TOLERANCE
+
+
 def _normalize_metric(
     profile: str,
     metric: str,
@@ -203,6 +216,8 @@ def _normalize_metric(
     else:
         measured_at = _canonical_local_time(measured_at)
         if measured_at is None:
+            return None
+        if _is_future_timestamp(measured_at):
             return None
 
     return {
@@ -404,6 +419,8 @@ def _normalize_symptom(
     else:
         recorded_at = _canonical_local_time(recorded_at)
         if recorded_at is None:
+            return None
+        if _is_future_timestamp(recorded_at):
             return None
 
     return {
@@ -3601,6 +3618,8 @@ class SessionStore:
         else:
             taken_at = _canonical_local_time(taken_at)
             if taken_at is None:
+                return None
+            if _is_future_timestamp(taken_at):
                 return None
         note = " ".join(str(note or "").split())[:300]
         now = datetime.now().isoformat(timespec="microseconds")

@@ -161,7 +161,7 @@ def test_health_calendar_validates_month(client_and_store):
 def test_health_calendar_month_boundaries(client_and_store):
     client, _store = client_and_store
 
-    for day in ("2026-12-31", "2027-01-01", "2028-02-29"):
+    for day in ("2024-12-31", "2025-01-01", "2024-02-29"):
         client.post("/api/metrics", json={
             "profile": "妈妈", "metric": "weight",
             "value1": 60, "measured_at": f"{day}T08:00",
@@ -169,24 +169,24 @@ def test_health_calendar_month_boundaries(client_and_store):
 
     december = client.get(
         "/api/health/calendar",
-        params={"profile": "妈妈", "month": "2026-12"},
+        params={"profile": "妈妈", "month": "2024-12"},
     ).json()
-    assert december["end"] == "2026-12-31"
-    assert december["days"]["2026-12-31"]["metrics"] == 1
-    assert "2027-01-01" not in december["days"]
+    assert december["end"] == "2024-12-31"
+    assert december["days"]["2024-12-31"]["metrics"] == 1
+    assert "2025-01-01" not in december["days"]
 
     january = client.get(
         "/api/health/calendar",
-        params={"profile": "妈妈", "month": "2027-01"},
+        params={"profile": "妈妈", "month": "2025-01"},
     ).json()
-    assert january["days"]["2027-01-01"]["metrics"] == 1
+    assert january["days"]["2025-01-01"]["metrics"] == 1
 
     february = client.get(
         "/api/health/calendar",
-        params={"profile": "妈妈", "month": "2028-02"},
+        params={"profile": "妈妈", "month": "2024-02"},
     ).json()
-    assert february["end"] == "2028-02-29"
-    assert february["days"]["2028-02-29"]["metrics"] == 1
+    assert february["end"] == "2024-02-29"
+    assert february["days"]["2024-02-29"]["metrics"] == 1
 
 
 def test_health_calendar_csv_export(client_and_store):
@@ -197,16 +197,16 @@ def test_health_calendar_csv_export(client_and_store):
 
     client.post("/api/metrics", json={
         "profile": "妈妈", "metric": "weight",
-        "value1": 60, "measured_at": "2026-12-31T08:00",
+        "value1": 60, "measured_at": "2026-10-31T08:00",
     })
     client.post("/api/symptoms", json={
         "profile": "妈妈", "symptom": "头晕",
-        "severity": 8, "recorded_at": "2026-12-31T09:00",
+        "severity": 8, "recorded_at": "2026-10-31T09:00",
     })
 
     export = client.get(
         "/api/health/calendar/export.csv",
-        params={"profile": "妈妈", "month": "2026-12"},
+        params={"profile": "妈妈", "month": "2026-10"},
     )
     rows = list(
         csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
@@ -219,7 +219,7 @@ def test_health_calendar_csv_export(client_and_store):
         "待办提醒", "已完成提醒", "异常",
     ]
     assert len(rows) == 32
-    last = next(row for row in rows[1:] if row[0] == "2026-12-31")
+    last = next(row for row in rows[1:] if row[0] == "2026-10-31")
     assert last[1] == "1"
     assert last[2] == "1"
     assert last[7] == "1"

@@ -111,9 +111,17 @@ def test_medications_api_validation(client_and_store):
         "/api/medications", json={"name": " ", "active": True}
     )
     missing_name = client.post("/api/medications", json={"active": True})
+    medication = client.post(
+        "/api/medications", json={"name": "氨氯地平"}
+    ).json()["medication"]
+    future_log = client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": "2099-01-01T08:00"},
+    )
 
     assert blank.status_code == 400
     assert missing_name.status_code == 422
+    assert future_log.status_code == 404
 
 
 def test_medication_logs_api_roundtrip(client_and_store):
