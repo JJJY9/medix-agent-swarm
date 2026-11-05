@@ -417,6 +417,7 @@ const els = {
   timelineRange: document.getElementById('timeline-range'),
   timelineType: document.getElementById('timeline-type'),
   timelineSearch: document.getElementById('timeline-search'),
+  timelineOnlyAlert: document.getElementById('timeline-only-alert'),
   timelineExport: document.getElementById('timeline-export'),
   timelineSummary: document.getElementById('timeline-summary'),
   timelineList: document.getElementById('timeline-list'),
@@ -8803,7 +8804,11 @@ function renderTimeline(data) {
   const query = els.timelineSearch
     ? String(els.timelineSearch.value || '').trim().toLowerCase()
     : '';
+  const onlyAlert = Boolean(
+    els.timelineOnlyAlert && els.timelineOnlyAlert.checked
+  );
   const events = allEvents.filter((event) => {
+    if (onlyAlert && !event.alert) return false;
     if (type && event.type !== type) return false;
     if (!query) return true;
     return [event.title, event.value, event.note, event.profile]
@@ -8817,13 +8822,15 @@ function renderTimeline(data) {
   els.timelineEmpty.hidden = events.length > 0;
   if (query) {
     els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
+  } else if (onlyAlert) {
+    els.timelineEmpty.textContent = `近 ${days} 天没有超标的记录。`;
   } else if (type) {
     els.timelineEmpty.textContent = `近 ${days} 天没有该类型的记录。`;
   } else {
     els.timelineEmpty.textContent = `近 ${days} 天没有健康记录。`;
   }
   if (els.timelineSummary) {
-    const count = type || query
+    const count = type || query || onlyAlert
       ? events.length
       : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
@@ -11614,6 +11621,13 @@ els.timelineType.addEventListener('change', () => {
 });
 if (els.timelineSearch) {
   els.timelineSearch.addEventListener('input', () => {
+    if (timelineDataCache) {
+      renderTimeline(timelineDataCache);
+    }
+  });
+}
+if (els.timelineOnlyAlert) {
+  els.timelineOnlyAlert.addEventListener('change', () => {
     if (timelineDataCache) {
       renderTimeline(timelineDataCache);
     }
