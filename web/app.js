@@ -496,6 +496,9 @@ const AGENT_NAMES = {
 
 const initialSessionFromUrl = new URLSearchParams(window.location.search).get('session');
 let sessionId = initialSessionFromUrl || safeStorageGet('medix.session') || null;
+// 当前会话已从服务端渲染的最大消息 ID；中止对账用它区分“旧问答”和
+// “本轮新落库的问答”，仅靠问题文本会在重复提问时误判
+let lastServerMessageId = 0;
 if (initialSessionFromUrl) {
   safeStorageSet('medix.session', initialSessionFromUrl);
 }
@@ -1251,6 +1254,7 @@ async function copyText(text) {
     return true;
   } catch {
     // 非安全上下文（例如局域网 http）下 clipboard API 不可用，退回 execCommand
+    const previousFocus = document.activeElement;
     const ta = document.createElement('textarea');
     ta.value = text;
     ta.setAttribute('readonly', '');
@@ -1265,6 +1269,14 @@ async function copyText(text) {
       ok = false;
     }
     ta.remove();
+    if (
+      previousFocus
+      && previousFocus !== document.body
+      && document.contains(previousFocus)
+      && typeof previousFocus.focus === 'function'
+    ) {
+      previousFocus.focus();
+    }
     return ok;
   }
 }
@@ -2404,6 +2416,8 @@ function renderSources(sources) {
 }
 
 function renderAnswer(payload, elapsedSeconds, question = '') {
+  const messageId = Number(payload.assistant_message_id) || 0;
+  if (messageId > lastServerMessageId) lastServerMessageId = messageId;
   const turn = document.createElement('div');  turn.className = 'turn';
 
   const note = document.createElement('div');
@@ -2783,6 +2797,7 @@ async function startNewSession() {
     sessionId = data.session_id;
     safeStorageSet('medix.session', sessionId);
     setSessionUrl(sessionId);
+    lastServerMessageId = 0;
 
     els.thread.replaceChildren(els.empty);
     els.empty.hidden = false;
@@ -3444,6 +3459,7 @@ async function bulkDelete() {
 
     if (ids.includes(sessionId)) {
       sessionId = null;
+      lastServerMessageId = 0;
       safeStorageRemove('medix.session');
       setSessionUrl(null);
       els.thread.replaceChildren(els.empty);
@@ -4291,6 +4307,10 @@ function closeHistory(restoreFocus = false) {
 function renderStoredMessages(messages, activeSessionId = sessionId, profile = '') {
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = messages.length > 0;
+  lastServerMessageId = messages.reduce(
+    (max, message) => Math.max(max, Number(message.id) || 0),
+    0
+  );
 
   let question = '';
   let askTurn = null;
@@ -4547,6 +4567,7 @@ async function deleteHistory(item) {
 
     if (item.id === sessionId) {
       sessionId = null;
+      lastServerMessageId = 0;
       safeStorageRemove('medix.session');
       setSessionUrl(null);
       els.thread.replaceChildren(els.empty);
@@ -11531,7 +11552,7 @@ async function handleLaunchAction() {
   }
 }
 
-async function restoreCurrentSession(expectedQuestion = '') {
+async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 0) {
   if (!sessionId) return;
   const expectedSession = sessionId;
 
@@ -11547,22 +11568,23 @@ async function restoreCurrentSession(expectedQuestion = '') {
     const messages = data.messages || [];
     if (!messages.length) return;
 
+    const newestAssistantId = messages.reduce(
+      (max, message) => message.role === 'assistant'
+        ? Math.max(max, Number(message.id) || 0)
+        : max,
+      0
+    );
     if (expectedQuestion) {
-      // 只在这一轮确实已保存（有对应提问和其后的回答）时才恢复，
-      // 否则会把刚停止的提问与“已停止”卡片覆盖成旧会话
-      let questionIndex = -1;
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        if (messages[i].role === 'user'
-          && messages[i].content === expectedQuestion) {
-          questionIndex = i;
-          break;
-        }
+      // 本轮提问和回答都必须比中止前的最大消息 ID 更新；否则只是同文本的
+      // 旧问答，不能覆盖刚停止的提问与“已停止”卡片
+      const persistedQuestion = messages.some(
+        (message) => message.role === 'user'
+          && message.content === expectedQuestion
+          && (Number(message.id) || 0) > baselineMessageId
+      );
+      if (!persistedQuestion || newestAssistantId <= baselineMessageId) {
+        return;
       }
-      const persisted = questionIndex >= 0
-        && messages.slice(questionIndex + 1).some(
-          (message) => message.role === 'assistant'
-        );
-      if (!persisted) return;
     }
 
     els.readout.session.textContent = shortSession(expectedSession);
@@ -11573,13 +11595,13 @@ async function restoreCurrentSession(expectedQuestion = '') {
   }
 }
 
-function scheduleAbortReconcile(session, question) {
+function scheduleAbortReconcile(session, question, baselineMessageId) {
   // 停止接收不等于服务端没有保存结果；稍后拉取一次会话，
   // 仅当本轮问答已落库时恢复，避免清掉停止提示并重复会诊
   [1200, 3500].forEach((delay) => {
     setTimeout(() => {
       if (!busy && sessionId === session) {
-        restoreCurrentSession(question);
+        restoreCurrentSession(question, baselineMessageId);
       }
     }, delay);
   });
@@ -11600,6 +11622,7 @@ async function send(question) {
   activeController = controller;
 
   resetRail();
+  const baselineMessageId = lastServerMessageId;
   const askTurn = renderAsk(question);
 
   const startedAt = performance.now();
@@ -11797,7 +11820,7 @@ async function send(question) {
 
     if (err.name === 'AbortError') {
       renderStopped({ question, askTurn });
-      scheduleAbortReconcile(sessionId, question);
+      scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
       logStep('用户停止了本次会诊', false);

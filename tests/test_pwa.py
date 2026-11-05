@@ -63,6 +63,8 @@ def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):
     app_js = client.get("/static/app.js").text
 
     assert "scheduleAbortReconcile" in app_js
+    assert "baselineMessageId" in app_js
+    assert "lastServerMessageId" in app_js
     assert "已停止接收本次会诊" in app_js
     assert "会诊进行中，暂不能批量删除会话" in app_js
 
@@ -77,6 +79,8 @@ def test_shell_accessibility_regions_and_focusable_scrollable_areas(client):
     assert "viewport-fit=cover" in index
     assert "isWindowNearBottom" in app_js
     assert "aria-invalid" in app_js
+    assert ".voice[hidden]" in styles
+    assert "previousFocus.focus()" in app_js
     assert "contribution-body" in app_js
     assert 'html[data-theme="dark"] .bp-grade-ok' in styles
     assert 'html[data-theme="dark"] .timeline-badge-consultation' in styles
