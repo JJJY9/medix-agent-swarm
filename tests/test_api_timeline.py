@@ -125,6 +125,46 @@ def test_timeline_consultation_without_risk(client_and_store):
     assert "中危" not in consultation["value"]
 
 
+def test_timeline_filters_single_day(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 130, "value2": 85, "measured_at": "2026-10-02T08:00",
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕",
+        "severity": 3, "recorded_at": "2026-10-03T09:00",
+    })
+
+    day = client.get(
+        "/api/timeline", params={"profile": "妈妈", "date": "2026-10-02"}
+    ).json()
+    assert day["date"] == "2026-10-02"
+    assert day["total"] == 1
+    assert day["events"][0]["type"] == "metric"
+
+    empty = client.get(
+        "/api/timeline", params={"profile": "妈妈", "date": "2026-10-04"}
+    ).json()
+    assert empty["total"] == 0
+
+    exported = client.get(
+        "/api/timeline/export.csv",
+        params={"profile": "妈妈", "date": "2026-10-02"},
+    )
+    rows = list(
+        csv.reader(io.StringIO(exported.content.decode("utf-8-sig")))
+    )
+    assert len(rows) == 2
+    assert rows[1][1] == "指标"
+
+    invalid = client.get(
+        "/api/timeline", params={"date": "2026-10-xx"}
+    )
+    assert invalid.status_code == 400
+
+
 def test_timeline_csv_export(client_and_store):
     client, _store = client_and_store
     now = datetime.now().isoformat(timespec="minutes")
