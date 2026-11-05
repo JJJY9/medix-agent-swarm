@@ -2,24 +2,22 @@
 
 基于 Skills-Agent 两层架构的多智能体协作医疗助手系统，融合 Agent Loop、Agent Swarm、记忆管理和 Milvus 知识库。
 
-## 📌 项目来源与改动说明
+## 📌 项目说明
 
-**本仓库的核心代码（Agent 架构、Skills、Swarm 协作、记忆系统、知识库）由他人编写，非本人原创。**
-本人在此基础上完成了 Windows 平台适配、缺陷修复与 Web 前端开发。
+本项目及其代码（Agent 架构、Skills、Swarm 协作、记忆系统、本地知识库、Web 会诊界面与健康数据功能）由仓库作者原创实现并持续改进。此前 README 中关于代码来源的说明有误，现已更正。
 
-原项目未附带 LICENSE 文件，按默认著作权法属于「保留所有权利」。因此本仓库目前设为**私有**，
-未经原作者许可不应公开分发或用于商业用途。
+仓库当前为**私有**，是否公开由作者决定。
 
-### 本版本相对原项目的主要改动
+### 主要实现
 
-| 改动 | 说明 |
+| 方向 | 说明 |
 |------|------|
-| 修复模块文件名 | `swarm/events.py` 和 `validation/auto_fixer.py` 被改名为带时间戳的备份名，导致 `import swarm` 直接失败 |
-| 移除硬编码路径 | `core/llm_client.py` 里写死了 macOS 路径，改为按文件位置动态解析，并支持 `.env` 覆盖 |
-| 新增 Windows 向量库降级 | Milvus Lite 官方不支持 Windows，`knowledge/local_vector_store.py` 用 numpy 实现了接口一致的本地向量库，自动接管 |
-| 新增 Web 界面 | `api_server.py`（FastAPI）+ `web/`（原生 HTML/CSS/JS），含 SSE 流式接口与会诊面板 |
-| 修复 GBK 编码崩溃 | 中文 Windows 控制台默认 GBK，打印 emoji 抛 `UnicodeEncodeError` |
-| 新增工程配套 | `.vscode/` 运行配置、`.env.example`、运行截图脚本、端到端验证脚本 |
+| 多智能体协作 | Skills-Agent 两层架构、Agent Loop、Agent Swarm 并行协作与 SSE 流式会诊 |
+| 记忆与知识库 | 短期/长期记忆、Mem0 接入、Milvus 知识库与本地向量库降级 |
+| Web 会诊界面 | FastAPI + 原生 HTML/CSS/JS，含会诊面板、健康记录、随访提醒、临床工具与系统自检 |
+| 健康数据管理 | 指标/目标、症状日记、用药清单与打卡、健康小结、就诊摘要，以及 CSV 与整库备份导入导出 |
+| Windows 适配 | 控制台编码、路径解析与向量库降级等平台适配 |
+| 工程配套 | `.env.example`、完整测试套件、诊断与端到端验证脚本 |
 
 ## 📋 项目概述
 
@@ -1154,8 +1152,7 @@ MIT License
 
 ## 🙏 致谢
 
-- 基于 [MediX-R1](https://github.com/...) 医学多模态模型
-- 使用 [LLM API](https://www.volcengine.com/) 作为LLM后端
-- 记忆管理基于 [Mem0](https://mem0.ai/)
+- 感谢 [FastAPI](https://fastapi.tiangolo.com/)、[Milvus](https://milvus.io/)、[Mem0](https://mem0.ai/) 等开源项目
+- 感谢 [火山引擎](https://www.volcengine.com/) 提供的 LLM API
 
 ---

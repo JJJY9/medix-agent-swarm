@@ -13,7 +13,10 @@ setup(
     name="medix-agent-swarm",
     version="0.1.0",
     author="MediX Team",
-    description="Multi-agent medical assistant system based on MediX-R1",
+    description=(
+        "Multi-agent medical consultation assistant with "
+        "Skills-Agent architecture"
+    ),
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/JJJY9/medix-agent-swarm",
