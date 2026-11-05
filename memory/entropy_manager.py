@@ -132,7 +132,15 @@ class MemoryEntropyManager:
         if not memories:
             return []
 
-        max_age_days = max_age_days or self.max_age_days
+        if max_age_days is None:
+            max_age_days = self.max_age_days
+        try:
+            max_age_days = int(max_age_days)
+        except (TypeError, ValueError):
+            raise ValueError("max_age_days 必须是正整数")
+        if max_age_days <= 0:
+            raise ValueError("max_age_days 必须大于 0")
+        max_age_days = min(max_age_days, 3650)
         naive_cutoff = datetime.now() - timedelta(days=max_age_days)
         aware_cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
@@ -148,7 +156,11 @@ class MemoryEntropyManager:
                     timestamp = timestamp_value
                 elif isinstance(timestamp_value, str):
                     try:
-                        timestamp = datetime.fromisoformat(timestamp_value)
+                        # Python 3.10 的 fromisoformat 不识别结尾 Z
+                        normalized = timestamp_value.strip().replace(
+                            "Z", "+00:00"
+                        )
+                        timestamp = datetime.fromisoformat(normalized)
                     except ValueError:
                         logger.warning(f"Invalid timestamp format: {timestamp_value}")
 
@@ -195,12 +207,21 @@ class MemoryEntropyManager:
         """
         if len(messages) <= max_messages:
             return messages
+        # 只有 1-2 条位置时放不下「摘要 + 一轮对话」，
+        # 直接保留最近一轮比只返回摘要更有用
+        if max_messages <= 2:
+            return messages[-max_messages:] if max_messages > 0 else []
 
         # 给摘要留 1 条位置；边界消息必须进入摘要，
         # 不能被「摘要 + 最近 N 条」两边都漏掉
         keep = max(0, max_messages - 1)
-        recent = messages[-keep:] if keep else []
-        older = messages[:-keep] if keep else list(messages)
+        start = len(messages) - keep if keep else len(messages)
+        # 最近窗口必须从用户消息开始，否则模型会收到一条
+        # 没有对应提问的 assistant 回答
+        while start < len(messages) and messages[start].get("role") != "user":
+            start += 1
+        recent = messages[start:] if start < len(messages) else []
+        older = messages[:start]
         compressed = self._compress_older_messages(older)
 
         logger.info(
@@ -229,45 +250,60 @@ class MemoryEntropyManager:
         """
         compressed = []
 
-        i = 0
-        while i < len(messages):
-            # 查找 user 和 assistant 配对
-            user_msg = None
-            assistant_msg = None
+        # 按用户消息切分轮次，每轮内保留最终 assistant 回答与工具名；
+        # 旧实现只取 user 后第一条 assistant，会把工具调用和最终回答
+        # 之间的消息直接跳过且不再出现在摘要里。
+        turns: List[List[Dict]] = []
+        current: List[Dict] = []
+        for message in messages:
+            if message.get("role") == "user" and current:
+                turns.append(current)
+                current = [message]
+            else:
+                current.append(message)
+        if current:
+            turns.append(current)
 
-            # 查找 user 消息
-            while i < len(messages) and messages[i].get("role") != "user":
-                i += 1
+        for turn in turns:
+            user_msg = next(
+                (m for m in turn if m.get("role") == "user"), None
+            )
+            assistant_texts = [
+                str(m.get("content") or "")
+                for m in turn
+                if m.get("role") == "assistant" and m.get("content")
+            ]
+            tool_names = []
+            for message in turn:
+                if message.get("role") != "tool":
+                    continue
+                name = str(message.get("content") or "").split(":", 1)[0].strip()
+                if name and name not in tool_names:
+                    tool_names.append(name)
 
-            if i < len(messages):
-                user_msg = messages[i]
-                i += 1
+            # 优先使用真正的最终回答，而不是“调用工具：xxx”占位
+            final_answer = ""
+            for text in reversed(assistant_texts):
+                if not text.startswith("调用工具："):
+                    final_answer = text
+                    break
+            if not final_answer and assistant_texts:
+                final_answer = assistant_texts[-1]
 
-            # 查找对应的 assistant 消息
-            while i < len(messages) and messages[i].get("role") != "assistant":
-                i += 1
+            parts = []
+            if user_msg:
+                parts.append(f"用户问: {str(user_msg.get('content', ''))[:50]}...")
+            if final_answer:
+                parts.append(f"回答: {final_answer[:100]}...")
+            if tool_names:
+                parts.append(f"工具: {', '.join(tool_names)}")
+            if not parts:
+                continue
 
-            if i < len(messages):
-                assistant_msg = messages[i]
-                i += 1
-
-            # 生成摘要（未配对的尾部消息也不丢弃）
-            if user_msg or assistant_msg:
-                parts = []
-                if user_msg:
-                    parts.append(
-                        f"用户问: {user_msg.get('content', '')[:50]}..."
-                    )
-                if assistant_msg:
-                    parts.append(
-                        f"回答: {assistant_msg.get('content', '')[:100]}..."
-                    )
-                summary = "[历史摘要] " + " ".join(parts)
-
-                compressed.append({
-                    "role": "system",
-                    "content": summary
-                })
+            compressed.append({
+                "role": "system",
+                "content": "[历史摘要] " + " ".join(parts)
+            })
 
         return compressed
 

@@ -205,16 +205,19 @@ class SessionSummary:
         agents_participated = []
         for agent_id, contributions in shared_context.agent_contributions.items():
             # 优先使用子任务结果里的真实工具调用次数；
-            # 缺失时退回成功贡献数，不能把「贡献条数」当作工具次数
+            # 只有所有贡献都没提供该字段时才退回成功贡献数，
+            # 真实为 0 次不能和“字段缺失”混为一谈
             tool_calls = 0
+            has_tool_metric = False
             for contribution in contributions:
                 result = contribution.result
-                if isinstance(result, dict):
+                if isinstance(result, dict) and "tool_calls_used" in result:
+                    has_tool_metric = True
                     try:
                         tool_calls += int(result.get("tool_calls_used") or 0)
                     except (TypeError, ValueError, OverflowError):
                         pass
-            if tool_calls == 0:
+            if not has_tool_metric:
                 tool_calls = sum(
                     1 for c in contributions
                     if isinstance(c.result, dict) and c.result.get('success', True)

@@ -17,10 +17,12 @@ def test_compressed_history_has_no_gap():
 
     compressed = manager.compress_session_history(messages, max_messages=10)
 
-    assert len(compressed) == 10
+    assert len(compressed) <= 10
     assert compressed[0]["role"] == "system"
     # 边界消息（第 21 条，即「问 10」）必须进入摘要，不能两头都丢
     assert "问 10" in compressed[0]["content"]
+    # 摘要之后从用户消息开始，避免模型看到没有提问的回答
+    assert compressed[1]["role"] == "user"
     assert compressed[-1]["content"] == "答 14"
 
 

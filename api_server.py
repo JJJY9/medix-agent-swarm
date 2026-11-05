@@ -18,7 +18,7 @@ import re
 import sys
 import hashlib
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
@@ -518,6 +518,16 @@ async def auto_archive_sessions() -> None:
         logger.warning(f"自动归档旧会话失败: {e}")
 
 
+AUTO_ARCHIVE_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+async def auto_archive_loop() -> None:
+    """定期执行自动归档；只在启动时执行一次会让长期运行的实例漏掉归档。"""
+    while True:
+        await auto_archive_sessions()
+        await asyncio.sleep(AUTO_ARCHIVE_INTERVAL_SECONDS)
+
+
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
     """记录操作审计；审计失败不影响主流程。"""
     try:
@@ -712,9 +722,14 @@ async def lifespan(_: FastAPI):
         return
     # 后台预热知识库，不阻塞服务启动
     asyncio.create_task(state.warm_up())
-    asyncio.create_task(auto_archive_sessions())
-    yield
-    logger.info("MediX API 服务已停止")
+    archive_task = asyncio.create_task(auto_archive_loop())
+    try:
+        yield
+    finally:
+        archive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await archive_task
+        logger.info("MediX API 服务已停止")
 
 
 _AUTH_ENABLED = bool((os.getenv("MEDIX_ACCESS_TOKEN") or "").strip())

@@ -51,10 +51,12 @@ def test_compress_session_history_respects_max_messages():
 
     compressed = manager.compress_session_history(messages, max_messages=10)
 
-    assert len(compressed) == 10
+    assert len(compressed) <= 10
     assert compressed[0]["role"] == "system"
     assert "历史摘要" in compressed[0]["content"]
     assert "问题 0" in compressed[0]["content"]
+    # 最近窗口必须从用户消息开始，不能以 assistant 回答开头
+    assert compressed[1]["role"] == "user"
     assert compressed[-1]["content"] == "回答 19"
 
 

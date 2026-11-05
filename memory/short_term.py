@@ -304,12 +304,28 @@ class ShortTermMemory:
         # get_recent_messages 已处理熵管理，这里只做格式转换
         messages = self.get_recent_messages(session_id, limit * 2)  # 每轮2条消息
 
-        # 转换为 OpenAI 格式（只保留 user 和 assistant 消息）
+        # 转换为 OpenAI 格式（保留 user/assistant，以及压缩产生的 system 摘要）
         openai_messages = [
             {"role": msg["role"], "content": msg["content"]}
             for msg in messages
-            if msg["role"] in ["user", "assistant"]
+            if msg.get("role") in ["user", "assistant", "system"]
+            and msg.get("content")
         ]
+
+        # 摘要之后的第一条历史应从用户消息开始；否则模型会看到
+        # 一条没有对应提问的 assistant 回答
+        if openai_messages and openai_messages[0]["role"] == "system":
+            prefix = openai_messages[:1]
+            start = 1
+        else:
+            prefix = []
+            start = 0
+        while (
+            start < len(openai_messages)
+            and openai_messages[start]["role"] == "assistant"
+        ):
+            start += 1
+        openai_messages = prefix + openai_messages[start:]
 
         return openai_messages
 
