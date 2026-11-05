@@ -852,6 +852,32 @@ def test_sessions_csv_export_respects_filters(tmp_path, monkeypatch):
     assert row[9] == "1"
 
 
+def test_sessions_csv_includes_risk_level(tmp_path, monkeypatch):
+    import csv
+    import io
+
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "r1", "胸痛", "风险等级：**紧急**，请立即就医。"
+    )
+    store.save_exchange("r2", "头晕", "建议休息。")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        response = client.get("/api/sessions/export.csv")
+    finally:
+        store.close()
+
+    rows = list(
+        csv.reader(io.StringIO(response.content.decode("utf-8-sig")))
+    )
+    assert rows[0][12] == "风险"
+    by_id = {row[0]: row for row in rows[1:]}
+    assert by_id["r1"][12] == "紧急"
+    assert by_id["r2"][12] == ""
+
+
 def test_sessions_csv_escapes_formula_like_fields(tmp_path, monkeypatch):
     import csv
     import io
