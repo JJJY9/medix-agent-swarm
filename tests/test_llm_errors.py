@@ -126,3 +126,28 @@ def test_fatal_llm_error_is_not_retried():
 
     assert exc_info.value.code == "llm_balance"
     assert llm.calls == 1, "401/402 这类错误不应该被反复重试"
+
+
+class RetryLLM:
+    def __init__(self):
+        self.calls = 0
+
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        raise LLMError("llm_rate_limit", "请求过于频繁", retryable=True)
+
+
+def test_retry_exhaustion_returns_fallback_answer(monkeypatch):
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    llm = RetryLLM()
+    agent = FakeAgent(llm)
+    loop = AgentLoop(max_iterations=2)
+
+    result = asyncio.run(loop.run(agent, {"question": "测试"}))
+
+    assert isinstance(result, dict)
+    assert result.get("answer")
+    assert result.get("answer") != "{}"
