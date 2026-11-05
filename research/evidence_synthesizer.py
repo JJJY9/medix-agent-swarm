@@ -232,8 +232,8 @@ class EvidenceSynthesizer:
             numbers = re.findall(r'0\.\d+|\d+\.\d+', confidence_text)
             if numbers:
                 try:
-                    report.confidence = float(numbers[0])
-                except:
+                    report.confidence = min(1.0, max(0.0, float(numbers[0])))
+                except (TypeError, ValueError):
                     report.confidence = 0.5
         else:
             report.confidence = 0.5
