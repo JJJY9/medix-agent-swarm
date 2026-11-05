@@ -747,6 +747,8 @@ def test_app_js_ships_home_backup_card(client):
     html = client.get("/").text
 
     assert 'id="home-glance-backup"' in html
+    assert 'id="home-glance-today"' in html
+    assert "homeGlanceToday" in app_js
     assert "BACKUP_STORAGE_KEY" in app_js
     assert "readLastBackupAt" in app_js
     assert "markBackupExported" in app_js
