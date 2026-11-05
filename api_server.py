@@ -551,9 +551,13 @@ def _streak_info(days: List[str]) -> Dict[str, Any]:
     """按有记录的日期列表计算连续记录信息。"""
     from datetime import date
 
-    day_set = {str(day) for day in days if day}
     today = datetime.now().date()
-    recorded_today = today.isoformat() in day_set
+    today_key = today.isoformat()
+    day_set = {
+        str(day) for day in days
+        if day and str(day) <= today_key
+    }
+    recorded_today = today_key in day_set
     cursor = today if recorded_today else today - timedelta(days=1)
     current = 0
     while cursor.isoformat() in day_set:

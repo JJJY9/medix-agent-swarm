@@ -158,6 +158,37 @@ def test_health_calendar_validates_month(client_and_store):
     ).status_code == 400
 
 
+def test_health_calendar_month_boundaries(client_and_store):
+    client, _store = client_and_store
+
+    for day in ("2026-12-31", "2027-01-01", "2028-02-29"):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "weight",
+            "value1": 60, "measured_at": f"{day}T08:00",
+        })
+
+    december = client.get(
+        "/api/health/calendar",
+        params={"profile": "妈妈", "month": "2026-12"},
+    ).json()
+    assert december["end"] == "2026-12-31"
+    assert december["days"]["2026-12-31"]["metrics"] == 1
+    assert "2027-01-01" not in december["days"]
+
+    january = client.get(
+        "/api/health/calendar",
+        params={"profile": "妈妈", "month": "2027-01"},
+    ).json()
+    assert january["days"]["2027-01-01"]["metrics"] == 1
+
+    february = client.get(
+        "/api/health/calendar",
+        params={"profile": "妈妈", "month": "2028-02"},
+    ).json()
+    assert february["end"] == "2028-02-29"
+    assert february["days"]["2028-02-29"]["metrics"] == 1
+
+
 def test_health_calendar_empty_month(client_and_store):
     client, _store = client_and_store
 
