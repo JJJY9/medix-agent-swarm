@@ -18,6 +18,8 @@ import math
 import os
 import sys
 
+from core.session_context import session_memory_scope
+
 # Harness Engineering: 熵管理
 try:
     from .entropy_manager import MemoryEntropyManager
@@ -130,10 +132,10 @@ class LongTermMemory:
                 messages=[{"role": "user", "content": memory_text}],
                 user_id=str(user_id or "medix_local")[:120],
                 metadata={
+                    **(metadata or {}),
                     "type": "session_summary",
-                    "session_id": session_id,
+                    "session_id": session_memory_scope(session_id),
                     "timestamp": datetime.now().isoformat(),
-                    **(metadata or {})
                 }
             )
 

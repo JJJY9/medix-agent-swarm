@@ -1253,10 +1253,14 @@ def test_purge_sessions_before(store, monkeypatch):
     store.save_exchange("s1", "旧问题", "旧答复")
     store.save_exchange("s2", "新问题", "新答复")
 
-    assert store.purge_sessions_before("") == {"sessions": 0, "messages": 0}
+    assert store.purge_sessions_before("") == {
+        "sessions": 0, "messages": 0, "session_ids": [],
+    }
     result = store.purge_sessions_before("2026-01-01T12:00:00")
 
-    assert result == {"sessions": 1, "messages": 2}
+    assert result == {
+        "sessions": 1, "messages": 2, "session_ids": ["s1"],
+    }
     assert [item["id"] for item in store.list_sessions()] == ["s2"]
     assert store.get_messages("s1") == []
 

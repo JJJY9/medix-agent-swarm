@@ -38,6 +38,9 @@ def test_memory_scope_is_derived_from_profile_or_session():
     assert "s1" not in session_scope
     # 同一档案必须稳定复用同一命名空间
     assert profile_scope == api_server._memory_scope(" 母亲 ", "s2")
+    assert api_server._memory_scope("Mary  Jane", "s1") == (
+        api_server._memory_scope("Mary Jane", "s2")
+    )
     # 清洗后同名但原值不同的档案必须落在不同命名空间
     assert api_server._memory_scope("张 三", "s1") != api_server._memory_scope(
         "张_三", "s1"

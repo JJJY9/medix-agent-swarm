@@ -898,6 +898,8 @@ def test_app_js_profile_scoping_and_refresh(client):
     assert "async function restoreBackup" in app_js
     assert "选择要恢复的备份序号" in app_js
     assert "async function createLocalBackup" in app_js
+    assert "new TextEncoder().encode(token)" in app_js
+    assert "String.fromCharCode(byte)" in app_js
     assert (
         "await refreshMetricProfileOptions();\n"
         "    await loadMedications();"

@@ -229,32 +229,38 @@ class ShortTermMemory:
         """
         local_history = self.sessions.get(session_id)
         if self.storage_type == "redis" and self.redis_client:
-            try:
-                # 「不存在」返回 None；读取失败则抛错——不能用空历史
-                # 覆盖 Redis 中原有的整段会话
-                history = self._load_from_redis(session_id, strict=True)
-            except RuntimeError as e:
-                logger.error(
-                    f"读取 Redis 会话失败，使用本地副本继续: {e}"
-                )
-                history = local_history
-                if history is None:
-                    history = ConversationHistory(session_id=session_id)
-                    self.sessions[session_id] = history
-                # 新消息意味着会话重新启用，解除之前的删除墓碑
+            if session_id in self._cleared_sessions:
+                # 删除墓碑存在时，Redis 中可能仍有删除失败留下的旧会话；
+                # 新消息应开启全新历史，不能把旧内容合并回来
+                history = ConversationHistory(session_id=session_id)
                 self._cleared_sessions.discard(session_id)
-                history.add_message(role, content)
-                self._local_fallback_at[session_id] = datetime.now()
-                self._evict_local_sessions()
-                logger.debug(f"Added {role} message to session {session_id} (local fallback)")
-                return
+            else:
+                try:
+                    # 「不存在」返回 None；读取失败则抛错——不能用空历史
+                    # 覆盖 Redis 中原有的整段会话
+                    history = self._load_from_redis(session_id, strict=True)
+                except RuntimeError as e:
+                    logger.error(
+                        f"读取 Redis 会话失败，使用本地副本继续: {e}"
+                    )
+                    history = local_history
+                    if history is None:
+                        history = ConversationHistory(session_id=session_id)
+                        self.sessions[session_id] = history
+                    # 新消息意味着会话重新启用，解除之前的删除墓碑
+                    self._cleared_sessions.discard(session_id)
+                    history.add_message(role, content)
+                    self._local_fallback_at[session_id] = datetime.now()
+                    self._evict_local_sessions()
+                    logger.debug(f"Added {role} message to session {session_id} (local fallback)")
+                    return
 
-            # Redis 中的版本可能比本地兜底更旧（上次写入失败），不能覆盖本地新消息
-            if history is None or (
-                local_history is not None
-                and len(local_history.messages) > len(history.messages)
-            ):
-                history = local_history or history
+                # Redis 中的版本可能比本地兜底更旧（上次写入失败），不能覆盖本地新消息
+                if history is None or (
+                    local_history is not None
+                    and len(local_history.messages) > len(history.messages)
+                ):
+                    history = local_history or history
         else:
             history = self.get_session(session_id)
 
@@ -268,6 +274,8 @@ class ShortTermMemory:
             if self._save_to_redis(history):
                 self.sessions.pop(session_id, None)
                 self._local_fallback_at.pop(session_id, None)
+                # 成功写回后会话重新启用，解除墓碑
+                self._cleared_sessions.discard(session_id)
             else:
                 # 写 Redis 失败时退回本地副本，至少保证当前进程还能续聊
                 self.sessions[session_id] = history

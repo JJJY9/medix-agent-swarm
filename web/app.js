@@ -608,7 +608,13 @@ window.fetch = (input, init = {}) => {
     const token = safeSessionGet('medix.token');
     if (token) {
       const headers = new Headers(init.headers || {});
-      headers.set('X-Medix-Token', token);
+      // Header 值只能是 ISO-8859-1；把 UTF-8 字节映射成 latin-1 字符，
+      // 服务端 core/auth.py 会再按 UTF-8 解码
+      const encodedToken = Array.from(
+        new TextEncoder().encode(token),
+        (byte) => String.fromCharCode(byte)
+      ).join('');
+      headers.set('X-Medix-Token', encodedToken);
       init = { ...init, headers };
     }
   }
