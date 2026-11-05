@@ -715,6 +715,8 @@ def test_app_js_ships_health_timeline(client):
     assert "medix.weeklyRange" in app_js
     assert "medix.metricType" in app_js
     assert 'id="timeline-export"' in html
+    assert 'id="timeline-more"' in html
+    assert "timelineMore" in app_js
     assert "async function exportTimelineCsv" in app_js
     assert "/api/timeline/export.csv" in app_js
     assert "timeline-badge" in app_js

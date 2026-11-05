@@ -424,6 +424,7 @@ const els = {
   timelineSearch: document.getElementById('timeline-search'),
   timelineOnlyAlert: document.getElementById('timeline-only-alert'),
   timelineExport: document.getElementById('timeline-export'),
+  timelineMore: document.getElementById('timeline-more'),
   timelineSummary: document.getElementById('timeline-summary'),
   timelineList: document.getElementById('timeline-list'),
   timelineEmpty: document.getElementById('timeline-empty'),
@@ -5311,6 +5312,7 @@ let weeklySummaryCache = null;
 let weeklySummaryCopyTimer = null;
 let timelineRequestSeq = 0;
 let timelineDataCache = null;
+let timelineLimit = 200;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -9105,6 +9107,13 @@ function renderTimeline(data) {
   }
 }
 
+function updateTimelineMore(data) {
+  if (!els.timelineMore) return;
+  const loaded = (data.events || []).length;
+  const total = Number(data.total) || loaded;
+  els.timelineMore.hidden = !(total > loaded && timelineLimit < 500);
+}
+
 async function loadTimeline() {
   if (!els.timelineList) return;
   const requestSeq = ++timelineRequestSeq;
@@ -9113,17 +9122,19 @@ async function loadTimeline() {
   try {
     const res = await fetch(
       `/api/timeline?profile=${encodeURIComponent(profile)}`
-      + `&days=${days}&limit=200`
+      + `&days=${days}&limit=${timelineLimit}`
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== timelineRequestSeq) return;
     timelineDataCache = data;
     renderTimeline(data);
+    updateTimelineMore(data);
   } catch {
     if (requestSeq !== timelineRequestSeq) return;
     timelineDataCache = null;
     els.timelineList.replaceChildren();
+    if (els.timelineMore) els.timelineMore.hidden = true;
     els.timelineEmpty.hidden = false;
     els.timelineEmpty.textContent = '时间线加载失败，请稍后重试。';
     if (els.timelineSummary) els.timelineSummary.hidden = true;
@@ -11887,6 +11898,13 @@ if (els.timelineOnlyAlert) {
     if (timelineDataCache) {
       renderTimeline(timelineDataCache);
     }
+  });
+}
+if (els.timelineMore) {
+  els.timelineMore.addEventListener('click', () => {
+    if (timelineLimit >= 500) return;
+    timelineLimit = 500;
+    loadTimeline();
   });
 }
 els.timelineExport.addEventListener('click', exportTimelineCsv);
