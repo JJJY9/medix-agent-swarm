@@ -7217,17 +7217,28 @@ function renderFamilyOverview(data) {
     }
     const medications = profile.medications || {};
     if (medications.active) {
-      chips.appendChild(familyChip(
+      const chip = familyChip(
         medications.taken_today
           ? `用药 今日 ${medications.taken_today} 次`
           : `用药 ${medications.active} 种 未打卡`
-      ));
+      );
+      const details = [];
+      if (medications.names && medications.names.length) {
+        details.push(medications.names.join('、'));
+      }
+      if (medications.last_taken_at) {
+        details.push(`最近 ${formatTime(medications.last_taken_at)}`);
+      }
+      if (details.length) chip.title = details.join(' · ');
+      chips.appendChild(chip);
     }
     const reminders = profile.reminders || {};
     if (reminders.overdue) {
       chips.appendChild(familyChip(
         `提醒 ${reminders.overdue} 条逾期`, 'family-chip-alert'
       ));
+    } else if (reminders.due_today) {
+      chips.appendChild(familyChip(`提醒 今天 ${reminders.due_today} 条`));
     } else if (reminders.pending) {
       chips.appendChild(familyChip(`提醒 ${reminders.pending} 条待办`));
     }
