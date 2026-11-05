@@ -74,7 +74,6 @@ def test_family_dossier_includes_unassigned_records(client):
     client.post("/api/metrics", json={
         "metric": "weight",
         "value1": 70,
-        "measured_at": f"{today}T08:00",
     })
 
     response = client.get("/api/health/dossier-family.md")

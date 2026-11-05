@@ -135,7 +135,7 @@ def test_health_calendar_defaults_to_current_month(client_and_store):
 
     client.post("/api/symptoms", json={
         "profile": "妈妈", "symptom": "头痛",
-        "severity": 3, "recorded_at": f"{today}T10:00",
+        "severity": 3,
     })
 
     data = client.get("/api/health/calendar").json()

@@ -121,7 +121,6 @@ def test_weekly_report_normalizes_profile(client):
         "profile": "妈妈",
         "metric": "weight",
         "value1": 62,
-        "measured_at": f"{today}T08:00",
     })
 
     report = client.get(
