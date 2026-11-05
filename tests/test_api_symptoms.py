@@ -77,10 +77,18 @@ def test_symptoms_api_validation(client_and_store):
     blank = client.post(
         "/api/symptoms", json={"symptom": "   ", "severity": 6}
     )
+    future = client.post(
+        "/api/symptoms",
+        json={
+            "symptom": "头晕", "severity": 4,
+            "recorded_at": "2099-01-01T08:00",
+        },
+    )
 
     assert invalid_date.status_code == 400
     assert invalid_severity.status_code == 422
     assert blank.status_code == 400
+    assert future.status_code == 400
 
 
 def test_symptoms_import_backup(client_and_store):

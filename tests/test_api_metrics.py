@@ -256,7 +256,7 @@ def test_metrics_api_days_filter(client):
             "measured_at": datetime.now().isoformat(timespec="minutes"),
         },
     )
-    client.post(
+    future = client.post(
         "/api/metrics",
         json={
             "metric": "weight",
@@ -268,7 +268,8 @@ def test_metrics_api_days_filter(client):
     all_items = client.get("/api/metrics")
     recent = client.get("/api/metrics", params={"days": 30})
 
-    assert len(all_items.json()["metrics"]) == 3
+    assert future.status_code == 400
+    assert len(all_items.json()["metrics"]) == 2
     assert [item["value1"] for item in recent.json()["metrics"]] == [61]
 
 
@@ -593,7 +594,7 @@ def test_latest_metrics_days_and_future_bound(client):
     old = (now - timedelta(days=20)).isoformat(timespec="minutes")
 
     for value, measured_at in (
-        (61, recent), (60, old), (99, "2099-01-01T08:00"),
+        (61, recent), (60, old),
     ):
         client.post(
             "/api/metrics",
@@ -603,7 +604,16 @@ def test_latest_metrics_days_and_future_bound(client):
                 "measured_at": measured_at,
             },
         )
+    future = client.post(
+        "/api/metrics",
+        json={
+            "metric": "weight",
+            "value1": 99,
+            "measured_at": "2099-01-01T08:00",
+        },
+    )
 
+    assert future.status_code == 400
     all_latest = client.get("/api/metrics/latest").json()["metrics"]
     assert [item["value1"] for item in all_latest] == [61]
 
