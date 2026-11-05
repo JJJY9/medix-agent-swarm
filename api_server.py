@@ -1345,6 +1345,7 @@ async def export_medications_csv(
     import io
 
     from memory import get_session_store
+    from memory.session_store import adherence_rate
 
     items = await asyncio.to_thread(
         get_session_store().list_medications,
@@ -1368,7 +1369,7 @@ async def export_medications_csv(
             str(taken),
             csv_safe_cell(item.get("last_taken_at") or ""),
             str(expected) if expected else "",
-            str(min(100, round(taken / expected * 100 + 1e-9)))
+            str(adherence_rate(taken, expected))
             if expected else "",
         ])
 
@@ -1996,8 +1997,9 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         }
 
     from memory.session_store import (
-        LOWER_BOUND_TARGET_METRICS,
+        adherence_rate,
         expected_doses_for_period,
+        metric_over_target,
     )
 
     grouped: dict = {}
@@ -2025,20 +2027,9 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         )
         if target is not None:
             entry["target"] = target
-            value1 = float(item["value1"])
-            if item["metric"] in LOWER_BOUND_TARGET_METRICS:
-                within = value1 >= float(target["value1"])
-            else:
-                within = value1 <= float(target["value1"])
-                if (
-                    within
-                    and item["metric"] == "bp"
-                    and target.get("value2") is not None
-                ):
-                    within = float(item.get("value2") or 0) <= float(
-                        target["value2"]
-                    )
-            if within:
+            if not metric_over_target(
+                item["metric"], item["value1"], item.get("value2"), target
+            ):
                 entry["within"] += 1
 
     previous_grouped: dict = {}
@@ -2152,8 +2143,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             )
         row["expected"] = expected
         row["rate"] = (
-            min(100, round(row["doses"] / expected * 100 + 1e-9))
-            if expected else None
+            adherence_rate(row["doses"], expected) if expected else None
         )
         medication_rows.append(row)
     medication_rows.sort(key=lambda row: (-row["doses"], row["name"]))
@@ -2202,12 +2192,8 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
                 {
                     "expected": adherence_expected,
                     "taken": adherence_taken,
-                    "rate": min(
-                        100,
-                        round(
-                            adherence_taken / adherence_expected * 100
-                            + 1e-9
-                        ),
+                    "rate": adherence_rate(
+                        adherence_taken, adherence_expected
                     ),
                 }
                 if adherence_expected else None
@@ -2233,7 +2219,7 @@ async def health_timeline(
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
-    from memory.session_store import LOWER_BOUND_TARGET_METRICS, METRIC_TYPES
+    from memory.session_store import METRIC_TYPES, metric_over_target
 
     days = max(1, min(int(days or 30), 365))
     limit = max(1, min(int(limit or 100), 500))
@@ -2289,21 +2275,12 @@ async def health_timeline(
         target = target_map.get(
             (item.get("profile") or "", item["metric"])
         )
-        alert = False
-        if target is not None:
-            value1 = float(item["value1"])
-            if item["metric"] in LOWER_BOUND_TARGET_METRICS:
-                alert = value1 < float(target["value1"])
-            else:
-                alert = value1 > float(target["value1"])
-                if (
-                    not alert
-                    and item["metric"] == "bp"
-                    and target.get("value2") is not None
-                ):
-                    alert = float(item.get("value2") or 0) > float(
-                        target["value2"]
-                    )
+        alert = bool(
+            target is not None
+            and metric_over_target(
+                item["metric"], item["value1"], item.get("value2"), target
+            )
+        )
         events.append({
             "type": "metric",
             "at": at,
@@ -2772,8 +2749,9 @@ async def family_overview(days: int = 7):
     """家庭健康总览：按档案汇总最近指标、用药、提醒、症状与会诊。"""
     from memory import get_session_store
     from memory.session_store import (
-        LOWER_BOUND_TARGET_METRICS,
+        adherence_rate,
         METRIC_TYPES,
+        metric_over_target,
     )
 
     days = max(1, min(int(days or 7), 90))
@@ -2826,19 +2804,9 @@ async def family_overview(days: int = 7):
         target = target_map.get((profile, metric))
         over_target: Optional[bool] = None
         if target is not None:
-            value1 = float(item.get("value1") or 0)
-            if metric in LOWER_BOUND_TARGET_METRICS:
-                over_target = value1 < float(target["value1"])
-            else:
-                over_target = value1 > float(target["value1"])
-                if (
-                    not over_target
-                    and metric == "bp"
-                    and target.get("value2") is not None
-                ):
-                    over_target = float(item.get("value2") or 0) > float(
-                        target["value2"]
-                    )
+            over_target = metric_over_target(
+                metric, item.get("value1"), item.get("value2"), target
+            )
         metrics_by_profile.setdefault(profile, []).append({
             "metric": metric,
             "label": label,
@@ -2880,7 +2848,7 @@ async def family_overview(days: int = 7):
             {
                 "expected": expected,
                 "taken": taken,
-                "rate": min(100, round(taken / expected * 100 + 1e-9)),
+                "rate": adherence_rate(taken, expected),
             }
             if expected else None
         )
