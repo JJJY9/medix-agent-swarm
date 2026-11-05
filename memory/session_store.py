@@ -97,6 +97,32 @@ MAX_METRIC_NOTE_LENGTH = 300
 LOWER_BOUND_TARGET_METRICS = {"spo2"}
 
 
+def metric_over_target(
+    metric: str, value1: Any, value2: Any, target: Dict[str, Any]
+) -> bool:
+    """判断一条指标是否超出目标（血压同时比较舒张压，血氧按下限）。"""
+    number1 = float(value1 or 0)
+    if metric in LOWER_BOUND_TARGET_METRICS:
+        return number1 < float(target["value1"])
+    if number1 > float(target["value1"]):
+        return True
+    if metric == "bp" and target.get("value2") is not None:
+        return float(value2 or 0) > float(target["value2"])
+    return False
+
+
+def adherence_rate(taken: Any, expected: Any) -> Optional[int]:
+    """按已服/应服计算百分比（半值进位）；应服为 0 时返回 None。"""
+    try:
+        taken_value = float(taken or 0)
+        expected_value = float(expected or 0)
+    except (TypeError, ValueError):
+        return None
+    if expected_value <= 0:
+        return None
+    return min(100, round(taken_value / expected_value * 100 + 1e-9))
+
+
 def _canonical_local_time(value: Any) -> Optional[str]:
     """把合法 ISO 时间规范化为本地 T 分隔格式；无效返回 None。"""
     text = str(value or "").strip()[:40]
