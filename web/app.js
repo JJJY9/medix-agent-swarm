@@ -430,6 +430,7 @@ const els = {
   calendarPrev: document.getElementById('calendar-prev'),
   calendarNext: document.getElementById('calendar-next'),
   calendarToday: document.getElementById('calendar-today'),
+  calendarExport: document.getElementById('calendar-export'),
   calendarGrid: document.getElementById('calendar-grid'),
   calendarSummary: document.getElementById('calendar-summary'),
   timelineSection: document.getElementById('timeline-section'),
@@ -9488,6 +9489,30 @@ function selectCalendarDay(dayKey) {
   }
 }
 
+async function exportCalendarCsv() {
+  const profile = els.metricProfile.value;
+  const month = calendarMonth || currentMonthKey();
+  const params = new URLSearchParams({ profile, month });
+  try {
+    const res = await fetch(
+      `/api/health/calendar/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-calendar-${month.replace('-', '')}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setMetricsStatus('已导出健康月历 CSV。');
+  } catch (err) {
+    setMetricsStatus(`导出月历失败：${err.message || err}`, true);
+  }
+}
+
 async function loadTimeline() {
   if (!els.timelineList) return;
   const requestSeq = ++timelineRequestSeq;
@@ -12305,6 +12330,9 @@ if (els.calendarToday) {
     calendarMonth = '';
     loadCalendar();
   });
+}
+if (els.calendarExport) {
+  els.calendarExport.addEventListener('click', exportCalendarCsv);
 }
 if (els.compareMetric) {
   els.compareMetric.addEventListener('change', () => {

@@ -189,6 +189,42 @@ def test_health_calendar_month_boundaries(client_and_store):
     assert february["days"]["2028-02-29"]["metrics"] == 1
 
 
+def test_health_calendar_csv_export(client_and_store):
+    import csv
+    import io
+
+    client, _store = client_and_store
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight",
+        "value1": 60, "measured_at": "2026-12-31T08:00",
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕",
+        "severity": 8, "recorded_at": "2026-12-31T09:00",
+    })
+
+    export = client.get(
+        "/api/health/calendar/export.csv",
+        params={"profile": "妈妈", "month": "2026-12"},
+    )
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+
+    assert export.status_code == 200
+    assert export.content.startswith(b"\xef\xbb\xbf")
+    assert rows[0] == [
+        "日期", "指标", "症状", "用药打卡", "会诊",
+        "待办提醒", "已完成提醒", "异常",
+    ]
+    assert len(rows) == 32
+    last = next(row for row in rows[1:] if row[0] == "2026-12-31")
+    assert last[1] == "1"
+    assert last[2] == "1"
+    assert last[7] == "1"
+
+
 def test_health_calendar_empty_month(client_and_store):
     client, _store = client_and_store
 

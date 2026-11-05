@@ -2670,6 +2670,52 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     }
 
 
+@app.get("/api/health/calendar/export.csv")
+async def export_health_calendar_csv(
+    profile: Optional[str] = None, month: str = ""
+):
+    """导出健康月历 CSV（带 BOM），按天列出指标、症状、用药、会诊与提醒。"""
+    import calendar as calendar_module
+    import csv
+    import io
+
+    data = await health_calendar(profile=profile, month=month)
+    month_key = data["month"]
+    year, month_number = int(month_key[:4]), int(month_key[5:7])
+    last_day = calendar_module.monthrange(year, month_number)[1]
+    rows = [[
+        "日期", "指标", "症状", "用药打卡", "会诊",
+        "待办提醒", "已完成提醒", "异常",
+    ]]
+    for day in range(1, last_day + 1):
+        key = f"{month_key}-{day:02d}"
+        entry = data["days"].get(key) or {}
+        rows.append([
+            key,
+            str(int(entry.get("metrics") or 0)),
+            str(int(entry.get("symptoms") or 0)),
+            str(int(entry.get("doses") or 0)),
+            str(int(entry.get("consultations") or 0)),
+            str(int(entry.get("reminders_due") or 0)),
+            str(int(entry.get("reminders_done") or 0)),
+            str(int(entry.get("alerts") or 0)),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-calendar-{month_key}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/health/streak")
 async def health_streak(profile: Optional[str] = None):
     """健康记录连续天数：当前连续、最长连续与近 30 天记录天数。"""
