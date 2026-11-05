@@ -2824,14 +2824,32 @@ async def family_overview(days: int = 7):
             "taken_today": 0,
             "names": [],
             "last_taken_at": "",
+            "week_count": 0,
+            "expected_week_doses": 0,
         })
         entry["active"] += 1
         entry["taken_today"] += int(item.get("today_count") or 0)
+        entry["week_count"] += int(item.get("week_count") or 0)
+        entry["expected_week_doses"] += int(
+            item.get("expected_week_doses") or 0
+        )
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
         last_taken = str(item.get("last_taken_at") or "")
         if last_taken > entry["last_taken_at"]:
             entry["last_taken_at"] = last_taken
+
+    for entry in medications_by_profile.values():
+        expected = entry.pop("expected_week_doses")
+        taken = entry.pop("week_count")
+        entry["adherence"] = (
+            {
+                "expected": expected,
+                "taken": taken,
+                "rate": min(100, round(taken / expected * 100 + 1e-9)),
+            }
+            if expected else None
+        )
 
     reminders_by_profile: Dict[str, Dict[str, int]] = {}
     for item in reminders:
@@ -2887,7 +2905,8 @@ async def family_overview(days: int = 7):
             reverse=True,
         )
         medication = medications_by_profile.get(name, {
-            "active": 0, "taken_today": 0, "names": [], "last_taken_at": "",
+            "active": 0, "taken_today": 0, "names": [],
+            "last_taken_at": "", "adherence": None,
         })
         reminder = reminders_by_profile.get(name, {
             "pending": 0, "overdue": 0, "due_today": 0,

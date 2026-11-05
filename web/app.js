@@ -7222,6 +7222,9 @@ function renderFamilyOverview(data) {
           ? `用药 今日 ${medications.taken_today} 次`
           : `用药 ${medications.active} 种 未打卡`
       );
+      if (medications.adherence && medications.adherence.expected) {
+        chip.textContent += ` · 依从率 ${medications.adherence.rate}%`;
+      }
       const details = [];
       if (medications.names && medications.names.length) {
         details.push(medications.names.join('、'));

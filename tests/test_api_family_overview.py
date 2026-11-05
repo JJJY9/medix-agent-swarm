@@ -76,6 +76,7 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert mom["medications"]["taken_today"] == 1
     assert mom["medications"]["names"] == ["氨氯地平"]
     assert mom["medications"]["last_taken_at"]
+    assert mom["medications"]["adherence"] is None
     assert mom["reminders"] == {
         "pending": 1, "overdue": 1, "due_today": 0,
     }
@@ -115,6 +116,37 @@ def test_family_overview_medication_activity_and_due_today(client_and_store):
         "pending": 1, "overdue": 0, "due_today": 1,
     }
     assert dad["medications"]["last_taken_at"]
+
+
+def test_family_overview_medication_adherence(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "二甲双胍", "frequency": "每日两次",
+    }).json()["medication"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (
+                (now - timedelta(days=3)).isoformat(timespec="seconds"),
+                medication["id"],
+            ),
+        )
+
+    taken_at = now.isoformat(timespec="minutes")
+    for _ in range(5):
+        client.post(
+            f"/api/medications/{medication['id']}/logs",
+            json={"taken_at": taken_at},
+        )
+
+    data = client.get("/api/family/overview").json()
+    mom = {item["name"]: item for item in data["profiles"]}["妈妈"]
+
+    assert mom["medications"]["adherence"] == {
+        "expected": 8, "taken": 5, "rate": 63,
+    }
 
 
 def test_family_overview_includes_deleted_profiles(client_and_store):
