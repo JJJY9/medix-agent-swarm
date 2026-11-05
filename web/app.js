@@ -9346,8 +9346,21 @@ function renderFamilyCompare(data) {
       const rangeText = hasRange
         ? `（${row.min_value1}–${row.max_value1}${data.unit ? ` ${data.unit}` : ''}）`
         : '';
+      const targetText = row.target
+        && Number.isFinite(Number(row.within_target))
+        ? ` · 达标 ${row.within_target}/${row.count}`
+        : '';
       meta.textContent = `平均 ${formatCompareValue(row, data.unit)}`
-        + `${rangeText} · ${row.count} 次`;
+        + `${rangeText} · ${row.count} 次${targetText}`;
+      if (row.target) {
+        const targetValue2 = row.target.value2 !== null
+          && row.target.value2 !== undefined
+          ? `/${row.target.value2}`
+          : '';
+        const bound = row.target_lower_bound ? '≥' : '≤';
+        meta.title = `目标 ${bound} ${row.target.value1}${targetValue2}`
+          + `${data.unit ? ` ${data.unit}` : ''}`;
+      }
     } else {
       meta.textContent = '所选范围内无记录';
     }

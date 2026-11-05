@@ -3421,6 +3421,7 @@ async def family_compare(metric: str = "weight", days: int = 30):
                 "measured_at": latest.get("measured_at", ""),
             } if latest else None,
             "within_target": summary.get("within_target"),
+            "target_lower_bound": summary.get("target_lower_bound"),
             "target": summary.get("target"),
         })
     rows.sort(

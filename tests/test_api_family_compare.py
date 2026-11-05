@@ -46,6 +46,9 @@ def test_family_compare_metrics(client_and_store):
         "profile": "妈妈", "metric": "bp",
         "value1": 130, "value2": 84, "measured_at": now,
     })
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "weight", "value1": 60,
+    })
 
     data = client.get(
         "/api/family/compare", params={"metric": "weight", "days": 30}
@@ -64,6 +67,9 @@ def test_family_compare_metrics(client_and_store):
     assert mom["min_value1"] == 60.0
     assert mom["max_value1"] == 62.0
     assert mom["latest"]["value1"] == 62
+    assert mom["within_target"] == 1
+    assert mom["target"]["value1"] == 60.0
+    assert mom["target_lower_bound"] is False
     child = data["profiles"][1]
     assert child["count"] == 1
     assert child["avg_value1"] == 30.0
@@ -80,6 +86,26 @@ def test_family_compare_metrics(client_and_store):
     mom_bp = next(row for row in bp["profiles"] if row["name"] == "妈妈")
     assert mom_bp["avg_value1"] == 130.0
     assert mom_bp["avg_value2"] == 84.0
+
+
+def test_family_compare_reports_lower_bound_target(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "spo2",
+        "value1": 96, "measured_at": now,
+    })
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "spo2", "value1": 95,
+    })
+
+    data = client.get(
+        "/api/family/compare", params={"metric": "spo2", "days": 30}
+    ).json()
+    mom = next(row for row in data["profiles"] if row["name"] == "妈妈")
+    assert mom["within_target"] == 1
+    assert mom["target_lower_bound"] is True
 
 
 def test_family_compare_validates_metric(client_and_store):
