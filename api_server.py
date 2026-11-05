@@ -3246,6 +3246,61 @@ async def export_family_overview_csv(days: int = 7):
     )
 
 
+@app.get("/api/family/compare")
+async def family_compare(metric: str = "weight", days: int = 30):
+    """家庭指标对比：按档案统计指定指标的平均值与最近记录。"""
+    from memory import get_session_store
+    from memory.session_store import METRIC_TYPES
+
+    metric = str(metric or "").strip()
+    if metric not in METRIC_TYPES:
+        raise HTTPException(status_code=400, detail="不支持的指标类型")
+    days = max(1, min(int(days or 30), 365))
+    store = get_session_store()
+    names = await asyncio.to_thread(store.list_used_profile_names)
+    rows = []
+    for name in names:
+        summary = await asyncio.to_thread(
+            store.metric_summary, name, metric, days
+        )
+        if summary is None:
+            continue
+        latest = summary.get("latest") or {}
+        value1 = summary.get("value1") or {}
+        value2 = summary.get("value2") or {}
+        rows.append({
+            "name": name,
+            "count": int(summary.get("count") or 0),
+            "avg_value1": value1.get("avg"),
+            "avg_value2": value2.get("avg"),
+            "min_value1": value1.get("min"),
+            "max_value1": value1.get("max"),
+            "latest": {
+                "value1": latest.get("value1"),
+                "value2": latest.get("value2"),
+                "unit": latest.get("unit", ""),
+                "measured_at": latest.get("measured_at", ""),
+            } if latest else None,
+            "within_target": summary.get("within_target"),
+            "target": summary.get("target"),
+        })
+    rows.sort(
+        key=lambda row: (
+            row["avg_value1"] is None,
+            -(row["avg_value1"] or 0),
+            row["name"],
+        )
+    )
+    label, unit, _ = METRIC_TYPES[metric]
+    return {
+        "metric": metric,
+        "label": label,
+        "unit": unit,
+        "days": days,
+        "profiles": rows,
+    }
+
+
 @app.get("/api/health/dossier.md")
 async def export_health_dossier(profile: str = "", days: int = 30):
     """导出单个患者的健康档案 Markdown（指标、症状、用药、提醒与会诊）。"""

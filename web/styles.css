@@ -3662,6 +3662,48 @@ html[data-theme="dark"] .timeline-badge-medication {
   font-size: 11.5px;
 }
 
+.compare-list {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compare-item {
+  display: grid;
+  gap: 4px;
+}
+
+.compare-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.compare-meta {
+  color: var(--ink-soft);
+}
+
+.compare-bar {
+  height: 8px;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+}
+
+.compare-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--clinic);
+}
+
+.compare-bar-empty {
+  background: transparent;
+}
+
 .health-calendar .calendar-toolbar {
   display: flex;
   align-items: center;

@@ -418,6 +418,11 @@ const els = {
   weeklySummaryRange: document.getElementById('weekly-summary-range'),
   weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
+  compareSection: document.getElementById('compare-section'),
+  compareMetric: document.getElementById('compare-metric'),
+  compareRange: document.getElementById('compare-range'),
+  compareList: document.getElementById('compare-list'),
+  compareEmpty: document.getElementById('compare-empty'),
   calendarSection: document.getElementById('calendar-section'),
   calendarMonthLabel: document.getElementById('calendar-month-label'),
   calendarPrev: document.getElementById('calendar-prev'),
@@ -5262,6 +5267,8 @@ const HEALTH_FILTER_KEYS = {
   timelineType: 'medix.timelineType',
   metricRange: 'medix.metricRange',
   metricType: 'medix.metricType',
+  compareMetric: 'medix.compareMetric',
+  compareRange: 'medix.compareRange',
 };
 
 function readStoredFilter(key) {
@@ -6253,6 +6260,7 @@ async function refreshMetrics() {
   loadWeeklySummary();
   loadTimeline();
   loadCalendar();
+  loadFamilyCompare();
   loadHomeGlance();
 }
 
@@ -9129,6 +9137,89 @@ function updateTimelineMore(data) {
   const loaded = (data.events || []).length;
   const total = Number(data.total) || loaded;
   els.timelineMore.hidden = !(total > loaded && timelineLimit < 500);
+}
+
+let compareRequestSeq = 0;
+
+function formatCompareValue(row, unit) {
+  const suffix = unit ? ` ${unit}` : '';
+  if (row.avg_value2 !== null && row.avg_value2 !== undefined) {
+    return `${row.avg_value1}/${row.avg_value2}${suffix}`;
+  }
+  return `${row.avg_value1}${suffix}`;
+}
+
+async function loadFamilyCompare() {
+  if (!els.compareList) return;
+  const requestSeq = ++compareRequestSeq;
+  const metric = els.compareMetric ? els.compareMetric.value : 'weight';
+  const days = Number(els.compareRange && els.compareRange.value) || 30;
+  const params = new URLSearchParams({
+    metric, days: String(days),
+  });
+  try {
+    const res = await fetch(`/api/family/compare?${params.toString()}`);
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== compareRequestSeq) return;
+    renderFamilyCompare(data);
+  } catch {
+    if (requestSeq !== compareRequestSeq) return;
+    els.compareList.replaceChildren();
+    if (els.compareEmpty) {
+      els.compareEmpty.hidden = false;
+      els.compareEmpty.textContent = '对比数据加载失败，请稍后重试。';
+    }
+  }
+}
+
+function renderFamilyCompare(data) {
+  if (!els.compareList) return;
+  const rows = data.profiles || [];
+  els.compareList.replaceChildren();
+  if (els.compareEmpty) {
+    els.compareEmpty.hidden = rows.length > 0;
+    els.compareEmpty.textContent = `近 ${data.days} 天还没有可对比的${data.label}记录。`;
+  }
+  const withData = rows.filter(
+    (row) => Number(row.count) > 0
+      && row.avg_value1 !== null && row.avg_value1 !== undefined
+  );
+  const maxValue = withData.reduce(
+    (max, row) => Math.max(max, Number(row.avg_value1) || 0), 0
+  ) || 1;
+  for (const row of rows) {
+    const li = document.createElement('li');
+    li.className = 'compare-item';
+    const head = document.createElement('div');
+    head.className = 'compare-head';
+    const name = document.createElement('strong');
+    name.textContent = row.name;
+    const meta = document.createElement('span');
+    meta.className = 'compare-meta';
+    if (Number(row.count) > 0 && row.avg_value1 !== null) {
+      meta.textContent = `平均 ${formatCompareValue(row, data.unit)}`
+        + ` · ${row.count} 次`;
+    } else {
+      meta.textContent = '所选范围内无记录';
+    }
+    head.append(name, meta);
+    const barWrap = document.createElement('div');
+    barWrap.className = 'compare-bar';
+    const bar = document.createElement('span');
+    bar.className = 'compare-bar-fill';
+    if (Number(row.count) > 0 && row.avg_value1 !== null) {
+      const ratio = Math.max(
+        0, Math.min(1, Number(row.avg_value1) / maxValue)
+      );
+      bar.style.width = `${Math.round(ratio * 100)}%`;
+    } else {
+      bar.classList.add('compare-bar-empty');
+    }
+    barWrap.appendChild(bar);
+    li.append(head, barWrap);
+    els.compareList.appendChild(li);
+  }
 }
 
 let calendarMonth = '';
@@ -12048,6 +12139,8 @@ restoreSelectValue(
 );
 restoreSelectValue(els.metricRange, HEALTH_FILTER_KEYS.metricRange);
 restoreSelectValue(els.metricType, HEALTH_FILTER_KEYS.metricType);
+restoreSelectValue(els.compareMetric, HEALTH_FILTER_KEYS.compareMetric);
+restoreSelectValue(els.compareRange, HEALTH_FILTER_KEYS.compareRange);
 restoreSelectValue(els.timelineRange, HEALTH_FILTER_KEYS.timelineRange);
 restoreSelectValue(els.timelineType, HEALTH_FILTER_KEYS.timelineType);
 
@@ -12081,6 +12174,18 @@ if (els.calendarToday) {
   els.calendarToday.addEventListener('click', () => {
     calendarMonth = '';
     loadCalendar();
+  });
+}
+if (els.compareMetric) {
+  els.compareMetric.addEventListener('change', () => {
+    storeFilter(HEALTH_FILTER_KEYS.compareMetric, els.compareMetric.value);
+    loadFamilyCompare();
+  });
+}
+if (els.compareRange) {
+  els.compareRange.addEventListener('change', () => {
+    storeFilter(HEALTH_FILTER_KEYS.compareRange, els.compareRange.value);
+    loadFamilyCompare();
   });
 }
 if (els.timelineDateChip) {
