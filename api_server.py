@@ -1990,7 +1990,10 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             and item.get("metric")
         }
 
-    from memory.session_store import LOWER_BOUND_TARGET_METRICS
+    from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
+        expected_doses_for_period,
+    )
 
     grouped: dict = {}
     for item in metrics:
@@ -2100,19 +2103,55 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     ]
 
     active_meds = [item for item in medications if item.get("active")]
+    meds_by_id = {item["id"]: item for item in medications}
+    active_med_ids = {item["id"] for item in active_meds}
     doses_by_medication: dict = {}
     for log in logs:
         key = log["medication_id"]
         entry = doses_by_medication.setdefault(key, {
+            "medication_id": key,
             "name": log.get("medication_name") or "已删除药物",
             "dose": log.get("medication_dose") or "",
             "doses": 0,
         })
         entry["doses"] += 1
-    medication_rows = sorted(
-        doses_by_medication.values(),
-        key=lambda row: (-row["doses"], row["name"]),
-    )
+    for item in active_meds:
+        if item["id"] not in doses_by_medication:
+            doses_by_medication[item["id"]] = {
+                "medication_id": item["id"],
+                "name": item.get("name") or "",
+                "dose": item.get("dose") or "",
+                "doses": 0,
+            }
+    adherence_expected = 0
+    adherence_taken = 0
+    for item in active_meds:
+        expected = expected_doses_for_period(
+            item.get("frequency", ""), item.get("created_at", ""), now, days
+        )
+        if expected:
+            adherence_expected += expected
+    for log in logs:
+        if log["medication_id"] in active_med_ids:
+            adherence_taken += 1
+    medication_rows = []
+    for row in doses_by_medication.values():
+        medication = meds_by_id.get(row["medication_id"])
+        expected = None
+        if medication is not None and medication.get("active"):
+            expected = expected_doses_for_period(
+                medication.get("frequency", ""),
+                medication.get("created_at", ""),
+                now,
+                days,
+            )
+        row["expected"] = expected
+        row["rate"] = (
+            min(100, round(row["doses"] / expected * 100 + 1e-9))
+            if expected else None
+        )
+        medication_rows.append(row)
+    medication_rows.sort(key=lambda row: (-row["doses"], row["name"]))
 
     today = end
     horizon = (now + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -2154,6 +2193,20 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "doses": len(logs),
             "by_medication": medication_rows,
             "prev_doses": len(previous_logs),
+            "adherence": (
+                {
+                    "expected": adherence_expected,
+                    "taken": adherence_taken,
+                    "rate": min(
+                        100,
+                        round(
+                            adherence_taken / adherence_expected * 100
+                            + 1e-9
+                        ),
+                    ),
+                }
+                if adherence_expected else None
+            ),
         },
         "reminders": {
             "pending": len(reminders),

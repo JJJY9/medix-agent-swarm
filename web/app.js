@@ -8645,6 +8645,9 @@ function weeklySummaryLines(data) {
   let medicationText = '没有在用药物';
   if (meds.active) {
     medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${doses} 次`;
+    if (meds.adherence && meds.adherence.expected) {
+      medicationText += `，依从率 ${meds.adherence.rate}%`;
+    }
   } else if (doses > 0) {
     medicationText = `没有在用药物，近 ${days} 天打卡 ${doses} 次`;
   }
@@ -8653,7 +8656,11 @@ function weeklySummaryLines(data) {
     if (meds.by_medication && meds.by_medication.length) {
       details.push(
         meds.by_medication
-          .map((item) => `${item.name} ${item.doses} 次`)
+          .map(
+            (item) => `${item.name} ${item.doses}`
+              + (item.expected ? `/${item.expected}` : '')
+              + ' 次'
+          )
           .join('、')
       );
     }
