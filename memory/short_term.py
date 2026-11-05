@@ -103,6 +103,13 @@ class ShortTermMemory:
         """
         # 防止重复初始化
         if hasattr(self, '_initialized'):
+            if getattr(self, 'storage_type', None) not in (None, storage_type):
+                logger.warning(
+                    "ShortTermMemory 已按 storage_type=%s 初始化，"
+                    "忽略本次 storage_type=%s",
+                    getattr(self, 'storage_type', None),
+                    storage_type,
+                )
             return
 
         self.storage_type = storage_type
@@ -178,7 +185,18 @@ class ShortTermMemory:
             role: 消息角色（user/assistant/tool）
             content: 消息内容
         """
-        history = self.get_session(session_id)
+        if self.storage_type == "redis" and self.redis_client:
+            try:
+                # 「不存在」返回 None；读取失败则抛错——不能用空历史
+                # 覆盖 Redis 中原有的整段会话
+                history = self._load_from_redis(session_id, strict=True)
+            except RuntimeError as e:
+                logger.error(
+                    f"读取 Redis 会话失败，跳过本次写入以避免覆盖历史: {e}"
+                )
+                return
+        else:
+            history = self.get_session(session_id)
 
         if history is None:
             history = self.create_session(session_id)
@@ -296,21 +314,29 @@ class ShortTermMemory:
 
         logger.debug(f"Cleared session: {session_id}")
 
-    def _save_to_redis(self, history: ConversationHistory):
-        """保存到 Redis（内部方法）"""
+    def _save_to_redis(self, history: ConversationHistory) -> bool:
+        """保存到 Redis（内部方法）；失败返回 False，调用方可感知。"""
         if not self.redis_client:
-            return
+            return False
 
         try:
             key = f"session:{history.session_id}"
             value = json.dumps(history.to_dict())
             # 设置过期时间：1小时（3600秒）
             self.redis_client.setex(key, 3600, value)
+            return True
         except Exception as e:
             logger.error(f"Failed to save to Redis: {e}")
+            return False
 
-    def _load_from_redis(self, session_id: str) -> Optional[ConversationHistory]:
-        """从 Redis 加载（内部方法）"""
+    def _load_from_redis(
+        self, session_id: str, strict: bool = False
+    ) -> Optional[ConversationHistory]:
+        """从 Redis 加载（内部方法）。
+
+        strict=True 时读取/解析失败会抛出 RuntimeError，供写入路径区分
+        「键不存在」与「读取失败」。
+        """
         if not self.redis_client:
             return None
 
@@ -323,5 +349,7 @@ class ShortTermMemory:
                 return ConversationHistory.from_dict(data)
         except Exception as e:
             logger.error(f"Failed to load from Redis: {e}")
+            if strict:
+                raise RuntimeError(str(e)) from e
 
         return None

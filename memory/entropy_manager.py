@@ -8,7 +8,7 @@
 - 保持系统简洁
 """
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 import hashlib
 import json
@@ -133,7 +133,8 @@ class MemoryEntropyManager:
             return []
 
         max_age_days = max_age_days or self.max_age_days
-        cutoff_date = datetime.now() - timedelta(days=max_age_days)
+        naive_cutoff = datetime.now() - timedelta(days=max_age_days)
+        aware_cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
 
         cleaned = []
         removed_count = 0
@@ -150,6 +151,13 @@ class MemoryEntropyManager:
                         timestamp = datetime.fromisoformat(timestamp_value)
                     except ValueError:
                         logger.warning(f"Invalid timestamp format: {timestamp_value}")
+
+            # 带时区与不带时区的时间戳分别与对应基准比较，
+            # 避免 aware/naive 直接比较抛 TypeError
+            if timestamp is not None and timestamp.tzinfo is not None:
+                cutoff_date = aware_cutoff
+            else:
+                cutoff_date = naive_cutoff
 
             # 保留最近的记忆
             if timestamp and timestamp > cutoff_date:
@@ -188,11 +196,11 @@ class MemoryEntropyManager:
         if len(messages) <= max_messages:
             return messages
 
-        # 保留最近的消息
-        recent = messages[-max_messages:]
-
-        # 压缩更早的消息
-        older = messages[:-max_messages]
+        # 给摘要留 1 条位置；边界消息必须进入摘要，
+        # 不能被「摘要 + 最近 N 条」两边都漏掉
+        keep = max(0, max_messages - 1)
+        recent = messages[-keep:] if keep else []
+        older = messages[:-keep] if keep else list(messages)
         compressed = self._compress_older_messages(older)
 
         logger.info(
@@ -200,14 +208,12 @@ class MemoryEntropyManager:
         )
 
         if not compressed:
-            return recent
+            return messages[-max_messages:] if max_messages > 0 else []
 
         # 所有摘要合并为一条系统消息，保证总条数不超过 max_messages
         summary_text = "\n".join(item["content"] for item in compressed)
         summary = {"role": "system", "content": summary_text}
-        if max_messages <= 1:
-            return [summary]
-        return [summary] + recent[-(max_messages - 1):]
+        return [summary] + recent
 
     def _compress_older_messages(self, messages: List[Dict]) -> List[Dict]:
         """
