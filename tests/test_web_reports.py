@@ -718,6 +718,24 @@ def test_app_js_ships_health_timeline(client):
     assert ".timeline-badge" in css
 
 
+def test_app_js_ships_family_overview(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert "async function loadFamilyOverview" in app_js
+    assert "function renderFamilyOverview" in app_js
+    assert "/api/family/overview" in app_js
+    assert "/api/family/overview/export.csv" in app_js
+    assert "async function exportFamilyOverviewCsv" in app_js
+    assert "async function copyFamilyOverview" in app_js
+    assert 'id="family-overview"' in html
+    assert 'id="family-overview-copy"' in html
+    assert 'id="family-overview-export"' in html
+    assert ".family-card" in css
+    assert ".family-chip" in css
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

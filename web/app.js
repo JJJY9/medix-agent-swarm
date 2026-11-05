@@ -320,6 +320,7 @@ const els = {
   familyOverviewList: document.getElementById('family-overview-list'),
   familyOverviewStatus: document.getElementById('family-overview-status'),
   familyOverviewExport: document.getElementById('family-overview-export'),
+  familyOverviewCopy: document.getElementById('family-overview-copy'),
   todayMeds: document.getElementById('today-meds'),
   todayMedsSummary: document.getElementById('today-meds-summary'),
   todayMedsList: document.getElementById('today-meds-list'),
@@ -7149,6 +7150,7 @@ async function loadHomeGlance() {
 }
 
 let familyOverviewRequestSeq = 0;
+let familyOverviewCache = null;
 
 function familyContextText(context) {
   if (!context || typeof context !== 'object') return '';
@@ -7289,11 +7291,65 @@ async function loadFamilyOverview() {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== familyOverviewRequestSeq) return;
+    familyOverviewCache = data;
     renderFamilyOverview(data);
   } catch {
     if (requestSeq !== familyOverviewRequestSeq) return;
     els.familyOverview.hidden = true;
   }
+}
+
+function familyOverviewText(data) {
+  const days = Number(data.days) || 7;
+  const lines = [`家庭健康总览（近 ${days} 天）`];
+  for (const profile of data.profiles || []) {
+    const parts = [];
+    const metrics = (profile.metrics || []).slice(0, 3);
+    if (metrics.length) {
+      parts.push(metrics.map((item) => (
+        `${item.label} ${item.value}${item.unit ? ` ${item.unit}` : ''}`
+        + (item.over_target ? '（超标）' : '')
+      )).join('、'));
+    }
+    const medications = profile.medications || {};
+    if (medications.active) {
+      let medText = `用药 今日 ${medications.taken_today || 0} 次`;
+      if (medications.adherence && medications.adherence.expected) {
+        medText += `，依从率 ${medications.adherence.rate}%`;
+      }
+      parts.push(medText);
+    }
+    const reminders = profile.reminders || {};
+    if (reminders.overdue) {
+      parts.push(`提醒 ${reminders.overdue} 条逾期`);
+    } else if (reminders.due_today) {
+      parts.push(`提醒 今天 ${reminders.due_today} 条`);
+    } else if (reminders.pending) {
+      parts.push(`提醒 ${reminders.pending} 条待办`);
+    }
+    const symptom = profile.symptoms || {};
+    if (symptom.count) parts.push(`症状 ${symptom.count} 条`);
+    const consultations = profile.consultations || {};
+    if (consultations.count) parts.push(`会诊 ${consultations.count} 次`);
+    const context = familyContextText(profile.context);
+    const name = profile.name || '未指定档案';
+    lines.push(
+      `${name}${context ? `（${context}）` : ''}：`
+      + (parts.length ? parts.join('；') : '暂无健康记录')
+    );
+  }
+  return lines.join('\n');
+}
+
+async function copyFamilyOverview() {
+  if (!familyOverviewCache) {
+    setFamilyOverviewStatus('暂无家庭健康数据可复制。');
+    return;
+  }
+  const ok = await copyText(familyOverviewText(familyOverviewCache));
+  setFamilyOverviewStatus(
+    ok ? '已复制家庭健康总览。' : '复制失败，请手动选择文本。'
+  );
 }
 
 function setFamilyOverviewStatus(text) {
@@ -11808,6 +11864,9 @@ if (els.familyOverviewExport) {
   els.familyOverviewExport.addEventListener(
     'click', exportFamilyOverviewCsv
   );
+}
+if (els.familyOverviewCopy) {
+  els.familyOverviewCopy.addEventListener('click', copyFamilyOverview);
 }
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
