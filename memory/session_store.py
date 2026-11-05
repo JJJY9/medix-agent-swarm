@@ -3094,6 +3094,10 @@ class SessionStore:
             },
             "within_target": within_target,
             "bp_grades": bp_grades,
+            "target_lower_bound": (
+                metric in LOWER_BOUND_TARGET_METRICS
+                if target_row is not None else None
+            ),
         }
 
     def add_symptom(
