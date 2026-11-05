@@ -935,6 +935,41 @@ class SessionStore:
             sessions.append(item)
         return sessions
 
+    def list_sessions_for_timeline(
+        self,
+        profile: Optional[str] = None,
+        start: str = "",
+        end: str = "",
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """按创建时间倒序返回会话，供健康时间线合并展示。"""
+        limit = max(1, min(int(limit or 200), 2000))
+        conditions: List[str] = ["created_at >= ?"]
+        params: List[Any] = [str(start or "")]
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        if end:
+            conditions.append("created_at <= ?")
+            params.append(str(end))
+        where = " AND ".join(conditions)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT s.id, s.title, s.created_at, s.profile,
+                       (
+                           SELECT COUNT(*) FROM messages m
+                            WHERE m.session_id = s.id
+                       ) AS message_count
+                  FROM sessions s
+                 WHERE {where}
+                 ORDER BY s.created_at DESC, s.id DESC
+                 LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def count_sessions(
         self,
         query: str = "",

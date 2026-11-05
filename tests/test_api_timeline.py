@@ -120,3 +120,39 @@ def test_timeline_csv_export(client_and_store):
     assert rows[0] == ["时间", "类型", "项目", "数值", "患者档案", "备注"]
     assert {row[1] for row in rows[1:]} == {"指标", "症状"}
     assert any(row[2].startswith("'=SUM") for row in rows[1:])
+
+
+def test_timeline_includes_consultations(client_and_store):
+    client, store = client_and_store
+
+    store.save_exchange("session-mom", "妈妈最近头晕怎么办", "建议监测血压。")
+    store.set_session_profile("session-mom", "妈妈")
+    store.save_exchange("session-empty", "没有档案的会诊", "已记录。")
+
+    timeline = client.get("/api/timeline").json()
+    consultation = [
+        event for event in timeline["events"]
+        if event["type"] == "consultation"
+    ]
+    assert len(consultation) == 2
+    assert consultation[0]["id"].startswith("session-")
+    assert consultation[0]["value"] == "会诊 · 2 条消息"
+
+    mom = client.get(
+        "/api/timeline", params={"profile": "妈妈"}
+    ).json()
+    assert [event["type"] for event in mom["events"]] == ["consultation"]
+    assert mom["events"][0]["title"] == "妈妈最近头晕怎么办"
+    assert mom["events"][0]["profile"] == "妈妈"
+
+    unassigned = client.get(
+        "/api/timeline", params={"profile": ""}
+    ).json()
+    assert [event["id"] for event in unassigned["events"]] == ["session-empty"]
+
+    exported = client.get(
+        "/api/timeline/export.csv", params={"profile": "妈妈"}
+    )
+    rows = list(csv.reader(io.StringIO(exported.content.decode("utf-8-sig"))))
+    assert rows[1][1] == "会诊"
+    assert rows[1][2] == "妈妈最近头晕怎么办"

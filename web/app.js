@@ -8599,6 +8599,7 @@ const TIMELINE_TYPE_LABELS = {
   metric: '指标',
   symptom: '症状',
   medication: '用药',
+  consultation: '会诊',
 };
 
 function renderTimeline(data) {
@@ -8655,6 +8656,23 @@ function renderTimeline(data) {
       main.appendChild(note);
     }
     li.appendChild(main);
+    if (event.type === 'consultation' && event.id) {
+      li.classList.add('timeline-item-link');
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      li.title = '点击打开会诊记录';
+      const openConsultation = () => {
+        closeMetrics();
+        openSession(event.id);
+      };
+      li.addEventListener('click', openConsultation);
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openConsultation();
+        }
+      });
+    }
     els.timelineList.appendChild(li);
   }
 }

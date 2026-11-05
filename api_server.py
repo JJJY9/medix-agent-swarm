@@ -2156,7 +2156,7 @@ async def health_timeline(
     days: int = 30,
     limit: int = 100,
 ):
-    """健康时间线：指标、症状与用药打卡按时间倒序合并。"""
+    """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
     from memory.session_store import METRIC_TYPES
 
@@ -2174,6 +2174,9 @@ async def health_timeline(
     )
     raw_logs = await asyncio.to_thread(
         store.list_medication_logs, None, profile, 100000, 0, days
+    )
+    raw_sessions = await asyncio.to_thread(
+        store.list_sessions_for_timeline, profile, start, "", 500
     )
 
     events: List[Dict[str, Any]] = []
@@ -2242,10 +2245,30 @@ async def health_timeline(
             "note": item.get("note", ""),
         })
 
-    events.sort(
-        key=lambda event: (event["at"], event["id"] or 0),
-        reverse=True,
-    )
+    for item in raw_sessions:
+        at = str(item.get("created_at") or "")
+        if not at or at[:10] < start:
+            continue
+        message_count = int(item.get("message_count") or 0)
+        if message_count <= 0:
+            continue
+        events.append({
+            "type": "consultation",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": str(item.get("title") or "").strip() or "会诊记录",
+            "value": f"会诊 · {message_count} 条消息",
+            "note": "",
+        })
+
+    def sort_key(event: Dict[str, Any]):
+        event_id = event.get("id")
+        if isinstance(event_id, int):
+            return (event["at"], 0, event_id)
+        return (event["at"], 1, str(event_id or ""))
+
+    events.sort(key=sort_key, reverse=True)
     return {
         "events": events[:limit],
         "total": len(events),
@@ -2268,6 +2291,7 @@ async def export_timeline_csv(
         "metric": "指标",
         "symptom": "症状",
         "medication": "用药",
+        "consultation": "会诊",
     }
     rows = [["时间", "类型", "项目", "数值", "患者档案", "备注"]]
     for event in data["events"]:
