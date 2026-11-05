@@ -7152,7 +7152,7 @@ async function loadHomeGlance() {
 let familyOverviewRequestSeq = 0;
 let familyOverviewCache = null;
 
-const FAMILY_RISK_LABELS = {
+const HEALTH_RISK_LABELS = {
   emergency: '紧急',
   high: '高危',
   medium: '中危',
@@ -7270,7 +7270,7 @@ function renderFamilyOverview(data) {
       const chip = familyChip(
         `会诊 近 ${days} 天 ${consultations.count} 次`
       );
-      const riskLabel = FAMILY_RISK_LABELS[consultations.risk];
+      const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
       if (riskLabel) {
         chip.textContent += ` · ${riskLabel}`;
         if (
@@ -7351,7 +7351,7 @@ function familyOverviewText(data) {
     if (symptom.count) parts.push(`症状 ${symptom.count} 条`);
     const consultations = profile.consultations || {};
     if (consultations.count) {
-      const riskLabel = FAMILY_RISK_LABELS[consultations.risk];
+      const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
       parts.push(
         `会诊 ${consultations.count} 次`
         + (riskLabel ? `（${riskLabel}）` : '')
@@ -8797,6 +8797,8 @@ function weeklySummaryLines(data) {
         ? '，较上期持平'
         : `，较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 次`;
     }
+    const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
+    if (riskLabel) consultationText += `，最近一次 ${riskLabel}`;
   }
   lines.push(['会诊', consultationText]);
 

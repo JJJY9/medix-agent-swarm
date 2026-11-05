@@ -97,6 +97,21 @@ def test_timeline_merges_and_filters(client_and_store):
     assert family["events"][0]["profile"] == "父亲"
 
 
+def test_timeline_consultation_risk(client_and_store):
+    client, store = client_and_store
+
+    store.save_exchange(
+        "risk-timeline", "头晕怎么办", "风险等级：中危，建议复测血压。"
+    )
+
+    events = client.get("/api/timeline").json()["events"]
+    consultation = events[0]
+
+    assert consultation["type"] == "consultation"
+    assert consultation["risk"] == "medium"
+    assert "中危" in consultation["value"]
+
+
 def test_timeline_csv_export(client_and_store):
     client, _store = client_and_store
     now = datetime.now().isoformat(timespec="minutes")

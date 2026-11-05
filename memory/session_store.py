@@ -1055,6 +1055,7 @@ class SessionStore:
         start: str = "",
         end: str = "",
         limit: int = 200,
+        include_answer: bool = False,
     ) -> List[Dict[str, Any]]:
         """按创建时间倒序返回会话，供健康时间线合并展示。"""
         limit = max(1, min(int(limit or 200), 2000))
@@ -1067,6 +1068,15 @@ class SessionStore:
             conditions.append("created_at <= ?")
             params.append(str(end))
         where = " AND ".join(conditions)
+        answer_column = ""
+        if include_answer:
+            answer_column = """,
+                   (
+                       SELECT substr(m.content, 1, 1000)
+                         FROM messages m
+                        WHERE m.session_id = s.id AND m.role = 'assistant'
+                        ORDER BY m.id DESC LIMIT 1
+                   ) AS last_answer"""
         with self._lock:
             rows = self._conn.execute(
                 f"""
@@ -1074,7 +1084,7 @@ class SessionStore:
                        (
                            SELECT COUNT(*) FROM messages m
                             WHERE m.session_id = s.id
-                       ) AS message_count
+                       ) AS message_count{answer_column}
                   FROM sessions s
                  WHERE {where}
                  ORDER BY s.created_at DESC, s.id DESC
