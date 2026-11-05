@@ -85,7 +85,10 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("二甲双胍", ("二甲双胍", "metformin")),
     ),
     "contrast": (
-        ("含碘造影剂", ("含碘造影剂", "碘造影", "造影剂", "增强ct", "增强 ct", "contrast")),
+        ("含碘造影剂", (
+            "含碘造影剂", "碘造影", "造影剂", "增强ct", "增强 ct",
+            "iodinated contrast",
+        )),
     ),
     "cephalosporins": (
         ("头孢类抗菌药", ("头孢", "cephalosporin", "cef")),
@@ -104,8 +107,15 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("洛伐他汀", ("洛伐他汀", "lovastatin")),
         ("瑞舒伐他汀", ("瑞舒伐他汀", "rosuvastatin")),
     ),
+    #: 主要经 CYP3A4 代谢的他汀；瑞舒伐他汀不在此列
+    "cyp3a4_statins": (
+        ("阿托伐他汀", ("阿托伐他汀", "atorvastatin")),
+        ("辛伐他汀", ("辛伐他汀", "simvastatin")),
+        ("洛伐他汀", ("洛伐他汀", "lovastatin")),
+    ),
     "cyp3a4_inhibitors": (
         ("克拉霉素", ("克拉霉素", "clarithromycin")),
+        ("红霉素", ("红霉素", "erythromycin")),
         ("伊曲康唑", ("伊曲康唑", "itraconazole")),
         ("伏立康唑", ("伏立康唑", "voriconazole")),
     ),
@@ -133,10 +143,16 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("米诺环素", ("米诺环素", "minocycline")),
     ),
     "minerals": (
-        ("钙剂", ("钙片", "碳酸钙", "葡萄糖酸钙", "枸橼酸钙")),
-        ("铁剂", ("铁剂", "硫酸亚铁", "琥珀酸亚铁", "富马酸亚铁", "多糖铁")),
-        ("铝碳酸镁", ("铝碳酸镁",)),
-        ("氢氧化铝", ("氢氧化铝",)),
+        ("钙剂", (
+            "钙片", "碳酸钙", "葡萄糖酸钙", "枸橼酸钙",
+            "calcium", "calcium carbonate", "calcium citrate",
+        )),
+        ("铁剂", (
+            "铁剂", "硫酸亚铁", "琥珀酸亚铁", "富马酸亚铁", "多糖铁",
+            "iron", "ferrous sulfate", "ferrous fumarate",
+        )),
+        ("铝碳酸镁", ("铝碳酸镁", "aluminum", "aluminium")),
+        ("氢氧化铝", ("氢氧化铝", "aluminum hydroxide")),
     ),
     "ssris": (
         ("舍曲林", ("舍曲林", "sertraline")),
@@ -182,7 +198,7 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("吲达帕胺", ("吲达帕胺", "indapamide")),
     ),
     "alcohol": (
-        ("酒精", ("喝酒", "饮酒", "喝了酒", "酒精", "啤酒", "白酒", "红酒", "药酒",
+        ("酒精", ("喝酒", "饮酒", "喝了酒", "啤酒", "白酒", "红酒", "药酒",
                   "alcohol", "beer", "wine")),
     ),
 }
@@ -239,13 +255,13 @@ INTERACTION_RULES: Tuple[Tuple[str, str, str, str], ...] = (
     ),
     (
         "他汀与部分抗感染药",
-        "statins",
+        "cyp3a4_statins",
         "cyp3a4_inhibitors",
-        "克拉霉素、伊曲康唑等强效 CYP3A4 抑制剂会升高部分他汀的血药浓度，增加肌痛和横纹肌溶解风险；请让医生评估是否换药或暂停。",
+        "克拉霉素、红霉素、伊曲康唑等强效 CYP3A4 抑制剂会升高部分他汀的血药浓度，增加肌痛和横纹肌溶解风险；请让医生评估是否换药或暂停。",
     ),
     (
         "他汀与西柚",
-        "statins",
+        "cyp3a4_statins",
         "grapefruit",
         "西柚/葡萄柚会抑制 CYP3A4，可能升高部分他汀的血药浓度，增加肌肉损伤风险；服药期间请避免大量饮用西柚汁。",
     ),
@@ -330,7 +346,7 @@ INTERACTION_RULES: Tuple[Tuple[str, str, str, str], ...] = (
 )
 
 ALCOHOL_TERMS = (
-    "喝酒", "饮酒", "喝了酒", "酒精", "啤酒", "白酒", "红酒", "药酒",
+    "喝酒", "饮酒", "喝了酒", "啤酒", "白酒", "红酒", "药酒",
     "alcohol", "beer", "wine",
 )
 
@@ -338,7 +354,10 @@ ALCOHOL_TERMS = (
 ALLERGY_RULES: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
     (
         "青霉素类",
-        ("青霉素", "penicillin"),
+        (
+            "青霉素", "阿莫西林", "氨苄西林", "哌拉西林",
+            "penicillin", "amoxicillin", "ampicillin", "piperacillin",
+        ),
         ("penicillins", "cephalosporins"),
     ),
     (
@@ -348,8 +367,8 @@ ALLERGY_RULES: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
     ),
     (
         "磺胺类",
-        ("磺胺", "sulfa"),
-        ("sulfonamides", "inr_raisers"),
+        ("磺胺", "复方新诺明", "sulfa", "sulfonamide"),
+        ("sulfonamides",),
     ),
     (
         "非甾体抗炎药",
@@ -367,6 +386,7 @@ DRUG_GROUPS["penicillins"] = (
 )
 DRUG_GROUPS["sulfonamides"] = (
     ("复方磺胺甲噁唑", ("复方磺胺甲噁唑", "复方新诺明", "磺胺甲噁唑", "sulfamethoxazole")),
+    ("磺胺类", ("磺胺", "sulfonamide", "sulfonamides")),
 )
 
 #: 同时使用两种不同 NSAID 属于重复用药。
@@ -392,11 +412,80 @@ def _flatten(value: Any) -> str:
     return str(value).strip()
 
 
+_MEDICATION_VERBS = (
+    "服用", "口服", "吃", "用", "注射", "打", "含服", "滴", "喷", "喝", "饮",
+)
+#: 本身也是普通词语的药名，短别名需要用药语境才认定
+_AMBIGUOUS_SHORT_ALIASES = {"安定"}
+_NEGATED_USE_PREFIX = re.compile(
+    r"(?:没有|没吃|没喝|未用|未服|未|否认|并非|无需|不用|不要|避免|不需要|不必|无)"
+    r"[^，。；,.!?！？\n]{0,4}$"
+)
+
+
+def _alias_matches(text: str, alias: str) -> bool:
+    """匹配药名：英文按单词边界、否定语境与短中文别名按用药语境过滤。"""
+    alias_lower = alias.lower()
+    ascii_alias = alias_lower.isascii() and all(
+        char.isalnum() or char in " -" for char in alias_lower
+    )
+    if ascii_alias:
+        for match in re.finditer(
+            rf"(?<![a-z0-9_]){re.escape(alias_lower)}s?(?![a-z0-9_])",
+            text,
+        ):
+            prefix = text[max(0, match.start() - 6):match.start()]
+            if not _NEGATED_USE_PREFIX.search(prefix):
+                return True
+        return False
+
+    start = text.find(alias_lower)
+    while start != -1:
+        end = start + len(alias_lower)
+        prefix = text[max(0, start - 6):start]
+        if _NEGATED_USE_PREFIX.search(prefix):
+            start = text.find(alias_lower, end)
+            continue
+
+        if alias_lower in _AMBIGUOUS_SHORT_ALIASES:
+            gate_prefix = text[max(0, start - 4):start]
+            suffix = text[end:end + 3]
+            usable = (
+                any(verb in gate_prefix for verb in _MEDICATION_VERBS)
+                or (start == 0 and not text[end:].strip())
+                or suffix.startswith((
+                    "片", "粒", "胶囊", "针", "注射", "滴", "喷", "剂",
+                ))
+                or gate_prefix.rstrip().endswith((
+                    "、", "，", ",", "（", "(", "和", "与", "及", "+",
+                ))
+                or suffix.startswith(("、", "，", ",", "）", ")", "和", "与", "及"))
+            )
+            if not usable:
+                start = text.find(alias_lower, end)
+                continue
+
+        return True
+    return False
+
+
+def _term_matches(text: str, term: str) -> bool:
+    """过敏词等短词匹配；英文要求单词边界，避免 sulfa 命中 sulfate。"""
+    lowered = term.lower()
+    if not lowered:
+        return False
+    if lowered.isascii() and lowered.replace(" ", "").isalnum():
+        return bool(re.search(
+            rf"(?<![a-z0-9_]){re.escape(lowered)}s?(?![a-z0-9_])", text
+        ))
+    return lowered in text
+
+
 def _find_drugs(text: str, group: str) -> List[str]:
     """返回文本中命中的组内规范药名（去重、保持定义顺序）。"""
     found: List[str] = []
     for canonical, aliases in DRUG_GROUPS.get(group, ()):
-        if any(alias.lower() in text for alias in aliases):
+        if any(_alias_matches(text, alias) for alias in aliases):
             if canonical not in found:
                 found.append(canonical)
     return found
@@ -438,9 +527,35 @@ def _allergy_mentions_in_question(question: str) -> str:
     return " ".join(parts)
 
 
+def _positive_allergy_field(value: Any) -> str:
+    """清理结构化过敏史中的否定表述（“否认青霉素过敏”）。"""
+    clauses = re.split(
+        r"[，。；,.!?！？\n]", _flatten(value)
+    )
+    kept = []
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if (
+            re.search(r"(?:没有|否认|无|未|并非)[^，。；]{0,8}过敏", clause)
+            or "不过敏" in clause
+        ):
+            continue
+        kept.append(clause)
+    return " ".join(kept).lower()
+
+
+def _strip_allergy_statements(text: str) -> str:
+    """从药物文本中移除过敏陈述，避免把过敏药当成正在服用。"""
+    for pattern in _ALLERGY_STATEMENT_PATTERNS:
+        text = pattern.sub(" ", text)
+    return text
+
+
 def _allergy_text(context: Dict[str, Any], question: str) -> str:
     parts = [
-        _flatten(context.get("allergies")),
+        _positive_allergy_field(context.get("allergies")),
         _allergy_mentions_in_question(question),
     ]
     return " ".join(part for part in parts if part).lower()
@@ -478,13 +593,17 @@ def check_medication_safety(
     allergies = _allergy_text(context, question)
 
     # 药物相互作用的判断只使用主诉与当前用药，避免把过敏史里的药名当成正在服用。
-    drug_text = " ".join(part for part in (question, medications) if part)
+    drug_text = " ".join(
+        part for part in (
+            _strip_allergy_statements(question), medications
+        ) if part
+    )
 
     alerts: List[Dict[str, str]] = []
 
     # 过敏史优先保留：即使同时命中多种相互作用，也不应被 MAX_ALERTS 截掉
     for group_label, allergy_terms, drug_groups in ALLERGY_RULES:
-        if not any(term.lower() in allergies for term in allergy_terms):
+        if not any(_term_matches(allergies, term) for term in allergy_terms):
             continue
         for group in drug_groups:
             drugs = _find_drugs(drug_text, group)
@@ -524,7 +643,7 @@ def check_medication_safety(
         })
 
     if _find_drugs(drug_text, "cephalosporins") and any(
-        term in drug_text for term in ALCOHOL_TERMS
+        _term_matches(drug_text, term) for term in ALCOHOL_TERMS
     ):
         alerts.append({
             "severity": "info",
@@ -533,7 +652,7 @@ def check_medication_safety(
         })
 
     if _find_drugs(drug_text, "acetaminophen") and any(
-        term in drug_text for term in ALCOHOL_TERMS
+        _term_matches(drug_text, term) for term in ALCOHOL_TERMS
     ):
         alerts.append({
             "severity": "warning",

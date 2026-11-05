@@ -203,7 +203,7 @@ class EgfrRequest(BaseModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     sex: Literal["male", "female"]
     creatinine: float = Field(..., gt=0, lt=3000, description="血肌酐")
-    unit: Literal["mg/dL", "umol/L"] = "mg/dL"
+    unit: Literal["mg/dL", "umol/L", "μmol/L", "µmol/L"] = "mg/dL"
 
 
 class ChadsVascRequest(BaseModel):
