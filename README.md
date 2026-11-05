@@ -396,7 +396,7 @@ npm install -D playwright
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 
-`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标、随访提醒、症状日记、用药清单、用药打卡、操作审计（`audit_log`）与归档状态，并附带内容 SHA-256 校验和，导入时自动校验，文件损坏或被修改会返回 400。备份文件可能包含健康与操作记录，请按敏感数据保管。设置 `MEDIX_AUTO_BACKUP_HOURS` 后可定期把同样的完整备份写入 `data/backups/`，`MEDIX_BACKUP_KEEP` 控制保留份数（默认 7），`MEDIX_BACKUP_DIR` 可自定义目录。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同记录会跳过，不覆盖现有记录。单个备份最多 100000 个会话、每个会话最多 10000 条消息，其余数据类上限同为 100000 条。会诊接口默认限流 30 次/分钟，`/api/diagnose/llm` 自检限制 5 次/分钟，超限返回 429 与 `Retry-After`。
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标、随访提醒、症状日记、用药清单、用药打卡、操作审计（`audit_log`）与归档状态，并附带内容 SHA-256 校验和，导入时自动校验，文件损坏或被修改会返回 400。备份文件可能包含健康与操作记录，请按敏感数据保管。设置 `MEDIX_AUTO_BACKUP_HOURS` 后可定期把同样的完整备份写入 `data/backups/`，`MEDIX_BACKUP_KEEP` 控制保留份数（默认 7），`MEDIX_BACKUP_DIR` 可自定义目录；自动备份、立即备份与本地恢复的详细步骤见 [docs/backup.md](docs/backup.md)。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同记录会跳过，不覆盖现有记录。单个备份最多 100000 个会话、每个会话最多 10000 条消息，其余数据类上限同为 100000 条。会诊接口默认限流 30 次/分钟，`/api/diagnose/llm` 自检限制 5 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
