@@ -81,6 +81,28 @@ def test_health_dossier_markdown(client_and_store):
     assert "不构成医疗建议" in text
 
 
+def test_health_dossier_empty_profile(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/profiles", json={
+        "name": "孩子", "context": {"age": "7"},
+    })
+
+    response = client.get(
+        "/api/health/dossier.md", params={"profile": "孩子"}
+    )
+    text = response.text
+
+    assert response.status_code == 200
+    assert "# 健康档案：孩子" in text
+    assert "暂未设置指标目标" in text
+    assert "暂无健康指标记录" in text
+    assert "暂无症状记录" in text
+    assert "暂无用药记录" in text
+    assert "暂无待办提醒" in text
+    assert "暂无会诊记录" in text
+
+
 def test_health_dossier_requires_profile(client_and_store):
     client, _store = client_and_store
 
