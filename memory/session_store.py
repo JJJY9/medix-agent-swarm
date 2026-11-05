@@ -4181,8 +4181,8 @@ class SessionStore:
         """返回自定义指标目标；可按档案筛选。"""
         sql = "SELECT profile, metric, value1, value2, updated_at FROM metric_targets"
         params: List[Any] = []
-        profile = _normalize_profile_name(profile)
-        if profile:
+        if profile is not None:
+            profile = _normalize_profile_name(profile)
             sql += " WHERE profile = ?"
             params.append(profile)
         sql += " ORDER BY profile, metric"
@@ -4373,8 +4373,8 @@ class SessionStore:
         params: List[Any] = []
         if not include_done:
             clauses.append("done = 0")
-        profile = _normalize_profile_name(profile)
-        if profile:
+        if profile is not None:
+            profile = _normalize_profile_name(profile)
             clauses.append("profile = ?")
             params.append(profile)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
