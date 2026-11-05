@@ -709,6 +709,7 @@ def test_app_js_ships_family_compare(client):
     assert "async function loadFamilyCompare" in app_js
     assert "function renderFamilyCompare" in app_js
     assert "/api/family/compare" in app_js
+    assert "min_value1" in app_js
     assert ".compare-bar" in css
 
 
