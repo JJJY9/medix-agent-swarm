@@ -107,7 +107,7 @@ Skills (函数) → 直接转换 → OpenAI Format → LLM 调用
 
 ### 测试验证
 
-**测试状态**：原始项目的 26 个端到端用例保持通过；本仓库新增的离线测试（`pytest tests`）当前 **420 个用例**全部通过（无需 API Key）。
+**测试状态**：原始项目的 26 个端到端用例保持通过；本仓库新增的离线测试（`pytest tests`）当前 **800+ 个用例**全部通过（无需 API Key，CI 覆盖 Python 3.10/3.12 与 Linux/Windows）。
 
 原始项目验证项：
 
@@ -661,7 +661,7 @@ medix-agent-swarm/
 │   ├── sw.js                          # Service Worker（只缓存静态外壳）
 │   └── icons/                         # PWA 图标（192/512）
 │
-├── tests/                             # 离线单元测试（无需 API Key，当前 420 个用例）
+├── tests/                             # 离线单元测试（无需 API Key，当前 800+ 个用例）
 │
 ├── tools/
 │   └── capture_screenshots.js         # 抓运行截图，输出到 docs/screenshots/
