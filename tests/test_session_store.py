@@ -1826,13 +1826,13 @@ def test_medication_logs_cascade_and_backup(store, tmp_path):
 def test_medication_logs_ignore_future_dates_in_stats(store):
     item = store.add_medication("", "测试药")
     today = datetime.now().strftime("%Y-%m-%d")
-    store.add_medication_log(item["id"], f"{today}T08:00")
+    store.add_medication_log(item["id"])
     assert store.add_medication_log(item["id"], "2099-01-01T09:00") is None
 
     listed = store.list_medications()[0]
     assert listed["today_count"] == 1
     assert listed["week_count"] == 1
-    assert listed["last_taken_at"] == f"{today}T08:00"
+    assert listed["last_taken_at"].startswith(today)
 
 
 def test_update_medication_syncs_log_profile(store):
