@@ -1084,6 +1084,32 @@ class SessionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def latest_session_answers_by_profile(self) -> List[Dict[str, Any]]:
+        """返回每个档案最近一次会诊及其最后一条答复（截断 2000 字）。"""
+        sql = """
+            WITH latest AS (
+                SELECT profile, id, created_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY profile
+                           ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                  FROM sessions
+                 WHERE profile != ''
+            )
+            SELECT l.profile, l.id AS session_id, l.created_at,
+                   (
+                       SELECT substr(m.content, 1, 2000)
+                         FROM messages m
+                        WHERE m.session_id = l.id AND m.role = 'assistant'
+                        ORDER BY m.id DESC LIMIT 1
+                   ) AS last_answer
+              FROM latest l
+             WHERE l.rn = 1
+        """
+        with self._lock:
+            rows = self._conn.execute(sql).fetchall()
+        return [dict(row) for row in rows]
+
     def count_sessions(
         self,
         query: str = "",

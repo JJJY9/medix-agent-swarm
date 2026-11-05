@@ -1,4 +1,5 @@
 """目标判定与依从率计算的单元测试。"""
+from api_server import parse_risk_level
 from memory.session_store import adherence_rate, metric_over_target
 
 
@@ -28,3 +29,13 @@ def test_adherence_rate_rounds_half_up_and_caps():
     assert adherence_rate(0, 8) == 0
     assert adherence_rate(5, 0) is None
     assert adherence_rate(None, None) is None
+
+
+def test_parse_risk_level_tagged_and_keywords():
+    assert parse_risk_level("综合风险：中危") == "medium"
+    assert parse_risk_level("风险等级：紧急") == "emergency"
+    assert parse_risk_level("**高危**，建议尽快就诊。") == "high"
+    assert parse_risk_level("低风险，可先观察。") == "low"
+    assert parse_risk_level("高危人群需要定期筛查") == ""
+    assert parse_risk_level("") == ""
+    assert parse_risk_level(None) == ""

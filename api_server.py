@@ -511,6 +511,36 @@ def csv_safe_cell(value: Any) -> str:
     return text
 
 
+_RISK_TAG_PATTERN = re.compile(
+    r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:]\s*(紧急|高危|中危|低危)"
+)
+_RISK_KEYWORD_PATTERNS = (
+    ("high", re.compile(r"高风险(?!人群)|高度风险|高危(?!人群)")),
+    ("medium", re.compile(r"中风险|中等风险|中危(?!人群)")),
+    ("low", re.compile(r"低风险|风险较低|风险不高|低危(?!人群)")),
+)
+_RISK_TAG_LEVELS = {
+    "紧急": "emergency",
+    "高危": "high",
+    "中危": "medium",
+    "低危": "low",
+}
+
+
+def parse_risk_level(text: Any) -> str:
+    """从会诊意见中提取风险等级；无法判断时返回空字符串。"""
+    content = str(text or "")
+    if not content:
+        return ""
+    tagged = _RISK_TAG_PATTERN.search(content)
+    if tagged:
+        return _RISK_TAG_LEVELS.get(tagged.group(1), "")
+    for level, pattern in _RISK_KEYWORD_PATTERNS:
+        if pattern.search(content):
+            return level
+    return ""
+
+
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
 
@@ -2781,6 +2811,15 @@ async def family_overview(days: int = 7):
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 2000
     )
+    latest_answers = await asyncio.to_thread(
+        store.latest_session_answers_by_profile
+    )
+    risk_by_profile: Dict[str, str] = {}
+    for item in latest_answers:
+        profile_name = item.get("profile") or ""
+        risk = parse_risk_level(item.get("last_answer"))
+        if profile_name and risk:
+            risk_by_profile[profile_name] = risk
 
     target_map = {
         (item.get("profile") or "", item.get("metric")): item
@@ -2944,7 +2983,10 @@ async def family_overview(days: int = 7):
             "medications": medication,
             "reminders": reminder,
             "symptoms": symptom,
-            "consultations": consultation,
+            "consultations": {
+                **consultation,
+                "risk": risk_by_profile.get(name, ""),
+            },
             "last_activity": last_activity,
             "recorded_today": recorded_today,
         })
@@ -3002,6 +3044,12 @@ async def export_family_overview_csv(days: int = 7):
                 f"（最近 {latest['symptom']} {latest['severity']}/10）"
             )
         consultations = item.get("consultations") or {}
+        risk_label = {
+            "emergency": "紧急",
+            "high": "高危",
+            "medium": "中危",
+            "low": "低危",
+        }.get(consultations.get("risk") or "", "")
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -3013,6 +3061,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(symptom_text),
             csv_safe_cell(
                 f"近 {days} 天 {consultations.get('count', 0)} 次"
+                + (f"（{risk_label}）" if risk_label else "")
             ),
             csv_safe_cell(item.get("last_activity", "")),
         ])
