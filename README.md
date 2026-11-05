@@ -1148,7 +1148,7 @@ ConsultAgent DiagAgent ResearchAgent
 
 ## 📄 许可证
 
-MIT License
+本项目采用 [MIT License](LICENSE)。
 
 ## 🙏 致谢
 

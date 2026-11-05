@@ -13,6 +13,7 @@ setup(
     name="medix-agent-swarm",
     version="0.1.0",
     author="MediX Team",
+    license="MIT",
     description=(
         "Multi-agent medical consultation assistant with "
         "Skills-Agent architecture"
@@ -24,6 +25,7 @@ setup(
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Healthcare Industry",
+        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
