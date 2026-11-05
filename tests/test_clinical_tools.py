@@ -451,14 +451,23 @@ def test_abcd2_thresholds():
 
     middle = calculate_abcd2(age_ge_60=True, diabetes=True)
     assert middle["score"] == 2
-    assert middle["risk"] == "中风险"
+    assert middle["risk"] == "低风险"
 
-    high = calculate_abcd2(
+    moderate = calculate_abcd2(
         unilateral_weakness=True, duration_ge_60=True
     )
-    assert high["score"] == 4
+    assert moderate["score"] == 4
+    assert moderate["risk"] == "中风险"
+    assert len(moderate["criteria"]) == 2
+
+    high = calculate_abcd2(
+        age_ge_60=True,
+        bp_ge_140_90=True,
+        unilateral_weakness=True,
+        duration_ge_60=True,
+    )
+    assert high["score"] == 6
     assert high["risk"] == "高风险"
-    assert len(high["criteria"]) == 2
 
     speech_only = calculate_abcd2(speech_disturbance=True)
     assert speech_only["score"] == 1

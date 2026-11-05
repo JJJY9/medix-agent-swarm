@@ -878,9 +878,10 @@ def calculate_abcd2(
         score += 1
         criteria.append("糖尿病（+1）")
 
-    if score >= 4:
+    # ABCD2 标准分层：0–3 低危、4–5 中危、6–7 高危
+    if score >= 6:
         risk = "高风险"
-    elif score >= 2:
+    elif score >= 4:
         risk = "中风险"
     else:
         risk = "低风险"
