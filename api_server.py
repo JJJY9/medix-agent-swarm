@@ -547,6 +547,42 @@ def parse_risk_level(text: Any) -> str:
     return ""
 
 
+def _streak_info(days: List[str]) -> Dict[str, Any]:
+    """按有记录的日期列表计算连续记录信息。"""
+    from datetime import date
+
+    day_set = {str(day) for day in days if day}
+    today = datetime.now().date()
+    recorded_today = today.isoformat() in day_set
+    cursor = today if recorded_today else today - timedelta(days=1)
+    current = 0
+    while cursor.isoformat() in day_set:
+        current += 1
+        cursor -= timedelta(days=1)
+    best = 0
+    run = 0
+    prev = None
+    for day in sorted(day_set):
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            continue
+        if prev is not None and (parsed - prev).days == 1:
+            run += 1
+        else:
+            run = 1
+        best = max(best, run)
+        prev = parsed
+    cutoff = (today - timedelta(days=29)).isoformat()
+    days_last_30 = sum(1 for day in day_set if day >= cutoff)
+    return {
+        "current": current,
+        "best": best,
+        "recorded_today": recorded_today,
+        "days_last_30": days_last_30,
+    }
+
+
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
 
@@ -2209,6 +2245,10 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         elif due <= horizon:
             due_soon += 1
 
+    streak = _streak_info(
+        await asyncio.to_thread(store.recorded_days, profile, 365)
+    )
+
     return {
         "profile": profile or "",
         "days": days,
@@ -2257,6 +2297,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "prev_count": len(previous_sessions),
             "risk": risk_level,
         },
+        "streak": streak,
     }
 
 
@@ -2595,6 +2636,18 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         "days": days,
         "totals": totals,
     }
+
+
+@app.get("/api/health/streak")
+async def health_streak(profile: Optional[str] = None):
+    """健康记录连续天数：当前连续、最长连续与近 30 天记录天数。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    days = await asyncio.to_thread(store.recorded_days, profile, 365)
+    info = _streak_info(days)
+    info["profile"] = profile or ""
+    return info
 
 
 @app.post("/api/metrics")
@@ -2981,6 +3034,9 @@ async def family_overview(days: int = 7):
     latest_answers = await asyncio.to_thread(
         store.latest_session_answers_by_profile
     )
+    recorded_days = await asyncio.to_thread(
+        store.recorded_days_by_profile, 365
+    )
     risk_by_profile: Dict[str, str] = {}
     for item in latest_answers:
         profile_name = item.get("profile") or ""
@@ -3156,6 +3212,9 @@ async def family_overview(days: int = 7):
             },
             "last_activity": last_activity,
             "recorded_today": recorded_today,
+            "streak": _streak_info(
+                recorded_days.get(name, [])
+            )["current"],
         })
 
     profiles.sort(

@@ -1120,6 +1120,103 @@ class SessionStore:
             rows = self._conn.execute(sql).fetchall()
         return [dict(row) for row in rows]
 
+    def recorded_days(
+        self, profile: Optional[str] = None, days: int = 365
+    ) -> List[str]:
+        """返回有健康记录（指标/症状/用药打卡/会诊）的日期，按日期倒序。"""
+        try:
+            days = max(1, min(int(days or 365), 3650))
+        except (TypeError, ValueError, OverflowError):
+            days = 365
+        cutoff = (
+            datetime.now() - timedelta(days=days - 1)
+        ).strftime("%Y-%m-%d")
+        parts: List[str] = []
+        params: List[Any] = []
+        for table, column in (
+            ("health_metrics", "measured_at"),
+            ("symptoms", "recorded_at"),
+            ("medication_logs", "taken_at"),
+        ):
+            conditions = [f"substr({column}, 1, 10) >= ?"]
+            values: List[Any] = [cutoff]
+            if profile is not None:
+                conditions.append("profile = ?")
+                values.append(_normalize_profile_name(profile))
+            parts.append(
+                f"SELECT substr({column}, 1, 10) AS day FROM {table}"
+                f" WHERE {' AND '.join(conditions)}"
+            )
+            params.extend(values)
+        session_conditions = [
+            "substr(created_at, 1, 10) >= ?",
+            "EXISTS (SELECT 1 FROM messages m"
+            " WHERE m.session_id = sessions.id)",
+        ]
+        session_params: List[Any] = [cutoff]
+        if profile is not None:
+            session_conditions.append("profile = ?")
+            session_params.append(_normalize_profile_name(profile))
+        parts.append(
+            "SELECT substr(created_at, 1, 10) AS day FROM sessions"
+            f" WHERE {' AND '.join(session_conditions)}"
+        )
+        params.extend(session_params)
+        sql = (
+            "SELECT DISTINCT day FROM ("
+            + " UNION ".join(parts)
+            + ") ORDER BY day DESC"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [str(row["day"]) for row in rows if row["day"]]
+
+    def recorded_days_by_profile(
+        self, days: int = 365
+    ) -> Dict[str, List[str]]:
+        """按档案返回有健康记录的日期（仅已命名档案），日期升序。"""
+        try:
+            days = max(1, min(int(days or 365), 3650))
+        except (TypeError, ValueError, OverflowError):
+            days = 365
+        cutoff = (
+            datetime.now() - timedelta(days=days - 1)
+        ).strftime("%Y-%m-%d")
+        parts: List[str] = []
+        params: List[Any] = []
+        for table, column in (
+            ("health_metrics", "measured_at"),
+            ("symptoms", "recorded_at"),
+            ("medication_logs", "taken_at"),
+        ):
+            parts.append(
+                f"SELECT profile, substr({column}, 1, 10) AS day"
+                f" FROM {table} WHERE profile != ''"
+                f" AND substr({column}, 1, 10) >= ?"
+            )
+            params.append(cutoff)
+        parts.append(
+            "SELECT profile, substr(created_at, 1, 10) AS day"
+            " FROM sessions WHERE profile != ''"
+            " AND substr(created_at, 1, 10) >= ?"
+            " AND EXISTS (SELECT 1 FROM messages m"
+            " WHERE m.session_id = sessions.id)"
+        )
+        params.append(cutoff)
+        sql = (
+            "SELECT profile, day FROM ("
+            + " UNION ".join(parts)
+            + ") GROUP BY profile, day ORDER BY profile, day"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        result: Dict[str, List[str]] = {}
+        for row in rows:
+            if not row["day"]:
+                continue
+            result.setdefault(str(row["profile"]), []).append(str(row["day"]))
+        return result
+
     def count_sessions(
         self,
         query: str = "",
