@@ -11405,7 +11405,18 @@ async function send(question) {
 
 /* ---------- 系统状态检查 ---------- */
 
-async function checkStatus() {
+let checkStatusPromise = null;
+
+function checkStatus() {
+  if (!checkStatusPromise) {
+    checkStatusPromise = checkStatusOnce().finally(() => {
+      checkStatusPromise = null;
+    });
+  }
+  return checkStatusPromise;
+}
+
+async function checkStatusOnce() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
