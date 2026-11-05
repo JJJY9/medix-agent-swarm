@@ -652,3 +652,18 @@ def test_reminders_stats_completion(client_and_store):
     ).json()
     assert empty["due_total"] == 0
     assert empty["completion_rate"] is None
+
+    client.post("/api/reminders", json={
+        "profile": "孩子", "title": "孩子复查", "due_at": today,
+    })
+    all_profiles = client.get(
+        "/api/reminders/stats", params={"days": 30}
+    ).json()
+    assert all_profiles["due_total"] == 4
+    assert all_profiles["pending_total"] == 3
+
+    child = client.get(
+        "/api/reminders/stats", params={"profile": "孩子", "days": 30}
+    ).json()
+    assert child["due_total"] == 1
+    assert child["pending_total"] == 1
