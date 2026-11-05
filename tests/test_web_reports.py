@@ -1141,3 +1141,12 @@ def test_app_js_ships_timeline_risk_filter(client):
     assert 'id="timeline-risk-only"' in html
     assert "timelineRiskOnly" in app_js
     assert "没有高危会诊记录" in app_js
+
+
+def test_app_js_ships_history_risk_filter(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="history-risk-filter"' in html
+    assert "historyRiskFilter" in app_js
+    assert "historyRisk" in app_js

@@ -958,6 +958,43 @@ def test_sessions_api_exposes_consultation_risk(tmp_path, monkeypatch):
     assert all("risk_text" not in item for item in data["sessions"])
 
 
+def test_sessions_api_filters_by_risk(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange("low-1", "头晕", "风险等级：低危。建议观察。")
+    store.save_exchange("high-1", "胸痛", "风险等级：高危。建议尽快就诊。")
+    store.save_exchange(
+        "emg-1", "剧烈胸痛", "风险等级：**紧急**，请立即就医。"
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        high = client.get(
+            "/api/sessions", params={"risk": "high"}
+        ).json()
+        emergency = client.get(
+            "/api/sessions", params={"risk": "emergency"}
+        ).json()
+        medium = client.get(
+            "/api/sessions", params={"risk": "medium"}
+        ).json()
+        invalid = client.get(
+            "/api/sessions", params={"risk": "unknown"}
+        )
+    finally:
+        store.close()
+
+    assert {item["id"] for item in high["sessions"]} == {
+        "high-1", "emg-1",
+    }
+    assert high["summary"]["sessions"] == 2
+    assert [item["id"] for item in emergency["sessions"]] == ["emg-1"]
+    assert {item["id"] for item in medium["sessions"]} == {
+        "high-1", "emg-1",
+    }
+    assert invalid.status_code == 400
+
+
 def test_sessions_risk_parses_answer_beyond_1000_chars(
     tmp_path, monkeypatch
 ):
