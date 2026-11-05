@@ -722,7 +722,7 @@ class SessionStore:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = Path(db_path or os.getenv("MEDIX_SESSION_DB") or DEFAULT_DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -2007,7 +2007,15 @@ class SessionStore:
         }
 
     def export_data(self) -> Dict[str, Any]:
-        """导出全部会话与全部消息，供本地备份或迁移。"""
+        """导出全部会话与全部消息，供本地备份或迁移。
+
+        持锁贯穿所有表的读取，避免备份期间发生写入时产生跨表不一致。
+        """
+        with self._lock:
+            return self._export_data()
+
+    def _export_data(self) -> Dict[str, Any]:
+        """在调用方持有可重入锁时收集各表快照。"""
         # 在单个锁内一次取快照：分页导出时若有会话被更新，
         # 会因 updated_at 排序漂移而被漏导或重复导出
         with self._lock:
@@ -4239,7 +4247,7 @@ class SessionStore:
                 f"""
                 SELECT id, action, target, detail, created_at
                   FROM audit_log{where}
-                 ORDER BY id DESC
+                 ORDER BY datetime(created_at) DESC, id DESC
                  LIMIT ?
                 """,
                 params,
