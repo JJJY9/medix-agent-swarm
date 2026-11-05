@@ -551,3 +551,35 @@ def test_latest_metrics_api(client):
     assert response.status_code == 200
     latest = {item["metric"]: item["value1"] for item in response.json()["metrics"]}
     assert latest == {"weight": 62, "spo2": 97}
+
+
+def test_metrics_days_use_calendar_day_window(client):
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    window_start = (now - timedelta(days=6)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    inside = window_start + timedelta(minutes=1)
+    outside = window_start - timedelta(minutes=1)
+
+    for value, measured_at in ((70, inside), (60, outside)):
+        client.post(
+            "/api/metrics",
+            json={
+                "metric": "weight",
+                "value1": value,
+                "measured_at": measured_at.isoformat(timespec="minutes"),
+            },
+        )
+
+    items = client.get(
+        "/api/metrics", params={"days": 7}
+    ).json()["metrics"]
+    assert [item["value1"] for item in items] == [70]
+
+    summary = client.get(
+        "/api/metrics/summary",
+        params={"metric": "weight", "days": 7},
+    ).json()
+    assert summary["count"] == 1
