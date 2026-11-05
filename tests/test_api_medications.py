@@ -395,3 +395,46 @@ def test_medications_csv_export_and_import(client_and_store):
     assert again.json()["imported"] == 0
     assert again.json()["skipped"] == 2
     assert empty.status_code == 400
+
+
+def test_medications_list_range_counts(client_and_store):
+    from datetime import datetime, timedelta
+
+    client, store = client_and_store
+    now = datetime.now()
+
+    medication = client.post("/api/medications", json={
+        "name": "氨氯地平", "frequency": "每日一次",
+    }).json()["medication"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (
+                (now - timedelta(days=20)).isoformat(timespec="seconds"),
+                medication["id"],
+            ),
+        )
+    for days_ago in (15, 3, 0):
+        client.post(
+            f"/api/medications/{medication['id']}/logs",
+            json={
+                "taken_at": (now - timedelta(days=days_ago)).isoformat(
+                    timespec="minutes"
+                )
+            },
+        )
+
+    week = client.get(
+        "/api/medications", params={"days": 7}
+    ).json()["medications"][0]
+    assert week["range_days"] == 7
+    assert week["range_count"] == 2
+    assert week["expected_range_doses"] == 7
+    assert week["week_count"] == 2
+
+    month = client.get(
+        "/api/medications", params={"days": 30}
+    ).json()["medications"][0]
+    assert month["range_count"] == 3
+    assert month["expected_range_doses"] == 21
+    assert month["week_count"] == 2

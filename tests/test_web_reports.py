@@ -629,9 +629,12 @@ def test_app_js_ships_medication_filters(client):
     css = client.get("/static/styles.css").text
 
     assert 'id="medication-search"' in html
+    assert 'id="medication-range"' in html
     assert 'id="medication-status-filter"' in html
     assert "function filterMedications" in app_js
     assert ".medication-filters" in css
+    assert "medicationRange" in app_js
+    assert "range_days" in app_js
     assert "els.medicationSearch.addEventListener('input'" in app_js
     assert "els.medicationStatusFilter.addEventListener('change'" in app_js
 

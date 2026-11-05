@@ -757,6 +757,11 @@
       <label class="sr-only" for="medication-search">搜索用药</label>
       <div class="medication-filters">
         <input id="medication-search" type="search" placeholder="搜索药名、剂量、备注或档案">
+        <select id="medication-range" aria-label="用药统计范围">
+          <option value="7" selected>近 7 天</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
         <select id="medication-status-filter" aria-label="按用药状态筛选">
           <option value="">全部状态</option>
           <option value="active">在用</option>

@@ -3152,13 +3152,18 @@ class SessionStore:
         active_only: bool = False,
         limit: int = 1000,
         offset: int = 0,
+        days: int = 7,
     ) -> List[Dict[str, Any]]:
-        """按名称返回用药清单，可按档案与在用状态筛选。"""
+        """按名称返回用药清单，可按档案、在用状态与最近天数筛选。"""
         limit = max(1, min(int(limit or 1000), 100000))
         try:
             offset = max(0, int(offset or 0))
         except (TypeError, ValueError, OverflowError):
             offset = 0
+        try:
+            days = max(1, min(int(days or 7), 365))
+        except (TypeError, ValueError, OverflowError):
+            days = 7
         conditions: List[str] = []
         params: List[Any] = []
         if profile is not None:
@@ -3170,6 +3175,7 @@ class SessionStore:
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         week_cutoff = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+        range_cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
         with self._lock:
             rows = self._conn.execute(
                 f"""
@@ -3190,12 +3196,20 @@ class SessionStore:
                             WHERE l.medication_id = medications.id
                               AND substr(l.taken_at, 1, 10) >= ?
                               AND substr(l.taken_at, 1, 10) <= ?
-                       ) AS week_count
+                       ) AS week_count,
+                       (
+                           SELECT COUNT(*) FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND substr(l.taken_at, 1, 10) >= ?
+                              AND substr(l.taken_at, 1, 10) <= ?
+                       ) AS range_count
                   FROM medications{where}
                  ORDER BY active DESC, name ASC, id ASC
                  LIMIT ? OFFSET ?
                 """,
-                [today, today, week_cutoff, today] + params + [limit, offset],
+                [today, today, week_cutoff, today, range_cutoff, today]
+                + params
+                + [limit, offset],
             ).fetchall()
         return [
             {
@@ -3203,9 +3217,14 @@ class SessionStore:
                 "active": bool(row["active"]),
                 "today_count": int(row["today_count"] or 0),
                 "week_count": int(row["week_count"] or 0),
+                "range_count": int(row["range_count"] or 0),
+                "range_days": days,
                 "last_taken_at": row["last_taken_at"] or "",
                 "expected_week_doses": _expected_week_doses(
                     row["frequency"], row["created_at"], now
+                ),
+                "expected_range_doses": expected_doses_for_period(
+                    row["frequency"], row["created_at"], now, days
                 ),
             }
             for row in rows

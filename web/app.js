@@ -443,6 +443,7 @@ const els = {
   timelineEmpty: document.getElementById('timeline-empty'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
+  medicationRange: document.getElementById('medication-range'),
   medicationEmpty: document.getElementById('medication-empty'),
   medicationExport: document.getElementById('medication-export'),
   medicationLogsExport: document.getElementById('medication-logs-export'),
@@ -5269,6 +5270,7 @@ const HEALTH_FILTER_KEYS = {
   metricType: 'medix.metricType',
   compareMetric: 'medix.compareMetric',
   compareRange: 'medix.compareRange',
+  medicationRange: 'medix.medicationRange',
 };
 
 function readStoredFilter(key) {
@@ -8625,14 +8627,23 @@ function renderMedications(items) {
     } else if (item.active) {
       metaParts.push('今日未打卡');
     }
-    const expectedDoses = Number(item.expected_week_doses || 0);
-    const weekCount = Number(item.week_count || 0);
+    const rangeDays = Number(item.range_days) || 7;
+    const expectedDoses = Number(
+      item.expected_range_doses ?? item.expected_week_doses ?? 0
+    );
+    const rangeCount = Number(
+      item.range_count ?? item.week_count ?? 0
+    );
     if (expectedDoses > 0) {
-      const rate = Math.min(100, Math.round((weekCount / expectedDoses) * 100));
-      metaParts.push(`近 7 天 ${weekCount}/${expectedDoses} 次 · 依从率 ${rate}%`);
-      meta.title = `按频次估算近 7 天应服 ${expectedDoses} 次`;
-    } else if (weekCount > 0) {
-      metaParts.push(`近 7 天 ${weekCount} 次`);
+      const rate = Math.min(
+        100, Math.round((rangeCount / expectedDoses) * 100)
+      );
+      metaParts.push(
+        `近 ${rangeDays} 天 ${rangeCount}/${expectedDoses} 次 · 依从率 ${rate}%`
+      );
+      meta.title = `按频次估算近 ${rangeDays} 天应服 ${expectedDoses} 次`;
+    } else if (rangeCount > 0) {
+      metaParts.push(`近 ${rangeDays} 天 ${rangeCount} 次`);
     }
     if (item.last_taken_at) {
       metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
@@ -8705,9 +8716,11 @@ async function loadMedications() {
   if (!els.medicationList) return;
   const requestSeq = ++medicationRequestSeq;
   const profile = els.metricProfile.value;
+  const days = Number(els.medicationRange && els.medicationRange.value) || 7;
   try {
     const res = await fetch(
       `/api/medications?limit=1000&profile=${encodeURIComponent(profile)}`
+      + `&days=${days}`
     );
     if (!res.ok) return;
     const data = await res.json();
@@ -12141,6 +12154,9 @@ restoreSelectValue(els.metricRange, HEALTH_FILTER_KEYS.metricRange);
 restoreSelectValue(els.metricType, HEALTH_FILTER_KEYS.metricType);
 restoreSelectValue(els.compareMetric, HEALTH_FILTER_KEYS.compareMetric);
 restoreSelectValue(els.compareRange, HEALTH_FILTER_KEYS.compareRange);
+restoreSelectValue(
+  els.medicationRange, HEALTH_FILTER_KEYS.medicationRange
+);
 restoreSelectValue(els.timelineRange, HEALTH_FILTER_KEYS.timelineRange);
 restoreSelectValue(els.timelineType, HEALTH_FILTER_KEYS.timelineType);
 
@@ -12306,6 +12322,14 @@ els.medicationSearch.addEventListener('input', () => {
 els.medicationStatusFilter.addEventListener('change', () => {
   renderMedications(filterMedications(medicationItemsCache));
 });
+if (els.medicationRange) {
+  els.medicationRange.addEventListener('change', () => {
+    storeFilter(
+      HEALTH_FILTER_KEYS.medicationRange, els.medicationRange.value
+    );
+    loadMedications();
+  });
+}
 els.symptomCancel.addEventListener('click', () => {
   resetSymptomForm();
   setSymptomStatus('已取消编辑。');
