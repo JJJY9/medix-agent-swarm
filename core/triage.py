@@ -119,6 +119,68 @@ def _positive_mention(text: str, phrase: str) -> bool:
         start = text.find(phrase, start + len(phrase))
     return False
 
+#: 回答中出现这些词可能构成就医建议
+VISIT_ADVICE_TERMS = ("就医", "就诊", "看医生", "门诊", "急诊", "医院", "救护车")
+#: 紧邻就医建议前的否定表达（"不建议您现在立刻去医院"）
+_VISIT_NEGATIONS = (
+    "不建议", "不推荐", "不主张", "无需", "不用", "不必", "不需要",
+    "没有必要", "并非", "不是", "暂不", "先不", "不急着", "不必要",
+)
+_VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
+_QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
+#: “120”只有出现在呼救语境中才算就医建议，避免血压 120/80 误判
+_CALL_120_PATTERN = re.compile(
+    r"(?:拨打|打|叫|呼叫|致电)\s*(?:急救电话|急救中心|救护车)?\s*120"
+    r"|120\s*(?:急救|救护车)"
+)
+#: 科普性描述里的红旗词不表示该患者正处于急症
+EDUCATIONAL_MARKERS = (
+    "可导致", "可能导致", "可引起", "多见于", "多发生于", "好发于",
+    "常见于", "属于常见", "属常见", "典型表现", "临床表现",
+)
+
+
+def clinical_statement_text(text: str) -> str:
+    """去掉科普性分句，只保留描述患者当前情况的文本。"""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    clauses = re.split(r"[。；;！!？?\n]", text)
+    kept = [
+        clause for clause in clauses
+        if clause and not any(marker in clause for marker in EDUCATIONAL_MARKERS)
+    ]
+    return "。".join(kept)
+
+
+def has_visit_recommendation(text: str) -> bool:
+    """输出中是否包含非否定的就医/急诊建议。
+
+    按分句和就近否定判断；问句（“是否需要去医院？”）不算建议，
+    单独的“120”只有在拨打急救电话的语境中才算。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+
+    for sentence in _VISIT_CLAUSE_PATTERN.split(text):
+        if not sentence:
+            continue
+        for term in VISIT_ADVICE_TERMS:
+            start = sentence.find(term)
+            while start != -1:
+                prefix = sentence[:start]
+                negated = any(
+                    negation in prefix for negation in _VISIT_NEGATIONS
+                )
+                questioning = any(
+                    marker in prefix for marker in _QUESTION_MARKERS
+                ) or sentence.rstrip().endswith(("吗", "呢"))
+                if not negated and not questioning:
+                    return True
+                start = sentence.find(term, start + len(term))
+    return bool(_CALL_120_PATTERN.search(text))
+
 EMERGENCY_MESSAGE = (
     "描述中包含急症警示信号，请立即拨打 120 或前往急诊科，"
     "不要等待在线回复。若已出现意识不清、呼吸困难加重等情况，请立即呼救。"

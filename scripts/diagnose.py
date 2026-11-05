@@ -107,6 +107,8 @@ def print_report(report: Dict[str, Any]) -> None:
         ok = ok and report["llm"]["ok"]
     if "api" in report:
         ok = ok and report["api"]["ok"]
+    if "query_ok" in knowledge:
+        ok = ok and bool(knowledge["query_ok"])
 
     print("-" * 64)
     print("结论：" + ("✅ 环境正常，可以运行" if ok else "⚠️ 存在问题，请按上面的提示处理"))
@@ -138,6 +140,7 @@ def main() -> int:
         and report["llm_config"].get("api_key_set")
         and report.get("llm", {}).get("ok", True)
         and report.get("api", {}).get("ok", True)
+        and report.get("knowledge", {}).get("query_ok", True)
     )
     return 0 if ok else 1
 

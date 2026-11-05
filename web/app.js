@@ -5082,6 +5082,8 @@ function renderDiagnostics(report) {
       diagRow('数据表读取', `部分表不可读：${runtime.data_errors.join('、')}`)
     );
   }
+  const swStatus = describeServiceWorker();
+  els.diagRuntime.appendChild(diagRow('离线外壳', swStatus.text, swStatus.ok));
 
   const llm = report.llm_config || {};
   renderDiagSection(els.diagLlm, 'LLM 配置', [
@@ -11621,6 +11623,13 @@ async function send(question) {
 
 let checkStatusPromise = null;
 
+const OFFLINE_BANNER =
+  '当前网络不可用：会诊与历史数据需要本地后端服务，恢复连接后会自动重试。';
+
+let swRegistration = null;
+let swHadController = false;
+let swUpdateReady = false;
+
 function checkStatus() {
   if (!checkStatusPromise) {
     checkStatusPromise = checkStatusOnce().finally(() => {
@@ -11696,6 +11705,12 @@ async function checkStatusOnce() {
       els.readout.session.textContent = shortSession(sessionId);
     }
   } catch (err) {
+    if (navigator.onLine === false) {
+      // 离线时保留专用提示，避免通用错误覆盖并丢失「离线」状态
+      setVitals('warn', '离线');
+      showBanner(OFFLINE_BANNER);
+      return;
+    }
     setVitals('bad', '无法连接服务');
     showBanner(`无法连接后端服务：${escapeHtml(err.message)}`);
   }
@@ -11707,6 +11722,16 @@ function showBanner(html) {
 }
 
 function hideBanner() {
+  if (swUpdateReady) {
+    // 新版本提示优先保留；按钮已存在时只恢复可见性，
+    // 避免 20 秒一次的状态轮询重建 DOM 导致焦点丢失
+    if (document.getElementById('sw-refresh')) {
+      els.banner.hidden = false;
+    } else {
+      showUpdateBanner();
+    }
+    return;
+  }
   els.banner.hidden = true;
   els.banner.textContent = '';
 }
@@ -13215,24 +13240,25 @@ els.input.focus();
 
 // 可安装 PWA：只缓存静态外壳，API 数据不进入 Service Worker 缓存
 let deferredInstallPrompt = null;
+let installPromptUsed = false;
 
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
+  installPromptUsed = false;
   els.pwaInstall.hidden = false;
 });
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
+  installPromptUsed = false;
   els.pwaInstall.hidden = true;
 });
 
 function updateConnectivity() {
   if (navigator.onLine === false) {
     setVitals('warn', '离线');
-    showBanner(
-      '当前网络不可用：会诊与历史数据需要本地后端服务，恢复连接后会自动重试。'
-    );
+    showBanner(OFFLINE_BANNER);
   } else {
     hideBanner();
     checkStatus();
@@ -13244,22 +13270,96 @@ window.addEventListener('online', updateConnectivity);
 if (navigator.onLine === false) updateConnectivity();
 
 els.pwaInstall.addEventListener('click', async () => {
-  if (!deferredInstallPrompt) return;
-  deferredInstallPrompt.prompt();
-  try {
-    await deferredInstallPrompt.userChoice;
-  } catch {
-    // 用户取消或浏览器不支持时忽略
+  if (!deferredInstallPrompt) {
+    showBanner('如需安装，请刷新页面后再次点击“安装应用”。');
+    return;
   }
-  deferredInstallPrompt = null;
-  els.pwaInstall.hidden = true;
+  if (installPromptUsed) {
+    showBanner('安装提示已使用过；如需重试，请刷新页面后再点击“安装应用”。');
+    return;
+  }
+  installPromptUsed = true;
+  const promptEvent = deferredInstallPrompt;
+  try {
+    promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if (choice && choice.outcome === 'accepted') {
+      deferredInstallPrompt = null;
+      els.pwaInstall.hidden = true;
+    } else {
+      // 用户取消：保留安装入口并提示重试方式，而不是永久隐藏
+      deferredInstallPrompt = null;
+      showBanner('已取消安装。如需重试，请刷新页面后再次点击“安装应用”。');
+    }
+  } catch {
+    deferredInstallPrompt = null;
+    showBanner('当前浏览器无法弹出安装提示，请刷新页面后重试。');
+  }
 });
 
+function describeServiceWorker() {
+  if (!('serviceWorker' in navigator)) {
+    return { text: '浏览器不支持', ok: false };
+  }
+  if (!window.isSecureContext) {
+    return { text: '不可用（需要 HTTPS 或 localhost）', ok: false };
+  }
+  if (navigator.serviceWorker.controller) {
+    return { text: '已就绪，可离线打开静态页面', ok: true };
+  }
+  if (swRegistration) {
+    return { text: '已注册，等待激活', ok: true };
+  }
+  return { text: '未注册或注册失败', ok: false };
+}
+
+function showUpdateBanner() {
+  swUpdateReady = true;
+  if (document.getElementById('sw-refresh')) {
+    els.banner.hidden = false;
+    return;
+  }
+  showBanner(
+    '新版本已就绪。为避免影响正在编辑的内容，请在合适时刷新页面。'
+    + ' <button type="button" class="btn-quiet" id="sw-refresh">刷新页面</button>'
+  );
+  const button = document.getElementById('sw-refresh');
+  if (button) {
+    button.addEventListener('click', () => window.location.reload());
+  }
+}
+
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // 非 HTTPS / 浏览器不支持时静默降级
-    });
+  swHadController = Boolean(navigator.serviceWorker.controller);
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // 首次安装也会触发 controllerchange，只有替换旧外壳时才提示刷新
+    if (swHadController) showUpdateBanner();
+    swHadController = Boolean(navigator.serviceWorker.controller);
+  });
+
+  let swRegisterAttempts = 0;
+  const registerServiceWorker = () => {
+    if (!window.isSecureContext) return;
+    navigator.serviceWorker.register('/sw.js')
+      .then((registration) => {
+        swRegistration = registration;
+        swRegisterAttempts = 0;
+      })
+      .catch(() => {
+        swRegistration = null;
+        swRegisterAttempts += 1;
+        if (swRegisterAttempts <= 3) {
+          setTimeout(registerServiceWorker, 10000 * swRegisterAttempts);
+        }
+      });
+  };
+
+  window.addEventListener('load', registerServiceWorker);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !swRegistration) {
+      registerServiceWorker();
+    }
   });
 }
 

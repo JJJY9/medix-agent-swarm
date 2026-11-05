@@ -155,6 +155,11 @@ async def interactive_mode():
         except KeyboardInterrupt:
             print("\n\n👋 检测到中断信号，退出程序...\n")
             break
+        except EOFError:
+            # stdin 关闭（管道输入结束、终端断开）时 input() 抛 EOFError；
+            # 若不单独处理会落入通用异常分支并无限循环。
+            print("\n👋 输入已结束，退出程序...\n")
+            break
         except LLMError as e:
             print(f"\n❌ {e.user_message}\n")
         except Exception as e:

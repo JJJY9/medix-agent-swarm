@@ -233,3 +233,35 @@ def test_memory_question_overrides_routed_prompt():
 
     assert seen["prompt"] == "增强后的提示"
     assert memory.added[0] == ("user", "原始问题")
+
+
+class RecordingValidator:
+    def __init__(self):
+        self.seen = None
+
+    def validate_output(self, agent_id, output, user_input=""):
+        self.seen = (agent_id, user_input)
+        return {"valid": True, "violations": [], "auto_fixable": []}
+
+
+def test_agent_loop_passes_original_question_to_validator():
+    loop = AgentLoop()
+    validator = RecordingValidator()
+    loop.validator = validator
+    loop.auto_fixer = None
+    agent = SimpleNamespace(
+        agent_id="validated_agent",
+        config={},
+        llm_client=OneShotLLM(),
+        get_system_prompt=lambda: "系统提示",
+        format_user_input=lambda data: data["question"],
+        get_tools_for_llm=lambda: [],
+        post_process_result=_post_process_noop,
+    )
+
+    asyncio.run(loop.run(
+        agent,
+        {"question": "增强后的提示", "memory_question": "原始问题"},
+    ))
+
+    assert validator.seen == ("validated_agent", "原始问题")
