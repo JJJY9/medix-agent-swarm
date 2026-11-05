@@ -392,10 +392,15 @@ def test_interactions_api_validates_input(client):
     too_long = client.post(
         "/api/tools/interactions", json={"drugs": "a" * 1001}
     )
+    oversized = client.post(
+        "/api/tools/interactions",
+        json={"drugs": "维生素C、" * 100 + "华法林、阿司匹林"},
+    )
 
     assert blank.status_code == 400
     assert missing.status_code == 422
     assert too_long.status_code == 422
+    assert oversized.status_code == 400
 
 
 def test_qsofa_api(client):

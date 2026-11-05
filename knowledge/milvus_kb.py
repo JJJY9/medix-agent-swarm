@@ -162,10 +162,6 @@ class MedicalKnowledgeBase:
             logger.warning("No documents to add")
             return 0
 
-        if replace_existing:
-            self.delete_collection()
-            self._ensure_collection()
-
         logger.info(f"Adding {len(documents)} documents to knowledge base (chunk_size={chunk_size})...")
 
         # 分块并向量化
@@ -197,6 +193,12 @@ class MedicalKnowledgeBase:
                 "content": chunk["content"],
                 "metadata": json.dumps(chunk["metadata"], ensure_ascii=False)
             })
+
+        # 先完成分块与向量化，再替换旧 collection：
+        # 向量化失败（模型未就绪/内存不足）时保留原有索引
+        if replace_existing:
+            self.delete_collection()
+            self._ensure_collection()
 
         # 插入
         self.milvus_client.insert(self.collection_name, data)
@@ -242,10 +244,11 @@ class MedicalKnowledgeBase:
             )
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            return []
+            raise ValueError(f"知识库检索失败：{e}") from e
 
         # 格式化结果
         documents = []
+        parse_failures = 0
         for hits in results:
             for hit in hits:
                 try:
@@ -253,8 +256,14 @@ class MedicalKnowledgeBase:
                     # 直接作为 score，不能再做 1 - distance。
                     documents.append(hit_to_document(hit))
                 except Exception as e:
+                    parse_failures += 1
                     logger.warning(f"Failed to parse result: {e}")
                     continue
+
+        if parse_failures and not documents:
+            raise ValueError(
+                f"知识库检索结果解析失败（{parse_failures} 条）"
+            )
 
         logger.debug(f"Found {len(documents)} documents")
         return documents

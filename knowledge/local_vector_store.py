@@ -11,6 +11,7 @@ Windows 上导入 `milvus_lite` 会直接 ModuleNotFoundError。
 数据以 JSON 形式持久化到 `<db_path>.local.json`。
 """
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -79,11 +80,15 @@ class LocalVectorStore:
                     "contents": coll["contents"],
                     "metadata": coll["metadata"],
                 }
-            self.store_path.write_text(
-                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            payload = json.dumps(data, ensure_ascii=False)
+            temp_path = self.store_path.with_name(
+                f"{self.store_path.name}.tmp"
             )
+            temp_path.write_text(payload, encoding="utf-8")
+            os.replace(temp_path, self.store_path)
         except Exception as e:
             logger.error(f"Failed to save local vector store: {e}")
+            raise
 
     # ===== MilvusClient 兼容接口 =====
 

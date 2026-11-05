@@ -4502,9 +4502,13 @@ async def tool_interactions(request: InteractionsRequest):
         part.strip()
         for part in re.split(r"[\n,，、;；]+", request.drugs)
         if part.strip()
-    )[:500]
+    )
     if not drugs:
         raise HTTPException(status_code=400, detail="请至少填写一种药物")
+    if len(drugs) > 500:
+        raise HTTPException(
+            status_code=400, detail="药物列表过长，请控制在 500 字以内"
+        )
 
     result = check_medication_safety(
         "", {"medications": drugs, "allergies": request.allergies}
