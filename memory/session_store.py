@@ -4639,10 +4639,10 @@ class SessionStore:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
         return int(row["n"]) if row else 0
 
-    def purge_sessions_before(self, cutoff: str) -> Dict[str, int]:
+    def purge_sessions_before(self, cutoff: str) -> Dict[str, Any]:
         """删除 cutoff（ISO 时间）之前更新的会话及其消息，返回删除数量。"""
         cutoff = str(cutoff or "").strip()[:40]
-        empty = {"sessions": 0, "messages": 0}
+        empty = {"sessions": 0, "messages": 0, "session_ids": []}
         if not cutoff:
             return empty
 
@@ -4653,6 +4653,11 @@ class SessionStore:
                 "datetime(updated_at) IS NOT NULL "
                 "AND datetime(updated_at) < datetime(?)"
             )
+            session_ids = [
+                row["id"] for row in self._conn.execute(
+                    f"SELECT id FROM sessions WHERE {condition}", (cutoff,)
+                ).fetchall()
+            ]
             messages_deleted = self._conn.execute(
                 f"DELETE FROM messages WHERE session_id IN "
                 f"(SELECT id FROM sessions WHERE {condition})",
@@ -4671,6 +4676,7 @@ class SessionStore:
         return {
             "sessions": int(sessions_deleted),
             "messages": int(messages_deleted),
+            "session_ids": session_ids,
         }
 
     def close(self) -> None:

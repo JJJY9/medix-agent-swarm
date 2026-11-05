@@ -103,6 +103,25 @@ def test_long_term_add_is_scoped_by_user_id():
     assert client.added["user_id"] == "medix_session_s1"
 
 
+def test_long_term_metadata_hashes_raw_session_id():
+    client = FakeMem0()
+    memory = _memory(client)
+
+    memory.add_session_summary(
+        "妈妈的偏头痛",
+        "问题",
+        "回答",
+        user_id="hashed-scope",
+        metadata={"session_id": "raw-override", "mode": "swarm"},
+    )
+
+    metadata = client.added["metadata"]
+    assert "妈妈的偏头痛" not in str(metadata)
+    assert "raw-override" not in str(metadata)
+    assert metadata["session_id"] == session_memory_scope("妈妈的偏头痛")
+    assert metadata["mode"] == "swarm"
+
+
 def test_long_term_search_handles_null_metadata_and_score():
     client = FakeMem0(search_result=[
         {"id": "1", "memory": "案例一", "metadata": None, "score": None},

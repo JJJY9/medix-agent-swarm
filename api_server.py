@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
@@ -932,12 +933,68 @@ async def redacting_http_exception_handler(
     return await http_exception_handler(request, exc)
 
 
+_UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _default_http_port(scheme: str) -> Optional[int]:
+    scheme = str(scheme or "").lower()
+    if scheme == "http":
+        return 80
+    if scheme == "https":
+        return 443
+    return None
+
+
+def _same_origin(request: Request, value: str) -> bool:
+    """判断 Origin/Referer 是否与当前请求同源。"""
+    try:
+        parsed = urlsplit(str(value or ""))
+        request_scheme = request.url.scheme.lower()
+        if not parsed.scheme or parsed.hostname is None:
+            return False
+        if request.url.hostname is None:
+            return False
+        parsed_port = parsed.port or _default_http_port(parsed.scheme)
+        request_port = request.url.port or _default_http_port(request_scheme)
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.scheme.lower() == request_scheme
+        and parsed.hostname == request.url.hostname
+        and parsed_port == request_port
+    )
+
+
+def _is_cross_site_request(request: Request) -> bool:
+    """拒绝带跨站来源的写请求；无 Origin/Referer 的脚本客户端不受影响。"""
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if site == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if origin:
+        return not _same_origin(request, origin)
+    referer = request.headers.get("referer")
+    if referer:
+        return not _same_origin(request, referer)
+    return False
+
+
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
     """设置 MEDIX_ACCESS_TOKEN 后，为 API 增加可选的访问令牌校验。"""
     # 子路径部署时 request.url.path 会带 root_path 前缀，
     # 直接匹配 /api/ 会整体跳过鉴权与限流
     path = _scope_route_path(request.scope)
+    if (
+        request.method in _UNSAFE_HTTP_METHODS
+        and path.startswith("/api/")
+        and _is_cross_site_request(request)
+    ):
+        return add_security_headers(JSONResponse(
+            status_code=403,
+            content={"detail": "跨站请求被拒绝", "code": "csrf_rejected"},
+        ))
+
     if (
         get_access_token()
         and path.startswith("/api/")
@@ -1730,7 +1787,7 @@ async def purge_old_sessions(request: PurgeRequest):
     """删除指定天数以前的会诊及其消息（不可恢复）。"""
     from datetime import timedelta
 
-    from memory import get_session_store
+    from memory import ShortTermMemory, get_session_store
 
     cutoff = (
         datetime.now() - timedelta(days=request.days)
@@ -1738,6 +1795,14 @@ async def purge_old_sessions(request: PurgeRequest):
     result = await asyncio.to_thread(
         get_session_store().purge_sessions_before, cutoff
     )
+    session_ids = result.pop("session_ids", [])
+    if session_ids:
+        def clear_short_term() -> None:
+            memory = ShortTermMemory()
+            for session_id in session_ids:
+                memory.clear_session(session_id)
+
+        await asyncio.to_thread(clear_short_term)
     await record_audit(
         "maintenance.purge",
         f"days={request.days}",
@@ -5718,7 +5783,9 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
     不能出现在命名空间里；同一档案仍共享作用域，不同档案不会碰撞。
     旧版本以可读姓名写入的历史记忆不会自动迁移到新命名空间。
     """
-    raw_profile = str(patient_profile or "").strip()
+    from memory.session_store import _normalize_profile_name
+
+    raw_profile = _normalize_profile_name(patient_profile)
     if raw_profile:
         digest = hashlib.sha256(
             raw_profile.encode("utf-8")

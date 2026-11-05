@@ -1,4 +1,5 @@
 """记忆核心模块边界的回归测试（离线）。"""
+import json
 from datetime import datetime, timedelta, timezone
 
 from core.state_manager import StateManager, TaskStatus
@@ -89,6 +90,59 @@ class BrokenRedisDelete:
 
     def setex(self, *args, **kwargs):
         raise AssertionError("读取失败时不应写入")
+
+
+class StaleRedis:
+    """删除失败但读取仍可用，Redis 中残留旧会话。"""
+
+    def __init__(self, value):
+        self.value = value
+        self.set_calls = []
+
+    def get(self, key):
+        return self.value
+
+    def setex(self, key, ttl, value):
+        self.value = value
+        self.set_calls.append(value)
+
+    def delete(self, key):
+        raise RuntimeError("redis delete failed")
+
+
+def test_cleared_session_does_not_merge_stale_redis_history():
+    from memory.short_term import ConversationHistory
+
+    old = ConversationHistory(session_id="redis-stale-history")
+    old.add_message("user", "SECRET_OLD_QUESTION")
+    old.add_message("assistant", "SECRET_OLD_ANSWER")
+    stale = StaleRedis(json.dumps(old.to_dict()))
+
+    memory = ShortTermMemory(storage_type="memory")
+    memory.storage_type = "redis"
+    memory.redis_client = stale
+    session_id = "redis-stale-history"
+    memory.sessions.pop(session_id, None)
+    memory._cleared_sessions.discard(session_id)
+    try:
+        assert memory.clear_session(session_id) is False
+        assert memory.get_session(session_id) is None
+
+        memory.add_message(session_id, "user", "NEW_QUESTION")
+
+        assert "SECRET_OLD_QUESTION" not in stale.value
+        assert "SECRET_OLD_ANSWER" not in stale.value
+        assert "NEW_QUESTION" in stale.value
+        history = memory.get_session(session_id)
+        assert history is not None
+        assert [item["content"] for item in history.messages] == [
+            "NEW_QUESTION"
+        ]
+    finally:
+        memory.storage_type = "memory"
+        memory.redis_client = None
+        memory.sessions.pop(session_id, None)
+        memory._cleared_sessions.discard(session_id)
 
 
 def test_cleared_session_survives_redis_delete_failure():
