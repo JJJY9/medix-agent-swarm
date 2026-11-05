@@ -283,21 +283,24 @@ def test_family_overview_csv_export(client_and_store):
         "due_at": now.strftime("%Y-%m-%d"),
     })
 
-    export = client.get("/api/family/overview/export.csv")
+    export = client.get(
+        "/api/family/overview/export.csv", params={"days": 30}
+    )
     rows = list(
         csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
     )
 
     assert export.status_code == 200
+    assert export.content.startswith(b"\xef\xbb\xbf")
     assert rows[0] == [
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", "近7天症状", "近7天会诊", "最近活动",
     ]
     mom = next(row for row in rows[1:] if row[0] == "妈妈")
+    assert mom[8] == "近 30 天 0 次"
     assert mom[1] == "62"
     assert mom[2] == "女"
     assert "血压" in mom[3]
     assert "超标" in mom[3]
     assert mom[6].startswith("待办 1")
     assert mom[7] == "0"
-    assert mom[8] == "近 7 天 0 次"

@@ -139,12 +139,14 @@ def test_timeline_csv_export(client_and_store):
     })
 
     export = client.get(
-        "/api/timeline/export.csv", params={"profile": "妈妈"}
+        "/api/timeline/export.csv",
+        params={"profile": "妈妈", "days": 7},
     )
     text = export.content.decode("utf-8-sig")
     rows = list(csv.reader(io.StringIO(text)))
 
     assert export.status_code == 200
+    assert export.content.startswith(b"\xef\xbb\xbf")
     assert rows[0] == [
         "时间", "类型", "项目", "数值", "患者档案", "备注", "超标",
     ]
