@@ -1,4 +1,5 @@
 """API 数据导入/导出与时间边界的回归测试。"""
+import asyncio
 import csv
 import io
 from datetime import datetime, timedelta
@@ -24,11 +25,50 @@ def client_and_store(tmp_path, monkeypatch):
 
 
 def test_memory_scope_is_derived_from_profile_or_session():
-    assert api_server._memory_scope("母亲", "s1") == "medix_profile_母亲"
+    profile_scope = api_server._memory_scope("母亲", "s1")
+    assert profile_scope.startswith("medix_profile_母亲_")
     assert api_server._memory_scope("", "s1") == "medix_session_s1"
     assert api_server._memory_scope("a/b:c", "s1").startswith(
-        "medix_profile_a_b_c"
+        "medix_profile_a_b_c_"
     )
+    # 清洗后同名但原值不同的档案必须落在不同命名空间
+    assert api_server._memory_scope("张 三", "s1") != api_server._memory_scope(
+        "张_三", "s1"
+    )
+
+
+def test_resolve_memory_profile_prefers_bound_session_profile(client_and_store):
+    _client, store = client_and_store
+    store.save_exchange("bound-session", "问题", "回答")
+    store.ensure_session("bound-session", "", "母亲")
+
+    profile = asyncio.run(api_server._resolve_memory_profile(
+        "bound-session", "孩子"
+    ))
+
+    assert profile == "母亲"
+
+
+def test_messages_endpoint_limit_zero_returns_more_than_500(client_and_store):
+    client, store = client_and_store
+    store.save_exchange("many-messages", "问题", "回答")
+    rows = [
+        ("many-messages", "user", f"消息 {i}", "{}", "2026-11-01T08:00:00")
+        for i in range(600)
+    ]
+    with store._conn:
+        store._conn.executemany(
+            """
+            INSERT INTO messages(session_id, role, content, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+    response = client.get("/api/sessions/many-messages/messages?limit=0")
+
+    assert response.status_code == 200
+    assert len(response.json()["messages"]) == 602
 
 
 def test_audit_csv_sanitizes_imported_formula_cells(client_and_store):

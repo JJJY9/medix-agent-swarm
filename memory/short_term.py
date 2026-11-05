@@ -116,6 +116,10 @@ class ShortTermMemory:
             redis_config: Redis 配置（storage_type="redis" 时需要）
         """
         # 防止重复初始化
+        if not hasattr(self, "_local_fallback_at"):
+            self._local_fallback_at: Dict[str, datetime] = {}
+        if not hasattr(self, "_cleared_sessions"):
+            self._cleared_sessions: set[str] = set()
         if hasattr(self, '_initialized'):
             if getattr(self, 'storage_type', None) not in (None, storage_type):
                 logger.warning(
@@ -129,6 +133,9 @@ class ShortTermMemory:
         self.storage_type = storage_type
         self.sessions: Dict[str, ConversationHistory] = {}
         self.redis_client = None
+        # Redis 写失败时的本地兜底时间戳，以及已删除会话的墓碑
+        self._local_fallback_at: Dict[str, datetime] = {}
+        self._cleared_sessions: set[str] = set()
         self._initialized = True
 
         # Harness Engineering: 熵管理器
@@ -188,6 +195,7 @@ class ShortTermMemory:
             session_id=session_id,
             metadata=metadata or {}
         )
+        self._cleared_sessions.discard(session_id)
 
         if self.storage_type == "memory":
             self.sessions[session_id] = history
@@ -196,7 +204,11 @@ class ShortTermMemory:
             if not self._save_to_redis(history):
                 # Redis 暂时不可用时保留进程内副本，避免本轮直接丢失
                 self.sessions[session_id] = history
+                self._local_fallback_at[session_id] = datetime.now()
                 self._evict_local_sessions()
+            else:
+                self.sessions.pop(session_id, None)
+                self._local_fallback_at.pop(session_id, None)
 
         logger.debug(f"Created session: {session_id}")
         return history
@@ -215,6 +227,7 @@ class ShortTermMemory:
             role: 消息角色（user/assistant/tool）
             content: 消息内容
         """
+        local_history = self.sessions.get(session_id)
         if self.storage_type == "redis" and self.redis_client:
             try:
                 # 「不存在」返回 None；读取失败则抛错——不能用空历史
@@ -222,9 +235,24 @@ class ShortTermMemory:
                 history = self._load_from_redis(session_id, strict=True)
             except RuntimeError as e:
                 logger.error(
-                    f"读取 Redis 会话失败，跳过本次写入以避免覆盖历史: {e}"
+                    f"读取 Redis 会话失败，使用本地副本继续: {e}"
                 )
+                history = local_history
+                if history is None:
+                    history = ConversationHistory(session_id=session_id)
+                    self.sessions[session_id] = history
+                history.add_message(role, content)
+                self._local_fallback_at[session_id] = datetime.now()
+                self._evict_local_sessions()
+                logger.debug(f"Added {role} message to session {session_id} (local fallback)")
                 return
+
+            # Redis 中的版本可能比本地兜底更旧（上次写入失败），不能覆盖本地新消息
+            if history is None or (
+                local_history is not None
+                and len(local_history.messages) > len(history.messages)
+            ):
+                history = local_history or history
         else:
             history = self.get_session(session_id)
 
@@ -235,9 +263,13 @@ class ShortTermMemory:
 
         # 保存到存储
         if self.storage_type == "redis" and self.redis_client:
-            if not self._save_to_redis(history):
+            if self._save_to_redis(history):
+                self.sessions.pop(session_id, None)
+                self._local_fallback_at.pop(session_id, None)
+            else:
                 # 写 Redis 失败时退回本地副本，至少保证当前进程还能续聊
                 self.sessions[session_id] = history
+                self._local_fallback_at[session_id] = datetime.now()
                 self._evict_local_sessions()
         elif self.storage_type == "memory":
             self.sessions[session_id] = history
@@ -255,12 +287,27 @@ class ShortTermMemory:
         Returns:
             ConversationHistory 对象，如果不存在返回 None
         """
+        if session_id in self._cleared_sessions:
+            return None
         if self.storage_type == "memory":
             return self.sessions.get(session_id)
         elif self.storage_type == "redis" and self.redis_client:
             history = self._load_from_redis(session_id)
-            # Redis 读取失败/尚无数据时使用进程内兜底副本
-            return history if history is not None else self.sessions.get(session_id)
+            if history is not None:
+                return history
+            # Redis 读取失败/尚无数据时使用进程内兜底副本，但只保留 1 小时，
+            # 避免 Redis 键过期后旧会话被无限续用
+            local = self.sessions.get(session_id)
+            if local is None:
+                return None
+            fallback_at = self._local_fallback_at.get(session_id)
+            if fallback_at is None or (
+                datetime.now() - fallback_at
+            ).total_seconds() > 3600:
+                self.sessions.pop(session_id, None)
+                self._local_fallback_at.pop(session_id, None)
+                return None
+            return local
         return None
 
     def get_recent_messages(
@@ -364,25 +411,29 @@ class ShortTermMemory:
 
         return openai_messages
 
-    def clear_session(self, session_id: str):
+    def clear_session(self, session_id: str) -> bool:
         """
         清空会话
 
-        Args:
-            session_id: 会话ID
+        Returns:
+            Redis 删除是否成功；本地存储始终视为成功。
         """
-        if self.storage_type == "memory":
-            self.sessions.pop(session_id, None)
-        elif self.storage_type == "redis" and self.redis_client:
-            self.sessions.pop(session_id, None)
+        self._cleared_sessions.add(session_id)
+        self.sessions.pop(session_id, None)
+        self._local_fallback_at.pop(session_id, None)
+
+        deleted = True
+        if self.storage_type == "redis" and self.redis_client:
             try:
                 key = f"session:{session_id}"
                 self.redis_client.delete(key)
             except Exception as e:
-                # Redis 删除失败不应阻断 SQLite 会话删除
+                # Redis 删除失败时保留墓碑，至少当前进程不会再读到该会话
                 logger.error(f"Failed to clear Redis session: {e}")
+                deleted = False
 
         logger.debug(f"Cleared session: {session_id}")
+        return deleted
 
     def _save_to_redis(self, history: ConversationHistory) -> bool:
         """保存到 Redis（内部方法）；失败返回 False，调用方可感知。"""

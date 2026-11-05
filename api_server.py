@@ -5050,10 +5050,11 @@ async def get_session_messages(session_id: str, limit: int = 50):
     from memory import ShortTermMemory, get_session_store
 
     store = get_session_store()
-    # limit<=0 是导出/对比用的“全部”语义，也必须设硬上限
+    # limit<=0 是导出/对比用的“全部”语义，使用不受 500 条限制的读取，
+    # 但仍设 10000 条硬上限防止超大响应
     if limit <= 0:
         stored = await asyncio.to_thread(
-            store.get_messages, session_id, 10000
+            store.get_all_messages, session_id, 10000
         )
     else:
         stored = await asyncio.to_thread(
@@ -5568,12 +5569,31 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
 
 def _memory_scope(patient_profile: str, session_id: str) -> str:
     """长期记忆命名空间：有档案按档案共享，否则按会话隔离。"""
+    raw_profile = str(patient_profile or "").strip()
     profile = re.sub(
-        r"[^\w一-鿿.-]+", "_", str(patient_profile or "").strip()
+        r"[^\w一-鿿.-]+", "_", raw_profile
     )[:60].strip(" ._-")
     if profile:
-        return f"medix_profile_{profile}"[:120]
+        # 加入原值哈希，避免「张 三」和「张_三」清洗后共用命名空间
+        digest = hashlib.sha256(
+            raw_profile.encode("utf-8")
+        ).hexdigest()[:8]
+        return f"medix_profile_{profile}_{digest}"[:120]
     return f"medix_session_{session_id}"[:120]
+
+
+async def _resolve_memory_profile(session_id: str, requested: str) -> str:
+    """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。"""
+    from memory import get_session_store
+
+    try:
+        session = await asyncio.to_thread(
+            get_session_store().get_session, session_id
+        )
+    except Exception:
+        session = None
+    bound = str((session or {}).get("profile") or "").strip()
+    return bound or str(requested or "").strip()
 
 
 def _empty_answer_reason() -> str:
@@ -5628,9 +5648,12 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
 async def chat(request: ChatRequest):
     """同步接口：等 Swarm 全部跑完再返回。"""
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
+    memory_profile = await _resolve_memory_profile(
+        session_id, request.patient_profile
+    )
     memory_context = dict(request.context or {})
     memory_context["memory_scope"] = _memory_scope(
-        request.patient_profile, session_id
+        memory_profile, session_id
     )
 
     async with state.lock:
@@ -5676,9 +5699,12 @@ async def chat_stream(request: ChatRequest, http_request: Request):
       前端据此渐进渲染会诊意见。
     """
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
+    memory_profile = await _resolve_memory_profile(
+        session_id, request.patient_profile
+    )
     memory_context = dict(request.context or {})
     memory_context["memory_scope"] = _memory_scope(
-        request.patient_profile, session_id
+        memory_profile, session_id
     )
     triage = detect_red_flags(request.question, request.context)
     medication_safety = check_medication_safety(request.question, request.context)

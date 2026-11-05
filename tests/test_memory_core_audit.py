@@ -72,7 +72,9 @@ def test_redis_load_failure_does_not_overwrite_history():
     memory.sessions.pop(session_id, None)
     try:
         memory.add_message(session_id, "user", "内容")
-        assert session_id not in memory.sessions
+        # 读取失败时不写 Redis（setex 会断言失败），但保留进程内副本
+        assert session_id in memory.sessions
+        assert memory.sessions[session_id].messages[0]["content"] == "内容"
     finally:
         memory.storage_type = "memory"
         memory.redis_client = None

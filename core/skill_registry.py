@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Callable, Optional
 from dataclasses import dataclass
 import inspect
 import asyncio
+import contextvars
 from loguru import logger
 
 
@@ -164,11 +165,13 @@ class SkillRegistry:
                 # Async skill
                 result = await skill['function'](**kwargs)
             else:
-                # Sync skill - run in executor
+                # Sync skill - run in executor. run_in_executor 不会自动
+                # 复制 contextvars，需要手动 copy_context 才能看到当前记忆作用域
                 loop = asyncio.get_event_loop()
+                ctx = contextvars.copy_context()
                 result = await loop.run_in_executor(
                     None,
-                    lambda: skill['function'](**kwargs)
+                    lambda: ctx.run(lambda: skill['function'](**kwargs))
                 )
 
             logger.debug(f"Skill {name} completed successfully")

@@ -283,6 +283,46 @@ def test_stream_forwards_single_mode():
     assert coordinator.received is False
 
 
+class ContextCaptureCoordinator(FakeCoordinator):
+    def __init__(self):
+        super().__init__()
+        self.context = None
+
+    async def process(self, question, context=None, session_id=None, on_token=None):
+        self.context = context
+        return await super().process(question, context, session_id, on_token)
+
+
+def test_chat_memory_scope_prefers_bound_session_profile(tmp_path, monkeypatch):
+    import memory
+    from memory.session_store import SessionStore
+
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "scope.db"))
+    store.save_exchange("bound-profile", "问题", "回答")
+    store.ensure_session("bound-profile", "", "母亲")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    coordinator = ContextCaptureCoordinator()
+    api_server.state.coordinator = coordinator
+    client = TestClient(api_server.app)
+    try:
+        response = client.post(
+            "/api/chat",
+            json={
+                "question": "我头痛",
+                "session_id": "bound-profile",
+                "patient_profile": "孩子",
+            },
+        )
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert coordinator.context["memory_scope"].startswith(
+        "medix_profile_母亲_"
+    )
+
+
 class FailingCoordinator:
     worker_pool = []
 

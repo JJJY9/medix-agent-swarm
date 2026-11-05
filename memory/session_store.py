@@ -1419,18 +1419,35 @@ class SessionStore:
             messages.append(item)
         return messages
 
-    def get_all_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """返回会话的全部消息（备份导出用，不做条数截断）。"""
+    def get_all_messages(
+        self, session_id: str, max_messages: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """返回会话的全部消息（备份导出用）；可按需限制最大条数。"""
         with self._lock:
-            rows = self._conn.execute(
-                """
-                SELECT id, role, content, metadata, created_at
-                  FROM messages
-                 WHERE session_id = ?
-                 ORDER BY id
-                """,
-                (session_id,),
-            ).fetchall()
+            if max_messages is not None:
+                limit = max(1, min(int(max_messages), 10000))
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT id, role, content, metadata, created_at
+                          FROM messages
+                         WHERE session_id = ?
+                         ORDER BY id DESC
+                         LIMIT ?
+                    ) ORDER BY id
+                    """,
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT id, role, content, metadata, created_at
+                      FROM messages
+                     WHERE session_id = ?
+                     ORDER BY id
+                    """,
+                    (session_id,),
+                ).fetchall()
 
         messages = []
         for row in rows:
