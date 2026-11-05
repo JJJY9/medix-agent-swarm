@@ -223,3 +223,19 @@ def test_search_surfaces_index_errors(service):
 
     with pytest.raises(ValueError, match="检索失败"):
         svc.search("高血压")
+
+
+def test_long_duplicate_filenames_stay_distinct(service):
+    svc, _ = service
+    raw_name = "a" * 112 + ".markdown"
+
+    first = svc.save_upload(raw_name, b"first")
+    second = svc.save_upload(raw_name, b"second")
+
+    assert first["filename"] != second["filename"]
+    assert len(first["filename"]) <= 120
+    assert len(second["filename"]) <= 120
+    assert svc._safe_filename(second["filename"]) == second["filename"]
+
+    assert svc.delete_document(second["filename"]) is True
+    assert svc.preview_document(first["filename"]) is not None

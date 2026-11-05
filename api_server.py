@@ -555,7 +555,8 @@ def csv_safe_cell(value: Any) -> str:
 
 _RISK_TAG_PATTERN = re.compile(
     r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:为是]\s*[\*「【\s]*"
-    r"(中等风险|中等|中风险|紧急|高危|中危|低危)"
+    r"(中等风险|中等|中风险|紧急|高危|中危|低危"
+    r"|高(?!血压|风险|危)|中(?!等|风险|危)|低(?!危|风险))"
 )
 _RISK_KEYWORD_PATTERNS = (
     (
@@ -577,11 +578,14 @@ _RISK_NEGATION_PATTERN = re.compile(
 _RISK_TAG_LEVELS = {
     "紧急": "emergency",
     "高危": "high",
+    "高": "high",
     "中危": "medium",
     "中等风险": "medium",
     "中等": "medium",
     "中风险": "medium",
+    "中": "medium",
     "低危": "low",
+    "低": "low",
 }
 RISK_LEVEL_LABELS = {
     "emergency": "紧急",

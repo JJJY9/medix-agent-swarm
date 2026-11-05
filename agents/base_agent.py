@@ -142,6 +142,7 @@ class BaseAgent(ABC):
             session_id=session_id,
             on_token=on_token,
             persist_memory=persist_memory,
+            memory_question=input_data.get('memory_question'),
         )
 
     # ===== Swarm 协作能力 =====

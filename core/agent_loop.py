@@ -62,6 +62,7 @@ class AgentLoop:
         session_id: Optional[str] = None,
         on_token: Optional[Any] = None,
         persist_memory: bool = True,
+        memory_question: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         执行Agent循环
@@ -73,6 +74,8 @@ class AgentLoop:
             on_token: 可选的流式回调；用于强制收尾/最大迭代兜底时逐段推送文本
             persist_memory: 是否读写短期记忆；Swarm Worker 传 False，
                 避免把内部工具消息写进用户会话或重复加载历史
+            memory_question: 写入短期记忆的用户问题；默认取 input_data 中的
+                question。单 Agent 路由会增强 prompt，但记忆应保留原始问题
 
         Returns:
             最终结果
@@ -107,7 +110,9 @@ class AgentLoop:
                 # 只记录原始问题；messages[-1] 是带背景信息与历史的格式化
                 # 提示词，写回短期记忆会导致下次再拼接时逐轮嵌套膨胀
                 user_message = (
-                    input_data.get('question')
+                    memory_question
+                    or input_data.get('memory_question')
+                    or input_data.get('question')
                     or input_data.get('query')
                     or str(input_data)
                 )

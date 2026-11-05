@@ -287,12 +287,23 @@ class KnowledgeService:
         return name
 
     def _unique_path(self, name: str) -> Path:
-        path = self.upload_dir / name
+        suffix = Path(name).suffix
+        stem = Path(name).stem
+
+        def build(candidate_stem: str) -> str:
+            # 预留扩展名与 "-N" 后缀，保证落盘名 ≤120 且再次清洗不变
+            budget = max(1, 120 - len(suffix))
+            return f"{candidate_stem[:budget]}{suffix}"
+
+        path = self.upload_dir / build(stem)
         if not path.exists():
             return path
-        stem, suffix = path.stem, path.suffix
         for index in range(1, 1000):
-            candidate = self.upload_dir / f"{stem}-{index}{suffix}"
+            marker = f"-{index}"
+            budget = max(1, 120 - len(suffix) - len(marker))
+            candidate = self.upload_dir / (
+                f"{stem[:budget]}{marker}{suffix}"
+            )
             if not candidate.exists():
                 return candidate
         raise ValueError("同名文件过多，请先清理上传目录。")
