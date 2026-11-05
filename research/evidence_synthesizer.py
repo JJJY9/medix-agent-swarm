@@ -21,14 +21,19 @@ _NO_CONFLICT_TEXTS = {
     "无",
     "无冲突",
     "无明显冲突",
-    "无信息冲突",
+    "无相关冲突",
     "没有冲突",
     "没有明显冲突",
-    "没有信息冲突",
+    "没有相关冲突",
     "未发现冲突",
     "未发现明显冲突",
+    "未见冲突",
+    "未见明显冲突",
+    "未发生冲突",
     "暂未发现冲突",
     "暂未发现明显冲突",
+    "暂无冲突",
+    "暂无相关冲突",
 }
 
 
@@ -240,6 +245,8 @@ class EvidenceSynthesizer:
             normalized = re.sub(
                 r'[\s。．.；;，,、:：\-*•]', '', conflicts_text
             )
+            # 「的」「信息」不影响是否表示无冲突
+            normalized = normalized.replace("的", "").replace("信息", "")
             if normalized and normalized not in _NO_CONFLICT_TEXTS:
                 report.conflicts = _parse_list_items(conflicts_text)
 
