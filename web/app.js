@@ -493,9 +493,9 @@ const AGENT_NAMES = {
 };
 
 const initialSessionFromUrl = new URLSearchParams(window.location.search).get('session');
-let sessionId = initialSessionFromUrl || localStorage.getItem('medix.session') || null;
+let sessionId = initialSessionFromUrl || safeStorageGet('medix.session') || null;
 if (initialSessionFromUrl) {
-  localStorage.setItem('medix.session', initialSessionFromUrl);
+  safeStorageSet('medix.session', initialSessionFromUrl);
 }
 let busy = false;
 let activeController = null;
@@ -524,6 +524,7 @@ let historyItemMap = new Map();
 let compareOpen = false;
 let historyDays = 0;
 let historyRequestSeq = 0;
+let historyTagsRequestSeq = 0;
 let usageTrendRequestSeq = 0;
 let usageBudgetRequestSeq = 0;
 let kbSearching = false;
@@ -623,7 +624,7 @@ function updateThemeToggle(dark) {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   try {
-    localStorage.setItem(THEME_KEY, theme);
+    safeStorageSet(THEME_KEY, theme);
   } catch {
     // 隐私模式下 localStorage 可能不可用，忽略即可
   }
@@ -2712,7 +2713,7 @@ async function ensureSession() {
     throw new Error(data.detail || `新建会话失败（${res.status}）`);
   }
   sessionId = data.session_id;
-  localStorage.setItem('medix.session', sessionId);
+  safeStorageSet('medix.session', sessionId);
   setSessionUrl(sessionId);
   els.readout.session.textContent = shortSession(sessionId);
   return sessionId;
@@ -2731,7 +2732,7 @@ async function startNewSession() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     sessionId = data.session_id;
-    localStorage.setItem('medix.session', sessionId);
+    safeStorageSet('medix.session', sessionId);
     setSessionUrl(sessionId);
 
     els.thread.replaceChildren(els.empty);
@@ -3390,7 +3391,7 @@ async function bulkDelete() {
 
     if (ids.includes(sessionId)) {
       sessionId = null;
-      localStorage.removeItem('medix.session');
+      safeStorageRemove('medix.session');
       setSessionUrl(null);
       els.thread.replaceChildren(els.empty);
       els.empty.hidden = false;
@@ -4204,10 +4205,12 @@ async function openSession(id) {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
-    if (seq !== openSessionSeq) return;
+    // 拉取期间用户可能已经发起了新会诊：此时不能再渲染历史，
+    // 否则会把流式输出清空并把 sessionId 改回旧会话
+    if (seq !== openSessionSeq || busy) return;
 
     sessionId = id;
-    localStorage.setItem('medix.session', id);
+    safeStorageSet('medix.session', id);
     setSessionUrl(id);
     closeHistory();
     resetRail();
@@ -4216,7 +4219,7 @@ async function openSession(id) {
     setVitals('idle', '历史会诊');
     els.input.focus();
   } catch (err) {
-    if (seq !== openSessionSeq) return;
+    if (seq !== openSessionSeq || busy) return;
     closeHistory();
     renderError(`读取会诊记录失败：${err.message || err}`);
     els.input.focus();
@@ -4250,6 +4253,7 @@ async function toggleFavorite(item) {
 }
 
 async function loadHistoryTags() {
+  const requestSeq = ++historyTagsRequestSeq;
   try {
     const scope = historyProfile
       ? `?profile=${encodeURIComponent(historyProfile)}`
@@ -4257,6 +4261,8 @@ async function loadHistoryTags() {
     const res = await fetch(`/api/tags${scope}`);
     if (!res.ok) return;
     const data = await res.json();
+    // 档案快速切换时丢弃过期响应，避免旧标签覆盖新档案的下拉
+    if (requestSeq !== historyTagsRequestSeq) return;
     const items = data.tags || [];
     const current = historyTag;
 
@@ -4362,7 +4368,7 @@ async function deleteHistory(item) {
 
     if (item.id === sessionId) {
       sessionId = null;
-      localStorage.removeItem('medix.session');
+      safeStorageRemove('medix.session');
       setSessionUrl(null);
       els.thread.replaceChildren(els.empty);
       els.empty.hidden = false;
@@ -5358,20 +5364,37 @@ const HEALTH_FILTER_KEYS = {
   reminderStatsRange: 'medix.reminderStatsRange',
 };
 
-function readStoredFilter(key) {
+function safeStorageGet(key) {
   try {
-    return localStorage.getItem(key) || '';
+    return localStorage.getItem(key);
   } catch {
-    return '';
+    return null;
   }
 }
 
-function storeFilter(key, value) {
+function safeStorageSet(key, value) {
   try {
     localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    localStorage.removeItem(key);
   } catch {
     // 隐私模式下不可用时忽略
   }
+}
+
+function readStoredFilter(key) {
+  return safeStorageGet(key) || '';
+}
+
+function storeFilter(key, value) {
+  safeStorageSet(key, value);
 }
 
 function restoreSelectValue(select, key) {
@@ -5386,7 +5409,7 @@ function restoreSelectValue(select, key) {
 
 function readLastBackupAt() {
   try {
-    return localStorage.getItem(BACKUP_STORAGE_KEY) || '';
+    return safeStorageGet(BACKUP_STORAGE_KEY) || '';
   } catch {
     return '';
   }
@@ -5398,7 +5421,7 @@ function markBackupExported() {
     now.getTime() - now.getTimezoneOffset() * 60000
   ).toISOString().slice(0, 19);
   try {
-    localStorage.setItem(BACKUP_STORAGE_KEY, local);
+    safeStorageSet(BACKUP_STORAGE_KEY, local);
   } catch {
     // 隐私模式下不可用时忽略
   }
@@ -6997,9 +7020,11 @@ function renderReminders(items) {
   els.remindersDueHint.textContent = dueCount
     ? `有 ${dueCount} 条提醒已到期`
     : '';
+  // 用全量缓存判断条目是否真的被删除：搜索/逾期/日历筛选
+  // 只是临时隐藏，不应清空正在编辑的表单
   if (
     editingReminderId
-    && !items.some((item) => item.id === editingReminderId)
+    && !reminderItemsCache.some((item) => item.id === editingReminderId)
   ) {
     resetReminderForm();
   }
@@ -7080,7 +7105,7 @@ function maybeNotifyDueReminders(items) {
   }
   const today = todayLocalDate();
   try {
-    if (localStorage.getItem(REMINDER_NOTIFIED_KEY) === today) return;
+    if (safeStorageGet(REMINDER_NOTIFIED_KEY) === today) return;
   } catch {
     return;
   }
@@ -7103,7 +7128,7 @@ function maybeNotifyDueReminders(items) {
     : `有${parts.join('，')}。`;
   try {
     new Notification('MediX 随访提醒', { body, tag: 'medix-reminders' });
-    localStorage.setItem(REMINDER_NOTIFIED_KEY, today);
+    safeStorageSet(REMINDER_NOTIFIED_KEY, today);
   } catch {
     // 通知构造失败时忽略
   }
@@ -9300,9 +9325,9 @@ function renderTimeline(data) {
     els.timelineEmpty.textContent = `${rangeText}没有健康记录。`;
   }
   if (els.timelineSummary) {
-    const count = type || query || onlyAlert || riskOnly
-      ? events.length
-      : (Number(data.total) || allEvents.length);
+    // 筛选已由服务端执行，total 就是筛选后的总数；
+    // 不能用当前已加载页数冒充总数
+    const count = Number(data.total) || events.length;
     els.timelineSummary.hidden = !events.length;
     els.timelineSummary.textContent = events.length
       ? `${rangeText}共 ${count} 条记录`
@@ -9680,6 +9705,20 @@ async function loadTimeline() {
     limit: String(timelineLimit),
   });
   if (timelineDate) params.set('date', timelineDate);
+  // 筛选条件交给服务端，避免只过滤已加载的前几页
+  if (els.timelineType && els.timelineType.value) {
+    params.set('type', els.timelineType.value);
+  }
+  if (els.timelineOnlyAlert && els.timelineOnlyAlert.checked) {
+    params.set('only_alert', 'true');
+  }
+  if (els.timelineRiskOnly && els.timelineRiskOnly.checked) {
+    params.set('only_risk', 'true');
+  }
+  const timelineQuery = els.timelineSearch
+    ? els.timelineSearch.value.trim()
+    : '';
+  if (timelineQuery) params.set('q', timelineQuery);
   try {
     const res = await fetch(`/api/timeline?${params.toString()}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
@@ -9743,11 +9782,16 @@ async function exportTimelineCsv() {
 async function exportHealthDossier() {
   const profile = els.metricProfile.value;
   const isFamily = !profile;
+  // 导出跟随健康记录抽屉的时间范围；「全部」用接口支持的最大天数
+  const rangeDays = metricRangeDays();
+  const days = String(rangeDays > 0 ? rangeDays : 365);
   try {
     const url = isFamily
-      ? '/api/health/dossier-family.md?days=30'
+      ? `/api/health/dossier-family.md?${new URLSearchParams({
+        days,
+      }).toString()}`
       : `/api/health/dossier.md?${new URLSearchParams({
-        profile, days: '30',
+        profile, days,
       }).toString()}`;
     const res = await fetch(url);
     if (!res.ok) {
@@ -10277,7 +10321,7 @@ function setCalcTool(tool) {
   calcRequestSeq += 1;
   els.calcTool.value = tool;
   try {
-    localStorage.setItem('medix.calcTool', tool);
+    safeStorageSet('medix.calcTool', tool);
   } catch {
     // 隐私模式下不可用时忽略
   }
@@ -10348,7 +10392,7 @@ function openCalc() {
 
   let storedTool = '';
   try {
-    storedTool = localStorage.getItem('medix.calcTool') || '';
+    storedTool = safeStorageGet('medix.calcTool') || '';
   } catch {
     storedTool = '';
   }
@@ -11766,7 +11810,7 @@ async function fetchProfiles() {
 async function migrateLegacyProfiles() {
   let legacy;
   try {
-    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
+    const raw = safeStorageGet(PROFILES_STORAGE_KEY);
     legacy = raw ? JSON.parse(raw) : null;
   } catch {
     legacy = null;
@@ -11797,7 +11841,7 @@ async function migrateLegacyProfiles() {
   }
 
   try {
-    if (failed === 0) localStorage.removeItem(PROFILES_STORAGE_KEY);
+    if (failed === 0) safeStorageRemove(PROFILES_STORAGE_KEY);
   } catch {
     // 隐私模式下 localStorage 不可用时忽略
   }
@@ -12546,31 +12590,23 @@ if (els.timelineDateChip) {
 }
 els.timelineType.addEventListener('change', () => {
   storeFilter(HEALTH_FILTER_KEYS.timelineType, els.timelineType.value);
-  if (timelineDataCache) {
-    renderTimeline(timelineDataCache);
-  } else {
-    loadTimeline();
-  }
+  loadTimeline();
 });
 if (els.timelineSearch) {
+  let timelineSearchTimer = null;
   els.timelineSearch.addEventListener('input', () => {
-    if (timelineDataCache) {
-      renderTimeline(timelineDataCache);
-    }
+    clearTimeout(timelineSearchTimer);
+    timelineSearchTimer = setTimeout(loadTimeline, 250);
   });
 }
 if (els.timelineOnlyAlert) {
   els.timelineOnlyAlert.addEventListener('change', () => {
-    if (timelineDataCache) {
-      renderTimeline(timelineDataCache);
-    }
+    loadTimeline();
   });
 }
 if (els.timelineRiskOnly) {
   els.timelineRiskOnly.addEventListener('change', () => {
-    if (timelineDataCache) {
-      renderTimeline(timelineDataCache);
-    }
+    loadTimeline();
   });
 }
 if (els.timelineMore) {
@@ -13001,7 +13037,7 @@ let customStarters = [];
 function loadCustomStartersFromStorage() {
   try {
     const raw = JSON.parse(
-      localStorage.getItem(CUSTOM_STARTERS_KEY) || '[]'
+      safeStorageGet(CUSTOM_STARTERS_KEY) || '[]'
     );
     customStarters = Array.isArray(raw)
       ? raw
@@ -13016,7 +13052,7 @@ function loadCustomStartersFromStorage() {
 
 function persistCustomStarters() {
   try {
-    localStorage.setItem(
+    safeStorageSet(
       CUSTOM_STARTERS_KEY, JSON.stringify(customStarters)
     );
   } catch {

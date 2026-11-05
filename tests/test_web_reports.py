@@ -1158,3 +1158,21 @@ def test_app_js_guards_kb_busy_and_calc_tool_switch(client):
     assert "kbBusy" in app_js
     assert "previewFilename === filename" in app_js
     assert "calcRequestSeq += 1" in app_js
+
+
+def test_app_js_sends_timeline_filters_to_server(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "params.set('type', els.timelineType.value)" in app_js
+    assert "params.set('only_alert', 'true')" in app_js
+    assert "params.set('only_risk', 'true')" in app_js
+    assert "params.set('q', timelineQuery)" in app_js
+
+
+def test_app_js_wraps_local_storage_for_private_mode(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function safeStorageGet" in app_js
+    assert "function safeStorageSet" in app_js
+    assert "function safeStorageRemove" in app_js
+    assert "safeStorageSet('medix.session'" in app_js
