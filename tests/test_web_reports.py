@@ -1115,3 +1115,12 @@ def test_app_js_guards_kb_preview_races(client):
     assert "kbPreviewSeq" in app_js
     assert "previewEditingFilename" in app_js
     assert "seq !== kbPreviewSeq" in app_js
+
+
+def test_app_js_guards_history_races(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "openSessionSeq" in app_js
+    assert "feedbackRequestSeq" in app_js
+    assert "qualityRequestSeq" in app_js
+    assert "selectedSessions.delete(id)" in app_js
