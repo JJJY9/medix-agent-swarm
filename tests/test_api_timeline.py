@@ -112,6 +112,19 @@ def test_timeline_consultation_risk(client_and_store):
     assert "中危" in consultation["value"]
 
 
+def test_timeline_consultation_without_risk(client_and_store):
+    client, store = client_and_store
+
+    store.save_exchange("plain-session", "普通咨询", "建议多休息、多喝水。")
+
+    events = client.get("/api/timeline").json()["events"]
+    consultation = events[0]
+
+    assert consultation["type"] == "consultation"
+    assert consultation["risk"] == ""
+    assert "中危" not in consultation["value"]
+
+
 def test_timeline_csv_export(client_and_store):
     client, _store = client_and_store
     now = datetime.now().isoformat(timespec="minutes")

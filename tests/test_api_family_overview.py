@@ -228,6 +228,38 @@ def test_family_overview_consultation_risk(client_and_store):
     assert "（高危）" in mom_row[8]
 
 
+def test_family_overview_recorded_today_from_medication_log(client_and_store):
+    client, _store = client_and_store
+    taken_at = datetime.now().isoformat(timespec="minutes")
+
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": taken_at},
+    )
+
+    data = client.get("/api/family/overview").json()
+    mom = {item["name"]: item for item in data["profiles"]}["妈妈"]
+
+    assert mom["recorded_today"] is True
+    assert mom["consultations"]["risk"] == ""
+
+
+def test_family_overview_csv_escapes_formula(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/profiles", json={
+        "name": "=SUM(A1)", "context": {"age": "5"},
+    })
+
+    export = client.get("/api/family/overview/export.csv")
+    text = export.content.decode("utf-8-sig")
+
+    assert "'=SUM(A1)" in text
+
+
 def test_family_overview_csv_export(client_and_store):
     import csv
     import io
