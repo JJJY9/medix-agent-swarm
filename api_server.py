@@ -2680,6 +2680,191 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     return {"ok": True, "old_name": name, "name": new_name}
 
 
+@app.get("/api/family/overview")
+async def family_overview(days: int = 7):
+    """家庭健康总览：按档案汇总最近指标、用药、提醒、症状与会诊。"""
+    from memory import get_session_store
+    from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
+        METRIC_TYPES,
+    )
+
+    days = max(1, min(int(days or 7), 90))
+    store = get_session_store()
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+
+    saved_profiles = await asyncio.to_thread(store.list_profiles)
+    used_names = await asyncio.to_thread(store.list_used_profile_names)
+    contexts = {
+        item["name"]: item.get("context") or {} for item in saved_profiles
+    }
+    names = sorted(set(contexts) | set(used_names))
+    if not names:
+        return {"days": days, "profiles": []}
+
+    latest_metrics = await asyncio.to_thread(store.latest_metrics_by_profile)
+    medications = await asyncio.to_thread(
+        store.list_medications, None, False, 100000
+    )
+    reminders = await asyncio.to_thread(store.list_reminders, False, None)
+    symptoms = await asyncio.to_thread(
+        store.list_symptoms, None, 100000, days
+    )
+    targets = await asyncio.to_thread(store.list_metric_targets, None)
+    sessions = await asyncio.to_thread(
+        store.list_sessions_for_timeline, None, cutoff, "", 2000
+    )
+
+    target_map = {
+        (item.get("profile") or "", item.get("metric")): item
+        for item in targets
+        if item.get("metric")
+    }
+
+    def format_metric_value(item: Dict[str, Any]) -> str:
+        text = f"{float(item.get('value1') or 0):g}"
+        if item.get("value2") is not None:
+            return f"{text}/{float(item['value2']):g}"
+        return text
+
+    metrics_by_profile: Dict[str, List[Dict[str, Any]]] = {}
+    for item in latest_metrics:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        metric = item.get("metric") or ""
+        label, default_unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+        target = target_map.get((profile, metric))
+        over_target: Optional[bool] = None
+        if target is not None:
+            value1 = float(item.get("value1") or 0)
+            if metric in LOWER_BOUND_TARGET_METRICS:
+                over_target = value1 < float(target["value1"])
+            else:
+                over_target = value1 > float(target["value1"])
+                if (
+                    not over_target
+                    and metric == "bp"
+                    and target.get("value2") is not None
+                ):
+                    over_target = float(item.get("value2") or 0) > float(
+                        target["value2"]
+                    )
+        metrics_by_profile.setdefault(profile, []).append({
+            "metric": metric,
+            "label": label,
+            "value": format_metric_value(item),
+            "unit": item.get("unit") or default_unit,
+            "measured_at": item.get("measured_at", ""),
+            "over_target": over_target,
+        })
+
+    medications_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in medications:
+        profile = item.get("profile") or ""
+        if not profile or not item.get("active"):
+            continue
+        entry = medications_by_profile.setdefault(profile, {
+            "active": 0,
+            "taken_today": 0,
+            "names": [],
+        })
+        entry["active"] += 1
+        entry["taken_today"] += int(item.get("today_count") or 0)
+        if len(entry["names"]) < 3:
+            entry["names"].append(item.get("name") or "")
+
+    reminders_by_profile: Dict[str, Dict[str, int]] = {}
+    for item in reminders:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = reminders_by_profile.setdefault(profile, {
+            "pending": 0, "overdue": 0, "due_today": 0,
+        })
+        entry["pending"] += 1
+        due = str(item.get("due_at") or "")[:10]
+        if due and due < today:
+            entry["overdue"] += 1
+        elif due == today:
+            entry["due_today"] += 1
+
+    symptoms_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in symptoms:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = symptoms_by_profile.setdefault(profile, {
+            "count": 0, "latest": None,
+        })
+        entry["count"] += 1
+        if entry["latest"] is None:
+            entry["latest"] = {
+                "symptom": item.get("symptom", ""),
+                "severity": int(item.get("severity") or 0),
+                "recorded_at": item.get("recorded_at", ""),
+            }
+
+    sessions_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in sessions:
+        profile = item.get("profile") or ""
+        if not profile or int(item.get("message_count") or 0) <= 0:
+            continue
+        at = str(item.get("created_at") or "")
+        if not at or at[:10] < cutoff:
+            continue
+        entry = sessions_by_profile.setdefault(profile, {
+            "count": 0, "latest_at": "",
+        })
+        entry["count"] += 1
+        if at > entry["latest_at"]:
+            entry["latest_at"] = at
+
+    profiles = []
+    for name in names:
+        metrics = sorted(
+            metrics_by_profile.get(name, []),
+            key=lambda row: str(row.get("measured_at") or ""),
+            reverse=True,
+        )
+        medication = medications_by_profile.get(name, {
+            "active": 0, "taken_today": 0, "names": [],
+        })
+        reminder = reminders_by_profile.get(name, {
+            "pending": 0, "overdue": 0, "due_today": 0,
+        })
+        symptom = symptoms_by_profile.get(name, {
+            "count": 0, "latest": None,
+        })
+        consultation = sessions_by_profile.get(name, {
+            "count": 0, "latest_at": "",
+        })
+        activity_candidates = [
+            metrics[0]["measured_at"] if metrics else "",
+            (symptom.get("latest") or {}).get("recorded_at") or "",
+            consultation.get("latest_at") or "",
+        ]
+        last_activity = max(activity_candidates)
+        profiles.append({
+            "name": name,
+            "context": contexts.get(name) or {},
+            "metrics": metrics,
+            "medications": medication,
+            "reminders": reminder,
+            "symptoms": symptom,
+            "consultations": consultation,
+            "last_activity": last_activity,
+        })
+
+    profiles.sort(
+        key=lambda item: (item["last_activity"], item["name"]),
+        reverse=True,
+    )
+    return {"days": days, "profiles": profiles}
+
+
 @app.get("/api/reminders")
 async def list_reminders(
     include_done: bool = False, profile: Optional[str] = None
