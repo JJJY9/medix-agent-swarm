@@ -58,6 +58,7 @@ IMPORT_LIST_LIMITS = {
     "medications": 100000,
     "medication_logs": 100000,
     "reminders": 100000,
+    "audit_log": 100000,
 }
 
 
@@ -1900,24 +1901,46 @@ class SessionStore:
 
     def export_data(self) -> Dict[str, Any]:
         """导出全部会话与全部消息，供本地备份或迁移。"""
-        sessions = []
-        offset = 0
-        page_size = 200
-        while True:
-            batch = self.list_sessions(limit=page_size, offset=offset)
-            sessions.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += len(batch)
+        # 在单个锁内一次取快照：分页导出时若有会话被更新，
+        # 会因 updated_at 排序漂移而被漏导或重复导出
+        with self._lock:
+            session_rows = self._conn.execute(
+                """
+                SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
+                       s.archived, s.tags, s.profile
+                  FROM sessions s
+                 ORDER BY s.updated_at DESC
+                """
+            ).fetchall()
+            message_rows = self._conn.execute(
+                """
+                SELECT session_id, id, role, content, metadata, created_at
+                  FROM messages
+                 ORDER BY session_id, id
+                """
+            ).fetchall()
+
+        messages_by_session: Dict[str, List[Dict[str, Any]]] = {}
+        for row in message_rows:
+            item = dict(row)
+            session_id = item.pop("session_id")
+            try:
+                item["metadata"] = sanitize_json(
+                    json.loads(item.get("metadata") or "{}")
+                )
+            except (TypeError, json.JSONDecodeError):
+                item["metadata"] = {}
+            messages_by_session.setdefault(session_id, []).append(item)
 
         exported = []
-        for item in sessions:
-            # risk_text 是列表接口用于解析风险的中间字段，
-            # 备份里已有完整消息，不再重复保存答复片段
-            item.pop("risk_text", None)
+        for row in session_rows:
+            item = dict(row)
+            item["favorite"] = bool(item.get("favorite"))
+            item["archived"] = bool(item.get("archived"))
+            item["tags"] = _parse_tags(item.get("tags"))
             exported.append({
                 **item,
-                "messages": self.get_all_messages(item["id"]),
+                "messages": messages_by_session.get(item["id"], []),
             })
 
         return {
@@ -1925,6 +1948,7 @@ class SessionStore:
             "exported_at": self._now(),
             "session_count": len(exported),
             "sessions": exported,
+            "audit_log": self.list_audit_log(limit=100000),
             "profiles": self.list_profiles(),
             "health_metrics": self.list_metrics(limit=100000),
             "metric_targets": self.list_metric_targets(),
@@ -1949,6 +1973,7 @@ class SessionStore:
         raw_symptoms = data.get("symptoms")
         raw_medications = data.get("medications")
         raw_medication_logs = data.get("medication_logs")
+        raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
             or isinstance(raw_metrics, list)
@@ -1957,6 +1982,7 @@ class SessionStore:
             or isinstance(raw_symptoms, list)
             or isinstance(raw_medications, list)
             or isinstance(raw_medication_logs, list)
+            or isinstance(raw_audit, list)
         ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
@@ -1970,6 +1996,7 @@ class SessionStore:
             and not isinstance(raw_symptoms, list)
             and not isinstance(raw_medications, list)
             and not isinstance(raw_medication_logs, list)
+            and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
@@ -1984,6 +2011,7 @@ class SessionStore:
             ("medications", "用药", raw_medications),
             ("medication_logs", "用药打卡", raw_medication_logs),
             ("reminders", "提醒", raw_reminders),
+            ("audit_log", "审计记录", raw_audit),
         ):
             cap = IMPORT_LIST_LIMITS[key]
             if isinstance(items, list) and len(items) > cap:
@@ -2539,45 +2567,33 @@ class SessionStore:
                     except (TypeError, ValueError, OverflowError):
                         reminder_id = 0
 
+                    # 备份里的自增 id 只用于重建 repeats_from 关系；
+                    # 数据行一律插入新 id，撞号时不能静默丢弃
                     if reminder_id > 0:
-                        exists = self._conn.execute(
-                            "SELECT 1 FROM reminders WHERE id = ?",
+                        same_id = self._conn.execute(
+                            "SELECT id, title FROM reminders WHERE id = ?",
                             (reminder_id,),
                         ).fetchone()
-                        if exists:
-                            continue
-                        self._conn.execute(
-                            """
-                            INSERT INTO reminders(
-                                id, title, note, due_at, session_id, profile,
-                                advance_days, repeat_days, repeat_until,
-                                repeats_from, medication_id, done,
-                                created_at, updated_at
+                        if (
+                            same_id is not None
+                            and str(same_id["title"]) == title
+                        ):
+                            # 同一编号同标题视为已导入（日期可能被改过）
+                            raw_reminder_id_map[reminder_id] = int(
+                                same_id["id"]
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                reminder_id, title, note, due_at, session_id,
-                                profile, advance_days, repeat_days,
-                                repeat_until, 0, medication_id, done,
-                                created_at, updated_at,
-                            ),
-                        )
-                        raw_reminder_id_map[reminder_id] = reminder_id
-                        if repeats_from > 0:
-                            reminder_links.append((reminder_id, repeats_from))
-                        reminders_imported += 1
-                        continue
-
+                            continue
                     exists = self._conn.execute(
                         """
-                        SELECT 1 FROM reminders
-                         WHERE title = ? AND due_at = ? AND profile = ?
-                           AND note = ? AND session_id = ?
+                        SELECT id FROM reminders
+                         WHERE title = ? AND profile = ? AND note = ?
+                           AND session_id = ? AND created_at = ?
                         """,
-                        (title, due_at, profile, note, session_id),
+                        (title, profile, note, session_id, created_at),
                     ).fetchone()
-                    if exists:
+                    if exists is not None:
+                        if reminder_id > 0:
+                            raw_reminder_id_map[reminder_id] = int(exists["id"])
                         continue
                     cursor = self._conn.execute(
                         """
@@ -2597,6 +2613,8 @@ class SessionStore:
                         ),
                     )
                     new_reminder_id = int(cursor.lastrowid or 0)
+                    if reminder_id > 0 and new_reminder_id:
+                        raw_reminder_id_map[reminder_id] = new_reminder_id
                     if new_reminder_id and repeats_from > 0:
                         reminder_links.append(
                             (new_reminder_id, repeats_from)
@@ -2611,6 +2629,42 @@ class SessionStore:
                         (parent_id, new_id),
                     )
 
+            audit_imported = 0
+            if isinstance(raw_audit, list):
+                for raw in raw_audit[:IMPORT_LIST_LIMITS["audit_log"]]:
+                    if not isinstance(raw, dict):
+                        continue
+                    action = " ".join(
+                        str(raw.get("action") or "").split()
+                    )[:80]
+                    if not action:
+                        continue
+                    target = " ".join(
+                        str(raw.get("target") or "").split()
+                    )[:120]
+                    detail = " ".join(
+                        str(raw.get("detail") or "").split()
+                    )[:500]
+                    created_at = str(raw.get("created_at") or now)[:40]
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM audit_log
+                         WHERE action = ? AND target = ?
+                           AND detail = ? AND created_at = ?
+                        """,
+                        (action, target, detail, created_at),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO audit_log(action, target, detail, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (action, target, detail, created_at),
+                    )
+                    audit_imported += 1
+
         return {
             "imported": imported,
             "skipped": skipped,
@@ -2623,6 +2677,7 @@ class SessionStore:
             "symptoms": symptoms_imported,
             "medications": medications_imported,
             "medication_logs": medication_logs_imported,
+            "audit_log": audit_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:

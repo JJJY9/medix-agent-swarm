@@ -478,6 +478,7 @@ def test_import_data_roundtrip(tmp_path):
             "symptoms": 0,
             "medications": 0,
             "medication_logs": 0,
+            "audit_log": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"

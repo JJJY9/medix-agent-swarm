@@ -94,8 +94,18 @@ def extract_json_payload(content: Optional[str]) -> Optional[Any]:
 
         if isinstance(payload, dict) and "subtasks" in payload:
             return payload
-        if isinstance(payload, list) and all(isinstance(item, dict) for item in payload):
-            return {"subtasks": payload}
+        if isinstance(payload, list) and all(
+            isinstance(item, dict) for item in payload
+        ):
+            # 只有元素看起来像子任务时才认这个数组；
+            # 否则继续向后扫描，避免前面的说明性数组遮住真正的 subtasks
+            if any(
+                item.get("description")
+                or item.get("task")
+                or item.get("desc")
+                for item in payload
+            ):
+                return {"subtasks": payload}
 
     return None
 
