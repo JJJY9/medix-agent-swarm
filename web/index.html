@@ -778,6 +778,14 @@
           <option value="30" selected>近 30 天</option>
           <option value="90">近 90 天</option>
         </select>
+        <label class="sr-only" for="timeline-type">时间线类型</label>
+        <select id="timeline-type" aria-label="按类型筛选时间线">
+          <option value="">全部类型</option>
+          <option value="metric">指标</option>
+          <option value="symptom">症状</option>
+          <option value="medication">用药</option>
+        </select>
+        <button type="button" class="btn-quiet" id="timeline-export">导出 CSV</button>
       </div>
       <p class="metric-reference" id="timeline-summary" hidden></p>
       <ul class="timeline-list" id="timeline-list"></ul>

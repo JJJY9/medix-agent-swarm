@@ -705,6 +705,10 @@ def test_app_js_ships_health_timeline(client):
     assert "/api/timeline" in app_js
     assert 'id="timeline-section"' in html
     assert 'id="timeline-range"' in html
+    assert 'id="timeline-type"' in html
+    assert 'id="timeline-export"' in html
+    assert "async function exportTimelineCsv" in app_js
+    assert "/api/timeline/export.csv" in app_js
     assert "timeline-badge" in app_js
     assert ".timeline-badge" in css
 
