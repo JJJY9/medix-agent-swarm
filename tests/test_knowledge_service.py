@@ -197,3 +197,29 @@ def test_builtin_documents_cannot_be_deleted(service):
 
     with pytest.raises(ValueError):
         svc.delete_document("20_guideline_hypertension.txt")
+
+
+def test_rebuild_skips_duplicate_document_content(service):
+    svc, _kb = service
+    builtin = (
+        svc.docs_dir / "20_guideline_hypertension.txt"
+    ).read_text(encoding="utf-8")
+    svc.save_upload("copy.md", builtin.encode("utf-8"))
+
+    result = svc.rebuild()
+
+    assert result["documents"] == 1
+    assert result["duplicate_documents"] == 1
+    assert result["chunks"] == 2
+
+
+def test_search_surfaces_index_errors(service):
+    svc, kb = service
+
+    def broken_search(*args, **kwargs):
+        raise RuntimeError("index broken")
+
+    kb.search = broken_search
+
+    with pytest.raises(ValueError, match="检索失败"):
+        svc.search("高血压")

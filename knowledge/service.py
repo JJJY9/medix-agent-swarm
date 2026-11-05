@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import threading
 from pathlib import Path
@@ -225,7 +226,28 @@ class KnowledgeService:
         uploaded_documents = load_documents_from_directory(
             self.upload_dir, id_prefix="upload_"
         )
-        documents = builtin_documents + uploaded_documents
+        documents = []
+        seen_contents = set()
+        duplicate_count = 0
+        for document in builtin_documents + uploaded_documents:
+            normalized = (
+                str(document.get("content") or "")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .strip()
+            )
+            content_key = hashlib.sha256(
+                normalized.encode("utf-8")
+            ).hexdigest()
+            if content_key in seen_contents:
+                duplicate_count += 1
+                logger.info(
+                    "Skipping duplicate document content: "
+                    f"{document.get('id')}"
+                )
+                continue
+            seen_contents.add(content_key)
+            documents.append(document)
         if not documents:
             raise ValueError("知识库目录中没有可导入的文档。")
 
@@ -247,6 +269,7 @@ class KnowledgeService:
             "chunk_count": chunk_count,
             "builtin_documents": len(builtin_documents),
             "uploaded_documents": len(uploaded_documents),
+            "duplicate_documents": duplicate_count,
         }
 
     @staticmethod
