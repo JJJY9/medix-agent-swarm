@@ -283,3 +283,85 @@ def test_weekly_report_counts_consultations(client_and_store):
 
     family = client.get("/api/reports/weekly").json()
     assert family["consultations"] == {"count": 1, "prev_count": 1}
+
+
+def test_weekly_report_medication_adherence(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+
+    medication = client.post("/api/medications", json={
+        "profile": "母亲", "name": "二甲双胍", "frequency": "每日两次",
+    }).json()["medication"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (
+                (now - timedelta(days=6)).isoformat(timespec="seconds"),
+                medication["id"],
+            ),
+        )
+
+    taken_at = now.isoformat(timespec="minutes")
+    for _ in range(8):
+        client.post(
+            f"/api/medications/{medication['id']}/logs",
+            json={"taken_at": taken_at},
+        )
+
+    report = client.get("/api/reports/weekly").json()
+    medications = report["medications"]
+
+    assert medications["adherence"] == {
+        "expected": 14, "taken": 8, "rate": 57,
+    }
+    row = medications["by_medication"][0]
+    assert row["expected"] == 14
+    assert row["rate"] == 57
+
+
+def test_weekly_report_adherence_rounds_half_up(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+
+    medication = client.post("/api/medications", json={
+        "profile": "母亲", "name": "氨氯地平", "frequency": "每日两次",
+    }).json()["medication"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (
+                (now - timedelta(days=3)).isoformat(timespec="seconds"),
+                medication["id"],
+            ),
+        )
+
+    taken_at = now.isoformat(timespec="minutes")
+    for _ in range(5):
+        client.post(
+            f"/api/medications/{medication['id']}/logs",
+            json={"taken_at": taken_at},
+        )
+
+    report = client.get("/api/reports/weekly").json()
+    assert report["medications"]["adherence"] == {
+        "expected": 8, "taken": 5, "rate": 63,
+    }
+
+
+def test_weekly_report_lists_active_medication_without_logs(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/medications", json={
+        "name": "维生素 D", "frequency": "每日一次",
+    })
+
+    report = client.get("/api/reports/weekly").json()
+    medications = report["medications"]
+    row = medications["by_medication"][0]
+
+    assert row["name"] == "维生素 D"
+    assert row["doses"] == 0
+    assert row["expected"] == 1
+    assert medications["adherence"] == {
+        "expected": 1, "taken": 0, "rate": 0,
+    }

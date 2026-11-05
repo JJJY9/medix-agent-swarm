@@ -270,22 +270,30 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
     return None
 
 
-def _expected_week_doses(
-    frequency: str, created_at: str, now: datetime
+def expected_doses_for_period(
+    frequency: str, created_at: str, now: datetime, days: int = 7
 ) -> Optional[int]:
-    """按频次与用药开始时间估算近 7 天应服次数。"""
+    """按频次、用药开始时间与统计天数估算应服次数。"""
     per_day = parse_frequency_doses_per_day(frequency)
     if not per_day:
         return None
+    days = max(1, min(int(days or 7), 3650))
     try:
         created = datetime.fromisoformat(str(created_at or "")[:19]).date()
     except ValueError:
         created = now.date()
-    start = max(created, (now - timedelta(days=6)).date())
-    days = (now.date() - start).days + 1
-    if days <= 0:
+    start = max(created, (now - timedelta(days=days - 1)).date())
+    day_count = (now.date() - start).days + 1
+    if day_count <= 0:
         return None
-    return max(1, round(per_day * days))
+    return max(1, round(per_day * day_count))
+
+
+def _expected_week_doses(
+    frequency: str, created_at: str, now: datetime
+) -> Optional[int]:
+    """按频次与用药开始时间估算近 7 天应服次数。"""
+    return expected_doses_for_period(frequency, created_at, now, 7)
 
 
 def _normalize_medication(
