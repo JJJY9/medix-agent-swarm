@@ -316,6 +316,7 @@ const els = {
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   homeGlanceMedications: document.getElementById('home-glance-medications'),
   homeGlanceSummary: document.getElementById('home-glance-summary'),
+  homeGlanceBackup: document.getElementById('home-glance-backup'),
   familyOverview: document.getElementById('family-overview'),
   familyOverviewList: document.getElementById('family-overview-list'),
   familyOverviewStatus: document.getElementById('family-overview-status'),
@@ -3823,6 +3824,7 @@ async function exportHistoryBackup() {
       `medix-sessions-${stamp}.json`,
       'application/json;charset=utf-8'
     );
+    markBackupExported();
     btn.textContent = `已导出 ${data.session_count || 0} 次`;
   } catch (err) {
     btn.textContent = '导出失败';
@@ -5242,6 +5244,33 @@ let metricWeeklyRequestSeq = 0;
 let metricsOffset = 0;
 let metricItemsCache = [];
 let homeGlanceRequestSeq = 0;
+const BACKUP_STORAGE_KEY = 'medix.lastBackupAt';
+
+function readLastBackupAt() {
+  try {
+    return localStorage.getItem(BACKUP_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function markBackupExported() {
+  const now = new Date();
+  const local = new Date(
+    now.getTime() - now.getTimezoneOffset() * 60000
+  ).toISOString().slice(0, 19);
+  try {
+    localStorage.setItem(BACKUP_STORAGE_KEY, local);
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
+}
+
+function backupDaysAgo(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+}
 let weeklySummaryRequestSeq = 0;
 let weeklySummaryCache = null;
 let weeklySummaryCopyTimer = null;
@@ -7098,6 +7127,21 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
     );
   } else {
     els.homeGlanceSummary.hidden = true;
+  }
+  if (els.homeGlanceBackup) {
+    const lastBackup = readLastBackupAt();
+    let backupValue = '还没有导出备份';
+    let backupSub = '点击导出完整备份';
+    if (lastBackup) {
+      const days = backupDaysAgo(lastBackup);
+      backupValue = `上次备份 ${formatTime(lastBackup)}`;
+      if (days !== null && days >= 30) {
+        backupSub = `已 ${days} 天未备份，建议现在导出`;
+      }
+    }
+    els.homeGlanceBackup.replaceChildren(
+      ...homeGlanceLine('数据备份', backupValue, backupSub)
+    );
   }
   renderTodayMeds(medications);
   els.homeGlance.hidden = false;
@@ -11870,6 +11914,12 @@ els.homeGlanceSummary.addEventListener('click', () => {
   openMetrics();
   if (els.weeklySummarySection) els.weeklySummarySection.open = true;
 });
+if (els.homeGlanceBackup) {
+  els.homeGlanceBackup.addEventListener('click', async () => {
+    await exportHistoryBackup();
+    loadHomeGlance();
+  });
+}
 els.familyOverviewList.addEventListener('click', async (event) => {
   const card = event.target.closest('.family-card');
   if (!card || card.disabled) return;
