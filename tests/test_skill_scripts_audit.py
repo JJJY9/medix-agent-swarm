@@ -24,8 +24,11 @@ def test_extract_icd_code_matches_requested_disease():
         ROOT / "knowledge/data/documents/10_icd10_cardiovascular.txt"
     ).read_text(encoding="utf-8")
 
-    assert code_module.extract_icd_code(content, "高血压") == "I10"
-    assert code_module.extract_icd_code(content, "冠心病") == "I25"
+    hypertension = code_module.extract_icd_details(content, "高血压")
+    coronary = code_module.extract_icd_details(content, "冠心病")
+
+    assert hypertension["icd10_code"] == "I10"
+    assert coronary["icd10_code"] == "I25"
 
 
 def test_assess_risk_empty_input_is_unknown():

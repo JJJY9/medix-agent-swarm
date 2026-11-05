@@ -7,27 +7,35 @@ from typing import Dict, Any
 from loguru import logger
 
 
-async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
+async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any]:
     """
     深度研究
 
     Args:
         query: 研究问题
-        max_iterations: 最大迭代次数（默认2）
+        max_results_scale: 检索规模倍数（默认 2，限制 1-5）；
+            网络结果上限 = 倍数 × 5，知识库上限 = 倍数 × 3
 
     Returns:
         {
             "answer": "格式化的研究报告",
             "findings": ["发现1", "发现2"],
-            "confidence": "high/medium/low"
+            "confidence": "high/medium/low",
+            "source_count": 来源数量,
+            "evidence_level": "A/B/C",
+            "status": "completed/error",
+            "data_sources": 实际使用的数据源
         }
     """
-    logger.info(f"Starting deep research: query={query}, max_iterations={max_iterations}")
+    logger.info(
+        f"Starting deep research: query={query}, "
+        f"max_results_scale={max_results_scale}"
+    )
 
     try:
-        iterations = max(1, min(int(max_iterations or 2), 5))
+        scale = max(1, min(int(max_results_scale or 2), 5))
     except (TypeError, ValueError):
-        iterations = 2
+        scale = 2
 
     try:
         # 调用深度研究工作流
@@ -46,8 +54,8 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
         # 注意：DeepResearchWorkflow.run() 返回的是 ResearchReport 对象，不是 dict
         report = await workflow.run(
             question=query,  # 参数名是 question，不是 query
-            max_web_results=iterations * 5,  # 使用 max_iterations 控制搜索结果数
-            max_kb_results=iterations * 3
+            max_web_results=scale * 5,
+            max_kb_results=scale * 3
         )
 
         # report 是 ResearchReport 对象，有以下属性：
@@ -58,14 +66,15 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
         # - summary: str
         # - recommendations: List[str]
 
+        data_sources = _describe_data_sources(report.sources)
         return {
-            "answer": format_research_report(query, report),
+            "answer": format_research_report(query, report, data_sources),
             "findings": report.key_findings,
             "confidence": "high" if report.confidence > 0.7 else "medium" if report.confidence > 0.4 else "low",
             "source_count": len(report.sources),
             "evidence_level": report.evidence_level,
             "status": "completed",
-            "data_sources": "Web Search + Milvus RAG + Evidence Synthesis"
+            "data_sources": data_sources
         }
 
     except Exception as e:
@@ -75,11 +84,28 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
             "findings": [],
             "confidence": "low",
             "source_count": 0,
-            "status": "error"
+            "status": "error",
+            "data_sources": ""
         }
 
 
-def format_research_report(query: str, report) -> str:
+def _describe_data_sources(sources) -> str:
+    """按实际来源类型描述数据源，避免声称使用了并不存在的网络搜索。"""
+    types = {
+        str(item.get("type") or "")
+        for item in (sources or [])
+        if isinstance(item, dict)
+    }
+    parts = []
+    if "web" in types:
+        parts.append("网络搜索")
+    if "knowledge_base" in types:
+        parts.append("医学知识库（Milvus RAG）")
+    parts.append("证据综合")
+    return " + ".join(parts)
+
+
+def format_research_report(query: str, report, data_sources: str = "") -> str:
     """
     格式化研究报告
 
@@ -126,11 +152,13 @@ def format_research_report(query: str, report) -> str:
     if report.sources:
         output.append(f"\n参考来源数量：{len(report.sources)}")
 
-    output.append("\n💡 数据来源：网络搜索 + 医学知识库（Milvus RAG）+ 证据综合")
+    output.append(
+        f"\n💡 数据来源：{data_sources or '证据综合'}"
+    )
 
     return "\n".join(output)
 
 
-def deep_research_sync(query: str, max_iterations: int = 2) -> Dict[str, Any]:
+def deep_research_sync(query: str, max_results_scale: int = 2) -> Dict[str, Any]:
     import asyncio
-    return asyncio.run(deep_research(query, max_iterations))
+    return asyncio.run(deep_research(query, max_results_scale))

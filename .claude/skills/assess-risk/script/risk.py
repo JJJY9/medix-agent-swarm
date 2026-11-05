@@ -51,6 +51,11 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
             "sources": [],
         }
 
+    # 急症红旗优先：胸痛伴呼吸困难、意识改变等直接判为紧急
+    from core.triage import detect_red_flags
+
+    triage = detect_red_flags(symptoms)
+
     # 高风险症状列表
     high_risk_symptoms = [
         "胸痛", "呼吸困难", "意识模糊", "严重出血", "剧烈头痛",
@@ -63,13 +68,20 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
     risk_level = "low"
     reasons = []
 
-    # 检查高风险症状
-    for symptom in symptom_list:
-        for high_risk in high_risk_symptoms:
-            if high_risk in symptom:
-                risk_level = "high"
-                reasons.append(f"检测到高风险症状：{symptom}")
-                break
+    if triage["level"] == "emergency":
+        risk_level = "emergency"
+        reasons.append(
+            "检测到急症警示信号：" + "、".join(triage.get("matches") or [])
+        )
+
+    # 检查高风险症状（急症已确定时不再降级覆盖）
+    if risk_level != "emergency":
+        for symptom in symptom_list:
+            for high_risk in high_risk_symptoms:
+                if high_risk in symptom:
+                    risk_level = "high"
+                    reasons.append(f"检测到高风险症状：{symptom}")
+                    break
 
     # 检查中等风险特征
     if risk_level == "low":
@@ -79,30 +91,36 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
                 reasons.append(f"症状描述提示需要关注：{symptom}")
 
     # 生成建议
-    if risk_level == "high":
+    if risk_level == "emergency":
+        recommendation = (
+            "⚠️ 出现急症警示信号，请立即拨打 120 或前往急诊科，"
+            "不要等待在线回复。"
+        )
+    elif risk_level == "high":
         recommendation = "⚠️ 建议立即就医或拨打急救电话120"
     elif risk_level == "medium":
         recommendation = "建议尽快就医，不要拖延，必要时前往医院"
     else:
         recommendation = "建议密切观察症状变化，如果症状加重或持续不缓解，应及时就医"
 
-    # 从 RAG 知识库获取风险相关的医学建议
+    # 从 RAG 知识库获取风险相关的医学建议；急症时不等待检索
     kb_advice = None
     sources = []
-    try:
-        kb = await asyncio.to_thread(get_knowledge_base)
-        # 根据风险等级查询相关医学知识
-        risk_query = f"{symptoms} 紧急程度 风险评估 就医建议"
-        results = await asyncio.to_thread(kb.search,
-            query=risk_query,
-            top_k=1,
-            filter_type=None
-        )
-        if results and results[0]["score"] > 0.5:
-            kb_advice = results[0]["content"][:300]  # 限制长度
-            sources = build_sources(results, max_items=1)
-    except Exception as e:
-        logger.warning(f"Failed to get KB advice: {e}")
+    if risk_level != "emergency":
+        try:
+            kb = await asyncio.to_thread(get_knowledge_base)
+            # 根据风险等级查询相关医学知识
+            risk_query = f"{symptoms} 紧急程度 风险评估 就医建议"
+            results = await asyncio.to_thread(kb.search,
+                query=risk_query,
+                top_k=1,
+                filter_type=None
+            )
+            if results and results[0]["score"] > 0.5:
+                kb_advice = results[0]["content"][:300]  # 限制长度
+                sources = build_sources(results, max_items=1)
+        except Exception as e:
+            logger.warning(f"Failed to get KB advice: {e}")
 
     return {
         "answer": format_assessment(symptoms, risk_level, reasons, recommendation, kb_advice),

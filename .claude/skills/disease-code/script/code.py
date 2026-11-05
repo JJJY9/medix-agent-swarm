@@ -2,7 +2,7 @@
 Disease Code Skill
 疾病编码查询 Skill（自包含，无需依赖tools）
 """
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import asyncio
 import re
 from loguru import logger
@@ -38,60 +38,84 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
     # 使用知识库单例
     kb = await asyncio.to_thread(get_knowledge_base)
 
-    # 使用 Milvus 检索疾病编码
+    # 使用 Milvus 检索疾病编码；多取几条，按疾病名称定位正确小节
     results = await asyncio.to_thread(kb.search,
         query=f"{disease_name} ICD-10编码 疾病分类",
-        top_k=1,
+        top_k=3,
         filter_type="disease_classification"
     )
 
-    if results and results[0]["score"] > 0.1:
-        doc = results[0]
-        metadata = doc["metadata"]
-
-        content = doc["content"]
-        icd10_code = metadata.get("icd10_code", "")
-        if not icd10_code:
-            icd10_code = extract_icd_code(content, disease_name)
-
+    for doc in results:
+        if not isinstance(doc, dict) or doc.get("score", 0) <= 0.1:
+            continue
+        content = doc.get("content") or ""
+        details = extract_icd_details(content, disease_name)
+        if details is None:
+            continue
+        metadata = doc.get("metadata") or {}
         return {
             "answer": format_code_info(disease_name, content),
-            "icd10_code": icd10_code,
-            "category": metadata.get("category", ""),
+            "icd10_code": metadata.get("icd10_code")
+            or details["icd10_code"],
+            "category": details["category"]
+            or metadata.get("category", ""),
             "source": "向量数据库",
-            "sources": build_sources(results, max_items=1),
+            "sources": build_sources([doc], max_items=1),
         }
-    else:
-        # 未找到相关内容
-        logger.warning(f"No ICD-10 code found in vector DB for {disease_name}")
-        return {
-            "answer": f"未找到'{disease_name}'的ICD-10编码，建议使用更标准的疾病名称或联系医生咨询。",
-            "icd10_code": "",
-            "category": "",
-            "source": "未找到",
-            "sources": [],
-        }
+
+    # 未找到匹配小节
+    logger.warning(f"No ICD-10 code found in vector DB for {disease_name}")
+    return {
+        "answer": f"未找到'{disease_name}'的ICD-10编码，建议使用更标准的疾病名称或联系医生咨询。",
+        "icd10_code": "",
+        "category": "",
+        "source": "未找到",
+        "sources": [],
+    }
 
 
 _ICD_PATTERN = re.compile(
     r"ICD-10\s*编码\s*[：:]\s*([A-Z]\d{2}(?:\.\d+)?)", re.IGNORECASE
 )
+_CATEGORY_PATTERN = re.compile(r"疾病分类\s*[：:]\s*([^\n]+)")
 
 
-def extract_icd_code(content: str, disease_name: str) -> str:
-    """优先取与疾病名匹配小节内的编码，避免返回文档里的第一条编码。"""
+def extract_icd_details(
+    content: str, disease_name: str
+) -> Optional[Dict[str, str]]:
+    """提取与疾病名匹配小节内的编码与分类。
+
+    找不到匹配小节时返回 None（单疾病文档没有「疾病名称」小节时才
+    退回全文第一条编码），避免把文档里其他疾病的编码返回给用户。
+    """
     target = str(disease_name or "").strip()
-    if target:
+    if target and "疾病名称" in content:
         sections = content.split("疾病名称")
         for section in sections[1:]:
             name_match = re.match(r"\s*[：:]\s*([^\n]+)", section)
             name = name_match.group(1).strip() if name_match else ""
             if name and (target in name or name in target):
                 code_match = _ICD_PATTERN.search(section)
-                if code_match:
-                    return code_match.group(1)
-    fallback = _ICD_PATTERN.search(content)
-    return fallback.group(1) if fallback else ""
+                category_match = _CATEGORY_PATTERN.search(section)
+                return {
+                    "icd10_code": code_match.group(1) if code_match else "",
+                    "category": (
+                        category_match.group(1).strip()
+                        if category_match else ""
+                    ),
+                }
+        return None
+
+    code_match = _ICD_PATTERN.search(content)
+    if code_match is None:
+        return None
+    category_match = _CATEGORY_PATTERN.search(content)
+    return {
+        "icd10_code": code_match.group(1),
+        "category": (
+            category_match.group(1).strip() if category_match else ""
+        ),
+    }
 
 
 def format_code_info(disease_name: str, content: str) -> str:
