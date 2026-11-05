@@ -9696,6 +9696,9 @@ async function exportTimelineCsv() {
   if (els.timelineOnlyAlert && els.timelineOnlyAlert.checked) {
     params.set('only_alert', 'true');
   }
+  if (els.timelineRiskOnly && els.timelineRiskOnly.checked) {
+    params.set('only_risk', 'true');
+  }
   const query = els.timelineSearch
     ? els.timelineSearch.value.trim()
     : '';

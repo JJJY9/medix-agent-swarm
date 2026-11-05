@@ -2417,6 +2417,7 @@ async def health_timeline(
     date: Optional[str] = None,
     type: Optional[str] = None,
     only_alert: bool = False,
+    only_risk: bool = False,
     q: str = "",
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
@@ -2586,6 +2587,12 @@ async def health_timeline(
         events = [event for event in events if event.get("type") == type]
     if only_alert:
         events = [event for event in events if event.get("alert")]
+    if only_risk:
+        events = [
+            event for event in events
+            if event.get("type") == "consultation"
+            and event.get("risk") in ("high", "emergency")
+        ]
     query = str(q or "").strip().lower()
     if query:
         events = [
@@ -2610,16 +2617,17 @@ async def export_timeline_csv(
     days: int = 30,
     type: Optional[str] = None,
     only_alert: bool = False,
+    only_risk: bool = False,
     q: str = "",
     date: Optional[str] = None,
 ):
-    """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、超标与关键字筛选。"""
+    """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、超标、高危会诊与关键字筛选。"""
     import csv
     import io
 
     data = await health_timeline(
         profile=profile, days=days, limit=2000, date=date,
-        type=type, only_alert=only_alert, q=q,
+        type=type, only_alert=only_alert, only_risk=only_risk, q=q,
     )
     type_labels = {
         "metric": "指标",

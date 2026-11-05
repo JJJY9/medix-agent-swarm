@@ -394,3 +394,29 @@ def test_timeline_export_filters_before_limit(client_and_store):
     assert len(rows) == 2
     assert rows[1][1] == "会诊"
     assert rows[1][2] == "旧会诊"
+
+
+def test_timeline_filters_high_risk_consultations(client_and_store):
+    client, store = client_and_store
+
+    store.save_exchange("r-low", "头晕", "风险等级：低危。")
+    store.save_exchange("r-high", "胸痛", "风险等级：高危。")
+    store.save_exchange(
+        "r-emg", "剧烈胸痛", "风险等级：**紧急**，立即就医。"
+    )
+
+    data = client.get(
+        "/api/timeline", params={"only_risk": "true"}
+    ).json()
+    assert {event["id"] for event in data["events"]} == {
+        "r-high", "r-emg",
+    }
+
+    export = client.get(
+        "/api/timeline/export.csv", params={"only_risk": "true"}
+    )
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+    assert len(rows) == 3
+    assert {row[2] for row in rows[1:]} == {"胸痛", "剧烈胸痛"}
