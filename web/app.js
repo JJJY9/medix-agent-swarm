@@ -10186,11 +10186,17 @@ async function exportMetricsCsv() {
 
   const profile = els.metricProfile.value;
   const metric = els.metricType.value;
+  const days = metricRangeDays();
+  const query = els.metricSearch
+    ? String(els.metricSearch.value || '').trim()
+    : '';
 
   try {
     const res = await fetch(
       `/api/metrics/export.csv?profile=${encodeURIComponent(profile)}`
       + `&metric=${encodeURIComponent(metric)}`
+      + (days > 0 ? `&days=${days}` : '')
+      + (query ? `&q=${encodeURIComponent(query)}` : '')
     );
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

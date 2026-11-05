@@ -2817,6 +2817,8 @@ async def delete_metric(metric_id: int):
 async def export_metrics_csv(
     profile: Optional[str] = None,
     metric: Optional[str] = None,
+    days: int = 0,
+    q: str = "",
 ):
     """导出健康指标 CSV（带 BOM，Excel 可直接打开）。"""
     import csv
@@ -2830,8 +2832,10 @@ async def export_metrics_csv(
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
+    days = max(0, min(int(days or 0), 3650))
     items = await asyncio.to_thread(
-        get_session_store().list_metrics, profile, metric, 100000
+        get_session_store().list_metrics,
+        profile, metric, 100000, days, 0, q,
     )
     labels = {
         "bp": "血压",

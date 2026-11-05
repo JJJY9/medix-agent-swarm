@@ -215,6 +215,26 @@ def test_metrics_csv_export(client):
     assert "62.5" not in text
     assert invalid.status_code == 400
 
+    client.post(
+        "/api/metrics",
+        json={
+            "profile": "妈妈", "metric": "bp",
+            "value1": 120, "value2": 80,
+            "measured_at": "2026-11-04T20:00", "note": "睡前",
+        },
+    )
+    tagged = client.get(
+        "/api/metrics/export.csv", params={"metric": "bp", "q": "晨起"}
+    )
+    tagged_text = tagged.content.decode("utf-8-sig")
+    assert "138" in tagged_text and "120" not in tagged_text
+
+    recent = client.get(
+        "/api/metrics/export.csv", params={"metric": "bp", "days": 7}
+    )
+    recent_text = recent.content.decode("utf-8-sig")
+    assert "120" in recent_text and "138" not in recent_text
+
 
 def test_import_api_accepts_metrics_only(client):
     response = client.post(
