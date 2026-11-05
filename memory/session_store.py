@@ -2870,13 +2870,24 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
 
-    def latest_metrics(self, profile: Optional[str] = None) -> List[Dict[str, Any]]:
-        """返回每种指标类型最新的一条记录（可按档案筛选）。"""
+    def latest_metrics(
+        self, profile: Optional[str] = None, days: int = 0
+    ) -> List[Dict[str, Any]]:
+        """返回每种指标类型最新的一条记录（可按档案与最近天数筛选）。"""
         conditions: List[str] = []
         params: List[Any] = []
         if profile is not None:
             conditions.append("profile = ?")
             params.append(_normalize_profile_name(profile))
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("measured_at >= ?")
+            params.append(cutoff)
+        end_of_today = datetime.now().replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds")
+        conditions.append("measured_at <= ?")
+        params.append(end_of_today)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = f"""
             WITH ranked AS (

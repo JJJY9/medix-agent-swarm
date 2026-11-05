@@ -583,3 +583,36 @@ def test_metrics_days_use_calendar_day_window(client):
         params={"metric": "weight", "days": 7},
     ).json()
     assert summary["count"] == 1
+
+
+def test_latest_metrics_days_and_future_bound(client):
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    recent = (now - timedelta(days=1)).isoformat(timespec="minutes")
+    old = (now - timedelta(days=20)).isoformat(timespec="minutes")
+
+    for value, measured_at in (
+        (61, recent), (60, old), (99, "2099-01-01T08:00"),
+    ):
+        client.post(
+            "/api/metrics",
+            json={
+                "metric": "weight",
+                "value1": value,
+                "measured_at": measured_at,
+            },
+        )
+
+    all_latest = client.get("/api/metrics/latest").json()["metrics"]
+    assert [item["value1"] for item in all_latest] == [61]
+
+    week = client.get(
+        "/api/metrics/latest", params={"days": 7}
+    ).json()["metrics"]
+    assert [item["value1"] for item in week] == [61]
+
+    today = client.get(
+        "/api/metrics/latest", params={"days": 1}
+    ).json()["metrics"]
+    assert today == []
