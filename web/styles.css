@@ -3462,6 +3462,26 @@ html[data-theme="dark"] .reminders-due-hint {
   border-color: transparent;
 }
 
+.timeline-badge-consultation {
+  color: var(--ink);
+  background: #eef2f8;
+  border-color: transparent;
+}
+
+.timeline-item-link {
+  cursor: pointer;
+}
+
+.timeline-item-link:hover .metric-value,
+.timeline-item-link:focus-visible .metric-value {
+  text-decoration: underline;
+}
+
+.timeline-item-link:focus-visible {
+  outline: 2px solid var(--clinic);
+  outline-offset: 2px;
+}
+
 html[data-theme="dark"] .timeline-badge-symptom {
   color: #f2c66d;
   background: #3a2f14;
