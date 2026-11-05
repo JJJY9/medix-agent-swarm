@@ -9144,10 +9144,22 @@ async function loadTimeline() {
 async function exportTimelineCsv() {
   const profile = els.metricProfile.value;
   const days = Number(els.timelineRange.value) || 30;
+  const params = new URLSearchParams({
+    profile, days: String(days),
+  });
+  if (els.timelineType && els.timelineType.value) {
+    params.set('type', els.timelineType.value);
+  }
+  if (els.timelineOnlyAlert && els.timelineOnlyAlert.checked) {
+    params.set('only_alert', 'true');
+  }
+  const query = els.timelineSearch
+    ? els.timelineSearch.value.trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
-      `/api/timeline/export.csv?profile=${encodeURIComponent(profile)}`
-      + `&days=${days}`
+      `/api/timeline/export.csv?${params.toString()}`
     );
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
