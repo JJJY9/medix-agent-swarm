@@ -664,11 +664,33 @@ _BACKUP_CHECKSUM_FIELDS = (
 )
 
 
+def _canonical_json_value(value: Any) -> Any:
+    """把 JSON 数值规范化为与语言无关的表示。
+
+    浏览器 ``JSON.stringify(70.0)`` 会输出 ``70``，而 Python 导出的是
+    ``70.0``；校验和必须先消除这种差异。
+    """
+    if isinstance(value, float):
+        if not isinstance(sanitize_json(value), float):
+            return None
+        if value.is_integer():
+            return int(value)
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_canonical_json_value(item) for item in value]
+    return value
+
+
 def _backup_checksum(payload: Dict[str, Any]) -> str:
     """计算备份内容的 SHA-256；只覆盖可往返的业务字段。"""
     body = {key: payload.get(key) for key in _BACKUP_CHECKSUM_FIELDS}
     canonical = json.dumps(
-        sanitize_json(body),
+        _canonical_json_value(body),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

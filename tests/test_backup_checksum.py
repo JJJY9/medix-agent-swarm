@@ -81,3 +81,30 @@ def test_api_rejects_tampered_backup(tmp_path, monkeypatch):
         assert ok.status_code == 200
     finally:
         store.close()
+
+
+def _as_browser_json(value):
+    """模拟浏览器 JSON.stringify：整数值的 float 会变成 int。"""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {key: _as_browser_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_as_browser_json(item) for item in value]
+    return value
+
+
+def test_checksum_survives_browser_number_normalization(store, tmp_path):
+    store.save_exchange("s1", "问题", "答复")
+    store.add_metric("", "weight", 70)
+    data = store.export_data()
+    browser_data = _as_browser_json(data)
+
+    target = SessionStore(str(tmp_path / "browser-target.db"))
+    try:
+        result = target.import_data(browser_data)
+
+        assert result["imported"] == 1
+        assert result["metrics"] == 1
+    finally:
+        target.close()
