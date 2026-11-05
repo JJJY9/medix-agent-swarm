@@ -84,8 +84,10 @@ def calculate_egfr(
     if female:
         egfr *= 1.012
 
+    raw_egfr = egfr
     egfr = round(egfr, 1)
-    stage = _ckd_stage(egfr)
+    # 分期按未四舍五入的值判断，避免 29.99 被显示成 30.0 后误分为 G3b
+    stage = _ckd_stage(raw_egfr)
     return {
         "egfr": egfr,
         "stage": stage["stage"],
@@ -381,7 +383,11 @@ def calculate_audit_c(
         values.append(value)
 
     sex = str(sex or "").strip().lower()
-    if sex not in ("", "male", "female"):
+    if sex in ("female", "f", "女", "女性"):
+        sex = "female"
+    elif sex in ("male", "m", "男", "男性"):
+        sex = "male"
+    elif sex != "":
         raise ValueError("性别参数必须是 male 或 female。")
 
     score = sum(values)
