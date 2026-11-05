@@ -2153,10 +2153,6 @@ class SessionStore:
             messages = raw.get("messages")
             if not isinstance(messages, list):
                 continue
-            if len(messages) > MAX_BACKUP_SESSION_MESSAGES:
-                raise ValueError(
-                    f"单个会话最多导入 {MAX_BACKUP_SESSION_MESSAGES} 条消息。"
-                )
             for message in messages:
                 if not isinstance(message, dict):
                     continue

@@ -65,6 +65,7 @@ def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):
     assert "scheduleAbortReconcile" in app_js
     assert "baselineMessageId" in app_js
     assert "lastServerMessageId" in app_js
+    assert "const hasIds" in app_js
     assert "已停止接收本次会诊" in app_js
     assert "会诊进行中，暂不能批量删除会话" in app_js
 

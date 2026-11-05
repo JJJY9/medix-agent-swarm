@@ -493,10 +493,13 @@ def _find_drugs(text: str, group: str) -> List[str]:
 
 #: 只从「对X过敏」「X过敏史」这类明确句式提取过敏原
 _ALLERGY_STATEMENT_PATTERNS = (
-    # 标签式过敏记录：过敏原：X / 过敏药物：X / 我过敏的药是X
+    # 标签式过敏记录：过敏原：X / 过敏药物：X / 我过敏的药是X。
+    # 必须带冒号或「是/为」，避免把「过敏原检测」「抗过敏药物」当成过敏史
     re.compile(
-        r"(?:过敏原|过敏药物|过敏的药(?:物)?)\s*[：:是为]?\s*"
-        r"([^\n，。；]{1,30})"
+        r"(?<!抗)(?:我的|我|本人|患者)?\s*"
+        r"(?:过敏原|过敏药物|过敏的药(?:物)?)\s*"
+        r"(?:[：:]|[是为])\s*"
+        r"([^\s，。；、,.!?！？：:]{1,20})"
     ),
     re.compile(r"对[^，。；,.!?！？]{1,20}?过敏"),
     re.compile(r"[^，。；,.!?！？]{1,20}?过敏史"),
@@ -507,6 +510,9 @@ _ALLERGY_STATEMENT_PATTERNS = (
         r"([^，。；,.!?！？\n]{1,20}?)\s*过敏(?!史|的药|的药物)"
     ),
 )
+
+#: 检测结果不是过敏原（「阿莫西林阴性」）；阳性仍按过敏处理
+_ALLERGY_RESULT_WORDS = ("阴性", "待查", "正常", "未查")
 
 #: 句式前出现否定词时跳过（「我没有阿司匹林过敏」）
 _ALLERGY_NEGATION_PATTERN = re.compile(
@@ -527,6 +533,8 @@ def _allergy_mentions_in_question(question: str) -> str:
                 continue
             captured = match.group(1) if match.groups() else match.group(0)
             if any(word in captured for word in _ALLERGY_NEGATION_WORDS):
+                continue
+            if any(word in captured for word in _ALLERGY_RESULT_WORDS):
                 continue
             parts.append(match.group(0))
     return " ".join(parts)

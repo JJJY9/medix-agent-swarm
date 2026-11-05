@@ -110,6 +110,47 @@ class StaleRedis:
         raise RuntimeError("redis delete failed")
 
 
+class StaleRedisSetex(StaleRedis):
+    def setex(self, key, ttl, value):
+        raise RuntimeError("redis setex failed")
+
+
+def test_cleared_session_does_not_resurrect_when_redis_write_fails():
+    from memory.short_term import ConversationHistory
+
+    old = ConversationHistory(session_id="redis-write-failure")
+    old.add_message("user", "SECRET_DELETED_QUESTION")
+    old.add_message("assistant", "SECRET_DELETED_ANSWER")
+    stale = StaleRedisSetex(json.dumps(old.to_dict()))
+
+    memory = ShortTermMemory(storage_type="memory")
+    memory.storage_type = "redis"
+    memory.redis_client = stale
+    session_id = "redis-write-failure"
+    memory.sessions.pop(session_id, None)
+    memory._cleared_sessions.discard(session_id)
+    try:
+        assert memory.clear_session(session_id) is False
+        assert memory.get_session(session_id) is None
+
+        memory.add_message(session_id, "user", "NEW_QUESTION")
+
+        history = memory.get_session(session_id)
+        assert history is not None
+        assert [item["content"] for item in history.messages] == [
+            "NEW_QUESTION"
+        ]
+        recent = memory.get_recent_messages(session_id, limit=10)
+        assert all(
+            "SECRET_DELETED" not in item["content"] for item in recent
+        )
+    finally:
+        memory.storage_type = "memory"
+        memory.redis_client = None
+        memory.sessions.pop(session_id, None)
+        memory._cleared_sessions.discard(session_id)
+
+
 def test_cleared_session_does_not_merge_stale_redis_history():
     from memory.short_term import ConversationHistory
 

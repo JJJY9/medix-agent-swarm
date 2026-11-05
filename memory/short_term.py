@@ -231,9 +231,11 @@ class ShortTermMemory:
         if self.storage_type == "redis" and self.redis_client:
             if session_id in self._cleared_sessions:
                 # 删除墓碑存在时，Redis 中可能仍有删除失败留下的旧会话；
-                # 新消息应开启全新历史，不能把旧内容合并回来
-                history = ConversationHistory(session_id=session_id)
-                self._cleared_sessions.discard(session_id)
+                # 新消息应基于清理后的本地副本开启全新历史，不能合并旧内容。
+                # 墓碑要等 Redis 写回成功后再解除，避免写失败时旧会话重新可见
+                history = local_history or ConversationHistory(
+                    session_id=session_id
+                )
             else:
                 try:
                     # 「不存在」返回 None；读取失败则抛错——不能用空历史
@@ -298,7 +300,16 @@ class ShortTermMemory:
             ConversationHistory 对象，如果不存在返回 None
         """
         if session_id in self._cleared_sessions:
-            return None
+            # 墓碑期间忽略 Redis 中的旧值，但清理后新写入的本地副本仍可读
+            local = self.sessions.get(session_id)
+            fallback_at = self._local_fallback_at.get(session_id)
+            if local is None or fallback_at is None:
+                return None
+            if (datetime.now() - fallback_at).total_seconds() > 3600:
+                self.sessions.pop(session_id, None)
+                self._local_fallback_at.pop(session_id, None)
+                return None
+            return local
         if self.storage_type == "memory":
             return self.sessions.get(session_id)
         elif self.storage_type == "redis" and self.redis_client:

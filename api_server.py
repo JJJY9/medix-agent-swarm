@@ -4535,7 +4535,9 @@ async def export_reminders_ics(
         if not text:
             return None
         try:
-            parsed = datetime.fromisoformat(text[:19])
+            # 与 complete_reminder_with_repeat 一致：解析完整值并转成本地
+            # naive 时间；截断到 19 位会丢掉 Z/时区偏移
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
             if parsed.tzinfo is not None:
                 parsed = parsed.astimezone().replace(tzinfo=None)
             if len(text) == 10:
