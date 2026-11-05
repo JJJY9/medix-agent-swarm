@@ -110,3 +110,17 @@ def test_web_search_runs_backend_in_thread(monkeypatch):
 
     assert FakeDDGS.in_thread is True
     assert results and results[0].title == "标题"
+
+
+def test_parse_response_clamps_confidence():
+    synthesizer = EvidenceSynthesizer.__new__(EvidenceSynthesizer)
+
+    too_high = synthesizer._parse_response(
+        "问题", "【置信度】\n1.5\n【综合总结】\n无", [], []
+    )
+    normal = synthesizer._parse_response(
+        "问题", "【置信度】\n0.2\n【综合总结】\n无", [], []
+    )
+
+    assert too_high.confidence == 1.0
+    assert normal.confidence == 0.2
