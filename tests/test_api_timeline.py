@@ -117,9 +117,50 @@ def test_timeline_csv_export(client_and_store):
     rows = list(csv.reader(io.StringIO(text)))
 
     assert export.status_code == 200
-    assert rows[0] == ["时间", "类型", "项目", "数值", "患者档案", "备注"]
+    assert rows[0] == [
+        "时间", "类型", "项目", "数值", "患者档案", "备注", "超标",
+    ]
     assert {row[1] for row in rows[1:]} == {"指标", "症状"}
     assert any(row[2].startswith("'=SUM") for row in rows[1:])
+    assert all(row[6] == "" for row in rows[1:])
+
+
+def test_timeline_marks_over_target_metrics(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    high = (now - timedelta(minutes=2)).isoformat(timespec="minutes")
+    normal = (now - timedelta(minutes=1)).isoformat(timespec="minutes")
+
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "bp", "value1": 135, "value2": 85,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 140, "value2": 95, "measured_at": high,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 120, "value2": 80, "measured_at": normal,
+    })
+
+    events = client.get(
+        "/api/timeline", params={"profile": "妈妈"}
+    ).json()["events"]
+
+    assert events[0]["value"] == "120/80 mmHg"
+    assert events[0]["alert"] is False
+    assert events[1]["value"] == "140/95 mmHg"
+    assert events[1]["alert"] is True
+
+    exported = client.get(
+        "/api/timeline/export.csv", params={"profile": "妈妈"}
+    )
+    rows = list(
+        csv.reader(io.StringIO(exported.content.decode("utf-8-sig")))
+    )
+    alert_rows = [row for row in rows[1:] if row[6]]
+    assert len(alert_rows) == 1
+    assert alert_rows[0][3] == "140/95 mmHg"
 
 
 def test_timeline_includes_consultations(client_and_store):
