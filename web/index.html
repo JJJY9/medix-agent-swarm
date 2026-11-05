@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>MediX · 多智能体医疗助手</title>
 <link rel="manifest" href="/static/manifest.webmanifest">
 <meta name="theme-color" content="#0b6e9e">
@@ -70,21 +70,22 @@
         <svg viewBox="0 0 1200 44" preserveAspectRatio="none"><path d=""/></svg>
       </div>
     </div>
-    <p class="vitals-state">
+    <p class="vitals-state" role="status" aria-live="polite" aria-atomic="true">
       <span class="vitals-dot" aria-hidden="true"></span>
       <span class="vitals-text" id="vitals-text">连接中</span>
     </p>
   </div>
 
-  <div class="banner" id="config-banner" hidden></div>
+  <div class="banner" id="config-banner" role="status" aria-live="polite" aria-atomic="true" hidden></div>
 
   <main class="workspace">
 
     <div class="thread-col">
-      <div class="thread" id="thread" role="log" aria-live="polite" aria-label="问诊记录">
+      <h1 class="sr-only">MediX 多智能体医疗助手问诊记录</h1>
+      <div class="thread" id="thread" role="log" aria-live="polite" aria-label="问诊记录" tabindex="0">
 
         <div class="empty" id="empty-state">
-          <h1>描述您的症状，由多学科会诊给出综合意见</h1>
+          <h2>描述您的症状，由多学科会诊给出综合意见</h2>
           <p class="empty-lede">
             系统先做分诊：简单问题由单个科室接诊，复杂问题转多学科会诊，由三个科室分别出具意见后汇总结论。
           </p>
@@ -494,7 +495,7 @@
         </div>
       </div>
       <p class="kb-preview-meta" id="kb-preview-meta"></p>
-      <pre class="kb-preview-body" id="kb-preview-body"></pre>
+      <pre class="kb-preview-body" id="kb-preview-body" tabindex="0" aria-label="文档预览，可滚动查看"></pre>
       <textarea
         class="kb-preview-editor"
         id="kb-preview-editor"
@@ -1500,9 +1501,11 @@
       type="password"
       placeholder="访问令牌"
       autocomplete="off"
+      aria-describedby="auth-error"
+      aria-invalid="false"
       required
     />
-    <p class="auth-error" id="auth-error" hidden></p>
+    <p class="auth-error" id="auth-error" role="alert" aria-live="assertive" hidden></p>
     <button type="submit" class="send auth-submit">进入</button>
   </form>
 </div>

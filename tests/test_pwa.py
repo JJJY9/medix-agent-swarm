@@ -67,6 +67,22 @@ def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):
     assert "会诊进行中，暂不能批量删除会话" in app_js
 
 
+def test_shell_accessibility_regions_and_focusable_scrollable_areas(client):
+    index = client.get("/").text
+    app_js = client.get("/static/app.js").text
+    styles = client.get("/static/styles.css").text
+
+    assert 'role="status" aria-live="polite"' in index
+    assert 'tabindex="0"' in index
+    assert "viewport-fit=cover" in index
+    assert "isWindowNearBottom" in app_js
+    assert "aria-invalid" in app_js
+    assert "contribution-body" in app_js
+    assert 'html[data-theme="dark"] .bp-grade-ok' in styles
+    assert 'html[data-theme="dark"] .timeline-badge-consultation' in styles
+    assert ".jump-latest[hidden]" in styles
+
+
 def test_pwa_icons_are_png(client):
     for name in ("icon-192.png", "icon-512.png"):
         response = client.get(f"/static/icons/{name}")

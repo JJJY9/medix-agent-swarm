@@ -380,7 +380,7 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
 
 .empty { max-width: 62ch; padding: 10px 0 16px; }
 
-.empty h1 {
+.empty h2 {
   font-family: var(--serif);
   font-size: 22px;
   font-weight: 600;
@@ -854,7 +854,7 @@ html[data-theme="dark"] .family-chip-alert {
 .note-time {
   font-family: var(--mono);
   font-size: 11.5px;
-  color: var(--ink-soft);
+  color: #4a6270;
 }
 
 .note-body { padding: 4px 18px 16px; }
@@ -1008,10 +1008,10 @@ html[data-theme="dark"] .family-chip-alert {
   background: currentColor;
   flex: none;
 }
-.risk[data-level="low"] { color: var(--triage-4); background: #eff8f2; }
+.risk[data-level="low"] { color: #1d6b3c; background: #eff8f2; }
 .risk[data-level="medium"] { color: var(--triage-3); background: #fdf8e8; }
 .risk[data-level="high"] { color: var(--triage-2); background: #fdf2e9; }
-.risk[data-level="emergency"] { color: var(--triage-1); background: #fdf0ef; }
+.risk[data-level="emergency"] { color: #b91c1c; background: #fdf0ef; }
 
 /* 诊疗建议 */
 .advice {
@@ -2674,7 +2674,7 @@ html[data-theme="dark"] .history-risk-alert {
   border-radius: var(--radius);
 }
 .diag-summary.ok {
-  color: var(--triage-4);
+  color: #1d6b3c;
   background: #eff8f2;
   border-color: #cfe8da;
 }
@@ -3055,10 +3055,10 @@ html[data-theme="dark"] .metric-over-target {
 .bp-grade-danger { color: #b91c1c; background: #fee2e2; }
 .bp-grade-low { color: #1d4ed8; background: #dbeafe; }
 
-html[data-theme="dark"] .bp-grade-ok { background: #12302b; }
-html[data-theme="dark"] .bp-grade-warn { background: #33290f; }
-html[data-theme="dark"] .bp-grade-danger { background: #331f1d; }
-html[data-theme="dark"] .bp-grade-low { background: #17263f; }
+html[data-theme="dark"] .bp-grade-ok { color: #5fd695; background: #12302b; }
+html[data-theme="dark"] .bp-grade-warn { color: #ffa45c; background: #33290f; }
+html[data-theme="dark"] .bp-grade-danger { color: #ff8078; background: #331f1d; }
+html[data-theme="dark"] .bp-grade-low { color: #7bb9e8; background: #17263f; }
 
 .metrics-actions {
   display: flex;
@@ -3676,7 +3676,7 @@ html[data-theme="dark"] .reminders-due-hint {
 }
 
 .timeline-badge-medication {
-  color: var(--triage-1);
+  color: #b91c1c;
   background: #fdf0ef;
   border-color: transparent;
 }
@@ -3707,7 +3707,18 @@ html[data-theme="dark"] .timeline-badge-symptom {
 }
 
 html[data-theme="dark"] .timeline-badge-medication {
+  color: var(--triage-1);
   background: #331f1d;
+}
+
+html[data-theme="dark"] .timeline-badge-consultation {
+  color: var(--ink);
+  background: #1c2b33;
+}
+
+html[data-theme="dark"] .calendar-badge-alert {
+  color: var(--triage-1);
+  background: #331a19;
 }
 
 .timeline-date-chip {
@@ -3847,7 +3858,7 @@ html[data-theme="dark"] .timeline-badge-medication {
 }
 
 .calendar-badge-alert {
-  color: var(--triage-1);
+  color: #b91c1c;
   background: #fdf0ef;
   border-color: transparent;
 }
@@ -4288,6 +4299,7 @@ html[data-theme="dark"] .kb-status.error {
 }
 html[data-theme="dark"] .kb-item-delete:hover:not(:disabled) { background: #331f1d; }
 html[data-theme="dark"] .diag-summary.ok {
+  color: var(--triage-4);
   background: #123024;
   border-color: #1e4a35;
 }
@@ -4301,10 +4313,16 @@ html[data-theme="dark"] .diag-status.error {
   border-color: #5a3430;
 }
 
-html[data-theme="dark"] .risk[data-level="low"] { background: #123024; }
+html[data-theme="dark"] .risk[data-level="low"] {
+  color: var(--triage-4);
+  background: #123024;
+}
 html[data-theme="dark"] .risk[data-level="medium"] { background: #322a12; }
 html[data-theme="dark"] .risk[data-level="high"] { background: #332019; }
-html[data-theme="dark"] .risk[data-level="emergency"] { background: #331a19; }
+html[data-theme="dark"] .risk[data-level="emergency"] {
+  color: var(--triage-1);
+  background: #331a19;
+}
 
 html[data-theme="dark"] .failure {
   color: #f0b3a8;
@@ -4552,12 +4570,22 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .thread-col { min-height: auto; overflow: visible; }
   .thread { overflow: visible; padding: 20px 18px 4px; }
 
-  .jump-latest { display: none; }
+  .jump-latest {
+    display: inline-flex;
+    position: sticky;
+    left: auto;
+    bottom: 12px;
+    transform: none;
+    margin: -36px auto 8px;
+  }
+
+  .jump-latest[hidden] { display: none; }
 
   .composer {
     position: sticky;
     bottom: 0;
     z-index: 2;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
   }
 
   .footnote { padding-top: 14px; }
@@ -4571,7 +4599,7 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .topbar-actions { gap: 6px; }
   .btn-quiet { font-size: 12.5px; padding: 6px 10px; }
   .ask { max-width: 92%; }
-  .empty h1 { font-size: 21px; }
+  .empty h2 { font-size: 21px; }
   .vitals { gap: 12px; }
   .vitals-state { font-size: 12px; }
   .note-body { padding: 4px 14px 14px; }
@@ -4592,7 +4620,10 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
   .topbar-actions { gap: 4px; }
   .btn-quiet { font-size: 12px; padding: 6px 8px; }
   .btn-icon { width: 28px; height: 28px; }
-  .composer { padding: 12px; gap: 8px; }
+  .composer {
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+    gap: 8px;
+  }
   .send { padding: 9px 12px; }
   .send-icon { display: none; }
 }
