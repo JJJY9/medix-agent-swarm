@@ -3,6 +3,7 @@ Clinical Guideline Skill
 临床指南检索 Skill（自包含，无需依赖tools）
 """
 from typing import Dict, Any
+import asyncio
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -34,11 +35,17 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
     """
     logger.info(f"Searching clinical guidelines for: {query} (max_results={max_results})")
 
+    try:
+        max_results = int(max_results)
+    except (TypeError, ValueError):
+        max_results = 1
+    max_results = max(1, min(max_results, 10))
+
     # 使用知识库单例
-    kb = get_knowledge_base()
+    kb = await asyncio.to_thread(get_knowledge_base)
 
     # 使用 Milvus 检索临床指南
-    results = kb.search(
+    results = await asyncio.to_thread(kb.search,
         query=f"{query} 临床指南 诊疗规范",
         top_k=max_results,  # 使用传入的 max_results 参数
         filter_type="clinical_guideline"
@@ -47,14 +54,20 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
     if results and results[0]["score"] > 0.1:
         doc = results[0]
         metadata = doc["metadata"]
+        # max_results 是调用方要求的条数，全部格式化而不是只返回第一条
+        answer_parts = [
+            format_guideline(item["content"], item["metadata"])
+            for item in results[:max_results]
+            if isinstance(item, dict) and item.get("content")
+        ]
 
         return {
-            "answer": format_guideline(doc["content"], metadata),
+            "answer": "\n\n".join(answer_parts),
             "guideline_title": f"{metadata.get('disease', query)}相关临床指南",
             "organization": metadata.get("organization", "N/A"),
             "year": metadata.get("year", "N/A"),
             "source": "向量数据库",
-            "sources": build_sources(results, max_items=1),
+            "sources": build_sources(results, max_items=max_results),
         }
     else:
         # 未找到相关内容

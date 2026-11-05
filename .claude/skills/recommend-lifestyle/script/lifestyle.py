@@ -3,6 +3,7 @@ Recommend Lifestyle Skill
 生活方式建议 Skill（自包含，无需依赖tools）
 """
 from typing import Dict, Any
+import asyncio
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -34,10 +35,10 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
     logger.info(f"Recommending lifestyle for: {diagnosis}")
 
     # 使用知识库单例
-    kb = get_knowledge_base()
+    kb = await asyncio.to_thread(get_knowledge_base)
 
     # 从 Milvus 检索生活方式建议
-    results = kb.search(
+    results = await asyncio.to_thread(kb.search,
         query=f"{diagnosis} 生活方式建议 饮食 运动 用药",
         top_k=1,
         filter_type="lifestyle"

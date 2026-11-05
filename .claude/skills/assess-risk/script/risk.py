@@ -3,6 +3,7 @@ Assess Risk Skill
 风险评估 Skill（依赖 RAG 知识库）
 """
 from typing import Dict, Any, List
+import asyncio
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -35,10 +36,20 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
     """
     logger.info(f"Assessing risk: symptoms={symptoms}")
 
-    # 将症状字符串转换为列表
+    symptoms = str(symptoms or "").strip()
     symptom_list = [s.strip() for s in symptoms.split(",") if s.strip()]
-    if not symptom_list:
-        symptom_list = [symptoms]
+    if not symptoms or not symptom_list:
+        # 缺少症状描述时不能默认判为低危，否则是危险的假阴性
+        return {
+            "answer": "未提供症状描述，无法评估风险。请补充具体症状、持续时间和严重程度。",
+            "risk_level": "unknown",
+            "recommendation": (
+                "请补充症状描述后再评估；如出现胸痛、呼吸困难、意识模糊等"
+                "急症表现，请立即就医或拨打 120。"
+            ),
+            "kb_advice": None,
+            "sources": [],
+        }
 
     # 高风险症状列表
     high_risk_symptoms = [
@@ -79,10 +90,10 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
     kb_advice = None
     sources = []
     try:
-        kb = get_knowledge_base()
+        kb = await asyncio.to_thread(get_knowledge_base)
         # 根据风险等级查询相关医学知识
         risk_query = f"{symptoms} 紧急程度 风险评估 就医建议"
-        results = kb.search(
+        results = await asyncio.to_thread(kb.search,
             query=risk_query,
             top_k=1,
             filter_type=None

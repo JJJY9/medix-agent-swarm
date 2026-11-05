@@ -24,25 +24,30 @@ async def deep_research(query: str, max_iterations: int = 2) -> Dict[str, Any]:
     """
     logger.info(f"Starting deep research: query={query}, max_iterations={max_iterations}")
 
-    # 调用深度研究工作流
-    import sys
-    from pathlib import Path
-    # 确保项目根目录在 sys.path 中
-    project_root = Path(__file__).parent.parent.parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-
-    from research.deep_research_workflow import DeepResearchWorkflow
-
-    workflow = DeepResearchWorkflow()
+    try:
+        iterations = max(1, min(int(max_iterations or 2), 5))
+    except (TypeError, ValueError):
+        iterations = 2
 
     try:
+        # 调用深度研究工作流
+        import sys
+        from pathlib import Path
+        # 仓库根目录：parents[4] 依次为 script/技能/ skills/.claude/仓库根
+        project_root = Path(__file__).resolve().parents[4]
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+
+        from research.deep_research_workflow import DeepResearchWorkflow
+
+        workflow = DeepResearchWorkflow()
+
         # 执行研究
         # 注意：DeepResearchWorkflow.run() 返回的是 ResearchReport 对象，不是 dict
         report = await workflow.run(
             question=query,  # 参数名是 question，不是 query
-            max_web_results=max_iterations * 5,  # 使用 max_iterations 控制搜索结果数
-            max_kb_results=max_iterations * 3
+            max_web_results=iterations * 5,  # 使用 max_iterations 控制搜索结果数
+            max_kb_results=iterations * 3
         )
 
         # report 是 ResearchReport 对象，有以下属性：

@@ -24,6 +24,12 @@ async def search_history(session_id: str, limit: int = 10) -> Dict[str, Any]:
     logger.info(f"Searching conversation history: session={session_id}, limit={limit}")
 
     try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+
+    try:
         # 导入记忆系统
         from memory.short_term import ShortTermMemory
 
