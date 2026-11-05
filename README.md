@@ -318,8 +318,8 @@ npm install -D playwright
 | GET | `/api/metrics/latest` | 每种指标类型最新的一条记录（可按 `profile`/`days` 筛选，忽略未来时间，用于首页速览、最近指标与会诊上下文） |
 | GET | `/api/metrics/summary` | 指定指标在范围内的条数、平均/最高/最低、最新值、上一周期均值、目标与达标条数（`profile`/`metric`/`days`） |
 | GET | `/api/reports/weekly` | 近 N 天健康小结：指标汇总、症状统计、用药打卡与依从率、会诊次数与风险、待办提醒（`profile`/`days`，1–90） |
-| GET | `/api/timeline` | 健康时间线：指标、症状、用药打卡与会诊按时间倒序合并，指标附带目标超标标记、会诊附带风险等级（`profile`/`days`/`limit`/`date`） |
-| GET | `/api/timeline/export.csv` | 导出健康时间线 CSV（带 BOM，含超标列，可按 `profile`/`days`/`date`/`type`/`only_alert`/`q` 筛选） |
+| GET | `/api/timeline` | 健康时间线：指标、症状、用药打卡与会诊按时间倒序合并，指标附带目标超标标记、会诊附带风险等级（`profile`/`days`/`limit`/`date`/`type`/`only_alert`/`only_risk`/`q`） |
+| GET | `/api/timeline/export.csv` | 导出健康时间线 CSV（带 BOM，含超标列，可按 `profile`/`days`/`date`/`type`/`only_alert`/`only_risk`/`q` 筛选） |
 | GET | `/api/health/calendar` | 健康月历：按天汇总指标、症状、用药打卡、会诊、提醒完成情况与异常数（超标指标/重度症状/高危会诊，`profile`/`month`，格式 YYYY-MM） |
 | GET | `/api/health/calendar/export.csv` | 导出健康月历 CSV（带 BOM，按天列出指标、症状、用药、会诊、提醒与异常，`profile`/`month`） |
 | GET | `/api/health/streak` | 健康记录连续天数：当前连续、最长连续、今日是否记录与近 30 天记录天数（`profile`） |
