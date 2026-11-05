@@ -598,6 +598,57 @@ def test_reminders_csv_preserves_medication_link(client_and_store):
         files={"file": ("reminders.csv", export.content, "text/csv")},
     )
 
+    imported = client.post(
+        "/api/reminders/import",
+        files={"file": ("reminders.csv", export.content, "text/csv")},
+    )
+
     assert imported.status_code == 200
     restored = client.get("/api/reminders").json()["reminders"][0]
     assert restored["medication_id"] == medication["id"]
+
+
+def test_reminders_stats_completion(client_and_store):
+    from datetime import datetime, timedelta
+
+    client, _store = client_and_store
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    five_days = (now - timedelta(days=5)).strftime("%Y-%m-%d")
+    forty_days = (now - timedelta(days=40)).strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "今天复查", "due_at": today,
+    })
+    client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "逾期复查", "due_at": yesterday,
+    })
+    done = client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "已完成", "due_at": five_days,
+    }).json()["reminder"]
+    client.post(f"/api/reminders/{done['id']}/complete")
+    old = client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "很久以前", "due_at": forty_days,
+    }).json()["reminder"]
+    client.post(f"/api/reminders/{old['id']}/complete")
+    client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "明天", "due_at": tomorrow,
+    })
+
+    stats = client.get(
+        "/api/reminders/stats", params={"profile": "妈妈", "days": 30}
+    ).json()
+
+    assert stats["due_total"] == 3
+    assert stats["done_total"] == 1
+    assert stats["pending_total"] == 2
+    assert stats["overdue_total"] == 1
+    assert stats["completion_rate"] == 33
+
+    empty = client.get(
+        "/api/reminders/stats", params={"profile": "孩子", "days": 30}
+    ).json()
+    assert empty["due_total"] == 0
+    assert empty["completion_rate"] is None

@@ -306,6 +306,7 @@ const els = {
   reminderCancel: document.getElementById('reminder-cancel'),
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
+  reminderStats: document.getElementById('reminder-stats'),
   remindersProfile: document.getElementById('reminders-profile'),
   remindersShowDone: document.getElementById('reminders-show-done'),
   remindersOverdueOnly: document.getElementById('reminders-overdue-only'),
@@ -7577,9 +7578,47 @@ async function loadReminders() {
     refreshReminderViews();
     refreshReminderBadge();
     refreshOverview();
+    loadReminderStats();
   } catch (err) {
     if (requestSeq !== remindersRequestSeq) return;
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
+  }
+}
+
+let reminderStatsRequestSeq = 0;
+
+async function loadReminderStats() {
+  if (!els.reminderStats) return;
+  const requestSeq = ++reminderStatsRequestSeq;
+  const profile = els.remindersProfile ? els.remindersProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/reminders/stats?days=30&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== reminderStatsRequestSeq) return;
+    if (!data.due_total) {
+      els.reminderStats.hidden = true;
+      return;
+    }
+    els.reminderStats.hidden = false;
+    els.reminderStats.textContent =
+      `近 30 天到期 ${data.due_total} 条 · 已完成 ${data.done_total} 条`
+      + (
+        data.completion_rate !== null
+          ? `（${data.completion_rate}%）`
+          : ''
+      )
+      + ` · 待办 ${data.pending_total} 条`
+      + (
+        data.overdue_total
+          ? `（逾期 ${data.overdue_total} 条）`
+          : ''
+      );
+  } catch {
+    if (requestSeq !== reminderStatsRequestSeq) return;
+    els.reminderStats.hidden = true;
   }
 }
 

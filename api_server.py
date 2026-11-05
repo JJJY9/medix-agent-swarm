@@ -3621,6 +3621,49 @@ async def list_reminders(
     return {"reminders": reminders}
 
 
+@app.get("/api/reminders/stats")
+async def reminder_stats(profile: Optional[str] = None, days: int = 30):
+    """近 N 天到期提醒的完成情况统计。"""
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 30), 365))
+    now = datetime.now()
+    end = now.strftime("%Y-%m-%d")
+    start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    store = get_session_store()
+    reminders = await asyncio.to_thread(store.list_reminders, True, None)
+    if profile is not None:
+        profile_key = str(profile or "")
+        reminders = [
+            item for item in reminders
+            if (item.get("profile") or "") == profile_key
+        ]
+    due = [
+        item for item in reminders
+        if start <= str(item.get("due_at") or "")[:10] <= end
+    ]
+    done_total = sum(1 for item in due if item.get("done"))
+    pending_total = len(due) - done_total
+    overdue_total = sum(
+        1 for item in due
+        if not item.get("done")
+        and str(item.get("due_at") or "")[:10] < end
+    )
+    completion_rate = (
+        round(done_total / len(due) * 100 + 1e-9) if due else None
+    )
+    return {
+        "days": days,
+        "start": start,
+        "end": end,
+        "due_total": len(due),
+        "done_total": done_total,
+        "pending_total": pending_total,
+        "overdue_total": overdue_total,
+        "completion_rate": completion_rate,
+    }
+
+
 @app.post("/api/reminders")
 async def add_reminder(request: ReminderRequest):
     """新增随访提醒。"""
