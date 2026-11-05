@@ -564,7 +564,6 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
         total = _usage_int(raw_total)
         if (
             not total
-            and raw_total in (None, "", 0, "0")
             and (prompt or completion)
         ):
             total = prompt + completion
@@ -4610,6 +4609,13 @@ class SessionStore:
             ).rowcount
             sessions_deleted = self._conn.execute(
                 f"DELETE FROM sessions WHERE {condition}", (cutoff,)
+            ).rowcount
+            # 同时清理历史遗留的孤儿消息（其会话行早已不存在）
+            messages_deleted += self._conn.execute(
+                """
+                DELETE FROM messages
+                 WHERE session_id NOT IN (SELECT id FROM sessions)
+                """
             ).rowcount
         return {
             "sessions": int(sessions_deleted),

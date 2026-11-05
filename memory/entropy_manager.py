@@ -216,10 +216,14 @@ class MemoryEntropyManager:
         # 不能被「摘要 + 最近 N 条」两边都漏掉
         keep = max(0, max_messages - 1)
         start = len(messages) - keep if keep else len(messages)
-        # 最近窗口必须从用户消息开始，否则模型会收到一条
-        # 没有对应提问的 assistant 回答
-        while start < len(messages) and messages[start].get("role") != "user":
-            start += 1
+        # 最近窗口优先从用户消息开始，避免模型收到没有对应提问的回答；
+        # 若尾部没有用户消息（连续工具结果），仍保留最近 keep 条，
+        # 不能把整个窗口推进到末尾只剩一条摘要
+        boundary = start
+        while boundary < len(messages) and messages[boundary].get("role") != "user":
+            boundary += 1
+        if boundary < len(messages):
+            start = boundary
         recent = messages[start:] if start < len(messages) else []
         older = messages[:start]
         compressed = self._compress_older_messages(older)

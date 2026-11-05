@@ -22,9 +22,9 @@ def _read_price(name: str) -> Optional[float]:
         value = float(raw)
     except (TypeError, ValueError, OverflowError):
         return None
-    if not math.isfinite(value):
+    if not math.isfinite(value) or value < 0:
         return None
-    return max(0.0, value)
+    return value
 
 
 def get_pricing() -> Optional[Dict[str, Any]]:

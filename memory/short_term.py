@@ -312,19 +312,23 @@ class ShortTermMemory:
             and msg.get("content")
         ]
 
-        # 摘要之后的第一条历史应从用户消息开始；否则模型会看到
-        # 一条没有对应提问的 assistant 回答
+        # 摘要之后的第一条历史应从用户消息开始；如果窗口里根本没有
+        # 用户消息（尾部是连续工具/助手消息），保留这些回答而不是清空
         if openai_messages and openai_messages[0]["role"] == "system":
             prefix = openai_messages[:1]
             start = 1
         else:
             prefix = []
             start = 0
-        while (
-            start < len(openai_messages)
-            and openai_messages[start]["role"] == "assistant"
-        ):
-            start += 1
+        first_user = next(
+            (
+                index for index in range(start, len(openai_messages))
+                if openai_messages[index]["role"] == "user"
+            ),
+            None,
+        )
+        if first_user is not None:
+            start = first_user
         openai_messages = prefix + openai_messages[start:]
 
         return openai_messages

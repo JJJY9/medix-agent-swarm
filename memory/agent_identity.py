@@ -18,6 +18,10 @@ import re
 import threading
 
 
+#: 所有 AgentIdentityManager 实例共享的读改写锁
+_IDENTITY_LOCK = threading.RLock()
+
+
 @dataclass
 class CollaborationRecord:
     """协作记录"""
@@ -244,7 +248,7 @@ class AgentIdentityManager:
     def __init__(self, base_dir: str = "memory/agents"):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = _IDENTITY_LOCK
 
     def _get_identity_path(self, agent_id: str) -> Path:
         """获取 Agent 的 IDENTITY.md 文件路径（拒绝路径分隔符与 ..）。"""
@@ -254,6 +258,7 @@ class AgentIdentityManager:
             or normalized in {".", ".."}
             or "/" in normalized
             or "\\" in normalized
+            or ":" in normalized
             or Path(normalized).is_absolute()
         ):
             raise ValueError(f"非法 agent_id: {agent_id!r}")
@@ -263,27 +268,33 @@ class AgentIdentityManager:
 
     def load_identity(self, agent_id: str) -> Optional[AgentIdentity]:
         """加载 Agent 身份"""
-        identity_path = self._get_identity_path(agent_id)
+        with self._lock:
+            identity_path = self._get_identity_path(agent_id)
 
-        if not identity_path.exists():
-            return None
+            if not identity_path.exists():
+                return None
 
-        try:
-            content = identity_path.read_text(encoding="utf-8")
-            return AgentIdentity.from_markdown(agent_id, content)
-        except Exception as e:
-            print(f"Error loading identity for {agent_id}: {e}")
-            return None
+            try:
+                content = identity_path.read_text(encoding="utf-8")
+                return AgentIdentity.from_markdown(agent_id, content)
+            except Exception as e:
+                print(f"Error loading identity for {agent_id}: {e}")
+                return None
 
     def save_identity(self, identity: AgentIdentity):
-        """保存 Agent 身份"""
-        identity_path = self._get_identity_path(identity.agent_id)
+        """保存 Agent 身份（临时文件替换，避免写到一半被读走）"""
+        with self._lock:
+            identity_path = self._get_identity_path(identity.agent_id)
 
-        try:
-            content = identity.to_markdown()
-            identity_path.write_text(content, encoding="utf-8")
-        except Exception as e:
-            print(f"Error saving identity for {identity.agent_id}: {e}")
+            try:
+                content = identity.to_markdown()
+                temp_path = identity_path.with_name(
+                    identity_path.name + ".tmp"
+                )
+                temp_path.write_text(content, encoding="utf-8")
+                temp_path.replace(identity_path)
+            except Exception as e:
+                print(f"Error saving identity for {identity.agent_id}: {e}")
 
     def create_identity(
         self,
@@ -293,15 +304,16 @@ class AgentIdentityManager:
         expertise_domains: List[str]
     ) -> AgentIdentity:
         """创建新的 Agent 身份"""
-        identity = AgentIdentity(
-            agent_id=agent_id,
-            agent_type=agent_type,
-            core_capabilities=core_capabilities,
-            expertise_domains=expertise_domains
-        )
+        with self._lock:
+            identity = AgentIdentity(
+                agent_id=agent_id,
+                agent_type=agent_type,
+                core_capabilities=core_capabilities,
+                expertise_domains=expertise_domains
+            )
 
-        self.save_identity(identity)
-        return identity
+            self.save_identity(identity)
+            return identity
 
 
     def update_collaboration(
