@@ -83,10 +83,17 @@ class MemoryEntropyManager:
         seen_hashes = set()
 
         for session in sessions:
-            # 提取关键内容
-            question = session.get("question", "")
-            summary = session.get("summary", "")
-            content = f"{question}:{summary}"
+            # 检索结果用 content 字段；兼容旧的 question/summary 结构
+            content = str(session.get("content") or "").strip()
+            if not content:
+                question = session.get("question", "")
+                summary = session.get("summary", "")
+                content = f"{question}:{summary}".strip(":")
+            if not content:
+                content = (
+                    f"{session.get('memory_id', '')}:"
+                    f"{session.get('timestamp', '')}"
+                )
 
             # 生成哈希
             content_hash = hashlib.md5(content.encode()).hexdigest()
