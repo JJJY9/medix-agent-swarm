@@ -1,0 +1,11 @@
+# 离线单元测试依赖（CI 专用，避免安装 torch / sentence-transformers）
+pytest
+pyyaml
+loguru
+python-dotenv
+numpy
+fastapi
+httpx
+python-multipart
+pypdf
+openai>=1.33.0,<2.0.0
