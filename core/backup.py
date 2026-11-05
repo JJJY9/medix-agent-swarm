@@ -18,6 +18,7 @@ from loguru import logger
 DEFAULT_BACKUP_KEEP = 7
 MAX_BACKUP_KEEP = 100
 MAX_BACKUP_HOURS = 24 * 30
+MAX_BACKUP_FILE_BYTES = 128 * 1024 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 BACKUP_PREFIX = "medix-backup-"
@@ -96,14 +97,15 @@ def create_backup(
 
     temp_path = path.with_name(path.name + ".tmp")
     try:
-        temp_path.write_text(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
+        text = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
+        # 超过请求体上限的备份无法通过 Web 导入/恢复，直接拒绝写入
+        if len(text.encode("utf-8")) > MAX_BACKUP_FILE_BYTES:
+            raise ValueError("备份数据超过单个文件上限，未写入备份。")
+        temp_path.write_text(text, encoding="utf-8")
         temp_path.replace(path)
         try:
             # 备份含健康数据，尽量只允许当前用户读取（Windows 上忽略权限位）
@@ -125,12 +127,33 @@ def create_backup(
     return path
 
 
-def latest_backup(directory: Optional[Path] = None) -> Optional[Path]:
+def list_backups(directory: Optional[Path] = None) -> list[Path]:
+    """按时间倒序返回合法备份文件，忽略不匹配的临时文件。"""
     target_dir = Path(directory) if directory else get_backup_dir()
     if not target_dir.exists():
-        return None
-    backups = sorted(
-        target_dir.glob(f"{BACKUP_PREFIX}*.json"),
-        key=_backup_sort_key,
-    )
-    return backups[-1] if backups else None
+        return []
+    backups = [
+        path for path in target_dir.glob(f"{BACKUP_PREFIX}*.json")
+        if _BACKUP_NAME.match(path.name) and path.is_file()
+    ]
+    return sorted(backups, key=_backup_sort_key, reverse=True)
+
+
+def resolve_backup(
+    name: str, directory: Optional[Path] = None
+) -> Path:
+    """把备份文件名解析为目录内的真实路径，拒绝路径穿越。"""
+    if not isinstance(name, str) or not _BACKUP_NAME.match(name):
+        raise ValueError("备份文件名不合法。")
+    target_dir = (
+        Path(directory) if directory else get_backup_dir()
+    ).resolve()
+    path = (target_dir / name).resolve()
+    if path.parent != target_dir or not path.is_file():
+        raise FileNotFoundError(name)
+    return path
+
+
+def latest_backup(directory: Optional[Path] = None) -> Optional[Path]:
+    backups = list_backups(directory)
+    return backups[0] if backups else None

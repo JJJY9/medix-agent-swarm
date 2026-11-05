@@ -52,6 +52,7 @@ from core.pricing import get_pricing
 from core.budget import get_token_budget
 from core.serialization import sanitize_json
 from core.session_context import session_memory_scope
+from core.backup import MAX_BACKUP_FILE_BYTES
 
 WEB_DIR = project_root / "web"
 
@@ -827,7 +828,7 @@ def _scope_route_path(scope: Dict[str, Any]) -> str:
 def _body_limit_for_path(path: str) -> int:
     if path == "/api/sessions/import":
         # 整库备份需要可恢复；仍设上限防止超大导入长期占住数据库锁
-        return 128 * 1024 * 1024
+        return MAX_BACKUP_FILE_BYTES
     if path == "/api/knowledge/upload-batch":
         return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/upload"):
@@ -1598,22 +1599,90 @@ async def import_sessions(request: ImportSessionsRequest):
         logger.exception("导入会话失败")
         raise HTTPException(status_code=500, detail="导入会话失败，请稍后重试。")
 
+    await record_audit("session.import", detail=_import_result_detail(result))
+    return {"ok": True, **result}
+
+
+def _import_result_detail(result: Dict[str, Any]) -> str:
+    keys = (
+        "imported", "skipped", "profiles", "metrics", "targets",
+        "reminders", "symptoms", "medications", "medication_logs",
+        "audit_log",
+    )
+    return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
+
+
+@app.get("/api/backups")
+async def list_local_backups():
+    """列出本地自动备份，供恢复入口选择。"""
+    from core.backup import list_backups
+
+    items = []
+    for path in await asyncio.to_thread(list_backups):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        items.append({
+            "name": path.name,
+            "size": stat.st_size,
+            "modified_at": datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(timespec="seconds"),
+        })
+        if len(items) >= 50:
+            break
+    return {"backups": items}
+
+
+@app.post("/api/backups/{name}/restore")
+async def restore_local_backup(name: str):
+    """恢复指定本地备份；与导入一样只合并、跳过已有记录。"""
+    from core.backup import resolve_backup
+    from memory import get_session_store
+
+    try:
+        path = await asyncio.to_thread(resolve_backup, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="备份不存在或已被清理。"
+        )
+
+    try:
+        if path.stat().st_size > MAX_BACKUP_FILE_BYTES:
+            raise HTTPException(
+                status_code=413, detail="备份文件过大，无法直接恢复。"
+            )
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        payload = json.loads(text)
+    except HTTPException:
+        raise
+    except (OSError, ValueError, UnicodeError):
+        raise HTTPException(
+            status_code=400, detail="备份文件无法读取或已损坏。"
+        )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="备份文件格式不正确。")
+
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, payload
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("恢复本地备份失败")
+        raise HTTPException(
+            status_code=500, detail="恢复备份失败，请稍后重试。"
+        )
+
     await record_audit(
         "session.import",
-        detail=(
-            f"imported={result.get('imported', 0)} "
-            f"skipped={result.get('skipped', 0)} "
-            f"profiles={result.get('profiles', 0)} "
-            f"metrics={result.get('metrics', 0)} "
-            f"targets={result.get('targets', 0)} "
-            f"reminders={result.get('reminders', 0)} "
-            f"symptoms={result.get('symptoms', 0)} "
-            f"medications={result.get('medications', 0)} "
-            f"medication_logs={result.get('medication_logs', 0)} "
-            f"audit_log={result.get('audit_log', 0)}"
-        ),
+        detail=f"source=backup:{name} {_import_result_detail(result)}",
     )
-    return {"ok": True, **result}
+    return {"ok": True, "backup": name, **result}
 
 
 @app.post("/api/maintenance/purge")

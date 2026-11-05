@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 import api_server
 import memory
 from core.backup import (
@@ -12,6 +14,8 @@ from core.backup import (
     get_auto_backup_hours,
     get_backup_keep,
     latest_backup,
+    list_backups,
+    resolve_backup,
 )
 
 
@@ -54,6 +58,35 @@ def test_same_second_backup_order_uses_numeric_suffix(tmp_path):
     # 后缀按数字比较：-11 比 -9 新，不能用文件名字典序判断
     assert latest_backup(tmp_path) == paths[-1]
     assert latest_backup(tmp_path).name.endswith("-11.json")
+    assert list_backups(tmp_path)[0] == paths[-1]
+
+
+def test_resolve_backup_rejects_unsafe_names(tmp_path):
+    path = create_backup(
+        {"n": 1}, directory=tmp_path, keep=5,
+        now=datetime(2026, 1, 1, 8, 0, 0),
+    )
+
+    assert resolve_backup(path.name, tmp_path) == path
+    with pytest.raises(ValueError):
+        resolve_backup("../outside.json", tmp_path)
+    with pytest.raises(ValueError):
+        resolve_backup("not-a-backup.json", tmp_path)
+    with pytest.raises(FileNotFoundError):
+        resolve_backup("medix-backup-19990101-000000.json", tmp_path)
+
+
+def test_create_backup_rejects_oversized_payload(tmp_path, monkeypatch):
+    import core.backup as backup_module
+
+    monkeypatch.setattr(backup_module, "MAX_BACKUP_FILE_BYTES", 64)
+    with pytest.raises(ValueError):
+        create_backup(
+            {"data": "x" * 100}, directory=tmp_path,
+            now=datetime(2026, 1, 1, 8, 0, 0),
+        )
+    assert not list(tmp_path.glob("*.json"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_backup_config_defaults_and_caps(monkeypatch):

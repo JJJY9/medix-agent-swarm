@@ -893,7 +893,9 @@ def test_app_js_profile_scoping_and_refresh(client):
     assert "applyPatientContext({});" in app_js
     assert "全部档案 · 症状" in app_js
     assert "没有在用药物，${rangeDaysLabel(days)}打卡" in app_js
-    assert "refreshReminderBadge();\n        refreshOverview();" in app_js
+    assert "refreshReminderBadge();\n    refreshOverview();" in app_js
+    assert "await refreshAfterBackupImport(result);" in app_js
+    assert "async function restoreLatestBackup" in app_js
     assert (
         "await refreshMetricProfileOptions();\n"
         "    await loadMedications();"
