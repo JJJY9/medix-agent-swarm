@@ -727,6 +727,7 @@ def test_app_js_ships_health_calendar(client):
     assert 'id="calendar-prev"' in html
     assert 'id="calendar-next"' in html
     assert 'id="calendar-today"' in html
+    assert "徽标：指 指标" in html
     assert 'id="calendar-export"' in html
     assert "async function exportCalendarCsv" in app_js
     assert 'id="timeline-date-chip"' in html
