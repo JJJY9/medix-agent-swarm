@@ -69,12 +69,11 @@ class KnowledgeBase:
         self.embedding_model_name = embedding_model
         self.use_memory = use_memory
 
-        # 初始化 Embedding 模型（仅在需要时加载）
+        # 初始化 Embedding 模型；内存存储同样需要向量才能检索
         self.embedding_model = None
         self.vector_size = 0
 
-        # 只有在不使用内存存储时才加载 Embedding 模型
-        if not use_memory and EMBEDDING_AVAILABLE:
+        if EMBEDDING_AVAILABLE:
             try:
                 logger.info(f"Loading embedding model: {embedding_model}")
                 self.embedding_model = SentenceTransformer(embedding_model)
@@ -83,8 +82,7 @@ class KnowledgeBase:
             except Exception as e:
                 logger.error(f"Failed to load embedding model: {e}")
         else:
-            if use_memory:
-                logger.info("Using in-memory storage, skipping embedding model loading")
+            logger.error("sentence-transformers 不可用，知识库无法向量化")
 
         # 初始化存储后端
         self.qdrant_client = None
@@ -175,8 +173,9 @@ class KnowledgeBase:
         # 向量化
         vector = self._embed_text(content)
         if vector is None:
-            logger.warning("Embedding failed, document not added")
-            return ""
+            raise RuntimeError(
+                "向量模型不可用，文档未写入知识库（请检查 sentence-transformers）"
+            )
 
         # 创建文档对象
         document = Document(
@@ -236,8 +235,9 @@ class KnowledgeBase:
         # 向量化查询
         query_vector = self._embed_text(query)
         if query_vector is None:
-            logger.warning("Query embedding failed")
-            return []
+            raise ValueError(
+                "向量模型不可用，无法检索知识库（请检查 sentence-transformers）"
+            )
 
         if self.qdrant_client:
             # 从 Qdrant 检索

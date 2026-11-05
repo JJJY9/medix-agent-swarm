@@ -7,8 +7,13 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from loguru import logger
 import asyncio
-from bs4 import BeautifulSoup
 import httpx
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:  # 离线测试环境可能没有安装 beautifulsoup4
+    BeautifulSoup = None
+    logger.warning("beautifulsoup4 不可用，网页正文抓取已禁用")
 
 # 尝试导入 ddgs (新包名) 或 duckduckgo_search (旧包名)
 try:
@@ -103,10 +108,14 @@ class WebSearchTool:
                 search_results = []
 
                 # 尝试多个后端：bing → duckduckgo → auto
+                backend_errors = []
                 for backend in ("bing", "duckduckgo", "auto"):
                     try:
                         ddgs = DDGS()
-                        raw = ddgs.text(
+                        # DDGS.text 是同步阻塞调用，必须放到线程里，
+                        # 否则 gather 的并发搜索会退化为串行并卡住事件循环
+                        raw = await asyncio.to_thread(
+                            ddgs.text,
                             enhanced_query,
                             max_results=max_results * 2,  # 获取更多结果用于过滤
                             safesearch=safesearch,
@@ -118,8 +127,18 @@ class WebSearchTool:
                             logger.debug(f"DDGS backend {backend} succeeded with {len(search_results)} results")
                             break
                     except Exception as e:
+                        backend_errors.append(f"{backend}: {e}")
                         logger.debug(f"DDGS backend {backend} failed: {e}")
+                        # 切换后端前稍作等待，避免连续请求加剧限流
+                        await asyncio.sleep(0.5)
                         continue
+
+                # 所有后端都失败时向上抛出，让重试与退避真正生效，
+                # 而不是把请求失败伪装成“没有搜索结果”
+                if not search_results and backend_errors:
+                    raise RuntimeError(
+                        "所有搜索后端均失败：" + "；".join(backend_errors)
+                    )
 
                 # 处理搜索结果
                 for result in search_results:
@@ -195,6 +214,9 @@ class WebSearchTool:
             网页文本内容（提取正文）
         """
         try:
+            if BeautifulSoup is None:
+                logger.warning("beautifulsoup4 未安装，无法抓取网页正文")
+                return None
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url)
                 response.raise_for_status()
