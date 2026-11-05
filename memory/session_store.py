@@ -1374,26 +1374,30 @@ class SessionStore:
         if not ids:
             return {}
 
-        placeholders = ",".join("?" for _ in ids)
-        with self._lock:
-            rows = self._conn.execute(
-                f"""
-                SELECT session_id, metadata
-                  FROM messages
-                 WHERE role = 'assistant' AND session_id IN ({placeholders})
-                """,
-                ids,
-            ).fetchall()
-
         stats: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            try:
-                metadata = json.loads(row["metadata"] or "{}")
-            except (TypeError, json.JSONDecodeError):
-                metadata = {}
-
-            entry = stats.setdefault(row["session_id"], _new_usage_entry())
-            _accumulate_usage(entry, metadata)
+        with self._lock:
+            # SQLite 变量上限约 32766，分批查询避免大导出直接报错
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = self._conn.execute(
+                    f"""
+                    SELECT session_id, metadata
+                      FROM messages
+                     WHERE role = 'assistant'
+                       AND session_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    try:
+                        metadata = json.loads(row["metadata"] or "{}")
+                    except (TypeError, json.JSONDecodeError):
+                        metadata = {}
+                    entry = stats.setdefault(
+                        row["session_id"], _new_usage_entry()
+                    )
+                    _accumulate_usage(entry, metadata)
 
         return stats
 
@@ -2723,6 +2727,8 @@ class SessionStore:
                 UPDATE sessions
                    SET archived = 1
                  WHERE archived = 0 AND updated_at < ?
+                   AND favorite = 0
+                   AND TRIM(tags) IN ('', '[]')
                 """,
                 (cutoff,),
             )
@@ -2765,14 +2771,20 @@ class SessionStore:
             rows = self._conn.execute(sql, params).fetchall()
 
         counts: Dict[str, int] = {}
+        display: Dict[str, str] = {}
         for row in rows:
             for tag in _parse_tags(row["tags"]):
-                counts[tag] = counts.get(tag, 0) + 1
+                # 与 _normalize_tags 的 casefold 语义保持一致，
+                # HTN 与 htn 统计为同一个标签
+                key = tag.casefold()
+                counts[key] = counts.get(key, 0) + 1
+                display.setdefault(key, tag)
 
         return [
-            {"name": name, "count": count}
-            for name, count in sorted(
-                counts.items(), key=lambda item: (-item[1], item[0])
+            {"name": display[key], "count": count}
+            for key, count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], display[item[0]].casefold())
             )
         ]
 
@@ -4071,13 +4083,20 @@ class SessionStore:
 
         end = str(end or "").strip()[:32]
         if end:
+            # 秒级边界：日期补到 23:59:59，分钟精度补到该分钟最后一秒
+            if len(end) == 10:
+                end = end + "T23:59:59"
+            elif len(end) == 16:
+                end = end + ":59"
             clauses.append("created_at <= ?")
-            params.append(end + "T23:59:59" if len(end) == 10 else end)
+            params.append(end)
 
         keyword = " ".join(str(keyword or "").split())[:80]
         if keyword:
-            pattern = f"%{keyword}%"
-            clauses.append("(target LIKE ? OR detail LIKE ?)")
+            pattern = _like_pattern(keyword)
+            clauses.append(
+                "(target LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\')"
+            )
             params.extend([pattern, pattern])
 
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -4253,13 +4272,18 @@ class SessionStore:
                     try:
                         next_dt = datetime.fromisoformat(next_due)
                         until_dt = datetime.fromisoformat(repeat_until)
+                        # repeat_until 允许带时区；统一转成 naive 本地时间再比较
+                        if until_dt.tzinfo is not None:
+                            until_dt = until_dt.astimezone().replace(
+                                tzinfo=None
+                            )
                         if len(repeat_until) == 10:
                             until_dt = datetime.combine(
                                 until_dt.date(), time(23, 59, 59)
                             )
                         if next_dt > until_dt:
                             in_range = False
-                    except ValueError:
+                    except (ValueError, TypeError):
                         # 无法解析时退回按日期比较
                         if next_due[:10] > repeat_until[:10]:
                             in_range = False
@@ -4482,21 +4506,15 @@ class SessionStore:
             return empty
 
         with self._lock, self._conn:
-            ids = [
-                row["id"] for row in self._conn.execute(
-                    "SELECT id FROM sessions WHERE updated_at < ?", (cutoff,)
-                )
-            ]
-            if not ids:
-                return empty
-            placeholders = ",".join("?" for _ in ids)
-            messages_deleted = self._conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({placeholders})",
-                ids,
-            ).rowcount
             sessions_deleted = self._conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({placeholders})",
-                ids,
+                "DELETE FROM sessions WHERE updated_at < ?", (cutoff,)
+            ).rowcount
+            # 用子查询清理孤儿消息，避免按 id 展开 IN 占位符触发变量上限
+            messages_deleted = self._conn.execute(
+                """
+                DELETE FROM messages
+                 WHERE session_id NOT IN (SELECT id FROM sessions)
+                """
             ).rowcount
         return {
             "sessions": int(sessions_deleted),

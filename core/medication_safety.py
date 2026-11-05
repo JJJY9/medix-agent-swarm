@@ -406,12 +406,21 @@ def _find_drugs(text: str, group: str) -> List[str]:
 _ALLERGY_STATEMENT_PATTERNS = (
     re.compile(r"对[^，。；,.!?！？]{1,20}?过敏"),
     re.compile(r"[^，。；,.!?！？]{1,20}?过敏史"),
+    re.compile(r"过敏史\s*[：:]\s*([^\n，。；]{1,30})"),
+    # 「我青霉素过敏」这类不带「对」的陈述；捕获组排除否定表达
+    re.compile(
+        r"(?:^|[，。；,.!?！？\n])\s*(?:我|本人|患者)?\s*"
+        r"([^，。；,.!?！？\n]{1,20}?)\s*过敏(?!史)"
+    ),
 )
 
 #: 句式前出现否定词时跳过（「我没有阿司匹林过敏」）
 _ALLERGY_NEGATION_PATTERN = re.compile(
     r"(?:没有|无|未|否认|不|并非)[^，。；,.!?！？]{0,6}$"
 )
+
+#: 捕获内容本身带否定词时也跳过（「没有阿司匹林过敏」）
+_ALLERGY_NEGATION_WORDS = ("没有", "无", "未", "否认", "不", "并非")
 
 
 def _allergy_mentions_in_question(question: str) -> str:
@@ -421,6 +430,9 @@ def _allergy_mentions_in_question(question: str) -> str:
         for match in pattern.finditer(question):
             prefix = question[max(0, match.start() - 10):match.start()]
             if _ALLERGY_NEGATION_PATTERN.search(prefix):
+                continue
+            captured = match.group(1) if match.groups() else match.group(0)
+            if any(word in captured for word in _ALLERGY_NEGATION_WORDS):
                 continue
             parts.append(match.group(0))
     return " ".join(parts)
