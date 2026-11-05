@@ -1150,3 +1150,11 @@ def test_app_js_ships_history_risk_filter(client):
     assert 'id="history-risk-filter"' in html
     assert "historyRiskFilter" in app_js
     assert "historyRisk" in app_js
+
+
+def test_app_js_guards_kb_busy_and_calc_tool_switch(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "kbBusy" in app_js
+    assert "previewFilename === filename" in app_js
+    assert "calcRequestSeq += 1" in app_js
