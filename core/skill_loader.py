@@ -4,6 +4,7 @@ Skill Loader 辅助函数
 """
 from pathlib import Path
 import importlib.util
+import sys
 from typing import Callable, Dict, List, Optional
 import yaml
 import os
@@ -29,6 +30,11 @@ def load_skill_function(skill_name: str, script_name: str, function_name: str, p
     if project_root is None:
         # 自动检测项目根目录（假设当前文件在 core/ 目录）
         project_root = Path(__file__).parent.parent
+
+    # Skill 脚本里会 import 项目内模块；不依赖调用方的 cwd，直接加入 sys.path
+    root_text = str(project_root)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
 
     skills_dir = project_root / ".claude" / "skills"
     module_path = skills_dir / skill_name / "script" / f"{script_name}.py"
@@ -69,6 +75,11 @@ def parse_skill_md(file_path: Path) -> Optional[Dict]:
                 yaml_content = content[3:end_idx]
                 try:
                     data = yaml.safe_load(yaml_content)
+                    if not isinstance(data, dict):
+                        logger.warning(
+                            f"SKILL.md frontmatter 不是键值映射，已跳过: {file_path}"
+                        )
+                        return None
                     return data
                 except yaml.YAMLError as e:
                     logger.warning(f"Error parsing YAML in {file_path}: {e}")
@@ -163,7 +174,8 @@ def discover_skills(project_root: Path = None) -> List[Dict]:
                 "function": func
             })
             logger.info(f"✅ Discovered skill: {skill_name} (function={function_name})")
-        except (FileNotFoundError, AttributeError) as e:
+        except Exception as e:
+            # 单个 Skill 的依赖/语法问题不应拖垮所有 Agent 的初始化
             logger.warning(f"⚠️ Skipping {skill_name}: {e}")
             continue
 

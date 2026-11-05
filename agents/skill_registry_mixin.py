@@ -30,7 +30,9 @@ class SkillRegistryMixin:
         # 自动注册所有发现的 skills
         for skill_info in discovered:
             function_name = skill_info["function_name"]
-            metadata = skill_info["metadata"]
+            metadata = skill_info.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
             func = skill_info["function"]
 
             # 从 metadata 获取描述
@@ -74,10 +76,22 @@ class SkillRegistryMixin:
             # 判断是否必需
             required = param.default == inspect.Parameter.empty
 
-            # 推断类型（简单规则）
-            param_type = "string"
-            if "count" in param_name or "limit" in param_name or "max" in param_name or "iterations" in param_name:
+            # 优先按类型注解推断，注解缺失时退回按参数名猜测
+            annotation = param.annotation
+            if annotation is int:
+                param_type = "integer"
+            elif annotation is float:
                 param_type = "number"
+            elif annotation is bool:
+                param_type = "boolean"
+            elif annotation in (list, tuple):
+                param_type = "array"
+            elif annotation is dict:
+                param_type = "object"
+            elif "count" in param_name or "limit" in param_name or "max" in param_name or "iterations" in param_name:
+                param_type = "integer"
+            else:
+                param_type = "string"
 
             # 生成描述
             param_desc = param_name.replace('_', ' ').title()
