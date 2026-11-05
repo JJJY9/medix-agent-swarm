@@ -548,6 +548,14 @@ RISK_LEVEL_LABELS = {
     "low": "低危",
 }
 
+#: 风险从低到高的排序，用于「中危及以上」等筛选
+RISK_LEVEL_ORDER = {"": 0, "low": 1, "medium": 2, "high": 3, "emergency": 4}
+RISK_FILTER_VALUES = {"medium", "high", "emergency"}
+
+
+def _risk_at_least(level: str, threshold: str) -> bool:
+    return RISK_LEVEL_ORDER.get(level, 0) >= RISK_LEVEL_ORDER[threshold]
+
 
 def parse_risk_level(text: Any) -> str:
     """从会诊意见中提取风险等级；无法判断时返回空字符串。"""
@@ -948,13 +956,15 @@ async def list_sessions(
     days: int = 0,
     archived: bool = False,
     tag: Optional[str] = None,
-    profile: Optional[str] = None
+    profile: Optional[str] = None,
+    risk: Optional[str] = None,
 ):
-    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围、归档、标签与档案）。
+    """历史会诊列表（按最近更新时间倒序，支持搜索、分页、收藏、时间范围、归档、标签、档案与风险筛选）。
 
     archived=false（默认）只返回未归档会话；archived=true 只返回已归档会话。
     summary 汇总所有匹配会话的 Token 用量、模型调用次数与反馈，
     不受当前分页影响；每条会话附带自身用量。
+    risk 取 medium/high/emergency 时按「该等级及以上」筛选。
     """
     from memory import get_session_store
 
@@ -964,8 +974,76 @@ async def list_sessions(
     query = q or ""
     favorites_only = bool(favorite)
     profile = profile or None
+    risk = str(risk or "").strip().lower()
+    if risk and risk not in RISK_FILTER_VALUES:
+        raise HTTPException(status_code=400, detail="不支持的风险筛选")
 
     store = get_session_store()
+    if risk:
+        matched: List[Dict[str, Any]] = []
+        matched_stats: Dict[str, Dict[str, Any]] = {}
+        total_turns = 0
+        total_calls = 0
+        totals_usage: Dict[str, int] = {}
+        scan_offset = 0
+        while scan_offset < 2000:
+            batch = await asyncio.to_thread(
+                store.list_sessions,
+                200,
+                query,
+                scan_offset,
+                favorites_only,
+                days,
+                archived,
+                tag,
+                profile,
+            )
+            if not batch:
+                break
+            batch_matched = []
+            for item in batch:
+                level = parse_risk_level(item.pop("risk_text", ""))
+                if _risk_at_least(level, risk):
+                    item["risk"] = level
+                    batch_matched.append(item)
+            if batch_matched:
+                stats_batch = await asyncio.to_thread(
+                    store.usage_by_session,
+                    [item["id"] for item in batch_matched],
+                )
+                matched_stats.update(stats_batch)
+                for stat in stats_batch.values():
+                    for key, value in (stat.get("usage") or {}).items():
+                        totals_usage[key] = (
+                            totals_usage.get(key, 0) + int(value or 0)
+                        )
+                    total_turns += int(stat.get("turns") or 0)
+                    total_calls += int(stat.get("llm_calls") or 0)
+                matched.extend(batch_matched)
+            if len(batch) < 200:
+                break
+            scan_offset += len(batch)
+
+        total = len(matched)
+        sessions = matched[offset:offset + limit]
+        for item in sessions:
+            stat = matched_stats.get(item["id"])
+            if not stat:
+                continue
+            item["usage"] = stat["usage"]
+            item["llm_calls"] = stat["llm_calls"]
+            item["turns"] = stat["turns"]
+        summary: Dict[str, Any] = {
+            "sessions": total,
+            "loaded": len(sessions),
+            "offset": offset,
+            "limit": limit,
+            "turns": total_turns,
+            "llm_calls": total_calls,
+            "usage": totals_usage,
+            "feedback": None,
+        }
+        return {"sessions": sessions, "summary": summary}
     sessions, total, combined = await asyncio.gather(
         asyncio.to_thread(
             store.list_sessions,

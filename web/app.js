@@ -57,6 +57,7 @@ const els = {
   historyImportFile: document.getElementById('history-import-file'),
   historyRange: document.getElementById('history-range'),
   historyTag: document.getElementById('history-tag'),
+  historyRiskFilter: document.getElementById('history-risk-filter'),
   historyProfile: document.getElementById('history-profile'),
   historyFeedback: document.getElementById('history-feedback'),
   historyFeedbackCount: document.getElementById('history-feedback-count'),
@@ -514,6 +515,7 @@ let historyLoading = false;
 let favoritesOnly = false;
 let archivedOnly = false;
 let historyTag = '';
+let historyRisk = '';
 let historyProfile = '';
 let bulkMode = false;
 let selectedSessions = new Set();
@@ -2803,6 +2805,8 @@ function renderHistoryItems(sessions, summary, append = false) {
       els.historyEmpty.textContent = `标签「${historyTag}」下没有会诊`;
     } else if (historyProfile) {
       els.historyEmpty.textContent = `档案「${historyProfile}」下没有会诊`;
+    } else if (historyRisk) {
+      els.historyEmpty.textContent = '所选风险等级下没有会诊';
     } else if (favoritesOnly) {
       els.historyEmpty.textContent = '还没有收藏的会诊';
     } else if (historyDays > 0) {
@@ -3031,6 +3035,12 @@ function renderHistorySummary(summary) {
   } else {
     title = `共 ${summary.sessions} 次${scope}会诊`;
   }
+  const riskLabel = historyRisk && els.historyRiskFilter
+    ? String(
+      els.historyRiskFilter.selectedOptions[0]?.textContent || ''
+    ).trim()
+    : '';
+  if (riskLabel) title += `（${riskLabel}）`;
   const parts = [title];
   if (summary.loaded && summary.loaded < summary.sessions) {
     parts.push(`已加载 ${summary.loaded} 次`);
@@ -3616,6 +3626,7 @@ async function loadHistory(query = '', { append = false } = {}) {
       (favoritesOnly ? '&favorite=1' : '') +
       (archivedOnly ? '&archived=true' : '') +
       (historyTag ? `&tag=${encodeURIComponent(historyTag)}` : '') +
+      (historyRisk ? `&risk=${encodeURIComponent(historyRisk)}` : '') +
       (historyProfile ? `&profile=${encodeURIComponent(historyProfile)}` : '') +
       (historyDays > 0 ? `&days=${historyDays}` : '')
     );
@@ -12856,6 +12867,13 @@ els.historyTag.addEventListener('change', () => {
   historyTag = els.historyTag.value;
   loadHistory(els.historySearch.value.trim());
 });
+
+if (els.historyRiskFilter) {
+  els.historyRiskFilter.addEventListener('change', () => {
+    historyRisk = els.historyRiskFilter.value;
+    loadHistory(els.historySearch.value.trim());
+  });
+}
 
 if (els.historyProfile) {
   els.historyProfile.addEventListener('change', () => {
