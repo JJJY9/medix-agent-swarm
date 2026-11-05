@@ -3,6 +3,7 @@ Search Knowledge Skill
 搜索医学知识库 Skill（自包含，无需依赖tools）
 """
 from typing import Dict, Any
+import asyncio
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -37,10 +38,10 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
     logger.info(f"Searching knowledge base: query={query}, max_results={max_results}")
 
     # 获取知识库单例（避免重复加载模型）
-    kb = get_knowledge_base()
+    kb = await asyncio.to_thread(get_knowledge_base)
 
     # 使用 Milvus 进行语义检索
-    results = kb.search(
+    results = await asyncio.to_thread(kb.search,
         query=query,
         top_k=max_results,
         filter_type=None

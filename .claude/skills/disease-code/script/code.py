@@ -3,6 +3,8 @@ Disease Code Skill
 疾病编码查询 Skill（自包含，无需依赖tools）
 """
 from typing import Dict, Any
+import asyncio
+import re
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -34,10 +36,10 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
     logger.info(f"Searching ICD-10 code for disease: {disease_name}")
 
     # 使用知识库单例
-    kb = get_knowledge_base()
+    kb = await asyncio.to_thread(get_knowledge_base)
 
     # 使用 Milvus 检索疾病编码
-    results = kb.search(
+    results = await asyncio.to_thread(kb.search,
         query=f"{disease_name} ICD-10编码 疾病分类",
         top_k=1,
         filter_type="disease_classification"
@@ -47,16 +49,10 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
         doc = results[0]
         metadata = doc["metadata"]
 
-        # 从内容中提取 ICD-10 编码（简单解析）
         content = doc["content"]
         icd10_code = metadata.get("icd10_code", "")
-        if not icd10_code and "ICD-10编码：" in content:
-            # 从内容中提取
-            lines = content.split("\n")
-            for line in lines:
-                if "ICD-10编码：" in line:
-                    icd10_code = line.split("：")[1].strip()
-                    break
+        if not icd10_code:
+            icd10_code = extract_icd_code(content, disease_name)
 
         return {
             "answer": format_code_info(disease_name, content),
@@ -75,6 +71,27 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             "source": "未找到",
             "sources": [],
         }
+
+
+_ICD_PATTERN = re.compile(
+    r"ICD-10\s*编码\s*[：:]\s*([A-Z]\d{2}(?:\.\d+)?)", re.IGNORECASE
+)
+
+
+def extract_icd_code(content: str, disease_name: str) -> str:
+    """优先取与疾病名匹配小节内的编码，避免返回文档里的第一条编码。"""
+    target = str(disease_name or "").strip()
+    if target:
+        sections = content.split("疾病名称")
+        for section in sections[1:]:
+            name_match = re.match(r"\s*[：:]\s*([^\n]+)", section)
+            name = name_match.group(1).strip() if name_match else ""
+            if name and (target in name or name in target):
+                code_match = _ICD_PATTERN.search(section)
+                if code_match:
+                    return code_match.group(1)
+    fallback = _ICD_PATTERN.search(content)
+    return fallback.group(1) if fallback else ""
 
 
 def format_code_info(disease_name: str, content: str) -> str:

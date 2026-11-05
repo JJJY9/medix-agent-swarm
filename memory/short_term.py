@@ -42,6 +42,13 @@ class ConversationHistory:
 
     def get_recent_messages(self, limit: int = 50) -> List[Dict[str, str]]:
         """获取最近的消息"""
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
+        # 负数/零切片（messages[-0:]）会返回整段历史
+        if limit <= 0:
+            return []
         return self.messages[-limit:]
 
     def to_dict(self) -> Dict[str, Any]:
@@ -240,6 +247,13 @@ class ShortTermMemory:
         Returns:
             消息列表（去重和压缩后）
         """
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 50
+        if limit <= 0:
+            return []
+
         history = self.get_session(session_id)
         if history:
             # 有熵管理器时多取一段更早的消息，交给压缩逻辑生成历史摘要；
