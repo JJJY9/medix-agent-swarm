@@ -61,12 +61,15 @@ def test_health_dossier_markdown(client_and_store):
     store.set_session_profile("dossier-session", "妈妈")
 
     response = client.get(
-        "/api/health/dossier.md", params={"profile": "妈妈"}
+        "/api/health/dossier.md",
+        params={"profile": "妈妈", "days": 7},
     )
     text = response.text
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/markdown")
+    assert "## 近 7 天症状" in text
+    assert "## 近 7 天会诊" in text
     assert "# 健康档案：妈妈" in text
     assert "62 岁 · 女" in text
     assert "过敏史：青霉素" in text
@@ -113,11 +116,14 @@ def test_family_dossier_markdown(client_and_store):
         "name": "孩子", "context": {"age": "7"},
     })
 
-    response = client.get("/api/health/dossier-family.md")
+    response = client.get(
+        "/api/health/dossier-family.md", params={"days": 7}
+    )
     text = response.text
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/markdown")
+    assert text.count("## 近 7 天症状") == 2
     assert "# 健康档案：妈妈" in text
     assert "# 健康档案：孩子" in text
     assert text.count("# 健康档案：") == 2
