@@ -6,6 +6,7 @@
 from typing import List, Dict, Any, Optional
 from loguru import logger
 import asyncio
+import re
 
 from core import LLMClient
 from research.web_search import WebSearchTool, SearchResult
@@ -195,8 +196,13 @@ class DeepResearchWorkflow:
 
             for line in lines:
                 line = line.strip()
-                # 移除可能的编号
-                line = line.lstrip('0123456789.-:：）) ')
+                # 只去掉行首编号/项目符号，不能用 lstrip 否则会剥掉
+                # 「2型糖尿病」这类查询本身的数字
+                line = re.sub(
+                    r'^\s*(?:(?:子查询\s*\d+)[：:]\s*'
+                    r'|\d+[.、)）:：]\s*|[-*•]\s*)',
+                    '', line
+                )
                 if line and len(line) > 5:  # 过滤太短的行
                     sub_queries.append(line)
 

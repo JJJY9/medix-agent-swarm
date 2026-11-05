@@ -6,10 +6,40 @@
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+import re
 from loguru import logger
 
 from core import LLMClient
 from research.web_search import SearchResult
+
+#: 列表行前缀（- / * / • 或数字编号），提示词并未强制模型只用 "-"
+_LIST_PREFIX_PATTERN = re.compile(r'^\s*(?:[-*•]\s*|\d+[.、)）:：]\s*)')
+
+#: 「没有冲突」的整体表述；只有整体匹配才算无冲突，
+#: 不能用子串判断，否则“研究B显示无效”这类真实冲突会被丢掉
+_NO_CONFLICT_TEXTS = {
+    "无",
+    "无冲突",
+    "无明显冲突",
+    "无信息冲突",
+    "没有冲突",
+    "没有明显冲突",
+    "没有信息冲突",
+    "未发现冲突",
+    "未发现明显冲突",
+    "暂未发现冲突",
+    "暂未发现明显冲突",
+}
+
+
+def _parse_list_items(text: str) -> List[str]:
+    """解析提示词里的列表段落，兼容 - / * / • 与数字编号。"""
+    items = []
+    for line in str(text or "").splitlines():
+        cleaned = _LIST_PREFIX_PATTERN.sub("", line).strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
 
 
 @dataclass
@@ -176,12 +206,7 @@ class EvidenceSynthesizer:
         # 提取关键发现
         findings_match = re.search(r'【关键发现】(.*?)【', response, re.DOTALL)
         if findings_match:
-            findings_text = findings_match.group(1).strip()
-            report.key_findings = [
-                line.strip('- ').strip()
-                for line in findings_text.split('\n')
-                if line.strip() and line.strip().startswith('-')
-            ]
+            report.key_findings = _parse_list_items(findings_match.group(1))
 
         # 提取证据等级
         evidence_match = re.search(r'【证据等级】(.*?)【', response, re.DOTALL)
@@ -212,12 +237,11 @@ class EvidenceSynthesizer:
         conflicts_match = re.search(r'【信息冲突】(.*?)【', response, re.DOTALL)
         if conflicts_match:
             conflicts_text = conflicts_match.group(1).strip()
-            if "无" not in conflicts_text and "没有" not in conflicts_text:
-                report.conflicts = [
-                    line.strip('- ').strip()
-                    for line in conflicts_text.split('\n')
-                    if line.strip() and line.strip().startswith('-')
-                ]
+            normalized = re.sub(
+                r'[\s。．.；;，,、:：\-*•]', '', conflicts_text
+            )
+            if normalized and normalized not in _NO_CONFLICT_TEXTS:
+                report.conflicts = _parse_list_items(conflicts_text)
 
         # 提取综合总结
         summary_match = re.search(r'【综合总结】(.*?)【', response, re.DOTALL)
@@ -230,12 +254,9 @@ class EvidenceSynthesizer:
         # 提取建议
         recommendations_match = re.search(r'【建议】(.*?)(?:【|$)', response, re.DOTALL)
         if recommendations_match:
-            recommendations_text = recommendations_match.group(1).strip()
-            report.recommendations = [
-                line.strip('- ').strip()
-                for line in recommendations_text.split('\n')
-                if line.strip() and line.strip().startswith('-')
-            ]
+            report.recommendations = _parse_list_items(
+                recommendations_match.group(1)
+            )
 
         # 收集来源
         for result in web_results[:5]:
