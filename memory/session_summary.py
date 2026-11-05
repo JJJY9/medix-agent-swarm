@@ -227,13 +227,68 @@ class SessionSummary:
                     confidence=contrib.confidence
                 ))
 
+        # 性能指标：优先用子任务的起止时间估算并行收益
+        subtasks = list(shared_context.task_decomposition.values())
+        completed_subtasks = shared_context.get_all_completed_subtasks()
+        information_coverage = (
+            len(completed_subtasks) / len(subtasks) if subtasks else 1.0
+        )
+
+        work_seconds = 0.0
+        for subtask in subtasks:
+            if subtask.started_at and subtask.completed_at:
+                span = (
+                    subtask.completed_at - subtask.started_at
+                ).total_seconds()
+                if span > 0:
+                    work_seconds += span
+        agent_count = max(1, len(shared_context.agent_contributions))
+        if total_time > 0 and work_seconds > 0:
+            speedup = round(work_seconds / total_time, 2)
+            parallel_efficiency = min(
+                1.0, work_seconds / (total_time * agent_count)
+            )
+        else:
+            speedup = 1.0
+            parallel_efficiency = 1.0
+
+        seen_findings = set()
+        duplicate_findings = 0
+        for finding in key_findings:
+            key = (finding.category, finding.finding)
+            if key in seen_findings:
+                duplicate_findings += 1
+            else:
+                seen_findings.add(key)
+        redundancy = (
+            duplicate_findings / len(key_findings) if key_findings else 0.0
+        )
+
+        lessons_learned: List[Lesson] = []
+        for subtask in subtasks:
+            if getattr(subtask.status, "value", "") != "failed":
+                continue
+            error = ""
+            if isinstance(subtask.result, dict):
+                error = str(subtask.result.get("error") or "")
+            lessons_learned.append(Lesson(
+                agent_id=subtask.assigned_agent or "unknown",
+                lesson_type="failure",
+                description=(
+                    f"子任务「{subtask.description or subtask.id}」执行失败"
+                    + (f"：{error}" if error else "")
+                ),
+                actionable="检查该 Agent 的工具调用与输入上下文后重试。",
+            ))
+
         # 性能指标
         performance = PerformanceMetrics(
             total_time=total_time,
-            agent_count=len(shared_context.agent_contributions),
-            parallel_efficiency=0.8,  # TODO: 实际计算
-            information_coverage=0.9,  # TODO: 实际计算
-            redundancy=0.15  # TODO: 实际计算
+            agent_count=agent_count,
+            parallel_efficiency=round(parallel_efficiency, 3),
+            information_coverage=round(information_coverage, 3),
+            redundancy=round(redundancy, 3),
+            speedup_vs_single=speedup,
         )
 
         return cls(
@@ -247,7 +302,7 @@ class SessionSummary:
             events_count=len(shared_context.events),
             final_answer=final_answer,
             key_findings=key_findings,
-            lessons_learned=[],  # TODO: 从协作过程中提取
+            lessons_learned=lessons_learned,
             performance=performance
         )
 
