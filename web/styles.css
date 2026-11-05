@@ -3539,6 +3539,19 @@ html[data-theme="dark"] .reminders-due-hint {
   color: var(--triage-1);
 }
 
+.timeline-only-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.timeline-only-alert input {
+  accent-color: var(--clinic);
+}
+
 .weekly-summary-toolbar select {
   font: inherit;
   font-size: 12.5px;
