@@ -1901,7 +1901,7 @@ async def latest_metrics(profile: Optional[str] = None):
 
 @app.get("/api/reports/weekly")
 async def weekly_report(profile: Optional[str] = None, days: int = 7):
-    """近 N 天健康小结：指标、症状、用药打卡与待办提醒汇总。"""
+    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
     from datetime import timedelta
 
     from memory import get_session_store
@@ -1952,6 +1952,19 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     previous_logs = [
         item for item in raw_logs
         if prev_start <= str(item.get("taken_at") or "")[:10] < start
+    ]
+    raw_sessions = await asyncio.to_thread(
+        store.list_sessions_for_timeline, profile, prev_start, "", 2000
+    )
+    sessions = [
+        item for item in raw_sessions
+        if int(item.get("message_count") or 0) > 0
+        and start <= str(item.get("created_at") or "")[:10] <= end
+    ]
+    previous_sessions = [
+        item for item in raw_sessions
+        if int(item.get("message_count") or 0) > 0
+        and prev_start <= str(item.get("created_at") or "")[:10] < start
     ]
     pending_reminders = await asyncio.to_thread(
         store.list_reminders, False, None
@@ -2146,6 +2159,10 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "pending": len(reminders),
             "overdue": overdue,
             "due_in_7_days": due_soon,
+        },
+        "consultations": {
+            "count": len(sessions),
+            "prev_count": len(previous_sessions),
         },
     }
 

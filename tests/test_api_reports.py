@@ -254,3 +254,32 @@ def test_weekly_report_logs_calendar_window(client_and_store):
 
     report = client.get("/api/reports/weekly").json()
     assert report["medications"]["doses"] == 1
+
+
+def test_weekly_report_counts_consultations(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    previous = (now - timedelta(days=10)).isoformat(timespec="seconds")
+
+    store.save_exchange("weekly-recent", "最近头晕怎么办", "建议测血压。")
+    store.set_session_profile("weekly-recent", "母亲")
+    store.save_exchange("weekly-previous", "孩子的疫苗怎么打", "按接种程序。")
+    store.set_session_profile("weekly-previous", "母亲")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET created_at = ? WHERE id = ?",
+            (previous, "weekly-previous"),
+        )
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "母亲"}
+    ).json()
+    assert report["consultations"] == {"count": 1, "prev_count": 1}
+
+    other = client.get(
+        "/api/reports/weekly", params={"profile": "父亲"}
+    ).json()
+    assert other["consultations"] == {"count": 0, "prev_count": 0}
+
+    family = client.get("/api/reports/weekly").json()
+    assert family["consultations"] == {"count": 1, "prev_count": 1}

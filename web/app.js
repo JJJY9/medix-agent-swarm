@@ -7077,12 +7077,16 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
     const metricCount = Number(weekly.metrics.count) || 0;
     const symptomCount = Number(weekly.symptoms.count) || 0;
     const doseCount = Number(weekly.medications.doses) || 0;
+    const consultCount = Number(
+      weekly.consultations ? weekly.consultations.count : 0
+    ) || 0;
     els.homeGlanceSummary.hidden = false;
     els.homeGlanceSummary.replaceChildren(
       ...homeGlanceLine(
         '健康小结',
         `近 ${days} 天：指标 ${metricCount} 条`,
         `全部档案 · 症状 ${symptomCount} 条 · 打卡 ${doseCount} 次`
+          + (consultCount ? ` · 会诊 ${consultCount} 次` : '')
       )
     );
   } else {
@@ -8500,6 +8504,21 @@ function weeklySummaryLines(data) {
     }
   }
   lines.push(['用药', medicationText]);
+
+  const consultations = data.consultations || {};
+  const consultCount = Number(consultations.count) || 0;
+  let consultationText = `近 ${days} 天没有会诊`;
+  if (consultCount) {
+    consultationText = `${consultCount} 次`;
+    const previousConsult = consultations.prev_count;
+    if (previousConsult !== null && previousConsult !== undefined) {
+      const diff = consultCount - Number(previousConsult);
+      consultationText += diff === 0
+        ? '，较上期持平'
+        : `，较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 次`;
+    }
+  }
+  lines.push(['会诊', consultationText]);
 
   lines.push([
     '随访提醒',
