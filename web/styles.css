@@ -3741,6 +3741,11 @@ html[data-theme="dark"] .timeline-badge-medication {
   border-radius: 999px;
 }
 
+.compare-latest {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
 .compare-bar-fill {
   display: block;
   height: 100%;

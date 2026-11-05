@@ -9380,6 +9380,20 @@ function renderFamilyCompare(data) {
     }
     barWrap.appendChild(bar);
     li.append(head, barWrap);
+    if (row.latest && row.latest.value1 !== null
+        && row.latest.value1 !== undefined) {
+      const latestValue = row.latest.value2 !== null
+        && row.latest.value2 !== undefined
+        ? `${formatStatNumber(row.latest.value1)}/`
+          + formatStatNumber(row.latest.value2)
+        : formatStatNumber(row.latest.value1);
+      const latest = document.createElement('span');
+      latest.className = 'compare-latest';
+      latest.textContent =
+        `最近 ${latestValue}${data.unit ? ` ${data.unit}` : ''}`
+        + `（${formatTime(row.latest.measured_at)}）`;
+      li.appendChild(latest);
+    }
     els.compareList.appendChild(li);
   }
 }

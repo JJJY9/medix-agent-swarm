@@ -714,6 +714,8 @@ def test_app_js_ships_family_compare(client):
     assert "min_value1" in app_js
     assert "within_target" in app_js
     assert "target_lower_bound" in app_js
+    assert "compare-latest" in app_js
+    assert ".compare-latest" in css
     assert ".compare-bar" in css
 
 
