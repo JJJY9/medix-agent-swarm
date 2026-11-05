@@ -438,3 +438,40 @@ def test_medications_list_range_counts(client_and_store):
     assert month["range_count"] == 3
     assert month["expected_range_doses"] == 21
     assert month["week_count"] == 2
+
+
+def test_import_preserves_medication_created_at(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/sessions/import", json={"medications": [{
+        "profile": "妈妈", "name": "氨氯地平", "dose": "5 mg",
+        "frequency": "每日两次", "active": True,
+        "created_at": "2026-10-01T08:00:00",
+    }]})
+
+    medication = client.get(
+        "/api/medications", params={"profile": "妈妈"}
+    ).json()["medications"][0]
+    assert medication["created_at"].startswith("2026-10-01")
+
+
+def test_medication_logs_include_midnight_at_window_start(
+    client_and_store,
+):
+    from datetime import datetime
+
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    medication = client.post("/api/medications", json={
+        "name": "氨氯地平",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": f"{today}T00:00"},
+    )
+
+    logs = client.get(
+        "/api/medication-logs", params={"days": 1}
+    ).json()["logs"]
+    assert len(logs) == 1

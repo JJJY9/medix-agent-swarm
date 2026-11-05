@@ -335,7 +335,7 @@ def expected_doses_for_period(
     day_count = (now.date() - start).days + 1
     if day_count <= 0:
         return None
-    return max(1, round(per_day * day_count))
+    return round(per_day * day_count)
 
 
 def _expected_week_doses(
@@ -1070,7 +1070,7 @@ class SessionStore:
             item["archived"] = bool(item.get("archived"))
             item["tags"] = _parse_tags(item.get("tags"))
             last_answer = item.pop("last_answer", "") or ""
-            item["risk_text"] = last_answer[:1000]
+            item["risk_text"] = last_answer[:2000]
             preview = last_answer.replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
             if query:
@@ -1101,7 +1101,7 @@ class SessionStore:
         if include_answer:
             answer_column = """,
                    (
-                       SELECT substr(m.content, 1, 1000)
+                       SELECT substr(m.content, 1, 2000)
                          FROM messages m
                         WHERE m.session_id = s.id AND m.role = 'assistant'
                         ORDER BY m.id DESC LIMIT 1
@@ -2264,6 +2264,10 @@ class SessionStore:
                     if existing is not None:
                         actual_id = int(existing["id"])
                     else:
+                        created_at = str(raw.get("created_at") or now)[:40]
+                        updated_at = str(
+                            raw.get("updated_at") or created_at
+                        )[:40]
                         cursor = self._conn.execute(
                             """
                             INSERT INTO medications(
@@ -2275,7 +2279,7 @@ class SessionStore:
                                 normalized["profile"], normalized["name"],
                                 normalized["dose"], normalized["frequency"],
                                 normalized["note"], normalized["active"],
-                                now, now,
+                                created_at, updated_at,
                             ),
                         )
                         actual_id = int(cursor.lastrowid)
@@ -2388,6 +2392,8 @@ class SessionStore:
                     medication_logs_imported += 1
 
             reminders_imported = 0
+            reminder_links: List[Tuple[int, int]] = []
+            raw_reminder_id_map: Dict[int, int] = {}
             if isinstance(raw_reminders, list):
                 for raw in raw_reminders[:2000]:
                     if not isinstance(raw, dict):
@@ -2441,10 +2447,28 @@ class SessionStore:
                         mapped_medication["id"]
                         if mapped_medication else 0
                     )
+                    medication_name = " ".join(
+                        str(raw.get("medication_name") or "").split()
+                    )[:MAX_MEDICATION_NAME_LENGTH]
+                    if not medication_id and raw_medication_id > 0:
+                        med_row = self._conn.execute(
+                            """
+                            SELECT id, profile, name FROM medications
+                             WHERE id = ?
+                            """,
+                            (raw_medication_id,),
+                        ).fetchone()
+                        if (
+                            med_row is not None
+                            and _normalize_profile_name(med_row["profile"])
+                            == profile
+                            and (
+                                not medication_name
+                                or str(med_row["name"]) == medication_name
+                            )
+                        ):
+                            medication_id = int(med_row["id"])
                     if not medication_id:
-                        medication_name = " ".join(
-                            str(raw.get("medication_name") or "").split()
-                        )[:MAX_MEDICATION_NAME_LENGTH]
                         if medication_name:
                             med_row = self._conn.execute(
                                 """
@@ -2485,10 +2509,13 @@ class SessionStore:
                             (
                                 reminder_id, title, note, due_at, session_id,
                                 profile, advance_days, repeat_days,
-                                repeat_until, repeats_from, medication_id, done,
+                                repeat_until, 0, medication_id, done,
                                 created_at, updated_at,
                             ),
                         )
+                        raw_reminder_id_map[reminder_id] = reminder_id
+                        if repeats_from > 0:
+                            reminder_links.append((reminder_id, repeats_from))
                         reminders_imported += 1
                         continue
 
@@ -2502,7 +2529,7 @@ class SessionStore:
                     ).fetchone()
                     if exists:
                         continue
-                    self._conn.execute(
+                    cursor = self._conn.execute(
                         """
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
@@ -2515,11 +2542,24 @@ class SessionStore:
                         (
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, medication_id, done,
+                            0, medication_id, done,
                             created_at, updated_at,
                         ),
                     )
+                    new_reminder_id = int(cursor.lastrowid or 0)
+                    if new_reminder_id and repeats_from > 0:
+                        reminder_links.append(
+                            (new_reminder_id, repeats_from)
+                        )
                     reminders_imported += 1
+
+            for new_id, raw_parent in reminder_links:
+                parent_id = raw_reminder_id_map.get(raw_parent)
+                if parent_id and parent_id != new_id:
+                    self._conn.execute(
+                        "UPDATE reminders SET repeats_from = ? WHERE id = ?",
+                        (parent_id, new_id),
+                    )
 
         return {
             "imported": imported,
@@ -3617,12 +3657,10 @@ class SessionStore:
             params.append(_normalize_profile_name(profile))
         cutoff = _days_cutoff(days)
         if cutoff:
-            conditions.append("l.taken_at >= ?")
-            params.append(cutoff)
-            end_of_today = datetime.now().replace(
-                hour=23, minute=59, second=59
-            ).isoformat(timespec="seconds")
-            conditions.append("l.taken_at <= ?")
+            conditions.append("substr(l.taken_at, 1, 10) >= ?")
+            params.append(cutoff[:10])
+            end_of_today = datetime.now().strftime("%Y-%m-%d")
+            conditions.append("substr(l.taken_at, 1, 10) <= ?")
             params.append(end_of_today)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
@@ -4104,7 +4142,7 @@ class SessionStore:
                 """
                 WITH RECURSIVE chain(id) AS (
                     SELECT id FROM reminders WHERE repeats_from = ?
-                    UNION ALL
+                    UNION
                     SELECT r.id FROM reminders r
                       JOIN chain c ON r.repeats_from = c.id
                 )

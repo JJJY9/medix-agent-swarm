@@ -929,3 +929,23 @@ def test_sessions_api_exposes_consultation_risk(tmp_path, monkeypatch):
     assert by_id["risk-1"]["risk"] == "high"
     assert by_id["risk-2"]["risk"] == ""
     assert all("risk_text" not in item for item in data["sessions"])
+
+
+def test_sessions_risk_parses_answer_beyond_1000_chars(
+    tmp_path, monkeypatch
+):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    prefix = "注意休息。" * 250
+    store.save_exchange(
+        "risk-long", "胸痛", prefix + "风险等级：高危。建议立即就医。"
+    )
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        data = client.get("/api/sessions").json()
+    finally:
+        store.close()
+
+    by_id = {item["id"]: item for item in data["sessions"]}
+    assert by_id["risk-long"]["risk"] == "high"

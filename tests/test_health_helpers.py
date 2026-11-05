@@ -39,3 +39,14 @@ def test_parse_risk_level_tagged_and_keywords():
     assert parse_risk_level("高危人群需要定期筛查") == ""
     assert parse_risk_level("") == ""
     assert parse_risk_level(None) == ""
+
+
+def test_parse_risk_level_negation_and_formatting():
+    assert parse_risk_level(
+        "您目前属于低危，注意控制高危因素即可"
+    ) == "low"
+    assert parse_risk_level("不属于高危，建议观察") == ""
+    assert parse_risk_level("风险等级：**紧急**，请立即就医") == "emergency"
+    assert parse_risk_level("风险等级：中等") == "medium"
+    assert parse_risk_level("风险程度为高危") == "high"
+    assert parse_risk_level("高风险因素包括吸烟") == ""
