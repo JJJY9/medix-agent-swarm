@@ -80,6 +80,53 @@ def test_redis_load_failure_does_not_overwrite_history():
         memory.redis_client = None
 
 
+class BrokenRedisDelete:
+    def delete(self, key):
+        raise RuntimeError("redis down")
+
+    def get(self, key):
+        raise RuntimeError("redis down")
+
+    def setex(self, *args, **kwargs):
+        raise AssertionError("读取失败时不应写入")
+
+
+def test_cleared_session_survives_redis_delete_failure():
+    memory = ShortTermMemory(storage_type="memory")
+    memory.storage_type = "redis"
+    memory.redis_client = BrokenRedisDelete()
+    session_id = "redis-clear-failure"
+    memory.sessions.pop(session_id, None)
+    memory._cleared_sessions.discard(session_id)
+    try:
+        memory.add_message(session_id, "user", "旧内容")
+        assert memory.clear_session(session_id) is False
+        # 删除失败时进程内仍视为已清空
+        assert memory.get_session(session_id) is None
+        # 新消息应解除墓碑，允许同一会话继续
+        memory.add_message(session_id, "user", "新内容")
+        history = memory.get_session(session_id)
+        assert history is not None
+        assert [item["content"] for item in history.messages] == ["新内容"]
+    finally:
+        memory.storage_type = "memory"
+        memory.redis_client = None
+        memory.sessions.pop(session_id, None)
+        memory._cleared_sessions.discard(session_id)
+
+
+def test_cleared_session_tombstones_are_capped():
+    memory = ShortTermMemory(storage_type="memory")
+    memory.storage_type = "memory"
+    memory._cleared_sessions.clear()
+    try:
+        for index in range(1005):
+            memory.clear_session(f"tombstone-cap-{index}")
+        assert len(memory._cleared_sessions) <= 1000
+    finally:
+        memory._cleared_sessions.clear()
+
+
 def test_session_summary_uses_real_tool_calls_and_subtask_time():
     context = SharedContext(session_id="s1")
     subtask = SubTask(

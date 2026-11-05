@@ -318,9 +318,9 @@ def test_chat_memory_scope_prefers_bound_session_profile(tmp_path, monkeypatch):
         store.close()
 
     assert response.status_code == 200
-    assert coordinator.context["memory_scope"].startswith(
-        "medix_profile_母亲_"
-    )
+    scope = coordinator.context["memory_scope"]
+    assert scope.startswith("medix_profile_")
+    assert "母亲" not in scope
 
 
 class FailingCoordinator:

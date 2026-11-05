@@ -44,6 +44,18 @@ def test_create_backup_avoids_same_second_collision(tmp_path):
     assert first.exists() and second.exists()
 
 
+def test_same_second_backup_order_uses_numeric_suffix(tmp_path):
+    now = datetime(2026, 1, 1, 8, 0, 0)
+    paths = [
+        create_backup({"n": index}, directory=tmp_path, keep=20, now=now)
+        for index in range(12)
+    ]
+
+    # 后缀按数字比较：-11 比 -9 新，不能用文件名字典序判断
+    assert latest_backup(tmp_path) == paths[-1]
+    assert latest_backup(tmp_path).name.endswith("-11.json")
+
+
 def test_backup_config_defaults_and_caps(monkeypatch):
     monkeypatch.delenv("MEDIX_AUTO_BACKUP_HOURS", raising=False)
     monkeypatch.delenv("MEDIX_BACKUP_KEEP", raising=False)

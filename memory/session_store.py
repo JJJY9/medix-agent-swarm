@@ -62,9 +62,10 @@ IMPORT_LIST_LIMITS = {
     "audit_log": 100000,
 }
 
-#: 单条消息与整次导入的文本上限，避免超大备份长时间占住全局数据库锁
-MAX_IMPORT_MESSAGE_CHARS = 200000
-MAX_IMPORT_TOTAL_CHARS = 10000000
+#: 单条消息与整次导入的文本上限，兼顾超大备份可恢复与内存/锁占用。
+#: 整库请求体上限 128MB；按 UTF-8 最坏 4 字节/字符计算，30M 字符仍能送达。
+MAX_IMPORT_MESSAGE_CHARS = 1000000
+MAX_IMPORT_TOTAL_CHARS = 30000000
 
 
 def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
@@ -1204,7 +1205,7 @@ class SessionStore:
         include_answer: bool = False,
     ) -> List[Dict[str, Any]]:
         """按创建时间倒序返回会话，供健康时间线合并展示。"""
-        limit = max(1, min(int(limit or 200), 2000))
+        limit = max(1, min(int(limit or 200), 100000))
         conditions: List[str] = ["created_at >= ?"]
         params: List[Any] = [str(start or "")]
         if profile is not None:

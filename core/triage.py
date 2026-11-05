@@ -120,7 +120,7 @@ def _positive_mention(text: str, phrase: str) -> bool:
     return False
 
 #: 回答中出现这些词可能构成就医建议
-VISIT_ADVICE_TERMS = ("就医", "就诊", "看医生", "门诊", "急诊", "医院", "救护车")
+VISIT_ADVICE_TERMS = ("就医", "就诊", "看医生", "急诊", "医院", "救护车")
 #: 紧邻就医建议前的否定表达（"不建议您现在立刻去医院"）
 _VISIT_NEGATIONS = (
     "不建议", "不推荐", "不主张", "无需", "不用", "不必", "不需要",

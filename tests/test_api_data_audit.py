@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 import api_server
 import memory
 from knowledge.documents import MAX_DOCUMENT_CHARS, load_document
-from memory.session_store import MAX_IMPORT_MESSAGE_CHARS, SessionStore
+from memory.session_store import (
+    MAX_IMPORT_MESSAGE_CHARS,
+    MAX_IMPORT_TOTAL_CHARS,
+    SessionStore,
+)
 
 
 @pytest.fixture
@@ -26,11 +30,14 @@ def client_and_store(tmp_path, monkeypatch):
 
 def test_memory_scope_is_derived_from_profile_or_session():
     profile_scope = api_server._memory_scope("母亲", "s1")
-    assert profile_scope.startswith("medix_profile_母亲_")
-    assert api_server._memory_scope("", "s1") == "medix_session_s1"
-    assert api_server._memory_scope("a/b:c", "s1").startswith(
-        "medix_profile_a_b_c_"
-    )
+    assert profile_scope.startswith("medix_profile_")
+    # 外部记忆服务会持久化 user_id，命名空间里不能出现档案姓名
+    assert "母亲" not in profile_scope
+    session_scope = api_server._memory_scope("", "s1")
+    assert session_scope.startswith("medix_session_")
+    assert "s1" not in session_scope
+    # 同一档案必须稳定复用同一命名空间
+    assert profile_scope == api_server._memory_scope(" 母亲 ", "s2")
     # 清洗后同名但原值不同的档案必须落在不同命名空间
     assert api_server._memory_scope("张 三", "s1") != api_server._memory_scope(
         "张_三", "s1"
@@ -132,6 +139,13 @@ def test_import_rejects_oversized_message(tmp_path):
             store.import_data(payload)
     finally:
         store.close()
+
+
+def test_import_caps_fit_request_body_limit():
+    # 导入上限按 UTF-8 最坏 4 字节/字符估算，不能超过中间件请求体上限，
+    # 否则合法备份会在到达 SessionStore 之前被 413 拒绝
+    body_limit = api_server._body_limit_for_path("/api/sessions/import")
+    assert MAX_IMPORT_TOTAL_CHARS * 4 <= body_limit
 
 
 def test_document_ids_include_extension(tmp_path):
