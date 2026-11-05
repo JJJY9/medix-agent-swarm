@@ -821,6 +821,8 @@ def test_app_js_ships_weekly_summary(client):
     assert "${rangeDaysLabel(days)}打卡" in app_js
     assert "较上期" in app_js
     assert "较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 条" in app_js
+    assert "'连续记录'" in app_js
+    assert "data.streak" in app_js
     assert "近 7 天小结" in app_js
     assert "weeklySummaryRequestSeq" in app_js
     assert "medicationLogRequestSeq" in app_js

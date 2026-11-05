@@ -7192,6 +7192,9 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
     const consultCount = Number(
       weekly.consultations ? weekly.consultations.count : 0
     ) || 0;
+    const streakDays = Number(
+      weekly.streak ? weekly.streak.current : 0
+    ) || 0;
     els.homeGlanceSummary.hidden = false;
     els.homeGlanceSummary.replaceChildren(
       ...homeGlanceLine(
@@ -7199,6 +7202,7 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
         `近 ${days} 天：指标 ${metricCount} 条`,
         `全部档案 · 症状 ${symptomCount} 条 · 打卡 ${doseCount} 次`
           + (consultCount ? ` · 会诊 ${consultCount} 次` : '')
+          + (streakDays >= 2 ? ` · 连续记录 ${streakDays} 天` : '')
       )
     );
   } else {
@@ -7401,6 +7405,10 @@ function renderFamilyOverview(data) {
         }
       }
       chips.appendChild(chip);
+    }
+    const streakDays = Number(profile.streak) || 0;
+    if (streakDays >= 2) {
+      chips.appendChild(familyChip(`连续 ${streakDays} 天`));
     }
     if (!chips.children.length) {
       chips.appendChild(familyChip(
@@ -8942,6 +8950,13 @@ function weeklySummaryLines(data) {
     `待办 ${data.reminders.pending} 条，逾期 ${data.reminders.overdue} 条`
     + `，7 天内到期 ${data.reminders.due_in_7_days} 条`,
   ]);
+  const streak = data.streak || {};
+  if (Number(streak.current) > 0) {
+    lines.push([
+      '连续记录',
+      `已连续 ${streak.current} 天，近 30 天记录 ${streak.days_last_30} 天`,
+    ]);
+  }
   return lines;
 }
 
