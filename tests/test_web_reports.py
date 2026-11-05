@@ -1193,3 +1193,21 @@ def test_app_js_exports_follow_active_filters(client):
     assert "params.set('date', reminderCalendarDay)" in app_js
     assert "params.set('status', status)" in app_js
     assert "auditRequestSeq" in app_js
+
+
+def test_app_js_streaming_keeps_aria_live_quiet(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "setAttribute('aria-live', 'off')" in app_js
+    assert "setAttribute('aria-live', 'polite')" in app_js
+    assert "previewReturnFocus" in app_js
+
+
+def test_web_styles_use_readable_contrast(client):
+    css = client.get("/static/styles.css").text
+    html = client.get("/").text
+
+    assert "--ink-faint: #5b7480" in css
+    assert "--triage-2: #b45309" in css
+    assert "--triage-3: #8a6500" in css
+    assert 'id="calendar-grid" role="group"' in html
