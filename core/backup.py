@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,6 +21,16 @@ MAX_BACKUP_HOURS = 24 * 30
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 BACKUP_PREFIX = "medix-backup-"
+_BACKUP_NAME = re.compile(
+    r"^medix-backup-(\d{8}-\d{6})(?:-(\d+))?\.json$"
+)
+
+
+def _backup_sort_key(path: Path):
+    match = _BACKUP_NAME.match(path.name)
+    if not match:
+        return ("", 0)
+    return (match.group(1), int(match.group(2) or 0))
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -53,7 +64,7 @@ def get_backup_dir() -> Path:
 def _prune_backups(directory: Path, keep: int) -> None:
     backups = sorted(
         directory.glob(f"{BACKUP_PREFIX}*.json"),
-        key=lambda path: path.name,
+        key=_backup_sort_key,
         reverse=True,
     )
     for path in backups[keep:]:
@@ -86,7 +97,11 @@ def create_backup(
     temp_path = path.with_name(path.name + ".tmp")
     try:
         temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
             encoding="utf-8",
         )
         temp_path.replace(path)
@@ -116,6 +131,6 @@ def latest_backup(directory: Optional[Path] = None) -> Optional[Path]:
         return None
     backups = sorted(
         target_dir.glob(f"{BACKUP_PREFIX}*.json"),
-        key=lambda path: path.name,
+        key=_backup_sort_key,
     )
     return backups[-1] if backups else None

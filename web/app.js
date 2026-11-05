@@ -11403,7 +11403,7 @@ async function handleLaunchAction() {
   }
 }
 
-async function restoreCurrentSession() {
+async function restoreCurrentSession(expectedQuestion = '') {
   if (!sessionId) return;
   const expectedSession = sessionId;
 
@@ -11419,6 +11419,24 @@ async function restoreCurrentSession() {
     const messages = data.messages || [];
     if (!messages.length) return;
 
+    if (expectedQuestion) {
+      // 只在这一轮确实已保存（有对应提问和其后的回答）时才恢复，
+      // 否则会把刚停止的提问与“已停止”卡片覆盖成旧会话
+      let questionIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        if (messages[i].role === 'user'
+          && messages[i].content === expectedQuestion) {
+          questionIndex = i;
+          break;
+        }
+      }
+      const persisted = questionIndex >= 0
+        && messages.slice(questionIndex + 1).some(
+          (message) => message.role === 'assistant'
+        );
+      if (!persisted) return;
+    }
+
     els.readout.session.textContent = shortSession(expectedSession);
     renderStoredMessages(messages, expectedSession, data.profile || '');
     setVitals('idle', '已恢复上次会诊');
@@ -11427,12 +11445,14 @@ async function restoreCurrentSession() {
   }
 }
 
-function scheduleAbortReconcile(session) {
+function scheduleAbortReconcile(session, question) {
   // 停止接收不等于服务端没有保存结果；稍后拉取一次会话，
-  // 已保存则恢复显示，避免误导用户“未产生结果”并重复会诊
+  // 仅当本轮问答已落库时恢复，避免清掉停止提示并重复会诊
   [1200, 3500].forEach((delay) => {
     setTimeout(() => {
-      if (!busy && sessionId === session) restoreCurrentSession();
+      if (!busy && sessionId === session) {
+        restoreCurrentSession(question);
+      }
     }, delay);
   });
 }
@@ -11649,7 +11669,7 @@ async function send(question) {
 
     if (err.name === 'AbortError') {
       renderStopped({ question, askTurn });
-      scheduleAbortReconcile(sessionId);
+      scheduleAbortReconcile(sessionId, question);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
       logStep('用户停止了本次会诊', false);

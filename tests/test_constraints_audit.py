@@ -39,6 +39,8 @@ def test_negated_diagnosis_phrase_is_not_flagged(validator):
         "无法根据这些信息确诊为高血压。",
         "目前尚未确诊为肺炎。",
         "目前没有确诊为肺炎。",
+        "目前未曾确诊为肺炎。",
+        "从没有确诊为肺炎。",
     ):
         result = validator.validate_output("consultation_agent", text)
         assert not any("明确诊断" in item for item in result["violations"]), text
@@ -59,7 +61,7 @@ def test_prescription_detection_accepts_tablet_and_liquid_units(validator):
     for text in (
         "建议口服二甲双胍，每次 1 片。",
         "可以服用布洛芬混悬液 5ml。",
-        "每日三次，每次两粒。",
+        "建议服用阿司匹林，每日三次，每次两粒。",
         "可服用布洛芬 200mg 缓解疼痛。",
         "布洛芬 200mg，每日三次。",
         "用法：每次 0.5g，一日三次。",
@@ -87,10 +89,13 @@ def test_general_lifestyle_advice_is_not_prescription(validator):
 
 
 def test_food_slice_is_not_prescription(validator):
-    result = validator.validate_output(
-        "diagnostic_agent", "每天吃一片全麦面包，多吃蔬菜。"
-    )
-    assert not any("药物处方" in item for item in result["violations"])
+    for text in (
+        "每天吃一片全麦面包，多吃蔬菜。",
+        # “服用”出现在饮食描述里时，不能仅因片/粒计数就判为处方
+        "服用期间每天吃一片全麦面包，多吃蔬菜。",
+    ):
+        result = validator.validate_output("diagnostic_agent", text)
+        assert not any("药物处方" in item for item in result["violations"]), text
 
 
 def test_high_risk_check_ignores_non_emergency_mentions(validator):
@@ -98,6 +103,25 @@ def test_high_risk_check_ignores_non_emergency_mentions(validator):
         "diagnostic_agent", "心悸多与焦虑有关，建议心内科门诊就诊。"
     )
     assert "高危症状未建议就医" not in result["violations"]
+
+
+def test_outpatient_mention_alone_is_not_emergency_advice(validator):
+    # “门诊”本身不是就医建议；只有“就医/就诊/医院”等明确措辞才算
+    result = validator.validate_output(
+        "diagnostic_agent", "胸痛建议到门诊评估。"
+    )
+    assert "高危症状未建议就医" in result["violations"]
+
+
+def test_negation_words_inside_other_words_do_not_hide_diagnosis(validator):
+    for text in (
+        "患者自觉无力，确诊为贫血。",
+        "补充维生素后确诊为缺铁性贫血。",
+        # “无法排除”不否定后面的“确诊为”
+        "无法排除肺炎，确诊为肺炎。",
+    ):
+        result = validator.validate_output("consultation_agent", text)
+        assert any("明确诊断" in item for item in result["violations"]), text
 
 
 def test_high_risk_check_detects_negated_visit_advice(validator):

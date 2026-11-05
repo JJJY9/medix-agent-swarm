@@ -241,3 +241,33 @@ def test_unserializable_tool_result_falls_back():
     result = asyncio.run(loop.run(agent, {"question": "测试"}))
 
     assert result["answer"] == "最终答复"
+
+
+def test_max_iterations_fallback_records_user_question():
+    """强制收尾也要把用户问题写进短期记忆，不能留下孤立回答。"""
+    from memory import ShortTermMemory
+
+    memory = ShortTermMemory(storage_type="memory")
+    session_id = "max-iterations-memory"
+    memory.clear_session(session_id)
+    try:
+        loop = AgentLoop(
+            max_iterations=1,
+            max_tool_calls=10,
+            short_term_memory=memory,
+        )
+        result = asyncio.run(loop.run(
+            FakeAgent(FakeLLM()),
+            {"question": "需要记录的原始问题"},
+            session_id=session_id,
+        ))
+
+        assert result["warning"] == "max_iterations_reached"
+        history = memory.get_session(session_id).messages
+        # 强制收尾前已有工具轮次；关键是最终回答前必须补上用户问题
+        assert history[-2]["role"] == "user"
+        assert history[-2]["content"] == "需要记录的原始问题"
+        assert history[-1]["role"] == "assistant"
+        assert history[-1]["content"] == result["answer"]
+    finally:
+        memory.clear_session(session_id)

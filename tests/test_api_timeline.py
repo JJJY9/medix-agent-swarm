@@ -420,3 +420,31 @@ def test_timeline_filters_high_risk_consultations(client_and_store):
     )
     assert len(rows) == 3
     assert {row[2] for row in rows[1:]} == {"胸痛", "剧烈胸痛"}
+
+
+def test_timeline_export_supports_more_than_2000_events(client_and_store):
+    client, store = client_and_store
+    now = datetime.now().isoformat(timespec="seconds")
+    total = 2005
+
+    with store._lock, store._conn:
+        store._conn.executemany(
+            "INSERT INTO health_metrics("
+            "profile,metric,value1,value2,unit,measured_at,note,created_at"
+            ") VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("妈妈", "weight", 60, None, "kg", now, "", now)
+                for _ in range(total)
+            ],
+        )
+
+    export = client.get(
+        "/api/timeline/export.csv",
+        params={"profile": "妈妈", "days": 30},
+    )
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+
+    assert export.status_code == 200
+    assert len(rows) == total + 1

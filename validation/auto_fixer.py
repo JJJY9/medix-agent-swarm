@@ -83,9 +83,11 @@ class AutoFixer:
             has_visit_recommendation,
         )
 
-        risk_text = (
-            user_input.strip() if user_input and user_input.strip()
-            else clinical_statement_text(output)
+        risk_text = "\n".join(
+            part for part in (
+                user_input.strip(),
+                clinical_statement_text(output),
+            ) if part
         )
         # 复用急症红旗与就医建议识别：否定或已给出就医建议时不再插入警告
         if (

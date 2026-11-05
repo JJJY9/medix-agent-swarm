@@ -5,6 +5,7 @@ Agent循环引擎
 支持约束验证（Harness Engineering）
 """
 import asyncio
+import hashlib
 import uuid
 import json
 from typing import Dict, Any, List, Optional
@@ -107,7 +108,11 @@ class AgentLoop:
         if isinstance(context_data, dict):
             memory_scope = str(context_data.get("memory_scope") or "").strip()
         if not memory_scope and session_id:
-            memory_scope = f"medix_session_{session_id}"
+            # 会话 ID 可能由客户端自定义，同样不能把原文发给外部记忆服务
+            digest = hashlib.sha256(
+                str(session_id).encode("utf-8")
+            ).hexdigest()[:24]
+            memory_scope = f"medix_session_{digest}"
         memory_scope = memory_scope[:120]
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
@@ -391,8 +396,15 @@ class AgentLoop:
                         'warning': 'max_iterations_reached'
                     }
 
-                    # 记录最终回答到短期记忆
+                    # 记录最终回答到短期记忆；强制收尾路径也补上用户问题，
+                    # 避免留下没有提问的回答
                     if self.short_term_memory and session_id and persist_memory:
+                        if user_question:
+                            self.short_term_memory.add_message(
+                                session_id=session_id,
+                                role="user",
+                                content=user_question
+                            )
                         self.short_term_memory.add_message(
                             session_id=session_id,
                             role="assistant",

@@ -241,6 +241,8 @@ class ShortTermMemory:
                 if history is None:
                     history = ConversationHistory(session_id=session_id)
                     self.sessions[session_id] = history
+                # 新消息意味着会话重新启用，解除之前的删除墓碑
+                self._cleared_sessions.discard(session_id)
                 history.add_message(role, content)
                 self._local_fallback_at[session_id] = datetime.now()
                 self._evict_local_sessions()
@@ -419,6 +421,10 @@ class ShortTermMemory:
             Redis 删除是否成功；本地存储始终视为成功。
         """
         self._cleared_sessions.add(session_id)
+        if len(self._cleared_sessions) > 1000:
+            # 墓碑只用于避免本次进程内的会话复活，限制集合规模
+            self._cleared_sessions.clear()
+            self._cleared_sessions.add(session_id)
         self.sessions.pop(session_id, None)
         self._local_fallback_at.pop(session_id, None)
 

@@ -28,9 +28,12 @@ _PRESCRIPTION_ACTIONS = {
 _DEFINITIVE_DIAGNOSIS_PATTERN = re.compile(
     r"(?:您患有|您得了|您得的是|确诊为|可以确诊为|明确诊断为|诊断为|肯定是)"
 )
-_DIAGNOSIS_NEGATIONS = (
-    "不能", "无法", "不可", "尚不能", "尚未", "没有", "未", "不建议", "不应",
-    "并非", "不是", "未曾", "未确诊",
+_DIAGNOSIS_NEGATION_PATTERN = re.compile(
+    r"(?:(?:不能|无法|不可|尚未|未曾|没有|否认|并非|不是|不建议|不应)"
+    r"(?:仅|单纯|完全|凭|根据|据此|明确|直接|轻易|发现|出现)?"
+    # “无法排除肺炎，确诊为…”里的“无法排除”并不否定诊断
+    r"(?![^，。；]{0,6}(?:排除|除外))"
+    r"[^，。；]{0,6}|未|无)\s*$"
 )
 _DIAGNOSIS_CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
 
@@ -60,8 +63,10 @@ _COUNT_UNIT_PATTERN = re.compile(
     rf"(?:每日|每天|一日|每次).{{0,8}}{_NUMERAL}\s*(?:片|粒|支|ml|毫升)"
 )
 _MEDICATION_TERMS = (
-    "药", "服用", "口服", "注射", "片剂", "胶囊", "颗粒", "滴剂", "喷雾", "胰岛素",
+    "药", "口服", "注射", "片剂", "胶囊", "颗粒", "滴剂", "喷雾", "胰岛素",
 )
+#: 片/粒/支既可能是药也可能是食物，需有明确药名或“药”语境
+_COUNT_UNIT_SUFFIX = re.compile(r"(?:片|粒|支)\s*$")
 #: “误服 20 片”是中毒描述，不是处方
 _OVERDOSE_PATTERN = re.compile(r"(?:误服|过量|超量|超过|中毒|自杀|自伤|服毒)")
 
@@ -89,7 +94,7 @@ def _contains_definitive_diagnosis(output: str) -> bool:
     """判断是否给出明确诊断，忽略同一分句内「不能诊断为」这类否定表述。"""
     for match in _DEFINITIVE_DIAGNOSIS_PATTERN.finditer(output):
         prefix = _clause_prefix(output, match.start())
-        if not any(negation in prefix for negation in _DIAGNOSIS_NEGATIONS):
+        if not _DIAGNOSIS_NEGATION_PATTERN.search(prefix):
             return True
     return False
 
@@ -116,13 +121,25 @@ def _mentions_known_drug(output: str) -> bool:
 
 def _contains_prescription(output: str) -> bool:
     """判断是否给出带剂量/用量的具体处方或用药方案。"""
+    known_drug = _mentions_known_drug(output)
+    medication_context = (
+        any(term in output for term in _MEDICATION_TERMS) or known_drug
+    )
+
     for pattern in _PRESCRIPTION_PATTERNS:
         for match in pattern.finditer(output):
-            if not _match_is_overdose(output, match):
-                return True
+            if _match_is_overdose(output, match):
+                continue
+            # 片/粒/支也可能是食物（“每天吃一片面包”），
+            # 没有明确药名或“药”语境时不算处方
+            if (
+                _COUNT_UNIT_SUFFIX.search(match.group(0))
+                and not medication_context
+            ):
+                continue
+            return True
 
-    known_drug = _mentions_known_drug(output)
-    if not any(term in output for term in _MEDICATION_TERMS) and not known_drug:
+    if not medication_context:
         return False
 
     # 有用药语境时，片/粒计数也可能是食物，需再匹配具体用法
@@ -251,9 +268,11 @@ class ConstraintValidator:
                 has_visit_recommendation,
             )
 
-            risk_text = (
-                user_input.strip() if user_input and user_input.strip()
-                else clinical_statement_text(output)
+            risk_text = "\n".join(
+                part for part in (
+                    user_input.strip(),
+                    clinical_statement_text(output),
+                ) if part
             )
             if (
                 detect_red_flags(risk_text)['level'] == 'emergency'

@@ -825,8 +825,8 @@ def _scope_route_path(scope: Dict[str, Any]) -> str:
 
 def _body_limit_for_path(path: str) -> int:
     if path == "/api/sessions/import":
-        # 整库备份可能很大，但必须有上限，避免一次导入长时间占住数据库锁
-        return 64 * 1024 * 1024
+        # 整库备份需要可恢复；仍设上限防止超大导入长期占住数据库锁
+        return 128 * 1024 * 1024
     if path == "/api/knowledge/upload-batch":
         return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/upload"):
@@ -2751,7 +2751,7 @@ async def health_timeline(
                 status_code=400, detail="日期格式应为 YYYY-MM-DD"
             )
     days = max(1, min(int(days or 30), 365))
-    limit = max(1, min(int(limit or 100), 2000))
+    limit = max(1, min(int(limit or 100), 100000))
     store = get_session_store()
     if day:
         start = day
@@ -2778,7 +2778,7 @@ async def health_timeline(
     )
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
-        profile, start, session_end, 500, True,
+        profile, start, session_end, max(500, limit), True,
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
@@ -5602,18 +5602,22 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
 
 
 def _memory_scope(patient_profile: str, session_id: str) -> str:
-    """长期记忆命名空间：有档案按档案共享，否则按会话隔离。"""
+    """长期记忆命名空间：只发送不可逆哈希。
+
+    外部记忆服务（Mem0 等）会持久化 user_id，档案姓名属于敏感信息，
+    不能出现在命名空间里；同一档案仍共享作用域，不同档案不会碰撞。
+    旧版本以可读姓名写入的历史记忆不会自动迁移到新命名空间。
+    """
     raw_profile = str(patient_profile or "").strip()
-    profile = re.sub(
-        r"[^\w一-鿿.-]+", "_", raw_profile
-    )[:60].strip(" ._-")
-    if profile:
-        # 加入原值哈希，避免「张 三」和「张_三」清洗后共用命名空间
+    if raw_profile:
         digest = hashlib.sha256(
             raw_profile.encode("utf-8")
-        ).hexdigest()[:8]
-        return f"medix_profile_{profile}_{digest}"[:120]
-    return f"medix_session_{session_id}"[:120]
+        ).hexdigest()[:24]
+        return f"medix_profile_{digest}"
+    digest = hashlib.sha256(
+        str(session_id or "").encode("utf-8")
+    ).hexdigest()[:24]
+    return f"medix_session_{digest}"
 
 
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:
@@ -5840,6 +5844,30 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             )
 
         task.add_done_callback(link_profile_when_done)
+
+        def finish_task(done_task):
+            # 锁必须等子任务真正结束才释放：仅 cancel() 后立刻 release
+            # 会让下一个请求与仍在收尾的 consultation 并发
+            if not done_task.cancelled():
+                try:
+                    done_task.exception()
+                except Exception:
+                    pass
+            for worker in getattr(coordinator, "worker_pool", []):
+                sc = getattr(worker, "shared_context", None)
+                if sc is None or id(sc) in stale_contexts:
+                    continue
+                detach = getattr(worker, "attach_shared_context", None)
+                if callable(detach):
+                    detach(None)
+                else:
+                    try:
+                        worker.shared_context = None
+                    except Exception:
+                        pass
+            release_lock()
+
+        task.add_done_callback(finish_task)
         # 锁只在会诊执行与事件排空期间持有；任务结束后由 finally
         # 在客户端断开/尾帧发送完成后统一释放
 
@@ -5934,30 +5962,10 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 })
                 return
         finally:
-            # 客户端断开时生成器被关闭，别让任务继续空转；取消后要
-            # await 一次，取走 CancelledError 并确保 Agent 侧清理完成
-            if task is not None:
-                if not task.done():
-                    task.cancel()
-                with suppress(asyncio.CancelledError):
-                    try:
-                        await task
-                    except Exception:
-                        pass
-                # 本轮结束后解除 Worker 上残留的患者上下文
-                for worker in getattr(coordinator, "worker_pool", []):
-                    sc = getattr(worker, "shared_context", None)
-                    if sc is None or id(sc) in stale_contexts:
-                        continue
-                    detach = getattr(worker, "attach_shared_context", None)
-                    if callable(detach):
-                        detach(None)
-                    else:
-                        try:
-                            worker.shared_context = None
-                        except Exception:
-                            pass
-            release_lock()
+            # 客户端断开时取消子任务；锁、Worker 解绑与异常取走
+            # 都交给 finish_task 在任务真正结束后执行
+            if task is not None and not task.done():
+                task.cancel()
 
         payload = _serialize_result(result, AGENT_LABELS)
         if not (payload["answer"] or "").strip():
