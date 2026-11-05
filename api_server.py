@@ -2976,6 +2976,82 @@ async def family_overview(days: int = 7):
     return {"days": days, "profiles": profiles}
 
 
+@app.get("/api/family/overview/export.csv")
+async def export_family_overview_csv(days: int = 7):
+    """导出家庭健康总览 CSV（带 BOM），每位成员一行。"""
+    import csv
+    import io
+
+    data = await family_overview(days=days)
+    days = data["days"]
+    rows = [[
+        "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
+        "待办提醒", "近7天症状", "近7天会诊", "最近活动",
+    ]]
+    for item in data["profiles"]:
+        context = item.get("context") or {}
+        metric_text = "；".join(
+            (
+                f"{metric['label']} {metric['value']} {metric['unit']}".strip()
+                + ("（超标）" if metric.get("over_target") else "")
+            )
+            for metric in (item.get("metrics") or [])[:3]
+        )
+        medications = item.get("medications") or {}
+        medication_text = ""
+        adherence_text = ""
+        if medications.get("active"):
+            medication_text = (
+                f"{medications['active']} 种，"
+                f"今日 {medications.get('taken_today', 0)} 次"
+            )
+            adherence = medications.get("adherence")
+            if adherence:
+                adherence_text = f"{adherence['rate']}%"
+        reminders = item.get("reminders") or {}
+        reminder_text = (
+            f"待办 {reminders.get('pending', 0)}，"
+            f"逾期 {reminders.get('overdue', 0)}，"
+            f"今天 {reminders.get('due_today', 0)}"
+        )
+        symptoms = item.get("symptoms") or {}
+        symptom_text = str(symptoms.get("count") or 0)
+        latest = symptoms.get("latest") or {}
+        if latest.get("symptom"):
+            symptom_text += (
+                f"（最近 {latest['symptom']} {latest['severity']}/10）"
+            )
+        consultations = item.get("consultations") or {}
+        rows.append([
+            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(context.get("age", "")),
+            csv_safe_cell(context.get("sex", "")),
+            csv_safe_cell(metric_text),
+            csv_safe_cell(medication_text),
+            csv_safe_cell(adherence_text),
+            csv_safe_cell(reminder_text),
+            csv_safe_cell(symptom_text),
+            csv_safe_cell(
+                f"近 {days} 天 {consultations.get('count', 0)} 次"
+            ),
+            csv_safe_cell(item.get("last_activity", "")),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-family-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/reminders")
 async def list_reminders(
     include_done: bool = False, profile: Optional[str] = None

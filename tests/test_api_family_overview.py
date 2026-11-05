@@ -164,3 +164,46 @@ def test_family_overview_includes_deleted_profiles(client_and_store):
     assert profiles["爷爷"]["context"] == {}
     assert profiles["爷爷"]["symptoms"]["count"] == 1
     assert data["days"] == 30
+
+
+def test_family_overview_csv_export(client_and_store):
+    import csv
+    import io
+
+    client, _store = client_and_store
+    now = datetime.now()
+
+    client.post("/api/profiles", json={
+        "name": "妈妈", "context": {"age": "62", "sex": "女"},
+    })
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "bp", "value1": 135, "value2": 85,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 140, "value2": 95,
+        "measured_at": now.isoformat(timespec="minutes"),
+    })
+    client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "复查",
+        "due_at": now.strftime("%Y-%m-%d"),
+    })
+
+    export = client.get("/api/family/overview/export.csv")
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+
+    assert export.status_code == 200
+    assert rows[0] == [
+        "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
+        "待办提醒", "近7天症状", "近7天会诊", "最近活动",
+    ]
+    mom = next(row for row in rows[1:] if row[0] == "妈妈")
+    assert mom[1] == "62"
+    assert mom[2] == "女"
+    assert "血压" in mom[3]
+    assert "超标" in mom[3]
+    assert mom[6].startswith("待办 1")
+    assert mom[7] == "0"
+    assert mom[8] == "近 7 天 0 次"
