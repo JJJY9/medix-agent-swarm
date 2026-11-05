@@ -20,6 +20,7 @@ from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
 from core.citations import merge_sources
 from core.usage import merge_usages
+from core.session_context import session_memory_scope
 from .shared_context import SharedContext, TaskStatus
 from .lead_agent import LeadAgent
 from .events import Event, EventType
@@ -284,7 +285,7 @@ class SwarmCoordinator:
         if isinstance(context, dict):
             memory_scope = str(context.get("memory_scope") or "").strip()
         if not memory_scope:
-            memory_scope = f"medix_session_{session_id}"
+            memory_scope = session_memory_scope(session_id)
         memory_scope = memory_scope[:120]
 
         logger.info(
@@ -655,7 +656,7 @@ class SwarmCoordinator:
                 session_id=session_id,
                 question=question,
                 answer=final_answer,
-                user_id=memory_scope or f"medix_session_{session_id}",
+                user_id=memory_scope or session_memory_scope(session_id),
                 metadata={
                     "mode": "swarm",
                     "agents_count": len(shared_context.agent_contributions),
