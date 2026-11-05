@@ -695,6 +695,20 @@ def test_app_js_ships_batch_medication_reminders(client):
     assert "reminders.push({" in app_js
 
 
+def test_app_js_ships_family_compare(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="compare-section"' in html
+    assert 'id="compare-metric"' in html
+    assert 'id="compare-list"' in html
+    assert "async function loadFamilyCompare" in app_js
+    assert "function renderFamilyCompare" in app_js
+    assert "/api/family/compare" in app_js
+    assert ".compare-bar" in css
+
+
 def test_app_js_ships_health_calendar(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

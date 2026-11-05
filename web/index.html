@@ -787,6 +787,29 @@
       <div class="weekly-summary-body" id="weekly-summary-body"></div>
     </details>
 
+    <details class="weekly-summary health-compare" id="compare-section">
+      <summary>家庭指标对比</summary>
+      <div class="weekly-summary-toolbar">
+        <label class="sr-only" for="compare-metric">对比指标</label>
+        <select id="compare-metric" aria-label="对比指标">
+          <option value="bp">血压</option>
+          <option value="weight" selected>体重</option>
+          <option value="glucose">血糖</option>
+          <option value="heart_rate">心率</option>
+          <option value="spo2">血氧饱和度</option>
+          <option value="temperature">体温</option>
+        </select>
+        <label class="sr-only" for="compare-range">对比范围</label>
+        <select id="compare-range" aria-label="对比范围">
+          <option value="7">近 7 天</option>
+          <option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+      </div>
+      <ul class="compare-list" id="compare-list"></ul>
+      <p class="metrics-empty" id="compare-empty" hidden>还没有可对比的记录。</p>
+    </details>
+
     <details class="weekly-summary health-calendar" id="calendar-section">
       <summary>健康月历</summary>
       <div class="calendar-toolbar">
