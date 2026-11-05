@@ -5,7 +5,8 @@
 防止他人调用模型、读取或删除会诊记录。
 
 令牌优先从 ``X-Medix-Token`` 请求头读取，也接受
-``Authorization: Bearer <token>`` 和 ``?token=``（方便 curl / 事件流调试）。
+``Authorization: Bearer <token>``。不接受 ``?token=``：查询串会进入
+uvicorn 访问日志与代理日志，等于明文记录令牌。
 """
 from __future__ import annotations
 
@@ -24,19 +25,23 @@ def get_access_token() -> str:
     return (os.getenv(TOKEN_ENV) or "").strip()
 
 
+def _decode_header(value: str) -> str:
+    """HTTP 头按 latin-1 解码；这里尝试还原浏览器发送的 UTF-8 字节。"""
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
+
+
 def request_token(request: Request) -> Optional[str]:
-    """从请求头或查询参数中提取令牌。"""
+    """从请求头中提取令牌。"""
     header = request.headers.get(HEADER_NAME)
     if header:
-        return header.strip()
+        return _decode_header(header).strip()
 
     authorization = request.headers.get("authorization", "")
     if authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-
-    query = request.query_params.get("token")
-    if query:
-        return query.strip()
+        return _decode_header(authorization[7:]).strip()
 
     return None
 

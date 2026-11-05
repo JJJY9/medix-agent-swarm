@@ -57,7 +57,7 @@ def test_status_and_static_are_public_but_api_requires_token(client, monkeypatch
     assert client.get("/api/auth/verify").status_code == 401
 
 
-def test_token_accepted_via_header_bearer_and_query(client, monkeypatch):
+def test_token_accepted_via_header_and_bearer(client, monkeypatch):
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "secret-token")
 
     assert client.get(
@@ -66,9 +66,10 @@ def test_token_accepted_via_header_bearer_and_query(client, monkeypatch):
     assert client.get(
         "/api/sessions", headers={"Authorization": "Bearer secret-token"}
     ).status_code == 200
+    # 查询串会进入访问日志，不再接受 ?token=
     assert client.get(
         "/api/sessions", params={"token": "secret-token"}
-    ).status_code == 200
+    ).status_code == 401
 
     for kwargs in (
         {"headers": {"X-Medix-Token": "wrong"}},
@@ -100,8 +101,14 @@ def test_token_is_not_echoed_in_status(client, monkeypatch):
 def test_non_ascii_token_is_compared_safely(client, monkeypatch):
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "中文令牌🔒")
 
-    ok = client.get("/api/sessions", params={"token": "中文令牌🔒"})
-    wrong = client.get("/api/sessions", params={"token": "错误令牌"})
+    ok = client.get(
+        "/api/sessions",
+        headers={"X-Medix-Token": "中文令牌🔒".encode("utf-8")},
+    )
+    wrong = client.get(
+        "/api/sessions",
+        headers={"X-Medix-Token": "错误令牌".encode("utf-8")},
+    )
 
     assert ok.status_code == 200
     assert wrong.status_code == 401

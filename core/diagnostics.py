@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from core.security import redact_secrets, sanitize_base_url
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MIN_PYTHON = (3, 10)
 
@@ -83,6 +85,10 @@ def read_llm_config() -> Dict[str, Any]:
 
     config["api_key_set"] = bool((config.get("api_key") or "").strip())
     config.pop("api_key", None)
+    if config.get("base_url"):
+        config["base_url"] = sanitize_base_url(str(config["base_url"]))
+    if config.get("load_error"):
+        config["load_error"] = redact_secrets(str(config["load_error"]))
     return config
 
 
@@ -126,7 +132,7 @@ def check_knowledge(
             info["hint"] = "知识库为空，请在「管理知识库」中上传文档或运行导入脚本"
     except Exception as e:
         info["query_ok"] = False
-        info["error"] = str(e)
+        info["error"] = redact_secrets(str(e))
 
     return info
 
@@ -191,7 +197,7 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
             finally:
                 conn.close()
         except Exception as e:
-            info["db_error"] = str(e)
+            info["db_error"] = redact_secrets(str(e))
 
     return info
 
@@ -259,4 +265,10 @@ def check_api(base_url: str) -> Dict[str, Any]:
             payload = json.loads(response.read().decode("utf-8"))
         return {"ok": bool(payload.get("ok")), "status": payload}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        message = str(e)
+        raw_base = str(base_url or "").rstrip("/")
+        if raw_base and raw_base in message:
+            message = message.replace(
+                raw_base, sanitize_base_url(raw_base)
+            )
+        return {"ok": False, "error": redact_secrets(message)}
