@@ -9320,8 +9320,14 @@ function renderFamilyCompare(data) {
     const meta = document.createElement('span');
     meta.className = 'compare-meta';
     if (Number(row.count) > 0 && row.avg_value1 !== null) {
+      const hasRange = row.avg_value2 === null && Number(row.count) > 1
+        && row.min_value1 !== null && row.max_value1 !== null
+        && Number(row.min_value1) !== Number(row.max_value1);
+      const rangeText = hasRange
+        ? `（${row.min_value1}–${row.max_value1}${data.unit ? ` ${data.unit}` : ''}）`
+        : '';
       meta.textContent = `平均 ${formatCompareValue(row, data.unit)}`
-        + ` · ${row.count} 次`;
+        + `${rangeText} · ${row.count} 次`;
     } else {
       meta.textContent = '所选范围内无记录';
     }

@@ -61,10 +61,14 @@ def test_family_compare_metrics(client_and_store):
     assert mom["count"] == 2
     assert mom["avg_value1"] == 61.0
     assert mom["avg_value2"] is None
+    assert mom["min_value1"] == 60.0
+    assert mom["max_value1"] == 62.0
     assert mom["latest"]["value1"] == 62
     child = data["profiles"][1]
     assert child["count"] == 1
     assert child["avg_value1"] == 30.0
+    assert child["min_value1"] == 30.0
+    assert child["max_value1"] == 30.0
     dad = data["profiles"][2]
     assert dad["count"] == 0
     assert dad["avg_value1"] is None
