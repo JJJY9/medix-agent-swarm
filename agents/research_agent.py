@@ -41,6 +41,7 @@ class ResearchAgent(BaseAgent, SkillRegistryMixin):
     ):
         config = config or {}
         config.setdefault('max_iterations', 5)
+        config.setdefault('max_tool_calls', 3)
 
         super().__init__(agent_id, config, llm_client)
 
@@ -92,10 +93,9 @@ class ResearchAgent(BaseAgent, SkillRegistryMixin):
 - 综合多个信息来源，提供证据等级
 
 **Swarm 协作模式**：
-- 你可以从 SharedContext 读取其他 Agent 的诊断结果
-- 针对诊断结果检索支持性证据
+- 你与其他科室并行执行，无法读取其他 Agent 的诊断结果
+- 针对用户问题与已有上下文检索支持性证据
 - 你的文献证据会帮助 LeadAgent 做出更可靠的最终建议
-- 专注于你的专长：文献检索和证据综合
 
 **输出格式**：
 【文献检索结果】
@@ -147,13 +147,22 @@ class ResearchAgent(BaseAgent, SkillRegistryMixin):
             if fallback:
                 evidence_level = fallback.group(1)
 
-        # 统计文献数量
-        literature_count = final_response.count("文献")
+        # 统计文献数量：只认提示词要求的「找到相关文献：N 篇」字段，
+        # 不能把「文献」一词的出现次数当作文献数
+        literature_match = re.search(
+            r"找到相关文献\s*[：:]\s*(\d+)\s*篇", final_response
+        )
+        literature_count = (
+            int(literature_match.group(1)) if literature_match else 0
+        )
 
         result.update({
             "evidence_level": evidence_level,
             "literature_count": literature_count,
-            "evidence_provided": True
+            "evidence_provided": (
+                evidence_level in {"A", "B", "C"}
+                or literature_count > 0
+            ),
         })
 
         return result

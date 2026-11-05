@@ -20,6 +20,7 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
         default_config = {
             "model": "openai_compatible",
             "max_iterations": 5,
+            "max_tool_calls": 3,
             "temperature": 0.8,
             "description": "健康咨询Agent，提供通用医疗咨询和健康建议"
         }
@@ -59,6 +60,7 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
 - 只在真正需要专业医学信息时才调用 Skills
 - 调用 Skill 后，根据返回的结果给出最终答案
 - **最多使用2-3个 Skills，然后必须给出最终答案**
+- 参数提示：search_history 必须传 session_id（见系统信息「当前会话ID」）；recommend_lifestyle 的疾病参数名为 diagnosis
 
 工作流程建议：
 1. 理解用户问题
@@ -78,6 +80,9 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
 - 对于严重或紧急情况，必须建议立即就医
 
 在最终回答时，请按以下格式输出：
+
+【风险评估】
+风险等级：低/中/高/紧急（如能从症状判断；无法判断时写“不确定”）
 
 【回答】
 [你的详细回答]
@@ -119,10 +124,26 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
         disclaimer = disclaimer_match.group(1) if disclaimer_match else \
             "⚠️ 以上信息仅供参考，不能替代专业医生的诊断和治疗。如有疑虑，请及时就医。"
 
+        # 提取风险等级（与诊断 Agent 一致的标签解析）
+        risk_level = ""
+        risk_match = re.search(
+            r"风险等级\s*[：:]\s*[【\[]?\s*(紧急|高|中|低)",
+            final_response,
+        )
+        if risk_match:
+            risk_level = {
+                "紧急": "emergency",
+                "高": "high",
+                "中": "medium",
+                "低": "low",
+            }[risk_match.group(1)]
+
         result.update({
             'suggestions': suggestions[:5],  # 最多5条
             'disclaimer': disclaimer
         })
+        if risk_level:
+            result['risk_level'] = risk_level
 
         return result
 
