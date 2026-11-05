@@ -1,4 +1,5 @@
 """会话持久化与上下文恢复的单元测试。"""
+import asyncio
 import json
 from datetime import datetime, timedelta
 
@@ -115,7 +116,7 @@ def test_coordinator_restores_short_term_context(store):
     coordinator.session_store = store
     coordinator.short_term_memory = memory
 
-    coordinator._restore_short_term_context("restore-test")
+    asyncio.run(coordinator._restore_short_term_context("restore-test"))
 
     messages = memory.get_recent_messages("restore-test", limit=10)
     assert [m["role"] for m in messages] == ["user", "assistant"]

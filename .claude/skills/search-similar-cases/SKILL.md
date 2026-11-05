@@ -31,4 +31,4 @@ description: Search similar historical cases from long-term memory (Mem0). Use w
 
 ## Note
 
-This skill searches **across all historical sessions** using vector similarity (Mem0). For current session history, use `/search-history`.
+This skill searches historical sessions **within the current patient/session memory scope** using vector similarity (Mem0). It never reads another patient's history. For current session history, use `/search-history`.

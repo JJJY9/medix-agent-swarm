@@ -13,6 +13,7 @@ from loguru import logger
 from .state_manager import StateManager, TaskStatus
 from .llm_client import LLMResponse, LLMError
 from .citations import merge_sources
+from .session_context import use_memory_scope
 from .usage import merge_usage
 
 # Harness Engineering: 约束验证和自动修复
@@ -101,6 +102,13 @@ class AgentLoop:
             or input_data.get('query')
             or str(input_data)
         )
+        context_data = input_data.get('context')
+        memory_scope = ""
+        if isinstance(context_data, dict):
+            memory_scope = str(context_data.get("memory_scope") or "").strip()
+        if not memory_scope and session_id:
+            memory_scope = f"medix_session_{session_id}"
+        memory_scope = memory_scope[:120]
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -210,10 +218,11 @@ class AgentLoop:
                                     )
 
                             try:
-                                tool_result = await agent.execute_tool(
-                                    tool_name=tool_call.name,
-                                    arguments=tool_call.arguments
-                                )
+                                with use_memory_scope(memory_scope):
+                                    tool_result = await agent.execute_tool(
+                                        tool_name=tool_call.name,
+                                        arguments=tool_call.arguments
+                                    )
                             except Exception as e:
                                 # 任何 Skill 异常都要变成一条 tool 响应，
                                 # 否则历史里会留下没有结果的 tool_calls，下一轮 API 直接 400

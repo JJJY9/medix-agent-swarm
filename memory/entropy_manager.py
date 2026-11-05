@@ -57,7 +57,10 @@ class MemoryEntropyManager:
             else:
                 # 重复消息保留最新一条（时间戳/元数据以新消息为准）
                 unique_messages[index_by_hash[content_hash]] = msg
-                logger.debug(f"🗑️ Deduplicated message: {content[:30]}...")
+                logger.debug(
+                    "🗑️ Deduplicated message "
+                    f"(role={msg.get('role', '')}, length={len(content)})"
+                )
 
         removed_count = len(messages) - len(unique_messages)
         if removed_count > 0:
