@@ -1352,9 +1352,11 @@ async def export_medications_csv(
     )
     rows = [[
         "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
-        "今日次数", "近7天次数", "最近服用",
+        "今日次数", "近7天次数", "最近服用", "近7天应服", "依从率",
     ]]
     for item in items:
+        expected = int(item.get("expected_week_doses") or 0)
+        taken = int(item.get("week_count") or 0)
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(item.get("dose", "")),
@@ -1363,8 +1365,11 @@ async def export_medications_csv(
             "在用" if item.get("active") else "停用",
             csv_safe_cell(item.get("note", "")),
             str(int(item.get("today_count") or 0)),
-            str(int(item.get("week_count") or 0)),
+            str(taken),
             csv_safe_cell(item.get("last_taken_at") or ""),
+            str(expected) if expected else "",
+            str(min(100, round(taken / expected * 100 + 1e-9)))
+            if expected else "",
         ])
 
     buffer = io.StringIO()
