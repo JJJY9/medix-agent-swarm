@@ -73,6 +73,7 @@ def test_health_dossier_markdown(client_and_store):
     assert "# 健康档案：妈妈" in text
     assert "62 岁 · 女" in text
     assert "过敏史：青霉素" in text
+    assert "连续记录：已连续 1 天（近 30 天记录 1 天）" in text
     assert "血压：≤ 135/85 mmHg" in text
     assert "血压：140/95 mmHg（" in text
     assert "超标" in text
@@ -98,6 +99,7 @@ def test_health_dossier_empty_profile(client_and_store):
 
     assert response.status_code == 200
     assert "# 健康档案：孩子" in text
+    assert "连续记录：已连续 0 天（近 30 天记录 0 天）" in text
     assert "暂未设置指标目标" in text
     assert "暂无健康指标记录" in text
     assert "暂无症状记录" in text
