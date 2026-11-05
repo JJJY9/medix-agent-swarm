@@ -80,6 +80,27 @@ def test_health_streak_includes_consultations(client_and_store):
     assert data["recorded_today"] is True
 
 
+def test_health_streak_ignores_future_records(client_and_store):
+    client, _store = client_and_store
+    tomorrow = (
+        datetime.now() + timedelta(days=1)
+    ).isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight",
+        "value1": 60, "measured_at": tomorrow,
+    })
+
+    data = client.get(
+        "/api/health/streak", params={"profile": "妈妈"}
+    ).json()
+
+    assert data["recorded_today"] is False
+    assert data["current"] == 0
+    assert data["best"] == 0
+    assert data["days_last_30"] == 0
+
+
 def test_health_streak_exposed_in_weekly_and_family_overview(
     client_and_store
 ):
