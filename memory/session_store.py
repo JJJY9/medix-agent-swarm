@@ -207,6 +207,86 @@ def _normalize_profile_name(value: Any) -> str:
 MAX_MEDICATION_NAME_LENGTH = 120
 MAX_MEDICATION_TEXT_LENGTH = 60
 
+#: 常见中文数字，用于解析「每日三次」这类频次描述
+_CN_DIGITS = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9,
+}
+
+
+def _frequency_count(token: str) -> Optional[int]:
+    token = str(token or "").strip()
+    if not token:
+        return 1
+    if token.isdigit():
+        value = int(token)
+        return value if 1 <= value <= 24 else None
+    if token == "十":
+        return 10
+    return _CN_DIGITS.get(token)
+
+
+def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
+    """按常见频次描述估算每日应服次数；按需服用或无法识别时返回 None。"""
+    text = " ".join(str(frequency or "").split())
+    if not text:
+        return None
+    if re.search(r"必要时|按需|临时|prn", text, re.IGNORECASE):
+        return None
+    lowered = text.lower()
+    for key, value in (
+        ("qd", 1), ("bid", 2), ("tid", 3), ("qid", 4),
+        ("q12h", 2), ("q8h", 3),
+    ):
+        if re.search(rf"(?<![a-z]){key}(?![a-z])", lowered):
+            return float(value)
+    if re.search(r"每(?:两|2)\s*(?:周|星期|礼拜)", text):
+        return 1 / 14
+    weekly = re.search(
+        r"每(?:周|星期|礼拜)\s*([一二两三四五六七八九十\d]+)?\s*次?", text
+    )
+    if weekly:
+        count = _frequency_count(weekly.group(1) or "")
+        return count / 7 if count else None
+    if re.search(r"隔日|隔天|每隔一天|每隔1天|每两天|每二天", text):
+        return 1 / 2
+    every_days = re.search(
+        r"每\s*隔?\s*([一二两三四五六七八九十\d]+)\s*天", text
+    )
+    if every_days:
+        count = _frequency_count(every_days.group(1))
+        return 1 / count if count else None
+    if re.search(r"每(?:个)?月", text):
+        return 1 / 30
+    daily = re.search(
+        r"(?:每(?:日|天|晚|早)|一日|一天)\s*([一二两三四五六七八九十\d]+)?\s*次",
+        text,
+    )
+    if daily:
+        count = _frequency_count(daily.group(1) or "")
+        return float(count) if count else None
+    if re.search(r"每日|每天|每晚|每早|一日|睡前|晨起", text):
+        return 1.0
+    return None
+
+
+def _expected_week_doses(
+    frequency: str, created_at: str, now: datetime
+) -> Optional[int]:
+    """按频次与用药开始时间估算近 7 天应服次数。"""
+    per_day = parse_frequency_doses_per_day(frequency)
+    if not per_day:
+        return None
+    try:
+        created = datetime.fromisoformat(str(created_at or "")[:19]).date()
+    except ValueError:
+        created = now.date()
+    start = max(created, (now - timedelta(days=6)).date())
+    days = (now.date() - start).days + 1
+    if days <= 0:
+        return None
+    return max(1, round(per_day * days))
+
 
 def _normalize_medication(
     profile: str,
@@ -3054,6 +3134,9 @@ class SessionStore:
                 "today_count": int(row["today_count"] or 0),
                 "week_count": int(row["week_count"] or 0),
                 "last_taken_at": row["last_taken_at"] or "",
+                "expected_week_doses": _expected_week_doses(
+                    row["frequency"], row["created_at"], now
+                ),
             }
             for row in rows
         ]
