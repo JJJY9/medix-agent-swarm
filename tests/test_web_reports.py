@@ -710,6 +710,10 @@ def test_app_js_ships_health_timeline(client):
     assert 'id="timeline-only-alert"' in html
     assert '<option value="1">今天</option>' in html
     assert "rangeDaysLabel" in app_js
+    assert "HEALTH_FILTER_KEYS" in app_js
+    assert "restoreSelectValue" in app_js
+    assert "medix.weeklyRange" in app_js
+    assert "medix.metricType" in app_js
     assert 'id="timeline-export"' in html
     assert "async function exportTimelineCsv" in app_js
     assert "/api/timeline/export.csv" in app_js
