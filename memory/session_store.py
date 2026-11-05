@@ -1042,7 +1042,9 @@ class SessionStore:
             item["favorite"] = bool(item.get("favorite"))
             item["archived"] = bool(item.get("archived"))
             item["tags"] = _parse_tags(item.get("tags"))
-            preview = (item.pop("last_answer", "") or "").replace("\n", " ")
+            last_answer = item.pop("last_answer", "") or ""
+            item["risk_text"] = last_answer[:1000]
+            preview = last_answer.replace("\n", " ")
             item["preview"] = preview[:PREVIEW_LENGTH]
             if query:
                 item["match_snippet"] = snippets.get(item["id"], "")

@@ -995,6 +995,7 @@ async def list_sessions(
         "feedback": feedback,
     }
     for item in sessions:
+        item["risk"] = parse_risk_level(item.pop("risk_text", ""))
         stat = stats.get(item["id"])
         if not stat:
             continue
