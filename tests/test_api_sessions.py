@@ -867,6 +867,12 @@ def test_sessions_csv_includes_risk_level(tmp_path, monkeypatch):
     try:
         client = TestClient(api_server.app)
         response = client.get("/api/sessions/export.csv")
+        high = client.get(
+            "/api/sessions/export.csv", params={"risk": "high"}
+        )
+        invalid = client.get(
+            "/api/sessions/export.csv", params={"risk": "unknown"}
+        )
     finally:
         store.close()
 
@@ -877,6 +883,13 @@ def test_sessions_csv_includes_risk_level(tmp_path, monkeypatch):
     by_id = {row[0]: row for row in rows[1:]}
     assert by_id["r1"][12] == "紧急"
     assert by_id["r2"][12] == ""
+
+    high_rows = list(
+        csv.reader(io.StringIO(high.content.decode("utf-8-sig")))
+    )
+    assert len(high_rows) == 2
+    assert high_rows[1][0] == "r1"
+    assert invalid.status_code == 400
 
 
 def test_sessions_csv_escapes_formula_like_fields(tmp_path, monkeypatch):
