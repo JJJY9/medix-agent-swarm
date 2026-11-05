@@ -42,7 +42,7 @@ class KnowledgeService:
         self.docs_dir.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self._kb = kb
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     @property
     def kb(self):
@@ -70,8 +70,9 @@ class KnowledgeService:
             "documents": documents,
             "document_count": len(documents),
             "chunk_count": chunk_count,
-            "docs_dir": str(self.docs_dir),
-            "upload_dir": str(self.upload_dir),
+            # 只返回目录名，避免把服务器绝对路径暴露给前端
+            "docs_dir": self.docs_dir.name,
+            "upload_dir": self.upload_dir.name,
         }
 
     def _describe(self, path: Path, builtin: bool) -> Optional[Dict[str, Any]]:
@@ -222,6 +223,11 @@ class KnowledgeService:
         }
 
     def rebuild(self, replace_existing: bool = True) -> Dict[str, Any]:
+        """重建索引；整个读取+写入过程持锁，避免读到半写入的上传文件。"""
+        with self._lock:
+            return self._rebuild_locked(replace_existing)
+
+    def _rebuild_locked(self, replace_existing: bool = True) -> Dict[str, Any]:
         builtin_documents = load_documents_from_directory(self.docs_dir)
         uploaded_documents = load_documents_from_directory(
             self.upload_dir, id_prefix="upload_"

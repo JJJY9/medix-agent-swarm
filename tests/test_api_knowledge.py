@@ -291,7 +291,7 @@ def test_knowledge_batch_reports_oversized_file():
     )
 
     assert response.status_code == 400
-    assert "文件过大" in response.json()["detail"]
+    assert "未上传成功" in response.json()["detail"]
 
 
 def test_knowledge_delete():

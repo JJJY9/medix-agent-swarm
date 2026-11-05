@@ -752,9 +752,16 @@ PUBLIC_API_PATHS = {"/api/status"}
 DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 CHAT_PATHS = {"/api/chat", "/api/chat/stream"}
 DIAGNOSE_PATHS = {"/api/diagnose/llm"}
+KNOWLEDGE_WRITE_PATHS = {
+    "/api/knowledge/rebuild",
+    "/api/knowledge/upload",
+    "/api/knowledge/upload-batch",
+}
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
 # 自检端点会真实调用一次付费模型，单独限制频率
 diagnose_limiter = SlidingWindowLimiter(5)
+# 重建/上传会触发全量索引，限制频率避免放大资源消耗
+knowledge_limiter = SlidingWindowLimiter(20)
 
 SECURITY_CSP = (
     "default-src 'self'; "
@@ -784,8 +791,8 @@ def _scope_route_path(scope: Dict[str, Any]) -> str:
 
 def _body_limit_for_path(path: str) -> int:
     if path == "/api/sessions/import":
-        # 整库备份可能很大，保留较宽上限但不再无限
-        return 100 * 1024 * 1024
+        # 整库备份可能很大，但必须有上限，避免一次导入长时间占住数据库锁
+        return 64 * 1024 * 1024
     if path == "/api/knowledge/upload-batch":
         return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/upload"):
@@ -931,6 +938,24 @@ async def require_access_token(request: Request, call_next):
                 headers={"Retry-After": str(max(1, int(retry_after)))},
             ))
 
+    knowledge_write = path in KNOWLEDGE_WRITE_PATHS or (
+        path.startswith("/api/knowledge/documents/")
+        and request.method in ("PUT", "DELETE")
+    )
+    if knowledge_write:
+        client_key = _rate_limit_key(request)
+        allowed, retry_after = knowledge_limiter.check(client_key)
+        if not allowed:
+            return add_security_headers(JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "知识库操作过于频繁，请稍后再试。",
+                    "code": "rate_limited",
+                    "retry_after": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(max(1, int(retry_after)))},
+            ))
+
     response = add_security_headers(
         await call_next(request),
         include_csp=path not in DOC_PATHS,
@@ -1020,8 +1045,8 @@ async def export_audit_csv(
     rows = [["时间", "动作", "对象", "说明"]]
     for item in reversed(items):
         rows.append([
-            item.get("created_at", ""),
-            item.get("action", ""),
+            csv_safe_cell(item.get("created_at", "")),
+            csv_safe_cell(item.get("action", "")),
             csv_safe_cell(item.get("target", "")),
             csv_safe_cell(item.get("detail", "")),
         ])
@@ -1042,7 +1067,7 @@ async def export_audit_csv(
 
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(request: Request):
     """健康检查 + 配置状态，前端用它决定是否显示警告。"""
     from core.llm_client import LLM_CONFIG
 
@@ -1053,20 +1078,30 @@ async def get_status():
         long_term = getattr(state.coordinator, "long_term_memory", None)
         mem0_enabled = bool(getattr(long_term, "enabled", False))
 
+    # 状态接口保持公开供登录页探活，但未授权时不返回内部路径、模型地址和原始异常
+    privileged = is_authorized(request)
+    startup_error = state.startup_error
+    kb_error = state.kb_error
+    if not privileged:
+        startup_error = "服务初始化失败，请查看服务端日志。" if startup_error else None
+        kb_error = "知识库加载失败，请查看服务端日志。" if kb_error else None
+
     return {
         "ok": state.startup_error is None,
-        "startup_error": state.startup_error,
+        "startup_error": startup_error,
         "auth_required": bool(get_access_token()),
         "llm_configured": bool(api_key),
         "pricing": get_pricing(),
         "monthly_token_budget": get_token_budget(),
         "auto_archive_days": get_auto_archive_days(),
-        "model_name": LLM_CONFIG.get("model_name"),
-        "base_url": _public_base_url(LLM_CONFIG.get("base_url")),
+        "model_name": LLM_CONFIG.get("model_name") if privileged else None,
+        "base_url": (
+            _public_base_url(LLM_CONFIG.get("base_url")) if privileged else None
+        ),
         "mem0_enabled": mem0_enabled,
         "knowledge_base": {
             "status": state.kb_status,
-            "error": state.kb_error,
+            "error": kb_error,
         },
         "agents": [
             {"id": agent_id, "name": name}
@@ -1110,7 +1145,7 @@ async def diagnose():
         return await asyncio.to_thread(collect_report)
     except Exception as e:
         logger.exception("系统自检失败")
-        raise HTTPException(status_code=500, detail=f"系统自检失败：{e}")
+        raise HTTPException(status_code=500, detail="系统自检失败，请稍后重试。")
 
 
 @app.post("/api/sessions", response_model=SessionResponse)
@@ -1397,7 +1432,7 @@ async def export_sessions():
         data = await asyncio.to_thread(get_session_store().export_data)
     except Exception as e:
         logger.exception("导出会话失败")
-        raise HTTPException(status_code=500, detail=f"导出会话失败：{e}")
+        raise HTTPException(status_code=500, detail="导出会话失败，请稍后重试。")
     await record_audit(
         "session.export",
         detail=f"sessions={data.get('session_count', 0)}",
@@ -1526,7 +1561,7 @@ async def import_sessions(request: ImportSessionsRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("导入会话失败")
-        raise HTTPException(status_code=500, detail=f"导入会话失败：{e}")
+        raise HTTPException(status_code=500, detail="导入会话失败，请稍后重试。")
 
     await record_audit(
         "session.import",
@@ -1867,7 +1902,13 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
 
     records = []
     invalid = 0
-    for row in reader:
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
+
+    for row in csv_rows:
         mapped = {}
         for key, value in row.items():
             if not key:
@@ -1895,9 +1936,12 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             detail=f"没有可导入的用药记录（无效 {invalid} 行）",
         )
 
-    result = await asyncio.to_thread(
-        get_session_store().import_data, {"medications": records}
-    )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"medications": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("medications", 0))
     await record_audit(
         "medication.import",
@@ -2177,7 +2221,13 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
 
     records = []
     invalid = 0
-    for row in reader:
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
+
+    for row in csv_rows:
         mapped = {}
         for key, value in row.items():
             if not key:
@@ -2220,9 +2270,12 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
             detail=f"没有可导入的症状记录（无效 {invalid} 行）",
         )
 
-    result = await asyncio.to_thread(
-        get_session_store().import_data, {"symptoms": records}
-    )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"symptoms": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("symptoms", 0))
     await record_audit(
         "symptom.import",
@@ -2266,6 +2319,11 @@ async def update_symptom(symptom_id: int, request: SymptomUpdateRequest):
     existing = await asyncio.to_thread(store.get_symptom, symptom_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
+    if (
+        "recorded_at" in request.model_fields_set
+        and not str(request.recorded_at or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail="记录时间不能为空")
 
     merged = {**existing, **request.model_dump(exclude_unset=True)}
     item = await asyncio.to_thread(
@@ -2852,9 +2910,14 @@ async def export_timeline_csv(
     import io
 
     data = await health_timeline(
-        profile=profile, days=days, limit=2000, date=date,
+        profile=profile, days=days, limit=100000, date=date,
         type=type, only_alert=only_alert, only_risk=only_risk, q=q,
     )
+    if data["total"] > len(data["events"]):
+        raise HTTPException(
+            status_code=400,
+            detail="时间线事件过多，请缩小时间范围或增加筛选条件后重试。",
+        )
     type_labels = {
         "metric": "指标",
         "symptom": "症状",
@@ -3105,6 +3168,11 @@ async def update_metric(metric_id: int, request: MetricUpdateRequest):
     existing = await asyncio.to_thread(store.get_metric, metric_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
+    if (
+        "measured_at" in request.model_fields_set
+        and not str(request.measured_at or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail="测量时间不能为空")
 
     merged = {**existing, **request.model_dump(exclude_unset=True)}
     item = await asyncio.to_thread(
@@ -3275,7 +3343,13 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
 
     records = []
     invalid = 0
-    for row in reader:
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
+
+    for row in csv_rows:
         mapped = {}
         for key, value in row.items():
             if not key:
@@ -3318,9 +3392,12 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
             detail=f"没有可导入的健康记录（无效 {invalid} 行）",
         )
 
-    result = await asyncio.to_thread(
-        get_session_store().import_data, {"health_metrics": records}
-    )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"health_metrics": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("metrics", 0))
     await record_audit(
         "metric.import",
@@ -4190,6 +4267,7 @@ async def export_reminders_csv(
     rows = [[
         "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
         "重复截止", "重复来源ID", "备注", "关联药物ID", "关联药物",
+        "关联会话ID", "ID",
     ]]
     for item in items:
         medication_id = int(item.get("medication_id") or 0)
@@ -4205,6 +4283,8 @@ async def export_reminders_csv(
             csv_safe_cell(item.get("note", "")),
             medication_id or "",
             csv_safe_cell(medication_names.get(medication_id, "")),
+            csv_safe_cell(item.get("session_id", "")),
+            int(item.get("id") or 0) or "",
         ])
 
     buffer = io.StringIO()
@@ -4382,11 +4462,19 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
         "备注": "note",
         "关联药物ID": "medication_id",
         "关联药物": "medication_name",
+        "关联会话ID": "session_id",
+        "ID": "id",
     }
+
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"提醒 CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
 
     records = []
     invalid = 0
-    for row in reader:
+    for row in csv_rows:
         mapped = {}
         for key, value in row.items():
             if not key:
@@ -4421,9 +4509,15 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             medication_id = max(0, int(mapped.get("medication_id") or 0))
         except (TypeError, ValueError):
             medication_id = 0
+        try:
+            reminder_id = max(0, int(mapped.get("id") or 0))
+        except (TypeError, ValueError):
+            reminder_id = 0
         records.append({
+            "id": reminder_id,
             "title": title,
             "due_at": due_at,
+            "session_id": mapped.get("session_id", ""),
             "profile": mapped.get("profile", ""),
             "note": mapped.get("note", ""),
             "advance_days": advance_days,
@@ -4441,9 +4535,12 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             detail=f"没有可导入的提醒（无效 {invalid} 行）",
         )
 
-    result = await asyncio.to_thread(
-        get_session_store().import_data, {"reminders": records}
-    )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"reminders": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("reminders", 0))
     await record_audit(
         "reminder.import",
@@ -5219,7 +5316,7 @@ async def knowledge_overview():
             return await asyncio.to_thread(service.list_documents)
     except Exception as e:
         logger.exception("读取知识库失败")
-        raise HTTPException(status_code=500, detail=f"读取知识库失败：{e}")
+        raise HTTPException(status_code=500, detail="读取知识库失败，请稍后重试。")
 
 
 @app.post("/api/knowledge/rebuild")
@@ -5235,7 +5332,7 @@ async def knowledge_rebuild():
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.exception("重建知识库失败")
-            raise HTTPException(status_code=500, detail=f"重建知识库失败：{e}")
+            raise HTTPException(status_code=500, detail="重建知识库失败，请稍后重试。")
 
     return {"ok": True, **result}
 
@@ -5261,7 +5358,7 @@ async def knowledge_upload(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("保存知识库文档失败")
-        raise HTTPException(status_code=500, detail=f"保存文档失败：{e}")
+        raise HTTPException(status_code=500, detail="保存文档失败，请稍后重试。")
 
     result = None
     if rebuild:
@@ -5272,7 +5369,7 @@ async def knowledge_upload(
                 logger.exception("上传后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
-                    detail=f"文档已保存，但重建索引失败：{e}",
+                    detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
 
     return {"ok": True, "document": saved, "rebuild": result}
@@ -5316,16 +5413,14 @@ async def knowledge_upload_batch(
             logger.exception("批量保存知识库文档失败")
             failed.append({
                 "filename": file.filename or "未命名文件",
-                "error": f"保存失败：{e}",
+                "error": "保存失败，请稍后重试。",
             })
 
     if not saved:
-        detail = "所有文件均未上传成功"
-        if failed:
-            detail += "：" + "；".join(
-                f"{item['filename']}（{item['error']}）" for item in failed
-            )
-        raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(
+            status_code=400,
+            detail="所有文件均未上传成功，请检查文件格式与大小后重试。",
+        )
 
     result = None
     if rebuild:
@@ -5336,7 +5431,7 @@ async def knowledge_upload_batch(
                 logger.exception("批量上传后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
-                    detail=f"文档已保存，但重建索引失败：{e}",
+                    detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
 
     return {
@@ -5374,7 +5469,7 @@ async def knowledge_search(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("知识库检索失败")
-        raise HTTPException(status_code=500, detail=f"检索失败：{e}")
+        raise HTTPException(status_code=500, detail="检索失败，请稍后重试。")
     return result
 
 
@@ -5394,7 +5489,7 @@ async def knowledge_preview(filename: str, full: bool = False):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("预览知识库文档失败")
-        raise HTTPException(status_code=500, detail=f"读取文档失败：{e}")
+        raise HTTPException(status_code=500, detail="读取文档失败，请稍后重试。")
 
     if not result:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -5420,7 +5515,7 @@ async def knowledge_update(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("更新知识库文档失败")
-        raise HTTPException(status_code=500, detail=f"保存文档失败：{e}")
+        raise HTTPException(status_code=500, detail="保存文档失败，请稍后重试。")
 
     result = None
     if rebuild:
@@ -5431,7 +5526,7 @@ async def knowledge_update(
                 logger.exception("更新后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
-                    detail=f"文档已保存，但重建索引失败：{e}",
+                    detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
 
     return {"ok": True, "document": saved, "rebuild": result}
@@ -5460,7 +5555,7 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
                 logger.exception("删除后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
-                    detail=f"文档已删除，但重建索引失败：{e}",
+                    detail="文档已删除，但重建索引失败，请稍后重试。",
                 )
 
     return {"ok": True, "filename": filename, "rebuild": result}

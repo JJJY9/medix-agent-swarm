@@ -53,6 +53,10 @@ def read_text_file(path: Path) -> str:
     return text.lstrip("﻿")
 
 
+MAX_PDF_PAGES = 200
+MAX_DOCUMENT_CHARS = 2000000
+
+
 def extract_pdf_text(path: Path) -> str:
     try:
         from pypdf import PdfReader
@@ -60,9 +64,18 @@ def extract_pdf_text(path: Path) -> str:
         raise RuntimeError("解析 PDF 需要安装 pypdf：pip install pypdf") from e
 
     reader = PdfReader(str(path))
+    if len(reader.pages) > MAX_PDF_PAGES:
+        raise ValueError(f"PDF 页数不能超过 {MAX_PDF_PAGES} 页。")
     pages = []
+    total_chars = 0
     for page in reader.pages:
-        pages.append(page.extract_text() or "")
+        text = page.extract_text() or ""
+        total_chars += len(text)
+        if total_chars > MAX_DOCUMENT_CHARS:
+            raise ValueError(
+                f"文档提取文本不能超过 {MAX_DOCUMENT_CHARS} 个字符。"
+            )
+        pages.append(text)
     return "\n".join(pages)
 
 
@@ -121,10 +134,15 @@ def load_document(path: Path, id_prefix: str = "") -> Optional[Dict[str, Any]]:
     content = content.strip()
     if not content:
         return None
+    if len(content) > MAX_DOCUMENT_CHARS:
+        raise ValueError(
+            f"文档内容不能超过 {MAX_DOCUMENT_CHARS} 个字符。"
+        )
 
     metadata = infer_metadata(path.name, content)
     return {
-        "id": f"{id_prefix}{metadata['type']}_{path.stem}",
+        # 带上扩展名，避免 a.md 与 a.txt 生成同一个 doc_id 后在来源卡片中互相覆盖
+        "id": f"{id_prefix}{metadata['type']}_{path.stem}_{suffix.lstrip('.')}",
         "content": content,
         "metadata": metadata,
     }

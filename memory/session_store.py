@@ -62,6 +62,10 @@ IMPORT_LIST_LIMITS = {
     "audit_log": 100000,
 }
 
+#: 单条消息与整次导入的文本上限，避免超大备份长时间占住全局数据库锁
+MAX_IMPORT_MESSAGE_CHARS = 200000
+MAX_IMPORT_TOTAL_CHARS = 10000000
+
 
 def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
     """校验并收敛档案字段；没有有效内容时返回 None。"""
@@ -181,8 +185,8 @@ def _canonical_local_time(value: Any) -> Optional[str]:
     return parsed.isoformat(timespec="seconds")
 
 
-#: 允许的时钟偏差；超过该时间的“未来记录”视为无效
-FUTURE_TIME_TOLERANCE = timedelta(minutes=5)
+#: 允许的时钟偏差；客户端与服务端可能处于不同时区，留出 24 小时余量
+FUTURE_TIME_TOLERANCE = timedelta(hours=24)
 
 
 def _is_future_timestamp(value: str) -> bool:
@@ -2111,6 +2115,27 @@ class SessionStore:
             if isinstance(items, list) and len(items) > cap:
                 raise ValueError(f"一次最多导入 {cap} 条{label}。")
 
+        total_message_chars = 0
+        for raw in raw_sessions:
+            if not isinstance(raw, dict):
+                continue
+            messages = raw.get("messages")
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if not isinstance(content, str):
+                    continue
+                if len(content) > MAX_IMPORT_MESSAGE_CHARS:
+                    raise ValueError(
+                        f"单条消息最多 {MAX_IMPORT_MESSAGE_CHARS} 个字符。"
+                    )
+                total_message_chars += len(content)
+                if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
+                    raise ValueError("备份中的消息总量过大。")
+
         imported = 0
         skipped = 0
         invalid = 0
@@ -2677,7 +2702,7 @@ class SessionStore:
                                 same_id["id"]
                             )
                             continue
-                    if reminder_id > 0:
+                    if reminder_id > 0 and raw.get("created_at"):
                         # 备份导入用 created_at 去重：提醒改期后仍能识别
                         exists = self._conn.execute(
                             """
