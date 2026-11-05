@@ -31,16 +31,22 @@ _AGENT_ALIASES = {
     "consultationagent": "consultation_agent",
     "health_consultation": "consultation_agent",
     "健康咨询": "consultation_agent",
+    "健康咨询专家": "consultation_agent",
+    "consultation_expert": "consultation_agent",
     "diagnostic_agent": "diagnostic_agent",
     "diagnostic": "diagnostic_agent",
     "diagnosticagent": "diagnostic_agent",
     "diagnosis": "diagnostic_agent",
     "诊断": "diagnostic_agent",
+    "诊断推理专家": "diagnostic_agent",
+    "症状诊断": "diagnostic_agent",
     "research_agent": "research_agent",
     "research": "research_agent",
     "researchagent": "research_agent",
     "researcher": "research_agent",
     "循证医学": "research_agent",
+    "循证医学专家": "research_agent",
+    "医学研究": "research_agent",
 }
 
 
@@ -178,7 +184,7 @@ class LeadAgent:
         return """你是医疗 Swarm 的 Lead Agent。你的职责是**分析问题并分配给合适的 Worker Agent**。
 
 **核心原则**：
-1. **尽量少分配任务**：能用 1 个 Agent 解决的，不要用 2 个；能用 2 个的，不要用 3 个
+1. **尽量少分配任务**：能用 1 个 Agent 解决的，不要用 2 个；能用 2 个的，不要用 3 个；**最多 5 个子任务**，超出的会被丢弃
 2. **优先使用 ConsultationAgent**：对于常见病症（感冒、发烧、咳嗽等）、健康科普，单独使用 ConsultationAgent 就足够
 3. 你**只负责分配 Agent**，不决定具体使用哪些工具/技能（Worker Agent 会自己选择）
 4. 子任务应该相对独立，可以并行执行

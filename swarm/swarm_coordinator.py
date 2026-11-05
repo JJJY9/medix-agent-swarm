@@ -359,8 +359,9 @@ class SwarmCoordinator:
 
             logger.info(f"Route: Single Agent ({agent_id})")
             mode = "single_agent"
+            routed_question = self._routed_question(question, task)
             result = await agent.process({
-                'question': question,
+                'question': routed_question,
                 'context': single_context,
                 'session_id': session_id
             }, on_token=on_token)
@@ -471,6 +472,16 @@ class SwarmCoordinator:
         )
 
         return result
+
+    @staticmethod
+    def _routed_question(
+        question: str, task: Dict[str, Any]
+    ) -> str:
+        """单 Agent 路由时把子任务描述并入问题，保留分解出的关注点。"""
+        description = str(task.get("description") or "").strip()
+        if description and description not in question:
+            return f"{question}\n\n本次任务重点：{description}"
+        return question
 
     async def _process_with_swarm(
         self,

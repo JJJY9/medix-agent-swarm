@@ -39,6 +39,7 @@ class DiagnosticAgent(BaseAgent, SkillRegistryMixin):
     ):
         config = config or {}
         config.setdefault('max_iterations', 5)
+        config.setdefault('max_tool_calls', 3)
 
         super().__init__(agent_id, config, llm_client)
 
@@ -86,11 +87,11 @@ class DiagnosticAgent(BaseAgent, SkillRegistryMixin):
 - 如需权威指南，使用 clinical_guideline
 - 基于 Skill 结果进行诊断推理
 - 最多2-3次 Skill 调用，然后给出诊断思路
+- 参数提示：search_history 必须传 session_id（见系统信息「当前会话ID」）；recommend_lifestyle 的疾病参数名为 diagnosis
 
 **Swarm 协作模式**：
-- 你可能从 SharedContext 读取其他 Agent 的评估结果
-- 你的分析结果会被其他 Agent（如 ResearchAgent）使用
-- 专注于你的专长：症状分析和诊断推理
+- 你与其他科室并行执行，不要假设能读取其他 Agent 的结论
+- 专注于症状分析和诊断推理，结果由 LeadAgent 统一汇总
 
 **输出格式**：
 【风险评估】
