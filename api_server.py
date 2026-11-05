@@ -1200,9 +1200,11 @@ async def export_sessions_csv(
     rows = [[
         "会话编号", "标题", "档案", "标签", "收藏", "归档",
         "消息数", "轮次", "Token", "模型调用", "创建时间", "更新时间",
+        "风险",
     ]]
     for item in items:
         stats = usage.get(item["id"], {})
+        risk = parse_risk_level(item.pop("risk_text", ""))
         rows.append([
             csv_safe_cell(item.get("id", "")),
             csv_safe_cell(item.get("title", "")),
@@ -1216,6 +1218,7 @@ async def export_sessions_csv(
             stats.get("llm_calls", 0),
             csv_safe_cell(item.get("created_at", "")),
             csv_safe_cell(item.get("updated_at", "")),
+            csv_safe_cell(RISK_LEVEL_LABELS.get(risk, "")),
         ])
 
     buffer = io.StringIO()
