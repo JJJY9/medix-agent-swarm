@@ -3432,6 +3432,9 @@ async def export_health_dossier(profile: str = "", days: int = 30):
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, profile_key, cutoff, "", 200, True
     )
+    streak = _streak_info(
+        await asyncio.to_thread(store.recorded_days, profile_key, 365)
+    )
 
     lines: List[str] = [f"# 健康档案：{profile_key}", ""]
     lines.append(f"- 生成时间：{now.strftime('%Y-%m-%d %H:%M')}")
@@ -3450,6 +3453,10 @@ async def export_health_dossier(profile: str = "", days: int = 30):
         context_parts.append(f"过敏史：{context['allergies']}")
     if context_parts:
         lines.append("- 档案信息：" + " · ".join(context_parts))
+    lines.append(
+        f"- 连续记录：已连续 {streak['current']} 天"
+        f"（近 30 天记录 {streak['days_last_30']} 天）"
+    )
     lines.append("")
 
     lines.append("## 指标目标")
