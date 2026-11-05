@@ -810,6 +810,17 @@ def test_app_js_ships_history_risk_badge(client):
     assert ".history-risk" in css
 
 
+def test_app_js_ships_reminder_stats(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="reminder-stats"' in html
+    assert "async function loadReminderStats" in app_js
+    assert "/api/reminders/stats" in app_js
+    assert ".reminder-stats" in css
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text
