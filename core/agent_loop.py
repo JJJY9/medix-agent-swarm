@@ -94,6 +94,13 @@ class AgentLoop:
         sources: List[Dict[str, Any]] = []
         usage: Dict[str, int] = {}
         llm_calls = 0
+        user_question = (
+            memory_question
+            or input_data.get('memory_question')
+            or input_data.get('question')
+            or input_data.get('query')
+            or str(input_data)
+        )
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")
 
@@ -109,17 +116,10 @@ class AgentLoop:
             if self.short_term_memory and session_id and persist_memory:
                 # 只记录原始问题；messages[-1] 是带背景信息与历史的格式化
                 # 提示词，写回短期记忆会导致下次再拼接时逐轮嵌套膨胀
-                user_message = (
-                    memory_question
-                    or input_data.get('memory_question')
-                    or input_data.get('question')
-                    or input_data.get('query')
-                    or str(input_data)
-                )
                 self.short_term_memory.add_message(
                     session_id=session_id,
                     role="user",
-                    content=user_message
+                    content=user_question
                 )
                 logger.debug(f"Recorded user message to short-term memory (session={session_id})")
 
@@ -173,6 +173,7 @@ class AgentLoop:
                                 agent, state, final_answer, session_id,
                                 tool_call_count, sources, usage, llm_calls,
                                 remember=persist_memory,
+                                user_input=user_question,
                             )
                             break
 
@@ -305,6 +306,7 @@ class AgentLoop:
                                 agent, state, final_answer, session_id,
                                 tool_call_count, sources, usage, llm_calls,
                                 remember=persist_memory,
+                                user_input=user_question,
                             )
                             break
 
@@ -319,6 +321,7 @@ class AgentLoop:
                             agent, state, llm_response.content or "", session_id,
                             tool_call_count, sources, usage, llm_calls,
                             remember=persist_memory,
+                            user_input=user_question,
                         )
                         break
 
@@ -498,6 +501,7 @@ class AgentLoop:
         usage: Optional[Dict[str, int]] = None,
         llm_calls: int = 0,
         remember: bool = True,
+        user_input: str = "",
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
@@ -509,7 +513,8 @@ class AgentLoop:
         if self.validator and final_answer:
             validation_result = self.validator.validate_output(
                 agent.agent_id,
-                final_answer
+                final_answer,
+                user_input=user_input,
             )
 
             if not validation_result.get("valid"):
@@ -521,7 +526,8 @@ class AgentLoop:
                 if self.auto_fixer and validation_result.get("auto_fixable"):
                     fixed_answer = self.auto_fixer.fix_output(
                         final_answer,
-                        validation_result.get("auto_fixable", [])
+                        validation_result.get("auto_fixable", []),
+                        user_input=user_input,
                     )
                     if fixed_answer != final_answer:
                         logger.info("🔧 输出已自动修复")

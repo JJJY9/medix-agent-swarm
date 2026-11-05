@@ -17,7 +17,8 @@ class AutoFixer:
     def fix_output(
         self,
         output: str,
-        auto_fixable: List[str]
+        auto_fixable: List[str],
+        user_input: str = ""
     ) -> str:
         """
         自动修复输出
@@ -25,6 +26,7 @@ class AutoFixer:
         Args:
             output: 原始输出
             auto_fixable: 可修复的违规列表
+            user_input: 原始用户问题；用于判断高危症状语境
 
         Returns:
             修复后的输出
@@ -35,7 +37,9 @@ class AutoFixer:
             if fix_type == "add_disclaimer":
                 fixed_output = self.fix_missing_disclaimer(fixed_output)
             elif fix_type == "add_emergency_warning":
-                fixed_output = self.fix_high_risk_warning(fixed_output)
+                fixed_output = self.fix_high_risk_warning(
+                    fixed_output, user_input
+                )
 
         if fixed_output != output:
             logger.info("🔧 输出已自动修复")
@@ -52,30 +56,45 @@ class AutoFixer:
         Returns:
             添加免责声明后的输出
         """
-        if "免责" not in output and "仅供参考" not in output:
+        if (
+            "免责声明" not in output
+            and "仅供参考" not in output
+            and "disclaimer" not in output.lower()
+        ):
             disclaimer = "\n\n【免责声明】\n以上信息仅供参考，不能替代专业医生的诊断和治疗。如有疑虑，请及时就医。"
             logger.debug("+ 自动添加免责声明")
             return output + disclaimer
         return output
 
-    def fix_high_risk_warning(self, output: str) -> str:
+    def fix_high_risk_warning(self, output: str, user_input: str = "") -> str:
         """
         自动添加高危症状警告
 
         Args:
             output: 原始输出
+            user_input: 原始用户问题；用于区分患者症状与科普描述
 
         Returns:
             添加警告后的输出
         """
-        high_risk_keywords = ["胸痛", "呼吸困难", "昏厥", "剧烈头痛", "心悸", "突然视力模糊"]
+        from core.triage import (
+            clinical_statement_text,
+            detect_red_flags,
+            has_visit_recommendation,
+        )
 
-        # 检查是否包含高危症状且未建议就医
-        if any(kw in output for kw in high_risk_keywords):
-            if "就医" not in output and "急诊" not in output and "医院" not in output:
-                warning = "⚠️ **重要提醒**：您描述的症状可能提示严重问题，建议立即就医或拨打急救电话120，不要延误。\n\n"
-                logger.debug("+ 自动添加高危症状警告")
-                return warning + output
+        risk_text = (
+            user_input.strip() if user_input and user_input.strip()
+            else clinical_statement_text(output)
+        )
+        # 复用急症红旗与就医建议识别：否定或已给出就医建议时不再插入警告
+        if (
+            detect_red_flags(risk_text)["level"] == "emergency"
+            and not has_visit_recommendation(output)
+        ):
+            warning = "⚠️ **重要提醒**：您描述的症状可能提示严重问题，建议立即就医或拨打急救电话120，不要延误。\n\n"
+            logger.debug("+ 自动添加高危症状警告")
+            return warning + output
 
         return output
 

@@ -1,4 +1,6 @@
 """PWA 静态资源与 Service Worker 的离线测试。"""
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -27,8 +29,34 @@ def test_service_worker_is_served_at_root_scope(client):
 
     assert response.status_code == 200
     assert response.headers["service-worker-allowed"] == "/"
-    assert "medix-shell-v1" in response.text
+    assert "medix-shell-v2" in response.text
     assert "/api/" in response.text
+
+
+def test_service_worker_install_is_resilient_and_has_timeout(client):
+    sw = client.get("/sw.js").text
+
+    assert "Promise.allSettled" in sw
+    assert "oldCache.match(url)" in sw
+    assert "NETWORK_TIMEOUT_MS" in sw
+    assert "Promise.race([network, timeout])" in sw
+    assert "if (!cached)" in sw
+    assert "self.skipWaiting()" in sw
+    assert "caches.match('/')" in sw
+
+
+def test_app_js_keeps_offline_state_and_handles_sw_updates(client):
+    app_js = client.get("/static/app.js").text
+
+    assert re.search(
+        r"\} catch \(err\) \{\s*if \(navigator\.onLine === false\) \{",
+        app_js,
+    )
+    assert "OFFLINE_BANNER" in app_js
+    assert "choice.outcome === 'accepted'" in app_js
+    assert "installPromptUsed" in app_js
+    assert "document.getElementById('sw-refresh')" in app_js
+    assert "describeServiceWorker" in app_js
 
 
 def test_pwa_icons_are_png(client):

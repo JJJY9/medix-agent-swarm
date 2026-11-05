@@ -7,10 +7,135 @@
 - 运行时验证
 - 自动修复（可选）
 """
+import re
 from typing import Dict, Any, List, Optional
 import yaml
 from pathlib import Path
 from loguru import logger
+
+
+#: 不同 YAML 约束文件用不同措辞表达同一类禁止行为，这里统一映射
+_DIAGNOSIS_ACTIONS = {
+    "diagnose_disease",
+    "give_definitive_diagnosis",
+    "give_diagnosis",
+}
+_PRESCRIPTION_ACTIONS = {
+    "prescribe_medication",
+    "recommend_specific_drugs",
+    "recommend_treatment",
+}
+_DEFINITIVE_DIAGNOSIS_PATTERN = re.compile(
+    r"(?:您患有|您得了|您得的是|确诊为|可以确诊为|明确诊断为|诊断为|肯定是)"
+)
+_DIAGNOSIS_NEGATIONS = (
+    "不能", "无法", "不可", "尚不能", "尚未", "没有", "未", "不建议", "不应",
+    "并非", "不是", "未曾", "未确诊",
+)
+_DIAGNOSIS_CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
+
+_DOSE_UNIT = (
+    r"(?:mg|g|毫克|克|μg|ug|微克|片|粒|支|ml|毫升|单位|国际单位|iu|u|U)"
+)
+_NUMERAL = r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十半]+)"
+_DOSE_PATTERN = re.compile(rf"{_NUMERAL}\s*{_DOSE_UNIT}")
+_PRESCRIPTION_PATTERNS = (
+    re.compile(rf"(?:药物|药品|药).{{0,10}}{_NUMERAL}\s*{_DOSE_UNIT}"),
+    re.compile(
+        rf"每(?:日|天|次).{{0,5}}{_NUMERAL}\s*次.{{0,10}}{_NUMERAL}\s*{_DOSE_UNIT}"
+    ),
+    re.compile(
+        rf"(?:建议|推荐|可以|可|应|请)\s*"
+        rf"(?:服用|使用|吃|口服|注射).{{0,15}}{_NUMERAL}\s*{_DOSE_UNIT}"
+    ),
+    re.compile(
+        rf"(?:服用|使用|口服|注射).{{0,15}}{_NUMERAL}\s*{_DOSE_UNIT}"
+    ),
+    re.compile(
+        rf"(?:用法|用量|剂量).{{0,10}}{_NUMERAL}\s*{_DOSE_UNIT}"
+    ),
+)
+#: 片/粒/支等计数单位也可能是食物（“每天一片面包”），需有用药语境
+_COUNT_UNIT_PATTERN = re.compile(
+    rf"(?:每日|每天|一日|每次).{{0,8}}{_NUMERAL}\s*(?:片|粒|支|ml|毫升)"
+)
+_MEDICATION_TERMS = (
+    "药", "服用", "口服", "注射", "片剂", "胶囊", "颗粒", "滴剂", "喷雾", "胰岛素",
+)
+#: “误服 20 片”是中毒描述，不是处方
+_OVERDOSE_PATTERN = re.compile(r"(?:误服|过量|超量|超过|中毒|自杀|自伤|服毒)")
+
+
+def _clause_prefix(text: str, start: int) -> str:
+    """返回短语之前、同一分句内的文本。"""
+    boundary = start
+    while boundary > 0 and text[boundary - 1] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        boundary -= 1
+    return text[boundary:start]
+
+
+def _match_is_overdose(text: str, match: "re.Match[str]") -> bool:
+    """匹配所在分句是否在描述误服/过量，而不是给出处方。"""
+    boundary = match.start()
+    while boundary > 0 and text[boundary - 1] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        boundary -= 1
+    tail = match.end()
+    while tail < len(text) and text[tail] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        tail += 1
+    return bool(_OVERDOSE_PATTERN.search(text[boundary:tail]))
+
+
+def _contains_definitive_diagnosis(output: str) -> bool:
+    """判断是否给出明确诊断，忽略同一分句内「不能诊断为」这类否定表述。"""
+    for match in _DEFINITIVE_DIAGNOSIS_PATTERN.finditer(output):
+        prefix = _clause_prefix(output, match.start())
+        if not any(negation in prefix for negation in _DIAGNOSIS_NEGATIONS):
+            return True
+    return False
+
+
+def _mentions_known_drug(output: str) -> bool:
+    try:
+        from core.medication_safety import DRUG_GROUPS
+    except Exception:
+        return False
+    lowered = output.lower()
+    for group in DRUG_GROUPS.values():
+        for _, aliases in group:
+            for alias in aliases:
+                alias = alias.lower()
+                if alias.isascii() and alias.isalpha():
+                    if re.search(
+                        rf"(?<![a-z]){re.escape(alias)}(?![a-z])", lowered
+                    ):
+                        return True
+                elif alias in lowered:
+                    return True
+    return False
+
+
+def _contains_prescription(output: str) -> bool:
+    """判断是否给出带剂量/用量的具体处方或用药方案。"""
+    for pattern in _PRESCRIPTION_PATTERNS:
+        for match in pattern.finditer(output):
+            if not _match_is_overdose(output, match):
+                return True
+
+    known_drug = _mentions_known_drug(output)
+    if not any(term in output for term in _MEDICATION_TERMS) and not known_drug:
+        return False
+
+    # 有用药语境时，片/粒计数也可能是食物，需再匹配具体用法
+    for match in _COUNT_UNIT_PATTERN.finditer(output):
+        if not _match_is_overdose(output, match):
+            return True
+
+    # 已知药名 + 任意剂量（如“布洛芬 200mg”）
+    if known_drug:
+        for match in _DOSE_PATTERN.finditer(output):
+            if not _match_is_overdose(output, match):
+                return True
+    return False
 
 
 class ConstraintValidator:
@@ -73,13 +198,17 @@ class ConstraintValidator:
 
         return {"valid": True}
 
-    def validate_output(self, agent_id: str, output: str) -> Dict[str, Any]:
+    def validate_output(
+        self, agent_id: str, output: str, user_input: str = ""
+    ) -> Dict[str, Any]:
         """
         验证输出是否符合约束
 
         Args:
             agent_id: Agent ID
             output: Agent 的输出文本
+            user_input: 原始用户问题；提供时用于判断高危症状语境，
+                避免把科普文本里的红旗词当成患者当前症状
 
         Returns:
             {
@@ -114,40 +243,38 @@ class ConstraintValidator:
             if len(output) > max_length:
                 violations.append(f"回答过长（{len(output)} > {max_length}字）")
 
-        # 检查高危症状必须建议就医
+        # 检查高危症状必须建议就医（复用急症红旗规则，识别否定与语境）
         if 'must_recommend_doctor_visit_if_high_risk' in all_constraints:
-            high_risk_keywords = ["胸痛", "呼吸困难", "昏厥", "剧烈头痛", "心悸", "突然视力模糊"]
-            if any(kw in output for kw in high_risk_keywords):
-                if "就医" not in output and "急诊" not in output and "医院" not in output:
-                    violations.append("高危症状未建议就医")
-                    auto_fixable.append("add_emergency_warning")
+            from core.triage import (
+                clinical_statement_text,
+                detect_red_flags,
+                has_visit_recommendation,
+            )
+
+            risk_text = (
+                user_input.strip() if user_input and user_input.strip()
+                else clinical_statement_text(output)
+            )
+            if (
+                detect_red_flags(risk_text)['level'] == 'emergency'
+                and not has_visit_recommendation(output)
+            ):
+                violations.append("高危症状未建议就医")
+                auto_fixable.append("add_emergency_warning")
 
         # 检查是否引用来源（仅 ResearchAgent）
         if 'must_cite_sources' in all_constraints:
             if "指南" not in output and "文献" not in output and "研究" not in output:
                 violations.append("未引用来源或证据")
 
-        # 检查禁止行为
+        # 检查禁止行为（YAML 中不同 Agent 使用不同的动作名，统一归类）
         forbidden_actions = agent_constraints.get('forbidden_actions', [])
-        if 'diagnose_disease' in forbidden_actions:
-            if any(phrase in output for phrase in ["您患有", "确诊为", "肯定是", "就是"]):
+        if _DIAGNOSIS_ACTIONS.intersection(forbidden_actions):
+            if _contains_definitive_diagnosis(output):
                 violations.append("包含明确诊断（越界行为）")
 
-        if 'prescribe_medication' in forbidden_actions:
-            # 更精细的药物处方检测（避免误报）
-            # 只检测明确的药物处方模式
-            import re
-
-            # 模式1: 具体药物剂量（如：硝苯地平20mg）
-            if re.search(r'(药物|药品|药).{0,10}(\d+\s*(mg|g|毫克|克))', output):
-                violations.append("包含具体药物处方（越界行为）")
-
-            # 模式2: 用药频率和剂量（如：每日3次，每次10mg）
-            elif re.search(r'每(日|天|次).{0,5}\d+\s*次.{0,10}(\d+\s*(mg|g|毫克|克))', output):
-                violations.append("包含具体药物处方（越界行为）")
-
-            # 模式3: 明确的处方建议（如：建议服用XX 20mg）
-            elif re.search(r'(建议|推荐)(服用|使用).{0,15}\d+\s*(mg|g|毫克|克)', output):
+        if _PRESCRIPTION_ACTIONS.intersection(forbidden_actions):
+            if _contains_prescription(output):
                 violations.append("包含具体药物处方（越界行为）")
 
         return {
