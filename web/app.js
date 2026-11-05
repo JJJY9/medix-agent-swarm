@@ -6375,7 +6375,10 @@ async function loadMetrics(append = false) {
       + (days > 0 ? `&days=${days}` : '')
       + (query ? `&q=${encodeURIComponent(query)}` : '')
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `服务返回 ${res.status}`);
+    }
     const data = await res.json();
     if (requestSeq !== metricsRequestSeq) return;
     const items = data.metrics || [];
@@ -6387,8 +6390,17 @@ async function loadMetrics(append = false) {
       els.metricsMore.hidden = items.length < METRICS_PAGE_SIZE;
     }
     renderMetrics(metricItemsCache, days, metric);
-  } catch {
-    // 读取失败时保留当前列表
+  } catch (err) {
+    if (requestSeq !== metricsRequestSeq) return;
+    if (!append) {
+      metricItemsCache = [];
+      metricsOffset = 0;
+      els.metricsList.replaceChildren();
+      els.metricsMore.hidden = true;
+      els.metricsEmpty.hidden = false;
+      els.metricsEmpty.textContent =
+        `加载失败：${err.message || err}`;
+    }
   }
 }
 
@@ -10313,7 +10325,10 @@ function closeCalc(restoreFocus = false) {
   }
 }
 
+let calcRequestSeq = 0;
+
 async function runCalc(url, body, build) {
+  const seq = ++calcRequestSeq;
   setCalcStatus('计算中…');
   els.calcResult.hidden = true;
 
@@ -10330,6 +10345,7 @@ async function runCalc(url, body, build) {
         : `请检查输入（${res.status}）`;
       throw new Error(detail);
     }
+    if (seq !== calcRequestSeq) return;
 
     const view = build(data);
     els.calcResultTitle.textContent = view.title;
@@ -10344,6 +10360,7 @@ async function runCalc(url, body, build) {
     els.calcResult.scrollIntoView({ block: 'nearest' });
     setCalcStatus('');
   } catch (err) {
+    if (seq !== calcRequestSeq) return;
     currentCalcAction = null;
     els.calcSave.hidden = true;
     setCalcStatus(`计算失败：${err.message || err}`, true);
