@@ -106,6 +106,21 @@ def parse_tool_call_arguments(raw_arguments: Optional[str]) -> Dict[str, Any]:
     return arguments
 
 
+def tool_arguments_incomplete(raw_arguments: Optional[str]) -> bool:
+    """判断工具参数是否被截断或不是 JSON 对象。
+
+    与 parse_tool_call_arguments 的兜底不同，这里用于识别
+    finish_reason=length 时被截断的参数，避免用空参数执行 Skill。
+    """
+    if not raw_arguments:
+        return False
+    try:
+        parsed = json.loads(raw_arguments)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    return not isinstance(parsed, dict)
+
+
 def usage_to_dict(raw_usage: Any) -> Optional[Dict[str, int]]:
     """把 OpenAI SDK 的 usage 对象转换成普通字典。"""
     if raw_usage is None:
@@ -316,8 +331,10 @@ class LLMClient:
     ) -> Tuple[str, Optional[Dict[str, int]]]:
         """异步聊天接口，同时返回 token 用量字典。"""
         try:
-            temperature = temperature or self.temperature
-            max_tokens = max_tokens or self.max_tokens
+            if temperature is None:
+                temperature = self.temperature
+            if max_tokens is None:
+                max_tokens = self.max_tokens
 
             logger.debug(f"Calling LLM ({self.model_type}) with {len(messages)} messages")
 
@@ -549,8 +566,10 @@ class LLMClient:
             LLMResponse 对象
         """
         try:
-            temperature = temperature or self.temperature
-            max_tokens = max_tokens or self.max_tokens
+            if temperature is None:
+                temperature = self.temperature
+            if max_tokens is None:
+                max_tokens = self.max_tokens
 
             logger.debug(f"Calling LLM with {len(tools) if tools else 0} tools")
 
@@ -577,14 +596,29 @@ class LLMClient:
 
             # 提取工具调用
             tool_calls = []
+            truncated = False
             if hasattr(message, 'tool_calls') and message.tool_calls:
                 for tc in message.tool_calls:
+                    if (
+                        finish_reason == "length"
+                        and tool_arguments_incomplete(tc.function.arguments)
+                    ):
+                        truncated = True
                     tool_calls.append(ToolCall(
                         id=tc.id,
                         name=tc.function.name,
                         arguments=parse_tool_call_arguments(tc.function.arguments)
                     ))
                 logger.debug(f"LLM requested {len(tool_calls)} tool calls")
+
+            # 参数被 max_tokens 截断时不能用空参数执行 Skill，
+            # 交给上层重试或降级，避免返回无依据的结果
+            if truncated:
+                raise LLMError(
+                    "llm_truncated",
+                    "模型回答在工具参数中途被截断，请重试或缩短输入。",
+                    retryable=True,
+                )
 
             return LLMResponse(
                 content=message.content,

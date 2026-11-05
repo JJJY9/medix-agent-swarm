@@ -99,7 +99,13 @@ class AgentLoop:
 
             # 记录用户消息到短期记忆
             if self.short_term_memory and session_id:
-                user_message = messages[-1]["content"] if messages else str(input_data)
+                # 只记录原始问题；messages[-1] 是带背景信息与历史的格式化
+                # 提示词，写回短期记忆会导致下次再拼接时逐轮嵌套膨胀
+                user_message = (
+                    input_data.get('question')
+                    or input_data.get('query')
+                    or str(input_data)
+                )
                 self.short_term_memory.add_message(
                     session_id=session_id,
                     role="user",
@@ -113,8 +119,10 @@ class AgentLoop:
             logger.debug(f"Agent has {len(tools_openai_format) if tools_openai_format else 0} skills available")
 
             # 主循环：LLM → Skill Calls → Results → LLM
+            finalizing = False
             while state.should_continue():
                 state.iteration += 1
+                finalizing = False
                 logger.debug(f"=== Iteration {state.iteration}/{state.max_iterations} ===")
 
                 try:
@@ -150,6 +158,7 @@ class AgentLoop:
                             final_answer = await self._force_final_answer(
                                 agent, messages, on_token, usage
                             )
+                            finalizing = True
                             result = await self._finalize(
                                 agent, state, final_answer, session_id,
                                 tool_call_count, sources, usage, llm_calls
@@ -280,6 +289,7 @@ class AgentLoop:
                             final_answer = await self._force_final_answer(
                                 agent, messages, on_token, usage
                             )
+                            finalizing = True
                             result = await self._finalize(
                                 agent, state, final_answer, session_id,
                                 tool_call_count, sources, usage, llm_calls
@@ -292,6 +302,7 @@ class AgentLoop:
                     # 情况2: LLM 返回文本响应，任务完成
                     else:
                         logger.info(f"LLM provided final response (no tool calls)")
+                        finalizing = True
                         result = await self._finalize(
                             agent, state, llm_response.content or "", session_id,
                             tool_call_count, sources, usage, llm_calls
@@ -315,6 +326,18 @@ class AgentLoop:
                     await asyncio.sleep(min(2 ** state.iteration, 8))
                 except Exception as e:
                     logger.error(f"Error in iteration {state.iteration}: {e}")
+                    if finalizing:
+                        # 收尾阶段（约束校验/后处理/记忆写入）出错时重试
+                        # 只会重复调用模型并写入重复答复，直接降级
+                        logger.warning("收尾阶段出错，不再重试，改为降级答复")
+                        result = {
+                            'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
+                            'iterations': state.iteration,
+                            'warning': 'finalize_failed',
+                            'error': str(e)
+                        }
+                        state.mark_completed(result)
+                        break
                     if state.iteration >= state.max_iterations:
                         logger.warning(
                             "连续异常达到最大迭代次数，改为生成兜底答复"
@@ -389,13 +412,16 @@ class AgentLoop:
         usage: Optional[Dict[str, int]] = None
     ) -> str:
         """禁用工具，要求模型基于已有上下文给出最终答复。"""
-        messages.append({
-            'role': 'user',
-            'content': (
-                '信息检索次数已达上限。请不要再请求调用工具，'
-                '直接基于以上已有信息给出最终答复。'
-            )
-        })
+        advisory = (
+            '信息检索次数已达上限。请不要再请求调用工具，'
+            '直接基于以上已有信息给出最终答复。'
+        )
+        # 重试时不要重复追加同一条提示，避免提示词里堆叠相同指令
+        if not messages or messages[-1].get('content') != advisory:
+            messages.append({
+                'role': 'user',
+                'content': advisory
+            })
 
         return (await self._complete_text(agent, messages, on_token, usage)).strip()
 
@@ -409,10 +435,28 @@ class AgentLoop:
         """生成最终文本：有流式回调时逐段推送，否则回退到普通调用。"""
         if on_token is not None and hasattr(agent.llm_client, "chat_stream"):
             stream_usage: Dict[str, int] = {}
+            chunks: List[str] = []
+
+            def guarded_on_token(delta: str) -> None:
+                chunks.append(delta)
+                on_token(delta)
+
             try:
-                return await agent.llm_client.chat_stream(
-                    messages, on_token=on_token, usage_out=stream_usage
+                # 优先生成带「已输出不重试」保护的版本；测试/自定义客户端
+                # 只实现 chat_stream 时退回普通流式调用
+                stream_method = getattr(
+                    agent.llm_client, "chat_stream_retry", None
+                ) or agent.llm_client.chat_stream
+                return await stream_method(
+                    messages, on_token=guarded_on_token, usage_out=stream_usage
                 )
+            except LLMError:
+                # 已经推送过增量时不要再重试或重新生成，
+                # 否则前端会把两段回答拼接在一起
+                if chunks:
+                    logger.warning("流式回答中断，保留已推送的部分内容")
+                    return "".join(chunks)
+                raise
             finally:
                 if usage is not None:
                     merge_usage(usage, stream_usage)
@@ -439,6 +483,9 @@ class AgentLoop:
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
+        if not final_answer:
+            # 预算耗尽等路径可能拿到空文本；与 max_iterations 兜底保持一致
+            final_answer = "抱歉，未能生成有效答复，请稍后重试或简化问题。"
 
         # Harness Engineering: 验证和修复输出
         if self.validator and final_answer:

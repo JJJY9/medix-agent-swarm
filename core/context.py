@@ -31,10 +31,18 @@ MAX_CONTEXT_LENGTH = 2000
 
 
 def _stringify(value: Any) -> str:
+    if value is None:
+        return ""
     if isinstance(value, (list, tuple)):
-        return "；".join(_stringify(item) for item in value)
+        parts = [_stringify(item) for item in value]
+        return "；".join(part for part in parts if part)
     if isinstance(value, dict):
-        return "；".join(f"{key}={_stringify(item)}" for key, item in value.items())
+        parts = []
+        for key, item in value.items():
+            text = _stringify(item)
+            if text:
+                parts.append(f"{key}={text}")
+        return "；".join(parts)
     return str(value).strip()
 
 
