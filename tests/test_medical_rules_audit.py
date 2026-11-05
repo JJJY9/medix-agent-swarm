@@ -92,3 +92,15 @@ def test_merge_sources_keeps_highest_score_duplicate():
 
     assert merged[0]["score"] == 0.95
     assert len(merged) == 5
+
+
+def test_triage_understands_not_and_exclude_phrases():
+    for text in (
+        "不是胸痛，是胃痛",
+        "并非胸痛",
+        "排除胸痛",
+        "不考虑心梗",
+    ):
+        assert detect_red_flags(text)["level"] == "none", text
+
+    assert detect_red_flags("非常剧烈的胸痛")["level"] == "emergency"

@@ -41,6 +41,13 @@ def test_parse_risk_level_tagged_and_keywords():
     assert parse_risk_level(None) == ""
 
 
+def test_parse_risk_level_accepts_bare_labels():
+    assert parse_risk_level("风险等级：高") == "high"
+    assert parse_risk_level("风险等级：中，建议尽快就医") == "medium"
+    assert parse_risk_level("风险等级：低") == "low"
+    assert parse_risk_level("风险等级：高血压") == ""
+
+
 def test_parse_risk_level_negation_and_formatting():
     assert parse_risk_level(
         "您目前属于低危，注意控制高危因素即可"

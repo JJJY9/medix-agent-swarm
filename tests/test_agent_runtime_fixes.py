@@ -207,3 +207,29 @@ def test_short_term_memory_records_raw_question():
     ))
 
     assert memory.added[0] == ("user", "原始问题")
+
+
+def test_memory_question_overrides_routed_prompt():
+    memory = FakeMemory()
+    loop = AgentLoop(short_term_memory=memory)
+    seen = {}
+    agent = SimpleNamespace(
+        agent_id="memory_question_agent",
+        config={},
+        llm_client=OneShotLLM(),
+        get_system_prompt=lambda: "系统提示",
+        format_user_input=lambda data: seen.setdefault(
+            "prompt", data["question"]
+        ),
+        get_tools_for_llm=lambda: [],
+        post_process_result=_post_process_noop,
+    )
+
+    asyncio.run(loop.run(
+        agent,
+        {"question": "增强后的提示", "memory_question": "原始问题"},
+        session_id="s1",
+    ))
+
+    assert seen["prompt"] == "增强后的提示"
+    assert memory.added[0] == ("user", "原始问题")

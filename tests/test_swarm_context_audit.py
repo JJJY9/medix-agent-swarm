@@ -23,7 +23,7 @@ class RecordingLoop:
         self.calls = []
 
     async def run(self, agent, input_data, session_id=None, on_token=None,
-                  persist_memory=True):
+                  persist_memory=True, memory_question=None):
         self.calls.append((input_data, session_id, persist_memory))
         return {"answer": "ok"}
 

@@ -362,6 +362,7 @@ class SwarmCoordinator:
             routed_question = self._routed_question(question, task)
             result = await agent.process({
                 'question': routed_question,
+                'memory_question': question,
                 'context': single_context,
                 'session_id': session_id
             }, on_token=on_token)
