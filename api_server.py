@@ -109,6 +109,7 @@ class ImportSessionsRequest(BaseModel):
     symptoms: Optional[List[Dict[str, Any]]] = None
     medications: Optional[List[Dict[str, Any]]] = None
     medication_logs: Optional[List[Dict[str, Any]]] = None
+    audit_log: Optional[List[Dict[str, Any]]] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -463,6 +464,9 @@ class AppState:
     def __init__(self):
         self.coordinator = None
         self.lock = asyncio.Lock()  # Swarm 复用 Worker 实例，请求串行化
+        # 知识库读写/重建单独一把锁：重建可能耗时数十秒，
+        # 不应阻塞正在进行或排队的会诊
+        self.kb_lock = asyncio.Lock()
         self.kb_status = "pending"  # pending | loading | ready | failed
         self.kb_error: Optional[str] = None
         self.startup_error: Optional[str] = None
@@ -1388,6 +1392,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "symptoms": request.symptoms,
         "medications": request.medications,
         "medication_logs": request.medication_logs,
+        "audit_log": request.audit_log,
     }
     try:
         result = await asyncio.to_thread(
@@ -1410,7 +1415,8 @@ async def import_sessions(request: ImportSessionsRequest):
             f"reminders={result.get('reminders', 0)} "
             f"symptoms={result.get('symptoms', 0)} "
             f"medications={result.get('medications', 0)} "
-            f"medication_logs={result.get('medication_logs', 0)}"
+            f"medication_logs={result.get('medication_logs', 0)} "
+            f"audit_log={result.get('audit_log', 0)}"
         ),
     )
     return {"ok": True, **result}
@@ -4997,7 +5003,7 @@ async def knowledge_overview():
 
     service = get_knowledge_service()
     try:
-        async with state.lock:
+        async with state.kb_lock:
             return await asyncio.to_thread(service.list_documents)
     except Exception as e:
         logger.exception("读取知识库失败")
@@ -5010,7 +5016,7 @@ async def knowledge_rebuild():
     from knowledge.service import get_knowledge_service
 
     service = get_knowledge_service()
-    async with state.lock:
+    async with state.kb_lock:
         try:
             result = await asyncio.to_thread(service.rebuild)
         except ValueError as e:
@@ -5047,7 +5053,7 @@ async def knowledge_upload(
 
     result = None
     if rebuild:
-        async with state.lock:
+        async with state.kb_lock:
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
@@ -5111,7 +5117,7 @@ async def knowledge_upload_batch(
 
     result = None
     if rebuild:
-        async with state.lock:
+        async with state.kb_lock:
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
@@ -5206,7 +5212,7 @@ async def knowledge_update(
 
     result = None
     if rebuild:
-        async with state.lock:
+        async with state.kb_lock:
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
@@ -5235,7 +5241,7 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
 
     result = None
     if rebuild:
-        async with state.lock:
+        async with state.kb_lock:
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
@@ -5363,7 +5369,14 @@ async def chat_stream(request: ChatRequest):
         if medication_safety["alerts"]:
             yield sse({"type": "medication_safety", **medication_safety})
 
-        await state.lock.acquire()
+        # 等待会诊锁期间也要保持心跳：另一次会诊可能运行数十秒，
+        # 期间静默会让代理/浏览器读超时断流
+        while True:
+            try:
+                await asyncio.wait_for(state.lock.acquire(), timeout=10)
+                break
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
         lock_released = False
 
         def release_lock(_task=None):
@@ -5417,20 +5430,13 @@ async def chat_stream(request: ChatRequest):
         last_keepalive = asyncio.get_event_loop().time()
         try:
             while not task.done() or not token_queue.empty():
-                # 先推送汇总阶段已经产生的增量文本
-                while not token_queue.empty():
-                    yield sse({
-                        "type": "token",
-                        "delta": token_queue.get_nowait(),
-                    })
-
                 # worker 在 swarm 模式下会被挂上 SharedContext，据此读取进展
                 for worker in getattr(coordinator, "worker_pool", []):
                     sc = getattr(worker, "shared_context", None)
                     if sc is None or id(sc) in stale_contexts:
                         continue
 
-                    # 子任务进入执行中时先点亮对应科室
+                    agent_subtasks: Dict[str, List[str]] = {}
                     for subtask in list(
                         getattr(sc, "task_decomposition", {}).values()
                     ):
@@ -5438,9 +5444,11 @@ async def chat_stream(request: ChatRequest):
                         status = getattr(
                             getattr(subtask, "status", None), "value", ""
                         )
+                        if not agent_id:
+                            continue
+                        agent_subtasks.setdefault(agent_id, []).append(status)
                         if (
-                            agent_id
-                            and status == "in_progress"
+                            status == "in_progress"
                             and agent_id not in started_agents
                         ):
                             started_agents.add(agent_id)
@@ -5450,14 +5458,36 @@ async def chat_stream(request: ChatRequest):
                                 "name": AGENT_LABELS.get(agent_id, agent_id),
                             })
 
-                    for agent_id in list(getattr(sc, "agent_contributions", {}).keys()):
-                        if agent_id not in seen_agents:
-                            seen_agents.add(agent_id)
+                    # 同一 Agent 的全部子任务都结束后再推 agent_done；
+                    # 多子任务时不能在第一个完成就点亮，快速任务也补发开始事件
+                    for agent_id, statuses in agent_subtasks.items():
+                        if agent_id in seen_agents:
+                            continue
+                        if not statuses or not all(
+                            status in ("completed", "failed")
+                            for status in statuses
+                        ):
+                            continue
+                        if agent_id not in started_agents:
+                            started_agents.add(agent_id)
                             yield sse({
-                                "type": "agent_done",
+                                "type": "agent_started",
                                 "agent_id": agent_id,
                                 "name": AGENT_LABELS.get(agent_id, agent_id),
                             })
+                        seen_agents.add(agent_id)
+                        yield sse({
+                            "type": "agent_done",
+                            "agent_id": agent_id,
+                            "name": AGENT_LABELS.get(agent_id, agent_id),
+                        })
+
+                # 进展事件之后再推送汇总阶段已经产生的增量文本
+                while not token_queue.empty():
+                    yield sse({
+                        "type": "token",
+                        "delta": token_queue.get_nowait(),
+                    })
 
                 now = asyncio.get_event_loop().time()
                 if now - last_keepalive >= 15:

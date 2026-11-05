@@ -708,15 +708,21 @@ def test_import_reminder_backup_skips_unrelated_repeat_parent(
         ],
     })
     assert response.status_code == 200
-    assert response.json()["reminders"] == 1
+    # 备份中的父提醒与本地编号撞号但内容不同：不能丢弃，
+    # 应作为新记录导入，并让子提醒指向它
+    assert response.json()["reminders"] == 2
 
     reminders = client.get(
         "/api/reminders", params={"include_done": True}
     ).json()["reminders"]
+    parent = next(
+        item for item in reminders if item["title"] == "备份父提醒"
+    )
     child = next(
         item for item in reminders if item["title"] == "备份子提醒"
     )
-    assert child["repeats_from"] in (0, None)
+    assert parent["id"] != local["id"]
+    assert child["repeats_from"] == parent["id"]
 
     client.post(f"/api/reminders/{local['id']}/complete", json={})
     client.post(f"/api/reminders/{local['id']}/reopen", json={})
