@@ -1588,8 +1588,10 @@ async def list_medications(
 async def export_medications_csv(
     profile: Optional[str] = None,
     active_only: bool = False,
+    status: Optional[str] = None,
+    q: Optional[str] = None,
 ):
-    """导出用药清单 CSV（带 BOM），可按档案与在用状态筛选。"""
+    """导出用药清单 CSV（带 BOM），支持档案、在用状态与关键字筛选。"""
     import csv
     import io
 
@@ -1600,6 +1602,20 @@ async def export_medications_csv(
         get_session_store().list_medications,
         profile, active_only, 100000,
     )
+    status = str(status or "").strip().lower()
+    if status == "active":
+        items = [item for item in items if item.get("active")]
+    elif status == "inactive":
+        items = [item for item in items if not item.get("active")]
+    query = str(q or "").strip().lower()
+    if query:
+        items = [
+            item for item in items
+            if query in " ".join(
+                str(item.get(key) or "")
+                for key in ("name", "dose", "frequency", "note", "profile")
+            ).lower()
+        ]
     rows = [[
         "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
         "今日次数", "近7天次数", "最近服用", "近7天应服", "依从率",
@@ -3656,7 +3672,9 @@ async def family_compare(metric: str = "weight", days: int = 30):
 
 
 @app.get("/api/health/dossier.md")
-async def export_health_dossier(profile: str = "", days: int = 30):
+async def export_health_dossier(
+    profile: str = "", days: int = 30, allow_unassigned: bool = False
+):
     """导出单个患者的健康档案 Markdown（指标、症状、用药、提醒与会诊）。"""
     from memory import get_session_store
     from memory.session_store import (
@@ -3667,7 +3685,9 @@ async def export_health_dossier(profile: str = "", days: int = 30):
     )
 
     profile_key = _normalized_profile_key(profile)
-    if not profile_key:
+    # 空档案名表示「未指定档案」的记录；单独导出接口仍要求先选择档案，
+    # 家庭导出通过 allow_unassigned=True 附带这部分记录
+    if not profile_key and not allow_unassigned:
         raise HTTPException(status_code=400, detail="请先选择患者档案")
     days = max(1, min(int(days or 30), 365))
     store = get_session_store()
@@ -3680,7 +3700,10 @@ async def export_health_dossier(profile: str = "", days: int = 30):
         if item.get("name") == profile_key:
             context = item.get("context") or {}
             break
-    targets = await asyncio.to_thread(store.list_metric_targets, profile_key)
+    targets = (
+        await asyncio.to_thread(store.list_metric_targets, profile_key)
+        if profile_key else []
+    )
     target_map = {
         item["metric"]: item
         for item in targets
@@ -3693,7 +3716,18 @@ async def export_health_dossier(profile: str = "", days: int = 30):
     medications = await asyncio.to_thread(
         store.list_medications, profile_key, False, 100000
     )
-    reminders = await asyncio.to_thread(store.list_reminders, False, profile_key)
+    if profile_key:
+        reminders = await asyncio.to_thread(
+            store.list_reminders, False, profile_key
+        )
+    else:
+        all_reminders = await asyncio.to_thread(
+            store.list_reminders, False, None
+        )
+        reminders = [
+            item for item in all_reminders
+            if not (item.get("profile") or "")
+        ]
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, profile_key, cutoff, "", 200, True
     )
@@ -3701,7 +3735,9 @@ async def export_health_dossier(profile: str = "", days: int = 30):
         await asyncio.to_thread(store.recorded_days, profile_key, 365)
     )
 
-    lines: List[str] = [f"# 健康档案：{profile_key}", ""]
+    lines: List[str] = [
+        f"# 健康档案：{profile_key or '未指定'}", ""
+    ]
     lines.append(f"- 生成时间：{now.strftime('%Y-%m-%d %H:%M')}")
     context_parts = []
     if context.get("age"):
@@ -3857,14 +3893,24 @@ async def export_health_dossier(profile: str = "", days: int = 30):
 
 @app.get("/api/health/dossier-family.md")
 async def export_family_dossier(days: int = 30):
-    """导出所有患者档案的健康档案 Markdown（每位成员一份）。"""
+    """导出所有患者档案的健康档案 Markdown（含未指定档案的记录）。"""
     from memory import get_session_store
 
     store = get_session_store()
     names = await asyncio.to_thread(store.list_used_profile_names)
-    if not names:
+    unassigned = any([
+        await asyncio.to_thread(store.list_metrics, "", None, 1),
+        await asyncio.to_thread(store.list_symptoms, "", 1),
+        await asyncio.to_thread(store.list_medications, "", False, 1),
+    ])
+    if not names and not unassigned:
         raise HTTPException(status_code=400, detail="暂无患者档案")
     parts = []
+    if unassigned:
+        response = await export_health_dossier(
+            profile="", days=days, allow_unassigned=True
+        )
+        parts.append(response.body.decode("utf-8").rstrip() + "\n")
     for name in names:
         response = await export_health_dossier(profile=name, days=days)
         parts.append(response.body.decode("utf-8").rstrip() + "\n")
@@ -3966,8 +4012,11 @@ async def add_reminder(request: ReminderRequest):
 async def export_reminders_csv(
     profile: Optional[str] = None,
     include_done: bool = True,
+    q: Optional[str] = None,
+    overdue: bool = False,
+    date: Optional[str] = None,
 ):
-    """导出随访提醒 CSV（带 BOM），可按档案与完成状态筛选。"""
+    """导出随访提醒 CSV（带 BOM），支持档案、完成状态、关键字、逾期与日期筛选。"""
     import csv
     import io
 
@@ -3977,6 +4026,28 @@ async def export_reminders_csv(
     items = await asyncio.to_thread(
         store.list_reminders, include_done, profile
     )
+    query = str(q or "").strip().lower()
+    if query:
+        items = [
+            item for item in items
+            if query in " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "note", "profile")
+            ).lower()
+        ]
+    if overdue:
+        today = datetime.now().strftime("%Y-%m-%d")
+        items = [
+            item for item in items
+            if not item.get("done")
+            and str(item.get("due_at") or "")[:10] < today
+        ]
+    day = str(date or "").strip()[:10]
+    if day:
+        items = [
+            item for item in items
+            if str(item.get("due_at") or "")[:10] == day
+        ]
     medications = await asyncio.to_thread(
         store.list_medications, None, False, 100000
     )
