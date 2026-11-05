@@ -948,7 +948,15 @@
 
     <p class="metrics-status" id="reminders-status" role="status" hidden></p>
     <p class="reminders-due-hint" id="reminders-due-hint" role="status" hidden></p>
-    <p class="reminder-stats" id="reminder-stats" role="status" hidden></p>
+    <div class="reminder-stats-bar" id="reminder-stats-bar" hidden>
+      <p class="reminder-stats" id="reminder-stats" role="status"></p>
+      <label class="sr-only" for="reminder-stats-range">提醒统计范围</label>
+      <select id="reminder-stats-range" aria-label="提醒统计范围">
+        <option value="7">近 7 天</option>
+        <option value="30" selected>近 30 天</option>
+        <option value="90">近 90 天</option>
+      </select>
+    </div>
     <div class="reminders-filters">
       <input type="search" id="reminders-search" placeholder="搜索提醒、备注或档案" aria-label="搜索提醒">
       <label class="sr-only" for="reminders-profile">按档案筛选提醒</label>

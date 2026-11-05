@@ -818,9 +818,11 @@ def test_app_js_ships_reminder_stats(client):
     css = client.get("/static/styles.css").text
 
     assert 'id="reminder-stats"' in html
+    assert 'id="reminder-stats-range"' in html
     assert "async function loadReminderStats" in app_js
     assert "/api/reminders/stats" in app_js
-    assert ".reminder-stats" in css
+    assert "reminderStatsRange" in app_js
+    assert ".reminder-stats-bar" in css
 
 
 def test_app_js_ships_weekly_summary(client):

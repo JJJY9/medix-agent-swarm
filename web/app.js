@@ -307,6 +307,8 @@ const els = {
   remindersStatus: document.getElementById('reminders-status'),
   remindersDueHint: document.getElementById('reminders-due-hint'),
   reminderStats: document.getElementById('reminder-stats'),
+  reminderStatsBar: document.getElementById('reminder-stats-bar'),
+  reminderStatsRange: document.getElementById('reminder-stats-range'),
   remindersProfile: document.getElementById('reminders-profile'),
   remindersShowDone: document.getElementById('reminders-show-done'),
   remindersOverdueOnly: document.getElementById('reminders-overdue-only'),
@@ -5286,6 +5288,7 @@ const HEALTH_FILTER_KEYS = {
   compareMetric: 'medix.compareMetric',
   compareRange: 'medix.compareRange',
   medicationRange: 'medix.medicationRange',
+  reminderStatsRange: 'medix.reminderStatsRange',
 };
 
 function readStoredFilter(key) {
@@ -7589,23 +7592,25 @@ async function loadReminders() {
 let reminderStatsRequestSeq = 0;
 
 async function loadReminderStats() {
-  if (!els.reminderStats) return;
+  if (!els.reminderStats || !els.reminderStatsBar) return;
   const requestSeq = ++reminderStatsRequestSeq;
   const profile = els.remindersProfile ? els.remindersProfile.value : '';
+  const days = Number(els.reminderStatsRange?.value) || 30;
   try {
     const res = await fetch(
-      `/api/reminders/stats?days=30&profile=${encodeURIComponent(profile)}`
+      `/api/reminders/stats?days=${days}`
+      + `&profile=${encodeURIComponent(profile)}`
     );
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== reminderStatsRequestSeq) return;
+    els.reminderStatsBar.hidden = false;
     if (!data.due_total) {
-      els.reminderStats.hidden = true;
+      els.reminderStats.textContent = `近 ${days} 天暂无到期提醒。`;
       return;
     }
-    els.reminderStats.hidden = false;
     els.reminderStats.textContent =
-      `近 30 天到期 ${data.due_total} 条 · 已完成 ${data.done_total} 条`
+      `近 ${days} 天到期 ${data.due_total} 条 · 已完成 ${data.done_total} 条`
       + (
         data.completion_rate !== null
           ? `（${data.completion_rate}%）`
@@ -7619,7 +7624,7 @@ async function loadReminderStats() {
       );
   } catch {
     if (requestSeq !== reminderStatsRequestSeq) return;
-    els.reminderStats.hidden = true;
+    els.reminderStatsBar.hidden = true;
   }
 }
 
@@ -12240,6 +12245,14 @@ els.reminderDueQuick.addEventListener('click', (event) => {
 });
 els.remindersShowDone.addEventListener('change', loadReminders);
 els.remindersProfile.addEventListener('change', loadReminders);
+if (els.reminderStatsRange) {
+  els.reminderStatsRange.addEventListener('change', () => {
+    storeFilter(
+      HEALTH_FILTER_KEYS.reminderStatsRange, els.reminderStatsRange.value
+    );
+    loadReminderStats();
+  });
+}
 els.reminderCancel.addEventListener('click', () => {
   resetReminderForm();
   setRemindersStatus('已取消编辑。');
@@ -12295,6 +12308,9 @@ restoreSelectValue(
 );
 restoreSelectValue(els.timelineRange, HEALTH_FILTER_KEYS.timelineRange);
 restoreSelectValue(els.timelineType, HEALTH_FILTER_KEYS.timelineType);
+restoreSelectValue(
+  els.reminderStatsRange, HEALTH_FILTER_KEYS.reminderStatsRange
+);
 
 els.weeklySummaryRange.addEventListener('change', () => {
   storeFilter(HEALTH_FILTER_KEYS.weeklyRange, els.weeklySummaryRange.value);
