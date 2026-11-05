@@ -196,6 +196,38 @@ def test_family_overview_recorded_today(client_and_store):
     assert dad["recorded_today"] is True
 
 
+def test_family_overview_consultation_risk(client_and_store):
+    import csv
+    import io
+
+    client, store = client_and_store
+
+    store.save_exchange(
+        "risk-session", "妈妈最近头晕怎么办",
+        "风险等级：中危。建议近期复查血压。",
+    )
+    store.set_session_profile("risk-session", "妈妈")
+
+    data = client.get("/api/family/overview").json()
+    mom = {item["name"]: item for item in data["profiles"]}["妈妈"]
+    assert mom["consultations"]["risk"] == "medium"
+
+    store.save_exchange(
+        "risk-session", "再补充一点", "**高危**：建议尽快到门诊评估。"
+    )
+
+    data = client.get("/api/family/overview").json()
+    mom = {item["name"]: item for item in data["profiles"]}["妈妈"]
+    assert mom["consultations"]["risk"] == "high"
+
+    export = client.get("/api/family/overview/export.csv")
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+    mom_row = next(row for row in rows[1:] if row[0] == "妈妈")
+    assert "（高危）" in mom_row[8]
+
+
 def test_family_overview_csv_export(client_and_store):
     import csv
     import io

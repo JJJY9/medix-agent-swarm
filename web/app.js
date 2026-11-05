@@ -7152,6 +7152,13 @@ async function loadHomeGlance() {
 let familyOverviewRequestSeq = 0;
 let familyOverviewCache = null;
 
+const FAMILY_RISK_LABELS = {
+  emergency: '紧急',
+  high: '高危',
+  medium: '中危',
+  low: '低危',
+};
+
 function familyContextText(context) {
   if (!context || typeof context !== 'object') return '';
   const parts = [];
@@ -7260,9 +7267,20 @@ function renderFamilyOverview(data) {
     }
     const consultations = profile.consultations || {};
     if (consultations.count) {
-      chips.appendChild(familyChip(
+      const chip = familyChip(
         `会诊 近 ${days} 天 ${consultations.count} 次`
-      ));
+      );
+      const riskLabel = FAMILY_RISK_LABELS[consultations.risk];
+      if (riskLabel) {
+        chip.textContent += ` · ${riskLabel}`;
+        if (
+          consultations.risk === 'emergency'
+          || consultations.risk === 'high'
+        ) {
+          chip.className += ' family-chip-alert';
+        }
+      }
+      chips.appendChild(chip);
     }
     if (!chips.children.length) {
       chips.appendChild(familyChip(
@@ -7332,7 +7350,13 @@ function familyOverviewText(data) {
     const symptom = profile.symptoms || {};
     if (symptom.count) parts.push(`症状 ${symptom.count} 条`);
     const consultations = profile.consultations || {};
-    if (consultations.count) parts.push(`会诊 ${consultations.count} 次`);
+    if (consultations.count) {
+      const riskLabel = FAMILY_RISK_LABELS[consultations.risk];
+      parts.push(
+        `会诊 ${consultations.count} 次`
+        + (riskLabel ? `（${riskLabel}）` : '')
+      );
+    }
     const context = familyContextText(profile.context);
     const name = profile.name || '未指定档案';
     lines.push(
