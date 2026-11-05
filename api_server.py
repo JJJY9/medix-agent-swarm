@@ -18,7 +18,7 @@ import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -2147,6 +2147,110 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "overdue": overdue,
             "due_in_7_days": due_soon,
         },
+    }
+
+
+@app.get("/api/timeline")
+async def health_timeline(
+    profile: Optional[str] = None,
+    days: int = 30,
+    limit: int = 100,
+):
+    """健康时间线：指标、症状与用药打卡按时间倒序合并。"""
+    from memory import get_session_store
+    from memory.session_store import METRIC_TYPES
+
+    days = max(1, min(int(days or 30), 365))
+    limit = max(1, min(int(limit or 100), 500))
+    store = get_session_store()
+    start = (
+        datetime.now() - timedelta(days=days - 1)
+    ).strftime("%Y-%m-%d")
+    raw_metrics = await asyncio.to_thread(
+        store.list_metrics, profile, None, 100000, days
+    )
+    raw_symptoms = await asyncio.to_thread(
+        store.list_symptoms, profile, 100000, days
+    )
+    raw_logs = await asyncio.to_thread(
+        store.list_medication_logs, None, profile, 100000, 0, days
+    )
+
+    events: List[Dict[str, Any]] = []
+
+    def format_value(value: Any) -> str:
+        number = float(value)
+        if number.is_integer():
+            return str(int(number))
+        return f"{number:g}"
+
+    for item in raw_metrics:
+        at = str(item.get("measured_at") or "")
+        if not at or at[:10] < start:
+            continue
+        label = METRIC_TYPES.get(
+            item["metric"], (item["metric"], "", (0, 0))
+        )[0]
+        if (
+            item["metric"] == "bp"
+            and item.get("value2") is not None
+        ):
+            value = (
+                f"{format_value(item['value1'])}/"
+                f"{format_value(item['value2'])}"
+            )
+        else:
+            value = format_value(item["value1"])
+        unit = str(item.get("unit") or "").strip()
+        events.append({
+            "type": "metric",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": label,
+            "value": f"{value} {unit}".strip(),
+            "note": item.get("note", ""),
+        })
+    for item in raw_symptoms:
+        at = str(item.get("recorded_at") or "")
+        if not at or at[:10] < start:
+            continue
+        events.append({
+            "type": "symptom",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("symptom", ""),
+            "value": f"{int(item.get('severity') or 0)}/10",
+            "note": item.get("note", ""),
+        })
+    for item in raw_logs:
+        at = str(item.get("taken_at") or "")
+        if not at or at[:10] < start:
+            continue
+        details = [
+            str(item.get("medication_dose") or "").strip(),
+            "打卡",
+        ]
+        events.append({
+            "type": "medication",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("medication_name") or "用药打卡",
+            "value": " · ".join(part for part in details if part),
+            "note": item.get("note", ""),
+        })
+
+    events.sort(
+        key=lambda event: (event["at"], event["id"] or 0),
+        reverse=True,
+    )
+    return {
+        "events": events[:limit],
+        "total": len(events),
+        "days": days,
+        "start": start,
     }
 
 

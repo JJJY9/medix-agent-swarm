@@ -410,6 +410,11 @@ const els = {
   weeklySummaryRange: document.getElementById('weekly-summary-range'),
   weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
+  timelineSection: document.getElementById('timeline-section'),
+  timelineRange: document.getElementById('timeline-range'),
+  timelineSummary: document.getElementById('timeline-summary'),
+  timelineList: document.getElementById('timeline-list'),
+  timelineEmpty: document.getElementById('timeline-empty'),
   medicationSearch: document.getElementById('medication-search'),
   medicationStatusFilter: document.getElementById('medication-status-filter'),
   medicationEmpty: document.getElementById('medication-empty'),
@@ -5231,6 +5236,7 @@ let homeGlanceRequestSeq = 0;
 let weeklySummaryRequestSeq = 0;
 let weeklySummaryCache = null;
 let weeklySummaryCopyTimer = null;
+let timelineRequestSeq = 0;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -6160,6 +6166,7 @@ async function refreshMetrics() {
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
+  loadTimeline();
   loadHomeGlance();
 }
 
@@ -7129,7 +7136,11 @@ async function loadHomeGlance() {
 }
 
 function refreshOverview() {
-  return Promise.all([loadHomeGlance(), loadWeeklySummary()]);
+  return Promise.all([
+    loadHomeGlance(),
+    loadWeeklySummary(),
+    loadTimeline(),
+  ]);
 }
 
 async function loadReminders() {
@@ -8578,6 +8589,84 @@ async function copyWeeklySummary() {
     weeklySummaryCopyTimer = setTimeout(() => {
       els.weeklySummaryCopy.textContent = '复制小结';
     }, 1500);
+  }
+}
+
+const TIMELINE_TYPE_LABELS = {
+  metric: '指标',
+  symptom: '症状',
+  medication: '用药',
+};
+
+function renderTimeline(data) {
+  if (!els.timelineList) return;
+  const events = data.events || [];
+  const days = Number(data.days) || 30;
+  els.timelineList.replaceChildren();
+  els.timelineEmpty.hidden = events.length > 0;
+  els.timelineEmpty.textContent = `近 ${days} 天没有健康记录。`;
+  if (els.timelineSummary) {
+    els.timelineSummary.hidden = !events.length;
+    els.timelineSummary.textContent = events.length
+      ? `近 ${days} 天共 ${Number(data.total) || events.length} 条记录`
+      : '';
+  }
+  for (const event of events) {
+    const li = document.createElement('li');
+    li.className = 'metric-item timeline-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = event.title || '';
+    const badge = document.createElement('span');
+    badge.className =
+      `timeline-badge timeline-badge-${event.type || 'metric'}`;
+    badge.textContent = TIMELINE_TYPE_LABELS[event.type] || '记录';
+    title.append(' ', badge);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      formatTime(event.at),
+      event.value,
+      event.profile || '未指定档案',
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (event.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = event.note;
+      main.appendChild(note);
+    }
+    li.appendChild(main);
+    els.timelineList.appendChild(li);
+  }
+}
+
+async function loadTimeline() {
+  if (!els.timelineList) return;
+  const requestSeq = ++timelineRequestSeq;
+  const profile = els.metricProfile.value;
+  const days = Number(els.timelineRange.value) || 30;
+  try {
+    const res = await fetch(
+      `/api/timeline?profile=${encodeURIComponent(profile)}`
+      + `&days=${days}&limit=200`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== timelineRequestSeq) return;
+    renderTimeline(data);
+  } catch {
+    if (requestSeq !== timelineRequestSeq) return;
+    els.timelineList.replaceChildren();
+    els.timelineEmpty.hidden = false;
+    els.timelineEmpty.textContent = '时间线加载失败，请稍后重试。';
+    if (els.timelineSummary) els.timelineSummary.hidden = true;
   }
 }
 
@@ -11242,6 +11331,7 @@ els.metricProfile.addEventListener('change', refreshMetrics);
 els.metricRange.addEventListener('change', refreshMetrics);
 els.weeklySummaryRange.addEventListener('change', loadWeeklySummary);
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
+els.timelineRange.addEventListener('change', loadTimeline);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
