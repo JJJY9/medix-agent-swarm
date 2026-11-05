@@ -416,6 +416,7 @@ const els = {
   timelineSection: document.getElementById('timeline-section'),
   timelineRange: document.getElementById('timeline-range'),
   timelineType: document.getElementById('timeline-type'),
+  timelineSearch: document.getElementById('timeline-search'),
   timelineExport: document.getElementById('timeline-export'),
   timelineSummary: document.getElementById('timeline-summary'),
   timelineList: document.getElementById('timeline-list'),
@@ -8799,17 +8800,30 @@ function renderTimeline(data) {
   if (!els.timelineList) return;
   const allEvents = data.events || [];
   const type = els.timelineType ? els.timelineType.value : '';
-  const events = type
-    ? allEvents.filter((event) => event.type === type)
-    : allEvents;
+  const query = els.timelineSearch
+    ? String(els.timelineSearch.value || '').trim().toLowerCase()
+    : '';
+  const events = allEvents.filter((event) => {
+    if (type && event.type !== type) return false;
+    if (!query) return true;
+    return [event.title, event.value, event.note, event.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query);
+  });
   const days = Number(data.days) || 30;
   els.timelineList.replaceChildren();
   els.timelineEmpty.hidden = events.length > 0;
-  els.timelineEmpty.textContent = type
-    ? `近 ${days} 天没有该类型的记录。`
-    : `近 ${days} 天没有健康记录。`;
+  if (query) {
+    els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
+  } else if (type) {
+    els.timelineEmpty.textContent = `近 ${days} 天没有该类型的记录。`;
+  } else {
+    els.timelineEmpty.textContent = `近 ${days} 天没有健康记录。`;
+  }
   if (els.timelineSummary) {
-    const count = type
+    const count = type || query
       ? events.length
       : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
@@ -8832,6 +8846,12 @@ function renderTimeline(data) {
       `timeline-badge timeline-badge-${event.type || 'metric'}`;
     badge.textContent = TIMELINE_TYPE_LABELS[event.type] || '记录';
     title.append(' ', badge);
+    if (event.alert) {
+      const alertBadge = document.createElement('span');
+      alertBadge.className = 'timeline-alert';
+      alertBadge.textContent = '超标';
+      title.appendChild(alertBadge);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -11592,6 +11612,13 @@ els.timelineType.addEventListener('change', () => {
     loadTimeline();
   }
 });
+if (els.timelineSearch) {
+  els.timelineSearch.addEventListener('input', () => {
+    if (timelineDataCache) {
+      renderTimeline(timelineDataCache);
+    }
+  });
+}
 els.timelineExport.addEventListener('click', exportTimelineCsv);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);

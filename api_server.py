@@ -2228,7 +2228,7 @@ async def health_timeline(
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
-    from memory.session_store import METRIC_TYPES
+    from memory.session_store import LOWER_BOUND_TARGET_METRICS, METRIC_TYPES
 
     days = max(1, min(int(days or 30), 365))
     limit = max(1, min(int(limit or 100), 500))
@@ -2248,6 +2248,12 @@ async def health_timeline(
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, profile, start, "", 500
     )
+    targets = await asyncio.to_thread(store.list_metric_targets, None)
+    target_map = {
+        (item.get("profile") or "", item.get("metric")): item
+        for item in targets
+        if item.get("metric")
+    }
 
     events: List[Dict[str, Any]] = []
 
@@ -2275,6 +2281,24 @@ async def health_timeline(
         else:
             value = format_value(item["value1"])
         unit = str(item.get("unit") or "").strip()
+        target = target_map.get(
+            (item.get("profile") or "", item["metric"])
+        )
+        alert = False
+        if target is not None:
+            value1 = float(item["value1"])
+            if item["metric"] in LOWER_BOUND_TARGET_METRICS:
+                alert = value1 < float(target["value1"])
+            else:
+                alert = value1 > float(target["value1"])
+                if (
+                    not alert
+                    and item["metric"] == "bp"
+                    and target.get("value2") is not None
+                ):
+                    alert = float(item.get("value2") or 0) > float(
+                        target["value2"]
+                    )
         events.append({
             "type": "metric",
             "at": at,
@@ -2283,6 +2307,7 @@ async def health_timeline(
             "title": label,
             "value": f"{value} {unit}".strip(),
             "note": item.get("note", ""),
+            "alert": alert,
         })
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
@@ -2296,6 +2321,7 @@ async def health_timeline(
             "title": item.get("symptom", ""),
             "value": f"{int(item.get('severity') or 0)}/10",
             "note": item.get("note", ""),
+            "alert": False,
         })
     for item in raw_logs:
         at = str(item.get("taken_at") or "")
@@ -2313,6 +2339,7 @@ async def health_timeline(
             "title": item.get("medication_name") or "用药打卡",
             "value": " · ".join(part for part in details if part),
             "note": item.get("note", ""),
+            "alert": False,
         })
 
     for item in raw_sessions:
@@ -2330,6 +2357,7 @@ async def health_timeline(
             "title": str(item.get("title") or "").strip() or "会诊记录",
             "value": f"会诊 · {message_count} 条消息",
             "note": "",
+            "alert": False,
         })
 
     def sort_key(event: Dict[str, Any]):
@@ -2363,7 +2391,7 @@ async def export_timeline_csv(
         "medication": "用药",
         "consultation": "会诊",
     }
-    rows = [["时间", "类型", "项目", "数值", "患者档案", "备注"]]
+    rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "超标"]]
     for event in data["events"]:
         rows.append([
             csv_safe_cell(event.get("at", "")),
@@ -2372,6 +2400,7 @@ async def export_timeline_csv(
             csv_safe_cell(event.get("value", "")),
             csv_safe_cell(event.get("profile", "")),
             csv_safe_cell(event.get("note", "")),
+            "是" if event.get("alert") else "",
         ])
 
     buffer = io.StringIO()
