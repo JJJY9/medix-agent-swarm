@@ -1,4 +1,6 @@
 """健康时间线 API 的离线测试。"""
+import csv
+import io
 from datetime import datetime, timedelta
 
 import pytest
@@ -93,3 +95,28 @@ def test_timeline_merges_and_filters(client_and_store):
     family = client.get("/api/timeline").json()
     assert family["total"] == 5
     assert family["events"][0]["profile"] == "父亲"
+
+
+def test_timeline_csv_export(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 130, "value2": 85, "measured_at": now,
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "=SUM(A1:A2)",
+        "severity": 4, "recorded_at": now,
+    })
+
+    export = client.get(
+        "/api/timeline/export.csv", params={"profile": "妈妈"}
+    )
+    text = export.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert export.status_code == 200
+    assert rows[0] == ["时间", "类型", "项目", "数值", "患者档案", "备注"]
+    assert {row[1] for row in rows[1:]} == {"指标", "症状"}
+    assert any(row[2].startswith("'=SUM") for row in rows[1:])

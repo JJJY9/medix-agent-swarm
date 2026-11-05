@@ -2254,6 +2254,47 @@ async def health_timeline(
     }
 
 
+@app.get("/api/timeline/export.csv")
+async def export_timeline_csv(
+    profile: Optional[str] = None,
+    days: int = 30,
+):
+    """导出健康时间线 CSV（带 BOM），可按档案与最近天数筛选。"""
+    import csv
+    import io
+
+    data = await health_timeline(profile=profile, days=days, limit=500)
+    type_labels = {
+        "metric": "指标",
+        "symptom": "症状",
+        "medication": "用药",
+    }
+    rows = [["时间", "类型", "项目", "数值", "患者档案", "备注"]]
+    for event in data["events"]:
+        rows.append([
+            csv_safe_cell(event.get("at", "")),
+            type_labels.get(event.get("type"), event.get("type", "")),
+            csv_safe_cell(event.get("title", "")),
+            csv_safe_cell(event.get("value", "")),
+            csv_safe_cell(event.get("profile", "")),
+            csv_safe_cell(event.get("note", "")),
+        ])
+
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = f"medix-timeline-{datetime.now().strftime('%Y%m%d')}.csv"
+
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.post("/api/metrics")
 async def add_metric(request: MetricRequest):
     """新增血压、体重、血糖或体温记录。"""

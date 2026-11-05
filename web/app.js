@@ -412,6 +412,8 @@ const els = {
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
   timelineSection: document.getElementById('timeline-section'),
   timelineRange: document.getElementById('timeline-range'),
+  timelineType: document.getElementById('timeline-type'),
+  timelineExport: document.getElementById('timeline-export'),
   timelineSummary: document.getElementById('timeline-summary'),
   timelineList: document.getElementById('timeline-list'),
   timelineEmpty: document.getElementById('timeline-empty'),
@@ -5237,6 +5239,7 @@ let weeklySummaryRequestSeq = 0;
 let weeklySummaryCache = null;
 let weeklySummaryCopyTimer = null;
 let timelineRequestSeq = 0;
+let timelineDataCache = null;
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -8600,15 +8603,24 @@ const TIMELINE_TYPE_LABELS = {
 
 function renderTimeline(data) {
   if (!els.timelineList) return;
-  const events = data.events || [];
+  const allEvents = data.events || [];
+  const type = els.timelineType ? els.timelineType.value : '';
+  const events = type
+    ? allEvents.filter((event) => event.type === type)
+    : allEvents;
   const days = Number(data.days) || 30;
   els.timelineList.replaceChildren();
   els.timelineEmpty.hidden = events.length > 0;
-  els.timelineEmpty.textContent = `近 ${days} 天没有健康记录。`;
+  els.timelineEmpty.textContent = type
+    ? `近 ${days} 天没有该类型的记录。`
+    : `近 ${days} 天没有健康记录。`;
   if (els.timelineSummary) {
+    const count = type
+      ? events.length
+      : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
     els.timelineSummary.textContent = events.length
-      ? `近 ${days} 天共 ${Number(data.total) || events.length} 条记录`
+      ? `近 ${days} 天共 ${count} 条记录`
       : '';
   }
   for (const event of events) {
@@ -8660,13 +8672,40 @@ async function loadTimeline() {
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== timelineRequestSeq) return;
+    timelineDataCache = data;
     renderTimeline(data);
   } catch {
     if (requestSeq !== timelineRequestSeq) return;
+    timelineDataCache = null;
     els.timelineList.replaceChildren();
     els.timelineEmpty.hidden = false;
     els.timelineEmpty.textContent = '时间线加载失败，请稍后重试。';
     if (els.timelineSummary) els.timelineSummary.hidden = true;
+  }
+}
+
+async function exportTimelineCsv() {
+  const profile = els.metricProfile.value;
+  const days = Number(els.timelineRange.value) || 30;
+  try {
+    const res = await fetch(
+      `/api/timeline/export.csv?profile=${encodeURIComponent(profile)}`
+      + `&days=${days}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-timeline-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setMetricsStatus('已导出健康时间线 CSV。');
+  } catch (err) {
+    setMetricsStatus(`导出时间线失败：${err.message || err}`, true);
   }
 }
 
@@ -11332,6 +11371,14 @@ els.metricRange.addEventListener('change', refreshMetrics);
 els.weeklySummaryRange.addEventListener('change', loadWeeklySummary);
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
 els.timelineRange.addEventListener('change', loadTimeline);
+els.timelineType.addEventListener('change', () => {
+  if (timelineDataCache) {
+    renderTimeline(timelineDataCache);
+  } else {
+    loadTimeline();
+  }
+});
+els.timelineExport.addEventListener('click', exportTimelineCsv);
 els.metricTargetEdit.addEventListener('click', startEditMetricTarget);
 els.metricTargetSave.addEventListener('click', saveMetricTarget);
 els.metricTargetCancel.addEventListener('click', updateMetricTargetDisplay);
