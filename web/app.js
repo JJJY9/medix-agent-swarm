@@ -6223,8 +6223,9 @@ async function loadMetricWeekly() {
   const requestSeq = ++metricWeeklyRequestSeq;
   const profile = els.metricProfile.value;
   try {
+    const params = new URLSearchParams({ profile, days: '7' });
     const res = await fetch(
-      `/api/metrics?limit=500&profile=${encodeURIComponent(profile)}&days=7`
+      `/api/metrics/latest?${params.toString()}`
     );
     if (!res.ok) return;
     const items = (await res.json()).metrics || [];
@@ -6244,9 +6245,10 @@ async function loadMetricOverview() {
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
   try {
+    const params = new URLSearchParams({ profile });
+    if (days > 0) params.set('days', String(days));
     const res = await fetch(
-      `/api/metrics?limit=500&profile=${encodeURIComponent(profile)}`
-      + (days > 0 ? `&days=${days}` : '')
+      `/api/metrics/latest?${params.toString()}`
     );
     if (!res.ok) return;
     const items = (await res.json()).metrics || [];
@@ -6254,7 +6256,7 @@ async function loadMetricOverview() {
 
     const latest = {};
     for (const item of items) {
-      if (!latest[item.metric]) latest[item.metric] = item;
+      latest[item.metric] = item;
     }
 
     els.metricOverviewGrid.replaceChildren();

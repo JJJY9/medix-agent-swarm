@@ -315,7 +315,7 @@ npm install -D playwright
 | POST | `/api/tools/abcd2` | ABCD2 TIA 后短期卒中风险评分 |
 | POST | `/api/tools/morse-fall` | Morse 跌倒风险评分 |
 | GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选；`limit`/`offset` 分页，默认最近 100 条） |
-| GET | `/api/metrics/latest` | 每种指标类型最新的一条记录（可按 `profile` 筛选，用于首页速览与会诊上下文） |
+| GET | `/api/metrics/latest` | 每种指标类型最新的一条记录（可按 `profile`/`days` 筛选，忽略未来时间，用于首页速览、最近指标与会诊上下文） |
 | GET | `/api/metrics/summary` | 指定指标在范围内的条数、平均/最高/最低、最新值、上一周期均值、目标与达标条数（`profile`/`metric`/`days`） |
 | GET | `/api/reports/weekly` | 近 N 天健康小结：指标汇总、症状统计、用药打卡与依从率、会诊次数与风险、待办提醒（`profile`/`days`，1–90） |
 | GET | `/api/timeline` | 健康时间线：指标、症状、用药打卡与会诊按时间倒序合并，指标附带目标超标标记、会诊附带风险等级（`profile`/`days`/`limit`/`date`） |

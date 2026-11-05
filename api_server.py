@@ -1974,12 +1974,13 @@ async def delete_symptom(symptom_id: int):
 
 
 @app.get("/api/metrics/latest")
-async def latest_metrics(profile: Optional[str] = None):
-    """每种指标类型最新的一条记录。"""
+async def latest_metrics(profile: Optional[str] = None, days: int = 0):
+    """每种指标类型最新的一条记录（可按档案与最近天数筛选）。"""
     from memory import get_session_store
 
+    days = max(0, min(int(days or 0), 3650))
     items = await asyncio.to_thread(
-        get_session_store().latest_metrics, profile
+        get_session_store().latest_metrics, profile, days
     )
     return {"metrics": items}
 
