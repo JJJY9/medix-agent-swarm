@@ -2785,7 +2785,6 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
 
     active_meds = [item for item in medications if item.get("active")]
     meds_by_id = {item["id"]: item for item in medications}
-    active_med_ids = {item["id"] for item in active_meds}
     doses_by_medication: dict = {}
     for log in logs:
         key = log["medication_id"]
@@ -2806,14 +2805,18 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             }
     adherence_expected = 0
     adherence_taken = 0
+    adherence_med_ids = set()
     for item in active_meds:
         expected = expected_doses_for_period(
             item.get("frequency", ""), item.get("created_at", ""), now, days
         )
         if expected:
             adherence_expected += expected
+            adherence_med_ids.add(item["id"])
     for log in logs:
-        if log["medication_id"] in active_med_ids:
+        # 必要时/无法估算频次的药物只展示打卡，不进入依从率分子，
+        # 否则会出现“按时药一次没吃但依从率 100%”的假象
+        if log["medication_id"] in adherence_med_ids:
             adherence_taken += 1
     medication_rows = []
     for row in doses_by_medication.values():
@@ -3820,10 +3823,12 @@ async def family_overview(days: int = 7):
         })
         entry["active"] += 1
         entry["taken_today"] += int(item.get("today_count") or 0)
-        entry["week_count"] += int(item.get("week_count") or 0)
-        entry["expected_week_doses"] += int(
-            item.get("expected_week_doses") or 0
-        )
+        expected_week = int(item.get("expected_week_doses") or 0)
+        # 无明确频次（必要时/每月一次等）的药物只展示次数，不进入
+        # 家庭依从率的分子
+        if expected_week > 0:
+            entry["week_count"] += int(item.get("week_count") or 0)
+        entry["expected_week_doses"] += expected_week
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
         last_taken = str(item.get("last_taken_at") or "")
@@ -4119,9 +4124,8 @@ async def export_health_dossier(
         if item.get("name") == profile_key:
             context = item.get("context") or {}
             break
-    targets = (
-        await asyncio.to_thread(store.list_metric_targets, profile_key)
-        if profile_key else []
+    targets = await asyncio.to_thread(
+        store.list_metric_targets, profile_key
     )
     target_map = {
         item["metric"]: item
@@ -4321,6 +4325,10 @@ async def export_family_dossier(days: int = 30):
         await asyncio.to_thread(store.list_metrics, "", None, 1),
         await asyncio.to_thread(store.list_symptoms, "", 1),
         await asyncio.to_thread(store.list_medications, "", False, 1),
+        await asyncio.to_thread(
+            store.list_sessions_for_timeline, "", "", "", 1
+        ),
+        await asyncio.to_thread(store.list_reminders, False, ""),
     ])
     if not names and not unassigned:
         raise HTTPException(status_code=400, detail="暂无患者档案")
@@ -4514,13 +4522,27 @@ async def export_reminders_ics(
     include_done: bool = False,
 ):
     """导出随访提醒为 iCalendar（.ics），可导入手机/桌面日历。"""
-    from datetime import timedelta, timezone
+    from datetime import timedelta, time, timezone
 
     from memory import get_session_store
 
     items = await asyncio.to_thread(
         get_session_store().list_reminders, include_done, profile
     )
+
+    def parse_repeat_until(value: Any) -> Optional[datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text[:19])
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            if len(text) == 10:
+                parsed = datetime.combine(parsed.date(), time(23, 59, 59))
+            return parsed
+        except (TypeError, ValueError):
+            return None
 
     def escape_ics(value: str) -> str:
         text = str(value or "")
@@ -4599,11 +4621,23 @@ async def export_reminders_ics(
             lines.append("TRANSP:TRANSPARENT")
         repeat_days = int(item.get("repeat_days") or 0)
         if repeat_days > 0 and not item.get("done"):
-            rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
-            until = str(item.get("repeat_until") or "")[:10].replace("-", "")
-            if until:
-                rule += f";UNTIL={until}T235959" if timed else f";UNTIL={until}"
-            lines.append(rule)
+            until_text = str(item.get("repeat_until") or "").strip()
+            until_dt = parse_repeat_until(until_text)
+            next_start = start + timedelta(days=repeat_days)
+            # 第一次顺延已晚于截止时间时不应导出 RRULE，避免日历里出现
+            # 应用自身不会创建的幽灵日程
+            if until_dt is None or next_start <= until_dt:
+                rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
+                if until_text:
+                    if timed and "T" in until_text[:19] and until_dt is not None:
+                        rule += f";UNTIL={until_dt.strftime('%Y%m%dT%H%M%S')}"
+                    else:
+                        until_date = until_text[:10].replace("-", "")
+                        rule += (
+                            f";UNTIL={until_date}T235959"
+                            if timed else f";UNTIL={until_date}"
+                        )
+                lines.append(rule)
         advance = int(item.get("advance_days") or 0)
         if advance > 0 and not item.get("done"):
             lines.extend([
