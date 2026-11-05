@@ -5245,6 +5245,39 @@ let metricsOffset = 0;
 let metricItemsCache = [];
 let homeGlanceRequestSeq = 0;
 const BACKUP_STORAGE_KEY = 'medix.lastBackupAt';
+const HEALTH_FILTER_KEYS = {
+  weeklyRange: 'medix.weeklyRange',
+  timelineRange: 'medix.timelineRange',
+  timelineType: 'medix.timelineType',
+  metricRange: 'medix.metricRange',
+  metricType: 'medix.metricType',
+};
+
+function readStoredFilter(key) {
+  try {
+    return localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+
+function storeFilter(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
+}
+
+function restoreSelectValue(select, key) {
+  if (!select) return;
+  const stored = readStoredFilter(key);
+  if (!stored) return;
+  const exists = Array.from(select.options).some(
+    (option) => option.value === stored
+  );
+  if (exists) select.value = stored;
+}
 
 function readLastBackupAt() {
   try {
@@ -11758,15 +11791,34 @@ for (const input of [
   });
 }
 els.metricType.addEventListener('change', () => {
+  storeFilter(HEALTH_FILTER_KEYS.metricType, els.metricType.value);
   setMetricType(els.metricType.value);
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
-els.metricRange.addEventListener('change', refreshMetrics);
-els.weeklySummaryRange.addEventListener('change', loadWeeklySummary);
+els.metricRange.addEventListener('change', () => {
+  storeFilter(HEALTH_FILTER_KEYS.metricRange, els.metricRange.value);
+  refreshMetrics();
+});
+restoreSelectValue(
+  els.weeklySummaryRange, HEALTH_FILTER_KEYS.weeklyRange
+);
+restoreSelectValue(els.metricRange, HEALTH_FILTER_KEYS.metricRange);
+restoreSelectValue(els.metricType, HEALTH_FILTER_KEYS.metricType);
+restoreSelectValue(els.timelineRange, HEALTH_FILTER_KEYS.timelineRange);
+restoreSelectValue(els.timelineType, HEALTH_FILTER_KEYS.timelineType);
+
+els.weeklySummaryRange.addEventListener('change', () => {
+  storeFilter(HEALTH_FILTER_KEYS.weeklyRange, els.weeklySummaryRange.value);
+  loadWeeklySummary();
+});
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
-els.timelineRange.addEventListener('change', loadTimeline);
+els.timelineRange.addEventListener('change', () => {
+  storeFilter(HEALTH_FILTER_KEYS.timelineRange, els.timelineRange.value);
+  loadTimeline();
+});
 els.timelineType.addEventListener('change', () => {
+  storeFilter(HEALTH_FILTER_KEYS.timelineType, els.timelineType.value);
   if (timelineDataCache) {
     renderTimeline(timelineDataCache);
   } else {
