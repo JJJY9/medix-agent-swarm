@@ -616,3 +616,24 @@ def test_latest_metrics_days_and_future_bound(client):
         "/api/metrics/latest", params={"days": 1}
     ).json()["metrics"]
     assert today == []
+
+
+def test_metrics_api_searches_notes_and_profile(client):
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 60,
+        "measured_at": "2026-11-04T08:00", "note": "晨起",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 70,
+        "measured_at": "2026-11-04T09:00", "note": "服药后",
+    })
+
+    by_note = client.get(
+        "/api/metrics", params={"q": "晨起"}
+    ).json()["metrics"]
+    assert [item["value1"] for item in by_note] == [60]
+
+    by_profile = client.get(
+        "/api/metrics", params={"q": "爸爸"}
+    ).json()["metrics"]
+    assert [item["value1"] for item in by_profile] == [70]

@@ -1373,8 +1373,9 @@ async def list_metrics(
     limit: int = 100,
     days: int = 0,
     offset: int = 0,
+    q: str = "",
 ):
-    """健康指标记录（默认最近 100 条，可按最近天数筛选）。"""
+    """健康指标记录（默认最近 100 条，可按最近天数与关键字筛选）。"""
     from memory import get_session_store
 
     if metric and metric not in (
@@ -1386,7 +1387,8 @@ async def list_metrics(
     days = max(0, min(int(days or 0), 3650))
     offset = max(0, int(offset or 0))
     items = await asyncio.to_thread(
-        get_session_store().list_metrics, profile, metric, limit, days, offset
+        get_session_store().list_metrics,
+        profile, metric, limit, days, offset, q,
     )
     return {"metrics": items}
 

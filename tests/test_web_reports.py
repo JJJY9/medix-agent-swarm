@@ -1096,3 +1096,14 @@ def test_app_js_ships_medication_csv_and_toggle(client):
     assert "async function toggleMedication" in app_js
     assert 'id="medication-export"' in html
     assert 'id="medication-import"' in html
+
+
+def test_app_js_ships_metric_note_search(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="metric-search"' in html
+    assert "metricSearch" in app_js
+    assert "&q=" in app_js
+    assert ".metric-search" in css

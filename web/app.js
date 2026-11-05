@@ -386,6 +386,7 @@ const els = {
   metricsStatus: document.getElementById('metrics-status'),
   metricsList: document.getElementById('metrics-list'),
   metricsMore: document.getElementById('metric-more'),
+  metricSearch: document.getElementById('metric-search'),
   symptomSection: document.getElementById('symptom-section'),
   symptomText: document.getElementById('symptom-text'),
   symptomSeverity: document.getElementById('symptom-severity'),
@@ -5730,9 +5731,14 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
   els.metricsList.replaceChildren();
   els.metricsEmpty.hidden = items.length > 0;
   const metricName = METRIC_NAMES[metric] || '该类';
-  els.metricsEmpty.textContent = days > 0
-    ? `所选时间范围内还没有${metricName}记录。`
-    : `还没有${metricName}记录。`;
+  const query = els.metricSearch
+    ? String(els.metricSearch.value || '').trim()
+    : '';
+  els.metricsEmpty.textContent = query
+    ? `没有匹配「${query}」的${metricName}记录。`
+    : days > 0
+      ? `所选时间范围内还没有${metricName}记录。`
+      : `还没有${metricName}记录。`;
 
   for (const item of items) {
     const li = document.createElement('li');
@@ -6315,6 +6321,9 @@ async function loadMetrics(append = false) {
   const metric = els.metricType.value;
   const profile = els.metricProfile.value;
   const days = metricRangeDays();
+  const query = els.metricSearch
+    ? String(els.metricSearch.value || '').trim()
+    : '';
   if (!append) {
     metricsOffset = 0;
     metricItemsCache = [];
@@ -6326,6 +6335,7 @@ async function loadMetrics(append = false) {
       + `&metric=${encodeURIComponent(metric)}`
       + `&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
+      + (query ? `&q=${encodeURIComponent(query)}` : '')
     );
     if (!res.ok) return;
     const data = await res.json();
@@ -12645,6 +12655,15 @@ els.metricImportFile.addEventListener('change', () => {
   const file = els.metricImportFile.files && els.metricImportFile.files[0];
   if (file) importMetricsCsv(file);
 });
+if (els.metricSearch) {
+  let metricSearchTimer = 0;
+  els.metricSearch.addEventListener('input', () => {
+    clearTimeout(metricSearchTimer);
+    metricSearchTimer = setTimeout(() => {
+      loadMetrics();
+    }, 250);
+  });
+}
 
 els.authForm.addEventListener('submit', async (event) => {
   event.preventDefault();
