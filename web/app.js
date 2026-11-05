@@ -4148,7 +4148,7 @@ async function createLocalBackup() {
   }
 }
 
-async function restoreLatestBackup() {
+async function restoreBackup() {
   const btn = els.historyRestore;
   if (!btn || btn.disabled) return;
 
@@ -4162,23 +4162,47 @@ async function restoreLatestBackup() {
     if (!listRes.ok) {
       throw new Error(list.detail || `服务返回 ${listRes.status}`);
     }
-    const latest = (list.backups || [])[0];
-    if (!latest) {
+    const candidates = (list.backups || []).slice(0, 10);
+    let target = candidates[0];
+    if (!target) {
       btn.textContent = '暂无备份';
       window.alert(
-        '暂无本地自动备份。可在设置中开启自动备份，或使用“导入备份”。'
+        '暂无本地备份。可点击“立即备份”，或在设置中开启自动备份。'
       );
       return;
     }
 
-    const size = latest.size
-      ? `${Math.max(1, Math.round(latest.size / 1024))} KB`
+    if (candidates.length > 1) {
+      const options = candidates.map((item, index) => {
+        const when = item.modified_at
+          ? formatTime(item.modified_at)
+          : item.name;
+        return `${index + 1}. ${item.name}（${when}）`;
+      }).join('\n');
+      const answer = window.prompt(
+        `选择要恢复的备份序号：\n${options}`, '1'
+      );
+      if (answer === null) return;
+      const index = Number(answer) - 1;
+      if (
+        !Number.isInteger(index)
+        || index < 0
+        || index >= candidates.length
+      ) {
+        window.alert('请输入列表中的有效序号。');
+        return;
+      }
+      target = candidates[index];
+    }
+
+    const size = target.size
+      ? `${Math.max(1, Math.round(target.size / 1024))} KB`
       : '';
-    const when = latest.modified_at
-      ? formatTime(latest.modified_at)
-      : latest.name;
+    const when = target.modified_at
+      ? formatTime(target.modified_at)
+      : target.name;
     if (!window.confirm(
-      `恢复本地备份「${latest.name}」（${when}${size ? `，${size}` : ''}）？\n`
+      `恢复本地备份「${target.name}」（${when}${size ? `，${size}` : ''}）？\n`
       + '已有记录会跳过，不会删除现有数据。'
     )) {
       return;
@@ -4186,7 +4210,7 @@ async function restoreLatestBackup() {
 
     btn.textContent = '恢复中…';
     const res = await fetch(
-      `/api/backups/${encodeURIComponent(latest.name)}/restore`,
+      `/api/backups/${encodeURIComponent(target.name)}/restore`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -13181,7 +13205,7 @@ els.historyFeedbackExport.addEventListener('click', exportFeedbackCsv);
 els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);
-els.historyRestore?.addEventListener('click', restoreLatestBackup);
+els.historyRestore?.addEventListener('click', restoreBackup);
 els.historyBackupNow?.addEventListener('click', createLocalBackup);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
