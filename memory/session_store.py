@@ -560,14 +560,18 @@ def _like_pattern(query: str) -> str:
 
 
 def _days_cutoff(days: int) -> Optional[str]:
-    """把“最近 N 天”转换成 updated_at 的下限。"""
+    """把“最近 N 天”转换成自然日窗口的下限（含今天，共 N 天）。"""
     try:
         days = int(days or 0)
     except (TypeError, ValueError):
         return None
     if days <= 0:
         return None
-    return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    return (
+        (datetime.now() - timedelta(days=days - 1))
+        .strftime("%Y-%m-%d")
+        + "T00:00:00"
+    )
 
 
 def _session_filter_conditions(
@@ -2948,7 +2952,9 @@ class SessionStore:
         prev_conditions: Optional[List[str]] = None
         prev_params: List[Any] = []
         if days > 0:
-            current_start = now - timedelta(days=days)
+            current_start = (now - timedelta(days=days - 1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
             current_cutoff = current_start.isoformat(timespec="seconds")
             conditions.append("measured_at >= ?")
             params.append(current_cutoff)
