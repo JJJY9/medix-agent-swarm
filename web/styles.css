@@ -1770,6 +1770,7 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 .history-toolbar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1777,7 +1778,7 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 }
 
 .history-summary {
-  flex: 1;
+  flex: 1 1 200px;
   min-width: 0;
   font-family: var(--mono);
   font-size: 11px;

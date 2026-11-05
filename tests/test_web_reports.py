@@ -817,6 +817,14 @@ def test_app_js_ships_history_risk_badge(client):
     assert ".history-risk" in css
 
 
+def test_history_toolbar_wraps_on_narrow_screens(client):
+    css = client.get("/static/styles.css").text
+
+    toolbar = css.split(".history-toolbar {", 1)[1].split("}", 1)[0]
+    assert "flex-wrap: wrap" in toolbar
+    assert "flex: 1 1 200px" in css
+
+
 def test_app_js_ships_reminder_stats(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text
