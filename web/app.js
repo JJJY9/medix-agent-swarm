@@ -8762,9 +8762,13 @@ function weeklyMetricText(row) {
   return `${name} ${row.count} 次，平均 ${average}${change}${targetText}`;
 }
 
+function rangeDaysLabel(days) {
+  return Number(days) === 1 ? '今天' : `近 ${Number(days)} 天`;
+}
+
 function weeklySummaryLines(data) {
   const days = Number(data.days) || 7;
-  const emptyText = `近 ${days} 天没有记录`;
+  const emptyText = `${rangeDaysLabel(days)}没有记录`;
   const metricRows = data.metrics.by_metric || [];
   const lines = [[
     '健康指标',
@@ -8797,12 +8801,12 @@ function weeklySummaryLines(data) {
   const doses = Number(meds.doses) || 0;
   let medicationText = '没有在用药物';
   if (meds.active) {
-    medicationText = `在用 ${meds.active} 种，近 ${days} 天打卡 ${doses} 次`;
+    medicationText = `在用 ${meds.active} 种，${rangeDaysLabel(days)}打卡 ${doses} 次`;
     if (meds.adherence && meds.adherence.expected) {
       medicationText += `，依从率 ${meds.adherence.rate}%`;
     }
   } else if (doses > 0) {
-    medicationText = `没有在用药物，近 ${days} 天打卡 ${doses} 次`;
+    medicationText = `没有在用药物，${rangeDaysLabel(days)}打卡 ${doses} 次`;
   }
   if (meds.active || doses > 0) {
     const details = [];
@@ -8831,7 +8835,7 @@ function weeklySummaryLines(data) {
 
   const consultations = data.consultations || {};
   const consultCount = Number(consultations.count) || 0;
-  let consultationText = `近 ${days} 天没有会诊`;
+  let consultationText = `${rangeDaysLabel(days)}没有会诊`;
   if (consultCount) {
     consultationText = `${consultCount} 次`;
     const previousConsult = consultations.prev_count;
@@ -8973,11 +8977,11 @@ function renderTimeline(data) {
   if (query) {
     els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
   } else if (onlyAlert) {
-    els.timelineEmpty.textContent = `近 ${days} 天没有超标的记录。`;
+    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有超标的记录。`;
   } else if (type) {
-    els.timelineEmpty.textContent = `近 ${days} 天没有该类型的记录。`;
+    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有该类型的记录。`;
   } else {
-    els.timelineEmpty.textContent = `近 ${days} 天没有健康记录。`;
+    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有健康记录。`;
   }
   if (els.timelineSummary) {
     const count = type || query || onlyAlert
@@ -8985,7 +8989,7 @@ function renderTimeline(data) {
       : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
     els.timelineSummary.textContent = events.length
-      ? `近 ${days} 天共 ${count} 条记录`
+      ? `${rangeDaysLabel(days)}共 ${count} 条记录`
       : '';
   }
   for (const event of events) {

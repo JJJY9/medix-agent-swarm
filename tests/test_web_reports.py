@@ -708,6 +708,8 @@ def test_app_js_ships_health_timeline(client):
     assert 'id="timeline-type"' in html
     assert 'id="timeline-search"' in html
     assert 'id="timeline-only-alert"' in html
+    assert '<option value="1">今天</option>' in html
+    assert "rangeDaysLabel" in app_js
     assert 'id="timeline-export"' in html
     assert "async function exportTimelineCsv" in app_js
     assert "/api/timeline/export.csv" in app_js
@@ -764,7 +766,7 @@ def test_app_js_ships_weekly_summary(client):
     assert "function weeklySummaryText" in app_js
     assert "const ok = await copyText(weeklySummaryText(cache.data))" in app_js
     assert "已复制健康小结" in app_js
-    assert "近 ${days} 天打卡" in app_js
+    assert "${rangeDaysLabel(days)}打卡" in app_js
     assert "较上期" in app_js
     assert "较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 条" in app_js
     assert "近 7 天小结" in app_js
@@ -794,7 +796,7 @@ def test_app_js_profile_scoping_and_refresh(client):
     assert "(item.profile || '') === profile" in app_js
     assert "applyPatientContext({});" in app_js
     assert "全部档案 · 症状" in app_js
-    assert "没有在用药物，近 ${days} 天打卡" in app_js
+    assert "没有在用药物，${rangeDaysLabel(days)}打卡" in app_js
     assert "refreshReminderBadge();\n        refreshOverview();" in app_js
     assert (
         "await refreshMetricProfileOptions();\n"
