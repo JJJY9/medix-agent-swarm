@@ -526,6 +526,9 @@ let historyDays = 0;
 let historyRequestSeq = 0;
 let historyTagsRequestSeq = 0;
 let auditRequestSeq = 0;
+let remindersSearchTimer = null;
+let symptomSearchTimer = null;
+let medicationSearchTimer = null;
 let usageTrendRequestSeq = 0;
 let usageBudgetRequestSeq = 0;
 let kbSearching = false;
@@ -4466,6 +4469,7 @@ let kbFocused = null;
 let kbBusy = false;
 let previewFilename = '';
 let previewEditable = false;
+let previewReturnFocus = null;
 let previewEditing = false;
 let previewEditingFilename = '';
 let kbPreviewSeq = 0;
@@ -4569,10 +4573,16 @@ function closeKbPreview() {
   els.kbPreviewBody.textContent = '';
   els.kbPreviewEditor.value = '';
   els.kbPreviewEdit.hidden = true;
+  // 焦点回到打开预览的按钮，键盘用户不必从抽屉顶部重新 Tab
+  if (previewReturnFocus && previewReturnFocus.isConnected) {
+    previewReturnFocus.focus();
+  }
+  previewReturnFocus = null;
 }
 
 async function previewKbDocument(filename) {
   const seq = ++kbPreviewSeq;
+  previewReturnFocus = document.activeElement;
   exitKbPreviewEdit();
   previewFilename = filename;
   previewEditable = false;
@@ -10490,6 +10500,8 @@ async function runCalc(url, body, build) {
     if (seq !== calcRequestSeq) return;
 
     const view = build(data);
+    // 先让 live 区域可见，再写入结果，读屏才会播报
+    els.calcResult.hidden = false;
     els.calcResultTitle.textContent = view.title;
     els.calcResultMain.textContent = view.main;
     els.calcResultDetail.textContent = view.detail || '';
@@ -10498,7 +10510,6 @@ async function runCalc(url, body, build) {
     currentCalcAction = view.action || null;
     els.calcSave.hidden = !currentCalcAction;
     els.calcSave.textContent = currentCalcAction ? currentCalcAction.label : '保存到健康记录';
-    els.calcResult.hidden = false;
     els.calcResult.scrollIntoView({ block: 'nearest' });
     setCalcStatus('');
   } catch (err) {
@@ -11486,6 +11497,8 @@ async function send(question) {
             const streamed = renderStreamingNote();
             streamTurn = streamed.turn;
             streamBody = streamed.body;
+            // 流式增量逐 token 更新，不能让读屏逐个朗读
+            els.thread.setAttribute('aria-live', 'off');
           }
           streamBuffer += event.delta || '';
           streamBody.textContent = streamBuffer;
@@ -11559,6 +11572,8 @@ async function send(question) {
     }
     setVitals('idle', '系统就绪');
 
+    // 流式期间关闭了 live 播报，最终答复前恢复，让读屏朗读完整意见
+    els.thread.setAttribute('aria-live', 'polite');
     renderAnswer(finalPayload, finalPayload.total_time || elapsed, question);
 
     if (historyOpen) {
@@ -11591,6 +11606,7 @@ async function send(question) {
   } finally {
     clearInterval(elapsedTimer);
     els.thread.removeAttribute('aria-busy');
+    els.thread.setAttribute('aria-live', 'polite');
     busy = false;
     activeController = null;
     els.stop.hidden = true;
@@ -12491,7 +12507,10 @@ els.remindersCalendarClear.addEventListener('click', () => {
   reminderCalendarDay = '';
   refreshReminderViews();
 });
-els.remindersSearch.addEventListener('input', refreshReminderViews);
+els.remindersSearch.addEventListener('input', () => {
+  clearTimeout(remindersSearchTimer);
+  remindersSearchTimer = setTimeout(refreshReminderViews, 200);
+});
 els.remindersOverdueOnly.addEventListener(
   'change', refreshReminderViews
 );
@@ -12743,10 +12762,16 @@ els.symptomImportFile.addEventListener('change', () => {
   if (file) importSymptomsCsv(file);
 });
 els.symptomSearch.addEventListener('input', () => {
-  renderSymptoms(filterSymptoms(symptomItemsCache));
+  clearTimeout(symptomSearchTimer);
+  symptomSearchTimer = setTimeout(() => {
+    renderSymptoms(filterSymptoms(symptomItemsCache));
+  }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {
-  renderMedications(filterMedications(medicationItemsCache));
+  clearTimeout(medicationSearchTimer);
+  medicationSearchTimer = setTimeout(() => {
+    renderMedications(filterMedications(medicationItemsCache));
+  }, 200);
 });
 els.medicationStatusFilter.addEventListener('change', () => {
   renderMedications(filterMedications(medicationItemsCache));

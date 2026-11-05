@@ -15,7 +15,7 @@
 
   --ink: #16303a;
   --ink-soft: #5b7480;
-  --ink-faint: #90a4ad;
+  --ink-faint: #5b7480;
 
   --rule: #d6e0e5;
   --rule-soft: #e6edf0;
@@ -37,8 +37,8 @@
 
   /* 急诊分诊四级色标（用于风险提示配色） */
   --triage-1: #d92b2b;
-  --triage-2: #e8730c;
-  --triage-3: #c99a00;
+  --triage-2: #b45309;
+  --triage-3: #8a6500;
   --triage-4: #2e9e5b;
 
   --serif: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", Georgia, serif;
@@ -59,7 +59,7 @@ html[data-theme="dark"] {
 
   --ink: #e6eef1;
   --ink-soft: #a6bac3;
-  --ink-faint: #6f8792;
+  --ink-faint: #8aa0aa;
 
   --rule: #293b43;
   --rule-soft: #213139;
