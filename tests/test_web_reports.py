@@ -896,6 +896,7 @@ def test_app_js_profile_scoping_and_refresh(client):
     assert "refreshReminderBadge();\n    refreshOverview();" in app_js
     assert "await refreshAfterBackupImport(result);" in app_js
     assert "async function restoreLatestBackup" in app_js
+    assert "async function createLocalBackup" in app_js
     assert (
         "await refreshMetricProfileOptions();\n"
         "    await loadMedications();"

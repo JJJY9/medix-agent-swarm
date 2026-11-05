@@ -131,6 +131,10 @@ class PurgeRequest(BaseModel):
     days: int = Field(..., ge=1, le=3650, description="删除多少天以前的会诊")
 
 
+class ConfirmRequest(BaseModel):
+    confirm: bool = Field(False, description="确认执行该操作")
+
+
 class BulkSessionsRequest(BaseModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
@@ -1635,11 +1639,47 @@ async def list_local_backups():
     return {"backups": items}
 
 
+@app.post("/api/backups")
+async def create_local_backup(request: ConfirmRequest):
+    """立即创建一份本地备份，不受自动备份间隔限制。"""
+    from core.backup import create_backup
+    from memory import get_session_store
+
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="请确认创建本地备份。")
+
+    try:
+        payload = await asyncio.to_thread(
+            get_session_store().export_data
+        )
+        path = await asyncio.to_thread(create_backup, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception("创建本地备份失败")
+        raise HTTPException(
+            status_code=500, detail="创建本地备份失败，请稍后重试。"
+        )
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    await record_audit(
+        "session.export",
+        detail=f"source=manual-backup name={path.name}",
+    )
+    return {"ok": True, "backup": path.name, "size": size}
+
+
 @app.post("/api/backups/{name}/restore")
-async def restore_local_backup(name: str):
+async def restore_local_backup(name: str, request: ConfirmRequest):
     """恢复指定本地备份；与导入一样只合并、跳过已有记录。"""
     from core.backup import resolve_backup
     from memory import get_session_store
+
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="请确认恢复本地备份。")
 
     try:
         path = await asyncio.to_thread(resolve_backup, name)

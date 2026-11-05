@@ -23,6 +23,31 @@ def client_and_store(tmp_path, monkeypatch):
         store.close()
 
 
+def test_create_backup_now(client_and_store):
+    client, store, backup_dir = client_and_store
+    store.save_exchange("manual-backup-session", "问题", "回答")
+
+    created = client.post("/api/backups", json={"confirm": True})
+
+    assert created.status_code == 200
+    data = created.json()
+    assert data["ok"] is True
+    assert data["backup"].startswith("medix-backup-")
+    assert data["size"] > 0
+    assert (backup_dir / data["backup"]).exists()
+    listing = client.get("/api/backups").json()["backups"]
+    assert listing[0]["name"] == data["backup"]
+
+
+def test_create_backup_requires_confirmation(client_and_store):
+    client, _store, backup_dir = client_and_store
+
+    response = client.post("/api/backups", json={"confirm": False})
+
+    assert response.status_code == 400
+    assert not backup_dir.exists() or not list(backup_dir.glob("*.json"))
+
+
 def test_list_and_restore_latest_backup(client_and_store):
     client, store, backup_dir = client_and_store
     store.save_exchange("restore-session", "问题", "回答")
@@ -40,7 +65,9 @@ def test_list_and_restore_latest_backup(client_and_store):
     assert store.delete_session("restore-session") is True
     assert store.get_session("restore-session") is None
 
-    restored = client.post(f"/api/backups/{backup.name}/restore")
+    restored = client.post(
+        f"/api/backups/{backup.name}/restore", json={"confirm": True}
+    )
 
     assert restored.status_code == 200
     data = restored.json()
@@ -58,7 +85,8 @@ def test_restore_rejects_corrupted_backup(client_and_store):
     )
 
     response = client.post(
-        "/api/backups/medix-backup-20260101-000000.json/restore"
+        "/api/backups/medix-backup-20260101-000000.json/restore",
+        json={"confirm": True},
     )
 
     assert response.status_code == 400
@@ -72,10 +100,26 @@ def test_restore_rejects_tampered_checksum(client_and_store):
     payload["sessions"][0]["title"] = "被篡改"
     backup = create_backup(payload, directory=backup_dir)
 
-    response = client.post(f"/api/backups/{backup.name}/restore")
+    response = client.post(
+        f"/api/backups/{backup.name}/restore", json={"confirm": True}
+    )
 
     assert response.status_code == 400
     assert "校验失败" in response.json()["detail"]
+
+
+def test_restore_requires_confirmation(client_and_store):
+    client, store, backup_dir = client_and_store
+    store.save_exchange("restore-confirm-session", "问题", "回答")
+    backup = create_backup(store.export_data(), directory=backup_dir)
+    assert store.delete_session("restore-confirm-session") is True
+
+    response = client.post(
+        f"/api/backups/{backup.name}/restore", json={"confirm": False}
+    )
+
+    assert response.status_code == 400
+    assert store.get_session("restore-confirm-session") is None
 
 
 def test_list_backups_returns_empty_when_missing(client_and_store):
@@ -94,7 +138,8 @@ def test_restore_rejects_path_outside_backup_dir(client_and_store):
     outside.write_text(json.dumps({"version": 1}), encoding="utf-8")
 
     response = client.post(
-        "/api/backups/..%2Fmedix-backup-20260101-000000.json/restore"
+        "/api/backups/..%2Fmedix-backup-20260101-000000.json/restore",
+        json={"confirm": True},
     )
 
     # 编码斜杠可能先被路由拒绝，也可能进入端点后被文件名校验拒绝

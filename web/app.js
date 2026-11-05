@@ -55,6 +55,7 @@ const els = {
   historyExportCsv: document.getElementById('history-export-csv'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
+  historyBackupNow: document.getElementById('history-backup-now'),
   historyRestore: document.getElementById('history-restore'),
   historyRange: document.getElementById('history-range'),
   historyTag: document.getElementById('history-tag'),
@@ -4116,6 +4117,37 @@ async function importHistoryBackup() {
   }
 }
 
+async function createLocalBackup() {
+  const btn = els.historyBackupNow;
+  if (!btn || btn.disabled) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '备份中…';
+
+  try {
+    const res = await fetch('/api/backups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
+
+    btn.textContent = '已备份';
+    markBackupExported();
+    await loadHomeGlance();
+  } catch (err) {
+    btn.textContent = '备份失败';
+    window.alert(`创建本地备份失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1600);
+  }
+}
+
 async function restoreLatestBackup() {
   const btn = els.historyRestore;
   if (!btn || btn.disabled) return;
@@ -4155,7 +4187,11 @@ async function restoreLatestBackup() {
     btn.textContent = '恢复中…';
     const res = await fetch(
       `/api/backups/${encodeURIComponent(latest.name)}/restore`,
-      { method: 'POST' }
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      }
     );
     const result = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
@@ -13146,6 +13182,7 @@ els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);
 els.historyRestore?.addEventListener('click', restoreLatestBackup);
+els.historyBackupNow?.addEventListener('click', createLocalBackup);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;
