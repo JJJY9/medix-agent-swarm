@@ -1898,6 +1898,9 @@ class SessionStore:
 
         exported = []
         for item in sessions:
+            # risk_text 是列表接口用于解析风险的中间字段，
+            # 备份里已有完整消息，不再重复保存答复片段
+            item.pop("risk_text", None)
             exported.append({
                 **item,
                 "messages": self.get_all_messages(item["id"]),

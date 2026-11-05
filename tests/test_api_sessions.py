@@ -741,6 +741,7 @@ def test_sessions_export_api(tmp_path, monkeypatch):
     assert data["version"] == 1
     assert data["session_count"] == 1
     assert data["sessions"][0]["id"] == "s1"
+    assert "risk_text" not in data["sessions"][0]
     assert len(data["sessions"][0]["messages"]) == 2
     assert data["sessions"][0]["messages"][1]["metadata"]["usage"]["total_tokens"] == 8
 
