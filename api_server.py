@@ -907,10 +907,14 @@ async def require_access_token(request: Request, call_next):
                 headers={"Retry-After": str(max(1, int(retry_after)))},
             ))
 
-    return add_security_headers(
+    response = add_security_headers(
         await call_next(request),
         include_csp=path not in DOC_PATHS,
     )
+    if path.startswith("/api/"):
+        # 会诊与健康数据不应被浏览器或中间代理缓存
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 # ===== API =====
