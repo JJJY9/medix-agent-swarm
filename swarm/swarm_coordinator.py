@@ -349,7 +349,9 @@ class SwarmCoordinator:
         # Step 1: LeadAgent 分解任务
         lead_usage: Dict[str, int] = {}
         assessment = await self.lead_agent.assess_and_decompose(
-            question, enhanced_context, usage_out=lead_usage
+            question,
+            public_context(enhanced_context),
+            usage_out=lead_usage,
         )
         # 约束兜底：高危症状/指南类问题必须包含对应 Agent
         self._enforce_required_agents(question, assessment)

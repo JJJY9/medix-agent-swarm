@@ -188,7 +188,7 @@ class LongTermMemory:
             )
 
             # 添加调试日志
-            logger.debug(f"Mem0 search called with limit={limit * 2}")
+            logger.debug(f"Mem0 search called with limit={result_limit * 2}")
 
             # 格式化结果
             formatted_results = []
@@ -196,10 +196,10 @@ class LongTermMemory:
             # 处理不同格式的 Mem0 返回值
             if isinstance(results, dict):
                 results_list = results.get("results", [])
-                logger.debug(f"Mem0 returned dict with {len(results_list)} results (requested limit={limit * 2})")
+                logger.debug(f"Mem0 returned dict with {len(results_list)} results (requested limit={result_limit * 2})")
             elif isinstance(results, list):
                 results_list = results
-                logger.debug(f"Mem0 returned list with {len(results_list)} results (requested limit={limit * 2})")
+                logger.debug(f"Mem0 returned list with {len(results_list)} results (requested limit={result_limit * 2})")
             else:
                 results_list = []
 

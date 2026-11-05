@@ -10,6 +10,7 @@ import pytest
 from core.agent_loop import AgentLoop
 from core.llm_client import LLMResponse, ToolCall
 from core.session_context import get_memory_scope, use_memory_scope
+from core.skill_registry import SkillRegistry
 from memory import ShortTermMemory
 from memory.long_term import LongTermMemory
 from memory.short_term import (
@@ -124,11 +125,16 @@ def test_redis_write_failure_falls_back_to_local_copy():
     session_id = "redis-fallback-test"
     try:
         memory.add_message(session_id, "user", "头痛")
+        memory.add_message(session_id, "assistant", "建议休息")
         history = memory.get_session(session_id)
 
         assert history is not None
-        assert history.messages[0]["content"] == "头痛"
-        memory.clear_session(session_id)
+        assert [msg["content"] for msg in history.messages] == [
+            "头痛", "建议休息"
+        ]
+        # Redis 删除失败时墓碑仍生效，避免会话复活
+        assert memory.clear_session(session_id) is False
+        assert memory.get_session(session_id) is None
     finally:
         memory.storage_type = "memory"
         memory.redis_client = None
@@ -301,3 +307,24 @@ def test_short_term_memory_has_bounded_storage():
     finally:
         for session_id in created:
             memory.clear_session(session_id)
+
+
+def test_sync_skill_receives_memory_scope():
+    registry = SkillRegistry()
+
+    def read_scope():
+        return {"scope": get_memory_scope()}
+
+    registry.register("scope_sync_test", read_scope, "读取作用域", [])
+    with use_memory_scope("medix_profile_测试"):
+        result = asyncio.run(registry.execute("scope_sync_test"))
+
+    assert result["scope"] == "medix_profile_测试"
+
+
+def test_long_term_search_tolerates_none_limit():
+    client = FakeMem0(search_result=[])
+    memory = _memory(client)
+
+    assert memory.search_similar_sessions("头痛", limit=None) == []
+    assert client.searched["limit"] == 10

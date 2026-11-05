@@ -375,27 +375,29 @@ class SessionSummaryManager:
 
     def save_summary(self, summary: SessionSummary):
         """保存会话总结"""
-        summary_path = self._get_summary_path(summary.session_id)
-
+        temp_path = None
         try:
+            summary_path = self._get_summary_path(summary.session_id)
             content = summary.to_markdown()
             temp_path = summary_path.with_name(summary_path.name + ".tmp")
             temp_path.write_text(content, encoding="utf-8")
             temp_path.replace(summary_path)
             logger.info(f"Saved session summary: {summary.session_id}")
         except Exception as e:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             logger.error(f"Error saving session summary: {e}")
 
     def load_summary(self, session_id: str) -> Optional[SessionSummary]:
-        """加载会话总结（简化实现）"""
-        summary_path = self._get_summary_path(session_id)
-
-        if not summary_path.exists():
-            return None
-
+        """加载会话总结（尚未实现完整反序列化，保留安全占位）。"""
         try:
+            summary_path = self._get_summary_path(session_id)
+            if not summary_path.exists():
+                return None
             # 这里可以实现从 Markdown 解析回 SessionSummary
-            # 简化版直接返回 None
             return None
         except Exception as e:
             logger.error(f"Error loading session summary: {e}")
