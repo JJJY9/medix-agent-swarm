@@ -8,6 +8,7 @@ DiagnosticAgent：症状诊断推理 Agent
 4. 将结果写入 SharedContext
 """
 from typing import Dict, Any, Optional
+import re
 from loguru import logger
 
 from .base_agent import BaseAgent
@@ -125,14 +126,27 @@ class DiagnosticAgent(BaseAgent, SkillRegistryMixin):
 
         这里可以添加更复杂的解析逻辑
         """
-        # 尝试提取风险等级
+        # 尝试提取风险等级：优先匹配“风险等级：高/中/低/紧急”的标签，
+        # 避免回答里出现“高血压”“高风险人群”等词就被判成高风险
         risk_level = "unknown"
-        if "风险等级" in final_response:
-            if "高" in final_response or "HIGH" in final_response:
+        label_match = re.search(
+            r"风险等级\s*[：:]\s*[【\[]?\s*(紧急|高|中|低)",
+            final_response,
+        )
+        if label_match:
+            risk_level = {
+                "紧急": "emergency",
+                "高": "high",
+                "中": "medium",
+                "低": "low",
+            }[label_match.group(1)]
+        elif "风险等级" in final_response:
+            lowered = final_response.upper()
+            if re.search(r"\bHIGH\b", lowered):
                 risk_level = "high"
-            elif "中" in final_response or "MEDIUM" in final_response:
+            elif re.search(r"\bMEDIUM\b", lowered):
                 risk_level = "medium"
-            elif "低" in final_response or "LOW" in final_response:
+            elif re.search(r"\bLOW\b", lowered):
                 risk_level = "low"
 
         result.update({

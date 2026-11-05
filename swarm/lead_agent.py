@@ -522,9 +522,11 @@ class LeadAgent:
         timeout_note = ""
         if timeout_occurred:
             all_subtasks = shared_context.task_decomposition.values()
+            # 协调器在汇总前会把未完成的子任务标成 failed，
+            # 因此这里以「未完成」而非某个具体状态来判断
             incomplete_tasks = [
                 subtask.type for subtask in all_subtasks
-                if subtask.status.value in ["pending", "claimed"]
+                if subtask.status.value != "completed"
             ]
             if incomplete_tasks:
                 timeout_note = f"""

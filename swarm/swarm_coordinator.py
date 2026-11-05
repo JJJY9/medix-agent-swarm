@@ -301,8 +301,8 @@ class SwarmCoordinator:
             limit=3
         )
 
-        # 3. 构建增强上下文
-        enhanced_context = context or {}
+        # 3. 构建增强上下文（复制一份，避免修改调用方传入的字典）
+        enhanced_context = dict(context or {})
         patient_context = public_context(context)
 
         # 添加短期记忆
@@ -323,6 +323,13 @@ class SwarmCoordinator:
                 for mem in similar_memories
             ]
             logger.info(f"Found {len(similar_memories)} similar historical cases from long-term memory")
+
+        # 单 Agent 路径的 AgentLoop 会自行从短期记忆加载最近对话，
+        # context 里再带一份 recent_history 会让历史在提示词中重复出现
+        single_context = {
+            key: value for key, value in enhanced_context.items()
+            if key != "recent_history"
+        }
 
         # Step 1: LeadAgent 分解任务
         lead_usage: Dict[str, int] = {}
@@ -354,7 +361,7 @@ class SwarmCoordinator:
             mode = "single_agent"
             result = await agent.process({
                 'question': question,
-                'context': enhanced_context,
+                'context': single_context,
                 'session_id': session_id
             }, on_token=on_token)
             final_answer = result.get('answer', '')
@@ -418,7 +425,7 @@ class SwarmCoordinator:
 
             result = await self.consultation_agent.process({
                 'question': question,
-                'context': enhanced_context,
+                'context': single_context,
                 'session_id': session_id
             }, on_token=on_token)
             final_answer = result.get('answer', '')
@@ -719,7 +726,11 @@ class SwarmCoordinator:
     async def _execute_single_subtask(self, worker, subtask, shared_context):
         """执行单个子任务，失败时记录状态而不是静默吞掉。"""
         try:
-            result = await worker.process_subtask(subtask)
+            # 显式传入本次请求的 SharedContext：Worker 是长期复用的实例，
+            # 并发请求下实例字段会互相覆盖
+            result = await worker.process_subtask(
+                subtask, shared_context=shared_context
+            )
             shared_context.complete_subtask(subtask.id, worker.agent_id, result)
             logger.info(f"{worker.agent_id}: Completed {subtask.type}")
         except Exception as e:

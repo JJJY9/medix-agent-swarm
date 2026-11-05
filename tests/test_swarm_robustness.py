@@ -28,8 +28,10 @@ class FakeWorker:
         self.active = 0
         self.max_active = 0
 
-    async def process_subtask(self, subtask):
+    async def process_subtask(self, subtask, shared_context=None):
         self.started.append(subtask.id)
+        self.contexts_seen = getattr(self, "contexts_seen", [])
+        self.contexts_seen.append(shared_context)
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         await asyncio.sleep(0.01)
@@ -66,6 +68,7 @@ def test_worker_serializes_tasks_and_records_failure():
     )
 
     assert worker.started == ["s1", "s2"]
+    assert worker.contexts_seen == [context, context]
     assert worker.max_active == 1, "同一个 Worker 的子任务应串行执行"
     assert context.get_subtask("s1").status is TaskStatus.COMPLETED
     assert context.get_subtask("s2").status is TaskStatus.FAILED

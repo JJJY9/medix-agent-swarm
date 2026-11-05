@@ -60,7 +60,8 @@ class AgentLoop:
         agent,
         input_data: Dict[str, Any],
         session_id: Optional[str] = None,
-        on_token: Optional[Any] = None
+        on_token: Optional[Any] = None,
+        persist_memory: bool = True,
     ) -> Dict[str, Any]:
         """
         执行Agent循环
@@ -70,6 +71,8 @@ class AgentLoop:
             input_data: 输入数据
             session_id: 会话ID
             on_token: 可选的流式回调；用于强制收尾/最大迭代兜底时逐段推送文本
+            persist_memory: 是否读写短期记忆；Swarm Worker 传 False，
+                避免把内部工具消息写进用户会话或重复加载历史
 
         Returns:
             最终结果
@@ -95,10 +98,12 @@ class AgentLoop:
             state.status = TaskStatus.IN_PROGRESS
 
             # 初始化消息历史（包含历史对话）
-            messages = self._initialize_messages(agent, input_data, session_id)
+            messages = self._initialize_messages(
+                agent, input_data, session_id, load_history=persist_memory
+            )
 
             # 记录用户消息到短期记忆
-            if self.short_term_memory and session_id:
+            if self.short_term_memory and session_id and persist_memory:
                 # 只记录原始问题；messages[-1] 是带背景信息与历史的格式化
                 # 提示词，写回短期记忆会导致下次再拼接时逐轮嵌套膨胀
                 user_message = (
@@ -161,7 +166,8 @@ class AgentLoop:
                             finalizing = True
                             result = await self._finalize(
                                 agent, state, final_answer, session_id,
-                                tool_call_count, sources, usage, llm_calls
+                                tool_call_count, sources, usage, llm_calls,
+                                remember=persist_memory,
                             )
                             break
 
@@ -174,7 +180,7 @@ class AgentLoop:
                         messages.append(self._create_assistant_message_with_tools(llm_response))
 
                         # 记录 assistant 消息到短期记忆
-                        if self.short_term_memory and session_id:
+                        if self.short_term_memory and session_id and persist_memory:
                             tool_names = [tc.name for tc in llm_response.tool_calls]
                             self.short_term_memory.add_message(
                                 session_id=session_id,
@@ -242,7 +248,7 @@ class AgentLoop:
                             messages.append(tool_message)
 
                             # 记录结果到短期记忆
-                            if self.short_term_memory and session_id:
+                            if self.short_term_memory and session_id and persist_memory:
                                 result_summary = str(tool_result)[:200]
                                 self.short_term_memory.add_message(
                                     session_id=session_id,
@@ -292,7 +298,8 @@ class AgentLoop:
                             finalizing = True
                             result = await self._finalize(
                                 agent, state, final_answer, session_id,
-                                tool_call_count, sources, usage, llm_calls
+                                tool_call_count, sources, usage, llm_calls,
+                                remember=persist_memory,
                             )
                             break
 
@@ -305,7 +312,8 @@ class AgentLoop:
                         finalizing = True
                         result = await self._finalize(
                             agent, state, llm_response.content or "", session_id,
-                            tool_call_count, sources, usage, llm_calls
+                            tool_call_count, sources, usage, llm_calls,
+                            remember=persist_memory,
                         )
                         break
 
@@ -375,7 +383,7 @@ class AgentLoop:
                     }
 
                     # 记录最终回答到短期记忆
-                    if self.short_term_memory and session_id:
+                    if self.short_term_memory and session_id and persist_memory:
                         self.short_term_memory.add_message(
                             session_id=session_id,
                             role="assistant",
@@ -403,6 +411,10 @@ class AgentLoop:
             logger.error(f"Agent Loop failed: {e}")
             state.mark_failed(str(e))
             raise
+        finally:
+            # 每次运行都会新建状态；AgentLoop 长期存活，不清理会累积
+            # 所有历史输入与中间结果，内存只增不减
+            self.state_manager.delete_state(task_id)
 
     async def _force_final_answer(
         self,
@@ -479,7 +491,8 @@ class AgentLoop:
         tool_calls_used: int,
         sources: Optional[List[Dict[str, Any]]] = None,
         usage: Optional[Dict[str, int]] = None,
-        llm_calls: int = 0
+        llm_calls: int = 0,
+        remember: bool = True,
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
@@ -510,7 +523,7 @@ class AgentLoop:
                         final_answer = fixed_answer
 
         # 记录最终回答到短期记忆
-        if self.short_term_memory and session_id:
+        if self.short_term_memory and session_id and remember:
             self.short_term_memory.add_message(
                 session_id=session_id,
                 role="assistant",
@@ -535,7 +548,13 @@ class AgentLoop:
         state.mark_completed(result)
         return result
 
-    def _initialize_messages(self, agent, input_data: Dict[str, Any], session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _initialize_messages(
+        self,
+        agent,
+        input_data: Dict[str, Any],
+        session_id: Optional[str] = None,
+        load_history: bool = True,
+    ) -> List[Dict[str, Any]]:
         """初始化消息列表，包含历史对话上下文"""
         messages = []
 
@@ -548,7 +567,7 @@ class AgentLoop:
             })
 
         # 加载历史对话（短期记忆）
-        if self.short_term_memory and session_id:
+        if self.short_term_memory and session_id and load_history:
             history = self.short_term_memory.get_history(session_id, limit=5)  # 最近5轮对话
             if history:
                 logger.info(f"Loaded {len(history)} historical messages from short-term memory")
