@@ -1735,6 +1735,12 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   font-weight: 600;
 }
 
+.drawer-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .drawer-close {
   font: inherit;
   font-size: 22px;
