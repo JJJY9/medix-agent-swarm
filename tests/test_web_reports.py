@@ -356,6 +356,8 @@ def test_app_js_ships_weekly_adherence_and_a11y(client):
     html = client.get("/").text
 
     assert "metric-weekly-target" in app_js
+    assert "metric-weekly-grades" in app_js
+    assert "bp_grades" in app_js
     assert "aria-pressed" in app_js
     assert 'aria-live="polite"' in html
     assert 'id="reminders-empty" role="status"' in html

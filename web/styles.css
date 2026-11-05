@@ -4132,6 +4132,11 @@ html[data-theme="dark"] .symptom-severity.is-high {
   color: var(--clinic);
 }
 
+.metric-weekly-grades {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
 .metric-weekly-delta {
   font-size: 12px;
   color: var(--ink-faint);

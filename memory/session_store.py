@@ -93,6 +93,29 @@ METRIC_TYPES = {
 }
 MAX_METRIC_NOTE_LENGTH = 300
 
+#: 血压分级（中国高血压防治指南 2018 成人标准），供统计分布使用。
+BP_GRADE_KEYS = ("normal", "high_normal", "grade1", "grade2", "grade3", "low")
+
+
+def classify_bp_grade(systolic: Any, diastolic: Any) -> Optional[str]:
+    """按诊室血压分级；收缩压与舒张压分属不同级别时取较高者。"""
+    try:
+        sys_v = float(systolic)
+        dia_v = float(diastolic)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if sys_v >= 180 or dia_v >= 110:
+        return "grade3"
+    if sys_v >= 160 or dia_v >= 100:
+        return "grade2"
+    if sys_v >= 140 or dia_v >= 90:
+        return "grade1"
+    if sys_v >= 120 or dia_v >= 80:
+        return "high_normal"
+    if sys_v < 90 or dia_v < 60:
+        return "low"
+    return "normal"
+
 #: 目标为下限的指标（数值越高越好，低于目标视为未达标）。
 LOWER_BOUND_TARGET_METRICS = {"spo2"}
 
@@ -3012,6 +3035,21 @@ class SessionStore:
                     target_params,
                 ).fetchone()[0] or 0)
 
+        bp_grades = None
+        if metric == "bp":
+            bp_grades = {key: 0 for key in BP_GRADE_KEYS}
+            with self._lock:
+                grade_rows = self._conn.execute(
+                    f"SELECT value1, value2 FROM health_metrics WHERE {where}",
+                    params,
+                ).fetchall()
+            for grade_row in grade_rows:
+                grade = classify_bp_grade(
+                    grade_row["value1"], grade_row["value2"]
+                )
+                if grade:
+                    bp_grades[grade] += 1
+
         def stat(value):
             return round(float(value), 1) if value is not None else None
 
@@ -3055,6 +3093,7 @@ class SessionStore:
                 ),
             },
             "within_target": within_target,
+            "bp_grades": bp_grades,
         }
 
     def add_symptom(
