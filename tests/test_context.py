@@ -126,13 +126,15 @@ def test_base_agent_formats_plain_question_without_context():
 def test_process_subtask_passes_patient_context_to_workers():
     agent = DummyAgent()
     agent.shared_context = SimpleNamespace(
-        data={"patient_context": {"age": 38, "sex": "女"}}
+        session_id="s1",
+        data={"patient_context": {"age": 38, "sex": "女"}},
     )
 
     captured = {}
 
-    async def fake_run_loop(input_data, on_token=None):
+    async def fake_run_loop(input_data, on_token=None, persist_memory=True):
         captured.update(input_data)
+        captured["persist_memory"] = persist_memory
         return {"answer": "ok"}
 
     agent.run_loop = fake_run_loop
@@ -143,6 +145,8 @@ def test_process_subtask_passes_patient_context_to_workers():
     assert result == {"answer": "ok"}
     assert captured["question"] == "分析头痛"
     assert captured["context"] == {"age": 38, "sex": "女"}
+    assert captured["session_id"] == "s1"
+    assert captured["persist_memory"] is False
 
 
 def test_format_context_labels_recent_metrics_and_reminders():

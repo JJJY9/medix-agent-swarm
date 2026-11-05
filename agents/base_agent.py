@@ -124,7 +124,12 @@ class BaseAgent(ABC):
         """
         return await self.run_loop(input_data, on_token=on_token)
 
-    async def run_loop(self, input_data: Dict[str, Any], on_token: Optional[Any] = None) -> Dict[str, Any]:
+    async def run_loop(
+        self,
+        input_data: Dict[str, Any],
+        on_token: Optional[Any] = None,
+        persist_memory: bool = True,
+    ) -> Dict[str, Any]:
         """运行 Agent Loop"""
         # 提取session_id（如果有）
         session_id = input_data.get('session_id')
@@ -132,7 +137,8 @@ class BaseAgent(ABC):
             self,
             input_data,
             session_id=session_id,
-            on_token=on_token
+            on_token=on_token,
+            persist_memory=persist_memory,
         )
 
     # ===== Swarm 协作能力 =====
@@ -153,20 +159,31 @@ class BaseAgent(ABC):
         """附加 AgentIdentityManager（由 Swarm 调用）"""
         self.identity_manager = identity_manager
 
-    async def process_subtask(self, subtask: Any) -> Dict[str, Any]:
+    async def process_subtask(
+        self,
+        subtask: Any,
+        shared_context: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """
         处理子任务（Swarm 模式）
 
         子类可以重写以实现自定义逻辑
         默认实现：运行 Agent Loop
+
+        shared_context 由协调器按请求显式传入；Worker 是长期复用的实例，
+        不应依赖实例字段，否则并发请求会串用患者背景。
         """
+        shared = shared_context if shared_context is not None else self.shared_context
+
         # 使用 subtask.description 作为输入；带上患者背景信息，
         # 让诊断 / 研究 Agent 也能看到年龄、病程等结构化上下文。
         patient_context = {}
-        if self.shared_context is not None:
-            patient_context = getattr(self.shared_context, "data", {}).get(
+        session_id = None
+        if shared is not None:
+            patient_context = getattr(shared, "data", {}).get(
                 "patient_context", {}
             ) or {}
+            session_id = getattr(shared, "session_id", None)
 
         input_data = {
             'question': subtask.description,
@@ -174,5 +191,9 @@ class BaseAgent(ABC):
             'subtask_type': subtask.type,
             'context': patient_context,
         }
+        if session_id:
+            # 模型据此调用 search_history，避免自行编造会话 ID；
+            # Worker 不写短期记忆，历史已由协调器注入 context。
+            input_data['session_id'] = session_id
 
-        return await self.run_loop(input_data)
+        return await self.run_loop(input_data, persist_memory=False)
