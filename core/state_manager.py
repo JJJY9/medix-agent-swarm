@@ -104,14 +104,43 @@ class StateManager:
         """获取状态"""
         return self.states.get(task_id)
 
-    def update_state(self, task_id: str, **kwargs):
-        """更新状态"""
-        if task_id in self.states:
-            state = self.states[task_id]
-            for key, value in kwargs.items():
-                if hasattr(state, key):
-                    setattr(state, key, value)
-            state.updated_at = datetime.now()
+    #: update_state 允许修改的字段；结构字段与方法不可被覆盖
+    _UPDATABLE_FIELDS = {
+        "status",
+        "iteration",
+        "max_iterations",
+        "final_result",
+        "error",
+        "intermediate_results",
+    }
+
+    def update_state(self, task_id: str, **kwargs) -> bool:
+        """更新状态；status 支持 TaskStatus 或字符串值。
+
+        Returns:
+            状态不存在或所有字段都非法时返回 False
+        """
+        state = self.states.get(task_id)
+        if state is None:
+            return False
+
+        for key, value in kwargs.items():
+            if key not in self._UPDATABLE_FIELDS:
+                continue
+            if key == "status" and not isinstance(value, TaskStatus):
+                try:
+                    value = TaskStatus(value)
+                except (TypeError, ValueError):
+                    continue
+            if key in ("iteration", "max_iterations"):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            setattr(state, key, value)
+
+        state.updated_at = datetime.now()
+        return True
 
     def delete_state(self, task_id: str):
         """删除状态"""

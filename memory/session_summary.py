@@ -204,16 +204,44 @@ class SessionSummary:
         # 提取 Agent 参与信息
         agents_participated = []
         for agent_id, contributions in shared_context.agent_contributions.items():
-            tool_calls = sum(
-                1 for c in contributions
-                if c.result.get('success', True)
-            )
+            # 优先使用子任务结果里的真实工具调用次数；
+            # 缺失时退回成功贡献数，不能把「贡献条数」当作工具次数
+            tool_calls = 0
+            for contribution in contributions:
+                result = contribution.result
+                if isinstance(result, dict):
+                    try:
+                        tool_calls += int(result.get("tool_calls_used") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+            if tool_calls == 0:
+                tool_calls = sum(
+                    1 for c in contributions
+                    if isinstance(c.result, dict) and c.result.get('success', True)
+                )
+
+            # 执行时间按该 Agent 名下子任务的起止时间累加，
+            # 不再把总耗时平均分给每个 Agent
+            execution_seconds = 0.0
+            seen_subtasks = set()
+            for contribution in contributions:
+                if contribution.subtask_id in seen_subtasks:
+                    continue
+                seen_subtasks.add(contribution.subtask_id)
+                subtask = shared_context.get_subtask(contribution.subtask_id)
+                if subtask and subtask.started_at and subtask.completed_at:
+                    span = (
+                        subtask.completed_at - subtask.started_at
+                    ).total_seconds()
+                    if span > 0:
+                        execution_seconds += span
+
             agents_participated.append(AgentParticipation(
                 agent_id=agent_id,
                 role="worker",
                 subtasks_handled=[c.subtask_id for c in contributions],
                 tool_calls=tool_calls,
-                execution_time=total_time / len(shared_context.agent_contributions)
+                execution_time=execution_seconds,
             ))
 
         # 提取关键发现
