@@ -55,6 +55,7 @@ const els = {
   historyExportCsv: document.getElementById('history-export-csv'),
   historyImport: document.getElementById('history-import'),
   historyImportFile: document.getElementById('history-import-file'),
+  historyRestore: document.getElementById('history-restore'),
   historyRange: document.getElementById('history-range'),
   historyTag: document.getElementById('history-tag'),
   historyRiskFilter: document.getElementById('history-risk-filter'),
@@ -3994,6 +3995,26 @@ async function exportHistoryCsv() {
   }
 }
 
+async function refreshAfterBackupImport(result) {
+  await loadHistory(els.historySearch.value.trim());
+  await loadUsageTrend();
+  await loadUsageBudget();
+  if (result.profiles) await initProfiles();
+  if (result.targets) loadMetricTargets();
+  if (
+    result.metrics || result.symptoms || result.reminders
+    || result.medications || result.medication_logs
+  ) {
+    await refreshMetricProfileOptions();
+    loadSymptoms();
+    if (result.medications || result.medication_logs) loadMedications();
+    if (result.medication_logs) loadMedicationLogs();
+    refreshReminderBadge();
+    refreshOverview();
+  }
+  await loadQualityInsights();
+}
+
 async function importHistoryBackup() {
   const file = els.historyImportFile.files && els.historyImportFile.files[0];
   if (!file) return;
@@ -4080,23 +4101,7 @@ async function importHistoryBackup() {
       if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
 
       btn.textContent = `已导入 ${result.imported || 0} 次`;
-      await loadHistory(els.historySearch.value.trim());
-      await loadUsageTrend();
-      await loadUsageBudget();
-      if (result.profiles) await initProfiles();
-      if (result.targets) loadMetricTargets();
-      if (
-        result.metrics || result.symptoms || result.reminders
-        || result.medications || result.medication_logs
-      ) {
-        await refreshMetricProfileOptions();
-        loadSymptoms();
-        if (result.medications || result.medication_logs) loadMedications();
-        if (result.medication_logs) loadMedicationLogs();
-        refreshReminderBadge();
-        refreshOverview();
-      }
-      await loadQualityInsights();
+      await refreshAfterBackupImport(result);
     } catch (err) {
       btn.textContent = '导入失败';
       window.alert(`导入备份失败：${err.message || err}`);
@@ -4108,6 +4113,63 @@ async function importHistoryBackup() {
     }
   } finally {
     els.historyImportFile.value = '';
+  }
+}
+
+async function restoreLatestBackup() {
+  const btn = els.historyRestore;
+  if (!btn || btn.disabled) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '读取备份…';
+
+  try {
+    const listRes = await fetch('/api/backups');
+    const list = await listRes.json().catch(() => ({}));
+    if (!listRes.ok) {
+      throw new Error(list.detail || `服务返回 ${listRes.status}`);
+    }
+    const latest = (list.backups || [])[0];
+    if (!latest) {
+      btn.textContent = '暂无备份';
+      window.alert(
+        '暂无本地自动备份。可在设置中开启自动备份，或使用“导入备份”。'
+      );
+      return;
+    }
+
+    const size = latest.size
+      ? `${Math.max(1, Math.round(latest.size / 1024))} KB`
+      : '';
+    const when = latest.modified_at
+      ? formatTime(latest.modified_at)
+      : latest.name;
+    if (!window.confirm(
+      `恢复本地备份「${latest.name}」（${when}${size ? `，${size}` : ''}）？\n`
+      + '已有记录会跳过，不会删除现有数据。'
+    )) {
+      return;
+    }
+
+    btn.textContent = '恢复中…';
+    const res = await fetch(
+      `/api/backups/${encodeURIComponent(latest.name)}/restore`,
+      { method: 'POST' }
+    );
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.detail || `服务返回 ${res.status}`);
+
+    btn.textContent = `已恢复 ${result.imported || 0} 次`;
+    await refreshAfterBackupImport(result);
+  } catch (err) {
+    btn.textContent = '恢复失败';
+    window.alert(`恢复备份失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1800);
   }
 }
 
@@ -13083,6 +13145,7 @@ els.historyFeedbackExport.addEventListener('click', exportFeedbackCsv);
 els.usageExport.addEventListener('click', exportUsageCsv);
 els.historyImport.addEventListener('click', () => els.historyImportFile.click());
 els.historyImportFile.addEventListener('change', importHistoryBackup);
+els.historyRestore?.addEventListener('click', restoreLatestBackup);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;
