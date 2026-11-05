@@ -30,11 +30,23 @@ def get_rate_limit() -> int:
 class SlidingWindowLimiter:
     """按 key 统计时间窗口内的请求数。"""
 
+    #: 内存上限：地址轮换不能无限扩大 _hits
+    MAX_KEYS = 10000
+
     def __init__(self, limit: int, window: float = WINDOW_SECONDS):
         self.limit = max(0, int(limit))
         self.window = float(window)
         self._hits: Dict[str, Deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+
+    def _prune_keys(self) -> None:
+        """先清理空窗口，再按插入顺序淘汰最早的一批 key。"""
+        empty = [key for key, hits in self._hits.items() if not hits]
+        for key in empty[: max(1, self.MAX_KEYS // 10)]:
+            self._hits.pop(key, None)
+        while len(self._hits) >= self.MAX_KEYS:
+            oldest = next(iter(self._hits))
+            self._hits.pop(oldest, None)
 
     def check(self, key: str, now: Optional[float] = None) -> Tuple[bool, float]:
         """返回 (是否允许, 建议等待秒数)。limit<=0 时始终放行。"""
@@ -43,6 +55,8 @@ class SlidingWindowLimiter:
 
         moment = time.monotonic() if now is None else now
         with self._lock:
+            if key not in self._hits and len(self._hits) >= self.MAX_KEYS:
+                self._prune_keys()
             hits = self._hits[key]
             while hits and moment - hits[0] >= self.window:
                 hits.popleft()

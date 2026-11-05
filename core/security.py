@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 SECRET_ENV_NAMES = (
     "MEDIX_API_KEY",
@@ -48,11 +49,28 @@ _ASSIGNMENT_PATTERN = re.compile(
 
 
 def mask_secret(value: str) -> str:
-    """保留首尾少量字符，其余用 *** 替代。"""
+    """保留首尾少量字符，其余用 *** 替代；短密钥完全隐藏。"""
     value = str(value or "")
-    if len(value) <= 8:
+    if len(value) < 16:
+        # 9-11 位密钥若保留首尾 4 位，等于暴露大半明文
         return "***"
     return f"{value[:4]}***{value[-4:]}"
+
+
+def sanitize_base_url(value: Optional[str]) -> str:
+    """对外展示的服务地址：去掉账号密码、查询参数与片段并统一脱敏。"""
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return redact_secrets(text)
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    sanitized = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    return redact_secrets(sanitized)
 
 
 def redact_secrets(text: Optional[str]) -> str:

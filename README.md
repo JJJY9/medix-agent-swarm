@@ -148,7 +148,7 @@ python api_server.py --host 0.0.0.0       # 允许局域网访问
 python api_server.py --reload             # 开发模式，改代码自动重载
 ```
 
-> 用 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`。设置后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer` 或 `?token=`）。
+> 用 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`。设置后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer`）。为了不把令牌写进访问日志，不再支持 `?token=` 查询参数。
 
 ### 界面说明
 
@@ -389,7 +389,7 @@ npm install -D playwright
 
 `/api/chat` 与 `/api/chat/stream` 的最终结果包含 `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）与 `llm_calls`，分别汇总任务分解、各科室和最终汇总阶段的用量。`GET /api/sessions` 支持 `limit` / `offset` 分页；`summary` 汇总全部匹配会话（`sessions` 总数、`loaded` 已加载数、轮数、总 Token、调用次数、反馈数与好评率），每条会话也带有各自的 `usage` 与 `llm_calls`。流式接口会在模型调用前额外推送 `triage` 与 `medication_safety` 事件，最终结果的 `medication_safety.alerts` 会随会诊记录保存。`/api/chat` 与 `/api/chat/stream` 支持 `patient_profile`（常用档案名称），成功后会把会话关联到该档案，供历史筛选与就诊摘要使用。
 
-设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头、`Authorization: Bearer` 或 `?token=`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。
+设置 `MEDIX_ACCESS_TOKEN` 后，除 `/api/status` 外的 `/api/*` 都要求携带令牌（`X-Medix-Token` 请求头或 `Authorization: Bearer`），失败返回 401；`GET /api/auth/verify` 可用于校验令牌。令牌不接受 `?token=` 查询参数，避免被 uvicorn 访问日志记录。
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 

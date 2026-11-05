@@ -16,12 +16,12 @@ import json
 import os
 import re
 import sys
+import hashlib
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
-from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exception_handlers import http_exception_handler
@@ -39,10 +39,10 @@ from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
 
-from core.security import install_log_redaction, redact_secrets
+from core.security import install_log_redaction, redact_secrets, sanitize_base_url
 install_log_redaction()
 
-from core.auth import get_access_token, is_authorized
+from core.auth import get_access_token, is_authorized, request_token
 from core.retention import get_auto_archive_days
 from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
@@ -674,23 +674,11 @@ def _request_content_length(request: Request) -> int:
 
 
 def _public_base_url(value: Any) -> Any:
-    """去掉服务地址中可能携带的账号密码与查询参数后再对外展示。
-
-    一些网关把密钥放在 URL 查询串里（?api_key=...），公开的状态接口
-    只应展示协议、主机与路径，另外再统一过一遍密钥脱敏。
-    """
+    """去掉服务地址中可能携带的账号密码与查询参数后再对外展示。"""
     text = str(value or "")
     if not text:
         return value
-    try:
-        parsed = urlsplit(text)
-    except ValueError:
-        return redact_secrets(text)
-    host = parsed.hostname or ""
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
-    sanitized = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
-    return redact_secrets(sanitized)
+    return sanitize_base_url(text)
 
 
 def reminder_audit_target(reminder: Dict[str, Any]) -> str:
@@ -757,6 +745,82 @@ SECURITY_CSP = (
 )
 
 
+class _BodyTooLarge(Exception):
+    """请求体超过路径允许的上限。"""
+
+
+def _scope_route_path(scope: Dict[str, Any]) -> str:
+    """去掉 root_path 后的路由路径（子路径部署时鉴权与限流仍能匹配）。"""
+    path = str(scope.get("path") or "")
+    root = str(scope.get("root_path") or "")
+    if root and path.startswith(root):
+        path = path[len(root):]
+    return path or "/"
+
+
+def _body_limit_for_path(path: str) -> int:
+    if path == "/api/sessions/import":
+        # 整库备份可能很大，保留较宽上限但不再无限
+        return 100 * 1024 * 1024
+    if path == "/api/knowledge/upload-batch":
+        return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
+    if path.startswith("/api/knowledge/upload"):
+        return MAX_UPLOAD_BYTES + 1024 * 1024
+    if path.endswith("/import"):
+        return MAX_UPLOAD_BYTES + 1024 * 1024
+    return 2 * 1024 * 1024
+
+
+class BodySizeLimitMiddleware:
+    """限制请求体大小：先看 Content-Length，再按实际接收字节兜底。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        limit = _body_limit_for_path(_scope_route_path(scope))
+        headers = {
+            key.decode("latin-1").lower(): value
+            for key, value in (scope.get("headers") or [])
+        }
+        raw_length = headers.get("content-length")
+        if raw_length:
+            try:
+                declared = int(raw_length)
+            except (TypeError, ValueError):
+                declared = 0
+            if declared > limit:
+                response = JSONResponse(
+                    status_code=413, content={"detail": "请求体过大"}
+                )
+                return await response(scope, receive, send)
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    raise _BodyTooLarge()
+            return message
+
+        try:
+            return await self.app(scope, limited_receive, send)
+        except _BodyTooLarge:
+            response = JSONResponse(
+                status_code=413, content={"detail": "请求体过大"}
+            )
+            return await response(scope, receive, send)
+
+
+app.add_middleware(BodySizeLimitMiddleware)
+
+
 def add_security_headers(
     response: Response, include_csp: bool = True
 ) -> Response:
@@ -769,6 +833,16 @@ def add_security_headers(
     if include_csp:
         response.headers.setdefault("Content-Security-Policy", SECURITY_CSP)
     return response
+
+
+def _rate_limit_key(request: Request) -> str:
+    """优先按访问令牌限流；匿名请求退回源 IP。"""
+    token = request_token(request) if get_access_token() else None
+    if token:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+        return f"token:{digest}"
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -790,7 +864,9 @@ async def redacting_http_exception_handler(
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
     """设置 MEDIX_ACCESS_TOKEN 后，为 API 增加可选的访问令牌校验。"""
-    path = request.url.path
+    # 子路径部署时 request.url.path 会带 root_path 前缀，
+    # 直接匹配 /api/ 会整体跳过鉴权与限流
+    path = _scope_route_path(request.scope)
     if (
         get_access_token()
         and path.startswith("/api/")
@@ -804,7 +880,7 @@ async def require_access_token(request: Request, call_next):
 
     if path in CHAT_PATHS:
         chat_limiter.limit = get_rate_limit()
-        client_key = request.client.host if request.client else "unknown"
+        client_key = _rate_limit_key(request)
         allowed, retry_after = chat_limiter.check(client_key)
         if not allowed:
             return add_security_headers(JSONResponse(
@@ -818,7 +894,7 @@ async def require_access_token(request: Request, call_next):
             ))
 
     if path in DIAGNOSE_PATHS:
-        client_key = request.client.host if request.client else "unknown"
+        client_key = _rate_limit_key(request)
         allowed, retry_after = diagnose_limiter.check(client_key)
         if not allowed:
             return add_security_headers(JSONResponse(
@@ -945,7 +1021,9 @@ async def get_status():
     api_key = (LLM_CONFIG.get("api_key") or "").strip()
     mem0_enabled = False
     if state.coordinator is not None:
-        mem0_enabled = getattr(state.coordinator.long_term_memory, "enabled", False)
+        # 测试或自定义协调器可能没有长期记忆字段，逐级 getattr
+        long_term = getattr(state.coordinator, "long_term_memory", None)
+        mem0_enabled = bool(getattr(long_term, "enabled", False))
 
     return {
         "ok": state.startup_error is None,
