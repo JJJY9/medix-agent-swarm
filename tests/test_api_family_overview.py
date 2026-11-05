@@ -72,9 +72,10 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert metrics["bp"]["value"] == "140/95"
     assert metrics["bp"]["over_target"] is True
     assert metrics["weight"]["over_target"] is None
-    assert mom["medications"] == {
-        "active": 1, "taken_today": 1, "names": ["氨氯地平"],
-    }
+    assert mom["medications"]["active"] == 1
+    assert mom["medications"]["taken_today"] == 1
+    assert mom["medications"]["names"] == ["氨氯地平"]
+    assert mom["medications"]["last_taken_at"]
     assert mom["reminders"] == {
         "pending": 1, "overdue": 1, "due_today": 0,
     }
@@ -88,6 +89,32 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert child["medications"]["active"] == 0
     assert child["symptoms"]["count"] == 0
     assert child["last_activity"] == ""
+
+
+def test_family_overview_medication_activity_and_due_today(client_and_store):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    taken_at = datetime.now().isoformat(timespec="minutes")
+
+    medication = client.post("/api/medications", json={
+        "profile": "爸爸", "name": "二甲双胍",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": taken_at},
+    )
+    client.post("/api/reminders", json={
+        "profile": "爸爸", "title": "复诊", "due_at": today,
+    })
+
+    data = client.get("/api/family/overview").json()
+    dad = {item["name"]: item for item in data["profiles"]}["爸爸"]
+
+    assert dad["last_activity"]
+    assert dad["reminders"] == {
+        "pending": 1, "overdue": 0, "due_today": 1,
+    }
+    assert dad["medications"]["last_taken_at"]
 
 
 def test_family_overview_includes_deleted_profiles(client_and_store):
