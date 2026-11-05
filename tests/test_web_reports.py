@@ -1124,3 +1124,11 @@ def test_app_js_guards_history_races(client):
     assert "feedbackRequestSeq" in app_js
     assert "qualityRequestSeq" in app_js
     assert "selectedSessions.delete(id)" in app_js
+
+
+def test_app_js_guards_calc_and_metric_requests(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "calcRequestSeq" in app_js
+    assert "seq !== calcRequestSeq" in app_js
+    assert "加载失败：" in app_js
