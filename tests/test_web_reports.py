@@ -1132,3 +1132,12 @@ def test_app_js_guards_calc_and_metric_requests(client):
     assert "calcRequestSeq" in app_js
     assert "seq !== calcRequestSeq" in app_js
     assert "加载失败：" in app_js
+
+
+def test_app_js_ships_timeline_risk_filter(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="timeline-risk-only"' in html
+    assert "timelineRiskOnly" in app_js
+    assert "没有高危会诊记录" in app_js

@@ -441,6 +441,7 @@ const els = {
   timelineType: document.getElementById('timeline-type'),
   timelineSearch: document.getElementById('timeline-search'),
   timelineOnlyAlert: document.getElementById('timeline-only-alert'),
+  timelineRiskOnly: document.getElementById('timeline-risk-only'),
   timelineExport: document.getElementById('timeline-export'),
   timelineMore: document.getElementById('timeline-more'),
   timelineDateChip: document.getElementById('timeline-date-chip'),
@@ -9238,8 +9239,15 @@ function renderTimeline(data) {
   const onlyAlert = Boolean(
     els.timelineOnlyAlert && els.timelineOnlyAlert.checked
   );
+  const riskOnly = Boolean(
+    els.timelineRiskOnly && els.timelineRiskOnly.checked
+  );
   const events = allEvents.filter((event) => {
     if (onlyAlert && !event.alert) return false;
+    if (riskOnly && !(
+      event.type === 'consultation'
+      && (event.risk === 'high' || event.risk === 'emergency')
+    )) return false;
     if (type && event.type !== type) return false;
     if (!query) return true;
     return [event.title, event.value, event.note, event.profile]
@@ -9257,13 +9265,15 @@ function renderTimeline(data) {
     els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
   } else if (onlyAlert) {
     els.timelineEmpty.textContent = `${rangeText}没有超标的记录。`;
+  } else if (riskOnly) {
+    els.timelineEmpty.textContent = `${rangeText}没有高危会诊记录。`;
   } else if (type) {
     els.timelineEmpty.textContent = `${rangeText}没有该类型的记录。`;
   } else {
     els.timelineEmpty.textContent = `${rangeText}没有健康记录。`;
   }
   if (els.timelineSummary) {
-    const count = type || query || onlyAlert
+    const count = type || query || onlyAlert || riskOnly
       ? events.length
       : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
@@ -12521,6 +12531,13 @@ if (els.timelineSearch) {
 }
 if (els.timelineOnlyAlert) {
   els.timelineOnlyAlert.addEventListener('change', () => {
+    if (timelineDataCache) {
+      renderTimeline(timelineDataCache);
+    }
+  });
+}
+if (els.timelineRiskOnly) {
+  els.timelineRiskOnly.addEventListener('change', () => {
     if (timelineDataCache) {
       renderTimeline(timelineDataCache);
     }
