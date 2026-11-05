@@ -714,6 +714,8 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, id);
+                CREATE INDEX IF NOT EXISTS idx_messages_role_created
+                    ON messages(role, created_at);
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated
                     ON sessions(updated_at DESC);
                 CREATE TABLE IF NOT EXISTS patient_profiles (
@@ -806,6 +808,8 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_medication_logs_med_time
                     ON medication_logs(medication_id, taken_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_medication_logs_profile_time
+                    ON medication_logs(profile, taken_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -842,6 +846,18 @@ class SessionStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_sessions_profile_updated
                     ON sessions(profile, updated_at DESC)
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sessions_created
+                    ON sessions(created_at DESC)
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sessions_profile_created
+                    ON sessions(profile, created_at DESC)
                 """
             )
             reminder_columns = {
