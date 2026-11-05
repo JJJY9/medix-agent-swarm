@@ -8,6 +8,7 @@ ResearchAgent：医学文献检索和证据支持 Agent
 - 提供文献来源和证据等级
 """
 from typing import Dict, Any, Optional
+import re
 from loguru import logger
 
 from .base_agent import BaseAgent
@@ -132,14 +133,19 @@ class ResearchAgent(BaseAgent, SkillRegistryMixin):
 
         这里可以添加更复杂的解析逻辑
         """
-        # 尝试识别证据等级
+        # 尝试识别证据等级：优先取「证据等级：X」标签，
+        # 避免回答里提到「A 级指南」就被判成 A 级证据
         evidence_level = "unknown"
-        if "A级" in final_response or "A 级" in final_response:
-            evidence_level = "A"
-        elif "B级" in final_response or "B 级" in final_response:
-            evidence_level = "B"
-        elif "C级" in final_response or "C 级" in final_response:
-            evidence_level = "C"
+        label_match = re.search(
+            r"证据等级\s*[：:]\s*[【\[]?\s*([ABC])\s*级?",
+            final_response,
+        )
+        if label_match:
+            evidence_level = label_match.group(1)
+        else:
+            fallback = re.search(r"(?<![A-Za-z])([ABC])\s*级", final_response)
+            if fallback:
+                evidence_level = fallback.group(1)
 
         # 统计文献数量
         literature_count = final_response.count("文献")

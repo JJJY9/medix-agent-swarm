@@ -24,7 +24,8 @@ class ConsultationAgent(BaseAgent, SkillRegistryMixin):
             "description": "健康咨询Agent，提供通用医疗咨询和健康建议"
         }
 
-        config = config or default_config
+        # 合并默认配置：只覆盖调用方显式给出的键
+        config = {**default_config, **(config or {})}
         super().__init__(
             agent_id="consultation_agent",
             config=config
