@@ -483,13 +483,18 @@ class SwarmCoordinator:
 
         注意：context 已经包含了长短期记忆（在 process() 中注入）
         """
-        # context 已经包含 recent_history 和 historical_cases
-        # 无需重复检索
+        # context 已经包含 recent_history 和 historical_cases，
+        # 一并交给 Worker，保证多轮追问能理解指代
+        worker_context = dict(patient_context or {})
+        for key in ("recent_history", "historical_cases"):
+            value = (context or {}).get(key)
+            if value:
+                worker_context[key] = value
 
         # 创建 SharedContext
         shared_context = SharedContext(session_id=session_id)
-        # 让每个 Worker 在处理子任务时都能看到患者背景信息
-        shared_context.data["patient_context"] = patient_context or {}
+        # 让每个 Worker 在处理子任务时都能看到患者背景与最近对话
+        shared_context.data["patient_context"] = worker_context
 
         # 附加 SharedContext 到所有 Worker
         for worker in self.worker_pool:
@@ -564,6 +569,17 @@ class SwarmCoordinator:
         )
 
         end_time = datetime.now()
+
+        # Worker 没有 session_id，不会写短期记忆；由协调器记录本轮问答，
+        # 下一次 Swarm 才能拿到上一轮上下文
+        if final_answer:
+            self.short_term_memory.add_message(
+                session_id=session_id, role="user", content=question
+            )
+            self.short_term_memory.add_message(
+                session_id=session_id, role="assistant",
+                content=final_answer,
+            )
 
         # Step 4: 生成 SessionSummary
         try:

@@ -5182,115 +5182,132 @@ async def chat_stream(request: ChatRequest):
         if medication_safety["alerts"]:
             yield sse({"type": "medication_safety", **medication_safety})
 
-        async with state.lock:
-            try:
-                coordinator = state.get_coordinator()
-            except Exception as e:
-                yield sse({"type": "error", "message": f"初始化失败：{redact_secrets(str(e))}"})
+        await state.lock.acquire()
+        lock_released = False
+
+        def release_lock(_task=None):
+            nonlocal lock_released
+            if lock_released:
                 return
+            lock_released = True
+            state.lock.release()
 
-            # 记下请求开始前 worker 上挂着的 SharedContext。
-            # 只有本次请求真的走进 swarm 分支，_process_with_swarm 才会新建 SharedContext；
-            # 否则读到的会是上一次会诊的残留，播报出根本没参与的科室。
-            stale_contexts = {
-                id(getattr(w, "shared_context", None))
-                for w in getattr(coordinator, "worker_pool", [])
-            }
+        try:
+            coordinator = state.get_coordinator()
+        except Exception as e:
+            release_lock()
+            yield sse({"type": "error", "message": f"初始化失败：{redact_secrets(str(e))}"})
+            return
 
-            token_queue: asyncio.Queue[str] = asyncio.Queue()
+        # 记下请求开始前 worker 上挂着的 SharedContext。
+        # 只有本次请求真的走进 swarm 分支，_process_with_swarm 才会新建 SharedContext；
+        # 否则读到的会是上一次会诊的残留，播报出根本没参与的科室。
+        stale_contexts = {
+            id(getattr(w, "shared_context", None))
+            for w in getattr(coordinator, "worker_pool", [])
+        }
 
-            def on_token(delta: str) -> None:
-                token_queue.put_nowait(delta)
+        token_queue: asyncio.Queue[str] = asyncio.Queue()
 
-            stream_kwargs = {
-                "question": request.question,
-                "context": request.context,
-                "session_id": session_id,
-                "on_token": on_token,
-            }
-            if not request.enable_swarm:
-                stream_kwargs["enable_swarm"] = False
+        def on_token(delta: str) -> None:
+            token_queue.put_nowait(delta)
+
+        stream_kwargs = {
+            "question": request.question,
+            "context": request.context,
+            "session_id": session_id,
+            "on_token": on_token,
+        }
+        if not request.enable_swarm:
+            stream_kwargs["enable_swarm"] = False
+        try:
             task = asyncio.create_task(
                 coordinator.process(**stream_kwargs)
             )
+        except Exception:
+            release_lock()
+            raise
+        # 锁只在会诊执行期间持有；任务结束（成功/失败/取消）立即释放，
+        # 不再因为客户端读取慢而在 yield 上一直占着全局锁
+        task.add_done_callback(release_lock)
 
-            seen_agents = set()
-            started_agents = set()
-            last_keepalive = asyncio.get_event_loop().time()
-            try:
-                while not task.done() or not token_queue.empty():
-                    # 先推送汇总阶段已经产生的增量文本
-                    while not token_queue.empty():
-                        yield sse({
-                            "type": "token",
-                            "delta": token_queue.get_nowait(),
-                        })
+        seen_agents = set()
+        started_agents = set()
+        last_keepalive = asyncio.get_event_loop().time()
+        try:
+            while not task.done() or not token_queue.empty():
+                # 先推送汇总阶段已经产生的增量文本
+                while not token_queue.empty():
+                    yield sse({
+                        "type": "token",
+                        "delta": token_queue.get_nowait(),
+                    })
 
-                    # worker 在 swarm 模式下会被挂上 SharedContext，据此读取进展
-                    for worker in getattr(coordinator, "worker_pool", []):
-                        sc = getattr(worker, "shared_context", None)
-                        if sc is None or id(sc) in stale_contexts:
-                            continue
+                # worker 在 swarm 模式下会被挂上 SharedContext，据此读取进展
+                for worker in getattr(coordinator, "worker_pool", []):
+                    sc = getattr(worker, "shared_context", None)
+                    if sc is None or id(sc) in stale_contexts:
+                        continue
 
-                        # 子任务进入执行中时先点亮对应科室
-                        for subtask in list(
-                            getattr(sc, "task_decomposition", {}).values()
+                    # 子任务进入执行中时先点亮对应科室
+                    for subtask in list(
+                        getattr(sc, "task_decomposition", {}).values()
+                    ):
+                        agent_id = getattr(subtask, "assigned_agent", None)
+                        status = getattr(
+                            getattr(subtask, "status", None), "value", ""
+                        )
+                        if (
+                            agent_id
+                            and status == "in_progress"
+                            and agent_id not in started_agents
                         ):
-                            agent_id = getattr(subtask, "assigned_agent", None)
-                            status = getattr(
-                                getattr(subtask, "status", None), "value", ""
-                            )
-                            if (
-                                agent_id
-                                and status == "in_progress"
-                                and agent_id not in started_agents
-                            ):
-                                started_agents.add(agent_id)
-                                yield sse({
-                                    "type": "agent_started",
-                                    "agent_id": agent_id,
-                                    "name": AGENT_LABELS.get(agent_id, agent_id),
-                                })
+                            started_agents.add(agent_id)
+                            yield sse({
+                                "type": "agent_started",
+                                "agent_id": agent_id,
+                                "name": AGENT_LABELS.get(agent_id, agent_id),
+                            })
 
-                        for agent_id in list(getattr(sc, "agent_contributions", {}).keys()):
-                            if agent_id not in seen_agents:
-                                seen_agents.add(agent_id)
-                                yield sse({
-                                    "type": "agent_done",
-                                    "agent_id": agent_id,
-                                    "name": AGENT_LABELS.get(agent_id, agent_id),
-                                })
+                    for agent_id in list(getattr(sc, "agent_contributions", {}).keys()):
+                        if agent_id not in seen_agents:
+                            seen_agents.add(agent_id)
+                            yield sse({
+                                "type": "agent_done",
+                                "agent_id": agent_id,
+                                "name": AGENT_LABELS.get(agent_id, agent_id),
+                            })
 
-                    now = asyncio.get_event_loop().time()
-                    if now - last_keepalive >= 15:
-                        # SSE 注释行，前端解析器会忽略；防止长时间无事件被代理断开
-                        yield ": keep-alive\n\n"
-                        last_keepalive = now
+                now = asyncio.get_event_loop().time()
+                if now - last_keepalive >= 15:
+                    # SSE 注释行，前端解析器会忽略；防止长时间无事件被代理断开
+                    yield ": keep-alive\n\n"
+                    last_keepalive = now
 
-                    if not task.done():
-                        await asyncio.sleep(0.1)
-
-                try:
-                    result = await task
-                except LLMError as e:
-                    logger.error(f"流式模型调用失败: {e.code} - {e.user_message}")
-                    yield sse({
-                        "type": "error",
-                        "code": e.code,
-                        "message": e.user_message,
-                    })
-                    return
-                except Exception as e:
-                    logger.exception("流式处理失败")
-                    yield sse({
-                        "type": "error",
-                        "message": redact_secrets(str(e)),
-                    })
-                    return
-            finally:
-                # 客户端断开时生成器被关闭，别让任务继续空转
                 if not task.done():
-                    task.cancel()
+                    await asyncio.sleep(0.1)
+
+            try:
+                result = await task
+            except LLMError as e:
+                logger.error(f"流式模型调用失败: {e.code} - {e.user_message}")
+                yield sse({
+                    "type": "error",
+                    "code": e.code,
+                    "message": e.user_message,
+                })
+                return
+            except Exception as e:
+                logger.exception("流式处理失败")
+                yield sse({
+                    "type": "error",
+                    "message": redact_secrets(str(e)),
+                })
+                return
+        finally:
+            # 客户端断开时生成器被关闭，别让任务继续空转
+            if not task.done():
+                task.cancel()
 
         payload = _serialize_result(result, AGENT_LABELS)
         if not (payload["answer"] or "").strip():

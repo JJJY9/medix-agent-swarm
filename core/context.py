@@ -20,6 +20,12 @@ CONTEXT_LABELS = {
 #: 由记忆系统注入的内部字段，不写入患者的公开上下文
 INTERNAL_CONTEXT_KEYS = {"recent_history", "historical_cases"}
 
+#: 内部记忆字段在提示词里的展示标签（仅 include_internal=True 时渲染）
+INTERNAL_CONTEXT_LABELS = {
+    "recent_history": "最近对话",
+    "historical_cases": "相似历史案例",
+}
+
 #: 防止用户输入过长挤占提示词
 MAX_CONTEXT_LENGTH = 2000
 
@@ -47,11 +53,44 @@ def medication_context_text(context: Any) -> str:
     return "；".join(parts)
 
 
-def format_context(context: Any, max_length: int = MAX_CONTEXT_LENGTH) -> str:
+def _format_recent_history(value: Any) -> str:
+    lines = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = "用户" if str(item.get("role")) == "user" else "助手"
+        lines.append(f"{role}：{content}")
+    return "\n".join(lines)
+
+
+def _format_historical_cases(value: Any) -> str:
+    lines = []
+    for index, item in enumerate(
+        value if isinstance(value, list) else [], 1
+    ):
+        if not isinstance(item, dict):
+            continue
+        summary = str(item.get("summary") or "").strip()
+        if not summary:
+            continue
+        score = item.get("score")
+        suffix = f"（相关度 {score}）" if score is not None else ""
+        lines.append(f"案例{index}{suffix}：{summary}")
+    return "\n".join(lines)
+
+
+def format_context(
+    context: Any, max_length: int = MAX_CONTEXT_LENGTH,
+    include_internal: bool = False,
+) -> str:
     """把上下文字典格式化为提示词里的「背景信息」段落。
 
     已知字段使用中文标签；未知字段保留原键名，方便 API 调用方
-    传入自定义信息。空值会被忽略。
+    传入自定义信息。空值会被忽略。include_internal=True 时额外
+    渲染短期记忆与相似历史案例（Worker 需要多轮上下文）。
     """
     if not isinstance(context, dict):
         return ""
@@ -64,6 +103,22 @@ def format_context(context: Any, max_length: int = MAX_CONTEXT_LENGTH) -> str:
         text = _stringify(value)
         if text:
             lines.append(f"{label}：{text}")
+
+    if include_internal:
+        history_text = _format_recent_history(context.get("recent_history"))
+        if history_text:
+            lines.append(
+                f"{INTERNAL_CONTEXT_LABELS['recent_history']}：\n"
+                f"{history_text}"
+            )
+        cases_text = _format_historical_cases(
+            context.get("historical_cases")
+        )
+        if cases_text:
+            lines.append(
+                f"{INTERNAL_CONTEXT_LABELS['historical_cases']}：\n"
+                f"{cases_text}"
+            )
 
     for key, value in context.items():
         if key in CONTEXT_LABELS or key in INTERNAL_CONTEXT_KEYS:

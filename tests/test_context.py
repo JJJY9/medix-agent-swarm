@@ -43,6 +43,43 @@ def test_format_context_uses_labels_and_skips_internal_memory():
     assert "custom_note：夜间加重" in text
 
 
+def test_format_context_can_include_recent_history_and_cases():
+    text = format_context({
+        "age": 38,
+        "recent_history": [
+            {"role": "user", "content": "我最近头痛"},
+            {"role": "assistant", "content": "建议监测血压"},
+        ],
+        "historical_cases": [
+            {"summary": "类似头痛病例", "score": 0.8},
+        ],
+    }, include_internal=True)
+
+    assert "最近对话：" in text
+    assert "用户：我最近头痛" in text
+    assert "助手：建议监测血压" in text
+    assert "相似历史案例：" in text
+    assert "案例1（相关度 0.8）：类似头痛病例" in text
+
+
+def test_base_agent_renders_recent_history_for_workers():
+    agent = DummyAgent()
+
+    text = agent.format_user_input({
+        "question": "那还需要吃布洛芬吗？",
+        "context": {
+            "age": 38,
+            "recent_history": [
+                {"role": "user", "content": "我最近头痛"},
+            ],
+        },
+    })
+
+    assert "最近对话：" in text
+    assert "用户：我最近头痛" in text
+    assert text.rstrip().endswith("用户问题：那还需要吃布洛芬吗？")
+
+
 def test_format_context_handles_invalid_and_long_input():
     assert format_context(None) == ""
     assert format_context("not a dict") == ""
