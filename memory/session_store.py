@@ -2869,6 +2869,7 @@ class SessionStore:
         limit: int = 100,
         days: int = 0,
         offset: int = 0,
+        q: str = "",
     ) -> List[Dict[str, Any]]:
         """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -2892,6 +2893,11 @@ class SessionStore:
                 return []
             conditions.append("metric = ?")
             params.append(metric)
+        query = str(q or "").strip()
+        if query:
+            like = f"%{query}%"
+            conditions.append("(note LIKE ? OR profile LIKE ?)")
+            params.extend([like, like])
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("measured_at >= ?")

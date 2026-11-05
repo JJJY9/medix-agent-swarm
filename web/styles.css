@@ -3408,6 +3408,11 @@ html[data-theme="dark"] .reminders-due-hint {
   color: var(--ink-soft);
 }
 
+.metric-search {
+  width: 100%;
+  margin: 0 0 8px;
+}
+
 .metrics-empty {
   margin: 0;
   font-size: 12.5px;
