@@ -3102,6 +3102,199 @@ async def export_family_overview_csv(days: int = 7):
     )
 
 
+@app.get("/api/health/dossier.md")
+async def export_health_dossier(profile: str = "", days: int = 30):
+    """导出单个患者的健康档案 Markdown（指标、症状、用药、提醒与会诊）。"""
+    from memory import get_session_store
+    from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
+        METRIC_TYPES,
+        adherence_rate,
+        metric_over_target,
+    )
+
+    profile_key = str(profile or "").strip()
+    if not profile_key:
+        raise HTTPException(status_code=400, detail="请先选择患者档案")
+    days = max(1, min(int(days or 30), 365))
+    store = get_session_store()
+    now = datetime.now()
+    cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+
+    profiles = await asyncio.to_thread(store.list_profiles)
+    context: Dict[str, Any] = {}
+    for item in profiles:
+        if item.get("name") == profile_key:
+            context = item.get("context") or {}
+            break
+    targets = await asyncio.to_thread(store.list_metric_targets, profile_key)
+    target_map = {
+        item["metric"]: item
+        for item in targets
+        if isinstance(item, dict) and item.get("metric")
+    }
+    latest_metrics = await asyncio.to_thread(store.latest_metrics, profile_key)
+    symptoms = await asyncio.to_thread(
+        store.list_symptoms, profile_key, 100000, days
+    )
+    medications = await asyncio.to_thread(
+        store.list_medications, profile_key, False, 100000
+    )
+    reminders = await asyncio.to_thread(store.list_reminders, False, profile_key)
+    sessions = await asyncio.to_thread(
+        store.list_sessions_for_timeline, profile_key, cutoff, "", 200, True
+    )
+
+    lines: List[str] = [f"# 健康档案：{profile_key}", ""]
+    lines.append(f"- 生成时间：{now.strftime('%Y-%m-%d %H:%M')}")
+    context_parts = []
+    if context.get("age"):
+        context_parts.append(f"{context['age']} 岁")
+    if context.get("sex"):
+        context_parts.append(str(context["sex"]))
+    if context.get("duration"):
+        context_parts.append(f"病程：{context['duration']}")
+    if context.get("history"):
+        context_parts.append(f"既往史：{context['history']}")
+    if context.get("medications"):
+        context_parts.append(f"长期用药：{context['medications']}")
+    if context.get("allergies"):
+        context_parts.append(f"过敏史：{context['allergies']}")
+    if context_parts:
+        lines.append("- 档案信息：" + " · ".join(context_parts))
+    lines.append("")
+
+    lines.append("## 指标目标")
+    if target_map:
+        for metric, target in sorted(target_map.items()):
+            label, unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+            unit = f" {unit}" if unit else ""
+            if metric == "bp" and target.get("value2") is not None:
+                text = f"≤ {target['value1']:g}/{target['value2']:g}{unit}"
+            elif metric in LOWER_BOUND_TARGET_METRICS:
+                text = f"≥ {target['value1']:g}{unit}"
+            else:
+                text = f"≤ {target['value1']:g}{unit}"
+            lines.append(f"- {label}：{text}")
+    else:
+        lines.append("- 暂未设置指标目标")
+    lines.append("")
+
+    lines.append("## 最近指标")
+    if latest_metrics:
+        for item in sorted(
+            latest_metrics,
+            key=lambda row: str(row.get("measured_at") or ""),
+            reverse=True,
+        ):
+            metric = item["metric"]
+            label, default_unit, _ = METRIC_TYPES.get(
+                metric, (metric, "", (0, 0))
+            )
+            unit = item.get("unit") or default_unit
+            value = f"{float(item['value1']):g}"
+            if item.get("value2") is not None:
+                value += f"/{float(item['value2']):g}"
+            target = target_map.get(metric)
+            details = [str(item.get("measured_at") or "").replace("T", " ")[:16]]
+            if target is not None and metric_over_target(
+                metric, item["value1"], item.get("value2"), target
+            ):
+                details.append("超标")
+            details = [part for part in details if part]
+            suffix = f"（{'，'.join(details)}）" if details else ""
+            lines.append(f"- {label}：{value} {unit}{suffix}")
+    else:
+        lines.append("- 暂无健康指标记录")
+    lines.append("")
+
+    lines.append(f"## 近 {days} 天症状")
+    if symptoms:
+        for item in symptoms:
+            note = f"（{item['note']}）" if item.get("note") else ""
+            lines.append(
+                f"- {str(item.get('recorded_at') or '').replace('T', ' ')[:16]} "
+                f"{item.get('symptom', '')} "
+                f"{int(item.get('severity') or 0)}/10{note}"
+            )
+    else:
+        lines.append("- 暂无症状记录")
+    lines.append("")
+
+    lines.append("## 用药清单")
+    if medications:
+        for item in medications:
+            status = "在用" if item.get("active") else "停用"
+            detail = f"- {item.get('name') or ''}"
+            if item.get("dose"):
+                detail += f" {item['dose']}"
+            if item.get("frequency"):
+                detail += f"，{item['frequency']}"
+            detail += f"（{status}"
+            if item.get("active"):
+                detail += (
+                    f"；今日 {int(item.get('today_count') or 0)} 次，"
+                    f"近 7 天 {int(item.get('week_count') or 0)} 次"
+                )
+                expected = item.get("expected_week_doses")
+                if expected:
+                    rate = adherence_rate(item.get("week_count"), expected)
+                    detail += f"，依从率 {rate}%"
+            detail += "）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂无用药记录")
+    lines.append("")
+
+    lines.append("## 待办提醒")
+    today = now.strftime("%Y-%m-%d")
+    if reminders:
+        for item in reminders:
+            due = str(item.get("due_at") or "")
+            overdue = "（已逾期）" if due[:10] < today else ""
+            lines.append(
+                f"- {due} {item.get('title') or '随访提醒'}{overdue}"
+            )
+    else:
+        lines.append("- 暂无待办提醒")
+    lines.append("")
+
+    lines.append(f"## 近 {days} 天会诊")
+    visible_sessions = [
+        item for item in sessions
+        if int(item.get("message_count") or 0) > 0
+    ]
+    if visible_sessions:
+        for item in visible_sessions:
+            risk = parse_risk_level(item.get("last_answer"))
+            risk_text = (
+                f"（{RISK_LEVEL_LABELS[risk]}）" if risk else ""
+            )
+            lines.append(
+                f"- {str(item.get('created_at') or '').replace('T', ' ')[:16]} "
+                f"{str(item.get('title') or '').strip() or '会诊记录'}"
+                f"{risk_text}"
+            )
+    else:
+        lines.append("- 暂无会诊记录")
+    lines.append("")
+    lines.append("---")
+    lines.append(
+        "本档案由 MediX 生成，仅供个人健康记录参考，不构成医疗建议。"
+    )
+
+    content = "\n".join(lines) + "\n"
+    filename = f"medix-dossier-{now.strftime('%Y%m%d')}.md"
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/reminders")
 async def list_reminders(
     include_done: bool = False, profile: Optional[str] = None

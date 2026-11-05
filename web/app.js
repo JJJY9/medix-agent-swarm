@@ -276,6 +276,7 @@ const els = {
   metricsDrawer: document.getElementById('metrics-drawer'),
   metricsBackdrop: document.getElementById('metrics-backdrop'),
   metricsClose: document.getElementById('metrics-close'),
+  healthDossierExport: document.getElementById('health-dossier-export'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
   visitSummary: document.getElementById('visit-summary'),
@@ -9134,6 +9135,32 @@ async function exportTimelineCsv() {
   }
 }
 
+async function exportHealthDossier() {
+  const profile = els.metricProfile.value;
+  if (!profile) {
+    setMetricsStatus('请先选择患者档案再导出健康档案。', true);
+    return;
+  }
+  try {
+    const params = new URLSearchParams({ profile, days: '30' });
+    const res = await fetch(`/api/health/dossier.md?${params.toString()}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const text = await res.text();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([text], { type: 'text/markdown;charset=utf-8' }),
+      `medix-dossier-${stamp}.md`,
+      'text/markdown;charset=utf-8'
+    );
+    setMetricsStatus('已导出健康档案 Markdown。');
+  } catch (err) {
+    setMetricsStatus(`导出健康档案失败：${err.message || err}`, true);
+  }
+}
+
 async function toggleMedication(item) {
   try {
     const res = await fetch(`/api/medications/${item.id}`, {
@@ -11697,6 +11724,9 @@ els.calcSave.addEventListener('click', async () => {
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));
+if (els.healthDossierExport) {
+  els.healthDossierExport.addEventListener('click', exportHealthDossier);
+}
 els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
 els.remindersOpen.addEventListener('click', openReminders);
 els.remindersClose.addEventListener('click', () => closeReminders(true));

@@ -753,6 +753,15 @@ def test_app_js_ships_home_backup_card(client):
     assert "homeGlanceBackup" in app_js
 
 
+def test_app_js_ships_health_dossier_export(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="health-dossier-export"' in html
+    assert "async function exportHealthDossier" in app_js
+    assert "/api/health/dossier.md" in app_js
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text
