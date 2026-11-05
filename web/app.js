@@ -8387,6 +8387,15 @@ function renderMedications(items) {
     } else if (item.active) {
       metaParts.push('今日未打卡');
     }
+    const expectedDoses = Number(item.expected_week_doses || 0);
+    const weekCount = Number(item.week_count || 0);
+    if (expectedDoses > 0) {
+      const rate = Math.min(100, Math.round((weekCount / expectedDoses) * 100));
+      metaParts.push(`近 7 天 ${weekCount}/${expectedDoses} 次 · 依从率 ${rate}%`);
+      meta.title = `按频次估算近 7 天应服 ${expectedDoses} 次`;
+    } else if (weekCount > 0) {
+      metaParts.push(`近 7 天 ${weekCount} 次`);
+    }
     if (item.last_taken_at) {
       metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
     }
