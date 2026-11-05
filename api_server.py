@@ -626,22 +626,23 @@ def _request_content_length(request: Request) -> int:
 
 
 def _public_base_url(value: Any) -> Any:
-    """去掉服务地址中可能携带的账号密码后再对外展示。"""
+    """去掉服务地址中可能携带的账号密码与查询参数后再对外展示。
+
+    一些网关把密钥放在 URL 查询串里（?api_key=...），公开的状态接口
+    只应展示协议、主机与路径，另外再统一过一遍密钥脱敏。
+    """
     text = str(value or "")
     if not text:
         return value
     try:
         parsed = urlsplit(text)
     except ValueError:
-        return text
-    if not parsed.username and not parsed.password:
-        return text
+        return redact_secrets(text)
     host = parsed.hostname or ""
     if parsed.port:
         host = f"{host}:{parsed.port}"
-    return urlunsplit(
-        (parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)
-    )
+    sanitized = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    return redact_secrets(sanitized)
 
 
 def reminder_audit_target(reminder: Dict[str, Any]) -> str:

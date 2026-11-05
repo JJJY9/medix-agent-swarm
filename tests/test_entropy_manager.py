@@ -26,3 +26,48 @@ def test_deduplicate_sessions_falls_back_to_question_summary():
     unique = manager.deduplicate_sessions(sessions)
 
     assert [item["session_id"] for item in unique] == ["a", "c"]
+
+
+def test_deduplicate_messages_keeps_latest_duplicate():
+    manager = MemoryEntropyManager()
+    messages = [
+        {"role": "user", "content": "高血压怎么办？", "timestamp": "2026-01-01"},
+        {"role": "assistant", "content": "建议低盐饮食。", "timestamp": "2026-01-01"},
+        {"role": "user", "content": "高血压怎么办？", "timestamp": "2026-02-01"},
+    ]
+
+    unique = manager.deduplicate_messages(messages)
+
+    assert len(unique) == 2
+    assert unique[0]["timestamp"] == "2026-02-01"
+
+
+def test_compress_session_history_respects_max_messages():
+    manager = MemoryEntropyManager()
+    messages = []
+    for i in range(20):
+        messages.append({"role": "user", "content": f"问题 {i}"})
+        messages.append({"role": "assistant", "content": f"回答 {i}"})
+
+    compressed = manager.compress_session_history(messages, max_messages=10)
+
+    assert len(compressed) == 10
+    assert compressed[0]["role"] == "system"
+    assert "历史摘要" in compressed[0]["content"]
+    assert "问题 0" in compressed[0]["content"]
+    assert compressed[-1]["content"] == "回答 19"
+
+
+def test_compress_keeps_unpaired_trailing_user_message():
+    manager = MemoryEntropyManager()
+    messages = []
+    for i in range(5):
+        messages.append({"role": "user", "content": f"问题 {i}"})
+        messages.append({"role": "assistant", "content": f"回答 {i}"})
+    messages.append({"role": "user", "content": "最后一个问题"})
+
+    compressed = manager.compress_session_history(messages, max_messages=4)
+
+    assert compressed[0]["role"] == "system"
+    assert "问题 3" in compressed[0]["content"]
+    assert compressed[-1]["content"] == "最后一个问题"

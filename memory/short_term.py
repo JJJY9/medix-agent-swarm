@@ -224,7 +224,10 @@ class ShortTermMemory:
         """
         history = self.get_session(session_id)
         if history:
-            messages = history.get_recent_messages(limit)
+            # 有熵管理器时多取一段更早的消息，交给压缩逻辑生成历史摘要；
+            # 只取 limit 条会让压缩永远达不到触发条件。
+            window = limit * 3 if self.entropy_manager else limit
+            messages = history.get_recent_messages(window)
 
             # Harness Engineering: 统一熵管理
             if self.entropy_manager and len(messages) > 0:
@@ -245,6 +248,8 @@ class ShortTermMemory:
                     enable_compression=True,
                     max_messages=limit
                 )
+                if len(messages) > limit:
+                    messages = messages[-limit:]
 
             return messages
         return []
