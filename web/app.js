@@ -319,6 +319,7 @@ const els = {
   familyOverview: document.getElementById('family-overview'),
   familyOverviewList: document.getElementById('family-overview-list'),
   familyOverviewStatus: document.getElementById('family-overview-status'),
+  familyOverviewExport: document.getElementById('family-overview-export'),
   todayMeds: document.getElementById('today-meds'),
   todayMedsSummary: document.getElementById('today-meds-summary'),
   todayMedsList: document.getElementById('today-meds-list'),
@@ -7301,6 +7302,27 @@ function setFamilyOverviewStatus(text) {
   els.familyOverviewStatus.hidden = !text;
 }
 
+async function exportFamilyOverviewCsv() {
+  if (!els.familyOverviewExport) return;
+  try {
+    const res = await fetch('/api/family/overview/export.csv?days=7');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-family-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setFamilyOverviewStatus('已导出家庭健康总览 CSV。');
+  } catch (err) {
+    setFamilyOverviewStatus(`导出失败：${err.message || err}`);
+  }
+}
+
 function refreshOverview() {
   return Promise.all([
     loadHomeGlance(),
@@ -11782,6 +11804,11 @@ els.familyOverviewList.addEventListener('click', async (event) => {
   setFamilyOverviewStatus(`已切换到档案「${name}」`);
   refreshOverview();
 });
+if (els.familyOverviewExport) {
+  els.familyOverviewExport.addEventListener(
+    'click', exportFamilyOverviewCsv
+  );
+}
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
   els.metricsMore.disabled = true;

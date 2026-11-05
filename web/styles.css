@@ -490,6 +490,13 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--ink-faint);
 }
 
+.family-overview-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .family-overview-list {
   display: flex;
   flex-direction: column;
