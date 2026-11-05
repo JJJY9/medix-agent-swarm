@@ -88,7 +88,9 @@ class BaseAgent(ABC):
         if session_id:
             parts.append(f"[系统信息] 当前会话ID: {session_id}")
 
-        context_text = format_context(input_data.get('context') or {})
+        context_text = format_context(
+            input_data.get('context') or {}, include_internal=True
+        )
         if context_text:
             parts.append(f"背景信息：\n{context_text}\n")
 
