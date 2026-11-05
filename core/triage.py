@@ -15,8 +15,15 @@ from core.context import medication_context_text
 #: (匹配短语, 展示标签)。同一个标签只保留一次。
 RED_FLAG_PHRASES = (
     ("胸痛", "胸痛"),
+    ("胸口痛", "胸痛"),
+    ("胸口疼", "胸痛"),
+    ("心口痛", "胸痛"),
+    ("心口疼", "胸痛"),
     ("心前区痛", "胸痛"),
+    ("心前区疼痛", "胸痛"),
     ("胸口压榨", "胸部压榨感"),
+    ("胸部压榨", "胸部压榨感"),
+    ("胸骨后压榨", "胸部压榨感"),
     ("呼吸困难", "呼吸困难"),
     ("喘不上气", "呼吸困难"),
     ("喘不过气", "呼吸困难"),
@@ -73,13 +80,14 @@ RED_FLAG_PHRASES = (
 )
 
 #: 短语前 4 个字符内出现这些词时视为否定描述（"没有胸痛""无呼吸困难"）
-NEGATIONS = ("没有", "无", "不", "未", "否认")
+NEGATIONS = ("没有", "没", "无", "不", "未", "否认")
 
 #: 否定结构必须紧贴短语，且排除「无诱因」「不能缓解」「不舒服」这类
 #: 正常修饰语，否则真实的急症描述会被误判成否定
 _NEGATION_PATTERN = re.compile(
-    r"(?:没有|无|未|否认|不是|并非|非|排除|不考虑|不)"
-    r"(?:出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|诉说|诉|特殊|显著|疑似|表现|是)?"
+    r"(?:没有|没|无|未|否认|不是|并非|非|排除|不考虑|不)"
+    r"(?:出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
+    r"诉说|诉|特殊|显著|疑似|表现|是|过|曾经|曾)*"
     r"(?:的)?\s*$"
 )
 
@@ -128,6 +136,18 @@ _VISIT_NEGATIONS = (
 )
 _VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
 _QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
+#: 就医建议通常带有这些祈使/建议词；仅有「医院」等名词不够
+_VISIT_ADVICE_CUES = (
+    "建议", "推荐", "请", "需要", "需", "必须", "务必",
+    "尽快", "立即", "及时", "马上", "最好", "可以", "前往",
+)
+#: 紧贴就医建议前的祈使动词
+_VISIT_ENDING_CUES = ("去", "到", "送", "再")
+#: 描述既往检查/就诊经历的分句，不是对当前患者的就医建议
+_VISIT_DESCRIPTIVE_MARKERS = (
+    "看到", "听到", "发现", "检查", "记录", "结果",
+    "之前", "既往", "曾经", "到过", "去过", "住过", "做过",
+)
 #: “120”只有出现在呼救语境中才算就医建议，避免血压 120/80 误判
 _CALL_120_PATTERN = re.compile(
     r"(?:拨打|打|叫|呼叫|致电)\s*(?:急救电话|急救中心|救护车)?\s*120"
@@ -176,7 +196,26 @@ def has_visit_recommendation(text: str) -> bool:
                 questioning = any(
                     marker in prefix for marker in _QUESTION_MARKERS
                 ) or sentence.rstrip().endswith(("吗", "呢"))
-                if not negated and not questioning:
+                descriptive = (
+                    any(
+                        marker in prefix
+                        for marker in _VISIT_DESCRIPTIVE_MARKERS
+                    )
+                    and not any(
+                        cue in prefix for cue in _VISIT_ADVICE_CUES
+                    )
+                )
+                advised = (
+                    not prefix.strip()
+                    or any(cue in prefix for cue in _VISIT_ADVICE_CUES)
+                    or prefix.rstrip().endswith(_VISIT_ENDING_CUES)
+                )
+                if (
+                    not negated
+                    and not questioning
+                    and advised
+                    and not descriptive
+                ):
                     return True
                 start = sentence.find(term, start + len(term))
     return bool(_CALL_120_PATTERN.search(text))
