@@ -2843,6 +2843,18 @@ function renderHistoryItems(sessions, summary, append = false) {
 
     const title = document.createElement('strong');
     setHighlightedText(title, item.title || '未命名会诊', historyQuery);
+    const riskLabel = HEALTH_RISK_LABELS[item.risk];
+    if (riskLabel) {
+      const riskBadge = document.createElement('span');
+      riskBadge.className = 'history-risk'
+        + (
+          item.risk === 'high' || item.risk === 'emergency'
+            ? ' history-risk-alert'
+            : ''
+        );
+      riskBadge.textContent = riskLabel;
+      title.append(' ', riskBadge);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'history-meta';

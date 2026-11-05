@@ -2272,6 +2272,28 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   padding: 1px 6px;
 }
 
+.history-risk {
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 15px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+}
+
+.history-risk-alert {
+  color: var(--triage-1);
+  background: #fdf0ef;
+  border-color: transparent;
+}
+
+html[data-theme="dark"] .history-risk-alert {
+  background: #331f1d;
+}
+
 .history-actions {
   flex: none;
   display: flex;

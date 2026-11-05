@@ -801,6 +801,15 @@ def test_app_js_ships_health_dossier_export(client):
     assert "/api/health/dossier.md" in app_js
 
 
+def test_app_js_ships_history_risk_badge(client):
+    app_js = client.get("/static/app.js").text
+    css = client.get("/static/styles.css").text
+
+    assert "history-risk" in app_js
+    assert "item.risk" in app_js
+    assert ".history-risk" in css
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

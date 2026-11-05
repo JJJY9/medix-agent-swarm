@@ -909,3 +909,23 @@ def test_maintenance_purge_api(tmp_path, monkeypatch):
     assert invalid.status_code == 422
     actions = [item["action"] for item in audit.json()["actions"]]
     assert "maintenance.purge" in actions
+
+
+def test_sessions_api_exposes_consultation_risk(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    store.save_exchange(
+        "risk-1", "最近头晕", "风险等级：高危。建议尽快就诊。"
+    )
+    store.save_exchange("risk-2", "普通咨询", "建议多休息。")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        data = client.get("/api/sessions").json()
+    finally:
+        store.close()
+
+    by_id = {item["id"]: item for item in data["sessions"]}
+    assert by_id["risk-1"]["risk"] == "high"
+    assert by_id["risk-2"]["risk"] == ""
+    assert all("risk_text" not in item for item in data["sessions"])
