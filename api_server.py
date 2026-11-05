@@ -2312,6 +2312,9 @@ async def health_timeline(
     days: int = 30,
     limit: int = 100,
     date: Optional[str] = None,
+    type: Optional[str] = None,
+    only_alert: bool = False,
+    q: str = "",
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
@@ -2326,7 +2329,7 @@ async def health_timeline(
                 status_code=400, detail="日期格式应为 YYYY-MM-DD"
             )
     days = max(1, min(int(days or 30), 365))
-    limit = max(1, min(int(limit or 100), 500))
+    limit = max(1, min(int(limit or 100), 2000))
     store = get_session_store()
     if day:
         start = day
@@ -2345,8 +2348,15 @@ async def health_timeline(
     raw_logs = await asyncio.to_thread(
         store.list_medication_logs, None, profile, 100000, 0, window_days
     )
+    session_end = (
+        f"{day}T23:59:59" if day
+        else datetime.now().replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds")
+    )
     raw_sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile, start, "", 500, True
+        store.list_sessions_for_timeline,
+        profile, start, session_end, 500, True,
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
@@ -2469,6 +2479,19 @@ async def health_timeline(
         return (event["at"], 1, str(event_id or ""))
 
     events.sort(key=sort_key, reverse=True)
+    if type in {"metric", "symptom", "medication", "consultation"}:
+        events = [event for event in events if event.get("type") == type]
+    if only_alert:
+        events = [event for event in events if event.get("alert")]
+    query = str(q or "").strip().lower()
+    if query:
+        events = [
+            event for event in events
+            if query in " ".join(
+                str(event.get(key) or "")
+                for key in ("title", "value", "note", "profile")
+            ).lower()
+        ]
     return {
         "events": events[:limit],
         "total": len(events),
@@ -2492,7 +2515,8 @@ async def export_timeline_csv(
     import io
 
     data = await health_timeline(
-        profile=profile, days=days, limit=500, date=date
+        profile=profile, days=days, limit=2000, date=date,
+        type=type, only_alert=only_alert, q=q,
     )
     type_labels = {
         "metric": "指标",
@@ -2501,19 +2525,6 @@ async def export_timeline_csv(
         "consultation": "会诊",
     }
     events = data["events"]
-    if type in type_labels:
-        events = [event for event in events if event.get("type") == type]
-    if only_alert:
-        events = [event for event in events if event.get("alert")]
-    query = str(q or "").strip().lower()
-    if query:
-        events = [
-            event for event in events
-            if query in " ".join(
-                str(event.get(key) or "")
-                for key in ("title", "value", "note", "profile")
-            ).lower()
-        ]
     rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "超标"]]
     for event in events:
         rows.append([
