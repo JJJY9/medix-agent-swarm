@@ -306,3 +306,91 @@ def test_timeline_includes_consultations(client_and_store):
     rows = list(csv.reader(io.StringIO(exported.content.decode("utf-8-sig"))))
     assert rows[1][1] == "会诊"
     assert rows[1][2] == "妈妈最近头晕怎么办"
+
+
+def test_timeline_date_keeps_sessions_past_newer_limit(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    target_day = (now - timedelta(days=20)).strftime("%Y-%m-%d")
+    target_at = f"{target_day}T09:00:00"
+    recent_at = now.isoformat(timespec="seconds")
+
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO sessions("
+            "id,title,created_at,updated_at,favorite,archived,tags,profile"
+            ") VALUES (?,?,?,?,0,0,'[]','妈妈')",
+            ("target-session", "目标日会诊", target_at, target_at),
+        )
+        store._conn.execute(
+            "INSERT INTO messages(session_id,role,content,created_at) "
+            "VALUES (?,?,?,?)",
+            ("target-session", "assistant", "建议复查。", target_at),
+        )
+        store._conn.executemany(
+            "INSERT INTO sessions("
+            "id,title,created_at,updated_at,favorite,archived,tags,profile"
+            ") VALUES (?,?,?,?,0,0,'[]','妈妈')",
+            [
+                (f"newer-{index}", "较新会诊", recent_at, recent_at)
+                for index in range(501)
+            ],
+        )
+        store._conn.executemany(
+            "INSERT INTO messages(session_id,role,content,created_at) "
+            "VALUES (?,?,?,?)",
+            [
+                (f"newer-{index}", "assistant", "建议。", recent_at)
+                for index in range(501)
+            ],
+        )
+
+    data = client.get(
+        "/api/timeline", params={"profile": "妈妈", "date": target_day}
+    ).json()
+    consultations = [
+        event for event in data["events"]
+        if event["type"] == "consultation"
+    ]
+    assert [event["id"] for event in consultations] == ["target-session"]
+
+
+def test_timeline_export_filters_before_limit(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    old_at = (now - timedelta(days=20)).isoformat(timespec="seconds")
+    recent_at = now.isoformat(timespec="minutes")
+
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO sessions("
+            "id,title,created_at,updated_at,favorite,archived,tags,profile"
+            ") VALUES (?,?,?,?,0,0,'[]','妈妈')",
+            ("old-session", "旧会诊", old_at, old_at),
+        )
+        store._conn.execute(
+            "INSERT INTO messages(session_id,role,content,created_at) "
+            "VALUES (?,?,?,?)",
+            ("old-session", "assistant", "建议复查。", old_at),
+        )
+        store._conn.executemany(
+            "INSERT INTO health_metrics("
+            "profile,metric,value1,value2,unit,measured_at,note,created_at"
+            ") VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("妈妈", "weight", 60, None, "kg", recent_at, "", recent_at)
+                for _ in range(501)
+            ],
+        )
+
+    response = client.get(
+        "/api/timeline/export.csv",
+        params={"profile": "妈妈", "days": 30, "type": "consultation"},
+    )
+    rows = list(
+        csv.reader(io.StringIO(response.content.decode("utf-8-sig")))
+    )
+
+    assert len(rows) == 2
+    assert rows[1][1] == "会诊"
+    assert rows[1][2] == "旧会诊"
