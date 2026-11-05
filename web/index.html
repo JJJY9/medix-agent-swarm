@@ -769,6 +769,21 @@
       <div class="weekly-summary-body" id="weekly-summary-body"></div>
     </details>
 
+    <details class="weekly-summary health-timeline" id="timeline-section">
+      <summary>健康时间线</summary>
+      <div class="weekly-summary-toolbar">
+        <label class="sr-only" for="timeline-range">时间线范围</label>
+        <select id="timeline-range" aria-label="时间线范围">
+          <option value="7">近 7 天</option>
+          <option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+      </div>
+      <p class="metric-reference" id="timeline-summary" hidden></p>
+      <ul class="timeline-list" id="timeline-list"></ul>
+      <p class="metrics-empty" id="timeline-empty" hidden>所选范围内还没有健康记录。</p>
+    </details>
+
     <p class="calc-disclaimer">记录仅用于趋势回顾，异常值请及时咨询医生。</p>
   </div>
 </aside>

@@ -695,6 +695,20 @@ def test_app_js_ships_batch_medication_reminders(client):
     assert "reminders.push({" in app_js
 
 
+def test_app_js_ships_health_timeline(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert "async function loadTimeline" in app_js
+    assert "function renderTimeline" in app_js
+    assert "/api/timeline" in app_js
+    assert 'id="timeline-section"' in html
+    assert 'id="timeline-range"' in html
+    assert "timeline-badge" in app_js
+    assert ".timeline-badge" in css
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

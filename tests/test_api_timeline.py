@@ -1,0 +1,95 @@
+"""健康时间线 API 的离线测试。"""
+from datetime import datetime, timedelta
+
+import pytest
+from fastapi.testclient import TestClient
+
+import api_server
+import memory
+from memory.session_store import SessionStore
+
+
+@pytest.fixture
+def client_and_store(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    try:
+        yield TestClient(api_server.app), store
+    finally:
+        store.close()
+
+
+def test_timeline_merges_and_filters(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    bp_time = (now - timedelta(minutes=3)).isoformat(timespec="minutes")
+    symptom_time = (now - timedelta(minutes=2)).isoformat(timespec="minutes")
+    log_time = (now - timedelta(minutes=1)).isoformat(timespec="minutes")
+    older_time = (now - timedelta(days=10)).isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 130, "value2": 85, "measured_at": bp_time,
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕",
+        "severity": 4, "recorded_at": symptom_time,
+    })
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平", "dose": "5 mg",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": log_time, "note": "早餐后"},
+    )
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight",
+        "value1": 60, "measured_at": older_time,
+    })
+    client.post("/api/metrics", json={
+        "profile": "父亲", "metric": "weight",
+        "value1": 70, "measured_at": now.isoformat(timespec="minutes"),
+    })
+
+    timeline = client.get(
+        "/api/timeline", params={"profile": "妈妈"}
+    ).json()
+    events = timeline["events"]
+
+    assert timeline["total"] == 4
+    assert [event["type"] for event in events] == [
+        "medication", "symptom", "metric", "metric"
+    ]
+    assert events[0]["title"] == "氨氯地平"
+    assert events[0]["value"] == "5 mg · 打卡"
+    assert events[0]["note"] == "早餐后"
+    assert events[1]["value"] == "4/10"
+    assert events[2]["title"] == "血压"
+    assert events[2]["value"] == "130/85 mmHg"
+    assert events[3]["value"] == "60 kg"
+
+    recent = client.get(
+        "/api/timeline", params={"profile": "妈妈", "days": 7}
+    ).json()
+    assert recent["total"] == 3
+    assert all(
+        event["title"] != "体重" or event["value"] != "60 kg"
+        for event in recent["events"]
+    )
+
+    father = client.get(
+        "/api/timeline", params={"profile": "父亲"}
+    ).json()
+    assert father["total"] == 1
+    assert father["events"][0]["title"] == "体重"
+
+    limited = client.get(
+        "/api/timeline", params={"profile": "妈妈", "limit": 2}
+    ).json()
+    assert len(limited["events"]) == 2
+    assert limited["total"] == 4
+
+    family = client.get("/api/timeline").json()
+    assert family["total"] == 5
+    assert family["events"][0]["profile"] == "父亲"
