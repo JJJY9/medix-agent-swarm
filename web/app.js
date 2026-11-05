@@ -4032,6 +4032,7 @@ async function importHistoryBackup() {
           medications: data.medications,
           medication_logs: data.medication_logs,
           audit_log: data.audit_log,
+          checksum: data.checksum,
         }),
       });
       const result = await res.json().catch(() => ({}));

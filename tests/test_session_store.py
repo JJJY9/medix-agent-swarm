@@ -1856,6 +1856,8 @@ def test_import_medication_logs_fallback_by_name(store, tmp_path):
     )
 
     data = store.export_data()
+    # 模拟外部编辑过的旧备份：去掉校验和后再改写药物编号
+    data.pop("checksum", None)
     data["medication_logs"][0]["medication_id"] = 99999
 
     other = SessionStore(str(tmp_path / "log-fallback.db"))

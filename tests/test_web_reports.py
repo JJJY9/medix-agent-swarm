@@ -1184,6 +1184,7 @@ def test_app_js_guards_session_storage_and_backup_audit(client):
     assert "function safeSessionGet" in app_js
     assert "safeSessionGet('medix.token')" in app_js
     assert "audit_log: data.audit_log" in app_js
+    assert "checksum: data.checksum" in app_js
 
 
 def test_app_js_exports_follow_active_filters(client):
