@@ -1,5 +1,5 @@
 """报表、家庭档案与 ICS 导出的安全回归测试。"""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -126,6 +126,26 @@ def test_ics_preserves_timed_repeat_until(client_and_store):
 
     assert f"UNTIL={until.strftime('%Y%m%dT%H%M%S')}" in text
     assert "UNTIL=" in text
+
+
+def test_ics_converts_timezone_bearing_repeat_until(client_and_store):
+    client, _store = client_and_store
+    due = (datetime.now() + timedelta(days=3)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    until_local = (due + timedelta(days=2)).replace(hour=10, minute=0)
+    until_aware = until_local.astimezone(timezone.utc)
+    expected = until_aware.astimezone().replace(tzinfo=None)
+    client.post("/api/reminders", json={
+        "title": "带时区截止",
+        "due_at": due.isoformat(timespec="minutes"),
+        "repeat_days": 1,
+        "repeat_until": until_aware.isoformat(),
+    })
+
+    text = client.get("/api/reminders/export.ics").content.decode("utf-8")
+
+    assert f"UNTIL={expected.strftime('%Y%m%dT%H%M%S')}" in text
 
 
 def test_ics_omits_rrule_when_next_occurrence_passes_until(client_and_store):

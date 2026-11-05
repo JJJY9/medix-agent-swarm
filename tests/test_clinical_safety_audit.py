@@ -89,3 +89,62 @@ def test_negated_label_style_allergy_is_ignored():
     result = check_medication_safety("没有过敏药物：阿司匹林，能吃布洛芬吗")
     titles = [alert["title"] for alert in result["alerts"]]
     assert not any("过敏史" in title for title in titles), titles
+
+
+def test_anti_allergy_medication_is_not_an_allergy_statement():
+    result = check_medication_safety(
+        "我在吃抗过敏药物氯雷他定、华法林，现在能吃阿司匹林吗"
+    )
+    titles = [alert["title"] for alert in result["alerts"]]
+    assert any("华法林与非甾体抗炎药" in title for title in titles)
+    assert not any("过敏史" in title for title in titles)
+
+
+def test_allergy_test_mention_keeps_current_medications():
+    result = check_medication_safety(
+        "做过敏原检测前我现在吃华法林和布洛芬可以吗"
+    )
+    titles = [alert["title"] for alert in result["alerts"]]
+    assert any("华法林与非甾体抗炎药" in title for title in titles)
+
+
+def test_negative_allergy_test_result_is_not_history():
+    result = check_medication_safety("过敏原：阿莫西林阴性，能吃头孢吗")
+    titles = [alert["title"] for alert in result["alerts"]]
+    assert not any("过敏史" in title for title in titles)
+
+
+def test_positive_allergy_test_result_is_history():
+    result = check_medication_safety("过敏原：阿莫西林阳性，能吃头孢吗")
+    titles = [alert["title"] for alert in result["alerts"]]
+    assert any("青霉素类过敏史" in title for title in titles), titles
+
+
+@pytest.mark.parametrize("text", [
+    "今天差点没昏倒",
+    "差点没窒息",
+    "不过胸痛越来越厉害了",
+    "不过是胸痛而已",
+])
+def test_concessive_and_almost_phrases_still_trigger_emergency(text):
+    assert detect_red_flags(text)["level"] == "emergency"
+
+
+@pytest.mark.parametrize("text", [
+    "如果胸痛加重，必要时就医。",
+    "出现胸痛应就诊。",
+    "应该看医生。",
+    "尽早就诊。",
+])
+def test_common_visit_recommendations_are_recognized(text):
+    assert has_visit_recommendation(text) is True
+    validator = ConstraintValidator()
+    result = validator.validate_output(
+        "diagnostic_agent", text, user_input="我胸痛两天了"
+    )
+    assert "高危症状未建议就医" not in result["violations"]
+
+
+def test_negated_visit_recommendation_is_not_advice():
+    assert has_visit_recommendation("不要去医院，先在家观察。") is False
+    assert has_visit_recommendation("不应就诊。") is False

@@ -11574,16 +11574,36 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         : max,
       0
     );
+    const hasIds = messages.some(
+      (message) => (Number(message.id) || 0) > 0
+    );
     if (expectedQuestion) {
-      // 本轮提问和回答都必须比中止前的最大消息 ID 更新；否则只是同文本的
-      // 旧问答，不能覆盖刚停止的提问与“已停止”卡片
-      const persistedQuestion = messages.some(
-        (message) => message.role === 'user'
-          && message.content === expectedQuestion
-          && (Number(message.id) || 0) > baselineMessageId
-      );
-      if (!persistedQuestion || newestAssistantId <= baselineMessageId) {
-        return;
+      if (!hasIds) {
+        // 纯短期记忆回退时没有消息 ID，退回按文本和顺序判断
+        let questionIndex = -1;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i].role === 'user'
+            && messages[i].content === expectedQuestion) {
+            questionIndex = i;
+            break;
+          }
+        }
+        const persisted = questionIndex >= 0
+          && messages.slice(questionIndex + 1).some(
+            (message) => message.role === 'assistant'
+          );
+        if (!persisted) return;
+      } else {
+        // 本轮提问和回答都必须比中止前的最大消息 ID 更新；否则只是同文本的
+        // 旧问答，不能覆盖刚停止的提问与“已停止”卡片
+        const persistedQuestion = messages.some(
+          (message) => message.role === 'user'
+            && message.content === expectedQuestion
+            && (Number(message.id) || 0) > baselineMessageId
+        );
+        if (!persistedQuestion || newestAssistantId <= baselineMessageId) {
+          return;
+        }
       }
     }
 

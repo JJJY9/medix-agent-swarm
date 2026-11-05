@@ -26,6 +26,44 @@ def test_import_rejects_session_over_message_cap(tmp_path, monkeypatch):
         store.close()
 
 
+def test_import_skips_existing_session_over_message_cap(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(store_module, "MAX_BACKUP_SESSION_MESSAGES", 2)
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.save_exchange("long", "旧问题一", "旧回答一")
+        store.save_exchange("long", "旧问题二", "旧回答二")
+        payload = {
+            "sessions": [
+                {
+                    "id": "long",
+                    "messages": [
+                        {"role": "user", "content": "备份问题"},
+                        {"role": "assistant", "content": "备份回答"},
+                        {"role": "user", "content": "备份追问"},
+                    ],
+                },
+                {
+                    "id": "new",
+                    "messages": [
+                        {"role": "user", "content": "新问题"},
+                        {"role": "assistant", "content": "新回答"},
+                    ],
+                },
+            ],
+        }
+
+        result = store.import_data(payload)
+
+        assert result["skipped"] == 1
+        assert result["imported"] == 1
+        assert len(store.get_messages("long")) == 4
+        assert store.get_session("new") is not None
+    finally:
+        store.close()
+
+
 def test_import_preserves_completed_repeat_parent(tmp_path):
     source = SessionStore(str(tmp_path / "source.db"))
     target = SessionStore(str(tmp_path / "target.db"))
