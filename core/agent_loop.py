@@ -173,8 +173,14 @@ class AgentLoop:
                                 content=f"调用工具：{', '.join(tool_names)}"
                             )
 
-                        # 执行每个 Skill 调用
-                        for tool_call in llm_response.tool_calls:
+                        # 执行每个 Skill 调用（超出预算的调用返回错误结果，
+                        # 保证每条 tool_call 都有配对的 tool 消息）
+                        remaining_budget = max(
+                            0, self.max_tool_calls - tool_call_count
+                        )
+                        to_execute = llm_response.tool_calls[:remaining_budget]
+                        to_skip = llm_response.tool_calls[remaining_budget:]
+                        for tool_call in to_execute:
                             # 增加计数
                             tool_call_count += 1
                             logger.debug(f"Executing: {tool_call.name}({tool_call.arguments}) - 第 {tool_call_count} 次调用")
@@ -235,6 +241,35 @@ class AgentLoop:
                                     content=f"{tool_call.name}: {result_summary}"
                                 )
 
+                        # 超出预算的 tool_call 也要补一条结果，避免历史里
+                        # 留下没有 tool 响应的调用导致下一轮请求 400
+                        for tool_call in to_skip:
+                            try:
+                                skipped_message = (
+                                    agent.llm_client.create_tool_message(
+                                        tool_call_id=tool_call.id,
+                                        tool_name=tool_call.name,
+                                        result={
+                                            "success": False,
+                                            "error": "已超出工具调用预算",
+                                        },
+                                    )
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to serialize skipped tool result: {e}"
+                                )
+                                skipped_message = {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "name": tool_call.name,
+                                    "content": json.dumps(
+                                        {"error": "已超出工具调用预算"},
+                                        ensure_ascii=False,
+                                    ),
+                                }
+                            messages.append(skipped_message)
+
                         # 预算耗尽后立即收尾。若继续带着 tools 进入下一轮，
                         # 模型往往会再次请求调用工具，白白空转到 max_iterations。
                         if tool_call_count >= self.max_tool_calls:
@@ -273,13 +308,17 @@ class AgentLoop:
                         state.mark_failed(e.user_message)
                         raise
                     if state.iteration >= state.max_iterations:
-                        state.mark_failed(e.user_message)
+                        logger.warning(
+                            "LLM 重试次数用尽，改为生成兜底答复"
+                        )
                         break
                     await asyncio.sleep(min(2 ** state.iteration, 8))
                 except Exception as e:
                     logger.error(f"Error in iteration {state.iteration}: {e}")
                     if state.iteration >= state.max_iterations:
-                        state.mark_failed(str(e))
+                        logger.warning(
+                            "连续异常达到最大迭代次数，改为生成兜底答复"
+                        )
                         break
                     # 否则继续尝试
 

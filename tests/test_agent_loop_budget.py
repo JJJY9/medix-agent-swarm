@@ -101,6 +101,43 @@ def test_zero_budget_skips_tool_execution():
     assert llm.calls == [True, False]
 
 
+class MultiToolLLM(FakeLLM):
+    """单次响应里请求多个工具调用。"""
+
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls.append(tools is not None)
+        if tools is None:
+            return LLMResponse(
+                content="最终答复", tool_calls=[], finish_reason="stop"
+            )
+
+        return LLMResponse(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id=f"call-{index}-{len(self.calls)}",
+                    name="fake_skill",
+                    arguments={},
+                )
+                for index in range(3)
+            ],
+            finish_reason="tool_calls",
+        )
+
+
+def test_budget_caps_batched_tool_calls():
+    loop = AgentLoop(max_iterations=10, max_tool_calls=2)
+    llm = MultiToolLLM()
+    agent = FakeAgent(llm)
+
+    result = asyncio.run(loop.run(agent, {"question": "测试问题"}))
+
+    assert result["answer"] == "最终答复"
+    assert result["tool_calls_used"] == 2
+    assert len(agent.executed) == 2
+    assert llm.calls == [True, False]
+
+
 class StreamingFakeLLM(FakeLLM):
     """强制收尾时走流式接口。"""
 
