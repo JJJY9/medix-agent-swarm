@@ -822,6 +822,8 @@ def test_app_js_ships_weekly_summary(client):
     assert 'id="weekly-summary-section"' in html
     assert 'id="weekly-summary-range"' in html
     assert 'id="weekly-summary-copy"' in html
+    assert 'id="weekly-summary-export"' in html
+    assert "async function exportWeeklySummary" in app_js
     assert ".weekly-summary-list" in css
     assert "async function copyWeeklySummary" in app_js
     assert "function weeklySummaryText" in app_js
