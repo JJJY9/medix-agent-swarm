@@ -1763,9 +1763,13 @@ def test_medications_crud_and_export_import(store, tmp_path):
 
 def test_medication_logs_crud_and_counts(store):
     item = store.add_medication("父亲", "二甲双胍", "500 mg", "每日两次")
-    today = datetime.now().strftime("%Y-%m-%d")
-    first = store.add_medication_log(item["id"], f"{today}T08:30", "早餐后")
-    second = store.add_medication_log(item["id"], f"{today}T20:00")
+    yesterday = (
+        datetime.now() - timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+    first = store.add_medication_log(
+        item["id"], f"{yesterday}T08:30", "早餐后"
+    )
+    second = store.add_medication_log(item["id"], f"{yesterday}T20:00")
     older = store.add_medication_log(item["id"], "2020-01-01T09:00")
 
     assert first["medication_id"] == item["id"]
@@ -1781,9 +1785,9 @@ def test_medication_logs_crud_and_counts(store):
     assert store.list_medication_logs(profile="父亲") == logs
 
     listed = store.list_medications()[0]
-    assert listed["today_count"] == 2
+    assert listed["today_count"] == 0
     assert listed["week_count"] == 2
-    assert listed["last_taken_at"] == f"{today}T20:00"
+    assert listed["last_taken_at"] == f"{yesterday}T20:00"
 
     assert store.get_medication_log(first["id"])["note"] == "早餐后"
     assert store.delete_medication_log(first["id"]) is True
