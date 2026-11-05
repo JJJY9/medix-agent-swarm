@@ -3916,6 +3916,7 @@ async function exportHistoryCsv() {
     if (archivedOnly) params.set('archived', 'true');
     if (historyTag) params.set('tag', historyTag);
     if (historyProfile) params.set('profile', historyProfile);
+    if (historyRisk) params.set('risk', historyRisk);
     if (historyDays > 0) params.set('days', String(historyDays));
 
     const res = await fetch(

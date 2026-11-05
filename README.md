@@ -278,7 +278,7 @@ npm install -D playwright
 | GET | `/api/session-profiles` | 会话中出现过的档案名及数量（含已删除档案留下的历史名字） |
 | GET | `/api/profile-names` | 所有数据表中出现过的档案名（含已删除档案留下的历史名字） |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
-| GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile` 筛选导出会话列表 CSV（带 BOM，含风险等级） |
+| GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile`/`risk` 筛选导出会话列表 CSV（带 BOM，含风险等级） |
 | POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息（不可恢复，写入审计） |
 | POST | `/api/sessions/import` | 导入备份 JSON（会话、档案、指标、目标、提醒、症状、用药与打卡；重复记录跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |

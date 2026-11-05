@@ -1240,6 +1240,7 @@ async def export_sessions_csv(
     archived: bool = False,
     tag: Optional[str] = None,
     profile: Optional[str] = None,
+    risk: Optional[str] = None,
 ):
     """按当前筛选导出会话列表 CSV（带 BOM），用于表格分析。"""
     import csv
@@ -1252,6 +1253,9 @@ async def export_sessions_csv(
     favorites_only = bool(favorite)
     days = max(0, min(int(days or 0), 365))
     profile = profile or None
+    risk_filter = str(risk or "").strip().lower()
+    if risk_filter and risk_filter not in RISK_FILTER_VALUES:
+        raise HTTPException(status_code=400, detail="不支持的风险筛选")
 
     items: List[Dict[str, Any]] = []
     offset = 0
@@ -1272,6 +1276,15 @@ async def export_sessions_csv(
             break
         offset += len(batch)
 
+    if risk_filter:
+        filtered = []
+        for item in items:
+            level = parse_risk_level(item.pop("risk_text", ""))
+            if _risk_at_least(level, risk_filter):
+                item["risk"] = level
+                filtered.append(item)
+        items = filtered
+
     usage = await asyncio.to_thread(
         store.usage_by_session, [item["id"] for item in items]
     )
@@ -1282,7 +1295,10 @@ async def export_sessions_csv(
     ]]
     for item in items:
         stats = usage.get(item["id"], {})
-        risk = parse_risk_level(item.pop("risk_text", ""))
+        if "risk" in item:
+            risk_level = item["risk"]
+        else:
+            risk_level = parse_risk_level(item.pop("risk_text", ""))
         rows.append([
             csv_safe_cell(item.get("id", "")),
             csv_safe_cell(item.get("title", "")),
@@ -1296,7 +1312,7 @@ async def export_sessions_csv(
             stats.get("llm_calls", 0),
             csv_safe_cell(item.get("created_at", "")),
             csv_safe_cell(item.get("updated_at", "")),
-            csv_safe_cell(RISK_LEVEL_LABELS.get(risk, "")),
+            csv_safe_cell(RISK_LEVEL_LABELS.get(risk_level, "")),
         ])
 
     buffer = io.StringIO()
