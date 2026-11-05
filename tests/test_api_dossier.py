@@ -103,6 +103,35 @@ def test_health_dossier_empty_profile(client_and_store):
     assert "暂无会诊记录" in text
 
 
+def test_family_dossier_markdown(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/profiles", json={
+        "name": "妈妈", "context": {"age": "62"},
+    })
+    client.post("/api/profiles", json={
+        "name": "孩子", "context": {"age": "7"},
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+    text = response.text
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "# 健康档案：妈妈" in text
+    assert "# 健康档案：孩子" in text
+    assert text.count("# 健康档案：") == 2
+
+
+def test_family_dossier_requires_profiles(client_and_store):
+    client, _store = client_and_store
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "暂无患者档案"
+
+
 def test_health_dossier_requires_profile(client_and_store):
     client, _store = client_and_store
 
