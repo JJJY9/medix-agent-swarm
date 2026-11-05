@@ -51,6 +51,7 @@ from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.pricing import get_pricing
 from core.budget import get_token_budget
 from core.serialization import sanitize_json
+from core.session_context import session_memory_scope
 
 WEB_DIR = project_root / "web"
 
@@ -5614,10 +5615,7 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
             raw_profile.encode("utf-8")
         ).hexdigest()[:24]
         return f"medix_profile_{digest}"
-    digest = hashlib.sha256(
-        str(session_id or "").encode("utf-8")
-    ).hexdigest()[:24]
-    return f"medix_session_{digest}"
+    return session_memory_scope(session_id)
 
 
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:

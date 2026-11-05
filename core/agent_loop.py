@@ -5,7 +5,6 @@ Agent循环引擎
 支持约束验证（Harness Engineering）
 """
 import asyncio
-import hashlib
 import uuid
 import json
 from typing import Dict, Any, List, Optional
@@ -14,7 +13,7 @@ from loguru import logger
 from .state_manager import StateManager, TaskStatus
 from .llm_client import LLMResponse, LLMError
 from .citations import merge_sources
-from .session_context import use_memory_scope
+from .session_context import session_memory_scope, use_memory_scope
 from .usage import merge_usage
 
 # Harness Engineering: 约束验证和自动修复
@@ -109,10 +108,7 @@ class AgentLoop:
             memory_scope = str(context_data.get("memory_scope") or "").strip()
         if not memory_scope and session_id:
             # 会话 ID 可能由客户端自定义，同样不能把原文发给外部记忆服务
-            digest = hashlib.sha256(
-                str(session_id).encode("utf-8")
-            ).hexdigest()[:24]
-            memory_scope = f"medix_session_{digest}"
+            memory_scope = session_memory_scope(session_id)
         memory_scope = memory_scope[:120]
 
         logger.info(f"Starting Agent Loop for {agent.agent_id}, task_id={task_id}")

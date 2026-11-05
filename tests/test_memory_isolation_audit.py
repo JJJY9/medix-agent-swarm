@@ -9,7 +9,11 @@ import pytest
 
 from core.agent_loop import AgentLoop
 from core.llm_client import LLMResponse, ToolCall
-from core.session_context import get_memory_scope, use_memory_scope
+from core.session_context import (
+    get_memory_scope,
+    session_memory_scope,
+    use_memory_scope,
+)
 from core.skill_registry import SkillRegistry
 from memory import ShortTermMemory
 from memory.long_term import LongTermMemory
@@ -78,6 +82,14 @@ def test_long_term_search_is_scoped_by_user_id():
     )
 
     assert client.searched["user_id"] == "medix_profile_母亲"
+
+
+def test_session_memory_scope_hashes_custom_session_id():
+    scope = session_memory_scope("妈妈的头痛")
+    assert scope.startswith("medix_session_")
+    assert "妈妈" not in scope
+    assert scope == session_memory_scope("妈妈的头痛")
+    assert scope != session_memory_scope("爸爸的头痛")
 
 
 def test_long_term_add_is_scoped_by_user_id():
