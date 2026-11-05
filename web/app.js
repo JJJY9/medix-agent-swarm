@@ -505,6 +505,7 @@ let historyOpen = false;
 let kbOpen = false;
 let diagOpen = false;
 let calcOpen = false;
+let calcRequestSeq = 0;
 let metricsOpen = false;
 let remindersOpen = false;
 let authGateOpen = false;
@@ -3662,6 +3663,8 @@ async function loadHistory(query = '', { append = false } = {}) {
     els.historyList.replaceChildren();
     els.historySummary.hidden = true;
     els.historyMore.hidden = true;
+    selectedSessions.clear();
+    updateBulkBar();
     els.historyEmpty.hidden = false;
     els.historyEmpty.textContent = `会诊记录加载失败：${err.message || err}`;
   }
@@ -4448,6 +4451,7 @@ async function exportHistoryHtml(item) {
 /* ---------- 知识库管理 ---------- */
 
 let kbFocused = null;
+let kbBusy = false;
 let previewFilename = '';
 let previewEditable = false;
 let previewEditing = false;
@@ -4461,9 +4465,15 @@ function setKbStatus(text, isError = false) {
 }
 
 function setKbBusy(busy) {
+  kbBusy = busy;
   [els.kbFile, els.kbUpload, els.kbRebuild].forEach((el) => {
     if (el) el.disabled = busy;
   });
+  if (els.kbList) {
+    els.kbList.querySelectorAll('.kb-item-delete').forEach((el) => {
+      el.disabled = busy || el.dataset.builtin === '1';
+    });
+  }
 }
 
 function formatBytes(bytes) {
@@ -4510,6 +4520,7 @@ function renderKbDocuments(documents) {
     del.type = 'button';
     del.className = 'kb-item-delete';
     del.textContent = '删除';
+    del.dataset.builtin = doc.builtin ? '1' : '';
     if (doc.builtin) {
       del.disabled = true;
       del.title = '内置文档请通过仓库更新';
@@ -4821,6 +4832,7 @@ function closeKb(restoreFocus = false) {
 }
 
 async function uploadKbDocument(fileOverride = null) {
+  if (kbBusy) return;
   const files = Array.isArray(fileOverride)
     ? fileOverride
     : fileOverride
@@ -4888,6 +4900,7 @@ async function uploadKbDocument(fileOverride = null) {
 }
 
 async function rebuildKb() {
+  if (kbBusy) return;
   setKbBusy(true);
   setKbStatus('正在重建索引，请稍候…');
 
@@ -4907,6 +4920,7 @@ async function rebuildKb() {
 }
 
 async function deleteKbDocument(filename) {
+  if (kbBusy) return;
   if (!window.confirm(`删除「${filename}」并重建索引？`)) return;
 
   setKbBusy(true);
@@ -4920,6 +4934,7 @@ async function deleteKbDocument(filename) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `删除失败（${res.status}）`);
 
+    if (previewFilename === filename) closeKbPreview();
     setKbStatus(`已删除 ${filename}。`);
     await loadKnowledge();
     checkStatus();
@@ -10259,6 +10274,7 @@ function setCalcStatus(text, isError = false) {
 }
 
 function setCalcTool(tool) {
+  calcRequestSeq += 1;
   els.calcTool.value = tool;
   try {
     localStorage.setItem('medix.calcTool', tool);
@@ -10346,6 +10362,7 @@ function openCalc() {
 }
 
 function closeCalc(restoreFocus = false) {
+  calcRequestSeq += 1;
   calcOpen = false;
   els.calcDrawer.hidden = true;
   els.calcBackdrop.hidden = true;
@@ -10355,8 +10372,6 @@ function closeCalc(restoreFocus = false) {
     calcFocused.focus();
   }
 }
-
-let calcRequestSeq = 0;
 
 async function runCalc(url, body, build) {
   const seq = ++calcRequestSeq;
