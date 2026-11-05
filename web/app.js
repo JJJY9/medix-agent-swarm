@@ -316,6 +316,9 @@ const els = {
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   homeGlanceMedications: document.getElementById('home-glance-medications'),
   homeGlanceSummary: document.getElementById('home-glance-summary'),
+  familyOverview: document.getElementById('family-overview'),
+  familyOverviewList: document.getElementById('family-overview-list'),
+  familyOverviewStatus: document.getElementById('family-overview-status'),
   todayMeds: document.getElementById('today-meds'),
   todayMedsSummary: document.getElementById('today-meds-summary'),
   todayMedsList: document.getElementById('today-meds-list'),
@@ -7142,11 +7145,152 @@ async function loadHomeGlance() {
   }
 }
 
+let familyOverviewRequestSeq = 0;
+
+function familyContextText(context) {
+  if (!context || typeof context !== 'object') return '';
+  const parts = [];
+  const age = Number.parseInt(context.age, 10);
+  if (Number.isFinite(age) && age > 0) parts.push(`${age} 岁`);
+  if (context.sex) parts.push(context.sex);
+  return parts.join(' · ');
+}
+
+function familyChip(text, extraClass) {
+  const chip = document.createElement('span');
+  chip.className = 'family-chip' + (extraClass ? ` ${extraClass}` : '');
+  chip.textContent = text;
+  return chip;
+}
+
+function renderFamilyOverview(data) {
+  if (!els.familyOverview || !els.familyOverviewList) return;
+  const profiles = data.profiles || [];
+  els.familyOverviewList.replaceChildren();
+  if (!profiles.length) {
+    els.familyOverview.hidden = true;
+    return;
+  }
+  const days = Number(data.days) || 7;
+  for (const profile of profiles) {
+    const li = document.createElement('li');
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'family-card';
+    card.dataset.profile = profile.name;
+    const saved = Boolean(profilesCache[profile.name]);
+    if (saved) {
+      card.title = `切换到档案「${profile.name}」`;
+    } else {
+      card.disabled = true;
+      card.title = '该档案已删除，仅保留历史记录';
+    }
+
+    const head = document.createElement('span');
+    head.className = 'family-card-head';
+    const name = document.createElement('strong');
+    name.textContent = profile.name;
+    head.appendChild(name);
+    const contextText = familyContextText(profile.context);
+    if (contextText) {
+      const meta = document.createElement('span');
+      meta.className = 'family-card-meta';
+      meta.textContent = contextText;
+      head.appendChild(meta);
+    }
+    if (!saved) {
+      const gone = document.createElement('span');
+      gone.className = 'family-card-gone';
+      gone.textContent = '已删除';
+      head.appendChild(gone);
+    }
+    card.appendChild(head);
+
+    const chips = document.createElement('span');
+    chips.className = 'family-card-chips';
+    for (const item of (profile.metrics || []).slice(0, 3)) {
+      const unit = item.unit ? ` ${item.unit}` : '';
+      chips.appendChild(familyChip(
+        `${item.label} ${item.value}${unit}${item.over_target ? ' 超标' : ''}`,
+        item.over_target ? 'family-chip-alert' : ''
+      ));
+    }
+    const medications = profile.medications || {};
+    if (medications.active) {
+      chips.appendChild(familyChip(
+        medications.taken_today
+          ? `用药 今日 ${medications.taken_today} 次`
+          : `用药 ${medications.active} 种 未打卡`
+      ));
+    }
+    const reminders = profile.reminders || {};
+    if (reminders.overdue) {
+      chips.appendChild(familyChip(
+        `提醒 ${reminders.overdue} 条逾期`, 'family-chip-alert'
+      ));
+    } else if (reminders.pending) {
+      chips.appendChild(familyChip(`提醒 ${reminders.pending} 条待办`));
+    }
+    const symptom = profile.symptoms || {};
+    if (symptom.count) {
+      const latest = symptom.latest || {};
+      chips.appendChild(familyChip(
+        `症状 近 ${days} 天 ${symptom.count} 条`
+        + (latest.symptom ? ` · ${latest.symptom} ${latest.severity}/10` : '')
+      ));
+    }
+    const consultations = profile.consultations || {};
+    if (consultations.count) {
+      chips.appendChild(familyChip(
+        `会诊 近 ${days} 天 ${consultations.count} 次`
+      ));
+    }
+    if (!chips.children.length) {
+      chips.appendChild(familyChip(
+        `近 ${days} 天暂无健康记录`, 'family-chip-muted'
+      ));
+    }
+    card.appendChild(chips);
+
+    if (profile.last_activity) {
+      const foot = document.createElement('span');
+      foot.className = 'family-card-foot';
+      foot.textContent = `最近活动 ${formatTime(profile.last_activity)}`;
+      card.appendChild(foot);
+    }
+    li.appendChild(card);
+    els.familyOverviewList.appendChild(li);
+  }
+  els.familyOverview.hidden = false;
+}
+
+async function loadFamilyOverview() {
+  if (!els.familyOverview) return;
+  const requestSeq = ++familyOverviewRequestSeq;
+  try {
+    const res = await fetch('/api/family/overview?days=7');
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== familyOverviewRequestSeq) return;
+    renderFamilyOverview(data);
+  } catch {
+    if (requestSeq !== familyOverviewRequestSeq) return;
+    els.familyOverview.hidden = true;
+  }
+}
+
+function setFamilyOverviewStatus(text) {
+  if (!els.familyOverviewStatus) return;
+  els.familyOverviewStatus.textContent = text;
+  els.familyOverviewStatus.hidden = !text;
+}
+
 function refreshOverview() {
   return Promise.all([
     loadHomeGlance(),
     loadWeeklySummary(),
     loadTimeline(),
+    loadFamilyOverview(),
   ]);
 }
 
@@ -10763,6 +10907,7 @@ async function initProfiles() {
   } catch {
     // 服务暂不可用时不阻塞主界面；恢复后刷新页面即可重新加载
   }
+  loadFamilyOverview();
 }
 
 function readStoredProfile() {
@@ -10886,6 +11031,7 @@ async function savePatientProfile() {
     }
     if (data.profile) profilesCache[data.profile.name] = data.profile;
     refreshProfileOptions(name);
+    loadFamilyOverview();
   } catch (err) {
     window.alert(`保存档案失败：${err.message || err}`);
   }
@@ -10944,6 +11090,7 @@ async function deletePatientProfile() {
     const wasSelected = els.profileSelect.value === name;
     delete profilesCache[name];
     refreshProfileOptions('');
+    loadFamilyOverview();
     if (wasSelected) applyPatientContext({});
   } catch (err) {
     window.alert(`删除档案失败：${err.message || err}`);
@@ -11545,6 +11692,24 @@ els.homeGlanceMedications.addEventListener('click', () => {
 els.homeGlanceSummary.addEventListener('click', () => {
   openMetrics();
   if (els.weeklySummarySection) els.weeklySummarySection.open = true;
+});
+els.familyOverviewList.addEventListener('click', async (event) => {
+  const card = event.target.closest('.family-card');
+  if (!card || card.disabled) return;
+  const name = card.dataset.profile || '';
+  if (!name || !profilesCache[name]) return;
+  if (els.profileSelect.value === name) {
+    setFamilyOverviewStatus(`当前档案：${name}`);
+    return;
+  }
+  els.profileSelect.value = name;
+  await applySelectedProfile();
+  if (els.profileSelect.value !== name) {
+    setFamilyOverviewStatus('');
+    return;
+  }
+  setFamilyOverviewStatus(`已切换到档案「${name}」`);
+  refreshOverview();
 });
 els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
