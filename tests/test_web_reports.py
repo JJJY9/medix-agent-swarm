@@ -736,6 +736,17 @@ def test_app_js_ships_family_overview(client):
     assert ".family-chip" in css
 
 
+def test_app_js_ships_home_backup_card(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+
+    assert 'id="home-glance-backup"' in html
+    assert "BACKUP_STORAGE_KEY" in app_js
+    assert "readLastBackupAt" in app_js
+    assert "markBackupExported" in app_js
+    assert "homeGlanceBackup" in app_js
+
+
 def test_app_js_ships_weekly_summary(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text
