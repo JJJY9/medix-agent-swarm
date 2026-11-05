@@ -75,8 +75,27 @@ RED_FLAG_PHRASES = (
 #: 短语前 4 个字符内出现这些词时视为否定描述（"没有胸痛""无呼吸困难"）
 NEGATIONS = ("没有", "无", "不", "未", "否认")
 
+#: 否定结构必须紧贴短语，且排除「无诱因」「不能缓解」「不舒服」这类
+#: 正常修饰语，否则真实的急症描述会被误判成否定
+_NEGATION_PATTERN = re.compile(
+    r"(?:没有|无|未|否认|不)"
+    r"(?:出现|伴有|伴随|伴|感|有|见|明显|任何|见到)?"
+    r"(?:的)?\s*$"
+)
+
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
+
+#: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
+PREGNANCY_BLEEDING_TERMS = (
+    "阴道出血", "阴道流血", "阴道大量出血", "产道出血",
+    "下体出血", "见红",
+)
+
+
+def _is_negated(prefix: str) -> bool:
+    """前缀是否以否定结构结束（"没有"、"未见"、"无"…）。"""
+    return bool(_NEGATION_PATTERN.search(prefix))
 
 #: 分句标点：否定判断只在同一分句内进行，避免上一句的「不」误伤下一句
 CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
@@ -95,7 +114,7 @@ def _positive_mention(text: str, phrase: str) -> bool:
     start = text.find(phrase)
     while start != -1:
         prefix = _clause_prefix(text, start)
-        if not any(negation in prefix for negation in NEGATIONS):
+        if not _is_negated(prefix):
             return True
         start = text.find(phrase, start + len(phrase))
     return False
@@ -168,13 +187,13 @@ def _has_fever(text: str) -> bool:
         start = text.find(term)
         while start != -1:
             prefix = _clause_prefix(text, start)
-            if not any(negation in prefix for negation in NEGATIONS):
+            if not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
 
     for match in TEMPERATURE_PATTERN.finditer(text):
         prefix = _clause_prefix(text, match.start())
-        if not any(negation in prefix for negation in NEGATIONS):
+        if not _is_negated(prefix):
             return True
     return False
 
@@ -211,7 +230,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
 
     if (
         any(term in medical_text for term in ANTICOAGULANT_TERMS)
-        and any(term in text for term in HEAD_TRAUMA_TERMS)
+        and any(_positive_mention(text, term) for term in HEAD_TRAUMA_TERMS)
     ):
         flags.append((
             "抗凝治疗期间头部外伤",
@@ -246,7 +265,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
         start = text.find(phrase)
         while start != -1:
             prefix = _clause_prefix(text, start)
-            if not any(negation in prefix for negation in NEGATIONS):
+            if not _is_negated(prefix):
                 if label not in matches:
                     matches.append(label)
                 break
@@ -254,7 +273,10 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
 
     if (
         any(term in text for term in PREGNANCY_TERMS)
-        and _positive_mention(text, "出血")
+        and any(
+            _positive_mention(text, term)
+            for term in PREGNANCY_BLEEDING_TERMS
+        )
         and "孕产期出血" not in matches
     ):
         matches.append("孕产期出血")

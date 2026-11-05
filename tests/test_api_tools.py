@@ -513,16 +513,28 @@ def test_padua_api(client):
 
 def test_abcd2_api(client):
     low = client.post("/api/tools/abcd2", json={})
-    high = client.post(
+    moderate = client.post(
         "/api/tools/abcd2",
         json={"unilateral_weakness": True, "duration_ge_60": True},
+    )
+    high = client.post(
+        "/api/tools/abcd2",
+        json={
+            "age_ge_60": True,
+            "bp_ge_140_90": True,
+            "unilateral_weakness": True,
+            "duration_ge_60": True,
+        },
     )
 
     assert low.status_code == 200
     assert low.json()["score"] == 0
     assert low.json()["risk"] == "低风险"
+    assert moderate.status_code == 200
+    assert moderate.json()["score"] == 4
+    assert moderate.json()["risk"] == "中风险"
     assert high.status_code == 200
-    assert high.json()["score"] == 4
+    assert high.json()["score"] == 6
     assert high.json()["risk"] == "高风险"
 
 

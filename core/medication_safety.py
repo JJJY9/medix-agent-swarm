@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Tuple
 
 from core.context import medication_context_text
@@ -401,10 +402,35 @@ def _find_drugs(text: str, group: str) -> List[str]:
     return found
 
 
+#: 只从「对X过敏」「X过敏史」这类明确句式提取过敏原
+_ALLERGY_STATEMENT_PATTERNS = (
+    re.compile(r"对[^，。；,.!?！？]{1,20}?过敏"),
+    re.compile(r"[^，。；,.!?！？]{1,20}?过敏史"),
+)
+
+#: 句式前出现否定词时跳过（「我没有阿司匹林过敏」）
+_ALLERGY_NEGATION_PATTERN = re.compile(
+    r"(?:没有|无|未|否认|不|并非)[^，。；,.!?！？]{0,6}$"
+)
+
+
+def _allergy_mentions_in_question(question: str) -> str:
+    """提取问题中的过敏陈述，忽略否定表述。"""
+    parts: List[str] = []
+    for pattern in _ALLERGY_STATEMENT_PATTERNS:
+        for match in pattern.finditer(question):
+            prefix = question[max(0, match.start() - 10):match.start()]
+            if _ALLERGY_NEGATION_PATTERN.search(prefix):
+                continue
+            parts.append(match.group(0))
+    return " ".join(parts)
+
+
 def _allergy_text(context: Dict[str, Any], question: str) -> str:
-    parts = [_flatten(context.get("allergies"))]
-    if "过敏" in question:
-        parts.append(question)
+    parts = [
+        _flatten(context.get("allergies")),
+        _allergy_mentions_in_question(question),
+    ]
     return " ".join(part for part in parts if part).lower()
 
 
