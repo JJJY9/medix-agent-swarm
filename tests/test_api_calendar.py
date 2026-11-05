@@ -94,6 +94,34 @@ def test_health_calendar_aggregates_month(client_and_store):
     ).json()
     assert family["days"]["2026-10-02"]["metrics"] == 3
 
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "bp", "value1": 135, "value2": 85,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 150, "value2": 95, "measured_at": "2026-10-08T08:00",
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "胸闷",
+        "severity": 8, "recorded_at": "2026-10-08T09:00",
+    })
+    store.save_exchange(
+        "calendar-alert-session", "胸痛咨询", "风险等级：高危。建议立即就医。"
+    )
+    store.set_session_profile("calendar-alert-session", "妈妈")
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE sessions SET created_at = ? WHERE id = ?",
+            ("2026-10-09T09:00:00", "calendar-alert-session"),
+        )
+
+    alerts = client.get(
+        "/api/health/calendar", params={"month": "2026-10"}
+    ).json()
+    assert alerts["days"]["2026-10-08"]["alerts"] == 2
+    assert alerts["days"]["2026-10-09"]["alerts"] == 1
+    assert alerts["totals"]["alerts"] == 3
+
     unassigned = client.get(
         "/api/health/calendar",
         params={"profile": "", "month": "2026-10"},
@@ -141,4 +169,5 @@ def test_health_calendar_empty_month(client_and_store):
     assert data["totals"] == {
         "metrics": 0, "symptoms": 0, "doses": 0,
         "consultations": 0, "reminders_due": 0, "reminders_done": 0,
+        "alerts": 0,
     }

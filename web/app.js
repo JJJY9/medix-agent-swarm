@@ -9365,6 +9365,7 @@ function renderCalendar(data) {
     ['doses', '药', '用药打卡'],
     ['consultations', '诊', '会诊'],
     ['reminders_due', '提', '待办提醒'],
+    ['alerts', '警', '异常'],
   ];
   for (let day = 1; day <= totalDays; day += 1) {
     const dayKey = `${monthKey}-${String(day).padStart(2, '0')}`;
@@ -9388,7 +9389,11 @@ function renderCalendar(data) {
         if (!count) continue;
         const badge = document.createElement('span');
         badge.className = 'calendar-badge'
-          + (key === 'reminders_due' ? ' calendar-badge-alert' : '');
+          + (
+            key === 'reminders_due' || key === 'alerts'
+              ? ' calendar-badge-alert'
+              : ''
+          );
         badge.textContent = `${short}${count}`;
         badges.appendChild(badge);
         badgeTexts.push(`${label} ${count}`);
@@ -9424,6 +9429,9 @@ function renderCalendar(data) {
     }
     if (Number(totals.reminders_done)) {
       parts.push(`已完成提醒 ${totals.reminders_done} 条`);
+    }
+    if (Number(totals.alerts)) {
+      parts.push(`异常 ${totals.alerts} 条`);
     }
     els.calendarSummary.textContent = parts.length
       ? `${data.profile ? `档案：${data.profile} · ` : ''}`

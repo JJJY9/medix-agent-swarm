@@ -2543,6 +2543,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     import calendar as calendar_module
 
     from memory import get_session_store
+    from memory.session_store import metric_over_target
 
     now = datetime.now()
     month_key = str(month or "").strip()
@@ -2574,8 +2575,14 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         store.list_medication_logs, None, profile, 100000, 0, 0
     )
     raw_sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile, start, "", 2000, False
+        store.list_sessions_for_timeline, profile, start, "", 2000, True
     )
+    targets = await asyncio.to_thread(store.list_metric_targets, None)
+    target_map = {
+        (item.get("profile") or "", item.get("metric")): item
+        for item in targets
+        if item.get("metric")
+    }
     reminders = await asyncio.to_thread(store.list_reminders, True, None)
     if profile is not None:
         profile_key = str(profile or "")
@@ -2590,6 +2597,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         return days.setdefault(day_key, {
             "metrics": 0, "symptoms": 0, "doses": 0,
             "consultations": 0, "reminders_due": 0, "reminders_done": 0,
+            "alerts": 0,
         })
 
     def in_month(value: Any) -> bool:
@@ -2599,11 +2607,25 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     for item in raw_metrics:
         at = str(item.get("measured_at") or "")
         if in_month(at):
-            bucket(at[:10])["metrics"] += 1
+            entry = bucket(at[:10])
+            entry["metrics"] += 1
+            target = target_map.get(
+                (item.get("profile") or "", item.get("metric"))
+            )
+            if target is not None and metric_over_target(
+                item["metric"],
+                item.get("value1"),
+                item.get("value2"),
+                target,
+            ):
+                entry["alerts"] += 1
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
         if in_month(at):
-            bucket(at[:10])["symptoms"] += 1
+            entry = bucket(at[:10])
+            entry["symptoms"] += 1
+            if int(item.get("severity") or 0) >= 7:
+                entry["alerts"] += 1
     for item in raw_logs:
         at = str(item.get("taken_at") or "")
         if in_month(at):
@@ -2611,7 +2633,11 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if in_month(at) and int(item.get("message_count") or 0) > 0:
-            bucket(at[:10])["consultations"] += 1
+            entry = bucket(at[:10])
+            entry["consultations"] += 1
+            risk = parse_risk_level(item.get("last_answer"))
+            if risk in ("high", "emergency"):
+                entry["alerts"] += 1
     for item in reminders:
         at = str(item.get("due_at") or "")
         if not in_month(at):
@@ -2627,6 +2653,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         for key in (
             "metrics", "symptoms", "doses",
             "consultations", "reminders_due", "reminders_done",
+            "alerts",
         )
     }
     return {
