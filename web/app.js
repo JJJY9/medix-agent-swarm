@@ -418,6 +418,13 @@ const els = {
   weeklySummaryRange: document.getElementById('weekly-summary-range'),
   weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
+  calendarSection: document.getElementById('calendar-section'),
+  calendarMonthLabel: document.getElementById('calendar-month-label'),
+  calendarPrev: document.getElementById('calendar-prev'),
+  calendarNext: document.getElementById('calendar-next'),
+  calendarToday: document.getElementById('calendar-today'),
+  calendarGrid: document.getElementById('calendar-grid'),
+  calendarSummary: document.getElementById('calendar-summary'),
   timelineSection: document.getElementById('timeline-section'),
   timelineRange: document.getElementById('timeline-range'),
   timelineType: document.getElementById('timeline-type'),
@@ -425,6 +432,7 @@ const els = {
   timelineOnlyAlert: document.getElementById('timeline-only-alert'),
   timelineExport: document.getElementById('timeline-export'),
   timelineMore: document.getElementById('timeline-more'),
+  timelineDateChip: document.getElementById('timeline-date-chip'),
   timelineSummary: document.getElementById('timeline-summary'),
   timelineList: document.getElementById('timeline-list'),
   timelineEmpty: document.getElementById('timeline-empty'),
@@ -5313,6 +5321,7 @@ let weeklySummaryCopyTimer = null;
 let timelineRequestSeq = 0;
 let timelineDataCache = null;
 let timelineLimit = 200;
+let timelineDate = '';
 const METRICS_PAGE_SIZE = 50;
 
 const METRIC_UNITS = {
@@ -6243,6 +6252,7 @@ async function refreshMetrics() {
   loadMedicationLogs();
   loadWeeklySummary();
   loadTimeline();
+  loadCalendar();
   loadHomeGlance();
 }
 
@@ -9028,16 +9038,18 @@ function renderTimeline(data) {
       .includes(query);
   });
   const days = Number(data.days) || 30;
+  const dateKey = String(data.date || '').trim();
+  const rangeText = dateKey ? `${dateKey} ` : rangeDaysLabel(days);
   els.timelineList.replaceChildren();
   els.timelineEmpty.hidden = events.length > 0;
   if (query) {
     els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
   } else if (onlyAlert) {
-    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有超标的记录。`;
+    els.timelineEmpty.textContent = `${rangeText}没有超标的记录。`;
   } else if (type) {
-    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有该类型的记录。`;
+    els.timelineEmpty.textContent = `${rangeText}没有该类型的记录。`;
   } else {
-    els.timelineEmpty.textContent = `${rangeDaysLabel(days)}没有健康记录。`;
+    els.timelineEmpty.textContent = `${rangeText}没有健康记录。`;
   }
   if (els.timelineSummary) {
     const count = type || query || onlyAlert
@@ -9045,8 +9057,13 @@ function renderTimeline(data) {
       : (Number(data.total) || allEvents.length);
     els.timelineSummary.hidden = !events.length;
     els.timelineSummary.textContent = events.length
-      ? `${rangeDaysLabel(days)}共 ${count} 条记录`
+      ? `${rangeText}共 ${count} 条记录`
       : '';
+  }
+  if (els.timelineDateChip) {
+    els.timelineDateChip.hidden = !dateKey;
+    els.timelineDateChip.textContent = dateKey ? `${dateKey} ×` : '';
+    els.timelineDateChip.title = dateKey ? '清除日期筛选' : '';
   }
   for (const event of events) {
     const li = document.createElement('li');
@@ -9114,16 +9131,161 @@ function updateTimelineMore(data) {
   els.timelineMore.hidden = !(total > loaded && timelineLimit < 500);
 }
 
+let calendarMonth = '';
+let calendarRequestSeq = 0;
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function shiftMonthKey(monthKey, delta) {
+  const [year, month] = monthKey.split('-').map((part) => Number(part));
+  const date = new Date(year, month - 1 + delta, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function calendarMonthText(monthKey) {
+  const [year, month] = monthKey.split('-').map((part) => Number(part));
+  return `${year} 年 ${month} 月`;
+}
+
+async function loadCalendar() {
+  if (!els.calendarGrid) return;
+  const requestSeq = ++calendarRequestSeq;
+  const month = calendarMonth || currentMonthKey();
+  const profile = els.metricProfile.value;
+  try {
+    const params = new URLSearchParams({ profile, month });
+    const res = await fetch(`/api/health/calendar?${params.toString()}`);
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== calendarRequestSeq) return;
+    calendarMonth = data.month || month;
+    renderCalendar(data);
+  } catch {
+    if (requestSeq !== calendarRequestSeq) return;
+    els.calendarGrid.replaceChildren();
+    if (els.calendarSummary) {
+      els.calendarSummary.textContent = '月历加载失败，请稍后重试。';
+    }
+  }
+}
+
+function renderCalendar(data) {
+  if (!els.calendarGrid) return;
+  const monthKey = data.month || currentMonthKey();
+  const [year, month] = monthKey.split('-').map((part) => Number(part));
+  if (els.calendarMonthLabel) {
+    els.calendarMonthLabel.textContent = calendarMonthText(monthKey);
+  }
+  const daysMap = data.days || {};
+  const firstWeekday = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  const totalDays = new Date(year, month, 0).getDate();
+  const todayKey = todayLocalDate();
+  const grid = els.calendarGrid;
+  grid.replaceChildren();
+  for (let i = 0; i < firstWeekday; i += 1) {
+    const blank = document.createElement('span');
+    blank.className = 'calendar-cell is-empty';
+    blank.setAttribute('aria-hidden', 'true');
+    grid.appendChild(blank);
+  }
+  const badgeDefs = [
+    ['metrics', '指', '指标'],
+    ['symptoms', '症', '症状'],
+    ['doses', '药', '用药打卡'],
+    ['consultations', '诊', '会诊'],
+    ['reminders_due', '提', '待办提醒'],
+  ];
+  for (let day = 1; day <= totalDays; day += 1) {
+    const dayKey = `${monthKey}-${String(day).padStart(2, '0')}`;
+    const entry = daysMap[dayKey];
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'calendar-cell';
+    cell.dataset.date = dayKey;
+    if (entry) cell.classList.add('has-data');
+    if (dayKey === todayKey) cell.classList.add('is-today');
+    const number = document.createElement('span');
+    number.className = 'calendar-day-number';
+    number.textContent = String(day);
+    cell.appendChild(number);
+    const badgeTexts = [];
+    if (entry) {
+      const badges = document.createElement('span');
+      badges.className = 'calendar-badges';
+      for (const [key, short, label] of badgeDefs) {
+        const count = Number(entry[key]) || 0;
+        if (!count) continue;
+        const badge = document.createElement('span');
+        badge.className = 'calendar-badge'
+          + (key === 'reminders_due' ? ' calendar-badge-alert' : '');
+        badge.textContent = `${short}${count}`;
+        badges.appendChild(badge);
+        badgeTexts.push(`${label} ${count}`);
+      }
+      if (entry.reminders_done) {
+        const done = document.createElement('span');
+        done.className = 'calendar-badge';
+        done.textContent = `完${entry.reminders_done}`;
+        badges.appendChild(done);
+        badgeTexts.push(`已完成提醒 ${entry.reminders_done}`);
+      }
+      cell.appendChild(badges);
+    }
+    cell.setAttribute(
+      'aria-label',
+      `${year} 年 ${month} 月 ${day} 日`
+      + (badgeTexts.length ? `，${badgeTexts.join('，')}` : '，无记录')
+    );
+    cell.addEventListener('click', () => selectCalendarDay(dayKey));
+    grid.appendChild(cell);
+  }
+  if (els.calendarSummary) {
+    const totals = data.totals || {};
+    const parts = [];
+    if (Number(totals.metrics)) parts.push(`指标 ${totals.metrics} 条`);
+    if (Number(totals.symptoms)) parts.push(`症状 ${totals.symptoms} 条`);
+    if (Number(totals.doses)) parts.push(`用药打卡 ${totals.doses} 次`);
+    if (Number(totals.consultations)) {
+      parts.push(`会诊 ${totals.consultations} 次`);
+    }
+    if (Number(totals.reminders_due)) {
+      parts.push(`待办提醒 ${totals.reminders_due} 条`);
+    }
+    if (Number(totals.reminders_done)) {
+      parts.push(`已完成提醒 ${totals.reminders_done} 条`);
+    }
+    els.calendarSummary.textContent = parts.length
+      ? `${data.profile ? `档案：${data.profile} · ` : ''}`
+        + `本月 ${parts.join(' · ')}`
+      : '本月暂无健康记录。';
+  }
+}
+
+function selectCalendarDay(dayKey) {
+  timelineDate = dayKey;
+  if (els.timelineSection) els.timelineSection.open = true;
+  loadTimeline();
+  if (els.timelineSection) {
+    els.timelineSection.scrollIntoView({ block: 'nearest' });
+  }
+}
+
 async function loadTimeline() {
   if (!els.timelineList) return;
   const requestSeq = ++timelineRequestSeq;
   const profile = els.metricProfile.value;
   const days = Number(els.timelineRange.value) || 30;
+  const params = new URLSearchParams({
+    profile,
+    days: String(days),
+    limit: String(timelineLimit),
+  });
+  if (timelineDate) params.set('date', timelineDate);
   try {
-    const res = await fetch(
-      `/api/timeline?profile=${encodeURIComponent(profile)}`
-      + `&days=${days}&limit=${timelineLimit}`
-    );
+    const res = await fetch(`/api/timeline?${params.toString()}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== timelineRequestSeq) return;
@@ -9147,6 +9309,7 @@ async function exportTimelineCsv() {
   const params = new URLSearchParams({
     profile, days: String(days),
   });
+  if (timelineDate) params.set('date', timelineDate);
   if (els.timelineType && els.timelineType.value) {
     params.set('type', els.timelineType.value);
   }
@@ -11894,9 +12057,38 @@ els.weeklySummaryRange.addEventListener('change', () => {
 });
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
 els.timelineRange.addEventListener('change', () => {
+  timelineDate = '';
   storeFilter(HEALTH_FILTER_KEYS.timelineRange, els.timelineRange.value);
   loadTimeline();
 });
+if (els.calendarPrev) {
+  els.calendarPrev.addEventListener('click', () => {
+    calendarMonth = shiftMonthKey(
+      calendarMonth || currentMonthKey(), -1
+    );
+    loadCalendar();
+  });
+}
+if (els.calendarNext) {
+  els.calendarNext.addEventListener('click', () => {
+    calendarMonth = shiftMonthKey(
+      calendarMonth || currentMonthKey(), 1
+    );
+    loadCalendar();
+  });
+}
+if (els.calendarToday) {
+  els.calendarToday.addEventListener('click', () => {
+    calendarMonth = '';
+    loadCalendar();
+  });
+}
+if (els.timelineDateChip) {
+  els.timelineDateChip.addEventListener('click', () => {
+    timelineDate = '';
+    loadTimeline();
+  });
+}
 els.timelineType.addEventListener('change', () => {
   storeFilter(HEALTH_FILTER_KEYS.timelineType, els.timelineType.value);
   if (timelineDataCache) {

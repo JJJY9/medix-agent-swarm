@@ -787,6 +787,22 @@
       <div class="weekly-summary-body" id="weekly-summary-body"></div>
     </details>
 
+    <details class="weekly-summary health-calendar" id="calendar-section">
+      <summary>健康月历</summary>
+      <div class="calendar-toolbar">
+        <button type="button" class="btn-quiet" id="calendar-prev" aria-label="上个月">‹</button>
+        <strong id="calendar-month-label">本月</strong>
+        <button type="button" class="btn-quiet" id="calendar-next" aria-label="下个月">›</button>
+        <button type="button" class="btn-quiet" id="calendar-today">本月</button>
+      </div>
+      <div class="calendar-weekdays" aria-hidden="true">
+        <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+      </div>
+      <div class="calendar-grid" id="calendar-grid" role="grid" aria-label="健康月历"></div>
+      <p class="calendar-summary" id="calendar-summary"></p>
+      <p class="calendar-hint" id="calendar-hint">点击日期可在健康时间线查看当天记录。</p>
+    </details>
+
     <details class="weekly-summary health-timeline" id="timeline-section">
       <summary>健康时间线</summary>
       <div class="weekly-summary-toolbar">
@@ -812,6 +828,7 @@
         </label>
         <button type="button" class="btn-quiet" id="timeline-export">导出 CSV</button>
         <button type="button" class="btn-quiet" id="timeline-more" hidden>加载更多</button>
+        <button type="button" class="btn-quiet timeline-date-chip" id="timeline-date-chip" hidden></button>
       </div>
       <p class="metric-reference" id="timeline-summary" hidden></p>
       <ul class="timeline-list" id="timeline-list"></ul>

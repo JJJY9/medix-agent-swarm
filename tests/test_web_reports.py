@@ -695,6 +695,24 @@ def test_app_js_ships_batch_medication_reminders(client):
     assert "reminders.push({" in app_js
 
 
+def test_app_js_ships_health_calendar(client):
+    app_js = client.get("/static/app.js").text
+    html = client.get("/").text
+    css = client.get("/static/styles.css").text
+
+    assert 'id="calendar-section"' in html
+    assert 'id="calendar-grid"' in html
+    assert 'id="calendar-prev"' in html
+    assert 'id="calendar-next"' in html
+    assert 'id="calendar-today"' in html
+    assert 'id="timeline-date-chip"' in html
+    assert "async function loadCalendar" in app_js
+    assert "function renderCalendar" in app_js
+    assert "function selectCalendarDay" in app_js
+    assert "/api/health/calendar" in app_js
+    assert ".calendar-cell" in css
+
+
 def test_app_js_ships_health_timeline(client):
     app_js = client.get("/static/app.js").text
     html = client.get("/").text

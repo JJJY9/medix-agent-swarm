@@ -2263,25 +2263,39 @@ async def health_timeline(
     profile: Optional[str] = None,
     days: int = 30,
     limit: int = 100,
+    date: Optional[str] = None,
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
     from memory.session_store import METRIC_TYPES, metric_over_target
 
+    day = str(date or "").strip()
+    if day:
+        try:
+            day = datetime.strptime(day, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="日期格式应为 YYYY-MM-DD"
+            )
     days = max(1, min(int(days or 30), 365))
     limit = max(1, min(int(limit or 100), 500))
     store = get_session_store()
-    start = (
-        datetime.now() - timedelta(days=days - 1)
-    ).strftime("%Y-%m-%d")
+    if day:
+        start = day
+        window_days = 0
+    else:
+        start = (
+            datetime.now() - timedelta(days=days - 1)
+        ).strftime("%Y-%m-%d")
+        window_days = days
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, days
+        store.list_metrics, profile, None, 100000, window_days
     )
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, days
+        store.list_symptoms, profile, 100000, window_days
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, days
+        store.list_medication_logs, None, profile, 100000, 0, window_days
     )
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, profile, start, "", 500, True
@@ -2295,6 +2309,13 @@ async def health_timeline(
 
     events: List[Dict[str, Any]] = []
 
+    def in_window(at: str) -> bool:
+        if not at:
+            return False
+        if day:
+            return at[:10] == day
+        return at[:10] >= start
+
     def format_value(value: Any) -> str:
         number = float(value)
         if number.is_integer():
@@ -2303,7 +2324,7 @@ async def health_timeline(
 
     for item in raw_metrics:
         at = str(item.get("measured_at") or "")
-        if not at or at[:10] < start:
+        if not in_window(at):
             continue
         label = METRIC_TYPES.get(
             item["metric"], (item["metric"], "", (0, 0))
@@ -2340,7 +2361,7 @@ async def health_timeline(
         })
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
-        if not at or at[:10] < start:
+        if not in_window(at):
             continue
         events.append({
             "type": "symptom",
@@ -2354,7 +2375,7 @@ async def health_timeline(
         })
     for item in raw_logs:
         at = str(item.get("taken_at") or "")
-        if not at or at[:10] < start:
+        if not in_window(at):
             continue
         details = [
             str(item.get("medication_dose") or "").strip(),
@@ -2373,7 +2394,7 @@ async def health_timeline(
 
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
-        if not at or at[:10] < start:
+        if not in_window(at):
             continue
         message_count = int(item.get("message_count") or 0)
         if message_count <= 0:
@@ -2405,6 +2426,7 @@ async def health_timeline(
         "total": len(events),
         "days": days,
         "start": start,
+        "date": day,
     }
 
 
@@ -2415,12 +2437,15 @@ async def export_timeline_csv(
     type: Optional[str] = None,
     only_alert: bool = False,
     q: str = "",
+    date: Optional[str] = None,
 ):
     """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、超标与关键字筛选。"""
     import csv
     import io
 
-    data = await health_timeline(profile=profile, days=days, limit=500)
+    data = await health_timeline(
+        profile=profile, days=days, limit=500, date=date
+    )
     type_labels = {
         "metric": "指标",
         "symptom": "症状",
@@ -2466,6 +2491,108 @@ async def export_timeline_csv(
             "Cache-Control": "no-store",
         },
     )
+
+
+@app.get("/api/health/calendar")
+async def health_calendar(profile: Optional[str] = None, month: str = ""):
+    """健康月历：按天汇总指标、症状、用药打卡、会诊与提醒。"""
+    import calendar as calendar_module
+
+    from memory import get_session_store
+
+    now = datetime.now()
+    month_key = str(month or "").strip()
+    if month_key:
+        try:
+            parsed = datetime.strptime(month_key, "%Y-%m")
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="月份格式应为 YYYY-MM"
+            )
+        if not 2000 <= parsed.year <= 2100:
+            raise HTTPException(status_code=400, detail="月份超出支持范围")
+        month_key = parsed.strftime("%Y-%m")
+    else:
+        month_key = now.strftime("%Y-%m")
+    year, month_number = int(month_key[:4]), int(month_key[5:7])
+    last_day = calendar_module.monthrange(year, month_number)[1]
+    start = f"{month_key}-01"
+    end = f"{month_key}-{last_day:02d}"
+
+    store = get_session_store()
+    raw_metrics = await asyncio.to_thread(
+        store.list_metrics, profile, None, 100000, 0
+    )
+    raw_symptoms = await asyncio.to_thread(
+        store.list_symptoms, profile, 100000, 0
+    )
+    raw_logs = await asyncio.to_thread(
+        store.list_medication_logs, None, profile, 100000, 0, 0
+    )
+    raw_sessions = await asyncio.to_thread(
+        store.list_sessions_for_timeline, profile, start, "", 2000, False
+    )
+    reminders = await asyncio.to_thread(store.list_reminders, True, None)
+    if profile is not None:
+        profile_key = str(profile or "")
+        reminders = [
+            item for item in reminders
+            if (item.get("profile") or "") == profile_key
+        ]
+
+    days: Dict[str, Dict[str, int]] = {}
+
+    def bucket(day_key: str) -> Dict[str, int]:
+        return days.setdefault(day_key, {
+            "metrics": 0, "symptoms": 0, "doses": 0,
+            "consultations": 0, "reminders_due": 0, "reminders_done": 0,
+        })
+
+    def in_month(value: Any) -> bool:
+        key = str(value or "")[:10]
+        return start <= key <= end
+
+    for item in raw_metrics:
+        at = str(item.get("measured_at") or "")
+        if in_month(at):
+            bucket(at[:10])["metrics"] += 1
+    for item in raw_symptoms:
+        at = str(item.get("recorded_at") or "")
+        if in_month(at):
+            bucket(at[:10])["symptoms"] += 1
+    for item in raw_logs:
+        at = str(item.get("taken_at") or "")
+        if in_month(at):
+            bucket(at[:10])["doses"] += 1
+    for item in raw_sessions:
+        at = str(item.get("created_at") or "")
+        if in_month(at) and int(item.get("message_count") or 0) > 0:
+            bucket(at[:10])["consultations"] += 1
+    for item in reminders:
+        at = str(item.get("due_at") or "")
+        if not in_month(at):
+            continue
+        entry = bucket(at[:10])
+        if item.get("done"):
+            entry["reminders_done"] += 1
+        else:
+            entry["reminders_due"] += 1
+
+    totals = {
+        key: sum(entry[key] for entry in days.values())
+        for key in (
+            "metrics", "symptoms", "doses",
+            "consultations", "reminders_due", "reminders_done",
+        )
+    }
+    return {
+        "month": month_key,
+        "profile": profile or "",
+        "start": start,
+        "end": end,
+        "days": days,
+        "totals": totals,
+    }
 
 
 @app.post("/api/metrics")
