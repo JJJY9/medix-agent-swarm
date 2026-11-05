@@ -1358,15 +1358,17 @@ async def list_medications(
     active_only: bool = False,
     limit: int = 1000,
     offset: int = 0,
+    days: int = 7,
 ):
-    """用药清单（可按档案与在用状态筛选）。"""
+    """用药清单（可按档案、在用状态与最近天数筛选）。"""
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 1000), 100000))
     offset = max(0, int(offset or 0))
+    days = max(1, min(int(days or 7), 365))
     items = await asyncio.to_thread(
         get_session_store().list_medications,
-        profile, active_only, limit, offset,
+        profile, active_only, limit, offset, days,
     )
     return {"medications": items}
 
