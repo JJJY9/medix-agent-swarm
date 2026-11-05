@@ -273,21 +273,21 @@ npm install -D playwright
 | POST | `/api/chat/stream` | SSE 流式问答：分诊、急症预检、用药安全提示、科室开始/完成、汇总 Token 与最终结果 |
 | GET | `/api/auth/verify` | 校验访问令牌（受保护） |
 | POST | `/api/sessions` | 新建会话 |
-| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、`profile=档案` 患者档案筛选、用量与反馈汇总；每条会话附带风险等级 |
+| GET | `/api/sessions` | 历史列表：`q` 搜索、`limit`/`offset` 分页、`favorite=1` 收藏筛选、`days=N` 时间范围、`archived=true` 查看已归档、`tag=标签` 标签筛选、`profile=档案` 患者档案筛选、`risk=medium\|high\|emergency` 按风险等级及以上筛选、用量与反馈汇总；每条会话附带风险等级 |
 | GET | `/api/tags` | 未归档会话的标签与数量 |
 | GET | `/api/session-profiles` | 会话中出现过的档案名及数量（含已删除档案留下的历史名字） |
 | GET | `/api/profile-names` | 所有数据表中出现过的档案名（含已删除档案留下的历史名字） |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile`/`risk` 筛选导出会话列表 CSV（带 BOM，含风险等级） |
 | POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息（不可恢复，写入审计） |
-| POST | `/api/sessions/import` | 导入备份 JSON（会话、档案、指标、目标、提醒、症状、用药与打卡；重复记录跳过） |
+| POST | `/api/sessions/import` | 导入备份 JSON（会话、档案、指标、目标、提醒、症状、用药、打卡与操作审计；重复记录跳过） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
 | GET | `/api/profiles` | 常用患者档案列表（服务端持久化） |
 | GET | `/api/family/overview` | 家庭健康总览：按档案汇总最近指标、用药打卡、待办提醒、近期症状与会诊（含最近一次会诊风险，`days`，默认 7） |
 | GET | `/api/family/compare` | 家庭指标对比：按档案统计指定指标在近 N 天的平均值、最近记录与次数（`metric`/`days`） |
 | GET | `/api/family/overview/export.csv` | 导出家庭健康总览 CSV（带 BOM，每位成员一行） |
 | GET | `/api/health/dossier.md` | 导出单个患者的健康档案 Markdown（档案信息、连续记录、指标目标、最近指标、症状、用药与依从率、提醒、近期会诊风险，`profile`/`days`） |
-| GET | `/api/health/dossier-family.md` | 导出全部患者档案的 Markdown（每位成员一份，`days`） |
+| GET | `/api/health/dossier-family.md` | 导出全部患者档案的 Markdown（每位成员一份，包含「未指定档案」的记录，`days`） |
 | POST | `/api/profiles` | 新增或覆盖患者档案（`name`、`context`） |
 | PATCH | `/api/profiles/{name}` | 重命名患者档案并同步健康指标 |
 | DELETE | `/api/profiles/{name}` | 删除患者档案 |
@@ -314,7 +314,7 @@ npm install -D playwright
 | POST | `/api/tools/padua` | Padua 内科住院患者静脉血栓风险评分 |
 | POST | `/api/tools/abcd2` | ABCD2 TIA 后短期卒中风险评分 |
 | POST | `/api/tools/morse-fall` | Morse 跌倒风险评分 |
-| GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选；`limit`/`offset` 分页，默认最近 100 条） |
+| GET | `/api/metrics` | 健康指标记录（可按 `profile` / `metric` / `days` 筛选，`q` 按备注/档案关键字搜索；`limit`/`offset` 分页，默认最近 100 条） |
 | GET | `/api/metrics/latest` | 每种指标类型最新的一条记录（可按 `profile`/`days` 筛选，忽略未来时间，用于首页速览、最近指标与会诊上下文） |
 | GET | `/api/metrics/summary` | 指定指标在范围内的条数、平均/最高/最低、最新值、上一周期均值、目标与达标条数（`profile`/`metric`/`days`） |
 | GET | `/api/reports/weekly` | 近 N 天健康小结：指标汇总、症状统计、用药打卡与依从率、会诊次数与风险、待办提醒（`profile`/`days`，1–90） |
@@ -334,7 +334,7 @@ npm install -D playwright
 | POST | `/api/medications` | 新增药物（名称、剂量、频次、备注、在用状态） |
 | PATCH | `/api/medications/{id}` | 更新药物记录 |
 | DELETE | `/api/medications/{id}` | 删除药物记录 |
-| GET | `/api/medications/export.csv` | 导出用药清单 CSV（带 BOM，可按 `profile`/`active_only` 筛选，含今日/近 7 天次数、最近服用时间、近 7 天应服次数与依从率） |
+| GET | `/api/medications/export.csv` | 导出用药清单 CSV（带 BOM，可按 `profile`/`active_only`/`status=active\|inactive`/`q` 筛选，`q` 匹配药名、剂量、频次、备注与档案；含今日/近 7 天次数、最近服用时间、近 7 天应服次数与依从率） |
 | POST | `/api/medications/import` | 从导出的 CSV 格式导入用药，重复记录自动跳过 |
 | GET | `/api/medications/{id}/logs` | 某个药物的用药打卡记录（按服用时间倒序，可按 `days` 筛选） |
 | POST | `/api/medications/{id}/logs` | 记录一次用药（可带 `taken_at`/`note`，默认当前时间） |
@@ -351,9 +351,9 @@ npm install -D playwright
 | GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
 | GET | `/api/reminders/stats` | 近 N 天到期提醒的完成情况（到期、已完成、待办、逾期与完成率，`profile`/`days`） |
 | POST | `/api/reminders/import` | 从导出的 CSV 格式导入随访提醒，重复提醒自动跳过 |
-| GET | `/api/reminders/export.csv` | 按筛选导出随访提醒 CSV（带 BOM） |
+| GET | `/api/reminders/export.csv` | 按筛选导出随访提醒 CSV（带 BOM；支持 `profile`、`include_done`、`q` 关键字、`overdue=true` 只看逾期、`date=YYYY-MM-DD` 指定日期） |
 | GET | `/api/reminders/export.ics` | 按筛选导出随访提醒 iCalendar（.ics，重复提醒输出 RRULE） |
-| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile`、`advance_days` 提前天数、`repeat_days`/`repeat_until` 重复设置；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
+| POST | `/api/reminders` | 新增随访提醒（内容 + 日期，可选 `profile`、`session_id` 关联会诊、`medication_id` 关联用药、`advance_days` 提前天数、`repeat_days`/`repeat_until` 重复设置；日期支持 `YYYY-MM-DD` 或 ISO 时间） |
 | POST | `/api/reminders/{id}/complete` | 完成提醒；重复提醒会返回自动生成的 `next` |
 | POST | `/api/reminders/{id}/reopen` | 把已完成的随访提醒恢复为待完成 |
 | PATCH | `/api/reminders/{id}` | 修改随访提醒的内容、日期、备注、档案、提前天数或重复设置 |
@@ -375,7 +375,7 @@ npm install -D playwright
 | GET | `/api/usage/month` | 本月用量、预算进度与是否超限 |
 | GET | `/api/usage/export.csv` | 导出近 N 天按日用量 CSV（含 BOM 与合计行，支持 `favorite`/`profile` 筛选） |
 | GET | `/api/knowledge` | 知识库文档与向量块统计 |
-| GET | `/api/knowledge/search` | 知识库检索测试（返回来源、相关度与片段，可用 `filter_type` 按文档类型过滤） |
+| GET | `/api/knowledge/search` | 知识库检索测试（`q` 检索词必填，`top_k` 默认 5，返回来源、相关度与片段，可用 `filter_type` 按文档类型过滤） |
 | GET | `/api/knowledge/documents/{filename}/preview` | 预览内置/上传文档前 4000 字（`full=1` 返回全文） |
 | PUT | `/api/knowledge/documents/{filename}` | 在线更新上传的 TXT/Markdown 并重建索引 |
 | POST | `/api/knowledge/rebuild` | 重建知识库索引（幂等） |
@@ -393,7 +393,7 @@ npm install -D playwright
 
 `/api/chat` 的 `context` 支持 `age`、`sex`、`duration`、`history`、`medications`、`allergies` 等字段，会注入任务分解和所有科室的提示词，并随会诊记录保存。`enable_swarm=false` 时本次请求跳过多学科协作、直接单科接诊。
 
-`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标、随访提醒、症状日记、用药清单、用药打卡与归档状态。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同记录会跳过，不覆盖现有记录。单个备份最多 5000 个会话、每个会话最多 10000 条消息。会诊接口默认限流 30 次/分钟，超限返回 429 与 `Retry-After`。
+`GET /api/sessions/export` 的 JSON（`version: 1`）可直接用于 `POST /api/sessions/import`；导出会同时包含常用患者档案、健康指标、自定义目标、随访提醒、症状日记、用药清单、用药打卡、操作审计（`audit_log`）与归档状态。备份文件可能包含健康与操作记录，请按敏感数据保管。导入时只接受 user/assistant 消息，已存在的会话编号、档案名称与相同记录会跳过，不覆盖现有记录。单个备份最多 100000 个会话、每个会话最多 10000 条消息，其余数据类上限同为 100000 条。会诊接口默认限流 30 次/分钟，`/api/diagnose/llm` 自检限制 5 次/分钟，超限返回 429 与 `Retry-After`。
 
 前端代码在 `web/` 目录（原生 HTML/CSS/JS，无需构建步骤）。
 
@@ -442,7 +442,7 @@ MEDIX_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 MEDIX_TIMEOUT=60
 ```
 
-`MEDIX_TIMEOUT` 是单次模型请求超时（秒），可不填，默认 60。服务会把 401（Key 无效）、402（余额不足）、429（限流）、超时和网络错误转换成可读提示，其中 401/402 不会反复重试。`MEDIX_RATE_LIMIT` 控制 `/api/chat` 与 `/api/chat/stream` 每分钟允许的请求数，默认 30，设为 0 关闭限流。`MEDIX_PRICE_INPUT` / `MEDIX_PRICE_OUTPUT` 是每百万输入/输出 Token 的单价，配合 `MEDIX_CURRENCY`（默认 `¥`）在界面显示预估费用，未配置时不显示。`MEDIX_MONTHLY_TOKEN_BUDGET` 设置每月 Token 预算（0 或留空不启用），历史抽屉会显示本月进度和超限提醒。`MEDIX_AUTO_ARCHIVE_DAYS` 设置自动归档旧会话的天数（0 或留空关闭），归档只隐藏记录、不删除数据，可在「已归档」中恢复。
+`MEDIX_TIMEOUT` 是单次模型请求超时（秒），可不填，默认 60。服务会把 401（Key 无效）、402（余额不足）、429（限流）、超时和网络错误转换成可读提示，其中 401/402 不会反复重试。`MEDIX_RATE_LIMIT` 控制 `/api/chat` 与 `/api/chat/stream` 每分钟允许的请求数，默认 30，设为 0 关闭限流；`/api/diagnose/llm` 自检单独限制 5 次/分钟。`MEDIX_PRICE_INPUT` / `MEDIX_PRICE_OUTPUT` 是每百万输入/输出 Token 的单价，配合 `MEDIX_CURRENCY`（默认 `¥`）在界面显示预估费用，未配置时不显示。`MEDIX_MONTHLY_TOKEN_BUDGET` 设置每月 Token 预算（0 或留空不启用），历史抽屉会显示本月进度和超限提醒。`MEDIX_AUTO_ARCHIVE_DAYS` 设置自动归档旧会话的天数（0 或留空关闭），归档只隐藏记录、不删除数据，可在「已归档」中恢复。`MEDIX_SESSION_DB` 可指定会话与健康数据的 SQLite 文件路径（默认 `data/sessions.db`）。
 
 **方式二**：编辑上一层目录的 `config.py`：
 
