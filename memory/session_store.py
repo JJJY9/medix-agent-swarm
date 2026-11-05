@@ -10,7 +10,7 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -507,9 +507,11 @@ def _next_repeat_due(due_at: str, days: int) -> str:
         parsed = datetime.combine(datetime.now().date(), datetime.min.time())
     target = parsed.date() + timedelta(days=days)
     today = datetime.now().date()
-    if target <= today:
+    if target < today:
+        # 顺延到第一个不早于今天的周期；恰好是今天的保留今天
         missed = (today - target).days
-        target += timedelta(days=((missed // days) + 1) * days)
+        steps = (missed + days - 1) // days
+        target += timedelta(days=steps * days)
     if "T" in str(due_at):
         return datetime.combine(
             target, parsed.time()
@@ -2859,7 +2861,13 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM patient_profiles WHERE name = ?", (name,)
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount == 0:
+                return False
+            # 指标目标属于档案配置，删除档案时一并清理，避免重建同名档案继承旧目标
+            self._conn.execute(
+                "DELETE FROM metric_targets WHERE profile = ?", (name,)
+            )
+            return True
 
     def rename_profile(
         self, old_name: str, new_name: str
@@ -2876,15 +2884,29 @@ class SessionStore:
             return new_name
 
         with self._lock, self._conn:
-            exists = self._conn.execute(
-                "SELECT 1 FROM patient_profiles WHERE name = ?", (old_name,)
-            ).fetchone()
-            if exists is None:
+            def _profile_rows(name: str) -> bool:
+                """档案是否在档案表或任一业务表中存在（数据-only 档案也可重命名）。"""
+                for table, column in (
+                    ("patient_profiles", "name"),
+                    ("sessions", "profile"),
+                    ("reminders", "profile"),
+                    ("health_metrics", "profile"),
+                    ("symptoms", "profile"),
+                    ("medications", "profile"),
+                    ("medication_logs", "profile"),
+                ):
+                    row = self._conn.execute(
+                        f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
+                        (name,),
+                    ).fetchone()
+                    if row is not None:
+                        return True
+                return False
+
+            if not _profile_rows(old_name):
                 return None
-            duplicate = self._conn.execute(
-                "SELECT 1 FROM patient_profiles WHERE name = ?", (new_name,)
-            ).fetchone()
-            if duplicate is not None:
+            # metric_targets 只作为配置在下面合并，不作为占用依据
+            if _profile_rows(new_name):
                 raise ValueError("新档案名称已存在")
 
             now = self._now()
@@ -3119,7 +3141,9 @@ class SessionStore:
             current_start = (now - timedelta(days=days - 1)).replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
-            current_cutoff = current_start.isoformat(timespec="seconds")
+            # 与写入侧的分钟精度一致：午夜记录存成 T00:00，
+            # 用 T00:00:00 比较会被漏出当前周期
+            current_cutoff = current_start.isoformat(timespec="minutes")
             conditions.append("measured_at >= ?")
             params.append(current_cutoff)
             conditions.append("measured_at <= ?")
@@ -3130,7 +3154,7 @@ class SessionStore:
                 "measured_at < ?",
             ]
             prev_params = base_params + [
-                prev_start.isoformat(timespec="seconds"),
+                prev_start.isoformat(timespec="minutes"),
                 current_cutoff,
             ]
         else:
@@ -4212,13 +4236,21 @@ class SessionStore:
                 except (TypeError, ValueError, OverflowError):
                     next_due = ""
                 repeat_until = str(row["repeat_until"] or "").strip()
-                in_range = (
-                    next_due
-                    and (
-                        not repeat_until
-                        or next_due[:10] <= repeat_until[:10]
-                    )
-                )
+                in_range = bool(next_due)
+                if in_range and repeat_until:
+                    try:
+                        next_dt = datetime.fromisoformat(next_due)
+                        until_dt = datetime.fromisoformat(repeat_until)
+                        if len(repeat_until) == 10:
+                            until_dt = datetime.combine(
+                                until_dt.date(), time(23, 59, 59)
+                            )
+                        if next_dt > until_dt:
+                            in_range = False
+                    except ValueError:
+                        # 无法解析时退回按日期比较
+                        if next_due[:10] > repeat_until[:10]:
+                            in_range = False
                 if in_range:
                     cursor = self._conn.execute(
                         """
@@ -4286,10 +4318,11 @@ class SessionStore:
             ids = [row["id"] for row in rows]
             if ids:
                 placeholders = ",".join("?" for _ in ids)
+                # 排除被恢复的提醒本身：异常数据里 repeats_from 可能指向自己
                 self._conn.execute(
                     f"DELETE FROM reminders WHERE done = 0 "
-                    f"AND id IN ({placeholders})",
-                    ids,
+                    f"AND id IN ({placeholders}) AND id != ?",
+                    [*ids, reminder_id],
                 )
             return True
 
