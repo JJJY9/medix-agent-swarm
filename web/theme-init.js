@@ -8,6 +8,10 @@
         ? 'dark'
         : 'light');
     document.documentElement.dataset.theme = theme;
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (themeColor) {
+      themeColor.content = theme === 'dark' ? '#0d1519' : '#0b6e9e';
+    }
   } catch {
     document.documentElement.dataset.theme = 'light';
   }

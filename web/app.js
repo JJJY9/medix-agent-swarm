@@ -571,9 +571,18 @@ function showAuthGate(message = '') {
   if (message) {
     els.authError.textContent = message;
     els.authError.hidden = false;
+    els.authToken.setAttribute('aria-invalid', 'true');
   }
   if (authGateOpen) return;
 
+  // 401 可能在抽屉打开时到达，先关闭其他模态，避免两个 aria-modal 并存
+  closeHistory();
+  closeKb();
+  closeCalc();
+  closeDiagnose();
+  closeMetrics();
+  closeReminders();
+  closeCompare();
   authGateOpen = true;
   els.authGate.hidden = false;
   syncPageInert();
@@ -585,6 +594,7 @@ function hideAuthGate() {
   els.authGate.hidden = true;
   els.authError.hidden = true;
   els.authError.textContent = '';
+  els.authToken.setAttribute('aria-invalid', 'false');
   syncPageInert();
 }
 
@@ -627,6 +637,10 @@ function updateThemeToggle(dark) {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
+  const themeColor = document.querySelector('meta[name="theme-color"]');
+  if (themeColor) {
+    themeColor.content = theme === 'dark' ? '#0d1519' : '#0b6e9e';
+  }
   try {
     safeStorageSet(THEME_KEY, theme);
   } catch {
@@ -730,11 +744,27 @@ function isNearBottom() {
   return els.thread.scrollHeight - els.thread.scrollTop - els.thread.clientHeight < 120;
 }
 
+function isWindowNearBottom() {
+  const doc = document.scrollingElement || document.documentElement;
+  return window.innerHeight + window.scrollY >= doc.scrollHeight - 140;
+}
+
 /**
  * 只有用户停留在底部附近时才自动跟随新内容；
  * 用户向上翻看历史时，改为显示「回到最新」按钮，避免把阅读位置拽走。
  */
 function scrollThreadToBottom(force = false) {
+  if (isStacked()) {
+    const doc = document.scrollingElement || document.documentElement;
+    if (force || isWindowNearBottom()) {
+      window.scrollTo({ top: doc.scrollHeight, behavior: 'auto' });
+      els.jumpLatest.hidden = true;
+    } else {
+      els.jumpLatest.hidden = false;
+    }
+    return;
+  }
+
   if (force || isNearBottom()) {
     // smooth 滚动在后台标签页/部分环境下不生效，强制跟随内容时改用即时定位
     const previous = els.thread.style.scrollBehavior;
@@ -840,6 +870,8 @@ function appendTable(container, rows) {
   // 窄屏下表格允许横向滚动，避免撑破会诊意见卡片
   const wrapper = document.createElement('div');
   wrapper.className = 'md-table-wrap';
+  wrapper.tabIndex = 0;
+  wrapper.setAttribute('aria-label', '表格，可横向滚动');
   wrapper.appendChild(table);
   container.appendChild(wrapper);
 }
@@ -2312,6 +2344,8 @@ function renderContributions(contributions) {
 
     const body = document.createElement('div');
     body.className = 'contribution-body';
+    body.tabIndex = 0;
+    body.setAttribute('aria-label', '科室意见全文，可滚动查看');
     appendBody(body, contribution.content || '');
 
     block.append(head, body);
@@ -6535,7 +6569,9 @@ async function openMetrics() {
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
   loadMetricTargets().then(() => refreshMetrics());
-  els.metricsClose.focus();
+  if (!els.metricsDrawer.contains(document.activeElement)) {
+    els.metricsClose.focus();
+  }
 }
 
 function closeMetrics(restoreFocus = false) {
@@ -6636,7 +6672,9 @@ async function openReminders() {
     els.reminderProfile.value = els.profileSelect.value || '';
   }
   loadReminders();
-  els.remindersClose.focus();
+  if (!els.remindersDrawer.contains(document.activeElement)) {
+    els.remindersClose.focus();
+  }
 }
 
 function closeReminders(restoreFocus = false) {
@@ -11424,7 +11462,6 @@ async function send(question) {
     workingTime.textContent = `${Math.floor((performance.now() - startedAt) / 1000)}s`;
   }, 500);
 
-  els.thread.setAttribute('aria-busy', 'true');
   els.railScan.hidden = false;
   setVitals('active', '会诊进行中');
 
@@ -11632,7 +11669,6 @@ async function send(question) {
     }
   } finally {
     clearInterval(elapsedTimer);
-    els.thread.removeAttribute('aria-busy');
     els.thread.setAttribute('aria-live', 'polite');
     busy = false;
     activeController = null;
@@ -12971,6 +13007,8 @@ els.authForm.addEventListener('submit', async (event) => {
 
 els.authToken.addEventListener('input', () => {
   els.authError.hidden = true;
+  els.authError.textContent = '';
+  els.authToken.setAttribute('aria-invalid', 'false');
 });
 
 els.contextToggle.addEventListener('click', () => {
@@ -13148,6 +13186,12 @@ els.thread.addEventListener('scroll', () => {
     userPausedFollow = false;
   }
 });
+window.addEventListener('scroll', () => {
+  if (isStacked() && isWindowNearBottom()) {
+    els.jumpLatest.hidden = true;
+    userPausedFollow = false;
+  }
+}, { passive: true });
 els.thread.addEventListener('wheel', () => {
   userPausedFollow = true;
 }, { passive: true });
