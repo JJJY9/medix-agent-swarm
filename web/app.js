@@ -2614,7 +2614,10 @@ function renderStopped(retry = null) {
   const strong = document.createElement('strong');
   strong.textContent = '会诊已停止';
   wrap.appendChild(strong);
-  wrap.appendChild(document.createTextNode('本次会诊在生成过程中被手动停止，未产生结果。'));
+  wrap.appendChild(document.createTextNode(
+    '已停止接收本次会诊。若服务端已完成生成，结果会自动刷新；'
+    + '否则可重新会诊。'
+  ));
   makeFailureRetry(wrap, retry, '继续本次会诊');
   els.thread.appendChild(wrap);
   scrollThreadToBottom(true);
@@ -3380,6 +3383,10 @@ async function bulkTagSessions() {
 async function bulkDelete() {
   const ids = Array.from(selectedSessions);
   if (!ids.length) return;
+  if (busy) {
+    els.historyActionStatus.textContent = '会诊进行中，暂不能批量删除会话。';
+    return;
+  }
   if (!window.confirm(`删除选中的 ${ids.length} 次会诊？删除后不可恢复。`)) {
     return;
   }
@@ -11382,6 +11389,16 @@ async function restoreCurrentSession() {
   }
 }
 
+function scheduleAbortReconcile(session) {
+  // 停止接收不等于服务端没有保存结果；稍后拉取一次会话，
+  // 已保存则恢复显示，避免误导用户“未产生结果”并重复会诊
+  [1200, 3500].forEach((delay) => {
+    setTimeout(() => {
+      if (!busy && sessionId === session) restoreCurrentSession();
+    }, delay);
+  });
+}
+
 /* ---------- 提交主诉 ---------- */
 
 async function send(question) {
@@ -11595,11 +11612,18 @@ async function send(question) {
 
     if (err.name === 'AbortError') {
       renderStopped({ question, askTurn });
+      scheduleAbortReconcile(sessionId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
       logStep('用户停止了本次会诊', false);
       setVitals('idle', '已停止会诊');
     } else {
+      // 渲染或解析异常时也要主动断开上游，避免服务端继续占用会诊锁
+      try {
+        controller.abort();
+      } catch {
+        // 已结束的请求忽略
+      }
       renderError(err.message || String(err), { question, askTurn });
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '中断';

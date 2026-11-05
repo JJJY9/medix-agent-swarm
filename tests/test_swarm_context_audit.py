@@ -161,3 +161,26 @@ def test_lead_lists_failed_subtasks_as_incomplete():
 
     assert text == "汇总答复"
     assert "research" in llm.prompts[0]
+
+
+class FailingSynthesisLLM:
+    async def chat_stream_retry(self, messages, on_token=None, usage_out=None):
+        raise RuntimeError("内部密钥 abc123")
+
+
+def test_lead_synthesis_error_does_not_leak_exception_text():
+    lead = object.__new__(LeadAgent)
+    lead.llm_client = FailingSynthesisLLM()
+    sc = SharedContext(session_id="s1")
+    sc.add_subtask(SubTask(
+        id="t1", type="diagnosis", description="诊断",
+        assigned_agent="diagnostic_agent",
+    ))
+    sc.complete_subtask("t1", "diagnostic_agent", {"answer": "分析"})
+
+    text = asyncio.run(lead.synthesize_results(
+        "问题", sc, timeout_occurred=False, on_token=lambda delta: None
+    ))
+
+    assert "内部密钥" not in text
+    assert "系统错误" in text

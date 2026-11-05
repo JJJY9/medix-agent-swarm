@@ -515,25 +515,38 @@ class LLMClient:
             chunks: List[str] = []
             callback_failed = False
 
-            async for chunk in stream:
-                chunk_usage = usage_to_dict(getattr(chunk, "usage", None))
-                if chunk_usage and usage_out is not None:
-                    usage_out.clear()
-                    usage_out.update(chunk_usage)
+            try:
+                async for chunk in stream:
+                    chunk_usage = usage_to_dict(getattr(chunk, "usage", None))
+                    if chunk_usage and usage_out is not None:
+                        usage_out.clear()
+                        usage_out.update(chunk_usage)
 
-                if not chunk.choices:
-                    continue
-                content = getattr(chunk.choices[0].delta, "content", None)
-                if not content:
-                    continue
+                    if not chunk.choices:
+                        continue
+                    content = getattr(chunk.choices[0].delta, "content", None)
+                    if not content:
+                        continue
 
-                chunks.append(content)
-                if on_token and not callback_failed:
+                    chunks.append(content)
+                    if on_token and not callback_failed:
+                        try:
+                            on_token(content)
+                        except Exception as e:
+                            callback_failed = True
+                            logger.warning(f"流式回调失败，后续增量将被忽略: {e}")
+            finally:
+                # 取消/异常时也要关闭上游 HTTP 流，避免连接悬挂到 GC
+                close = getattr(stream, "aclose", None) or getattr(
+                    stream, "close", None
+                )
+                if close:
                     try:
-                        on_token(content)
-                    except Exception as e:
-                        callback_failed = True
-                        logger.warning(f"流式回调失败，后续增量将被忽略: {e}")
+                        closed = close()
+                        if asyncio.iscoroutine(closed):
+                            await closed
+                    except Exception:
+                        pass
 
             return "".join(chunks)
 

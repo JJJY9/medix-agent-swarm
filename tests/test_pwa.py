@@ -59,6 +59,14 @@ def test_app_js_keeps_offline_state_and_handles_sw_updates(client):
     assert "describeServiceWorker" in app_js
 
 
+def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "scheduleAbortReconcile" in app_js
+    assert "已停止接收本次会诊" in app_js
+    assert "会诊进行中，暂不能批量删除会话" in app_js
+
+
 def test_pwa_icons_are_png(client):
     for name in ("icon-192.png", "icon-512.png"):
         response = client.get(f"/static/icons/{name}")
