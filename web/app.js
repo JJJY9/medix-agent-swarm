@@ -4414,6 +4414,8 @@ let kbFocused = null;
 let previewFilename = '';
 let previewEditable = false;
 let previewEditing = false;
+let previewEditingFilename = '';
+let kbPreviewSeq = 0;
 
 function setKbStatus(text, isError = false) {
   els.kbStatus.hidden = !text;
@@ -4485,6 +4487,7 @@ function renderKbDocuments(documents) {
 
 function exitKbPreviewEdit() {
   previewEditing = false;
+  previewEditingFilename = '';
   els.kbPreviewEditor.hidden = true;
   els.kbPreviewBody.hidden = false;
   els.kbPreviewSave.hidden = true;
@@ -4509,6 +4512,7 @@ function closeKbPreview() {
 }
 
 async function previewKbDocument(filename) {
+  const seq = ++kbPreviewSeq;
   exitKbPreviewEdit();
   previewFilename = filename;
   previewEditable = false;
@@ -4526,6 +4530,7 @@ async function previewKbDocument(filename) {
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    if (seq !== kbPreviewSeq) return;
 
     const meta = [
       data.builtin ? '内置' : '上传',
@@ -4544,26 +4549,32 @@ async function previewKbDocument(filename) {
       );
     els.kbPreviewEdit.hidden = !previewEditable;
   } catch (err) {
-    els.kbPreviewMeta.textContent = `读取失败：${err.message || err}`;
+    if (seq === kbPreviewSeq) {
+      els.kbPreviewMeta.textContent = `读取失败：${err.message || err}`;
+    }
   }
 }
 
 async function startKbPreviewEdit() {
   if (!previewEditable || previewEditing || !previewFilename) return;
 
+  const filename = previewFilename;
+  const seq = ++kbPreviewSeq;
   const button = els.kbPreviewEdit;
   button.disabled = true;
   button.textContent = '读取中…';
 
   try {
     const res = await fetch(
-      `/api/knowledge/documents/${encodeURIComponent(previewFilename)}/preview?full=1`
+      `/api/knowledge/documents/${encodeURIComponent(filename)}/preview?full=1`
     );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    if (seq !== kbPreviewSeq || previewFilename !== filename) return;
 
     els.kbPreviewEditor.value = data.content || '';
     previewEditing = true;
+    previewEditingFilename = filename;
     els.kbPreviewBody.hidden = true;
     els.kbPreviewEditor.hidden = false;
     els.kbPreviewEdit.hidden = true;
@@ -4571,7 +4582,9 @@ async function startKbPreviewEdit() {
     els.kbPreviewCancel.hidden = false;
     els.kbPreviewEditor.focus();
   } catch (err) {
-    els.kbPreviewMeta.textContent = `读取全文失败：${err.message || err}`;
+    if (seq === kbPreviewSeq) {
+      els.kbPreviewMeta.textContent = `读取全文失败：${err.message || err}`;
+    }
   } finally {
     button.disabled = false;
     button.textContent = '编辑';
@@ -4579,9 +4592,10 @@ async function startKbPreviewEdit() {
 }
 
 async function saveKbPreviewEdit() {
-  if (!previewEditing || !previewFilename) return;
+  if (!previewEditing || !previewEditingFilename) return;
 
-  const filename = previewFilename;
+  const filename = previewEditingFilename;
+  if (previewFilename !== filename) return;
   const content = els.kbPreviewEditor.value;
   if (!content.trim()) {
     setKbStatus('文档内容不能为空。', true);

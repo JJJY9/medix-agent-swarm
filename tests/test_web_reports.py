@@ -1107,3 +1107,11 @@ def test_app_js_ships_metric_note_search(client):
     assert "metricSearch" in app_js
     assert "&q=" in app_js
     assert ".metric-search" in css
+
+
+def test_app_js_guards_kb_preview_races(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "kbPreviewSeq" in app_js
+    assert "previewEditingFilename" in app_js
+    assert "seq !== kbPreviewSeq" in app_js
