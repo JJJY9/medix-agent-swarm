@@ -313,6 +313,7 @@ const els = {
   remindersSearch: document.getElementById('reminders-search'),
   homeGlance: document.getElementById('home-glance'),
   homeGlanceReminders: document.getElementById('home-glance-reminders'),
+  homeGlanceToday: document.getElementById('home-glance-today'),
   homeGlanceMetrics: document.getElementById('home-glance-metrics'),
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   homeGlanceMedications: document.getElementById('home-glance-medications'),
@@ -7056,6 +7057,12 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
   const overdue = pending.filter(
     (item) => Number(reminderDaysUntil(item.due_at)) < 0
   ).length;
+  const dueToday = pending.filter(
+    (item) => String(item.due_at || "").slice(0, 10) === todayLocalDate()
+  ).length;
+  const medsPending = (medications || []).filter(
+    (item) => item.active && !Number(item.today_count)
+  ).length;
   const upcoming = pending
     .filter((item) => {
       const days = reminderDaysUntil(item.due_at);
@@ -7105,6 +7112,19 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
   els.homeGlanceReminders.replaceChildren(
     ...homeGlanceLine('随访提醒', reminderValue, reminderSub)
   );
+  if (els.homeGlanceToday) {
+    const todoParts = [];
+    if (medsPending) todoParts.push(`${medsPending} 种药物待打卡`);
+    const reminderDue = overdue + dueToday;
+    if (reminderDue) todoParts.push(`${reminderDue} 条提醒待处理`);
+    els.homeGlanceToday.replaceChildren(
+      ...homeGlanceLine(
+        '今日待办',
+        todoParts.length ? todoParts.join(' · ') : '今日暂无待办',
+        todoParts.length ? '点击打开随访提醒' : '保持记录好习惯'
+      )
+    );
+  }
   els.homeGlanceMetrics.replaceChildren(
     ...homeGlanceLine('健康记录', metricValue, metricSub)
   );
@@ -11985,6 +12005,11 @@ for (const input of [
 els.homeGlanceReminders.addEventListener('click', () => {
   openReminders();
 });
+if (els.homeGlanceToday) {
+  els.homeGlanceToday.addEventListener('click', () => {
+    openReminders();
+  });
+}
 els.homeGlanceMetrics.addEventListener('click', () => {
   openMetrics();
 });
