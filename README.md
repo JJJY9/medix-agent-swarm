@@ -1,12 +1,16 @@
 # MediX多智能体医疗助手
 
+[![CI](https://github.com/JJJY9/medix-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/JJJY9/medix-agent-swarm/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)
+
 基于 Skills-Agent 两层架构的多智能体协作医疗助手系统，融合 Agent Loop、Agent Swarm、记忆管理和 Milvus 知识库。
 
 ## 📌 项目说明
 
 本项目及其代码（Agent 架构、Skills、Swarm 协作、记忆系统、本地知识库、Web 会诊界面与健康数据功能）由仓库作者原创实现并持续改进。此前 README 中关于代码来源的说明有误，现已更正。
 
-仓库当前为**私有**，是否公开由作者决定。
+仓库当前为**公开**仓库，采用 MIT License；是否保持公开由作者决定。
 
 ### 主要实现
 
