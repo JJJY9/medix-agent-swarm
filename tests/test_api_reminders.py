@@ -667,3 +667,98 @@ def test_reminders_stats_completion(client_and_store):
     ).json()
     assert child["due_total"] == 1
     assert child["pending_total"] == 1
+
+
+def test_reopen_reminder_survives_repeat_cycle(client_and_store):
+    client, store = client_and_store
+
+    reminder_id = client.post("/api/reminders", json={
+        "title": "循环提醒", "due_at": "2026-11-10",
+    }).json()["reminder"]["id"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE reminders SET repeats_from = id WHERE id = ?",
+            (reminder_id,),
+        )
+
+    response = client.post(f"/api/reminders/{reminder_id}/reopen")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_import_reminder_backup_skips_unrelated_repeat_parent(
+    client_and_store,
+):
+    client, _store = client_and_store
+
+    local = client.post("/api/reminders", json={
+        "title": "本地提醒", "due_at": "2026-11-01",
+    }).json()["reminder"]
+    response = client.post("/api/sessions/import", json={
+        "reminders": [
+            {
+                "id": local["id"], "title": "备份父提醒",
+                "due_at": "2026-11-10",
+            },
+            {
+                "id": local["id"] + 1, "title": "备份子提醒",
+                "due_at": "2026-11-11", "repeats_from": local["id"],
+            },
+        ],
+    })
+    assert response.status_code == 200
+    assert response.json()["reminders"] == 1
+
+    reminders = client.get(
+        "/api/reminders", params={"include_done": True}
+    ).json()["reminders"]
+    child = next(
+        item for item in reminders if item["title"] == "备份子提醒"
+    )
+    assert child["repeats_from"] in (0, None)
+
+    client.post(f"/api/reminders/{local['id']}/complete", json={})
+    client.post(f"/api/reminders/{local['id']}/reopen", json={})
+    titles = [
+        item["title"] for item in client.get(
+            "/api/reminders", params={"include_done": True}
+        ).json()["reminders"]
+    ]
+    assert "备份子提醒" in titles
+
+
+def test_reminder_import_uses_exported_medication_id(client_and_store):
+    client, _store = client_and_store
+
+    low = client.post("/api/medications", json={
+        "profile": "母亲", "name": "氨氯地平", "dose": "5 mg",
+    }).json()["medication"]
+    high = client.post("/api/medications", json={
+        "profile": "母亲", "name": "氨氯地平", "dose": "10 mg",
+    }).json()["medication"]
+    client.post("/api/sessions/import", json={
+        "reminders": [{
+            "title": "服降压药", "due_at": "2026-11-10",
+            "profile": "母亲", "medication_id": high["id"],
+            "medication_name": "氨氯地平",
+        }],
+    })
+
+    reminder = client.get(
+        "/api/reminders", params={"profile": "母亲"}
+    ).json()["reminders"][0]
+    assert low["id"] != high["id"]
+    assert reminder["medication_id"] == high["id"]
+
+
+def test_reminders_ics_keeps_time_for_timed_reminder(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/reminders", json={
+        "title": "复诊", "due_at": "2026-11-10T09:30",
+    })
+    text = client.get("/api/reminders/export.ics").content.decode("utf-8")
+
+    assert "DTSTART:20261110T093000" in text
+    assert "DTEND:20261110T100000" in text

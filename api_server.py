@@ -512,17 +512,33 @@ def csv_safe_cell(value: Any) -> str:
 
 
 _RISK_TAG_PATTERN = re.compile(
-    r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:]\s*(紧急|高危|中危|低危)"
+    r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:为是]\s*[\*「【\s]*"
+    r"(中等风险|中等|中风险|紧急|高危|中危|低危)"
 )
 _RISK_KEYWORD_PATTERNS = (
-    ("high", re.compile(r"高风险(?!人群)|高度风险|高危(?!人群)")),
-    ("medium", re.compile(r"中风险|中等风险|中危(?!人群)")),
-    ("low", re.compile(r"低风险|风险较低|风险不高|低危(?!人群)")),
+    (
+        "high",
+        re.compile(r"高风险(?!人群|因素)|高度风险(?!人群|因素)|高危(?!人群|因素)"),
+    ),
+    (
+        "medium",
+        re.compile(r"中风险(?!人群|因素)|中等风险(?!人群|因素)|中危(?!人群|因素)"),
+    ),
+    (
+        "low",
+        re.compile(r"低风险(?!人群|因素)|风险较低|风险不高|低危(?!人群|因素)"),
+    ),
+)
+_RISK_NEGATION_PATTERN = re.compile(
+    r"(?:不属于|不是|并非|排除|未见|无明显|没有|无|非|不)\s*$"
 )
 _RISK_TAG_LEVELS = {
     "紧急": "emergency",
     "高危": "high",
     "中危": "medium",
+    "中等风险": "medium",
+    "中等": "medium",
+    "中风险": "medium",
     "低危": "low",
 }
 RISK_LEVEL_LABELS = {
@@ -542,7 +558,10 @@ def parse_risk_level(text: Any) -> str:
     if tagged:
         return _RISK_TAG_LEVELS.get(tagged.group(1), "")
     for level, pattern in _RISK_KEYWORD_PATTERNS:
-        if pattern.search(content):
+        for match in pattern.finditer(content):
+            prefix = content[max(0, match.start() - 6):match.start()]
+            if _RISK_NEGATION_PATTERN.search(prefix):
+                continue
             return level
     return ""
 
@@ -3865,15 +3884,26 @@ async def export_reminders_ics(
         "METHOD:PUBLISH",
     ]
     for item in items:
-        due = str(item.get("due_at") or "")[:10]
+        due_text = str(item.get("due_at") or "").strip()
         try:
-            start = datetime.fromisoformat(due)
+            start = datetime.fromisoformat(due_text[:19])
         except ValueError:
             continue
-        try:
-            end = start + timedelta(days=1)
-        except OverflowError:
-            end = start
+        timed = "T" in due_text[:19]
+        if timed:
+            try:
+                end = start + timedelta(minutes=30)
+            except OverflowError:
+                end = start
+            start_line = f"DTSTART:{start.strftime('%Y%m%dT%H%M%S')}"
+            end_line = f"DTEND:{end.strftime('%Y%m%dT%H%M%S')}"
+        else:
+            try:
+                end = start + timedelta(days=1)
+            except OverflowError:
+                end = start
+            start_line = f"DTSTART;VALUE=DATE:{start.strftime('%Y%m%d')}"
+            end_line = f"DTEND;VALUE=DATE:{end.strftime('%Y%m%d')}"
         description = item.get("note") or ""
         if item.get("profile"):
             description = f"档案：{item['profile']}。{description}".strip()
@@ -3881,8 +3911,8 @@ async def export_reminders_ics(
             "BEGIN:VEVENT",
             f"UID:medix-reminder-{item['id']}@medix.local",
             f"DTSTAMP:{stamp}",
-            f"DTSTART;VALUE=DATE:{start.strftime('%Y%m%d')}",
-            f"DTEND;VALUE=DATE:{end.strftime('%Y%m%d')}",
+            start_line,
+            end_line,
             f"SUMMARY:{escape_ics(item.get('title') or '随访提醒')}",
             f"DESCRIPTION:{escape_ics(description)}",
             "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
@@ -3892,7 +3922,7 @@ async def export_reminders_ics(
             rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
             until = str(item.get("repeat_until") or "")[:10].replace("-", "")
             if until:
-                rule += f";UNTIL={until}"
+                rule += f";UNTIL={until}T235959" if timed else f";UNTIL={until}"
             lines.append(rule)
         advance = int(item.get("advance_days") or 0)
         if advance > 0 and not item.get("done"):

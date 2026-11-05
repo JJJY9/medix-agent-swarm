@@ -90,3 +90,17 @@ def test_medication_expected_doses_counts_from_start_date(client_and_store):
 
     assert by_name["氨氯地平"]["expected_week_doses"] == 3
     assert by_name["维生素 D"]["expected_week_doses"] is None
+
+
+def test_expected_doses_round_to_zero_for_long_interval(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "维生素 B12", "frequency": "每月一次",
+    })
+
+    medications = client.get(
+        "/api/medications", params={"profile": "妈妈", "days": 7}
+    ).json()["medications"]
+    assert medications[0]["expected_range_doses"] == 0
+    assert medications[0]["expected_week_doses"] == 0
