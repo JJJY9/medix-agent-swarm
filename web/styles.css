@@ -3383,14 +3383,28 @@ html[data-theme="dark"] .reminders-due-hint {
   background: #331f1d;
 }
 
-.reminder-stats {
+.reminder-stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 8px;
-  font-size: 12px;
-  color: var(--ink-soft);
 }
 
-.reminder-stats[hidden] {
+.reminder-stats-bar[hidden] {
   display: none;
+}
+
+.reminder-stats-bar select {
+  flex: none;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.reminder-stats {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
 }
 
 .metrics-empty {
