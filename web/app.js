@@ -6190,6 +6190,26 @@ function renderMetricWeekly(summaries) {
       button.appendChild(target);
     }
 
+    if (metric === 'bp' && summary.bp_grades) {
+      const gradeLabels = {
+        normal: '正常',
+        high_normal: '正常高值',
+        grade1: '1 级',
+        grade2: '2 级',
+        grade3: '3 级',
+        low: '偏低',
+      };
+      const parts = Object.entries(gradeLabels)
+        .filter(([key]) => Number(summary.bp_grades[key]) > 0)
+        .map(([key, label]) => `${label} ${summary.bp_grades[key]}`);
+      if (parts.length) {
+        const grades = document.createElement('span');
+        grades.className = 'metric-weekly-grades';
+        grades.textContent = `分级 ${parts.join(' · ')}`;
+        button.appendChild(grades);
+      }
+    }
+
     button.addEventListener('click', () => {
       setMetricType(metric);
       refreshMetrics();
