@@ -1176,3 +1176,20 @@ def test_app_js_wraps_local_storage_for_private_mode(client):
     assert "function safeStorageSet" in app_js
     assert "function safeStorageRemove" in app_js
     assert "safeStorageSet('medix.session'" in app_js
+
+
+def test_app_js_guards_session_storage_and_backup_audit(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function safeSessionGet" in app_js
+    assert "safeSessionGet('medix.token')" in app_js
+    assert "audit_log: data.audit_log" in app_js
+
+
+def test_app_js_exports_follow_active_filters(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "params.set('overdue', 'true')" in app_js
+    assert "params.set('date', reminderCalendarDay)" in app_js
+    assert "params.set('status', status)" in app_js
+    assert "auditRequestSeq" in app_js

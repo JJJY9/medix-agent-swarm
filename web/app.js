@@ -525,6 +525,7 @@ let compareOpen = false;
 let historyDays = 0;
 let historyRequestSeq = 0;
 let historyTagsRequestSeq = 0;
+let auditRequestSeq = 0;
 let usageTrendRequestSeq = 0;
 let usageBudgetRequestSeq = 0;
 let kbSearching = false;
@@ -589,7 +590,7 @@ const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, init = {}) => {
   const url = typeof input === 'string' ? input : (input && input.url) || '';
   if (url.startsWith('/api/')) {
-    const token = sessionStorage.getItem('medix.token');
+    const token = safeSessionGet('medix.token');
     if (token) {
       const headers = new Headers(init.headers || {});
       headers.set('X-Medix-Token', token);
@@ -599,7 +600,7 @@ window.fetch = (input, init = {}) => {
 
   return nativeFetch(input, init).then((response) => {
     if (response.status === 401) {
-      const hasToken = Boolean(sessionStorage.getItem('medix.token'));
+      const hasToken = Boolean(safeSessionGet('medix.token'));
       showAuthGate(
         hasToken ? '访问令牌无效或已失效，请重新输入。' : ''
       );
@@ -3982,10 +3983,13 @@ async function importHistoryBackup() {
     const medicationLogCount = Array.isArray(data.medication_logs)
       ? data.medication_logs.length
       : 0;
+    const auditCount = Array.isArray(data.audit_log)
+      ? data.audit_log.length
+      : 0;
     if (
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
-      && !medicationCount && !medicationLogCount
+      && !medicationCount && !medicationLogCount && !auditCount
     ) {
       window.alert('备份文件中没有可导入的数据。');
       return;
@@ -3999,6 +4003,7 @@ async function importHistoryBackup() {
       symptomCount ? `${symptomCount} 条症状记录` : '',
       medicationCount ? `${medicationCount} 条用药记录` : '',
       medicationLogCount ? `${medicationLogCount} 次用药打卡` : '',
+      auditCount ? `${auditCount} 条操作记录` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
@@ -4023,6 +4028,7 @@ async function importHistoryBackup() {
           symptoms: data.symptoms,
           medications: data.medications,
           medication_logs: data.medication_logs,
+          audit_log: data.audit_log,
         }),
       });
       const result = await res.json().catch(() => ({}));
@@ -5185,10 +5191,13 @@ function populateAuditActions(actions) {
 }
 
 async function loadAuditLog() {
+  const requestSeq = ++auditRequestSeq;
   try {
     const res = await fetch(`/api/audit?${auditFilterParams().toString()}`);
     if (!res.ok) return;
     const data = await res.json();
+    // 快速切换筛选时丢弃过期响应
+    if (requestSeq !== auditRequestSeq) return;
     const actions = data.actions || [];
     populateAuditActions(data.available_actions || []);
 
@@ -5363,6 +5372,31 @@ const HEALTH_FILTER_KEYS = {
   medicationRange: 'medix.medicationRange',
   reminderStatsRange: 'medix.reminderStatsRange',
 };
+
+function safeSessionGet(key) {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSessionSet(key, value) {
+  try {
+    sessionStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeSessionRemove(key) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // 隐私模式下不可用时忽略
+  }
+}
 
 function safeStorageGet(key) {
   try {
@@ -8061,6 +8095,15 @@ async function exportRemindersCsv() {
       ? 'true'
       : 'false'
   );
+  // 导出跟随当前搜索、逾期与日历筛选，避免文件与界面不一致
+  const query = els.remindersSearch
+    ? els.remindersSearch.value.trim()
+    : '';
+  if (query) params.set('q', query);
+  if (els.remindersOverdueOnly && els.remindersOverdueOnly.checked) {
+    params.set('overdue', 'true');
+  }
+  if (reminderCalendarDay) params.set('date', reminderCalendarDay);
 
   try {
     const res = await fetch(
@@ -8572,6 +8615,15 @@ async function exportSymptomsCsv() {
 
 async function exportMedicationsCsv() {
   const params = new URLSearchParams({ profile: els.metricProfile.value });
+  // 导出跟随用药列表的在用状态与搜索筛选
+  const status = els.medicationStatusFilter
+    ? els.medicationStatusFilter.value
+    : '';
+  if (status) params.set('status', status);
+  const query = els.medicationSearch
+    ? els.medicationSearch.value.trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/medications/export.csv?${params.toString()}`
@@ -11572,7 +11624,7 @@ async function checkStatusOnce() {
     if (data.auth_required) {
       if (authGateOpen) return;
 
-      const token = sessionStorage.getItem('medix.token');
+      const token = safeSessionGet('medix.token');
       if (!token) {
         setVitals('warn', '需要访问令牌');
         showAuthGate();
@@ -11581,7 +11633,7 @@ async function checkStatusOnce() {
 
       const verify = await fetch('/api/auth/verify');
       if (!verify.ok) {
-        sessionStorage.removeItem('medix.token');
+        safeSessionRemove('medix.token');
         setVitals('warn', '需要访问令牌');
         showAuthGate('访问令牌无效或已失效，请重新输入。');
         return;
@@ -11754,9 +11806,9 @@ function updateContextSummary() {
 
   try {
     if (parts.length) {
-      sessionStorage.setItem(CONTEXT_STORAGE_KEY, JSON.stringify(context));
+      safeSessionSet(CONTEXT_STORAGE_KEY, JSON.stringify(context));
     } else {
-      sessionStorage.removeItem(CONTEXT_STORAGE_KEY);
+      safeSessionRemove(CONTEXT_STORAGE_KEY);
     }
   } catch {
     // 隐私模式下 sessionStorage 不可用时忽略
@@ -11777,9 +11829,9 @@ function applyPatientContext(context) {
 
 function loadSavedContext() {
   try {
-    const raw = sessionStorage.getItem(CONTEXT_STORAGE_KEY);
+    const raw = safeSessionGet(CONTEXT_STORAGE_KEY);
     if (raw) applyPatientContext(JSON.parse(raw));
-    els.ctxSingle.checked = sessionStorage.getItem(SINGLE_MODE_KEY) === '1';
+    els.ctxSingle.checked = safeSessionGet(SINGLE_MODE_KEY) === '1';
   } catch {
     // 忽略损坏的缓存
   }
@@ -11861,7 +11913,7 @@ async function initProfiles() {
 
 function readStoredProfile() {
   try {
-    return sessionStorage.getItem(PROFILE_STORAGE_KEY) || '';
+    return safeSessionGet(PROFILE_STORAGE_KEY) || '';
   } catch {
     return '';
   }
@@ -11872,9 +11924,9 @@ function setActiveProfile(name) {
   if (els.profileSelect) els.profileSelect.value = activeProfileName;
   try {
     if (activeProfileName) {
-      sessionStorage.setItem(PROFILE_STORAGE_KEY, activeProfileName);
+      safeSessionSet(PROFILE_STORAGE_KEY, activeProfileName);
     } else {
-      sessionStorage.removeItem(PROFILE_STORAGE_KEY);
+      safeSessionRemove(PROFILE_STORAGE_KEY);
     }
   } catch {
     // 隐私模式下不可用时忽略
@@ -12101,9 +12153,9 @@ function saveDraft() {
   draftTimer = setTimeout(() => {
     try {
       if (els.input.value.trim()) {
-        sessionStorage.setItem(DRAFT_KEY, els.input.value);
+        safeSessionSet(DRAFT_KEY, els.input.value);
       } else {
-        sessionStorage.removeItem(DRAFT_KEY);
+        safeSessionRemove(DRAFT_KEY);
       }
     } catch {
       // 隐私模式下 sessionStorage 不可用时忽略
@@ -12114,7 +12166,7 @@ function saveDraft() {
 function clearDraft() {
   clearTimeout(draftTimer);
   try {
-    sessionStorage.removeItem(DRAFT_KEY);
+    safeSessionRemove(DRAFT_KEY);
   } catch {
     // 忽略
   }
@@ -12122,7 +12174,7 @@ function clearDraft() {
 
 function loadDraft() {
   try {
-    const draft = sessionStorage.getItem(DRAFT_KEY);
+    const draft = safeSessionGet(DRAFT_KEY);
     if (draft) {
       els.input.value = draft;
       autoGrow();
@@ -12825,7 +12877,7 @@ els.authForm.addEventListener('submit', async (event) => {
   const token = els.authToken.value.trim();
   if (!token) return;
 
-  sessionStorage.setItem('medix.token', token);
+  safeSessionSet('medix.token', token);
   try {
     const verify = await fetch('/api/auth/verify');
     if (verify.ok) {
@@ -12837,7 +12889,7 @@ els.authForm.addEventListener('submit', async (event) => {
     // 网络异常按令牌无效处理，让用户重试
   }
 
-  sessionStorage.removeItem('medix.token');
+  safeSessionRemove('medix.token');
   showAuthGate('令牌不正确，请重试。');
   els.authToken.select();
 });
@@ -12870,9 +12922,9 @@ els.profileDelete.addEventListener('click', deletePatientProfile);
 els.ctxSingle.addEventListener('change', () => {
   try {
     if (els.ctxSingle.checked) {
-      sessionStorage.setItem(SINGLE_MODE_KEY, '1');
+      safeSessionSet(SINGLE_MODE_KEY, '1');
     } else {
-      sessionStorage.removeItem(SINGLE_MODE_KEY);
+      safeSessionRemove(SINGLE_MODE_KEY);
     }
   } catch {
     // 忽略
