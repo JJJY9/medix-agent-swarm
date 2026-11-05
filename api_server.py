@@ -500,6 +500,10 @@ class AppState:
 
 state = AppState()
 
+#: SSE 等锁：单次等待切片与总等待上限
+STREAM_LOCK_ACQUIRE_SECONDS = 10
+STREAM_LOCK_TIMEOUT_SECONDS = 300
+
 
 async def auto_archive_sessions() -> None:
     """按 MEDIX_AUTO_ARCHIVE_DAYS 自动归档旧会话（不删除）。"""
@@ -5464,14 +5468,12 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
 
 def _empty_answer_reason() -> str:
     """
-    空答复几乎总是上游 LLM 调用失败导致的：
-    AgentLoop 会把每轮的异常吞掉并重试，最后返回空结果。
-    与其让用户看到一片空白，不如直接说明可能的原因。
+    空答复几乎总是上游 LLM 调用失败导致的。
+    对客户端只返回可操作的安全提示，不暴露 .env/config.py/base_url 等部署细节。
     """
     return (
-        "模型没有返回任何内容。常见原因：API Key 未配置或已失效、"
-        "模型名/接入点（endpoint）不正确、账户额度不足或网络无法访问 base_url。"
-        "请检查上一层目录的 config.py 或本目录的 .env 配置，然后重启服务。"
+        "模型没有返回任何内容，请稍后重试；"
+        "若持续出现，请打开系统自检检查 API Key 与模型配置。"
     )
 
 
@@ -5550,7 +5552,7 @@ async def chat(request: ChatRequest):
     return payload
 
 @app.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest, http_request: Request):
     """
     SSE 流式接口。
 
@@ -5565,7 +5567,11 @@ async def chat_stream(request: ChatRequest):
 
     async def event_stream() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:
-            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            return (
+                "data: "
+                + json.dumps(payload, ensure_ascii=False, default=str)
+                + "\n\n"
+            )
 
         yield sse({"type": "stage", "stage": "routing", "session_id": session_id})
 
@@ -5578,12 +5584,25 @@ async def chat_stream(request: ChatRequest):
             yield sse({"type": "medication_safety", **medication_safety})
 
         # 等待会诊锁期间也要保持心跳：另一次会诊可能运行数十秒，
-        # 期间静默会让代理/浏览器读超时断流
+        # 期间静默会让代理/浏览器读超时断流。设置总等待上限并按
+        # 客户端断开及时退出，避免锁泄漏时无限排队。
+        deadline = asyncio.get_event_loop().time() + STREAM_LOCK_TIMEOUT_SECONDS
         while True:
+            if await http_request.is_disconnected():
+                return
             try:
-                await asyncio.wait_for(state.lock.acquire(), timeout=10)
+                await asyncio.wait_for(
+                    state.lock.acquire(), timeout=STREAM_LOCK_ACQUIRE_SECONDS
+                )
                 break
             except asyncio.TimeoutError:
+                if asyncio.get_event_loop().time() >= deadline:
+                    yield sse({
+                        "type": "error",
+                        "code": "busy",
+                        "message": "当前会诊较多，请稍后重试。",
+                    })
+                    return
                 yield ": keep-alive\n\n"
         lock_released = False
 
@@ -5629,9 +5648,22 @@ async def chat_stream(request: ChatRequest):
         except Exception:
             release_lock()
             raise
-        # 锁只在会诊执行期间持有；任务结束（成功/失败/取消）立即释放，
-        # 不再因为客户端读取慢而在 yield 上一直占着全局锁
-        task.add_done_callback(release_lock)
+
+        def link_profile_when_done(done_task):
+            # 客户端在 result 事件前断开时，已保存的会诊仍要关联患者档案
+            if done_task.cancelled():
+                return
+            try:
+                done_task.result()
+            except Exception:
+                return
+            asyncio.create_task(
+                _link_patient_profile(session_id, request.patient_profile)
+            )
+
+        task.add_done_callback(link_profile_when_done)
+        # 锁只在会诊执行与事件排空期间持有；任务结束后由 finally
+        # 在客户端断开/尾帧发送完成后统一释放
 
         seen_agents = set()
         started_agents = set()
@@ -5724,13 +5756,38 @@ async def chat_stream(request: ChatRequest):
                 })
                 return
         finally:
-            # 客户端断开时生成器被关闭，别让任务继续空转
-            if not task.done():
-                task.cancel()
+            # 客户端断开时生成器被关闭，别让任务继续空转；取消后要
+            # await 一次，取走 CancelledError 并确保 Agent 侧清理完成
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                with suppress(asyncio.CancelledError):
+                    try:
+                        await task
+                    except Exception:
+                        pass
+                # 本轮结束后解除 Worker 上残留的患者上下文
+                for worker in getattr(coordinator, "worker_pool", []):
+                    sc = getattr(worker, "shared_context", None)
+                    if sc is None or id(sc) in stale_contexts:
+                        continue
+                    detach = getattr(worker, "attach_shared_context", None)
+                    if callable(detach):
+                        detach(None)
+                    else:
+                        try:
+                            worker.shared_context = None
+                        except Exception:
+                            pass
+            release_lock()
 
         payload = _serialize_result(result, AGENT_LABELS)
         if not (payload["answer"] or "").strip():
-            yield sse({"type": "error", "message": _empty_answer_reason()})
+            yield sse({
+                "type": "error",
+                "code": "empty_answer",
+                "message": _empty_answer_reason(),
+            })
             return
 
         await _link_patient_profile(session_id, request.patient_profile)

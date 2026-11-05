@@ -209,7 +209,44 @@ def test_short_term_memory_records_raw_question():
     assert memory.added[0] == ("user", "原始问题")
 
 
-def test_memory_question_overrides_routed_prompt():
+class CancellingLLM:
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        raise asyncio.CancelledError
+
+
+def test_cancelled_run_does_not_leave_user_message_in_memory():
+    memory = FakeMemory()
+    loop = AgentLoop(short_term_memory=memory)
+    agent = SimpleNamespace(
+        agent_id="cancel_agent",
+        config={},
+        llm_client=CancellingLLM(),
+        get_system_prompt=lambda: "系统提示",
+        format_user_input=lambda data: data["question"],
+        get_tools_for_llm=lambda: [],
+        post_process_result=_post_process_noop,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.run(agent, {"question": "被取消的问题"}, session_id="s1"))
+
+    assert memory.added == []
+
+
+def test_finalize_failure_does_not_write_memory():
+    memory = FakeMemory()
+    loop = AgentLoop(short_term_memory=memory)
+    agent = FailingPostProcessAgent()
+    llm = OneShotLLM()
+    agent.llm_client = llm
+    agent.get_system_prompt = lambda: "系统提示"
+    agent.format_user_input = lambda data: data["question"]
+    agent.get_tools_for_llm = lambda: []
+
+    result = asyncio.run(loop.run(agent, {"question": "测试"}, session_id="s1"))
+
+    assert result["warning"] == "finalize_failed"
+    assert memory.added == []
     memory = FakeMemory()
     loop = AgentLoop(short_term_memory=memory)
     seen = {}

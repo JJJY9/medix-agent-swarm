@@ -625,4 +625,5 @@ class LeadAgent:
             raise
         except Exception as e:
             logger.error(f"Synthesis error: {e}")
-            return f"汇总结果时出错：{e}"
+            # 不要把内部异常文本当作会诊意见持久化/展示
+            return "抱歉，汇总会诊意见时出现系统错误，请稍后重试。"

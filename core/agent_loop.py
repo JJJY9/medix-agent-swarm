@@ -112,16 +112,8 @@ class AgentLoop:
                 agent, input_data, session_id, load_history=persist_memory
             )
 
-            # 记录用户消息到短期记忆
-            if self.short_term_memory and session_id and persist_memory:
-                # 只记录原始问题；messages[-1] 是带背景信息与历史的格式化
-                # 提示词，写回短期记忆会导致下次再拼接时逐轮嵌套膨胀
-                self.short_term_memory.add_message(
-                    session_id=session_id,
-                    role="user",
-                    content=user_question
-                )
-                logger.debug(f"Recorded user message to short-term memory (session={session_id})")
+            # 用户消息与助手回答统一在 _finalize 收尾成功后写入短期记忆；
+            # 提前写入会在取消/失败/收尾异常时留下没有回答的孤立提问
 
             # 获取 Agent 的 Skills (OpenAI format)
             tools_openai_format = agent.get_tools_for_llm()
@@ -533,15 +525,6 @@ class AgentLoop:
                         logger.info("🔧 输出已自动修复")
                         final_answer = fixed_answer
 
-        # 记录最终回答到短期记忆
-        if self.short_term_memory and session_id and remember:
-            self.short_term_memory.add_message(
-                session_id=session_id,
-                role="assistant",
-                content=final_answer or "(empty response)"
-            )
-            logger.debug(f"Recorded final answer to short-term memory (session={session_id})")
-
         result = {
             'answer': final_answer,
             'iterations': state.iteration,
@@ -555,6 +538,22 @@ class AgentLoop:
         # 让 Agent 进行结果后处理（如提取建议等）
         if hasattr(agent, 'post_process_result'):
             result = await agent.post_process_result(result, final_answer)
+
+        # 后处理成功后再写入短期记忆，保证记忆与最终持久化的回答一致；
+        # 收尾异常时不会留下孤立提问或与 SQLite 不同的旧回答
+        if self.short_term_memory and session_id and remember:
+            if user_input:
+                self.short_term_memory.add_message(
+                    session_id=session_id,
+                    role="user",
+                    content=user_input
+                )
+            self.short_term_memory.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=result.get('answer') or final_answer or "(empty response)"
+            )
+            logger.debug(f"Recorded exchange to short-term memory (session={session_id})")
 
         state.mark_completed(result)
         return result

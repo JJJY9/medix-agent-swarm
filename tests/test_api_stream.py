@@ -86,6 +86,7 @@ def test_stream_emits_tokens_and_result():
     assert result["answer"] == "流式答案"
     assert result["agent_contributions"][0]["agent_name"] == "健康咨询"
     assert result["sources"][0]["filename"] == "20.txt"
+    assert not api_server.state.lock.locked()
 
 
 class LiveProgressCoordinator(FakeCoordinator):
@@ -303,6 +304,25 @@ def test_stream_emits_structured_llm_error():
     error = next(event for event in events if event["type"] == "error")
     assert error["code"] == "llm_balance"
     assert "余额不足" in error["message"]
+    assert not api_server.state.lock.locked()
+
+
+def test_stream_empty_answer_returns_safe_error_and_releases_lock():
+    api_server.state.coordinator = FakeCoordinator(answer="")
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"question": "你好", "session_id": "api-empty-test"},
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    error = next(event for event in events if event["type"] == "error")
+    assert error["code"] == "empty_answer"
+    assert ".env" not in error["message"]
+    assert "config.py" not in error["message"]
+    assert not api_server.state.lock.locked()
 
 
 def test_chat_returns_structured_llm_error():
