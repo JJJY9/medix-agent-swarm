@@ -275,10 +275,14 @@ def test_medications_csv_export_includes_counts(client_and_store):
     text = export.content.decode("utf-8-sig")
     rows = list(csv.reader(io.StringIO(text)))
 
-    assert rows[0][-3:] == ["今日次数", "近7天次数", "最近服用"]
-    assert rows[1][-3] == "1"
-    assert rows[1][-2] == "1"
-    assert rows[1][-1] != ""
+    assert rows[0][-5:] == [
+        "今日次数", "近7天次数", "最近服用", "近7天应服", "依从率",
+    ]
+    assert rows[1][-5] == "1"
+    assert rows[1][-4] == "1"
+    assert rows[1][-3] != ""
+    assert rows[1][-2] == ""
+    assert rows[1][-1] == ""
 
     client.delete(f"/api/medications/{medication['id']}")
     imported = client.post(
@@ -289,6 +293,43 @@ def test_medications_csv_export_includes_counts(client_and_store):
     assert imported.json()["imported"] == 1
     reexported = client.get("/api/medications/export.csv")
     assert "氨氯地平" in reexported.content.decode("utf-8-sig")
+
+
+def test_medications_csv_export_includes_adherence(client_and_store):
+    client, store = client_and_store
+    import csv
+    import io
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    medication = client.post("/api/medications", json={
+        "profile": "母亲", "name": "二甲双胍", "frequency": "每日两次",
+    }).json()["medication"]
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (
+                (now - timedelta(days=3)).isoformat(timespec="seconds"),
+                medication["id"],
+            ),
+        )
+    taken_at = now.isoformat(timespec="minutes")
+    for _ in range(5):
+        client.post(
+            f"/api/medications/{medication['id']}/logs",
+            json={"taken_at": taken_at},
+        )
+
+    export = client.get(
+        "/api/medications/export.csv", params={"profile": "母亲"}
+    )
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+
+    assert rows[0][-2:] == ["近7天应服", "依从率"]
+    assert rows[1][-2] == "8"
+    assert rows[1][-1] == "63"
 
 
 def test_medications_csv_export_and_import(client_and_store):
@@ -320,7 +361,7 @@ def test_medications_csv_export_and_import(client_and_store):
     text = exported.content.decode("utf-8-sig")
     assert text.splitlines()[0] == (
         "药物名称,剂量,频次,患者档案,状态,备注,"
-        "今日次数,近7天次数,最近服用"
+        "今日次数,近7天次数,最近服用,近7天应服,依从率"
     )
     assert "氨氯地平" in text
     assert "布洛芬" not in text

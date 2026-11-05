@@ -327,7 +327,7 @@ npm install -D playwright
 | POST | `/api/medications` | 新增药物（名称、剂量、频次、备注、在用状态） |
 | PATCH | `/api/medications/{id}` | 更新药物记录 |
 | DELETE | `/api/medications/{id}` | 删除药物记录 |
-| GET | `/api/medications/export.csv` | 导出用药清单 CSV（带 BOM，可按 `profile`/`active_only` 筛选，含今日/近 7 天次数与最近服用时间） |
+| GET | `/api/medications/export.csv` | 导出用药清单 CSV（带 BOM，可按 `profile`/`active_only` 筛选，含今日/近 7 天次数、最近服用时间、近 7 天应服次数与依从率） |
 | POST | `/api/medications/import` | 从导出的 CSV 格式导入用药，重复记录自动跳过 |
 | GET | `/api/medications/{id}/logs` | 某个药物的用药打卡记录（按服用时间倒序，可按 `days` 筛选） |
 | POST | `/api/medications/{id}/logs` | 记录一次用药（可带 `taken_at`/`note`，默认当前时间） |
