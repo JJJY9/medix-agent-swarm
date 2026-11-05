@@ -28,7 +28,8 @@ def test_merge_usage_ignores_missing_and_invalid_values():
 
     assert total["prompt_tokens"] == 12
     assert total["completion_tokens"] == 0
-    assert total["total_tokens"] == 0
+    # total 无法解析时用 prompt+completion 补算，避免预算显示为 0
+    assert total["total_tokens"] == 12
 
 
 def test_merge_usages_handles_multiple_sources():

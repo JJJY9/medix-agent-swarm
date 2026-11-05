@@ -34,6 +34,40 @@ def test_get_history_keeps_summary_and_starts_with_user():
         memory.clear_session(session_id)
 
 
+def test_compression_keeps_tail_when_window_has_no_user():
+    manager = MemoryEntropyManager()
+    messages = [
+        {"role": "user", "content": "原始问题"},
+        {"role": "assistant", "content": "原始回答"},
+    ] + [
+        {"role": "assistant", "content": f"补充 {i}"} for i in range(12)
+    ]
+
+    compressed = manager.compress_session_history(messages, max_messages=10)
+
+    assert len(compressed) == 10
+    assert compressed[0]["role"] == "system"
+    assert compressed[-1]["content"] == "补充 11"
+
+
+def test_get_history_keeps_tail_assistant_without_user():
+    memory = ShortTermMemory(storage_type="memory")
+    session_id = "tail-assistant-test"
+    memory.clear_session(session_id)
+    try:
+        memory.add_message(session_id, "user", "原始问题")
+        memory.add_message(session_id, "assistant", "原始回答")
+        for i in range(12):
+            memory.add_message(session_id, "assistant", f"补充 {i}")
+
+        history = memory.get_history(session_id, limit=5)
+
+        assert history[0]["role"] == "system"
+        assert any("补充 11" in message["content"] for message in history)
+    finally:
+        memory.clear_session(session_id)
+
+
 def test_compression_keeps_tool_turn_final_answer_and_tool_names():
     manager = MemoryEntropyManager()
     messages = [
@@ -111,6 +145,7 @@ def test_identity_roundtrip_and_updates_preserve_fields(tmp_path):
         expertise_domains=["神经系统"],
     )
     identity.update_tool_stats("search_knowledge", True, 1.0)
+    identity.created_at = datetime(2020, 5, 6, 7, 8, 9)
     identity.last_updated = datetime(2000, 1, 1)
     manager.save_identity(identity)
 
@@ -120,6 +155,8 @@ def test_identity_roundtrip_and_updates_preserve_fields(tmp_path):
     assert loaded.core_capabilities == ["症状分析"]
     assert loaded.expertise_domains == ["神经系统"]
     assert loaded.tool_usage_stats[0].tool_name == "search_knowledge"
+    assert loaded.created_at == datetime(2020, 5, 6, 7, 8, 9)
+    assert loaded.last_updated == datetime(2000, 1, 1)
 
     manager.update_tool_stats(
         "diagnostic_agent", "search_knowledge", True, 2.0
@@ -133,8 +170,9 @@ def test_identity_roundtrip_and_updates_preserve_fields(tmp_path):
 def test_identity_rejects_path_traversal(tmp_path):
     manager = AgentIdentityManager(str(tmp_path))
 
-    with pytest.raises(ValueError):
-        manager.load_identity("../escape")
+    for agent_id in ("../escape", "C:temp", "D:foo"):
+        with pytest.raises(ValueError):
+            manager.load_identity(agent_id)
 
 
 def test_session_summary_keeps_real_zero_tool_calls():
@@ -165,7 +203,15 @@ def test_merge_usage_derives_total_from_prompt_and_completion():
     total = merge_usage(
         {}, {"prompt_tokens": 1200, "completion_tokens": 800}
     )
+    assert total["total_tokens"] == 2000
 
+    total = merge_usage(
+        {}, {
+            "prompt_tokens": 1200,
+            "completion_tokens": 800,
+            "total_tokens": "2000.0",
+        }
+    )
     assert total["total_tokens"] == 2000
 
 
@@ -176,8 +222,16 @@ def test_store_usage_totals_derives_missing_total(tmp_path):
             "s1", "问题", "答复",
             metadata={"usage": {"prompt_tokens": 1200, "completion_tokens": 800}},
         )
+        store.save_exchange(
+            "s2", "问题", "答复",
+            metadata={"usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 800,
+                "total_tokens": "2000.0",
+            }},
+        )
         totals = store.usage_totals()
-        assert totals["usage"]["total_tokens"] == 2000
+        assert totals["usage"]["total_tokens"] == 4000
     finally:
         store.close()
 
@@ -202,8 +256,29 @@ def test_purge_uses_datetime_comparison_for_space_timestamps(tmp_path, monkeypat
         store.close()
 
 
+def test_purge_cleans_orphan_messages(tmp_path):
+    store = SessionStore(str(tmp_path / "orphan.db"))
+    try:
+        store.save_exchange("s1", "问题", "答复")
+        store._conn.execute("DELETE FROM sessions WHERE id = 's1'")
+        store._conn.commit()
+
+        result = store.purge_sessions_before("2999-01-01T00:00:00")
+
+        assert result == {"sessions": 0, "messages": 2}
+    finally:
+        store.close()
+
+
 def test_pricing_rejects_partially_invalid_configuration(monkeypatch):
     monkeypatch.setenv("MEDIX_PRICE_INPUT", "bad")
+    monkeypatch.setenv("MEDIX_PRICE_OUTPUT", "8")
+
+    assert get_pricing() is None
+
+
+def test_pricing_rejects_negative_price(monkeypatch):
+    monkeypatch.setenv("MEDIX_PRICE_INPUT", "-5")
     monkeypatch.setenv("MEDIX_PRICE_OUTPUT", "8")
 
     assert get_pricing() is None
@@ -216,13 +291,16 @@ def test_auto_archive_loop_runs_periodically(monkeypatch):
         calls.append(1)
 
     monkeypatch.setattr(api_server, "auto_archive_sessions", fake_archive)
+    monkeypatch.setattr(
+        api_server, "AUTO_ARCHIVE_INTERVAL_SECONDS", 0.01
+    )
 
     async def run_until_timeout():
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(
-                api_server.auto_archive_loop(), timeout=0.05
+                api_server.auto_archive_loop(), timeout=0.1
             )
 
     asyncio.run(run_until_timeout())
 
-    assert calls == [1]
+    assert len(calls) >= 2

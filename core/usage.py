@@ -27,11 +27,10 @@ def merge_usage(
     except (TypeError, ValueError, OverflowError):
         values["total_tokens"] = 0
 
-    # 部分客户端/备份只记录 prompt+completion；没有可信 total 时补算，
-    # 否则预算进度会显示 0 而费用列却有值
+    # 部分客户端/备份只记录 prompt+completion；total 缺失或无法解析为
+    # 正数时补算，否则预算进度会显示 0 而费用列却有值
     if (
         not values["total_tokens"]
-        and raw_total in (None, "", 0, "0")
         and (values["prompt_tokens"] or values["completion_tokens"])
     ):
         values["total_tokens"] = (
