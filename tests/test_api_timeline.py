@@ -191,6 +191,45 @@ def test_timeline_marks_over_target_metrics(client_and_store):
     assert alert_rows[0][3] == "140/95 mmHg"
 
 
+def test_timeline_csv_export_follows_filters(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    metric_at = (now - timedelta(minutes=3)).isoformat(timespec="minutes")
+    symptom_at = (now - timedelta(minutes=2)).isoformat(timespec="minutes")
+
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "bp", "value1": 135, "value2": 85,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 140, "value2": 95, "measured_at": metric_at,
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕",
+        "severity": 3, "recorded_at": symptom_at,
+    })
+
+    def read_rows(**params):
+        response = client.get(
+            "/api/timeline/export.csv",
+            params={"profile": "妈妈", **params},
+        )
+        return list(
+            csv.reader(io.StringIO(response.content.decode("utf-8-sig")))
+        )
+
+    symptom_rows = read_rows(type="symptom")
+    assert [row[1] for row in symptom_rows[1:]] == ["症状"]
+
+    alert_rows = read_rows(only_alert="true")
+    assert len(alert_rows) == 2
+    assert alert_rows[1][6] == "是"
+
+    search_rows = read_rows(q="头晕")
+    assert len(search_rows) == 2
+    assert search_rows[1][1] == "症状"
+
+
 def test_timeline_includes_consultations(client_and_store):
     client, store = client_and_store
 

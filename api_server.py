@@ -2412,8 +2412,11 @@ async def health_timeline(
 async def export_timeline_csv(
     profile: Optional[str] = None,
     days: int = 30,
+    type: Optional[str] = None,
+    only_alert: bool = False,
+    q: str = "",
 ):
-    """导出健康时间线 CSV（带 BOM），可按档案与最近天数筛选。"""
+    """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、超标与关键字筛选。"""
     import csv
     import io
 
@@ -2424,8 +2427,22 @@ async def export_timeline_csv(
         "medication": "用药",
         "consultation": "会诊",
     }
+    events = data["events"]
+    if type in type_labels:
+        events = [event for event in events if event.get("type") == type]
+    if only_alert:
+        events = [event for event in events if event.get("alert")]
+    query = str(q or "").strip().lower()
+    if query:
+        events = [
+            event for event in events
+            if query in " ".join(
+                str(event.get(key) or "")
+                for key in ("title", "value", "note", "profile")
+            ).lower()
+        ]
     rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "超标"]]
-    for event in data["events"]:
+    for event in events:
         rows.append([
             csv_safe_cell(event.get("at", "")),
             type_labels.get(event.get("type"), event.get("type", "")),
