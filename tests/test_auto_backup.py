@@ -1,6 +1,7 @@
 """本地自动备份的离线测试。"""
 import asyncio
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -87,6 +88,61 @@ def test_create_backup_rejects_oversized_payload(tmp_path, monkeypatch):
         )
     assert not list(tmp_path.glob("*.json"))
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_concurrent_same_second_backups_are_serialized(tmp_path):
+    now = datetime(2026, 1, 1, 8, 0, 0)
+    results = []
+    errors = []
+    barrier = threading.Barrier(4)
+
+    def worker(index):
+        barrier.wait()
+        try:
+            results.append(create_backup(
+                {"index": index}, directory=tmp_path, keep=10, now=now,
+            ))
+        except Exception as e:  # pragma: no cover - 失败时给出原因
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert not errors
+    assert len(results) == 4
+    assert len({path.name for path in results}) == 4
+    assert len(list(tmp_path.glob("medix-backup-*.json"))) == 4
+
+
+@pytest.mark.parametrize("field,value", [
+    ("MAX_BACKUP_SESSION_MESSAGES", 1),
+    ("MAX_BACKUP_MESSAGE_CHARS", 3),
+    ("MAX_BACKUP_TOTAL_CHARS", 5),
+])
+def test_create_backup_rejects_unimportable_message_caps(
+    tmp_path, monkeypatch, field, value
+):
+    import core.backup as backup_module
+
+    monkeypatch.setattr(backup_module, field, value)
+    payload = {
+        "sessions": [{
+            "id": "s1",
+            "messages": [
+                {"role": "user", "content": "abcd"},
+                {"role": "assistant", "content": "efgh"},
+            ],
+        }],
+    }
+    with pytest.raises(ValueError):
+        create_backup(
+            payload, directory=tmp_path,
+            now=datetime(2026, 1, 1, 8, 0, 0),
+        )
+    assert not list(tmp_path.glob("*.json"))
 
 
 def test_backup_config_defaults_and_caps(monkeypatch):
