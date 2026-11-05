@@ -18,6 +18,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 from core.serialization import sanitize_json
+from core.backup import (
+    MAX_BACKUP_MESSAGE_CHARS,
+    MAX_BACKUP_SESSION_MESSAGES,
+    MAX_BACKUP_TOTAL_CHARS,
+)
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db"
 
@@ -64,8 +69,8 @@ IMPORT_LIST_LIMITS = {
 
 #: 单条消息与整次导入的文本上限，兼顾超大备份可恢复与内存/锁占用。
 #: 整库请求体上限 128MB；按 UTF-8 最坏 4 字节/字符计算，30M 字符仍能送达。
-MAX_IMPORT_MESSAGE_CHARS = 1000000
-MAX_IMPORT_TOTAL_CHARS = 30000000
+MAX_IMPORT_MESSAGE_CHARS = MAX_BACKUP_MESSAGE_CHARS
+MAX_IMPORT_TOTAL_CHARS = MAX_BACKUP_TOTAL_CHARS
 
 
 def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
@@ -2148,6 +2153,10 @@ class SessionStore:
             messages = raw.get("messages")
             if not isinstance(messages, list):
                 continue
+            if len(messages) > MAX_BACKUP_SESSION_MESSAGES:
+                raise ValueError(
+                    f"单个会话最多导入 {MAX_BACKUP_SESSION_MESSAGES} 条消息。"
+                )
             for message in messages:
                 if not isinstance(message, dict):
                     continue
@@ -2190,9 +2199,10 @@ class SessionStore:
                 if not isinstance(raw_messages, list):
                     invalid += 1
                     continue
-                if len(raw_messages) > 10000:
-                    invalid += 1
-                    continue
+                if len(raw_messages) > MAX_BACKUP_SESSION_MESSAGES:
+                    raise ValueError(
+                        f"单个会话最多导入 {MAX_BACKUP_SESSION_MESSAGES} 条消息。"
+                    )
 
                 prepared = []
                 for message in raw_messages:
@@ -2617,6 +2627,12 @@ class SessionStore:
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
+            pre_existing_reminder_ids = {
+                int(row["id"])
+                for row in self._conn.execute(
+                    "SELECT id FROM reminders"
+                ).fetchall()
+            }
             if isinstance(raw_reminders, list):
                 for raw in raw_reminders[:IMPORT_LIST_LIMITS["reminders"]]:
                     if not isinstance(raw, dict):
@@ -2721,6 +2737,7 @@ class SessionStore:
                         ).fetchone()
                         if (
                             same_id is not None
+                            and int(same_id["id"]) in pre_existing_reminder_ids
                             and str(same_id["title"]) == title
                         ):
                             # 同一编号同标题视为已导入（日期可能被改过）
@@ -2748,6 +2765,16 @@ class SessionStore:
                             """,
                             (title, profile, note, session_id, due_at),
                         ).fetchone()
+                    if (
+                        exists is not None
+                        and reminder_id > 0
+                        and raw.get("created_at")
+                        and int(exists["id"]) not in pre_existing_reminder_ids
+                    ):
+                        # 不能把本次备份导入刚插入的提醒当成既有记录，否则会
+                        # 丢掉备份里同标题/同日期的另一条提醒；CSV 导入没有
+                        # 备份 id/created_at，仍需按内容去重同一文件内的重复行
+                        exists = None
                     if exists is not None:
                         if reminder_id > 0:
                             raw_reminder_id_map[reminder_id] = int(exists["id"])

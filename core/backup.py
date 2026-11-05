@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,9 +21,14 @@ DEFAULT_BACKUP_KEEP = 7
 MAX_BACKUP_KEEP = 100
 MAX_BACKUP_HOURS = 24 * 30
 MAX_BACKUP_FILE_BYTES = 128 * 1024 * 1024
+#: 与 SessionStore.import_data 共享的可恢复性上限
+MAX_BACKUP_MESSAGE_CHARS = 1_000_000
+MAX_BACKUP_TOTAL_CHARS = 30_000_000
+MAX_BACKUP_SESSION_MESSAGES = 10_000
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKUP_DIR = PROJECT_ROOT / "data" / "backups"
 BACKUP_PREFIX = "medix-backup-"
+_BACKUP_WRITE_LOCK = threading.Lock()
 _BACKUP_NAME = re.compile(
     r"^medix-backup-(\d{8}-\d{6})(?:-(\d+))?\.json$"
 )
@@ -76,6 +83,33 @@ def _prune_backups(directory: Path, keep: int) -> None:
             logger.warning(f"Failed to remove old backup {path.name}: {e}")
 
 
+def _validate_importable_payload(payload: Dict[str, Any]) -> None:
+    """拒绝写入无法通过 import_data 恢复的备份。"""
+    sessions = payload.get("sessions")
+    if not isinstance(sessions, list):
+        return
+    total_chars = 0
+    for raw in sessions:
+        if not isinstance(raw, dict):
+            continue
+        messages = raw.get("messages")
+        if not isinstance(messages, list):
+            continue
+        if len(messages) > MAX_BACKUP_SESSION_MESSAGES:
+            raise ValueError("单个会话消息过多，无法通过 Web 恢复。")
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            if len(content) > MAX_BACKUP_MESSAGE_CHARS:
+                raise ValueError("单条消息过长，无法通过 Web 恢复。")
+            total_chars += len(content)
+            if total_chars > MAX_BACKUP_TOTAL_CHARS:
+                raise ValueError("备份消息总量过大，无法通过 Web 恢复。")
+
+
 def create_backup(
     payload: Dict[str, Any],
     directory: Optional[Path] = None,
@@ -85,44 +119,53 @@ def create_backup(
     """原子写入一份完整备份，并按保留数量清理旧文件。"""
     if not isinstance(payload, dict):
         raise ValueError("备份内容必须是对象。")
+    _validate_importable_payload(payload)
     target_dir = Path(directory) if directory else get_backup_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    base = f"{BACKUP_PREFIX}{stamp}"
-    path = target_dir / f"{base}.json"
-    counter = 1
-    while path.exists():
-        path = target_dir / f"{base}-{counter}.json"
-        counter += 1
 
-    temp_path = path.with_name(path.name + ".tmp")
-    try:
-        text = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
+    # 同秒并发的手动/自动备份必须串行选择文件名、写入临时文件并轮转，
+    # 否则多个线程会共用同一个 .tmp 或互相覆盖最终文件
+    with _BACKUP_WRITE_LOCK:
+        stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+        base = f"{BACKUP_PREFIX}{stamp}"
+        path = target_dir / f"{base}.json"
+        counter = 1
+        while path.exists():
+            path = target_dir / f"{base}-{counter}.json"
+            counter += 1
+
+        fd, temp_name = tempfile.mkstemp(
+            prefix=path.name + ".", suffix=".tmp", dir=str(target_dir)
         )
-        # 超过请求体上限的备份无法通过 Web 导入/恢复，直接拒绝写入
-        if len(text.encode("utf-8")) > MAX_BACKUP_FILE_BYTES:
-            raise ValueError("备份数据超过单个文件上限，未写入备份。")
-        temp_path.write_text(text, encoding="utf-8")
-        temp_path.replace(path)
+        os.close(fd)
+        temp_path = Path(temp_name)
         try:
-            # 备份含健康数据，尽量只允许当前用户读取（Windows 上忽略权限位）
-            path.chmod(0o600)
-        except OSError:
-            pass
-    except Exception:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            text = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if len(text.encode("utf-8")) > MAX_BACKUP_FILE_BYTES:
+                raise ValueError("备份数据超过单个文件上限，未写入备份。")
+            temp_path.write_text(text, encoding="utf-8")
+            temp_path.replace(path)
+            try:
+                # 备份含健康数据，尽量只允许当前用户读取（Windows 上忽略权限位）
+                path.chmod(0o600)
+            except OSError:
+                pass
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
-    _prune_backups(
-        target_dir,
-        max(1, keep if keep is not None else get_backup_keep()),
-    )
+        _prune_backups(
+            target_dir,
+            max(1, keep if keep is not None else get_backup_keep()),
+        )
+
     logger.info(f"Created local backup: {path.name}")
     return path
 
