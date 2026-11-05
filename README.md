@@ -343,7 +343,7 @@ npm install -D playwright
 | GET | `/api/medication-logs` | 用药打卡记录（跨药物，按服用时间倒序，可按 `profile`/`days` 筛选） |
 | PATCH | `/api/metrics/{id}` | 更新健康指标记录 |
 | DELETE | `/api/metrics/{id}` | 删除健康指标记录 |
-| GET | `/api/metrics/export.csv` | 导出当前患者档案/指标类型的健康记录 CSV（带 BOM） |
+| GET | `/api/metrics/export.csv` | 导出健康记录 CSV（带 BOM，可按 `profile`/`metric`/`days`/`q` 筛选） |
 | POST | `/api/metrics/import` | 从导出的 CSV 格式导入健康记录，重复记录自动跳过 |
 | GET | `/api/metric-targets` | 自定义健康指标目标（可按 `profile` 筛选） |
 | PUT | `/api/metric-targets` | 设置或覆盖目标上限（血氧为下限；血压需同时提供舒张压） |
