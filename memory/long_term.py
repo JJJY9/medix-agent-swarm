@@ -14,6 +14,7 @@ Mem0 优势：
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from loguru import logger
+import math
 import os
 import sys
 
@@ -73,18 +74,13 @@ class LongTermMemory:
             logger.debug("✅ Entropy management enabled for long-term memory")
 
         try:
-            # 获取 API key（优先级：config参数 > 全局config.py > 环境变量）
-            mem0_api_key = None
-
-            # 1. 从参数config获取
-            if config and "api_key" in config:
-                mem0_api_key = config["api_key"]
-            # 2. 从全局config.py获取
-            elif MEM0_CONFIG and "api_key" in MEM0_CONFIG:
-                mem0_api_key = MEM0_CONFIG["api_key"]
-            # 3. 从环境变量获取
-            else:
-                mem0_api_key = os.getenv("MEM0_API_KEY")
+            # 获取 API key（优先级：参数 config > 环境变量 > 全局 config.py）
+            # config.py 仓库模板里 api_key 是空字符串，不能让空值挡住 .env
+            mem0_api_key = (
+                (config or {}).get("api_key")
+                or os.getenv("MEM0_API_KEY")
+                or (MEM0_CONFIG or {}).get("api_key")
+            )
 
             if not mem0_api_key:
                 raise ValueError("MEM0_API_KEY not found. Set it in ../config.py or .env")
@@ -104,7 +100,8 @@ class LongTermMemory:
         session_id: str,
         question: str,
         answer: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: str = "medix_local",
     ) -> Optional[str]:
         """
         添加会话总结到 Mem0
@@ -122,13 +119,16 @@ class LongTermMemory:
             return None
 
         try:
-            # 构建记忆文本（包含问题和答案摘要）
-            memory_text = f"问题：{question}\n回答：{answer[:500]}..."
+            # 构建记忆文本（包含问题和答案摘要），限制长度避免超大 payload
+            memory_text = (
+                f"问题：{str(question or '')[:2000]}\n"
+                f"回答：{str(answer or '')[:500]}..."
+            )
 
             # 添加到 Mem0
             result = self.mem0.add(
                 messages=[{"role": "user", "content": memory_text}],
-                user_id="medix_user",  # 固定用户ID（可扩展为多用户）
+                user_id=str(user_id or "medix_local")[:120],
                 metadata={
                     "type": "session_summary",
                     "session_id": session_id,
@@ -159,7 +159,8 @@ class LongTermMemory:
     def search_similar_sessions(
         self,
         query: str,
-        limit: int = 5
+        limit: int = 5,
+        user_id: str = "medix_local",
     ) -> List[Dict[str, Any]]:
         """
         搜索相似的历史会话（向量相似度搜索，自动去重）
@@ -175,10 +176,15 @@ class LongTermMemory:
             return []
 
         try:
+            result_limit = max(1, min(int(limit or 5), 20))
+        except (TypeError, ValueError, OverflowError):
+            result_limit = 5
+
+        try:
             results = self.mem0.search(
                 query=query,
-                user_id="medix_user",
-                limit=limit * 2  # 多获取一些以便去重后有足够结果
+                user_id=str(user_id or "medix_local")[:120],
+                limit=result_limit * 2,
             )
 
             # 添加调试日志
@@ -198,12 +204,26 @@ class LongTermMemory:
                 results_list = []
 
             for result in results_list:
+                if not isinstance(result, dict):
+                    continue
+                metadata = result.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                content = result.get("memory", result.get("text", ""))
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                try:
+                    score = float(result.get("score", 0.0))
+                except (TypeError, ValueError, OverflowError):
+                    score = 0.0
+                if not math.isfinite(score):
+                    score = 0.0
                 formatted_results.append({
                     "memory_id": result.get("id", "unknown"),
-                    "content": result.get("memory", result.get("text", "")),
-                    "score": result.get("score", 0.0),
-                    "metadata": result.get("metadata", {}),
-                    "timestamp": result.get("metadata", {}).get("timestamp")
+                    "content": content,
+                    "score": score,
+                    "metadata": metadata,
+                    "timestamp": metadata.get("timestamp"),
                 })
 
             # Harness Engineering: 熵管理 - 去重相似会话
@@ -212,7 +232,7 @@ class LongTermMemory:
                 
 
             # 限制返回数量
-            formatted_results = formatted_results[:limit]
+            formatted_results = formatted_results[:result_limit]
 
             # 只记录检索规模，不把患者问题写进日志
             logger.debug(

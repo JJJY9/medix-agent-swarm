@@ -250,7 +250,10 @@ class SessionSummary:
         # 提取关键发现
         key_findings = []
         for contrib in shared_context.get_contributions():
-            if "risk_level" in contrib.result:
+            if (
+                isinstance(contrib.result, dict)
+                and "risk_level" in contrib.result
+            ):
                 key_findings.append(KeyFinding(
                     category="risk",
                     finding=f"风险等级：{contrib.result['risk_level']}",
@@ -347,7 +350,11 @@ class SessionSummaryManager:
 
     def __init__(self, base_dir: str = "memory/swarm/session_summaries"):
         self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            # 总结是可选功能，目录不可写不应拖垮整个协调器
+            logger.warning(f"会话总结目录不可用: {e}")
 
     def _get_summary_path(self, session_id: str) -> Path:
         """获取会话总结文件路径（会话 ID 只保留安全字符，防止路径穿越）。"""
@@ -372,7 +379,9 @@ class SessionSummaryManager:
 
         try:
             content = summary.to_markdown()
-            summary_path.write_text(content, encoding="utf-8")
+            temp_path = summary_path.with_name(summary_path.name + ".tmp")
+            temp_path.write_text(content, encoding="utf-8")
+            temp_path.replace(summary_path)
             logger.info(f"Saved session summary: {summary.session_id}")
         except Exception as e:
             logger.error(f"Error saving session summary: {e}")
@@ -398,11 +407,33 @@ class SessionSummaryManager:
         limit: int = 5
     ) -> List[Path]:
         """
-        搜索相似的会话（简化实现）
+        搜索相似的会话（按关键词过滤后返回最近的总结）
 
         未来可以使用向量相似度搜索
         """
-        # 简单实现：返回最近的会话
-        all_summaries = list(self.base_dir.rglob("*.md"))
-        all_summaries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        try:
+            limit = max(1, min(int(limit or 5), 50))
+        except (TypeError, ValueError):
+            limit = 5
+        try:
+            all_summaries = list(self.base_dir.rglob("*.md"))
+        except OSError as e:
+            logger.warning(f"读取会话总结目录失败: {e}")
+            return []
+        query = str(query or "").strip().lower()
+        if query:
+            matched = []
+            for path in all_summaries:
+                try:
+                    if query in path.read_text(
+                        encoding="utf-8", errors="ignore"
+                    ).lower():
+                        matched.append(path)
+                except OSError:
+                    continue
+            all_summaries = matched
+        all_summaries.sort(
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True,
+        )
         return all_summaries[:limit]

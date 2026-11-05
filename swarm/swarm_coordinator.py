@@ -122,13 +122,15 @@ class SwarmCoordinator:
         }
         return mapping.get(agent_id)
 
-    def _restore_short_term_context(self, session_id: str) -> None:
+    async def _restore_short_term_context(self, session_id: str) -> None:
         """服务重启后从 SQLite 恢复最近问答，保证多轮上下文不中断。"""
         if self.short_term_memory.get_session(session_id) is not None:
             return
 
         try:
-            stored = self.session_store.get_messages(session_id, limit=10)
+            stored = await asyncio.to_thread(
+                self.session_store.get_messages, session_id, 10
+            )
         except Exception as e:
             logger.warning(f"读取历史会话失败（session={session_id}）: {e}")
             return
@@ -277,7 +279,18 @@ class SwarmCoordinator:
             session_id = f"{start_time.strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
         use_swarm = self.enable_swarm if enable_swarm is None else bool(enable_swarm)
 
-        logger.info(f"Processing question (session={session_id}): {question[:50]}...")
+        # 长期记忆按患者档案/会话隔离；API 会把 memory_scope 放进 context
+        memory_scope = ""
+        if isinstance(context, dict):
+            memory_scope = str(context.get("memory_scope") or "").strip()
+        if not memory_scope:
+            memory_scope = f"medix_session_{session_id}"
+        memory_scope = memory_scope[:120]
+
+        logger.info(
+            f"Processing question (session={session_id}): "
+            f"length={len(question or '')}"
+        )
 
         # 确定性急症预检：命中红旗时立即随结果返回，不依赖模型输出
         triage = detect_red_flags(question, context)
@@ -286,7 +299,7 @@ class SwarmCoordinator:
         medication_safety = check_medication_safety(question, context)
 
         # 服务重启后从 SQLite 恢复本会话的最近问答
-        self._restore_short_term_context(session_id)
+        await self._restore_short_term_context(session_id)
 
         # ===== 统一的记忆检索（所有模式都使用）=====
         # 1. 检索短期记忆（当前会话历史）
@@ -296,9 +309,11 @@ class SwarmCoordinator:
         )
 
         # 2. 检索长期记忆（相似历史会话）
-        similar_memories = self.long_term_memory.search_similar_sessions(
+        similar_memories = await asyncio.to_thread(
+            self.long_term_memory.search_similar_sessions,
             query=question,
-            limit=3
+            limit=3,
+            user_id=memory_scope,
         )
 
         # 3. 构建增强上下文（复制一份，避免修改调用方传入的字典）
@@ -400,7 +415,8 @@ class SwarmCoordinator:
                 start_time=start_time,
                 on_token=on_token,
                 lead_usage=lead_usage,
-                patient_context=patient_context
+                patient_context=patient_context,
+                memory_scope=memory_scope,
             )
             final_answer = result.get('answer', '')
 
@@ -408,7 +424,8 @@ class SwarmCoordinator:
             # 再把会诊依据写入 SQLite
             result['triage'] = triage
             result['medication_safety'] = medication_safety
-            result['assistant_message_id'] = self._save_exchange(
+            result['assistant_message_id'] = await asyncio.to_thread(
+                self._save_exchange,
                 session_id,
                 question,
                 final_answer,
@@ -450,22 +467,28 @@ class SwarmCoordinator:
 
         # 保存到长期记忆
         try:
-            self.long_term_memory.add_session_summary(
+            memory_id = await asyncio.to_thread(
+                self.long_term_memory.add_session_summary,
                 session_id=session_id,
                 question=question,
                 answer=final_answer,
+                user_id=memory_scope,
                 metadata={
                     "mode": mode,
                     "subtasks_count": len(subtasks),
                     "total_time": (end_time - start_time).total_seconds(),
-                }
+                },
             )
-            logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
+            if memory_id:
+                logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
+            else:
+                logger.warning(f"Long-term memory not saved (session={session_id}, mode={mode})")
         except Exception as e:
             logger.error(f"Failed to save to long-term memory: {e}")
 
         # 持久化到 SQLite，供历史列表与重启恢复使用
-        result['assistant_message_id'] = self._save_exchange(
+        result['assistant_message_id'] = await asyncio.to_thread(
+            self._save_exchange,
             session_id,
             question,
             final_answer,
@@ -493,7 +516,8 @@ class SwarmCoordinator:
         start_time: datetime,
         on_token: Optional[Callable[[str], None]] = None,
         lead_usage: Optional[Dict[str, int]] = None,
-        patient_context: Optional[Dict[str, Any]] = None
+        patient_context: Optional[Dict[str, Any]] = None,
+        memory_scope: str = "",
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -514,6 +538,8 @@ class SwarmCoordinator:
         shared_context = SharedContext(session_id=session_id)
         # 让每个 Worker 在处理子任务时都能看到患者背景与最近对话
         shared_context.data["patient_context"] = worker_context
+        if memory_scope:
+            shared_context.data["memory_scope"] = memory_scope
 
         # 附加 SharedContext 到所有 Worker
         for worker in self.worker_pool:
@@ -610,7 +636,9 @@ class SwarmCoordinator:
                 start_time=start_time,
                 end_time=end_time
             )
-            self.session_manager.save_summary(summary)
+            await asyncio.to_thread(
+                self.session_manager.save_summary, summary
+            )
         except Exception as e:
             logger.error(f"Failed to generate session summary: {e}")
 
@@ -620,19 +648,24 @@ class SwarmCoordinator:
         # 保存到 Mem0 长期记忆
         try:
             # 保存会话总结
-            self.long_term_memory.add_session_summary(
+            memory_id = await asyncio.to_thread(
+                self.long_term_memory.add_session_summary,
                 session_id=session_id,
                 question=question,
                 answer=final_answer,
+                user_id=memory_scope or f"medix_session_{session_id}",
                 metadata={
                     "mode": "swarm",
                     "agents_count": len(shared_context.agent_contributions),
                     "total_time": (end_time - start_time).total_seconds(),
                     "timeout_occurred": timeout_occurred
-                }
+                },
             )
 
-            logger.info(f"Saved to Mem0 long-term memory (session={session_id})")
+            if memory_id:
+                logger.info(f"Saved to Mem0 long-term memory (session={session_id})")
+            else:
+                logger.warning(f"Mem0 long-term memory not saved (session={session_id})")
 
         except Exception as e:
             logger.error(f"Failed to save to Mem0: {e}")

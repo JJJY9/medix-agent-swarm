@@ -23,6 +23,14 @@ def client_and_store(tmp_path, monkeypatch):
         store.close()
 
 
+def test_memory_scope_is_derived_from_profile_or_session():
+    assert api_server._memory_scope("母亲", "s1") == "medix_profile_母亲"
+    assert api_server._memory_scope("", "s1") == "medix_session_s1"
+    assert api_server._memory_scope("a/b:c", "s1").startswith(
+        "medix_profile_a_b_c"
+    )
+
+
 def test_audit_csv_sanitizes_imported_formula_cells(client_and_store):
     client, store = client_and_store
     store.import_data({

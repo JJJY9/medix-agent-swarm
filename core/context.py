@@ -18,7 +18,7 @@ CONTEXT_LABELS = {
 }
 
 #: 由记忆系统注入的内部字段，不写入患者的公开上下文
-INTERNAL_CONTEXT_KEYS = {"recent_history", "historical_cases"}
+INTERNAL_CONTEXT_KEYS = {"recent_history", "historical_cases", "memory_scope"}
 
 #: 内部记忆字段在提示词里的展示标签（仅 include_internal=True 时渲染）
 INTERNAL_CONTEXT_LABELS = {

@@ -3,6 +3,7 @@ Search Similar Cases Skill
 搜索相似历史案例（长期记忆/Mem0）
 """
 from typing import Dict, Any
+import math
 from loguru import logger
 
 
@@ -21,9 +22,27 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
             "query": "原始查询"
         }
     """
-    logger.info(f"Searching similar cases: query={query}, max_results={max_results}")
+    logger.info(
+        f"Searching similar cases: query_length={len(query or '')}, "
+        f"max_results={max_results}"
+    )
 
     try:
+        max_results = max(1, min(int(max_results or 3), 10))
+    except (TypeError, ValueError):
+        max_results = 3
+
+    try:
+        from core.session_context import get_memory_scope
+
+        scope = get_memory_scope()
+        if not scope:
+            return {
+                "answer": "当前会话没有可用的长期记忆作用域，无法检索历史案例。",
+                "total_found": 0,
+                "query": query
+            }
+
         # 导入长期记忆系统
         from memory.long_term import LongTermMemory
 
@@ -37,8 +56,10 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
                 "query": query
             }
 
-        # 搜索相似会话
-        results = memory.search_similar_sessions(query=query, limit=max_results)
+        # 只搜索当前患者/会话作用域，避免跨患者泄漏
+        results = memory.search_similar_sessions(
+            query=query, limit=max_results, user_id=scope
+        )
 
         if not results:
             return {
@@ -59,7 +80,7 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
     except Exception as e:
         logger.error(f"Failed to search similar cases: {e}")
         return {
-            "answer": f"抱歉，搜索历史案例时出错：{str(e)}",
+            "answer": "抱歉，搜索历史案例时出错，请稍后重试。",
             "total_found": 0,
             "query": query
         }
@@ -82,8 +103,15 @@ def format_cases(results: list) -> str:
 
     for i, case in enumerate(results, 1):
         content = case.get("content", "")
-        score = case.get("score", 0.0)
+        try:
+            score = float(case.get("score", 0.0))
+        except (TypeError, ValueError, OverflowError):
+            score = 0.0
+        if not math.isfinite(score):
+            score = 0.0
         metadata = case.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
 
         output.append(f"【案例 {i}】（相似度: {score:.2%}）")
         output.append(content[:300] + "..." if len(content) > 300 else content)

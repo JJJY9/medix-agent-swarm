@@ -22,6 +22,11 @@ except ImportError:
     ENTROPY_ENABLED = False
 
 
+#: 单会话消息上限与进程内会话上限，避免长期运行 OOM
+MAX_MESSAGES_PER_SESSION = 1000
+MAX_IN_MEMORY_SESSIONS = 200
+
+
 @dataclass
 class ConversationHistory:
     """对话历史数据类"""
@@ -38,6 +43,8 @@ class ConversationHistory:
             "content": content,
             "timestamp": datetime.now().isoformat()
         })
+        if len(self.messages) > MAX_MESSAGES_PER_SESSION:
+            del self.messages[:-MAX_MESSAGES_PER_SESSION]
         self.last_updated = datetime.now()
 
     def get_recent_messages(self, limit: int = 50) -> List[Dict[str, str]]:
@@ -150,6 +157,18 @@ class ShortTermMemory:
         else:
             logger.info("ShortTermMemory initialized with in-memory storage")
 
+    def _evict_local_sessions(self) -> None:
+        """限制进程内会话数量，优先淘汰最久未更新的会话。"""
+        overflow = len(self.sessions) - MAX_IN_MEMORY_SESSIONS
+        if overflow <= 0:
+            return
+        oldest = sorted(
+            self.sessions.items(),
+            key=lambda item: item[1].last_updated,
+        )[:overflow]
+        for session_id, _ in oldest:
+            self.sessions.pop(session_id, None)
+
     def create_session(
         self,
         session_id: str,
@@ -172,8 +191,12 @@ class ShortTermMemory:
 
         if self.storage_type == "memory":
             self.sessions[session_id] = history
+            self._evict_local_sessions()
         elif self.storage_type == "redis" and self.redis_client:
-            self._save_to_redis(history)
+            if not self._save_to_redis(history):
+                # Redis 暂时不可用时保留进程内副本，避免本轮直接丢失
+                self.sessions[session_id] = history
+                self._evict_local_sessions()
 
         logger.debug(f"Created session: {session_id}")
         return history
@@ -212,7 +235,13 @@ class ShortTermMemory:
 
         # 保存到存储
         if self.storage_type == "redis" and self.redis_client:
-            self._save_to_redis(history)
+            if not self._save_to_redis(history):
+                # 写 Redis 失败时退回本地副本，至少保证当前进程还能续聊
+                self.sessions[session_id] = history
+                self._evict_local_sessions()
+        elif self.storage_type == "memory":
+            self.sessions[session_id] = history
+            self._evict_local_sessions()
 
         logger.debug(f"Added {role} message to session {session_id}")
 
@@ -229,7 +258,9 @@ class ShortTermMemory:
         if self.storage_type == "memory":
             return self.sessions.get(session_id)
         elif self.storage_type == "redis" and self.redis_client:
-            return self._load_from_redis(session_id)
+            history = self._load_from_redis(session_id)
+            # Redis 读取失败/尚无数据时使用进程内兜底副本
+            return history if history is not None else self.sessions.get(session_id)
         return None
 
     def get_recent_messages(
@@ -343,8 +374,13 @@ class ShortTermMemory:
         if self.storage_type == "memory":
             self.sessions.pop(session_id, None)
         elif self.storage_type == "redis" and self.redis_client:
-            key = f"session:{session_id}"
-            self.redis_client.delete(key)
+            self.sessions.pop(session_id, None)
+            try:
+                key = f"session:{session_id}"
+                self.redis_client.delete(key)
+            except Exception as e:
+                # Redis 删除失败不应阻断 SQLite 会话删除
+                logger.error(f"Failed to clear Redis session: {e}")
 
         logger.debug(f"Cleared session: {session_id}")
 

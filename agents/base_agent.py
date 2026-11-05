@@ -195,6 +195,12 @@ class BaseAgent(ABC):
             'subtask_type': subtask.type,
             'context': patient_context,
         }
+        if shared is not None:
+            scope = getattr(shared, "data", {}).get("memory_scope")
+            if scope:
+                input_data['context'] = {
+                    **patient_context, "memory_scope": scope
+                }
         if session_id:
             # 模型据此调用 search_history，避免自行编造会话 ID；
             # Worker 不写短期记忆，历史已由协调器注入 context。
