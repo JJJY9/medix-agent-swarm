@@ -463,7 +463,8 @@ def test_reminders_ics_skips_alarm_for_done(client_and_store):
         "/api/reminders/export.ics", params={"include_done": True}
     ).content.decode("utf-8")
 
-    assert "STATUS:COMPLETED" in text
+    assert "STATUS:CONFIRMED" in text
+    assert "TRANSP:TRANSPARENT" in text
     assert "BEGIN:VALARM" not in text
 
 
@@ -560,7 +561,8 @@ def test_reminders_ics_skips_rrule_for_done(client_and_store):
         "/api/reminders/export.ics", params={"include_done": True}
     ).content.decode("utf-8")
 
-    assert "STATUS:COMPLETED" in text
+    assert "STATUS:COMPLETED" not in text
+    assert "TRANSP:TRANSPARENT" in text
     assert text.count("RRULE:FREQ=DAILY;INTERVAL=3") == 1
 
 

@@ -2585,14 +2585,26 @@ class SessionStore:
                                 same_id["id"]
                             )
                             continue
-                    exists = self._conn.execute(
-                        """
-                        SELECT id FROM reminders
-                         WHERE title = ? AND profile = ? AND note = ?
-                           AND session_id = ? AND created_at = ?
-                        """,
-                        (title, profile, note, session_id, created_at),
-                    ).fetchone()
+                    if reminder_id > 0:
+                        # 备份导入用 created_at 去重：提醒改期后仍能识别
+                        exists = self._conn.execute(
+                            """
+                            SELECT id FROM reminders
+                             WHERE title = ? AND profile = ? AND note = ?
+                               AND session_id = ? AND created_at = ?
+                            """,
+                            (title, profile, note, session_id, created_at),
+                        ).fetchone()
+                    else:
+                        # CSV 导入没有 created_at：按内容与到期日去重
+                        exists = self._conn.execute(
+                            """
+                            SELECT id FROM reminders
+                             WHERE title = ? AND profile = ? AND note = ?
+                               AND session_id = ? AND due_at = ?
+                            """,
+                            (title, profile, note, session_id, due_at),
+                        ).fetchone()
                     if exists is not None:
                         if reminder_id > 0:
                             raw_reminder_id_map[reminder_id] = int(exists["id"])
@@ -4418,9 +4430,11 @@ class SessionStore:
         now = self._now()
         with self._lock, self._conn:
             row = self._conn.execute(
-                "SELECT due_at FROM reminders WHERE id = ?", (int(reminder_id),)
+                "SELECT due_at, done FROM reminders WHERE id = ?",
+                (int(reminder_id),),
             ).fetchone()
-            if row is None:
+            if row is None or row["done"]:
+                # 已完成的提醒不再推迟：否则会带着新日期继续计入统计
                 return None
             raw_due = str(row["due_at"] or "").strip()
             try:

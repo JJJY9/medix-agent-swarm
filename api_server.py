@@ -739,7 +739,10 @@ app = FastAPI(
 PUBLIC_API_PATHS = {"/api/status"}
 DOC_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
 CHAT_PATHS = {"/api/chat", "/api/chat/stream"}
+DIAGNOSE_PATHS = {"/api/diagnose/llm"}
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
+# 自检端点会真实调用一次付费模型，单独限制频率
+diagnose_limiter = SlidingWindowLimiter(5)
 
 SECURITY_CSP = (
     "default-src 'self'; "
@@ -808,6 +811,20 @@ async def require_access_token(request: Request, call_next):
                 status_code=429,
                 content={
                     "detail": "会诊请求过于频繁，请稍后再试。",
+                    "code": "rate_limited",
+                    "retry_after": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(max(1, int(retry_after)))},
+            ))
+
+    if path in DIAGNOSE_PATHS:
+        client_key = request.client.host if request.client else "unknown"
+        allowed, retry_after = diagnose_limiter.check(client_key)
+        if not allowed:
+            return add_security_headers(JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "自检请求过于频繁，请稍后再试。",
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
@@ -1701,18 +1718,20 @@ async def export_medication_logs_csv(
 
 
 @app.post("/api/medications/import")
-async def import_medications_csv(file: UploadFile = File(...)):
+async def import_medications_csv(request: Request, file: UploadFile = File(...)):
     """从导出的 CSV 格式导入用药清单，重复记录自动跳过。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    raw = await file.read()
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
     if not raw:
         raise HTTPException(status_code=400, detail="CSV 文件为空")
     if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
 
     try:
         text = raw.decode("utf-8-sig")
@@ -2011,18 +2030,20 @@ async def export_symptoms_csv(
 
 
 @app.post("/api/symptoms/import")
-async def import_symptoms_csv(file: UploadFile = File(...)):
+async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
     """从导出的 CSV 格式导入症状记录，重复记录自动跳过。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    raw = await file.read()
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
     if not raw:
         raise HTTPException(status_code=400, detail="CSV 文件为空")
     if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
 
     try:
         text = raw.decode("utf-8-sig")
@@ -2964,6 +2985,7 @@ async def add_metric(request: MetricRequest):
     )
     if item is None:
         raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
+    await record_audit("metric.create", f"{item['id']}·{item['metric']}")
     return {"ok": True, "metric": item}
 
 
@@ -2990,6 +3012,7 @@ async def update_metric(metric_id: int, request: MetricUpdateRequest):
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+    await record_audit("metric.update", f"{item['id']}·{item['metric']}")
     return {"ok": True, "metric": item}
 
 
@@ -3074,18 +3097,20 @@ async def export_metrics_csv(
 
 
 @app.post("/api/metrics/import")
-async def import_metrics_csv(file: UploadFile = File(...)):
+async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
     """从导出的 CSV 格式导入健康指标，重复记录自动跳过。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    raw = await file.read()
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
     if not raw:
         raise HTTPException(status_code=400, detail="CSV 文件为空")
     if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
 
     try:
         text = raw.decode("utf-8-sig")
@@ -3271,6 +3296,7 @@ async def save_profile(request: ProfileRequest):
     )
     if profile is None:
         raise HTTPException(status_code=400, detail="档案名称或内容为空")
+    await record_audit("profile.save", profile["name"])
     return {"ok": True, "profile": profile}
 
 
@@ -4169,8 +4195,12 @@ async def export_reminders_ics(
             end_line,
             f"SUMMARY:{escape_ics(item.get('title') or '随访提醒')}",
             f"DESCRIPTION:{escape_ics(description)}",
-            "STATUS:COMPLETED" if item.get("done") else "STATUS:CONFIRMED",
+            # RFC 5545 的 VEVENT STATUS 只允许 TENTATIVE/CONFIRMED/CANCELLED
+            "STATUS:CONFIRMED",
         ])
+        if item.get("done"):
+            # 已完成的提醒用透明事件表示，避免日历客户端解析失败
+            lines.append("TRANSP:TRANSPARENT")
         repeat_days = int(item.get("repeat_days") or 0)
         if repeat_days > 0 and not item.get("done"):
             rule = f"RRULE:FREQ=DAILY;INTERVAL={repeat_days}"
@@ -4201,18 +4231,20 @@ async def export_reminders_ics(
 
 
 @app.post("/api/reminders/import")
-async def import_reminders_csv(file: UploadFile = File(...)):
+async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
     """从导出的 CSV 格式导入随访提醒，重复提醒自动跳过。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    raw = await file.read()
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
     if not raw:
         raise HTTPException(status_code=400, detail="CSV 文件为空")
     if len(raw) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="CSV 文件超过 5 MB")
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
 
     try:
         text = raw.decode("utf-8-sig")
@@ -4397,7 +4429,9 @@ async def snooze_reminder(reminder_id: int, days: int = 7):
         get_session_store().snooze_reminder, reminder_id, days
     )
     if reminder is None:
-        raise HTTPException(status_code=404, detail="提醒不存在")
+        raise HTTPException(
+            status_code=404, detail="提醒不存在或已完成，无法推迟"
+        )
     await record_audit(
         "reminder.snooze", reminder_audit_target(reminder), f"days={days}"
     )
