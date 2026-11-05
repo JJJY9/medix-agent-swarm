@@ -7268,6 +7268,8 @@ function renderFamilyOverview(data) {
       chips.appendChild(familyChip(
         `近 ${days} 天暂无健康记录`, 'family-chip-muted'
       ));
+    } else if (profile.recorded_today === false) {
+      chips.appendChild(familyChip('今日未记录', 'family-chip-muted'));
     }
     card.appendChild(chips);
 

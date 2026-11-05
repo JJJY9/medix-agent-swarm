@@ -2926,6 +2926,17 @@ async def family_overview(days: int = 7):
             medication.get("last_taken_at") or "",
         ]
         last_activity = max(activity_candidates)
+        recorded_today = bool(
+            any(
+                str(metric.get("measured_at") or "")[:10] == today
+                for metric in metrics
+            )
+            or str(
+                (symptom.get("latest") or {}).get("recorded_at") or ""
+            )[:10] == today
+            or medication.get("taken_today")
+            or str(consultation.get("latest_at") or "")[:10] == today
+        )
         profiles.append({
             "name": name,
             "context": contexts.get(name) or {},
@@ -2935,6 +2946,7 @@ async def family_overview(days: int = 7):
             "symptoms": symptom,
             "consultations": consultation,
             "last_activity": last_activity,
+            "recorded_today": recorded_today,
         })
 
     profiles.sort(
