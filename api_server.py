@@ -110,6 +110,7 @@ class ImportSessionsRequest(BaseModel):
     medications: Optional[List[Dict[str, Any]]] = None
     medication_logs: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
+    checksum: Optional[str] = None
 
 
 class FavoriteRequest(BaseModel):
@@ -1488,6 +1489,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "medications": request.medications,
         "medication_logs": request.medication_logs,
         "audit_log": request.audit_log,
+        "checksum": request.checksum,
     }
     try:
         result = await asyncio.to_thread(

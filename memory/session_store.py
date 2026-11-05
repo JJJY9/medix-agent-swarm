@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -646,6 +647,35 @@ def _session_filter_conditions(
         conditions.append("s.updated_at >= ?")
         params.append(cutoff)
     return conditions, params
+
+
+#: 参与备份校验和的字段（导出时间与会话计数是派生信息，不参与）
+_BACKUP_CHECKSUM_FIELDS = (
+    "version",
+    "sessions",
+    "profiles",
+    "health_metrics",
+    "metric_targets",
+    "reminders",
+    "symptoms",
+    "medications",
+    "medication_logs",
+    "audit_log",
+)
+
+
+def _backup_checksum(payload: Dict[str, Any]) -> str:
+    """计算备份内容的 SHA-256；只覆盖可往返的业务字段。"""
+    body = {key: payload.get(key) for key in _BACKUP_CHECKSUM_FIELDS}
+    canonical = json.dumps(
+        sanitize_json(body),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
 
 
 class SessionStore:
@@ -1949,7 +1979,7 @@ class SessionStore:
                 "messages": messages_by_session.get(item["id"], []),
             })
 
-        return {
+        payload = {
             "version": 1,
             "exported_at": self._now(),
             "session_count": len(exported),
@@ -1963,6 +1993,8 @@ class SessionStore:
             "medications": self.list_medications(limit=100000),
             "medication_logs": self.list_medication_logs(limit=100000),
         }
+        payload["checksum"] = _backup_checksum(payload)
+        return payload
 
     def import_data(
         self, data: Any, max_sessions: int = 100000
@@ -1970,6 +2002,13 @@ class SessionStore:
         """导入备份数据；已存在的会话编号与档案名称直接跳过，不覆盖现有记录。"""
         if not isinstance(data, dict):
             raise ValueError("备份文件格式不正确。")
+
+        checksum = data.get("checksum")
+        if isinstance(checksum, str) and checksum.strip():
+            if checksum.strip() != _backup_checksum(data):
+                raise ValueError(
+                    "备份校验失败，文件可能已损坏或被修改。"
+                )
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
