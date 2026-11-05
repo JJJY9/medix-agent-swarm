@@ -13,21 +13,30 @@ description: Search current session conversation history (short-term memory). Us
 - 需要回顾当前会话的早期内容
 - 需要上下文连贯性（如"继续上次的话题"）
 
+## 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | ✅ | 当前会话 ID，取自系统信息「当前会话ID」 |
+| `limit` | integer | ❌ | 返回的对话轮数，默认 10（限制在 1–50）；实际读取 `limit × 2` 条消息 |
+
 ## 调用方式
 
 ```bash
-/search-history
+/search-history 20260420-001919-xxx 5
 ```
 
 ## 返回格式
 
 ```json
 {
-  "answer": "格式化的历史对话记录",
+  "answer": "格式化的历史对话记录（按轮次分组）",
   "total_messages": 10,
   "session_id": "20260420-001919-xxx"
 }
 ```
+
+`total_messages` 是本次返回的消息条数（user + assistant），不是对话轮数。
 
 ## Note
 
