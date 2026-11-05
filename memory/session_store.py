@@ -48,6 +48,18 @@ PROFILE_CONTEXT_KEYS = (
     "allergies",
 )
 
+#: 备份导入时每类数据的条数上限。与 export_data 的导出口径保持一致，
+#: 避免应用自己导出的备份因超过导入上限而无法恢复
+IMPORT_LIST_LIMITS = {
+    "profiles": 100000,
+    "health_metrics": 100000,
+    "metric_targets": 100000,
+    "symptoms": 100000,
+    "medications": 100000,
+    "medication_logs": 100000,
+    "reminders": 100000,
+}
+
 
 def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
     """校验并收敛档案字段；没有有效内容时返回 None。"""
@@ -587,7 +599,9 @@ def _days_cutoff(days: int) -> Optional[str]:
     return (
         (datetime.now() - timedelta(days=days - 1))
         .strftime("%Y-%m-%d")
-        + "T00:00:00"
+        # 与 _canonical_local_time 的分钟精度保持一致：
+        # 午夜整点记录存成 T00:00，用 T00:00:00 比较会被漏掉
+        + "T00:00"
     )
 
 
@@ -1920,7 +1934,9 @@ class SessionStore:
             "medication_logs": self.list_medication_logs(limit=100000),
         }
 
-    def import_data(self, data: Any, max_sessions: int = 5000) -> Dict[str, int]:
+    def import_data(
+        self, data: Any, max_sessions: int = 100000
+    ) -> Dict[str, int]:
         """导入备份数据；已存在的会话编号与档案名称直接跳过，不覆盖现有记录。"""
         if not isinstance(data, dict):
             raise ValueError("备份文件格式不正确。")
@@ -1959,16 +1975,17 @@ class SessionStore:
         if len(raw_sessions) > max_sessions:
             raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
 
-        # 与上面的会话上限一致：超限时明确报错，避免静默丢弃备份数据
-        for label, items, cap in (
-            ("档案", raw_profiles, 500),
-            ("健康指标", raw_metrics, 10000),
-            ("指标目标", raw_targets, 500),
-            ("症状记录", raw_symptoms, 10000),
-            ("用药", raw_medications, 100000),
-            ("用药打卡", raw_medication_logs, 100000),
-            ("提醒", raw_reminders, 2000),
+        # 与 export_data 的导出口径一致：超限时明确报错，避免静默丢弃备份数据
+        for key, label, items in (
+            ("profiles", "档案", raw_profiles),
+            ("health_metrics", "健康指标", raw_metrics),
+            ("metric_targets", "指标目标", raw_targets),
+            ("symptoms", "症状记录", raw_symptoms),
+            ("medications", "用药", raw_medications),
+            ("medication_logs", "用药打卡", raw_medication_logs),
+            ("reminders", "提醒", raw_reminders),
         ):
+            cap = IMPORT_LIST_LIMITS[key]
             if isinstance(items, list) and len(items) > cap:
                 raise ValueError(f"一次最多导入 {cap} 条{label}。")
 
@@ -2076,7 +2093,7 @@ class SessionStore:
 
             profiles_imported = 0
             if isinstance(raw_profiles, list):
-                for raw in raw_profiles[:500]:
+                for raw in raw_profiles[:IMPORT_LIST_LIMITS["profiles"]]:
                     if not isinstance(raw, dict):
                         continue
                     name = " ".join(
@@ -2113,7 +2130,7 @@ class SessionStore:
 
             metrics_imported = 0
             if isinstance(raw_metrics, list):
-                for raw in raw_metrics[:10000]:
+                for raw in raw_metrics[:IMPORT_LIST_LIMITS["health_metrics"]]:
                     if not isinstance(raw, dict):
                         continue
                     normalized = _normalize_metric(
@@ -2167,7 +2184,7 @@ class SessionStore:
 
             targets_imported = 0
             if isinstance(raw_targets, list):
-                for raw in raw_targets[:500]:
+                for raw in raw_targets[:IMPORT_LIST_LIMITS["metric_targets"]]:
                     if not isinstance(raw, dict):
                         continue
                     metric = str(raw.get("metric") or "").strip()
@@ -2219,7 +2236,7 @@ class SessionStore:
 
             symptoms_imported = 0
             if isinstance(raw_symptoms, list):
-                for raw in raw_symptoms[:10000]:
+                for raw in raw_symptoms[:IMPORT_LIST_LIMITS["symptoms"]]:
                     if not isinstance(raw, dict):
                         continue
                     if not str(raw.get("recorded_at") or "").strip():
@@ -2270,7 +2287,7 @@ class SessionStore:
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
             if isinstance(raw_medications, list):
-                for raw in raw_medications[:100000]:
+                for raw in raw_medications[:IMPORT_LIST_LIMITS["medications"]]:
                     if not isinstance(raw, dict):
                         continue
                     normalized = _normalize_medication(
@@ -2332,7 +2349,7 @@ class SessionStore:
             existing_log_counts: Dict[tuple, int] = {}
             imported_log_counts: Dict[tuple, int] = {}
             if isinstance(raw_medication_logs, list):
-                for raw in raw_medication_logs[:100000]:
+                for raw in raw_medication_logs[:IMPORT_LIST_LIMITS["medication_logs"]]:
                     if not isinstance(raw, dict):
                         continue
                     taken_at = _canonical_local_time(raw.get("taken_at"))
@@ -2428,7 +2445,7 @@ class SessionStore:
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
             if isinstance(raw_reminders, list):
-                for raw in raw_reminders[:2000]:
+                for raw in raw_reminders[:IMPORT_LIST_LIMITS["reminders"]]:
                     if not isinstance(raw, dict):
                         continue
                     title = " ".join(
@@ -2928,8 +2945,10 @@ class SessionStore:
             params.append(metric)
         query = str(q or "").strip()
         if query:
-            like = f"%{query}%"
-            conditions.append("(note LIKE ? OR profile LIKE ?)")
+            like = _like_pattern(query)
+            conditions.append(
+                "(note LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')"
+            )
             params.extend([like, like])
         cutoff = _days_cutoff(days)
         if cutoff:
@@ -3747,6 +3766,24 @@ class SessionStore:
                 "DELETE FROM medication_logs WHERE id = ?", (log_id,)
             )
             return cursor.rowcount > 0
+
+    def get_metric(self, metric_id: int) -> Optional[Dict[str, Any]]:
+        """按编号读取一条健康指标记录。"""
+        try:
+            metric_id = int(metric_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, metric, value1, value2, unit,
+                       measured_at, note, created_at
+                  FROM health_metrics
+                 WHERE id = ?
+                """,
+                (metric_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def update_metric(
         self,
