@@ -417,6 +417,7 @@ const els = {
   weeklySummarySection: document.getElementById('weekly-summary-section'),
   weeklySummaryRange: document.getElementById('weekly-summary-range'),
   weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
+  weeklySummaryExport: document.getElementById('weekly-summary-export'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
   compareSection: document.getElementById('compare-section'),
   compareMetric: document.getElementById('compare-metric'),
@@ -9058,6 +9059,42 @@ async function copyWeeklySummary() {
   }
 }
 
+async function exportWeeklySummary() {
+  const profile = els.metricProfile.value;
+  const days = Number(els.weeklySummaryRange.value) || 7;
+  let cache = weeklySummaryCache;
+  if (!cache || cache.profile !== profile || cache.days !== days) {
+    await loadWeeklySummary();
+    cache = weeklySummaryCache;
+  }
+  if (!cache || cache.profile !== profile || cache.days !== days) {
+    setMetricsStatus('小结尚未加载，请稍后再试。', true);
+    return;
+  }
+  const data = cache.data;
+  const lines = [
+    `# 健康小结（${data.start} – ${data.end}）`,
+    '',
+    `- 档案：${profile || '未指定'}`,
+    `- 范围：近 ${days} 天`,
+    '',
+    ...weeklySummaryLines(data).map(
+      ([label, text]) => `- ${label}：${text}`
+    ),
+    '',
+    '本小结由 MediX 生成，仅供健康记录参考，不构成医疗建议。',
+  ];
+  const stamp = todayLocalDate().replace(/-/g, '');
+  downloadFile(
+    new Blob([lines.join('\n') + '\n'], {
+      type: 'text/markdown;charset=utf-8',
+    }),
+    `medix-weekly-${stamp}.md`,
+    'text/markdown;charset=utf-8'
+  );
+  setMetricsStatus('已导出健康小结 Markdown。');
+}
+
 const TIMELINE_TYPE_LABELS = {
   metric: '指标',
   symptom: '症状',
@@ -12192,6 +12229,9 @@ els.weeklySummaryRange.addEventListener('change', () => {
   loadWeeklySummary();
 });
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
+if (els.weeklySummaryExport) {
+  els.weeklySummaryExport.addEventListener('click', exportWeeklySummary);
+}
 els.timelineRange.addEventListener('change', () => {
   timelineDate = '';
   storeFilter(HEALTH_FILTER_KEYS.timelineRange, els.timelineRange.value);
