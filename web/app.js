@@ -3089,8 +3089,11 @@ function renderRecentFeedback(items) {
   }
 }
 
+let feedbackRequestSeq = 0;
+
 async function loadRecentFeedback() {
   if (!els.historyFeedback) return;
+  const seq = ++feedbackRequestSeq;
   try {
     const scope = historyProfile
       ? `&profile=${encodeURIComponent(historyProfile)}`
@@ -3100,6 +3103,7 @@ async function loadRecentFeedback() {
     );
     if (!res.ok) return;
     const data = await res.json();
+    if (seq !== feedbackRequestSeq) return;
     renderRecentFeedback(data.feedback || []);
   } catch {
     // 反馈区加载失败不影响历史列表
@@ -3213,14 +3217,19 @@ function renderQualityInsights(data) {
   }
 }
 
+let qualityRequestSeq = 0;
+
 async function loadQualityInsights() {
+  const seq = ++qualityRequestSeq;
   try {
     const scope = historyProfile
       ? `&profile=${encodeURIComponent(historyProfile)}`
       : '';
     const res = await fetch(`/api/insights/quality?days=30${scope}`);
     if (!res.ok) return;
-    renderQualityInsights(await res.json());
+    const data = await res.json();
+    if (seq !== qualityRequestSeq) return;
+    renderQualityInsights(data);
   } catch {
     // 质量概览加载失败不影响历史列表
   }
@@ -3614,6 +3623,12 @@ async function loadHistory(query = '', { append = false } = {}) {
     if (requestSeq !== historyRequestSeq) return;
 
     const sessions = data.sessions || [];
+    if (!append) {
+      const visibleIds = new Set(sessions.map((item) => item.id));
+      for (const id of Array.from(selectedSessions)) {
+        if (!visibleIds.has(id)) selectedSessions.delete(id);
+      }
+    }
     const loadedTotal = historyOffset + sessions.length;
     const viewSummary = { ...(data.summary || {}), loaded: loadedTotal };
 
@@ -3622,6 +3637,7 @@ async function loadHistory(query = '', { append = false } = {}) {
     historyOffset = loadedTotal;
     historyLoading = false;
     updateHistoryMore(viewSummary);
+    updateBulkBar();
   } catch (err) {
     if (requestSeq !== historyRequestSeq) return;
     historyLoading = false;
@@ -4162,13 +4178,17 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
   scrollThreadToBottom(true);
 }
 
+let openSessionSeq = 0;
+
 async function openSession(id) {
   if (busy) return;
+  const seq = ++openSessionSeq;
 
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
+    if (seq !== openSessionSeq) return;
 
     sessionId = id;
     localStorage.setItem('medix.session', id);
@@ -4180,6 +4200,7 @@ async function openSession(id) {
     setVitals('idle', '历史会诊');
     els.input.focus();
   } catch (err) {
+    if (seq !== openSessionSeq) return;
     closeHistory();
     renderError(`读取会诊记录失败：${err.message || err}`);
     els.input.focus();
@@ -4241,6 +4262,9 @@ async function loadHistoryTags() {
     } else if (current) {
       historyTag = '';
       els.historyTag.value = '';
+      // 当前标签已不存在：用「全部标签」重新拉取列表，避免筛选控件
+      // 与列表内容不一致
+      loadHistory(els.historySearch.value.trim());
     }
   } catch {
     // 标签加载失败不影响历史列表
