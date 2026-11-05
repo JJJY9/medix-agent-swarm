@@ -274,15 +274,21 @@ def test_weekly_report_counts_consultations(client_and_store):
     report = client.get(
         "/api/reports/weekly", params={"profile": "母亲"}
     ).json()
-    assert report["consultations"] == {"count": 1, "prev_count": 1}
+    assert report["consultations"] == {
+        "count": 1, "prev_count": 1, "risk": "",
+    }
 
     other = client.get(
         "/api/reports/weekly", params={"profile": "父亲"}
     ).json()
-    assert other["consultations"] == {"count": 0, "prev_count": 0}
+    assert other["consultations"] == {
+        "count": 0, "prev_count": 0, "risk": "",
+    }
 
     family = client.get("/api/reports/weekly").json()
-    assert family["consultations"] == {"count": 1, "prev_count": 1}
+    assert family["consultations"] == {
+        "count": 1, "prev_count": 1, "risk": "",
+    }
 
 
 def test_weekly_report_medication_adherence(client_and_store):
@@ -346,6 +352,23 @@ def test_weekly_report_adherence_rounds_half_up(client_and_store):
     assert report["medications"]["adherence"] == {
         "expected": 8, "taken": 5, "rate": 63,
     }
+
+
+def test_weekly_report_consultation_risk(client_and_store):
+    client, store = client_and_store
+
+    store.save_exchange(
+        "weekly-risk", "妈妈头晕怎么办", "**高危**，建议尽快就诊。"
+    )
+    store.set_session_profile("weekly-risk", "妈妈")
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "妈妈"}
+    ).json()
+    assert report["consultations"]["risk"] == "high"
+
+    family = client.get("/api/reports/weekly").json()
+    assert family["consultations"]["risk"] == ""
 
 
 def test_weekly_report_lists_active_medication_without_logs(client_and_store):

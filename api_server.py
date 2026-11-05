@@ -525,6 +525,12 @@ _RISK_TAG_LEVELS = {
     "中危": "medium",
     "低危": "low",
 }
+RISK_LEVEL_LABELS = {
+    "emergency": "紧急",
+    "high": "高危",
+    "medium": "中危",
+    "low": "低危",
+}
 
 
 def parse_risk_level(text: Any) -> str:
@@ -2002,6 +2008,16 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         if int(item.get("message_count") or 0) > 0
         and prev_start <= str(item.get("created_at") or "")[:10] < start
     ]
+    risk_level = ""
+    if profile is not None and sessions:
+        latest_answers = await asyncio.to_thread(
+            store.latest_session_answers_by_profile
+        )
+        profile_key = str(profile).strip()
+        for item in latest_answers:
+            if (item.get("profile") or "") == profile_key:
+                risk_level = parse_risk_level(item.get("last_answer"))
+                break
     pending_reminders = await asyncio.to_thread(
         store.list_reminders, False, None
     )
@@ -2237,6 +2253,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         "consultations": {
             "count": len(sessions),
             "prev_count": len(previous_sessions),
+            "risk": risk_level,
         },
     }
 
@@ -2267,7 +2284,7 @@ async def health_timeline(
         store.list_medication_logs, None, profile, 100000, 0, days
     )
     raw_sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile, start, "", 500
+        store.list_sessions_for_timeline, profile, start, "", 500, True
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
@@ -2361,15 +2378,19 @@ async def health_timeline(
         message_count = int(item.get("message_count") or 0)
         if message_count <= 0:
             continue
+        risk = parse_risk_level(item.get("last_answer"))
+        risk_label = RISK_LEVEL_LABELS.get(risk, "")
         events.append({
             "type": "consultation",
             "at": at,
             "id": item.get("id"),
             "profile": item.get("profile", ""),
             "title": str(item.get("title") or "").strip() or "会诊记录",
-            "value": f"会诊 · {message_count} 条消息",
+            "value": f"会诊 · {message_count} 条消息"
+            + (f" · {risk_label}" if risk_label else ""),
             "note": "",
             "alert": False,
+            "risk": risk,
         })
 
     def sort_key(event: Dict[str, Any]):
