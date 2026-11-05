@@ -3295,6 +3295,31 @@ async def export_health_dossier(profile: str = "", days: int = 30):
     )
 
 
+@app.get("/api/health/dossier-family.md")
+async def export_family_dossier(days: int = 30):
+    """导出所有患者档案的健康档案 Markdown（每位成员一份）。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    names = await asyncio.to_thread(store.list_used_profile_names)
+    if not names:
+        raise HTTPException(status_code=400, detail="暂无患者档案")
+    parts = []
+    for name in names:
+        response = await export_health_dossier(profile=name, days=days)
+        parts.append(response.body.decode("utf-8").rstrip() + "\n")
+    content = "\n".join(parts)
+    filename = f"medix-family-dossier-{datetime.now().strftime('%Y%m%d')}.md"
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/reminders")
 async def list_reminders(
     include_done: bool = False, profile: Optional[str] = None

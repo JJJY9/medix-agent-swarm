@@ -9168,13 +9168,14 @@ async function exportTimelineCsv() {
 
 async function exportHealthDossier() {
   const profile = els.metricProfile.value;
-  if (!profile) {
-    setMetricsStatus('请先选择患者档案再导出健康档案。', true);
-    return;
-  }
+  const isFamily = !profile;
   try {
-    const params = new URLSearchParams({ profile, days: '30' });
-    const res = await fetch(`/api/health/dossier.md?${params.toString()}`);
+    const url = isFamily
+      ? '/api/health/dossier-family.md?days=30'
+      : `/api/health/dossier.md?${new URLSearchParams({
+        profile, days: '30',
+      }).toString()}`;
+    const res = await fetch(url);
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
@@ -9183,10 +9184,16 @@ async function exportHealthDossier() {
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
       new Blob([text], { type: 'text/markdown;charset=utf-8' }),
-      `medix-dossier-${stamp}.md`,
+      isFamily
+        ? `medix-family-dossier-${stamp}.md`
+        : `medix-dossier-${stamp}.md`,
       'text/markdown;charset=utf-8'
     );
-    setMetricsStatus('已导出健康档案 Markdown。');
+    setMetricsStatus(
+      isFamily
+        ? '已导出家庭健康档案 Markdown。'
+        : '已导出健康档案 Markdown。'
+    );
   } catch (err) {
     setMetricsStatus(`导出健康档案失败：${err.message || err}`, true);
   }
