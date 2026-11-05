@@ -382,6 +382,20 @@ class MetricRequest(BaseModel):
     note: str = Field("", max_length=300)
 
 
+class MetricUpdateRequest(BaseModel):
+    """部分更新健康指标：只修改请求里显式给出的字段。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    metric: Optional[Literal[
+        "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
+        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+    ]] = None
+    value1: Optional[float] = None
+    value2: Optional[float] = None
+    measured_at: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+
+
 
 
 
@@ -398,12 +412,35 @@ class MedicationRequest(BaseModel):
 class MedicationLogRequest(BaseModel):
     taken_at: str = Field("", max_length=40, description="服用时间（ISO），默认当前时间")
     note: str = Field("", max_length=300)
+
+
+class MedicationUpdateRequest(BaseModel):
+    """部分更新用药记录：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    dose: Optional[str] = Field(None, max_length=60)
+    frequency: Optional[str] = Field(None, max_length=60)
+    note: Optional[str] = Field(None, max_length=300)
+    active: Optional[bool] = None
+
+
 class SymptomRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
     severity: int = Field(..., ge=0, le=10, description="严重程度 0–10")
     recorded_at: str = Field("", max_length=40, description="记录时间（ISO）")
     note: str = Field("", max_length=300)
+
+
+class SymptomUpdateRequest(BaseModel):
+    """部分更新症状记录：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    symptom: Optional[str] = Field(None, min_length=1, max_length=120)
+    severity: Optional[int] = Field(None, ge=0, le=10)
+    recorded_at: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
 class MetricTargetRequest(BaseModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -572,6 +609,13 @@ def parse_risk_level(text: Any) -> str:
                 continue
             return level
     return ""
+
+
+def _normalized_profile_key(value: Any) -> str:
+    """与写入侧一致地规范化档案名，避免首尾/连续空格导致过滤丢数据。"""
+    from memory.session_store import _normalize_profile_name
+
+    return _normalize_profile_name(value)
 
 
 def _streak_info(days: List[str]) -> Dict[str, Any]:
@@ -987,7 +1031,8 @@ async def list_sessions(
         total_calls = 0
         totals_usage: Dict[str, int] = {}
         scan_offset = 0
-        while scan_offset < 2000:
+        # 逐页扫描到结束：固定 2000 条上限会让后面的高危会话被静默忽略
+        while True:
             batch = await asyncio.to_thread(
                 store.list_sessions,
                 200,
@@ -1741,19 +1786,27 @@ async def add_medication(request: MedicationRequest):
 
 
 @app.patch("/api/medications/{medication_id}")
-async def update_medication(medication_id: int, request: MedicationRequest):
-    """更新一条用药记录。"""
+async def update_medication(
+    medication_id: int, request: MedicationUpdateRequest
+):
+    """部分更新一条用药记录；未提供的字段保持原值。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_medication, medication_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
     item = await asyncio.to_thread(
-        get_session_store().update_medication,
+        store.update_medication,
         medication_id,
-        request.profile,
-        request.name,
-        request.dose,
-        request.frequency,
-        request.note,
-        request.active,
+        merged.get("profile") or "",
+        merged.get("name") or "",
+        merged.get("dose") or "",
+        merged.get("frequency") or "",
+        merged.get("note") or "",
+        bool(merged.get("active", True)),
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
@@ -2055,18 +2108,24 @@ async def add_symptom(request: SymptomRequest):
 
 
 @app.patch("/api/symptoms/{symptom_id}")
-async def update_symptom(symptom_id: int, request: SymptomRequest):
-    """更新一条症状记录。"""
+async def update_symptom(symptom_id: int, request: SymptomUpdateRequest):
+    """部分更新一条症状记录；未提供的字段保持原值。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_symptom, symptom_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
     item = await asyncio.to_thread(
-        get_session_store().update_symptom,
+        store.update_symptom,
         symptom_id,
-        request.profile,
-        request.symptom,
-        request.severity,
-        request.recorded_at,
-        request.note,
+        merged.get("profile") or "",
+        merged.get("symptom") or "",
+        merged.get("severity"),
+        merged.get("recorded_at") or "",
+        merged.get("note") or "",
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
@@ -2176,7 +2235,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         latest_answers = await asyncio.to_thread(
             store.latest_session_answers_by_profile
         )
-        profile_key = str(profile).strip()
+        profile_key = _normalized_profile_key(profile)
         for item in latest_answers:
             if (item.get("profile") or "") == profile_key:
                 risk_level = parse_risk_level(item.get("last_answer"))
@@ -2185,7 +2244,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         store.list_reminders, False, None
     )
     if profile is not None:
-        profile_key = str(profile).strip()
+        profile_key = _normalized_profile_key(profile)
         reminders = [
             item for item in pending_reminders
             if (item.get("profile") or "") == profile_key
@@ -2196,7 +2255,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     raw_targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map: dict = {}
     if profile is not None:
-        profile_key = str(profile).strip()
+        profile_key = _normalized_profile_key(profile)
         target_map = {
             (item.get("profile") or "", item["metric"]): item
             for item in raw_targets
@@ -2728,7 +2787,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     }
     reminders = await asyncio.to_thread(store.list_reminders, True, None)
     if profile is not None:
-        profile_key = str(profile or "")
+        profile_key = _normalized_profile_key(profile)
         reminders = [
             item for item in reminders
             if (item.get("profile") or "") == profile_key
@@ -2887,19 +2946,25 @@ async def add_metric(request: MetricRequest):
 
 
 @app.patch("/api/metrics/{metric_id}")
-async def update_metric(metric_id: int, request: MetricRequest):
-    """更新一条健康指标记录。"""
+async def update_metric(metric_id: int, request: MetricUpdateRequest):
+    """部分更新一条健康指标记录；未提供的字段保持原值。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_metric, metric_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
     item = await asyncio.to_thread(
-        get_session_store().update_metric,
+        store.update_metric,
         metric_id,
-        request.profile,
-        request.metric,
-        request.value1,
-        request.value2,
-        request.measured_at,
-        request.note,
+        merged.get("profile") or "",
+        merged.get("metric") or "",
+        merged.get("value1"),
+        merged.get("value2"),
+        merged.get("measured_at") or "",
+        merged.get("note") or "",
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
@@ -3595,7 +3660,7 @@ async def export_health_dossier(profile: str = "", days: int = 30):
         metric_over_target,
     )
 
-    profile_key = str(profile or "").strip()
+    profile_key = _normalized_profile_key(profile)
     if not profile_key:
         raise HTTPException(status_code=400, detail="请先选择患者档案")
     days = max(1, min(int(days or 30), 365))
@@ -3834,7 +3899,7 @@ async def reminder_stats(profile: Optional[str] = None, days: int = 30):
     store = get_session_store()
     reminders = await asyncio.to_thread(store.list_reminders, True, None)
     if profile is not None:
-        profile_key = str(profile or "")
+        profile_key = _normalized_profile_key(profile)
         reminders = [
             item for item in reminders
             if (item.get("profile") or "") == profile_key
