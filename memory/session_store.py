@@ -543,6 +543,13 @@ def _new_usage_entry() -> Dict[str, Any]:
     }
 
 
+def _usage_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
     """把一条 assistant 消息的元数据累加进用量统计。"""
     entry["turns"] += 1
@@ -551,16 +558,21 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
 
     usage = metadata.get("usage")
     if isinstance(usage, dict):
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            try:
-                entry["usage"][key] += int(usage.get(key) or 0)
-            except (TypeError, ValueError, OverflowError):
-                continue
+        prompt = _usage_int(usage.get("prompt_tokens"))
+        completion = _usage_int(usage.get("completion_tokens"))
+        raw_total = usage.get("total_tokens")
+        total = _usage_int(raw_total)
+        if (
+            not total
+            and raw_total in (None, "", 0, "0")
+            and (prompt or completion)
+        ):
+            total = prompt + completion
+        entry["usage"]["prompt_tokens"] += prompt
+        entry["usage"]["completion_tokens"] += completion
+        entry["usage"]["total_tokens"] += total
 
-    try:
-        entry["llm_calls"] += int(metadata.get("llm_calls") or 0)
-    except (TypeError, ValueError, OverflowError):
-        pass
+    entry["llm_calls"] += _usage_int(metadata.get("llm_calls"))
 
 
 def _match_snippet(content: str, query: str, radius: int = 60) -> str:
@@ -2803,7 +2815,9 @@ class SessionStore:
                 """
                 UPDATE sessions
                    SET archived = 1
-                 WHERE archived = 0 AND updated_at < ?
+                 WHERE archived = 0
+                   AND datetime(updated_at) IS NOT NULL
+                   AND datetime(updated_at) < datetime(?)
                    AND favorite = 0
                    AND TRIM(tags) IN ('', '[]')
                 """,
@@ -4583,15 +4597,19 @@ class SessionStore:
             return empty
 
         with self._lock, self._conn:
-            sessions_deleted = self._conn.execute(
-                "DELETE FROM sessions WHERE updated_at < ?", (cutoff,)
-            ).rowcount
-            # 用子查询清理孤儿消息，避免按 id 展开 IN 占位符触发变量上限
+            # 统一交给 SQLite 的 datetime() 解析，兼容 "T" 与空格分隔、
+            # 时区后缀和带时分秒/仅日期的历史数据；无效时间不参与删除
+            condition = (
+                "datetime(updated_at) IS NOT NULL "
+                "AND datetime(updated_at) < datetime(?)"
+            )
             messages_deleted = self._conn.execute(
-                """
-                DELETE FROM messages
-                 WHERE session_id NOT IN (SELECT id FROM sessions)
-                """
+                f"DELETE FROM messages WHERE session_id IN "
+                f"(SELECT id FROM sessions WHERE {condition})",
+                (cutoff,),
+            ).rowcount
+            sessions_deleted = self._conn.execute(
+                f"DELETE FROM sessions WHERE {condition}", (cutoff,)
             ).rowcount
         return {
             "sessions": int(sessions_deleted),

@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import json
+import re
+import threading
 
 
 @dataclass
@@ -52,6 +54,7 @@ class AgentIdentity:
 
     def update_collaboration(self, partner_agent: str, efficiency_improvement: float):
         """更新协作记录"""
+        self.last_updated = datetime.now()
         for record in self.collaboration_records:
             if record.partner_agent == partner_agent:
                 record.collaboration_count += 1
@@ -67,10 +70,10 @@ class AgentIdentity:
             collaboration_count=1,
             efficiency_improvement=efficiency_improvement
         ))
-        self.last_updated = datetime.now()
 
     def update_tool_stats(self, tool_name: str, success: bool, execution_time: float):
         """更新工具使用统计"""
+        self.last_updated = datetime.now()
         for stats in self.tool_usage_stats:
             if stats.tool_name == tool_name:
                 stats.usage_count += 1
@@ -91,12 +94,13 @@ class AgentIdentity:
             success_rate=1.0 if success else 0.0,
             avg_execution_time=execution_time
         ))
-        self.last_updated = datetime.now()
 
     def to_markdown(self) -> str:
         """转换为 IDENTITY.md 格式"""
         lines = [
             f"# Agent: {self.agent_id}",
+            "",
+            f"**类型**: {self.agent_type}",
             "",
             "## 核心能力",
             *[f"- {cap}" for cap in self.core_capabilities],
@@ -125,7 +129,8 @@ class AgentIdentity:
         for stats in self.tool_usage_stats:
             lines.append(
                 f"- {stats.tool_name}: {stats.usage_count} 次"
-                f"（成功率 {stats.success_rate:.1%}）"
+                f"（成功率 {stats.success_rate:.1%}，"
+                f"平均耗时 {stats.avg_execution_time:.3f} 秒）"
             )
 
         lines.extend([
@@ -138,15 +143,95 @@ class AgentIdentity:
 
     @classmethod
     def from_markdown(cls, agent_id: str, markdown_content: str) -> "AgentIdentity":
-        """从 Markdown 格式解析（简化实现）"""
-        # 这里是简化版，实际项目中可以用更复杂的解析
-        identity = cls(
-            agent_id=agent_id,
-            agent_type=agent_id.split("_")[0] if "_" in agent_id else agent_id,
-            core_capabilities=[],
-            expertise_domains=[]
+        """从 IDENTITY.md 解析出完整身份，避免更新统计时覆盖已有内容。"""
+        capabilities: List[str] = []
+        expertise: List[str] = []
+        collaborations: List[CollaborationRecord] = []
+        tool_stats: List[ToolUsageStats] = []
+        agent_type = agent_id.split("_")[0] if "_" in agent_id else agent_id
+        created_at = datetime.now()
+        last_updated = created_at
+        section = ""
+
+        collaboration_pattern = re.compile(
+            r"^- 与 (.+?) 协作 (\d+) 次，效率提升 (-?[\d.]+)%$"
         )
-        return identity
+        tool_pattern = re.compile(
+            r"^- (.+?): (\d+) 次（成功率 ([\d.]+)%"
+            r"(?:，平均耗时 ([\d.]+) 秒)?）$"
+        )
+
+        for raw_line in markdown_content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("# Agent:"):
+                continue
+            if line.startswith("**类型**:"):
+                agent_type = line.split(":", 1)[1].strip() or agent_type
+                continue
+            if line.startswith("**创建时间**:"):
+                created_at = cls._parse_markdown_time(
+                    line.split(":", 1)[1].strip(), created_at
+                )
+                continue
+            if line.startswith("**最后更新**:"):
+                last_updated = cls._parse_markdown_time(
+                    line.split(":", 1)[1].strip(), last_updated
+                )
+                continue
+            if line.startswith("## "):
+                section = line[3:].strip()
+                continue
+            if not line.startswith("- "):
+                if line.startswith("> ") and collaborations:
+                    collaborations[-1].notes = line[2:].strip()
+                continue
+
+            item = line[2:].strip()
+            if section == "核心能力":
+                capabilities.append(item)
+            elif section == "专长领域":
+                expertise.append(item)
+            elif section == "协作经验":
+                match = collaboration_pattern.match(line)
+                if match:
+                    collaborations.append(CollaborationRecord(
+                        partner_agent=match.group(1).strip(),
+                        collaboration_count=int(match.group(2)),
+                        efficiency_improvement=float(match.group(3)) / 100,
+                    ))
+            elif section == "工具使用统计":
+                match = tool_pattern.match(line)
+                if match:
+                    tool_stats.append(ToolUsageStats(
+                        tool_name=match.group(1).strip(),
+                        usage_count=int(match.group(2)),
+                        success_rate=float(match.group(3)) / 100,
+                        avg_execution_time=(
+                            float(match.group(4)) if match.group(4) else 0.0
+                        ),
+                    ))
+
+        return cls(
+            agent_id=agent_id,
+            agent_type=agent_type,
+            core_capabilities=capabilities,
+            expertise_domains=expertise,
+            collaboration_records=collaborations,
+            tool_usage_stats=tool_stats,
+            created_at=created_at,
+            last_updated=last_updated,
+        )
+
+    @staticmethod
+    def _parse_markdown_time(value: str, fallback: datetime) -> datetime:
+        for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(value, pattern)
+            except ValueError:
+                continue
+        return fallback
 
 
 class AgentIdentityManager:
@@ -159,10 +244,20 @@ class AgentIdentityManager:
     def __init__(self, base_dir: str = "memory/agents"):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def _get_identity_path(self, agent_id: str) -> Path:
-        """获取 Agent 的 IDENTITY.md 文件路径"""
-        agent_dir = self.base_dir / agent_id
+        """获取 Agent 的 IDENTITY.md 文件路径（拒绝路径分隔符与 ..）。"""
+        normalized = str(agent_id or "").strip()
+        if (
+            not normalized
+            or normalized in {".", ".."}
+            or "/" in normalized
+            or "\\" in normalized
+            or Path(normalized).is_absolute()
+        ):
+            raise ValueError(f"非法 agent_id: {agent_id!r}")
+        agent_dir = self.base_dir / normalized
         agent_dir.mkdir(parents=True, exist_ok=True)
         return agent_dir / "IDENTITY.md"
 
@@ -216,12 +311,13 @@ class AgentIdentityManager:
         efficiency_improvement: float
     ):
         """更新协作记录"""
-        identity = self.load_identity(agent_id)
-        if not identity:
-            return
+        with self._lock:
+            identity = self.load_identity(agent_id)
+            if not identity:
+                return
 
-        identity.update_collaboration(partner_agent, efficiency_improvement)
-        self.save_identity(identity)
+            identity.update_collaboration(partner_agent, efficiency_improvement)
+            self.save_identity(identity)
 
     def update_tool_stats(
         self,
@@ -231,9 +327,10 @@ class AgentIdentityManager:
         execution_time: float
     ):
         """更新工具使用统计"""
-        identity = self.load_identity(agent_id)
-        if not identity:
-            return
+        with self._lock:
+            identity = self.load_identity(agent_id)
+            if not identity:
+                return
 
-        identity.update_tool_stats(tool_name, success, execution_time)
-        self.save_identity(identity)
+            identity.update_tool_stats(tool_name, success, execution_time)
+            self.save_identity(identity)

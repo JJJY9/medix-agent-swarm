@@ -29,8 +29,17 @@ def _read_price(name: str) -> Optional[float]:
 
 def get_pricing() -> Optional[Dict[str, Any]]:
     """返回前端估算费用所需的单价；未配置或全为 0 时返回 None。"""
+    raw_input = (os.getenv(INPUT_PRICE_ENV) or "").strip()
+    raw_output = (os.getenv(OUTPUT_PRICE_ENV) or "").strip()
     input_price = _read_price(INPUT_PRICE_ENV)
     output_price = _read_price(OUTPUT_PRICE_ENV)
+
+    # 配置了却无法解析时宁可不显示费用，也不要按 0 元低估
+    if (raw_input and input_price is None) or (
+        raw_output and output_price is None
+    ):
+        return None
+
     if not input_price and not output_price:
         return None
 

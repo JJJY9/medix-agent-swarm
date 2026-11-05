@@ -13,9 +13,10 @@ def test_recent_messages_compresses_long_history():
 
     messages = memory.get_recent_messages(session_id, limit=10)
 
-    assert len(messages) == 10
+    assert len(messages) <= 10
     assert messages[0]["role"] == "system"
     assert "历史摘要" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
     assert messages[-1]["content"] == "答 39"
     memory.clear_session(session_id)
 

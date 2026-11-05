@@ -14,12 +14,32 @@ def merge_usage(
     if not usage:
         return total
 
-    for key in USAGE_KEYS:
+    values: Dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens"):
         try:
-            value = int(usage.get(key) or 0)
+            values[key] = int(usage.get(key) or 0)
         except (TypeError, ValueError, OverflowError):
-            value = 0
-        total[key] = total.get(key, 0) + value
+            values[key] = 0
+
+    raw_total = usage.get("total_tokens")
+    try:
+        values["total_tokens"] = int(raw_total or 0)
+    except (TypeError, ValueError, OverflowError):
+        values["total_tokens"] = 0
+
+    # 部分客户端/备份只记录 prompt+completion；没有可信 total 时补算，
+    # 否则预算进度会显示 0 而费用列却有值
+    if (
+        not values["total_tokens"]
+        and raw_total in (None, "", 0, "0")
+        and (values["prompt_tokens"] or values["completion_tokens"])
+    ):
+        values["total_tokens"] = (
+            values["prompt_tokens"] + values["completion_tokens"]
+        )
+
+    for key in USAGE_KEYS:
+        total[key] = total.get(key, 0) + values[key]
     return total
 
 
