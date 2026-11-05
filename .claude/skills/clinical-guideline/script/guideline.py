@@ -4,6 +4,7 @@ Clinical Guideline Skill
 """
 from typing import Dict, Any
 import asyncio
+import re
 from loguru import logger
 from knowledge.sources import build_sources
 
@@ -54,6 +55,7 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
     if results and results[0]["score"] > 0.1:
         doc = results[0]
         metadata = doc["metadata"]
+        parsed = parse_guideline_meta(doc["content"])
         # max_results 是调用方要求的条数，全部格式化而不是只返回第一条
         answer_parts = [
             format_guideline(item["content"], item["metadata"])
@@ -63,9 +65,15 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
 
         return {
             "answer": "\n\n".join(answer_parts),
-            "guideline_title": f"{metadata.get('disease', query)}相关临床指南",
-            "organization": metadata.get("organization", "N/A"),
-            "year": metadata.get("year", "N/A"),
+            "guideline_title": (
+                parsed["title"]
+                or f"{metadata.get('disease', query)}相关临床指南"
+            ),
+            "organization": (
+                parsed["organization"]
+                or metadata.get("organization", "N/A")
+            ),
+            "year": parsed["year"] or metadata.get("year", "N/A"),
             "source": "向量数据库",
             "sources": build_sources(results, max_items=max_results),
         }
@@ -81,13 +89,32 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
         }
 
 
+def parse_guideline_meta(content: str) -> Dict[str, str]:
+    """从指南正文解析真实标题、发布机构与年份。"""
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    title = lines[0] if lines else ""
+    organization = ""
+    year = ""
+    for line in lines[:20]:
+        if line.startswith("发布机构"):
+            organization = re.split(r"[：:]", line, 1)[-1].strip()
+        elif line.startswith("发布年份"):
+            year = re.split(r"[：:]", line, 1)[-1].strip()
+    return {
+        "title": title,
+        "organization": organization,
+        "year": year,
+    }
+
+
 def format_guideline(content: str, metadata: Dict[str, Any]) -> str:
     """格式化临床指南信息"""
+    parsed = parse_guideline_meta(content)
     output = [
         "【临床诊疗指南】\n",
-        f"指南名称：{metadata.get('disease', 'N/A')}相关临床指南",
-        f"发布机构：{metadata.get('organization', 'N/A')}",
-        f"发布年份：{metadata.get('year', 'N/A')}",
+        f"指南名称：{parsed['title'] or metadata.get('disease', 'N/A')}",
+        f"发布机构：{parsed['organization'] or metadata.get('organization', 'N/A')}",
+        f"发布年份：{parsed['year'] or metadata.get('year', 'N/A')}",
         f"\n内容：\n{content}"
     ]
 
