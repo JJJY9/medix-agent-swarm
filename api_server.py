@@ -532,6 +532,36 @@ async def auto_archive_loop() -> None:
         await asyncio.sleep(AUTO_ARCHIVE_INTERVAL_SECONDS)
 
 
+async def auto_backup_once():
+    """执行一次本地备份；未配置间隔时返回 None。"""
+    from core.backup import create_backup, get_auto_backup_hours
+
+    if get_auto_backup_hours() <= 0:
+        return None
+    from memory import get_session_store
+
+    payload = await asyncio.to_thread(get_session_store().export_data)
+    return await asyncio.to_thread(create_backup, payload)
+
+
+async def auto_backup_loop() -> None:
+    """按 MEDIX_AUTO_BACKUP_HOURS 定期备份；关闭时每小时检查一次配置。"""
+    from core.backup import get_auto_backup_hours
+
+    while True:
+        hours = get_auto_backup_hours()
+        if hours <= 0:
+            await asyncio.sleep(3600)
+            continue
+        try:
+            path = await auto_backup_once()
+            if path:
+                logger.info(f"本地自动备份完成: {path}")
+        except Exception as e:
+            logger.warning(f"本地自动备份失败: {e}")
+        await asyncio.sleep(hours * 3600)
+
+
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
     """记录操作审计；审计失败不影响主流程。"""
     try:
@@ -727,12 +757,16 @@ async def lifespan(_: FastAPI):
     # 后台预热知识库，不阻塞服务启动
     asyncio.create_task(state.warm_up())
     archive_task = asyncio.create_task(auto_archive_loop())
+    backup_task = asyncio.create_task(auto_backup_loop())
     try:
         yield
     finally:
         archive_task.cancel()
+        backup_task.cancel()
         with suppress(asyncio.CancelledError):
             await archive_task
+        with suppress(asyncio.CancelledError):
+            await backup_task
         logger.info("MediX API 服务已停止")
 
 
