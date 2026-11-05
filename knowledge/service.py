@@ -279,7 +279,12 @@ class KnowledgeService:
         name = name.strip(" .")
         if not name:
             raise ValueError("文件名无效。")
-        return name[:120]
+        if len(name) > 120:
+            # 截断时保留扩展名，避免长文件名被误判为不支持的类型
+            suffix = Path(name).suffix
+            stem_budget = max(1, 120 - len(suffix))
+            name = f"{name[:stem_budget]}{suffix}"
+        return name
 
     def _unique_path(self, name: str) -> Path:
         path = self.upload_dir / name

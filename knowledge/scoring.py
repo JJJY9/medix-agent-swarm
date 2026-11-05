@@ -7,6 +7,7 @@ Milvus 在 COSINE 指标下返回的 ``distance`` 本身就是余弦相似度（
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict
 
 
@@ -17,11 +18,14 @@ def cosine_similarity_to_score(similarity: float) -> float:
         similarity: 向量库返回的余弦相似度（COSINE 指标下即相似度本身）。
 
     Returns:
-        裁剪到 [0, 1] 的相似度分数；无法解析时返回 0.0。
+        裁剪到 [0, 1] 的相似度分数；无法解析或 NaN 时返回 0.0。
     """
     try:
         value = float(similarity)
     except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        # NaN 参与 min/max 会得到 1.0，被当成满分相关
         return 0.0
     return max(0.0, min(1.0, value))
 
