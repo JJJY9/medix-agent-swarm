@@ -49,3 +49,33 @@ def test_coronary_icd_description_distinguishes_acute_codes():
     text = _doc("10_icd10_cardiovascular.txt")
 
     assert "I20.0" in text and "I21" in text and "I25.2" in text
+
+
+def test_diabetes_guideline_uses_risk_stratified_targets():
+    text = _doc("21_guideline_diabetes.txt")
+
+    assert "LDL-C <1.4 mmol/L" in text
+    assert "2020年版指南新增" in text
+    assert "未显著降低心血管死亡" in text
+    assert "eGFR 45-59 减量使用" in text
+    assert "≥80岁或健康状况差/衰弱" in text
+
+
+def test_cold_doc_warns_about_licorice_tablets():
+    text = _doc("03_lifestyle_cold.txt")
+
+    assert "复方甘草片含阿片粉" in text
+    assert "右美沙芬、复方甘草片" not in text
+
+
+def test_glp1_is_not_listed_as_oral_medication():
+    text = _doc("02_lifestyle_diabetes.txt")
+
+    assert "GLP-1受体激动剂（利拉鲁肽注射）" not in text
+    assert "皮下注射" in text
+
+
+def test_hypothyroidism_uses_e039():
+    text = _doc("11_icd10_endocrine.txt")
+
+    assert "ICD-10编码：E03.9" in text
