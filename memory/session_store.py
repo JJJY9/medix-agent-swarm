@@ -1959,6 +1959,19 @@ class SessionStore:
         if len(raw_sessions) > max_sessions:
             raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
 
+        # 与上面的会话上限一致：超限时明确报错，避免静默丢弃备份数据
+        for label, items, cap in (
+            ("档案", raw_profiles, 500),
+            ("健康指标", raw_metrics, 10000),
+            ("指标目标", raw_targets, 500),
+            ("症状记录", raw_symptoms, 10000),
+            ("用药", raw_medications, 100000),
+            ("用药打卡", raw_medication_logs, 100000),
+            ("提醒", raw_reminders, 2000),
+        ):
+            if isinstance(items, list) and len(items) > cap:
+                raise ValueError(f"一次最多导入 {cap} 条{label}。")
+
         imported = 0
         skipped = 0
         invalid = 0

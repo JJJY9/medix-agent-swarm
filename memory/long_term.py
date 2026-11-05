@@ -123,7 +123,7 @@ class LongTermMemory:
 
         try:
             # 构建记忆文本（包含问题和答案摘要）
-            memory_text = f"问题：{question}\\n回答：{answer[:500]}..."
+            memory_text = f"问题：{question}\n回答：{answer[:500]}..."
 
             # 添加到 Mem0
             result = self.mem0.add(
@@ -139,7 +139,13 @@ class LongTermMemory:
 
             # 提取记忆ID
             if isinstance(result, dict):
-                memory_id = result.get("id", result.get("results", [{}])[0].get("id"))
+                memory_id = result.get("id")
+                if memory_id is None:
+                    results = result.get("results")
+                    if isinstance(results, list) and results:
+                        first = results[0]
+                        if isinstance(first, dict):
+                            memory_id = first.get("id")
             else:
                 memory_id = str(result)
 
@@ -208,7 +214,11 @@ class LongTermMemory:
             # 限制返回数量
             formatted_results = formatted_results[:limit]
 
-            logger.info(f"Found {len(formatted_results)} similar sessions for query: {query[:50]}...")
+            # 只记录检索规模，不把患者问题写进日志
+            logger.debug(
+                f"Found {len(formatted_results)} similar sessions "
+                f"(query length={len(query)})"
+            )
             return formatted_results
 
         except Exception as e:

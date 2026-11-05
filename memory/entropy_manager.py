@@ -42,7 +42,7 @@ class MemoryEntropyManager:
             return []
 
         unique_messages = []
-        seen_hashes = {}
+        index_by_hash = {}
 
         for msg in messages:
             content = msg.get("content", "")
@@ -51,10 +51,12 @@ class MemoryEntropyManager:
             # 生成内容哈希
             content_hash = hashlib.md5(f"{role}:{content}".encode()).hexdigest()
 
-            if content_hash not in seen_hashes:
+            if content_hash not in index_by_hash:
+                index_by_hash[content_hash] = len(unique_messages)
                 unique_messages.append(msg)
-                seen_hashes[content_hash] = msg
             else:
+                # 重复消息保留最新一条（时间戳/元数据以新消息为准）
+                unique_messages[index_by_hash[content_hash]] = msg
                 logger.debug(f"🗑️ Deduplicated message: {content[:30]}...")
 
         removed_count = len(messages) - len(unique_messages)
@@ -197,7 +199,15 @@ class MemoryEntropyManager:
             f"📦 Compressed {len(older)} messages to {len(compressed)} summaries"
         )
 
-        return compressed + recent
+        if not compressed:
+            return recent
+
+        # 所有摘要合并为一条系统消息，保证总条数不超过 max_messages
+        summary_text = "\n".join(item["content"] for item in compressed)
+        summary = {"role": "system", "content": summary_text}
+        if max_messages <= 1:
+            return [summary]
+        return [summary] + recent[-(max_messages - 1):]
 
     def _compress_older_messages(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -235,12 +245,18 @@ class MemoryEntropyManager:
                 assistant_msg = messages[i]
                 i += 1
 
-            # 生成摘要
-            if user_msg and assistant_msg:
-                user_content = user_msg.get("content", "")
-                assistant_content = assistant_msg.get("content", "")
-
-                summary = f"[历史摘要] 用户问: {user_content[:50]}... 回答: {assistant_content[:100]}..."
+            # 生成摘要（未配对的尾部消息也不丢弃）
+            if user_msg or assistant_msg:
+                parts = []
+                if user_msg:
+                    parts.append(
+                        f"用户问: {user_msg.get('content', '')[:50]}..."
+                    )
+                if assistant_msg:
+                    parts.append(
+                        f"回答: {assistant_msg.get('content', '')[:100]}..."
+                    )
+                summary = "[历史摘要] " + " ".join(parts)
 
                 compressed.append({
                     "role": "system",

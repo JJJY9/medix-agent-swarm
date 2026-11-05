@@ -52,3 +52,17 @@ def test_public_base_url_strips_credentials():
         "https://api.example.com/v1"
     ) == "https://api.example.com/v1"
     assert _public_base_url("") == ""
+
+
+def test_public_base_url_drops_query_and_fragment():
+    from api_server import _public_base_url
+
+    assert _public_base_url(
+        "https://api.example.com/v1?api_key=sk-test12345678&x=1"
+    ) == "https://api.example.com/v1"
+    assert _public_base_url(
+        "https://api.example.com/v1#access_token=abc"
+    ) == "https://api.example.com/v1"
+    assert "sk-test12345678" not in _public_base_url(
+        "https://api.example.com/v1?key=sk-test12345678"
+    )
