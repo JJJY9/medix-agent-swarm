@@ -84,12 +84,14 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert mom["symptoms"]["latest"]["symptom"] == "头晕"
     assert mom["consultations"]["count"] == 1
     assert mom["last_activity"]
+    assert mom["recorded_today"] is True
 
     child = profiles["孩子"]
     assert child["metrics"] == []
     assert child["medications"]["active"] == 0
     assert child["symptoms"]["count"] == 0
     assert child["last_activity"] == ""
+    assert child["recorded_today"] is False
 
 
 def test_family_overview_medication_activity_and_due_today(client_and_store):
@@ -164,6 +166,34 @@ def test_family_overview_includes_deleted_profiles(client_and_store):
     assert profiles["爷爷"]["context"] == {}
     assert profiles["爷爷"]["symptoms"]["count"] == 1
     assert data["days"] == 30
+
+
+def test_family_overview_recorded_today(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    yesterday = (now - timedelta(days=1)).isoformat(timespec="minutes")
+
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight",
+        "value1": 70, "measured_at": yesterday,
+    })
+
+    dad = {
+        item["name"]: item
+        for item in client.get("/api/family/overview").json()["profiles"]
+    }["爸爸"]
+    assert dad["recorded_today"] is False
+
+    client.post("/api/symptoms", json={
+        "profile": "爸爸", "symptom": "咳嗽", "severity": 2,
+        "recorded_at": now.isoformat(timespec="minutes"),
+    })
+
+    dad = {
+        item["name"]: item
+        for item in client.get("/api/family/overview").json()["profiles"]
+    }["爸爸"]
+    assert dad["recorded_today"] is True
 
 
 def test_family_overview_csv_export(client_and_store):
