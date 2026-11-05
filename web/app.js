@@ -7616,11 +7616,10 @@ async function loadReminderStats() {
   const requestSeq = ++reminderStatsRequestSeq;
   const profile = els.remindersProfile ? els.remindersProfile.value : '';
   const days = Number(els.reminderStatsRange?.value) || 30;
+  const params = new URLSearchParams({ days: String(days) });
+  if (profile) params.set('profile', profile);
   try {
-    const res = await fetch(
-      `/api/reminders/stats?days=${days}`
-      + `&profile=${encodeURIComponent(profile)}`
-    );
+    const res = await fetch(`/api/reminders/stats?${params.toString()}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== reminderStatsRequestSeq) return;
