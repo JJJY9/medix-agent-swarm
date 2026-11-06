@@ -11510,9 +11510,30 @@ function submitChads(event) {
   );
 }
 
+/** 量表下拉的“请选择”占位，避免未作答被当成 0 分。 */
+function addScalePlaceholder(select) {
+  const option = document.createElement('option');
+  option.value = '';
+  option.textContent = '请选择';
+  option.disabled = true;
+  option.selected = true;
+  select.appendChild(option);
+}
+
+/** 收集量表答案；有未作答题时提示并聚焦第一题，返回 null。 */
+function collectScaleAnswers(container, label) {
+  const selects = Array.from(container.querySelectorAll('select'));
+  const missing = selects.find((select) => !select.value);
+  if (missing) {
+    window.alert(`请回答全部题目后再计算 ${label}。`);
+    missing.focus();
+    return null;
+  }
+  return selects.map((select) => Number(select.value));
+}
+
 const PHQ9_QUESTIONS = [
-  '做事时提不起劲或没有兴趣',
-  '感到心情低落、沮丧或绝望',
+  '做事时提不起劲或没有兴趣',  '感到心情低落、沮丧或绝望',
   '入睡困难、睡不安稳或睡得过多',
   '感觉疲倦或没有活力',
   '食欲不振或吃太多',
@@ -11542,6 +11563,7 @@ function ensurePhq9Form() {
     const select = document.createElement('select');
     select.className = 'phq9-select';
     select.dataset.index = String(index);
+    addScalePlaceholder(select);
     for (const [value, optionLabel] of PHQ9_OPTIONS) {
       const option = document.createElement('option');
       option.value = value;
@@ -11586,6 +11608,7 @@ function ensureGad7Form() {
     const select = document.createElement('select');
     select.className = 'gad7-select';
     select.dataset.index = String(index);
+    addScalePlaceholder(select);
     ensureQuestionOptions(select);
 
     label.append(text, select);
@@ -11619,9 +11642,8 @@ async function saveScreenerScore(metric, score, note) {
 function submitGad7(event) {
   event.preventDefault();
   ensureGad7Form();
-  const answers = Array.from(
-    els.calcGad7Questions.querySelectorAll('select')
-  ).map((select) => Number(select.value));
+  const answers = collectScaleAnswers(els.calcGad7Questions, 'GAD-7');
+  if (!answers) return;
 
   runCalc(
     '/api/tools/gad7',
@@ -11663,6 +11685,7 @@ function ensureCatForm() {
     const select = document.createElement('select');
     select.className = 'phq9-select';
     select.dataset.index = String(index);
+    addScalePlaceholder(select);
     for (let value = 0; value <= 5; value += 1) {
       const option = document.createElement('option');
       option.value = String(value);
@@ -11706,6 +11729,7 @@ function ensureEssForm() {
     const select = document.createElement('select');
     select.className = 'phq9-select';
     select.dataset.index = String(index);
+    addScalePlaceholder(select);
     for (const [value, optionLabel] of ESS_OPTIONS) {
       const option = document.createElement('option');
       option.value = value;
@@ -11721,9 +11745,8 @@ function ensureEssForm() {
 function submitEss(event) {
   event.preventDefault();
   ensureEssForm();
-  const answers = Array.from(
-    els.calcEssQuestions.querySelectorAll('select')
-  ).map((select) => Number(select.value));
+  const answers = collectScaleAnswers(els.calcEssQuestions, 'ESS');
+  if (!answers) return;
 
   runCalc(
     '/api/tools/ess',
@@ -11745,9 +11768,8 @@ function submitEss(event) {
 function submitCat(event) {
   event.preventDefault();
   ensureCatForm();
-  const answers = Array.from(
-    els.calcCatQuestions.querySelectorAll('select')
-  ).map((select) => Number(select.value));
+  const answers = collectScaleAnswers(els.calcCatQuestions, 'CAT');
+  if (!answers) return;
 
   runCalc(
     '/api/tools/cat',
@@ -11787,6 +11809,15 @@ function submitMmrc(event) {
 
 function submitAuditC(event) {
   event.preventDefault();
+  const auditcSelects = [
+    els.calcAuditCQ1, els.calcAuditCQ2, els.calcAuditCQ3,
+  ];
+  const missing = auditcSelects.find((select) => !select.value);
+  if (missing) {
+    window.alert('请回答全部题目后再计算 AUDIT-C。');
+    missing.focus();
+    return;
+  }
   runCalc(
     '/api/tools/audit-c',
     {
@@ -11840,9 +11871,8 @@ function submitHasBled(event) {
 function submitPhq9(event) {
   event.preventDefault();
   ensurePhq9Form();
-  const answers = Array.from(
-    els.calcPhq9Questions.querySelectorAll('select')
-  ).map((select) => Number(select.value));
+  const answers = collectScaleAnswers(els.calcPhq9Questions, 'PHQ-9');
+  if (!answers) return;
 
   runCalc(
     '/api/tools/phq9',

@@ -967,7 +967,19 @@ def _public_base_url(value: Any) -> Any:
 
 
 def reminder_audit_target(reminder: Dict[str, Any]) -> str:
-    return f"{reminder.get('id')}·{reminder.get('title', '')}"[:120]
+    """审计 target 只保留提醒 id，不写入提醒标题。"""
+    return str(reminder.get("id") or "")
+
+
+def _profile_audit_key(profile: str) -> str:
+    """档案审计目标用短哈希，导出的审计/备份不包含患者姓名。"""
+    from memory.session_store import _normalize_profile_name
+
+    normalized = _normalize_profile_name(profile)
+    if not normalized:
+        return "未指定"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"profile:{digest}"
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -2496,7 +2508,7 @@ async def add_medication(request: MedicationRequest):
     if item is None:
         raise HTTPException(status_code=400, detail="药物名称不能为空")
     await record_audit(
-        "medication.create", f"{item['id']}·{item['name']}"
+        "medication.create", str(item["id"])
     )
     return {"ok": True, "medication": item}
 
@@ -2527,7 +2539,7 @@ async def update_medication(
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
     await record_audit(
-        "medication.update", f"{item['id']}·{item['name']}"
+        "medication.update", str(item["id"])
     )
     return {"ok": True, "medication": item}
 
@@ -2544,8 +2556,17 @@ async def delete_medication(medication_id: SafeIntPath):
     ok = await asyncio.to_thread(store.delete_medication, medication_id)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        [
+            "medication.create", "medication.update", "medication.delete",
+            "medication.log", "medication.log_delete",
+        ],
+        f"{item['id']}·",
+        str(item["id"]),
+    )
     await record_audit(
-        "medication.delete", f"{item['id']}·{item['name']}"
+        "medication.delete", str(item["id"])
     )
     return {"ok": True, "id": medication_id}
 
@@ -3000,7 +3021,7 @@ async def add_symptom(request: SymptomRequest):
     if item is None:
         raise HTTPException(status_code=400, detail="症状内容或程度不正确")
     await record_audit(
-        "symptom.create", f"{item['id']}·{item['symptom']}", item["recorded_at"]
+        "symptom.create", str(item["id"]), item["recorded_at"]
     )
     return {"ok": True, "symptom": item}
 
@@ -3033,7 +3054,7 @@ async def update_symptom(symptom_id: SafeIntPath, request: SymptomUpdateRequest)
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
     await record_audit(
-        "symptom.update", f"{item['id']}·{item['symptom']}"
+        "symptom.update", str(item["id"])
     )
     return {"ok": True, "symptom": item}
 
@@ -3050,7 +3071,14 @@ async def delete_symptom(symptom_id: SafeIntPath):
     ok = await asyncio.to_thread(store.delete_symptom, symptom_id)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
-    await record_audit("symptom.delete", f"{item['id']}·{item['symptom']}")
+    # 旧版本审计 target 形如「id·症状」，删除时清理症状文本
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["symptom.create", "symptom.update", "symptom.delete"],
+        f"{item['id']}·",
+        str(item["id"]),
+    )
+    await record_audit("symptom.delete", str(item["id"]))
     return {"ok": True, "id": symptom_id}
 
 
@@ -4170,7 +4198,7 @@ async def set_metric_target(request: MetricTargetRequest):
         raise HTTPException(status_code=400, detail="目标数值无效")
     await record_audit(
         "metric_target.set",
-        f"{target['profile'] or '未指定'}·{target['metric']}",
+        f"{_profile_audit_key(request.profile)}·{target['metric']}",
         f"{target['value1']:g}"
         + (f"/{target['value2']:g}" if target["value2"] is not None else ""),
     )
@@ -4187,8 +4215,16 @@ async def delete_metric_target(metric: str, profile: str = ""):
     )
     if not ok:
         raise HTTPException(status_code=404, detail="目标不存在")
+    store = get_session_store()
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["metric_target.set", "metric_target.delete"],
+        f"{profile or '未指定'}·",
+        metric,
+    )
     await record_audit(
-        "metric_target.delete", f"{profile or '未指定'}·{metric}"
+        "metric_target.delete",
+        f"{_profile_audit_key(profile)}·{metric}",
     )
     return {"ok": True, "metric": metric}
 
@@ -4212,21 +4248,39 @@ async def save_profile(request: ProfileRequest):
     )
     if profile is None:
         raise HTTPException(status_code=400, detail="档案名称或内容为空")
-    await record_audit("profile.save", profile["name"])
+    await record_audit("profile.save", _profile_audit_key(profile["name"]))
     return {"ok": True, "profile": profile}
 
 
 @app.delete("/api/profiles/{name}")
 async def delete_profile(name: str):
     from memory import get_session_store
+    from memory.session_store import _normalize_profile_name
 
-    ok = await asyncio.to_thread(get_session_store().delete_profile, name)
+    store = get_session_store()
+    ok = await asyncio.to_thread(store.delete_profile, name)
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
     # 档案作用域是档案名的哈希；删除档案必须清空对应命名空间，
     # 否则重建同名档案会召回旧患者的病史对话
     await asyncio.to_thread(_erase_long_term_scope, name)
-    await record_audit("profile.delete", name)
+    normalized_name = _normalize_profile_name(name)
+    audit_key = _profile_audit_key(name)
+    # 清理历史审计中的档案名
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["profile.rename"],
+        normalized_name,
+        audit_key,
+        "renamed",
+    )
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["profile.save", "profile.delete"],
+        normalized_name,
+        audit_key,
+    )
+    await record_audit("profile.delete", audit_key)
     return {"ok": True, "name": name}
 
 
@@ -4248,7 +4302,22 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     if new_name != _normalize_profile_name(name):
         # 旧命名空间无法原地改名；删除它，避免旧患者病史在新名字下被召回
         await asyncio.to_thread(_erase_long_term_scope, name)
-    await record_audit("profile.rename", name, new_name)
+    store = get_session_store()
+    old_key = _profile_audit_key(name)
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["profile.rename"],
+        _normalize_profile_name(name),
+        old_key,
+        "renamed",
+    )
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["profile.save", "profile.delete"],
+        _normalize_profile_name(name),
+        old_key,
+    )
+    await record_audit("profile.rename", _profile_audit_key(new_name))
     return {"ok": True, "old_name": name, "name": new_name}
 
 
@@ -5501,6 +5570,15 @@ async def delete_reminder(reminder_id: SafeIntPath):
     ok = await asyncio.to_thread(store.delete_reminder, reminder_id)
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        [
+            "reminder.create", "reminder.update", "reminder.complete",
+            "reminder.reopen", "reminder.snooze", "reminder.delete",
+        ],
+        f"{reminder['id']}·",
+        str(reminder["id"]),
+    )
     await record_audit("reminder.delete", reminder_audit_target(reminder))
     return {"ok": True, "id": reminder_id}
 

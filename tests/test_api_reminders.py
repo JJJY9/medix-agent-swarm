@@ -334,9 +334,9 @@ def test_reminder_audit_targets_share_id(client_and_store):
     audit = client.get("/api/audit").json()["actions"]
 
     by_action = {item["action"]: item["target"] for item in audit}
-    prefix = f"{created['id']}·"
-    assert by_action["reminder.create"].startswith(prefix)
-    assert by_action["reminder.complete"].startswith(prefix)
+    assert by_action["reminder.create"] == str(created["id"])
+    assert by_action["reminder.complete"] == str(created["id"])
+    assert "复查" not in " ".join(by_action.values())
 
 
 def test_reminders_ics_folds_long_lines(client_and_store):

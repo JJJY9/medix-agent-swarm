@@ -4646,6 +4646,41 @@ class SessionStore:
             ).fetchall()
         return [row["action"] for row in rows]
 
+    def redact_audit_targets(
+        self,
+        actions: List[str],
+        prefix: str,
+        replacement: str,
+        detail: Optional[str] = None,
+    ) -> int:
+        """把以 prefix 开头的审计 target 替换为不可识别内容。
+
+        用于删除健康记录/档案时清理历史审计中残留的症状、药名或档案名。
+        """
+        actions = [str(action) for action in actions if str(action)]
+        prefix = str(prefix or "")
+        if not actions or not prefix:
+            return 0
+        placeholders = ",".join("?" for _ in actions)
+        sets = ["target = ?"]
+        params: List[Any] = [str(replacement)]
+        if detail is not None:
+            sets.append("detail = ?")
+            params.append(str(detail)[:500])
+        params.extend(actions)
+        params.extend([prefix, len(prefix), prefix])
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                f"""
+                UPDATE audit_log
+                   SET {", ".join(sets)}
+                 WHERE action IN ({placeholders})
+                   AND (target = ? OR substr(target, 1, ?) = ?)
+                """,
+                params,
+            )
+            return cursor.rowcount
+
     def add_reminder(
         self,
         title: str,
