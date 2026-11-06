@@ -35,5 +35,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-ci.txt
 
+      - name: 校验前端脚本语法
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+          node --check web/theme-init.js
+
       - name: 运行离线单元测试
         run: python -m pytest tests
