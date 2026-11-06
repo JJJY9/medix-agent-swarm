@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 import memory
-from memory.session_store import SessionStore
+from memory.session_store import SessionStore, _backup_checksum
 
 
 @pytest.fixture
@@ -38,6 +38,22 @@ def test_tampered_backup_is_rejected(store):
 
     with pytest.raises(ValueError, match="校验失败"):
         store.import_data(data)
+
+
+def test_old_backup_without_new_fields_still_verifies(store):
+    """升级后新增的校验字段缺失时，历史备份仍可导入。"""
+    store.save_exchange("s1", "问题", "答复")
+    data = store.export_data()
+    full_checksum = data["checksum"]
+
+    data.pop("vaccinations")
+    data["checksum"] = _backup_checksum(data)
+    assert data["checksum"] != full_checksum
+
+    result = store.import_data(data)
+
+    assert result["imported"] == 0
+    assert result["skipped"] == 1
 
 
 def test_backup_without_checksum_still_imports(store):
