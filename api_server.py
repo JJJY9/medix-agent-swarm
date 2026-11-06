@@ -838,6 +838,9 @@ def _body_limit_for_path(path: str) -> int:
         return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/upload"):
         return MAX_UPLOAD_BYTES + 1024 * 1024
+    if path.startswith("/api/knowledge/documents/"):
+        # 在线编辑按 update_document 的 5MB 上限，额外预留 JSON 转义开销
+        return MAX_UPLOAD_BYTES + 1024 * 1024
     if path.endswith("/import"):
         return MAX_UPLOAD_BYTES + 1024 * 1024
     return 2 * 1024 * 1024
@@ -5704,6 +5707,7 @@ async def knowledge_search(
 
     allowed_types = {
         "lifestyle",
+        "symptoms",
         "disease_classification",
         "clinical_guideline",
         "general",

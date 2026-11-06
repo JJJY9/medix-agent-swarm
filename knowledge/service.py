@@ -54,9 +54,18 @@ class KnowledgeService:
     def list_documents(self) -> Dict[str, Any]:
         with self._lock:
             documents = []
+            builtin_names = {
+                path.name for path in self.docs_dir.iterdir() if path.is_file()
+            }
             for path in sorted(self.docs_dir.iterdir()):
                 documents.append(self._describe(path, builtin=True))
             for path in sorted(self.upload_dir.iterdir()):
+                if path.name in builtin_names:
+                    # 历史遗留的同名上传会遮蔽内置文档，列表与预览只保留内置版本
+                    logger.warning(
+                        f"Ignoring upload shadowed by builtin document: {path.name}"
+                    )
+                    continue
                 documents.append(self._describe(path, builtin=False))
 
             try:
@@ -129,7 +138,8 @@ class KnowledgeService:
     ) -> Optional[Dict[str, Any]]:
         """读取文档内容，供知识库抽屉预览；max_chars 为 None 时返回全文。"""
         safe_name = self._safe_filename(filename)
-        candidates = (self.upload_dir / safe_name, self.docs_dir / safe_name)
+        # 内置文档优先；同名上传在历史数据中可能遮蔽内置文档
+        candidates = (self.docs_dir / safe_name, self.upload_dir / safe_name)
         path = next((candidate for candidate in candidates if candidate.is_file()), None)
         if path is None:
             return None
@@ -296,21 +306,27 @@ class KnowledgeService:
         suffix = Path(name).suffix
         stem = Path(name).stem
 
+        def available(path: Path) -> bool:
+            # 不允许上传文件与内置文档同名，否则预览/来源会互相遮蔽
+            return not path.exists() and not (self.docs_dir / path.name).exists()
+
         def build(candidate_stem: str) -> str:
             # 预留扩展名与 "-N" 后缀，保证落盘名 ≤120 且再次清洗不变
             budget = max(1, 120 - len(suffix))
             return f"{candidate_stem[:budget]}{suffix}"
 
         path = self.upload_dir / build(stem)
-        if not path.exists():
+        if available(path):
             return path
+        if (self.docs_dir / path.name).exists():
+            raise ValueError("与内置文档同名，请重命名后再上传。")
         for index in range(1, 1000):
             marker = f"-{index}"
             budget = max(1, 120 - len(suffix) - len(marker))
             candidate = self.upload_dir / (
                 f"{stem[:budget]}{marker}{suffix}"
             )
-            if not candidate.exists():
+            if available(candidate):
                 return candidate
         raise ValueError("同名文件过多，请先清理上传目录。")
 
