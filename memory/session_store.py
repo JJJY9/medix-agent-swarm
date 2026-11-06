@@ -88,6 +88,10 @@ ALLERGY_KINDS = ("drug", "food", "environment", "other")
 MAX_CARE_TITLE_LENGTH = 120
 MAX_CARE_NOTE_LENGTH = 300
 MAX_CARE_INTERVAL_DAYS = 3650
+#: 就诊记录
+MAX_VISIT_TEXT_LENGTH = 300
+MAX_VISIT_ADVICE_LENGTH = 1000
+MAX_VISIT_FACILITY_LENGTH = 80
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -118,6 +122,7 @@ IMPORT_LIST_LIMITS = {
     "lab_results": 100000,
     "allergies": 100000,
     "care_items": 100000,
+    "visit_records": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -1100,6 +1105,88 @@ def _care_item_view_fields(
     }
 
 
+def _normalize_visit_record(
+    profile: str,
+    appointment_id: Any,
+    visit_date: str,
+    department: str,
+    doctor: str,
+    facility: str,
+    diagnosis: str,
+    advice: str,
+    prescription: str,
+    next_followup_date: str,
+    note: str,
+) -> Dict[str, Any]:
+    """校验一条就诊记录；非法时抛出 ValueError。"""
+    visit = str(visit_date or "").strip()[:40]
+    if not visit:
+        visit = datetime.now().isoformat(timespec="minutes")
+    else:
+        visit = _canonical_local_time(visit)
+        if visit is None:
+            raise ValueError("就诊日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        if _is_future_timestamp(visit):
+            raise ValueError("就诊日期不能晚于当前时间")
+    visit = visit[:10]
+
+    followup = str(next_followup_date or "").strip()[:40]
+    if followup:
+        followup = _canonical_local_time(followup)
+        if followup is None:
+            raise ValueError("下次复诊日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        followup = followup[:10]
+        if followup < visit:
+            raise ValueError("下次复诊日期不能早于就诊日期")
+    else:
+        followup = ""
+
+    return {
+        "profile": _normalize_profile_name(profile),
+        "appointment_id": _safe_db_id(appointment_id),
+        "visit_date": visit,
+        "department": " ".join(str(department or "").split())[:60],
+        "doctor": " ".join(str(doctor or "").split())[:60],
+        "facility": " ".join(str(facility or "").split())[
+            :MAX_VISIT_FACILITY_LENGTH
+        ],
+        "diagnosis": " ".join(str(diagnosis or "").split())[
+            :MAX_VISIT_TEXT_LENGTH
+        ],
+        "advice": " ".join(str(advice or "").split())[
+            :MAX_VISIT_ADVICE_LENGTH
+        ],
+        "prescription": " ".join(str(prescription or "").split())[
+            :MAX_VISIT_ADVICE_LENGTH
+        ],
+        "next_followup_date": followup,
+        "note": " ".join(str(note or "").split())[
+            :MAX_VISIT_TEXT_LENGTH
+        ],
+    }
+
+
+def _visit_record_view_fields(
+    row: Dict[str, Any], today: str
+) -> Dict[str, Any]:
+    followup = str(row.get("next_followup_date") or "")
+    days_until: Optional[int] = None
+    if followup:
+        try:
+            days_until = (
+                datetime.strptime(followup, "%Y-%m-%d").date()
+                - datetime.strptime(today, "%Y-%m-%d").date()
+            ).days
+        except ValueError:
+            days_until = None
+    return {
+        "followup_days_until": days_until,
+        "followup_overdue": (
+            days_until is not None and days_until < 0
+        ),
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -1330,6 +1417,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "lab_results",
     "allergies",
     "care_items",
+    "visit_records",
     "audit_log",
 )
 
@@ -1604,6 +1692,24 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_care_items_profile_due
                     ON care_items(profile, active, next_due_at);
+                CREATE TABLE IF NOT EXISTS visit_records (
+                    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile            TEXT NOT NULL DEFAULT '',
+                    appointment_id     INTEGER NOT NULL DEFAULT 0,
+                    visit_date         TEXT NOT NULL,
+                    department         TEXT NOT NULL DEFAULT '',
+                    doctor             TEXT NOT NULL DEFAULT '',
+                    facility           TEXT NOT NULL DEFAULT '',
+                    diagnosis          TEXT NOT NULL DEFAULT '',
+                    advice             TEXT NOT NULL DEFAULT '',
+                    prescription       TEXT NOT NULL DEFAULT '',
+                    next_followup_date TEXT NOT NULL DEFAULT '',
+                    note               TEXT NOT NULL DEFAULT '',
+                    created_at         TEXT NOT NULL,
+                    updated_at         TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_visit_records_profile_date
+                    ON visit_records(profile, visit_date DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1891,6 +1997,7 @@ class SessionStore:
                 ("lab_results", "profile"),
                 ("allergies", "profile"),
                 ("care_items", "profile"),
+                ("visit_records", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2939,6 +3046,7 @@ class SessionStore:
             "lab_results": self.list_lab_results(limit=100000),
             "allergies": self.list_allergies(limit=100000),
             "care_items": self.list_care_items(limit=100000),
+            "visit_records": self.list_visit_records(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -2970,6 +3078,7 @@ class SessionStore:
         raw_lab_results = data.get("lab_results")
         raw_allergies = data.get("allergies")
         raw_care_items = data.get("care_items")
+        raw_visit_records = data.get("visit_records")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -2984,6 +3093,7 @@ class SessionStore:
             or isinstance(raw_lab_results, list)
             or isinstance(raw_allergies, list)
             or isinstance(raw_care_items, list)
+            or isinstance(raw_visit_records, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -3003,6 +3113,7 @@ class SessionStore:
             and not isinstance(raw_lab_results, list)
             and not isinstance(raw_allergies, list)
             and not isinstance(raw_care_items, list)
+            and not isinstance(raw_visit_records, list)
             and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
@@ -3022,6 +3133,7 @@ class SessionStore:
             ("lab_results", "化验结果", raw_lab_results),
             ("allergies", "过敏史", raw_allergies),
             ("care_items", "复查计划", raw_care_items),
+            ("visit_records", "就诊记录", raw_visit_records),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -3814,6 +3926,69 @@ class SessionStore:
                     )
                     care_items_imported += 1
 
+            visit_records_imported = 0
+            if isinstance(raw_visit_records, list):
+                for raw in raw_visit_records[
+                    :IMPORT_LIST_LIMITS["visit_records"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_visit_record(
+                            raw.get("profile") or "",
+                            raw.get("appointment_id") or 0,
+                            raw.get("visit_date") or "",
+                            raw.get("department") or "",
+                            raw.get("doctor") or "",
+                            raw.get("facility") or "",
+                            raw.get("diagnosis") or "",
+                            raw.get("advice") or "",
+                            raw.get("prescription") or "",
+                            raw.get("next_followup_date") or "",
+                            raw.get("note") or "",
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM visit_records
+                         WHERE profile = ? AND visit_date = ?
+                           AND diagnosis = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["visit_date"],
+                            normalized["diagnosis"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO visit_records(
+                            profile, appointment_id, visit_date, department,
+                            doctor, facility, diagnosis, advice,
+                            prescription, next_followup_date, note,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["appointment_id"],
+                            normalized["visit_date"],
+                            normalized["department"],
+                            normalized["doctor"], normalized["facility"],
+                            normalized["diagnosis"], normalized["advice"],
+                            normalized["prescription"],
+                            normalized["next_followup_date"],
+                            normalized["note"],
+                            str(raw.get("created_at") or now)[:40],
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    visit_records_imported += 1
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -4062,6 +4237,7 @@ class SessionStore:
             "lab_results": lab_results_imported,
             "allergies": allergies_imported,
             "care_items": care_items_imported,
+            "visit_records": visit_records_imported,
             "audit_log": audit_imported,
         }
 
@@ -4318,6 +4494,7 @@ class SessionStore:
                     ("lab_results", "profile"),
                     ("allergies", "profile"),
                     ("care_items", "profile"),
+                    ("visit_records", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -4367,6 +4544,7 @@ class SessionStore:
                 "lab_results",
                 "allergies",
                 "care_items",
+                "visit_records",
                 "sessions",
             ):
                 self._conn.execute(
@@ -5527,6 +5705,178 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM care_items WHERE id = ?",
                 (int(care_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_visit_record(
+        self,
+        profile: str,
+        appointment_id: Any = 0,
+        visit_date: str = "",
+        department: str = "",
+        doctor: str = "",
+        facility: str = "",
+        diagnosis: str = "",
+        advice: str = "",
+        prescription: str = "",
+        next_followup_date: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """新增一条就诊记录并返回完整行。"""
+        normalized = _normalize_visit_record(
+            profile, appointment_id, visit_date, department, doctor,
+            facility, diagnosis, advice, prescription,
+            next_followup_date, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO visit_records(
+                    profile, appointment_id, visit_date, department,
+                    doctor, facility, diagnosis, advice, prescription,
+                    next_followup_date, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["appointment_id"],
+                    normalized["visit_date"], normalized["department"],
+                    normalized["doctor"], normalized["facility"],
+                    normalized["diagnosis"], normalized["advice"],
+                    normalized["prescription"],
+                    normalized["next_followup_date"], normalized["note"],
+                    now, now,
+                ),
+            )
+            visit_id = int(cursor.lastrowid)
+        data = {"id": visit_id, **normalized, "created_at": now,
+                "updated_at": now}
+        return {
+            **data,
+            **_visit_record_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+    def update_visit_record(
+        self,
+        visit_id: int,
+        profile: str,
+        appointment_id: Any = 0,
+        visit_date: str = "",
+        department: str = "",
+        doctor: str = "",
+        facility: str = "",
+        diagnosis: str = "",
+        advice: str = "",
+        prescription: str = "",
+        next_followup_date: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条就诊记录；记录不存在时返回 None。"""
+        normalized = _normalize_visit_record(
+            profile, appointment_id, visit_date, department, doctor,
+            facility, diagnosis, advice, prescription,
+            next_followup_date, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE visit_records
+                   SET profile = ?, appointment_id = ?, visit_date = ?,
+                       department = ?, doctor = ?, facility = ?,
+                       diagnosis = ?, advice = ?, prescription = ?,
+                       next_followup_date = ?, note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["appointment_id"],
+                    normalized["visit_date"], normalized["department"],
+                    normalized["doctor"], normalized["facility"],
+                    normalized["diagnosis"], normalized["advice"],
+                    normalized["prescription"],
+                    normalized["next_followup_date"], normalized["note"],
+                    now, int(visit_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_visit_record(visit_id)
+
+    def get_visit_record(
+        self, visit_id: int
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, appointment_id, visit_date, department,
+                       doctor, facility, diagnosis, advice, prescription,
+                       next_followup_date, note, created_at, updated_at
+                  FROM visit_records WHERE id = ?
+                """,
+                (int(visit_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            **data,
+            **_visit_record_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+    def list_visit_records(
+        self,
+        profile: Optional[str] = None,
+        days: int = 0,
+        q: str = "",
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("substr(visit_date, 1, 10) >= ?")
+            params.append(cutoff[:10])
+        query = str(q or "").strip()
+        if query:
+            like = f"%{query}%"
+            conditions.append(
+                "(diagnosis LIKE ? OR advice LIKE ? OR doctor LIKE ?"
+                " OR department LIKE ? OR facility LIKE ? OR note LIKE ?)"
+            )
+            params.extend([like] * 6)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, appointment_id, visit_date, department,
+                       doctor, facility, diagnosis, advice, prescription,
+                       next_followup_date, note, created_at, updated_at
+                  FROM visit_records
+                 {where}
+                 ORDER BY visit_date DESC, id DESC
+                 LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        today = datetime.now().strftime("%Y-%m-%d")
+        return [
+            {**dict(row), **_visit_record_view_fields(dict(row), today)}
+            for row in rows
+        ]
+
+    def delete_visit_record(self, visit_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM visit_records WHERE id = ?",
+                (int(visit_id),),
             )
             return cursor.rowcount > 0
 

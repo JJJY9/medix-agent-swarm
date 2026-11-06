@@ -948,6 +948,50 @@
       <ul class="metrics-list" id="care-list"></ul>
       <p class="metrics-empty" id="care-empty" hidden>还没有复查计划。</p>
     </details>
+    <details class="visit-section" id="visit-section">
+      <summary>就诊记录</summary>
+      <p class="calc-hint">记录实际就诊的诊断、医嘱、处方与下次复诊时间，补齐「预约 → 就诊 → 结果」闭环。</p>
+      <div class="symptom-form">
+        <label class="calc-field">就诊日期
+          <input id="visit-date" type="date">
+        </label>
+        <label class="calc-field">科室
+          <input id="visit-department" type="text" maxlength="60" placeholder="如：心内科">
+        </label>
+        <label class="calc-field">医生（可选）
+          <input id="visit-doctor" type="text" maxlength="60" placeholder="如：王医生">
+        </label>
+        <label class="calc-field">医疗机构（可选）
+          <input id="visit-facility" type="text" maxlength="80" placeholder="如：市医院">
+        </label>
+        <label class="calc-field">诊断
+          <input id="visit-diagnosis" type="text" maxlength="300" placeholder="如：原发性高血压 2 级">
+        </label>
+        <label class="calc-field">医嘱（可选）
+          <input id="visit-advice" type="text" maxlength="1000" placeholder="如：低盐饮食，监测血压">
+        </label>
+        <label class="calc-field">处方（可选）
+          <input id="visit-prescription" type="text" maxlength="1000" placeholder="如：氨氯地平 5 mg 每日一次">
+        </label>
+        <label class="calc-field">下次复诊日期（可选）
+          <input id="visit-next-followup" type="date">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="visit-note" type="text" maxlength="300" placeholder="如：带上次化验单">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="visit-save">保存就诊记录</button>
+          <button type="button" class="btn-quiet" id="visit-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="visit-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="visit-status" role="status" hidden></p>
+      <label class="sr-only" for="visit-search">搜索就诊记录</label>
+      <input class="symptom-search" id="visit-search" type="search" placeholder="搜索诊断、医嘱、医生或档案">
+      <p class="symptom-summary" id="visit-summary" hidden></p>
+      <ul class="metrics-list" id="visit-list"></ul>
+      <p class="metrics-empty" id="visit-empty" hidden>还没有就诊记录。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>
@@ -1099,6 +1143,7 @@
           <option value="appointment">就诊</option>
           <option value="lab">化验</option>
           <option value="care">复查</option>
+          <option value="visit">就诊记录</option>
           <option value="consultation">会诊</option>
         </select>
         <label class="sr-only" for="timeline-search">搜索时间线</label>

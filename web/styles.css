@@ -4073,6 +4073,21 @@ html[data-theme="dark"] .medication-expiry-badge.is-expired {
   color: var(--ink-soft);
 }
 
+.visit-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.visit-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
 .care-due-badge {
   display: inline-block;
   margin-left: 4px;

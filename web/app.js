@@ -500,6 +500,24 @@ const els = {
   careEmpty: document.getElementById('care-empty'),
   careSearch: document.getElementById('care-search'),
   careSummary: document.getElementById('care-summary'),
+  visitSection: document.getElementById('visit-section'),
+  visitDate: document.getElementById('visit-date'),
+  visitDepartment: document.getElementById('visit-department'),
+  visitDoctor: document.getElementById('visit-doctor'),
+  visitFacility: document.getElementById('visit-facility'),
+  visitDiagnosis: document.getElementById('visit-diagnosis'),
+  visitAdvice: document.getElementById('visit-advice'),
+  visitPrescription: document.getElementById('visit-prescription'),
+  visitNextFollowup: document.getElementById('visit-next-followup'),
+  visitNote: document.getElementById('visit-note'),
+  visitSave: document.getElementById('visit-save'),
+  visitExport: document.getElementById('visit-export'),
+  visitCancel: document.getElementById('visit-cancel'),
+  visitStatus: document.getElementById('visit-status'),
+  visitList: document.getElementById('visit-list'),
+  visitEmpty: document.getElementById('visit-empty'),
+  visitSearch: document.getElementById('visit-search'),
+  visitSummary: document.getElementById('visit-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4204,7 +4222,7 @@ async function refreshAfterBackupImport(result) {
     || result.medications || result.medication_logs
     || result.vaccinations || result.appointments
     || result.lab_results || result.allergies
-    || result.care_items
+    || result.care_items || result.visit_records
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
@@ -4213,6 +4231,7 @@ async function refreshAfterBackupImport(result) {
     if (result.lab_results) loadLabs();
     if (result.allergies) loadAllergies();
     if (result.care_items) loadCareItems();
+    if (result.visit_records) loadVisits();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6971,6 +6990,7 @@ async function refreshMetrics() {
   loadLabs();
   loadAllergies();
   loadCareItems();
+  loadVisits();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -8155,6 +8175,14 @@ function renderFamilyOverview(data) {
         care.overdue ? 'family-chip-alert' : ''
       ));
     }
+    const visits = profile.visits || {};
+    const latestVisit = visits.latest || {};
+    if (latestVisit.visit_date) {
+      chips.appendChild(familyChip(
+        `就诊 ${latestVisit.visit_date}`
+        + (latestVisit.diagnosis ? ` · ${latestVisit.diagnosis}` : '')
+      ));
+    }
     const medications = profile.medications || {};
     if (medications.active) {
       const chip = familyChip(
@@ -8333,6 +8361,14 @@ function familyOverviewText(data) {
       parts.push(`复查逾期 ${care.overdue} 项`);
     } else if (care.due_soon) {
       parts.push(`复查近 7 天 ${care.due_soon} 项`);
+    }
+    const visits = profile.visits || {};
+    const latestVisit = visits.latest || {};
+    if (latestVisit.visit_date) {
+      parts.push(
+        `最近就诊 ${latestVisit.visit_date}`
+        + (latestVisit.diagnosis ? `（${latestVisit.diagnosis}）` : '')
+      );
     }
     const consultations = profile.consultations || {};
     if (consultations.count) {
@@ -11328,6 +11364,283 @@ async function deleteCareItem(item) {
   }
 }
 
+let editingVisitId = null;
+let editingVisitProfile = '';
+let visitSaving = false;
+let visitRequestSeq = 0;
+let visitItemsCache = [];
+let visitSearchTimer = null;
+
+function setVisitStatus(text, isError = false) {
+  if (!els.visitStatus) return;
+  els.visitStatus.textContent = text || '';
+  els.visitStatus.hidden = !text;
+  els.visitStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetVisitForm() {
+  editingVisitId = null;
+  editingVisitProfile = '';
+  els.visitDate.value = todayLocalDate();
+  els.visitDepartment.value = '';
+  els.visitDoctor.value = '';
+  els.visitFacility.value = '';
+  els.visitDiagnosis.value = '';
+  els.visitAdvice.value = '';
+  els.visitPrescription.value = '';
+  els.visitNextFollowup.value = '';
+  els.visitNote.value = '';
+  els.visitSave.textContent = '保存就诊记录';
+  els.visitCancel.hidden = true;
+}
+
+function filterVisits(items) {
+  const query = els.visitSearch
+    ? String(els.visitSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [
+      item.diagnosis, item.advice, item.prescription,
+      item.department, item.doctor, item.facility,
+      item.note, item.profile,
+    ]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderVisits(items) {
+  if (!els.visitList) return;
+  els.visitList.replaceChildren();
+  els.visitEmpty.hidden = items.length > 0;
+  const query = els.visitSearch
+    ? String(els.visitSearch.value || '').trim()
+    : '';
+  els.visitEmpty.textContent = query
+    ? `没有匹配「${query}」的就诊记录。`
+    : '还没有就诊记录。';
+  if (items.length) {
+    els.visitSummary.hidden = false;
+    els.visitSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`;
+  } else {
+    els.visitSummary.hidden = true;
+  }
+  if (
+    editingVisitId
+    && !visitItemsCache.some((item) => item.id === editingVisitId)
+  ) {
+    resetVisitForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.diagnosis || '就诊记录';
+    if (item.next_followup_date) {
+      const followup = document.createElement('span');
+      followup.className = 'care-due-badge'
+        + (item.followup_overdue ? ' is-overdue' : ' is-soon');
+      followup.textContent = `复诊 ${item.next_followup_date}`;
+      title.append(' ', followup);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      item.visit_date,
+      item.department,
+      item.doctor,
+      item.facility,
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.advice) {
+      const advice = document.createElement('span');
+      advice.className = 'metric-note';
+      advice.textContent = `医嘱：${item.advice}`;
+      main.appendChild(advice);
+    }
+    if (item.prescription) {
+      const prescription = document.createElement('span');
+      prescription.className = 'metric-note';
+      prescription.textContent = `处方：${item.prescription}`;
+      main.appendChild(prescription);
+    }
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑就诊记录：${item.diagnosis || ''}`);
+    edit.addEventListener('click', () => editVisit(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除就诊记录：${item.diagnosis || ''}`);
+    del.addEventListener('click', () => deleteVisit(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.visitList.appendChild(li);
+  }
+}
+
+async function loadVisits() {
+  if (!els.visitList) return;
+  const requestSeq = ++visitRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/visits?limit=1000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== visitRequestSeq) return;
+    visitItemsCache = data.visits || [];
+    renderVisits(filterVisits(visitItemsCache));
+  } catch {
+    if (requestSeq !== visitRequestSeq) return;
+    visitItemsCache = [];
+    renderVisits([]);
+    els.visitEmpty.textContent = '就诊记录加载失败，请稍后重试。';
+    els.visitEmpty.hidden = false;
+    setVisitStatus('就诊记录加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportVisitsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/visits/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-visits-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setVisitStatus('已导出就诊记录 CSV。');
+  } catch (err) {
+    setVisitStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+function editVisit(item) {
+  editingVisitId = item.id;
+  editingVisitProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.visitDate.value = String(item.visit_date || '').slice(0, 10);
+  els.visitDepartment.value = item.department || '';
+  els.visitDoctor.value = item.doctor || '';
+  els.visitFacility.value = item.facility || '';
+  els.visitDiagnosis.value = item.diagnosis || '';
+  els.visitAdvice.value = item.advice || '';
+  els.visitPrescription.value = item.prescription || '';
+  els.visitNextFollowup.value =
+    String(item.next_followup_date || '').slice(0, 10);
+  els.visitNote.value = item.note || '';
+  els.visitSave.textContent = '保存修改';
+  els.visitCancel.hidden = false;
+  els.visitDiagnosis.focus();
+}
+
+async function saveVisit() {
+  if (visitSaving) return;
+  const visitDate = els.visitDate.value || todayLocalDate();
+  const editingId = editingVisitId;
+  const payload = {
+    profile: editingId
+      ? editingVisitProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    visit_date: visitDate,
+    department: (els.visitDepartment.value || '').trim(),
+    doctor: (els.visitDoctor.value || '').trim(),
+    facility: (els.visitFacility.value || '').trim(),
+    diagnosis: (els.visitDiagnosis.value || '').trim(),
+    advice: (els.visitAdvice.value || '').trim(),
+    prescription: (els.visitPrescription.value || '').trim(),
+    next_followup_date: els.visitNextFollowup.value || '',
+    note: (els.visitNote.value || '').trim(),
+  };
+  visitSaving = true;
+  els.visitSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/visits/${editingId}` : '/api/visits',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetVisitForm();
+    setVisitStatus(editingId ? '已保存修改。' : '已保存就诊记录。');
+    await loadVisits();
+    refreshOverview();
+  } catch (err) {
+    setVisitStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    visitSaving = false;
+    els.visitSave.disabled = false;
+  }
+}
+
+async function deleteVisit(item) {
+  if (!window.confirm(
+    `删除就诊记录「${item.diagnosis || item.visit_date}」？`
+  )) return;
+  try {
+    const res = await fetch(`/api/visits/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingVisitId === item.id) resetVisitForm();
+    setVisitStatus('已删除就诊记录。');
+    await loadVisits();
+    refreshOverview();
+  } catch (err) {
+    setVisitStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -11985,6 +12298,7 @@ const TIMELINE_TYPE_LABELS = {
   appointment: '就诊',
   lab: '化验',
   care: '复查',
+  visit: '就诊记录',
   consultation: '会诊',
 };
 
@@ -15860,6 +16174,32 @@ els.careSearch.addEventListener('input', () => {
   clearTimeout(careSearchTimer);
   careSearchTimer = setTimeout(() => {
     renderCareItems(filterCareItems(careItemsCache));
+  }, 200);
+});
+els.visitSave.addEventListener('click', saveVisit);
+els.visitExport.addEventListener('click', exportVisitsCsv);
+els.visitCancel.addEventListener('click', () => {
+  resetVisitForm();
+  setVisitStatus('已取消编辑。');
+});
+for (const input of [
+  els.visitDate, els.visitDepartment, els.visitDoctor,
+  els.visitFacility, els.visitDiagnosis, els.visitAdvice,
+  els.visitPrescription, els.visitNextFollowup, els.visitNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveVisit();
+    }
+  });
+}
+els.visitSearch.addEventListener('input', () => {
+  clearTimeout(visitSearchTimer);
+  visitSearchTimer = setTimeout(() => {
+    renderVisits(filterVisits(visitItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {

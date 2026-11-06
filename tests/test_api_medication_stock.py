@@ -265,10 +265,10 @@ def test_medication_stock_in_family_overview_and_dossier(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-5] == "用药库存"
+    assert rows[0][-6] == "用药库存"
     row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "库存偏低 1 种" in row[-5]
-    assert "即将过期 1 种" in row[-5]
+    assert "库存偏低 1 种" in row[-6]
+    assert "即将过期 1 种" in row[-6]
 
     dossier = client.get(
         "/api/health/dossier.md", params={"profile": "奶奶"}

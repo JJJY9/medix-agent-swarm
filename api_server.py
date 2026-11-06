@@ -186,6 +186,7 @@ class ImportSessionsRequest(StrictRequestModel):
     lab_results: Optional[List[Dict[str, Any]]] = None
     allergies: Optional[List[Dict[str, Any]]] = None
     care_items: Optional[List[Dict[str, Any]]] = None
+    visit_records: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -663,6 +664,34 @@ class CareItemUpdateRequest(StrictRequestModel):
 
 class CareDoneRequest(StrictRequestModel):
     done_at: str = Field("", max_length=40)
+
+
+class VisitRecordRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40)
+    appointment_id: int = Field(0, ge=0, le=MAX_SQLITE_INT)
+    visit_date: str = Field("", max_length=40)
+    department: str = Field("", max_length=60)
+    doctor: str = Field("", max_length=60)
+    facility: str = Field("", max_length=80)
+    diagnosis: str = Field("", max_length=300)
+    advice: str = Field("", max_length=1000)
+    prescription: str = Field("", max_length=1000)
+    next_followup_date: str = Field("", max_length=40)
+    note: str = Field("", max_length=300)
+
+
+class VisitRecordUpdateRequest(StrictRequestModel):
+    profile: Optional[str] = Field(None, max_length=40)
+    appointment_id: Optional[int] = Field(None, ge=0, le=MAX_SQLITE_INT)
+    visit_date: Optional[str] = Field(None, max_length=40)
+    department: Optional[str] = Field(None, max_length=60)
+    doctor: Optional[str] = Field(None, max_length=60)
+    facility: Optional[str] = Field(None, max_length=80)
+    diagnosis: Optional[str] = Field(None, max_length=300)
+    advice: Optional[str] = Field(None, max_length=1000)
+    prescription: Optional[str] = Field(None, max_length=1000)
+    next_followup_date: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
 
 
 class SymptomRequest(StrictRequestModel):
@@ -2091,6 +2120,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "lab_results": request.lab_results,
         "allergies": request.allergies,
         "care_items": request.care_items,
+        "visit_records": request.visit_records,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -2120,7 +2150,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
         "vaccinations", "appointments", "lab_results", "allergies",
-        "care_items", "audit_log",
+        "care_items", "visit_records", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -4041,6 +4071,146 @@ async def create_care_item_reminder(care_id: SafeIntPath):
     return {"ok": True, "created": True, "reminder": reminder}
 
 
+@app.get("/api/visits")
+async def list_visits(
+    profile: Optional[str] = None,
+    days: int = 0,
+    q: str = "",
+    limit: int = 1000,
+):
+    """就诊记录列表（可按档案、最近天数与关键字筛选）。"""
+    from memory import get_session_store
+
+    days = max(0, min(int(days or 0), 3650))
+    limit = max(1, min(int(limit or 1000), 100000))
+    items = await asyncio.to_thread(
+        get_session_store().list_visit_records,
+        profile, days, q, limit,
+    )
+    return {"visits": items}
+
+
+@app.post("/api/visits")
+async def add_visit(request: VisitRecordRequest):
+    """新增一条就诊记录。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_visit_record,
+            request.profile,
+            request.appointment_id,
+            request.visit_date,
+            request.department,
+            request.doctor,
+            request.facility,
+            request.diagnosis,
+            request.advice,
+            request.prescription,
+            request.next_followup_date,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("visit.create", str(item["id"]))
+    return {"ok": True, "visit": item}
+
+
+@app.patch("/api/visits/{visit_id}")
+async def update_visit(
+    visit_id: SafeIntPath, request: VisitRecordUpdateRequest
+):
+    """部分更新一条就诊记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_visit_record, visit_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_visit_record,
+            visit_id,
+            merged.get("profile") or "",
+            merged.get("appointment_id") or 0,
+            merged.get("visit_date") or "",
+            merged.get("department") or "",
+            merged.get("doctor") or "",
+            merged.get("facility") or "",
+            merged.get("diagnosis") or "",
+            merged.get("advice") or "",
+            merged.get("prescription") or "",
+            merged.get("next_followup_date") or "",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("visit.update", str(item["id"]))
+    return {"ok": True, "visit": item}
+
+
+@app.delete("/api/visits/{visit_id}")
+async def delete_visit(visit_id: SafeIntPath):
+    """删除一条就诊记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_visit_record, visit_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_visit_record, visit_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("visit.delete", str(visit_id))
+    return {"ok": True, "id": visit_id}
+
+
+@app.get("/api/visits/export.csv")
+async def export_visits_csv(profile: Optional[str] = None):
+    """导出就诊记录 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_visit_records,
+        profile, 0, "", 100000,
+    )
+    rows = [[
+        "就诊日期", "患者档案", "科室", "医生", "机构", "诊断",
+        "医嘱", "处方", "下次复诊", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("visit_date", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("department", "")),
+            csv_safe_cell(item.get("doctor", "")),
+            csv_safe_cell(item.get("facility", "")),
+            csv_safe_cell(item.get("diagnosis", "")),
+            csv_safe_cell(item.get("advice", "")),
+            csv_safe_cell(item.get("prescription", "")),
+            csv_safe_cell(item.get("next_followup_date", "")),
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-visits-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -4689,6 +4859,9 @@ async def health_timeline(
     raw_care_items = await asyncio.to_thread(
         store.list_care_items, profile, False, False, 100000
     )
+    raw_visit_records = await asyncio.to_thread(
+        store.list_visit_records, profile, 0, "", 100000
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -4909,6 +5082,31 @@ async def health_timeline(
             "alert": bool(item.get("overdue") or item.get("due_soon")),
         })
 
+    for item in raw_visit_records:
+        at = str(item.get("visit_date") or "")
+        if not in_window(at):
+            continue
+        details = [
+            item.get("department") or "",
+            item.get("doctor") or "",
+            item.get("facility") or "",
+        ]
+        details = [part for part in details if part]
+        value = " · ".join(details)
+        if item.get("next_followup_date"):
+            followup = f"下次复诊 {item['next_followup_date']}"
+            value = f"{value} · {followup}" if value else followup
+        events.append({
+            "type": "visit",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("diagnosis") or "就诊记录",
+            "value": value,
+            "note": item.get("note", ""),
+            "alert": False,
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -4940,7 +5138,7 @@ async def health_timeline(
     events.sort(key=sort_key, reverse=True)
     if type in {
         "metric", "symptom", "medication", "vaccination",
-        "appointment", "lab", "care", "consultation",
+        "appointment", "lab", "care", "visit", "consultation",
     }:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
@@ -5000,6 +5198,7 @@ async def export_timeline_csv(
         "appointment": "就诊",
         "lab": "化验",
         "care": "复查",
+        "visit": "就诊记录",
         "consultation": "会诊",
     }
     events = data["events"]
@@ -5741,6 +5940,9 @@ async def family_overview(days: int = 7):
     care_items = await asyncio.to_thread(
         store.list_care_items, None, False, False, 100000
     )
+    visit_records = await asyncio.to_thread(
+        store.list_visit_records, None, 0, "", 100000
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -5936,6 +6138,25 @@ async def family_overview(days: int = 7):
                     f"{item.get('item') or '化验'} {value}".strip()
                 )
 
+    visits_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in visit_records:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = visits_by_profile.setdefault(profile, {
+            "count": 0, "latest": None,
+        })
+        entry["count"] += 1
+        if entry["latest"] is None:
+            entry["latest"] = {
+                "id": item.get("id"),
+                "visit_date": item.get("visit_date", ""),
+                "diagnosis": item.get("diagnosis", ""),
+                "department": item.get("department", ""),
+                "doctor": item.get("doctor", ""),
+                "next_followup_date": item.get("next_followup_date", ""),
+            }
+
     care_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in care_items:
         profile = item.get("profile") or ""
@@ -6037,6 +6258,9 @@ async def family_overview(days: int = 7):
         care = care_by_profile.get(name, {
             "overdue": 0, "due_soon": 0, "next": None, "items": [],
         })
+        visits = visits_by_profile.get(name, {
+            "count": 0, "latest": None,
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -6074,6 +6298,7 @@ async def family_overview(days: int = 7):
             "labs": labs,
             "critical_alerts": critical,
             "care_plan": care,
+            "visits": visits,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -6104,7 +6329,7 @@ async def export_family_overview_csv(days: int = 7):
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
         "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
-        "复查计划",
+        "复查计划", "最近就诊",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -6227,6 +6452,26 @@ async def export_family_overview_csv(days: int = 7):
                 f"{next_care['title']} {next_care.get('next_due_at', '')}"
             )
         care_text = "，".join(care_parts)
+        visit_info = item.get("visits") or {}
+        latest_visit = visit_info.get("latest") or {}
+        if latest_visit:
+            visit_record_text = (
+                f"{latest_visit.get('visit_date') or ''} "
+                f"{latest_visit.get('diagnosis') or '就诊'}"
+            )
+            details = [
+                latest_visit.get("department") or "",
+                latest_visit.get("doctor") or "",
+            ]
+            details = [part for part in details if part]
+            if details:
+                visit_record_text += f"（{' · '.join(details)}）"
+            if latest_visit.get("next_followup_date"):
+                visit_record_text += (
+                    f"，下次复诊 {latest_visit['next_followup_date']}"
+                )
+        else:
+            visit_record_text = ""
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -6247,6 +6492,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(lab_text),
             csv_safe_cell(critical_text),
             csv_safe_cell(care_text),
+            csv_safe_cell(visit_record_text),
         ])
 
     buffer = io.StringIO()
@@ -6380,6 +6626,9 @@ async def export_health_dossier(
     care_items = await asyncio.to_thread(
         store.list_care_items, profile_key, False, False, 1000
     )
+    visit_records = await asyncio.to_thread(
+        store.list_visit_records, profile_key, 0, "", 1000
+    )
     if profile_key:
         reminders = await asyncio.to_thread(
             store.list_reminders, False, profile_key
@@ -6475,6 +6724,34 @@ async def export_health_dossier(
             lines.append(detail)
     else:
         lines.append("- 暂未设置复查计划")
+    lines.append("")
+
+    lines.append("## 近期就诊")
+    if visit_records:
+        for item in visit_records:
+            detail = (
+                f"- {item.get('visit_date') or ''} "
+                f"{item.get('diagnosis') or '就诊'}"
+            )
+            extras = [
+                item.get("department") or "",
+                item.get("doctor") or "",
+                item.get("facility") or "",
+            ]
+            extras = [part for part in extras if part]
+            if extras:
+                detail += f"（{' · '.join(extras)}）"
+            if item.get("advice"):
+                detail += f"；医嘱：{item['advice']}"
+            if item.get("prescription"):
+                detail += f"；处方：{item['prescription']}"
+            if item.get("next_followup_date"):
+                detail += f"；下次复诊 {item['next_followup_date']}"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂未记录就诊记录")
     lines.append("")
 
     lines.append("## 指标目标")
