@@ -485,6 +485,7 @@ def test_import_data_roundtrip(tmp_path):
             "allergies": 0,
             "care_items": 0,
             "visit_records": 0,
+            "conditions": 0,
             "audit_log": 0,
         }
         messages = target.get_messages("s1")

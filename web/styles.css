@@ -4088,6 +4088,52 @@ html[data-theme="dark"] .medication-expiry-badge.is-expired {
   color: var(--ink-soft);
 }
 
+.condition-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.condition-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.condition-status-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+.condition-status-badge.is-active {
+  color: #8a5a00;
+  background: #fbefd2;
+}
+
+.condition-status-badge.is-controlled {
+  color: #1f7a4d;
+  background: #e7f5ec;
+}
+
+html[data-theme="dark"] .condition-status-badge.is-active {
+  color: #f0c36d;
+  background: #3a2d14;
+}
+
+html[data-theme="dark"] .condition-status-badge.is-controlled {
+  color: #7ee2a8;
+  background: #14301f;
+}
+
 .care-due-badge {
   display: inline-block;
   margin-left: 4px;

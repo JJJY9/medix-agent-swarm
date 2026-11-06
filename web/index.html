@@ -992,6 +992,49 @@
       <ul class="metrics-list" id="visit-list"></ul>
       <p class="metrics-empty" id="visit-empty" hidden>还没有就诊记录。</p>
     </details>
+    <details class="condition-section" id="condition-section">
+      <summary>慢病清单</summary>
+      <p class="calc-hint">记录高血压、糖尿病、CKD 等长期健康问题与状态；未痊愈的问题会自动并入会诊既往史。</p>
+      <div class="symptom-form">
+        <label class="calc-field">疾病/健康问题
+          <input id="condition-name" type="text" maxlength="120" placeholder="如：原发性高血压">
+        </label>
+        <label class="calc-field">ICD-10（可选）
+          <input id="condition-icd10" type="text" maxlength="20" placeholder="如：I10">
+        </label>
+        <label class="calc-field">确诊日期（可选）
+          <input id="condition-diagnosed-at" type="date">
+        </label>
+        <label class="calc-field">状态
+          <select id="condition-status">
+            <option value="active" selected>管理中</option>
+            <option value="controlled">已控制</option>
+            <option value="resolved">已痊愈</option>
+          </select>
+        </label>
+        <label class="calc-field">严重程度
+          <select id="condition-severity">
+            <option value="mild">轻度</option>
+            <option value="moderate" selected>中度</option>
+            <option value="severe">重度</option>
+          </select>
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="condition-note" type="text" maxlength="300" placeholder="如：服药后控制良好">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="condition-save">保存问题</button>
+          <button type="button" class="btn-quiet" id="condition-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="condition-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="condition-status-text" role="status" hidden></p>
+      <label class="sr-only" for="condition-search">搜索慢病清单</label>
+      <input class="symptom-search" id="condition-search" type="search" placeholder="搜索疾病、ICD-10 或档案">
+      <p class="symptom-summary" id="condition-summary" hidden></p>
+      <ul class="metrics-list" id="condition-list"></ul>
+      <p class="metrics-empty" id="condition-empty" hidden>还没有慢病/健康问题记录。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>

@@ -187,6 +187,7 @@ class ImportSessionsRequest(StrictRequestModel):
     allergies: Optional[List[Dict[str, Any]]] = None
     care_items: Optional[List[Dict[str, Any]]] = None
     visit_records: Optional[List[Dict[str, Any]]] = None
+    conditions: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -691,6 +692,26 @@ class VisitRecordUpdateRequest(StrictRequestModel):
     advice: Optional[str] = Field(None, max_length=1000)
     prescription: Optional[str] = Field(None, max_length=1000)
     next_followup_date: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+
+
+class ConditionRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40)
+    name: str = Field(..., min_length=1, max_length=120)
+    icd10: str = Field("", max_length=20)
+    diagnosed_at: str = Field("", max_length=40)
+    status: str = Field("active", max_length=20)
+    severity: str = Field("moderate", max_length=20)
+    note: str = Field("", max_length=300)
+
+
+class ConditionUpdateRequest(StrictRequestModel):
+    profile: Optional[str] = Field(None, max_length=40)
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    icd10: Optional[str] = Field(None, max_length=20)
+    diagnosed_at: Optional[str] = Field(None, max_length=40)
+    status: Optional[str] = Field(None, max_length=20)
+    severity: Optional[str] = Field(None, max_length=20)
     note: Optional[str] = Field(None, max_length=300)
 
 
@@ -2121,6 +2142,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "allergies": request.allergies,
         "care_items": request.care_items,
         "visit_records": request.visit_records,
+        "conditions": request.conditions,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -2150,7 +2172,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
         "vaccinations", "appointments", "lab_results", "allergies",
-        "care_items", "visit_records", "audit_log",
+        "care_items", "visit_records", "conditions", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -4211,6 +4233,146 @@ async def export_visits_csv(profile: Optional[str] = None):
     )
 
 
+@app.get("/api/conditions")
+async def list_conditions(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    status: Optional[str] = None,
+    limit: int = 1000,
+):
+    """慢病/健康问题清单（可按档案、状态筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_conditions,
+            profile, active_only, status, limit,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"conditions": items}
+
+
+@app.post("/api/conditions")
+async def add_condition(request: ConditionRequest):
+    """新增一条慢病/健康问题。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_condition,
+            request.profile,
+            request.name,
+            request.icd10,
+            request.diagnosed_at,
+            request.status,
+            request.severity,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("condition.create", str(item["id"]))
+    return {"ok": True, "condition": item}
+
+
+@app.patch("/api/conditions/{condition_id}")
+async def update_condition(
+    condition_id: SafeIntPath, request: ConditionUpdateRequest
+):
+    """部分更新一条慢病/健康问题。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_condition, condition_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_condition,
+            condition_id,
+            merged.get("profile") or "",
+            merged.get("name") or "",
+            merged.get("icd10") or "",
+            merged.get("diagnosed_at") or "",
+            merged.get("status") or "active",
+            merged.get("severity") or "moderate",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("condition.update", str(item["id"]))
+    return {"ok": True, "condition": item}
+
+
+@app.delete("/api/conditions/{condition_id}")
+async def delete_condition(condition_id: SafeIntPath):
+    """删除一条慢病/健康问题。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_condition, condition_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_condition, condition_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("condition.delete", str(condition_id))
+    return {"ok": True, "id": condition_id}
+
+
+@app.get("/api/conditions/export.csv")
+async def export_conditions_csv(profile: Optional[str] = None):
+    """导出慢病/健康问题 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_conditions, profile, False, None, 100000
+    )
+    status_labels = {
+        "active": "管理中",
+        "controlled": "已控制",
+        "resolved": "已痊愈",
+    }
+    severity_labels = {
+        "mild": "轻度",
+        "moderate": "中度",
+        "severe": "重度",
+    }
+    rows = [[
+        "疾病/健康问题", "患者档案", "ICD-10", "确诊日期",
+        "状态", "严重程度", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("icd10", "")),
+            csv_safe_cell(item.get("diagnosed_at", "")),
+            status_labels.get(item.get("status") or "", ""),
+            severity_labels.get(item.get("severity") or "", ""),
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-conditions-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -5943,6 +6105,9 @@ async def family_overview(days: int = 7):
     visit_records = await asyncio.to_thread(
         store.list_visit_records, None, 0, "", 100000
     )
+    condition_items = await asyncio.to_thread(
+        store.list_conditions, None, True, None, 100000
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -6138,6 +6303,18 @@ async def family_overview(days: int = 7):
                     f"{item.get('item') or '化验'} {value}".strip()
                 )
 
+    conditions_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in condition_items:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = conditions_by_profile.setdefault(profile, {
+            "count": 0, "names": [],
+        })
+        entry["count"] += 1
+        if len(entry["names"]) < 5:
+            entry["names"].append(item.get("name") or "")
+
     visits_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in visit_records:
         profile = item.get("profile") or ""
@@ -6261,6 +6438,9 @@ async def family_overview(days: int = 7):
         visits = visits_by_profile.get(name, {
             "count": 0, "latest": None,
         })
+        conditions_info = conditions_by_profile.get(name, {
+            "count": 0, "names": [],
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -6299,6 +6479,7 @@ async def family_overview(days: int = 7):
             "critical_alerts": critical,
             "care_plan": care,
             "visits": visits,
+            "conditions": conditions_info,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -6329,7 +6510,7 @@ async def export_family_overview_csv(days: int = 7):
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
         "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
-        "复查计划", "最近就诊",
+        "复查计划", "最近就诊", "慢病",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -6472,6 +6653,16 @@ async def export_family_overview_csv(days: int = 7):
                 )
         else:
             visit_record_text = ""
+        conditions_info = item.get("conditions") or {}
+        condition_text = ""
+        if conditions_info.get("count"):
+            condition_text = f"{int(conditions_info['count'])} 项"
+            names = [
+                name for name in (conditions_info.get("names") or [])
+                if name
+            ]
+            if names:
+                condition_text += "（" + "；".join(names) + "）"
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -6493,6 +6684,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(critical_text),
             csv_safe_cell(care_text),
             csv_safe_cell(visit_record_text),
+            csv_safe_cell(condition_text),
         ])
 
     buffer = io.StringIO()
@@ -6623,6 +6815,9 @@ async def export_health_dossier(
     allergies = await asyncio.to_thread(
         store.list_allergies, profile_key, False, None, "", 1000
     )
+    condition_items = await asyncio.to_thread(
+        store.list_conditions, profile_key, False, None, 1000
+    )
     care_items = await asyncio.to_thread(
         store.list_care_items, profile_key, False, False, 1000
     )
@@ -6705,6 +6900,42 @@ async def export_health_dossier(
             lines.append(detail)
     else:
         lines.append("- 暂未记录过敏史")
+    lines.append("")
+
+    lines.append("## 慢病清单")
+    if condition_items:
+        status_labels = {
+            "active": "管理中",
+            "controlled": "已控制",
+            "resolved": "已痊愈",
+        }
+        severity_labels = {
+            "mild": "轻度",
+            "moderate": "中度",
+            "severe": "重度",
+        }
+        for item in condition_items:
+            detail = f"- {item.get('name') or '健康问题'}"
+            extras = []
+            if item.get("icd10"):
+                extras.append(str(item["icd10"]))
+            if item.get("diagnosed_at"):
+                extras.append(f"确诊 {item['diagnosed_at']}")
+            status_label = status_labels.get(item.get("status") or "", "")
+            if status_label:
+                extras.append(status_label)
+            severity_label = severity_labels.get(
+                item.get("severity") or "", ""
+            )
+            if severity_label:
+                extras.append(severity_label)
+            if extras:
+                detail += f"（{'，'.join(extras)}）"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂未记录慢病/健康问题")
     lines.append("")
 
     lines.append("## 复查计划")
@@ -8762,6 +8993,57 @@ async def _attach_structured_allergies(
     return merged
 
 
+def _condition_context_text(items: List[Dict[str, Any]]) -> str:
+    status_labels = {
+        "active": "管理中",
+        "controlled": "已控制",
+        "resolved": "已痊愈",
+    }
+    parts = []
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        details = []
+        if item.get("diagnosed_at"):
+            details.append(str(item["diagnosed_at"]))
+        label = status_labels.get(item.get("status") or "", "")
+        if label:
+            details.append(label)
+        if item.get("icd10"):
+            details.append(str(item["icd10"]))
+        parts.append(
+            name + (f"（{'，'.join(details)}）" if details else "")
+        )
+    return "；".join(parts)
+
+
+async def _attach_structured_conditions(
+    context: Dict[str, Any], profile: str
+) -> Dict[str, Any]:
+    """把未痊愈的慢病清单并入会诊既往史；失败时保留原上下文。"""
+    from memory import get_session_store
+
+    if not profile:
+        return context
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_conditions,
+            profile, True, None, 1000,
+        )
+    except Exception:
+        return context
+    text = _condition_context_text(items)
+    if not text:
+        return context
+    merged = dict(context)
+    existing = str(merged.get("history") or "").strip()
+    merged["history"] = (
+        f"{existing}；慢病：{text}" if existing else f"慢病：{text}"
+    )
+    return merged
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """同步接口：等 Swarm 全部跑完再返回。"""
@@ -8774,6 +9056,9 @@ async def chat(request: ChatRequest):
         memory_profile, session_id
     )
     memory_context = await _attach_structured_allergies(
+        memory_context, memory_profile
+    )
+    memory_context = await _attach_structured_conditions(
         memory_context, memory_profile
     )
 
@@ -8828,6 +9113,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         memory_profile, session_id
     )
     memory_context = await _attach_structured_allergies(
+        memory_context, memory_profile
+    )
+    memory_context = await _attach_structured_conditions(
         memory_context, memory_profile
     )
     triage = detect_red_flags(request.question, memory_context)

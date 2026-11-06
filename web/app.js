@@ -518,6 +518,21 @@ const els = {
   visitEmpty: document.getElementById('visit-empty'),
   visitSearch: document.getElementById('visit-search'),
   visitSummary: document.getElementById('visit-summary'),
+  conditionSection: document.getElementById('condition-section'),
+  conditionName: document.getElementById('condition-name'),
+  conditionIcd10: document.getElementById('condition-icd10'),
+  conditionDiagnosedAt: document.getElementById('condition-diagnosed-at'),
+  conditionStatus: document.getElementById('condition-status'),
+  conditionSeverity: document.getElementById('condition-severity'),
+  conditionNote: document.getElementById('condition-note'),
+  conditionSave: document.getElementById('condition-save'),
+  conditionExport: document.getElementById('condition-export'),
+  conditionCancel: document.getElementById('condition-cancel'),
+  conditionStatusText: document.getElementById('condition-status-text'),
+  conditionList: document.getElementById('condition-list'),
+  conditionEmpty: document.getElementById('condition-empty'),
+  conditionSearch: document.getElementById('condition-search'),
+  conditionSummary: document.getElementById('condition-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4223,6 +4238,7 @@ async function refreshAfterBackupImport(result) {
     || result.vaccinations || result.appointments
     || result.lab_results || result.allergies
     || result.care_items || result.visit_records
+    || result.conditions
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
@@ -4232,6 +4248,7 @@ async function refreshAfterBackupImport(result) {
     if (result.allergies) loadAllergies();
     if (result.care_items) loadCareItems();
     if (result.visit_records) loadVisits();
+    if (result.conditions) loadConditions();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6991,6 +7008,7 @@ async function refreshMetrics() {
   loadAllergies();
   loadCareItems();
   loadVisits();
+  loadConditions();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -8183,6 +8201,14 @@ function renderFamilyOverview(data) {
         + (latestVisit.diagnosis ? ` · ${latestVisit.diagnosis}` : '')
       ));
     }
+    const conditions = profile.conditions || {};
+    if (conditions.count) {
+      const names = (conditions.names || []).filter(Boolean);
+      chips.appendChild(familyChip(
+        `慢病 ${conditions.count} 项`
+        + (names.length ? ` · ${names.join('、')}` : '')
+      ));
+    }
     const medications = profile.medications || {};
     if (medications.active) {
       const chip = familyChip(
@@ -8368,6 +8394,14 @@ function familyOverviewText(data) {
       parts.push(
         `最近就诊 ${latestVisit.visit_date}`
         + (latestVisit.diagnosis ? `（${latestVisit.diagnosis}）` : '')
+      );
+    }
+    const conditions = profile.conditions || {};
+    if (conditions.count) {
+      const names = (conditions.names || []).filter(Boolean);
+      parts.push(
+        `慢病 ${conditions.count} 项`
+        + (names.length ? `（${names.join('、')}）` : '')
       );
     }
     const consultations = profile.consultations || {};
@@ -11638,6 +11672,280 @@ async function deleteVisit(item) {
     refreshOverview();
   } catch (err) {
     setVisitStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
+let editingConditionId = null;
+let editingConditionProfile = '';
+let conditionSaving = false;
+let conditionRequestSeq = 0;
+let conditionItemsCache = [];
+let conditionSearchTimer = null;
+
+const CONDITION_STATUS_LABELS = {
+  active: '管理中',
+  controlled: '已控制',
+  resolved: '已痊愈',
+};
+const CONDITION_SEVERITY_LABELS = {
+  mild: '轻度',
+  moderate: '中度',
+  severe: '重度',
+};
+
+function setConditionStatus(text, isError = false) {
+  if (!els.conditionStatusText) return;
+  els.conditionStatusText.textContent = text || '';
+  els.conditionStatusText.hidden = !text;
+  els.conditionStatusText.classList.toggle('error', Boolean(isError));
+}
+
+function resetConditionForm() {
+  editingConditionId = null;
+  editingConditionProfile = '';
+  els.conditionName.value = '';
+  els.conditionIcd10.value = '';
+  els.conditionDiagnosedAt.value = '';
+  els.conditionStatus.value = 'active';
+  els.conditionSeverity.value = 'moderate';
+  els.conditionNote.value = '';
+  els.conditionSave.textContent = '保存问题';
+  els.conditionCancel.hidden = true;
+}
+
+function filterConditions(items) {
+  const query = els.conditionSearch
+    ? String(els.conditionSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [item.name, item.icd10, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderConditions(items) {
+  if (!els.conditionList) return;
+  els.conditionList.replaceChildren();
+  els.conditionEmpty.hidden = items.length > 0;
+  const query = els.conditionSearch
+    ? String(els.conditionSearch.value || '').trim()
+    : '';
+  els.conditionEmpty.textContent = query
+    ? `没有匹配「${query}」的慢病记录。`
+    : '还没有慢病/健康问题记录。';
+  const activeCount = items.filter(
+    (item) => item.status !== 'resolved'
+  ).length;
+  if (items.length) {
+    els.conditionSummary.hidden = false;
+    els.conditionSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (activeCount ? ` · 管理中 ${activeCount} 条` : '');
+  } else {
+    els.conditionSummary.hidden = true;
+  }
+  if (
+    editingConditionId
+    && !conditionItemsCache.some(
+      (item) => item.id === editingConditionId
+    )
+  ) {
+    resetConditionForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.name || '健康问题';
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'condition-status-badge '
+      + `is-${item.status || 'active'}`;
+    statusBadge.textContent =
+      CONDITION_STATUS_LABELS[item.status] || '管理中';
+    title.append(' ', statusBadge);
+    const severityBadge = document.createElement('span');
+    severityBadge.className = 'allergy-kind-badge';
+    severityBadge.textContent =
+      CONDITION_SEVERITY_LABELS[item.severity] || '中度';
+    title.append(' ', severityBadge);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      item.icd10,
+      item.diagnosed_at ? `确诊 ${item.diagnosed_at}` : '',
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑慢病记录：${item.name}`);
+    edit.addEventListener('click', () => editCondition(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除慢病记录：${item.name}`);
+    del.addEventListener('click', () => deleteCondition(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.conditionList.appendChild(li);
+  }
+}
+
+async function loadConditions() {
+  if (!els.conditionList) return;
+  const requestSeq = ++conditionRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/conditions?limit=1000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== conditionRequestSeq) return;
+    conditionItemsCache = data.conditions || [];
+    renderConditions(filterConditions(conditionItemsCache));
+  } catch {
+    if (requestSeq !== conditionRequestSeq) return;
+    conditionItemsCache = [];
+    renderConditions([]);
+    els.conditionEmpty.textContent = '慢病清单加载失败，请稍后重试。';
+    els.conditionEmpty.hidden = false;
+    setConditionStatus('慢病清单加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportConditionsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/conditions/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-conditions-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setConditionStatus('已导出慢病清单 CSV。');
+  } catch (err) {
+    setConditionStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+function editCondition(item) {
+  editingConditionId = item.id;
+  editingConditionProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.conditionName.value = item.name || '';
+  els.conditionIcd10.value = item.icd10 || '';
+  els.conditionDiagnosedAt.value =
+    String(item.diagnosed_at || '').slice(0, 10);
+  els.conditionStatus.value = item.status || 'active';
+  els.conditionSeverity.value = item.severity || 'moderate';
+  els.conditionNote.value = item.note || '';
+  els.conditionSave.textContent = '保存修改';
+  els.conditionCancel.hidden = false;
+  els.conditionName.focus();
+}
+
+async function saveCondition() {
+  if (conditionSaving) return;
+  const name = (els.conditionName.value || '').trim();
+  if (!name) {
+    setConditionStatus('请填写疾病/健康问题名称。', true);
+    els.conditionName.focus();
+    return;
+  }
+  const editingId = editingConditionId;
+  const payload = {
+    profile: editingId
+      ? editingConditionProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    name,
+    icd10: (els.conditionIcd10.value || '').trim(),
+    diagnosed_at: els.conditionDiagnosedAt.value || '',
+    status: els.conditionStatus.value || 'active',
+    severity: els.conditionSeverity.value || 'moderate',
+    note: (els.conditionNote.value || '').trim(),
+  };
+  conditionSaving = true;
+  els.conditionSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/conditions/${editingId}` : '/api/conditions',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetConditionForm();
+    setConditionStatus(editingId ? '已保存修改。' : '已保存慢病记录。');
+    await loadConditions();
+    refreshOverview();
+  } catch (err) {
+    setConditionStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    conditionSaving = false;
+    els.conditionSave.disabled = false;
+  }
+}
+
+async function deleteCondition(item) {
+  if (!window.confirm(`删除慢病记录「${item.name}」？`)) return;
+  try {
+    const res = await fetch(`/api/conditions/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingConditionId === item.id) resetConditionForm();
+    setConditionStatus('已删除慢病记录。');
+    await loadConditions();
+    refreshOverview();
+  } catch (err) {
+    setConditionStatus(`删除失败：${err.message || err}`, true);
   }
 }
 
@@ -16200,6 +16508,31 @@ els.visitSearch.addEventListener('input', () => {
   clearTimeout(visitSearchTimer);
   visitSearchTimer = setTimeout(() => {
     renderVisits(filterVisits(visitItemsCache));
+  }, 200);
+});
+els.conditionSave.addEventListener('click', saveCondition);
+els.conditionExport.addEventListener('click', exportConditionsCsv);
+els.conditionCancel.addEventListener('click', () => {
+  resetConditionForm();
+  setConditionStatus('已取消编辑。');
+});
+for (const input of [
+  els.conditionName, els.conditionIcd10, els.conditionDiagnosedAt,
+  els.conditionNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveCondition();
+    }
+  });
+}
+els.conditionSearch.addEventListener('input', () => {
+  clearTimeout(conditionSearchTimer);
+  conditionSearchTimer = setTimeout(() => {
+    renderConditions(filterConditions(conditionItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {

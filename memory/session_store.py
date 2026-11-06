@@ -92,6 +92,12 @@ MAX_CARE_INTERVAL_DAYS = 3650
 MAX_VISIT_TEXT_LENGTH = 300
 MAX_VISIT_ADVICE_LENGTH = 1000
 MAX_VISIT_FACILITY_LENGTH = 80
+#: 慢病清单
+MAX_CONDITION_NAME_LENGTH = 120
+MAX_CONDITION_ICD10_LENGTH = 20
+MAX_CONDITION_NOTE_LENGTH = 300
+CONDITION_STATUSES = ("active", "controlled", "resolved")
+CONDITION_SEVERITIES = ("mild", "moderate", "severe")
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -123,6 +129,7 @@ IMPORT_LIST_LIMITS = {
     "allergies": 100000,
     "care_items": 100000,
     "visit_records": 100000,
+    "conditions": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -1187,6 +1194,50 @@ def _visit_record_view_fields(
     }
 
 
+def _normalize_condition(
+    profile: str,
+    name: str,
+    icd10: str,
+    diagnosed_at: str,
+    status: str,
+    severity: str,
+    note: str,
+) -> Dict[str, Any]:
+    """校验一条慢病/健康问题；非法时抛出 ValueError。"""
+    title = " ".join(str(name or "").split())[
+        :MAX_CONDITION_NAME_LENGTH
+    ]
+    if not title:
+        raise ValueError("疾病/健康问题名称不能为空")
+    status_key = str(status or "active").strip().lower()
+    if status_key not in CONDITION_STATUSES:
+        raise ValueError("状态应为 active/controlled/resolved")
+    severity_key = str(severity or "moderate").strip().lower()
+    if severity_key not in CONDITION_SEVERITIES:
+        raise ValueError("严重程度应为 mild/moderate/severe")
+    diagnosed = str(diagnosed_at or "").strip()[:40]
+    if diagnosed:
+        diagnosed = _canonical_local_time(diagnosed)
+        if diagnosed is None:
+            raise ValueError("确诊日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        if _is_future_timestamp(diagnosed):
+            raise ValueError("确诊日期不能晚于当前时间")
+        diagnosed = diagnosed[:10]
+    return {
+        "profile": _normalize_profile_name(profile),
+        "name": title,
+        "icd10": " ".join(str(icd10 or "").split()).upper()[
+            :MAX_CONDITION_ICD10_LENGTH
+        ],
+        "diagnosed_at": diagnosed,
+        "status": status_key,
+        "severity": severity_key,
+        "note": " ".join(str(note or "").split())[
+            :MAX_CONDITION_NOTE_LENGTH
+        ],
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -1418,6 +1469,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "allergies",
     "care_items",
     "visit_records",
+    "conditions",
     "audit_log",
 )
 
@@ -1710,6 +1762,20 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_visit_records_profile_date
                     ON visit_records(profile, visit_date DESC);
+                CREATE TABLE IF NOT EXISTS conditions (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile      TEXT NOT NULL DEFAULT '',
+                    name         TEXT NOT NULL,
+                    icd10        TEXT NOT NULL DEFAULT '',
+                    diagnosed_at TEXT NOT NULL DEFAULT '',
+                    status       TEXT NOT NULL DEFAULT 'active',
+                    severity     TEXT NOT NULL DEFAULT 'moderate',
+                    note         TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_conditions_profile
+                    ON conditions(profile, status, name);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1998,6 +2064,7 @@ class SessionStore:
                 ("allergies", "profile"),
                 ("care_items", "profile"),
                 ("visit_records", "profile"),
+                ("conditions", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -3047,6 +3114,7 @@ class SessionStore:
             "allergies": self.list_allergies(limit=100000),
             "care_items": self.list_care_items(limit=100000),
             "visit_records": self.list_visit_records(limit=100000),
+            "conditions": self.list_conditions(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -3079,6 +3147,7 @@ class SessionStore:
         raw_allergies = data.get("allergies")
         raw_care_items = data.get("care_items")
         raw_visit_records = data.get("visit_records")
+        raw_conditions = data.get("conditions")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -3094,6 +3163,7 @@ class SessionStore:
             or isinstance(raw_allergies, list)
             or isinstance(raw_care_items, list)
             or isinstance(raw_visit_records, list)
+            or isinstance(raw_conditions, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -3114,6 +3184,7 @@ class SessionStore:
             and not isinstance(raw_allergies, list)
             and not isinstance(raw_care_items, list)
             and not isinstance(raw_visit_records, list)
+            and not isinstance(raw_conditions, list)
             and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
@@ -3134,6 +3205,7 @@ class SessionStore:
             ("allergies", "过敏史", raw_allergies),
             ("care_items", "复查计划", raw_care_items),
             ("visit_records", "就诊记录", raw_visit_records),
+            ("conditions", "慢病清单", raw_conditions),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -3989,6 +4061,57 @@ class SessionStore:
                     )
                     visit_records_imported += 1
 
+            conditions_imported = 0
+            if isinstance(raw_conditions, list):
+                for raw in raw_conditions[
+                    :IMPORT_LIST_LIMITS["conditions"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_condition(
+                            raw.get("profile") or "",
+                            raw.get("name") or "",
+                            raw.get("icd10") or "",
+                            raw.get("diagnosed_at") or "",
+                            raw.get("status") or "active",
+                            raw.get("severity") or "moderate",
+                            raw.get("note") or "",
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM conditions
+                         WHERE profile = ? AND name = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["name"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO conditions(
+                            profile, name, icd10, diagnosed_at, status,
+                            severity, note, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"], normalized["name"],
+                            normalized["icd10"],
+                            normalized["diagnosed_at"],
+                            normalized["status"],
+                            normalized["severity"], normalized["note"],
+                            str(raw.get("created_at") or now)[:40],
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    conditions_imported += 1
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -4238,6 +4361,7 @@ class SessionStore:
             "allergies": allergies_imported,
             "care_items": care_items_imported,
             "visit_records": visit_records_imported,
+            "conditions": conditions_imported,
             "audit_log": audit_imported,
         }
 
@@ -4495,6 +4619,7 @@ class SessionStore:
                     ("allergies", "profile"),
                     ("care_items", "profile"),
                     ("visit_records", "profile"),
+                    ("conditions", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -4545,6 +4670,7 @@ class SessionStore:
                 "allergies",
                 "care_items",
                 "visit_records",
+                "conditions",
                 "sessions",
             ):
                 self._conn.execute(
@@ -5877,6 +6003,143 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM visit_records WHERE id = ?",
                 (int(visit_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_condition(
+        self,
+        profile: str,
+        name: str,
+        icd10: str = "",
+        diagnosed_at: str = "",
+        status: str = "active",
+        severity: str = "moderate",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """新增一条慢病/健康问题并返回完整行。"""
+        normalized = _normalize_condition(
+            profile, name, icd10, diagnosed_at, status, severity, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO conditions(
+                    profile, name, icd10, diagnosed_at, status,
+                    severity, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["name"],
+                    normalized["icd10"], normalized["diagnosed_at"],
+                    normalized["status"], normalized["severity"],
+                    normalized["note"], now, now,
+                ),
+            )
+            condition_id = int(cursor.lastrowid)
+        return {
+            "id": condition_id, **normalized,
+            "created_at": now, "updated_at": now,
+        }
+
+    def update_condition(
+        self,
+        condition_id: int,
+        profile: str,
+        name: str,
+        icd10: str = "",
+        diagnosed_at: str = "",
+        status: str = "active",
+        severity: str = "moderate",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条慢病/健康问题；记录不存在时返回 None。"""
+        normalized = _normalize_condition(
+            profile, name, icd10, diagnosed_at, status, severity, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE conditions
+                   SET profile = ?, name = ?, icd10 = ?, diagnosed_at = ?,
+                       status = ?, severity = ?, note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["name"],
+                    normalized["icd10"], normalized["diagnosed_at"],
+                    normalized["status"], normalized["severity"],
+                    normalized["note"], now, int(condition_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_condition(condition_id)
+
+    def get_condition(
+        self, condition_id: int
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, name, icd10, diagnosed_at, status,
+                       severity, note, created_at, updated_at
+                  FROM conditions WHERE id = ?
+                """,
+                (int(condition_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_conditions(
+        self,
+        profile: Optional[str] = None,
+        active_only: bool = False,
+        status: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        conditions_sql: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions_sql.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        if active_only:
+            conditions_sql.append("status != 'resolved'")
+        status_key = str(status or "").strip().lower()
+        if status_key:
+            if status_key not in CONDITION_STATUSES:
+                raise ValueError("状态应为 active/controlled/resolved")
+            conditions_sql.append("status = ?")
+            params.append(status_key)
+        where = (
+            f"WHERE {' AND '.join(conditions_sql)}"
+            if conditions_sql else ""
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, name, icd10, diagnosed_at, status,
+                       severity, note, created_at, updated_at
+                  FROM conditions
+                 {where}
+                 ORDER BY CASE status
+                              WHEN 'active' THEN 0
+                              WHEN 'controlled' THEN 1
+                              ELSE 2
+                          END,
+                          name ASC, id ASC
+                 LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_condition(self, condition_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM conditions WHERE id = ?",
+                (int(condition_id),),
             )
             return cursor.rowcount > 0
 
