@@ -146,6 +146,9 @@ const els = {
   calcEgfrSex: document.getElementById('calc-egfr-sex'),
   calcEgfrCreatinine: document.getElementById('calc-egfr-creatinine'),
   calcEgfrUnit: document.getElementById('calc-egfr-unit'),
+  calcEgfrLab: document.getElementById('calc-egfr-lab'),
+  calcFib4Lab: document.getElementById('calc-fib4-lab'),
+  calcMeldLab: document.getElementById('calc-meld-lab'),
   calcFormChads: document.getElementById('calc-form-chads'),
   calcChadsAge: document.getElementById('calc-chads-age'),
   calcChadsSex: document.getElementById('calc-chads-sex'),
@@ -13813,6 +13816,174 @@ async function exportMetricsCsv() {
 let calcFocused = null;
 let currentCalcAction = null;
 
+const LAB_PREFILL_ALIASES = {
+  creatinine: ['肌酐', 'creatinine', 'scr'],
+  ast: ['谷草转氨酶', 'ast', 'got'],
+  alt: ['谷丙转氨酶', 'alt', 'gpt'],
+  platelets: ['血小板', 'plt', 'platelet'],
+  bilirubin: ['总胆红素', '胆红素', 'tbil', 'bilirubin'],
+  inr: ['国际标准化', 'inr'],
+};
+
+function normalizeLabName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[\s\-_()（）]/g, '');
+}
+
+function findLabItem(items, key) {
+  const aliases = LAB_PREFILL_ALIASES[key] || [];
+  return (items || []).find((item) => {
+    const name = normalizeLabName(item.item);
+    return aliases.some((alias) => name.includes(normalizeLabName(alias)));
+  }) || null;
+}
+
+function labNumber(item) {
+  const value = Number(item && item.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function labCreatinineMgDl(item) {
+  const value = labNumber(item);
+  if (value === null) return null;
+  const unit = String((item && item.unit) || '').toLowerCase();
+  if (unit.includes('mg')) return { value, converted: false };
+  return { value: value / 88.4, converted: true };
+}
+
+function labBilirubinMgDl(item) {
+  const value = labNumber(item);
+  if (value === null) return null;
+  const unit = String((item && item.unit) || '').toLowerCase();
+  if (unit.includes('mg')) return { value, converted: false };
+  return { value: value / 17.1, converted: true };
+}
+
+async function loadLatestLabItems() {
+  const profile = els.profileSelect ? els.profileSelect.value || '' : '';
+  const res = await fetch(
+    `/api/lab-results/latest?profile=${encodeURIComponent(profile)}`
+  );
+  if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+  return (await res.json()).lab_results || [];
+}
+
+function fillCalcAgeSex() {
+  const context = readPatientContext();
+  const age = Number.parseInt(context.age, 10);
+  if (Number.isFinite(age) && !Number(els.calcEgfrAge.value)) {
+    els.calcEgfrAge.value = String(age);
+  }
+  const fib4Age = document.getElementById('calc-fib4-age');
+  if (fib4Age && Number.isFinite(age) && !Number(fib4Age.value)) {
+    fib4Age.value = String(age);
+  }
+  if (
+    (context.sex === '女' || context.sex === '男')
+    && !els.calcEgfrSex.value
+  ) {
+    els.calcEgfrSex.value = context.sex === '女' ? 'female' : 'male';
+  }
+}
+
+async function prefillEgfrFromLab() {
+  try {
+    fillCalcAgeSex();
+    const items = await loadLatestLabItems();
+    const creatinine = findLabItem(items, 'creatinine');
+    const converted = labCreatinineMgDl(creatinine);
+    if (!converted) {
+      setCalcStatus('未找到最近的肌酐化验结果，请先在化验结果中登记。', true);
+      return;
+    }
+    els.calcEgfrCreatinine.value = String(
+      Math.round(converted.value * 100) / 100
+    );
+    els.calcEgfrUnit.value = 'mg/dL';
+    setCalcStatus(
+      `已带入肌酐 ${labNumber(creatinine)}`
+      + `${creatinine.unit ? ` ${creatinine.unit}` : ''}`
+      + `（${creatinine.tested_at || '最近一次'}）`
+      + (converted.converted ? '，已换算为 mg/dL。' : '。')
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
+async function prefillFib4FromLab() {
+  try {
+    fillCalcAgeSex();
+    const items = await loadLatestLabItems();
+    const ast = findLabItem(items, 'ast');
+    const alt = findLabItem(items, 'alt');
+    const platelets = findLabItem(items, 'platelets');
+    const missing = [];
+    if (!labNumber(ast)) missing.push('AST');
+    if (!labNumber(alt)) missing.push('ALT');
+    if (!labNumber(platelets)) missing.push('血小板');
+    if (missing.length) {
+      setCalcStatus(
+        `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
+        true
+      );
+      return;
+    }
+    document.getElementById('calc-fib4-ast').value =
+      String(Math.round(labNumber(ast)));
+    document.getElementById('calc-fib4-alt').value =
+      String(Math.round(labNumber(alt)));
+    document.getElementById('calc-fib4-platelets').value =
+      String(Math.round(labNumber(platelets)));
+    setCalcStatus(
+      `已带入 AST ${labNumber(ast)}、ALT ${labNumber(alt)}、`
+      + `血小板 ${labNumber(platelets)}（最近一次化验）。`
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
+async function prefillMeldFromLab() {
+  try {
+    const items = await loadLatestLabItems();
+    const bilirubin = findLabItem(items, 'bilirubin');
+    const inr = findLabItem(items, 'inr');
+    const creatinine = findLabItem(items, 'creatinine');
+    const bilirubinValue = labBilirubinMgDl(bilirubin);
+    const creatinineValue = labCreatinineMgDl(creatinine);
+    const missing = [];
+    if (!bilirubinValue) missing.push('总胆红素');
+    if (!labNumber(inr)) missing.push('INR');
+    if (!creatinineValue) missing.push('肌酐');
+    if (missing.length) {
+      setCalcStatus(
+        `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
+        true
+      );
+      return;
+    }
+    document.getElementById('calc-meld-bilirubin').value = String(
+      Math.round(bilirubinValue.value * 10) / 10
+    );
+    document.getElementById('calc-meld-inr').value = String(
+      Math.round(labNumber(inr) * 10) / 10
+    );
+    document.getElementById('calc-meld-creatinine').value = String(
+      Math.round(creatinineValue.value * 10) / 10
+    );
+    setCalcStatus(
+      `已带入总胆红素、INR 与肌酐（最近一次化验）`
+      + (bilirubinValue.converted || creatinineValue.converted
+        ? '，胆红素/肌酐已换算为 mg/dL。'
+        : '。')
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
 function setCalcStatus(text, isError = false) {
   els.calcStatus.textContent = text;
   els.calcStatus.hidden = !text;
@@ -16017,6 +16188,9 @@ els.calcBackdrop.addEventListener('click', () => closeCalc(true));
 els.calcTool.addEventListener('change', () => setCalcTool(els.calcTool.value));
 els.calcFormBmi.addEventListener('submit', submitBmi);
 els.calcFormEgfr.addEventListener('submit', submitEgfr);
+els.calcEgfrLab.addEventListener('click', prefillEgfrFromLab);
+els.calcFib4Lab.addEventListener('click', prefillFib4FromLab);
+els.calcMeldLab.addEventListener('click', prefillMeldFromLab);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
