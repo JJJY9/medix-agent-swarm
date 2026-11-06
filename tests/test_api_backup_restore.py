@@ -144,3 +144,14 @@ def test_restore_rejects_path_outside_backup_dir(client_and_store):
 
     # 编码斜杠可能先被路由拒绝，也可能进入端点后被文件名校验拒绝
     assert response.status_code in (400, 404)
+
+
+def test_backup_manage_ui_is_wired(client_and_store):
+    client, _store, _backup_dir = client_and_store
+    index = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'id="history-manage-backups"' in index
+    assert "manageLocalBackups" in app_js
+    assert "method: 'DELETE'" in app_js
+    assert "/api/backups/${encodeURIComponent(target.name)}" in app_js
