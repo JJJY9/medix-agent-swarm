@@ -60,8 +60,10 @@ def test_client_risk_detection_respects_negation(client):
     app_js = _app_js(client)
 
     start = app_js.index("function detectRisk(text)")
-    body = app_js[start:start + 1600]
+    body = app_js[start:start + 2400]
     assert "negatedAt" in body
+    assert "ruleOutAt" in body
+    assert "不排除高危" in body
     assert "不属于|不是|并非" in body
     assert "高风险(?!人群|因素)" in body
     assert "低风险(?!人群|因素)" in body

@@ -57,3 +57,17 @@ def test_parse_risk_level_negation_and_formatting():
     assert parse_risk_level("风险等级：中等") == "medium"
     assert parse_risk_level("风险程度为高危") == "high"
     assert parse_risk_level("高风险因素包括吸烟") == ""
+
+
+def test_parse_risk_level_handles_double_negation():
+    # “不排除高危”表示高危仍有可能，必须按高危处理
+    assert parse_risk_level("不能排除高危，建议尽快就医") == "high"
+    assert parse_risk_level("不排除高风险") == "high"
+    assert parse_risk_level("尚未排除高危") == "high"
+    assert parse_risk_level("无法完全排除高危") == "high"
+
+    # 明确的否定仍然不构成风险等级
+    assert parse_risk_level("没有明显高危") == ""
+    assert parse_risk_level("未见明显高危") == ""
+    assert parse_risk_level("已排除高危") == ""
+    assert parse_risk_level("不属于高危") == ""

@@ -51,6 +51,7 @@ def test_skill_logs_do_not_include_patient_queries(client):
         ".claude/skills/search-knowledge/script/search.py",
         ".claude/skills/clinical-guideline/script/guideline.py",
         ".claude/skills/disease-code/script/code.py",
+        ".claude/skills/recommend-lifestyle/script/lifestyle.py",
         ".claude/skills/deep-research/script/research.py",
     ):
         skill_texts.append(
@@ -62,4 +63,6 @@ def test_skill_logs_do_not_include_patient_queries(client):
     assert "Assessing risk: symptoms={symptoms}" not in joined
     assert "query={query}" not in joined
     assert "for disease: {disease_name}" not in joined
+    assert "Recommending lifestyle for: {diagnosis}" not in joined
     assert "query_length=" in joined
+    assert "diagnosis_length=" in joined
