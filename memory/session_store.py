@@ -1188,7 +1188,7 @@ class SessionStore:
 
         archived 为 None 时返回全部（备份导出用）；False 只看未归档；True 只看已归档。
         """
-        limit = max(1, min(int(limit or 50), 200))
+        limit = max(1, min(int(limit or 50), 100000))
         offset = _bounded_offset(offset)
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
@@ -1291,9 +1291,16 @@ class SessionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def latest_session_answers_by_profile(self) -> List[Dict[str, Any]]:
-        """返回每个档案最近一次会诊及其最后一条答复（截断 2000 字）。"""
-        sql = """
+    def latest_session_answers_by_profile(
+        self, include_empty: bool = False
+    ) -> List[Dict[str, Any]]:
+        """返回每个档案最近一次会诊及其最后一条答复（截断 2000 字）。
+
+        include_empty=True 时也返回未指定档案的最近会话，供周报按
+        “未指定”筛选时计算风险等级。
+        """
+        profile_filter = "" if include_empty else "WHERE profile != ''"
+        sql = f"""
             WITH latest AS (
                 SELECT profile, id, created_at,
                        ROW_NUMBER() OVER (
@@ -1301,7 +1308,7 @@ class SessionStore:
                            ORDER BY created_at DESC, id DESC
                        ) AS rn
                   FROM sessions
-                 WHERE profile != ''
+                 {profile_filter}
             )
             SELECT l.profile, l.id AS session_id, l.created_at,
                    (
