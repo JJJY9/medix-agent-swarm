@@ -79,6 +79,14 @@ RED_FLAG_PHRASES = (
     ("阴道大量出血", "大量阴道出血"),
 )
 
+#: 部分短语是常见词的子串（如「无尿痛」「减少尿蛋白」），匹配后需再校验
+_PHRASE_GUARDS = {
+    "无尿": re.compile(
+        r"无尿(?!痛|急|频|路|道|意|失禁|常规|培养|检查|感染|液|袋|管|酮|糖|蛋|红|白)"
+    ),
+    "少尿": re.compile(r"(?<!减)少尿"),
+}
+
 #: 短语前 4 个字符内出现这些词时视为否定描述（"没有胸痛""无呼吸困难"）
 NEGATIONS = ("没有", "没", "无", "不", "未", "否认")
 
@@ -133,6 +141,14 @@ def _positive_mention(text: str, phrase: str) -> bool:
         start = text.find(phrase, start + len(phrase))
     return False
 
+
+def has_positive_mention(text: str, phrase: str) -> bool:
+    """公开的否定感知匹配：短语是否以患者当前状态出现。
+
+    供风险评估等 Skill 复用，避免「没有胸痛」「不严重」被当作阳性症状。
+    """
+    return _positive_mention(text, phrase)
+
 #: 回答中出现这些词可能构成就医建议
 VISIT_ADVICE_TERMS = ("就医", "就诊", "看医生", "急诊", "医院", "救护车")
 #: 紧邻就医建议前的否定表达（"不建议您现在立刻去医院"）
@@ -140,6 +156,8 @@ _VISIT_NEGATIONS = (
     "不建议", "不推荐", "不主张", "无需", "不用", "不必", "不需要",
     "没有必要", "并非", "不是", "暂不", "先不", "不急着", "不必要",
     "不应", "不应该", "不要", "别", "不宜",
+    "可以不去", "没必要", "用不着", "无需去", "不必去", "不用去",
+    "不去", "先不去", "暂时不去", "目前不去", "不打算去",
 )
 _VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
 _QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
@@ -205,9 +223,18 @@ def has_visit_recommendation(text: str) -> bool:
                     marker in prefix for marker in _QUESTION_MARKERS
                 ) or sentence.rstrip().endswith(("吗", "呢"))
                 descriptive = (
-                    any(
-                        marker in prefix
-                        for marker in _VISIT_DESCRIPTIVE_MARKERS
+                    (
+                        any(
+                            marker in prefix
+                            for marker in _VISIT_DESCRIPTIVE_MARKERS
+                        )
+                        or (
+                            not prefix.strip()
+                            and any(
+                                marker in sentence
+                                for marker in _VISIT_DESCRIPTIVE_MARKERS
+                            )
+                        )
                     )
                     and not any(
                         cue in prefix for cue in _VISIT_ADVICE_CUES
@@ -245,9 +272,25 @@ ANTICOAGULANT_TERMS = (
     "华法林", "利伐沙班", "阿哌沙班", "达比加群", "艾多沙班",
     "肝素", "低分子肝素", "抗凝",
 )
+#: 纯跌倒本身不等于头部外伤；只有确实撞到/碰到头才按头部外伤处理
 HEAD_TRAUMA_TERMS = (
-    "摔倒", "跌倒", "摔伤", "滑倒", "头部外伤", "头部受伤",
-    "撞到头部", "头部撞击", "车祸", "头部被撞",
+    "头部外伤", "头部受伤", "头部撞击", "头部被撞", "头部着地",
+    "头部撞到", "撞到头部", "撞到头", "碰到头部", "碰到头",
+    "磕到头部", "磕到头", "头碰到", "头撞到", "头磕到", "头着地",
+    "摔到头",
+)
+
+#: 家族史/他人病史不能当作患者本人的当前状态
+_FAMILY_HISTORY_MARKERS = (
+    "父亲", "母亲", "父母", "家人", "家族", "爷爷", "奶奶", "外公", "外婆",
+    "丈夫", "妻子", "配偶", "哥哥", "姐姐", "弟弟", "妹妹", "儿子", "女儿",
+)
+
+#: 已经结束、停用、否认或仅为过敏的病史/用药不属于当前高危状态
+_CONTEXT_INACTIVE_MARKERS = (
+    "已结束", "结束后", "已停", "停用", "停药", "停了", "已完成",
+    "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
+    "否认", "未曾", "从未", "过敏",
 )
 
 _AGE_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:岁|周岁|years?|yrs?|y)", re.I)
@@ -307,6 +350,32 @@ def _has_fever(text: str) -> bool:
     return False
 
 
+def _active_medical_text(context: Dict[str, Any]) -> str:
+    """拼接当前仍生效的病史与用药。
+
+    按分句过滤家族史、他人病史、否定表述、过敏史以及已结束/已停用的
+    治疗，避免把「父亲化疗」「未使用抗凝药」当作患者本人的高危状态。
+    """
+    raw = " ".join(
+        part for part in (
+            _flatten(context.get("history")).lower(),
+            medication_context_text(context).lower(),
+        ) if part
+    )
+    clauses = re.split(r"[，。；;,.!?！？\n]", raw)
+    kept = []
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+            continue
+        if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
+            continue
+        kept.append(clause)
+    return " ".join(kept)
+
+
 def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
     """结合年龄、免疫状态与抗凝用药补充高危提示。"""
     if not isinstance(context, dict):
@@ -321,12 +390,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             "请不要自行用药，立即前往医院。",
         ))
 
-    medical_text = " ".join(
-        part for part in (
-            _flatten(context.get("history")).lower(),
-            medication_context_text(context).lower(),
-        ) if part
-    )
+    medical_text = _active_medical_text(context)
     if (
         any(term in medical_text for term in IMMUNOSUPPRESSION_TERMS)
         and _has_fever(text)
@@ -371,8 +435,12 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
 
     matches: List[str] = []
     for phrase, label in RED_FLAG_PHRASES:
+        guard = _PHRASE_GUARDS.get(phrase)
         start = text.find(phrase)
         while start != -1:
+            if guard is not None and not guard.match(text, start):
+                start = text.find(phrase, start + len(phrase))
+                continue
             prefix = _clause_prefix(text, start)
             if not _is_negated(prefix):
                 if label not in matches:
