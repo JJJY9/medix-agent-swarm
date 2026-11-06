@@ -332,6 +332,11 @@ class AgentLoop:
                         f"LLM error in iteration {state.iteration}: "
                         f"{e.code} - {e.user_message}"
                     )
+                    # 失败/截断的调用同样消耗 token：先并入本轮统计再重试
+                    error_usage = getattr(e, "usage", None)
+                    if isinstance(error_usage, dict):
+                        merge_usage(usage, error_usage)
+                    llm_calls += int(getattr(e, "llm_calls", 0) or 0) or 1
                     if not e.retryable:
                         # Key 无效、余额不足等错误重试没有意义，直接向上抛
                         state.mark_failed(e.user_message)
@@ -431,9 +436,10 @@ class AgentLoop:
             logger.info(f"Agent Loop finished: status={state.status.value}, iterations={state.iteration}")
             return state.final_result or {}
 
-        except Exception as e:
+        except BaseException as e:
+            # CancelledError 属于 BaseException；超时/断连取消时也要把
+            # 已消耗的 token 带出去，随后原样抛出
             logger.error(f"Agent Loop failed: {e}")
-            # 失败前已经消耗的 token 也要带出去，供上层统计费用与预算
             try:
                 e.usage = dict(usage)
                 e.llm_calls = llm_calls

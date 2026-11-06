@@ -65,11 +65,13 @@ def sanitize_base_url(value: Optional[str]) -> str:
         return ""
     try:
         parsed = urlsplit(text)
+        # .port 是惰性解析，非法端口（如 :8000x）会在这里抛 ValueError
+        port = parsed.port
     except ValueError:
         return redact_secrets(text)
     host = parsed.hostname or ""
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    if port:
+        host = f"{host}:{port}"
     sanitized = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     return redact_secrets(sanitized)
 
@@ -128,10 +130,16 @@ def configure_server_logging() -> None:
     if _server_logging_configured:
         return
     _server_logging_configured = True
+    logger = None
     try:
         from loguru import logger
 
         level = (os.getenv("MEDIX_LOG_LEVEL") or "INFO").strip().upper()
+        try:
+            # 先校验级别，避免 remove 之后 add 失败导致日志全部丢失
+            logger.level(level or "INFO")
+        except ValueError:
+            level = "INFO"
         logger.remove()
         logger.add(
             sys.stderr,
@@ -140,4 +148,14 @@ def configure_server_logging() -> None:
             diagnose=False,
         )
     except Exception:
-        pass
+        # 配置失败时至少保留一个可用的 INFO handler
+        if logger is not None:
+            try:
+                logger.add(
+                    sys.stderr,
+                    level="INFO",
+                    backtrace=False,
+                    diagnose=False,
+                )
+            except Exception:
+                pass

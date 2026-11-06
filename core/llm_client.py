@@ -21,6 +21,7 @@ from openai import (
 from loguru import logger
 
 from .security import install_log_redaction, redact_secrets, register_secret
+from .serialization import strip_lone_surrogates
 
 # 所有模型调用路径都会经过这里，导入时即开启日志脱敏，
 # 避免脚本或 CLI 绕过 api_server 时把 SDK 报错里的 Key 原样打出来。
@@ -185,10 +186,20 @@ def classify_llm_error(exc: Exception) -> LLMError:
     lowered = message.lower()
     type_name = type(exc).__name__.lower()
 
-    if status == 402 or "insufficient balance" in lowered or "余额不足" in message:
+    quota_exhausted = (
+        "insufficient_quota" in lowered
+        or "exceeded your current quota" in lowered
+        or "quota exceeded" in lowered
+    )
+    if (
+        status == 402
+        or quota_exhausted
+        or "insufficient balance" in lowered
+        or "余额不足" in message
+    ):
         return LLMError(
             "llm_balance",
-            "模型账户余额不足，请充值或更换 API Key 后重试。",
+            "模型账户额度已用尽或余额不足，请充值或更换 API Key 后重试。",
             retryable=False,
             status_code=status,
         )
@@ -346,7 +357,9 @@ class LLMClient:
                 **kwargs
             )
 
-            content = response.choices[0].message.content or ""
+            content = strip_lone_surrogates(
+                response.choices[0].message.content or ""
+            )
             usage = usage_to_dict(getattr(response, "usage", None))
             logger.debug(f"LLM response length: {len(content)} chars")
             return content, usage
@@ -527,6 +540,7 @@ class LLMClient:
                     content = getattr(chunk.choices[0].delta, "content", None)
                     if not content:
                         continue
+                    content = strip_lone_surrogates(content)
 
                     chunks.append(content)
                     if on_token and not callback_failed:
@@ -627,14 +641,20 @@ class LLMClient:
             # 参数被 max_tokens 截断时不能用空参数执行 Skill，
             # 交给上层重试或降级，避免返回无依据的结果
             if truncated:
-                raise LLMError(
+                error = LLMError(
                     "llm_truncated",
                     "模型回答在工具参数中途被截断，请重试或缩短输入。",
                     retryable=True,
                 )
+                # 这次调用已经真实计费，重试前把用量带回给上层
+                error.usage = usage_to_dict(
+                    getattr(response, "usage", None)
+                )
+                error.llm_calls = 1
+                raise error
 
             return LLMResponse(
-                content=message.content,
+                content=strip_lone_surrogates(message.content or ""),
                 tool_calls=tool_calls,
                 finish_reason=finish_reason,
                 usage=usage_to_dict(getattr(response, "usage", None)),
