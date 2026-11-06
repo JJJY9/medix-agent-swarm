@@ -1820,6 +1820,13 @@ async def import_sessions(request: ImportSessionsRequest):
         logger.exception("导入会话失败")
         raise HTTPException(status_code=500, detail="导入会话失败，请稍后重试。")
 
+    await asyncio.to_thread(
+        _clear_short_term_tombstones,
+        [
+            item.get("id") for item in request.sessions
+            if isinstance(item, dict)
+        ],
+    )
     await record_audit("session.import", detail=_import_result_detail(result))
     return {"ok": True, **result}
 
@@ -1935,6 +1942,13 @@ async def restore_local_backup(name: str, request: ConfirmRequest):
             status_code=500, detail="恢复备份失败，请稍后重试。"
         )
 
+    await asyncio.to_thread(
+        _clear_short_term_tombstones,
+        [
+            item.get("id") for item in (payload.get("sessions") or [])
+            if isinstance(item, dict)
+        ],
+    )
     await record_audit(
         "session.import",
         detail=f"source=backup:{name} {_import_result_detail(result)}",
@@ -1988,6 +2002,7 @@ async def purge_old_sessions(request: PurgeRequest):
             memory = ShortTermMemory()
             for session_id in session_ids:
                 memory.clear_session(session_id)
+                memory.seal_session(session_id)
 
         await asyncio.to_thread(clear_short_term)
         await asyncio.to_thread(
@@ -5532,7 +5547,11 @@ async def get_session_messages(session_id: str, limit: int = 50):
         }
 
     memory = ShortTermMemory()
-    messages = memory.get_recent_messages(session_id=session_id, limit=limit)
+    deleted = await asyncio.to_thread(store.is_session_deleted, session_id)
+    # 已删除会话即使短期记忆里有迟到写入，也不能再通过回退接口返回
+    messages = [] if deleted else memory.get_recent_messages(
+        session_id=session_id, limit=limit
+    )
     return {
         "session_id": session_id,
         "profile": "",
@@ -5672,6 +5691,7 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
             (str((existing or {}).get("profile") or ""), session_id)
         )
         memory.clear_session(session_id)
+        memory.seal_session(session_id)
         ok = await asyncio.to_thread(store.delete_session, session_id)
         if ok:
             deleted += 1
@@ -5761,7 +5781,9 @@ async def clear_session(session_id: str):
 
     store = get_session_store()
     existing = await asyncio.to_thread(store.get_session, session_id)
-    ShortTermMemory().clear_session(session_id)
+    short_term = ShortTermMemory()
+    short_term.clear_session(session_id)
+    short_term.seal_session(session_id)
     deleted = await asyncio.to_thread(store.delete_session, session_id)
     profile = str((existing or {}).get("profile") or "")
     # SQLite 删除后同步清理外部长期记忆与会诊总结明文，
@@ -6030,6 +6052,20 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
                 )
 
     return {"ok": True, "filename": filename, "rebuild": result}
+
+
+def _clear_short_term_tombstones(session_ids: List[Any]) -> None:
+    """导入/恢复会话后解除短期记忆墓碑，允许恢复后的会话继续写入。"""
+    try:
+        from memory import ShortTermMemory
+
+        memory = ShortTermMemory()
+        for raw in session_ids:
+            session_id = str(raw or "").strip()
+            if session_id:
+                memory.clear_tombstone(session_id)
+    except Exception as e:
+        logger.warning(f"解除短期记忆墓碑失败（忽略）: {e}")
 
 
 def _memory_scope(patient_profile: str, session_id: str) -> str:

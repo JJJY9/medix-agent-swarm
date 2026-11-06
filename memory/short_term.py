@@ -121,6 +121,10 @@ class ShortTermMemory:
             self._local_fallback_at: Dict[str, datetime] = {}
         if not hasattr(self, "_cleared_sessions"):
             self._cleared_sessions: set[str] = set()
+        if not hasattr(self, "_sealed_sessions"):
+            # 通过 API 删除的会话：迟到的消息必须直接丢弃，
+            # 普通 clear_session（测试/重置）不进入此集合
+            self._sealed_sessions: set[str] = set()
         if not hasattr(self, "_state_lock"):
             # 串行化 load→modify→save 与清理/墓碑变更，避免并发下把已删会话写回
             self._state_lock = threading.RLock()
@@ -140,6 +144,7 @@ class ShortTermMemory:
         # Redis 写失败时的本地兜底时间戳，以及已删除会话的墓碑
         self._local_fallback_at: Dict[str, datetime] = {}
         self._cleared_sessions: set[str] = set()
+        self._sealed_sessions: set[str] = set()
         self._initialized = True
 
         # Harness Engineering: 熵管理器
@@ -208,6 +213,7 @@ class ShortTermMemory:
             metadata=metadata or {}
         )
         self._cleared_sessions.discard(session_id)
+        self._sealed_sessions.discard(session_id)
 
         if self.storage_type == "memory":
             self.sessions[session_id] = history
@@ -249,6 +255,11 @@ class ShortTermMemory:
         content: str
     ):
         local_history = self.sessions.get(session_id)
+        if session_id in self._sealed_sessions and local_history is None:
+            # 会话已通过 API 删除：丢弃进行中会诊迟到的消息，
+            # 不能重新创建本地历史让已删内容通过短期记忆回退复活
+            logger.info("Session deleted, dropping late short-term message")
+            return
         if self.storage_type == "redis" and self.redis_client:
             if session_id in self._cleared_sessions:
                 # 删除墓碑存在时，Redis 中可能仍有删除失败留下的旧会话；
@@ -465,6 +476,23 @@ class ShortTermMemory:
         openai_messages = prefix + openai_messages[start:]
 
         return openai_messages
+
+    def seal_session(self, session_id: str) -> None:
+        """标记会话已被 API 删除：迟到的短期记忆写入直接丢弃。"""
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        with self._state_lock:
+            self._sealed_sessions.add(session_id)
+            while len(self._sealed_sessions) > 1000:
+                self._sealed_sessions.pop()
+
+    def clear_tombstone(self, session_id: str) -> None:
+        """显式恢复/重新启用会话时解除短期记忆墓碑。"""
+        with self._state_lock:
+            session_id = str(session_id or "").strip()
+            self._cleared_sessions.discard(session_id)
+            self._sealed_sessions.discard(session_id)
 
     def clear_session(self, session_id: str) -> bool:
         """

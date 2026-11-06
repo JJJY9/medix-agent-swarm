@@ -756,6 +756,8 @@ class SessionStore:
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:
+            # 删除时立即清零释放的页面，避免问诊明文留在空闲页
+            self._conn.execute("PRAGMA secure_delete=ON")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(
                 """
@@ -3026,6 +3028,14 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def _checkpoint_wal(self) -> None:
+        """把 WAL 合并回主库并截断，避免已删除内容残留在 -wal 文件。"""
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except sqlite3.Error as e:
+            # 有长读事务时 checkpoint 会 busy；下次删除/关闭时会再尝试
+            logger.warning(f"WAL checkpoint 失败（忽略）: {e}")
+
     def delete_session(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
         if not session_id:
@@ -3043,7 +3053,10 @@ class SessionStore:
                 self._deleted_sessions.pop(
                     next(iter(self._deleted_sessions))
                 )
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        # 事务提交后再 checkpoint，把 WAL 中已删除的页面清出
+        self._checkpoint_wal()
+        return deleted
 
     def list_profiles(self) -> List[Dict[str, Any]]:
         """按名称返回全部常用患者档案。"""
@@ -4779,6 +4792,7 @@ class SessionStore:
                 self._deleted_sessions.pop(
                     next(iter(self._deleted_sessions))
                 )
+        self._checkpoint_wal()
         return {
             "sessions": int(sessions_deleted),
             "messages": int(messages_deleted),
@@ -4788,6 +4802,7 @@ class SessionStore:
 
     def close(self) -> None:
         with self._lock:
+            self._checkpoint_wal()
             self._conn.close()
 
 

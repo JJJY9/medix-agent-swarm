@@ -34,6 +34,7 @@ def _redis_memory(redis_client):
     memory.sessions = {}
     memory._local_fallback_at = {}
     memory._cleared_sessions = set()
+    memory._sealed_sessions = set()
     memory._state_lock = threading.RLock()
     memory.entropy_manager = None
     memory._initialized = True

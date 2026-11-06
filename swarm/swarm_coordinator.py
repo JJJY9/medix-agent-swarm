@@ -136,6 +136,10 @@ class SwarmCoordinator:
             logger.warning(f"读取历史会话失败（session={session_id}）: {e}")
             return
 
+        if stored:
+            # SQLite 中仍有记录说明会话存在（例如备份恢复），
+            # 解除短期记忆墓碑后再回填历史
+            self.short_term_memory.clear_tombstone(session_id)
         for message in stored:
             role = message.get("role")
             if role in ("user", "assistant"):
