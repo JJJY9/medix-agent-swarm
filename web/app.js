@@ -1880,7 +1880,7 @@ function buildReportHtml(item, messages) {
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
 function buildVisitSummaryHtml({
   profile, context, metrics, reminders, sessions, targets, summaries,
-  symptoms, medications, weekly,
+  symptoms, medications, weekly, failures = [],
 }) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
@@ -2053,6 +2053,11 @@ function buildVisitSummaryHtml({
   li { margin: 3px 0; }
   .muted { color: #64748b; font-size: 12.5px; }
   .overdue { color: #d92b2b; }
+  .warn {
+    margin: 0 0 18px; padding: 10px 14px; border-radius: 8px;
+    background: #fef3c7; border: 1px solid #f59e0b; color: #92400e;
+    font-size: 13px;
+  }
   footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e2e8f0; color: #94a3b8; font-size: 12px; }
   .print-btn {
     position: fixed; right: 24px; bottom: 24px; padding: 12px 20px;
@@ -2074,6 +2079,11 @@ function buildVisitSummaryHtml({
     <h1>就诊摘要</h1>
     <span class="stamp">生成时间：${escapeHtml(generatedAt)}</span>
   </header>
+
+  ${failures.length
+    ? `<p class="warn">部分数据读取失败（${failures.map(escapeHtml).join('、')}），`
+      + '以下内容可能不完整，请核对后再使用。</p>'
+    : ''}
 
   <section>
     <h2>基本信息</h2>
@@ -2201,33 +2211,39 @@ async function exportVisitSummary() {
       fetch(`/api/medications?${medicationParams.toString()}`),
       fetch(`/api/reports/weekly?${weeklyParams.toString()}`),
     ]);
-    const metrics = metricsRes.ok
+    const failures = [];
+    const track = (res, label) => {
+      if (!res.ok) failures.push(label);
+      return res.ok;
+    };
+    const metrics = track(metricsRes, '健康指标')
       ? (await metricsRes.json()).metrics || []
       : [];
-    const reminders = remindersRes.ok
+    const reminders = track(remindersRes, '随访提醒')
       ? ((await remindersRes.json()).reminders || []).filter(
         (item) => (item.profile || '') === profile
       )
       : [];
-    const sessions = sessionsRes.ok
+    const sessions = track(sessionsRes, '会诊记录')
       ? ((await sessionsRes.json()).sessions || [])
         .filter((item) => (item.profile || '') === profile)
         .slice(0, 5)
       : [];
-    const targets = targetsRes.ok
+    const targets = track(targetsRes, '指标目标')
       ? ((await targetsRes.json()).targets || []).filter(
         (item) => (item.profile || '') === profile
       )
       : [];
-    const symptoms = symptomsRes.ok
+    const symptoms = track(symptomsRes, '症状日记')
       ? (await symptomsRes.json()).symptoms || []
       : [];
-    const medications = medicationsRes.ok
+    const medications = track(medicationsRes, '用药清单')
       ? (await medicationsRes.json()).medications || []
       : [];
     const weekly = weeklyRes && weeklyRes.ok
       ? await weeklyRes.json().catch(() => null)
       : null;
+    if (weeklyRes && !weeklyRes.ok) failures.push('近 7 天小结');
     const summaries = await fetchMetricSummaries(
       profile, metrics, 0, false
     );
@@ -2236,7 +2252,7 @@ async function exportVisitSummary() {
     downloadFile(
       buildVisitSummaryHtml({
         profile, context, metrics, reminders, sessions, targets,
-        summaries, symptoms, medications, weekly,
+        summaries, symptoms, medications, weekly, failures,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
@@ -2635,8 +2651,20 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
   button.type = 'button';
   button.className = 'failure-action';
   button.textContent = label;
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
     if (busy) return;
+    button.disabled = true;
+    // 传输中断不代表服务端没有保存：先核对本轮问答，已落库时恢复而不是重发
+    if (retry.baselineMessageId) {
+      const restored = await restoreCurrentSession(
+        retry.question, retry.baselineMessageId
+      );
+      if (restored) {
+        retry.askTurn?.remove();
+        wrap.remove();
+        return;
+      }
+    }
     retry.askTurn?.remove();
     wrap.remove();
     send(retry.question);
@@ -2647,6 +2675,7 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
 function renderError(message, retry = null) {
   const wrap = document.createElement('div');
   wrap.className = 'failure';
+  wrap.setAttribute('role', 'alert');
   const strong = document.createElement('strong');
   strong.textContent = '会诊未能完成';
   wrap.appendChild(strong);
@@ -2668,6 +2697,7 @@ function renderError(message, retry = null) {
 function renderStopped(retry = null) {
   const wrap = document.createElement('div');
   wrap.className = 'failure';
+  wrap.setAttribute('role', 'alert');
   const strong = document.createElement('strong');
   strong.textContent = '会诊已停止';
   wrap.appendChild(strong);
@@ -2788,6 +2818,8 @@ async function startNewSession() {
     window.alert('会诊进行中，请先停止当前会诊。');
     return;
   }
+  // 作废仍在途的历史会话请求，避免旧响应覆盖刚创建的新会话
+  openSessionSeq += 1;
 
   try {
     const res = await fetch('/api/sessions', { method: 'POST' });
@@ -3459,14 +3491,7 @@ async function bulkDelete() {
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
 
     if (ids.includes(sessionId)) {
-      sessionId = null;
-      lastServerMessageId = 0;
-      safeStorageRemove('medix.session');
-      setSessionUrl(null);
-      els.thread.replaceChildren(els.empty);
-      els.empty.hidden = false;
-      resetRail();
-      els.readout.session.textContent = '—';
+      clearCurrentSession();
     }
 
     const missing = (data.missing || []).length;
@@ -4625,6 +4650,19 @@ async function toggleArchive(item) {
   }
 }
 
+function clearCurrentSession() {
+  // 同时作废在途的历史读取，防止被删会话的旧响应重新渲染
+  openSessionSeq += 1;
+  sessionId = null;
+  lastServerMessageId = 0;
+  safeStorageRemove('medix.session');
+  setSessionUrl(null);
+  els.thread.replaceChildren(els.empty);
+  els.empty.hidden = false;
+  resetRail();
+  els.readout.session.textContent = '—';
+}
+
 async function deleteHistory(item) {
   const title = item.title || '这次会诊';
   if (busy && item.id === sessionId) {
@@ -4640,14 +4678,7 @@ async function deleteHistory(item) {
     if (!res.ok) throw new Error(`删除失败（${res.status}）`);
 
     if (item.id === sessionId) {
-      sessionId = null;
-      lastServerMessageId = 0;
-      safeStorageRemove('medix.session');
-      setSessionUrl(null);
-      els.thread.replaceChildren(els.empty);
-      els.empty.hidden = false;
-      resetRail();
-      els.readout.session.textContent = '—';
+      clearCurrentSession();
     }
     await loadHistory(els.historySearch.value.trim());
     await loadRecentFeedback();
@@ -5533,6 +5564,10 @@ async function exportAuditCsv() {
 }
 
 async function purgeOldSessions() {
+  if (busy) {
+    setDiagStatus('会诊进行中，暂不能清理旧会诊。', true);
+    return;
+  }
   const input = window.prompt(
     '删除多少天以前的会诊？删除后不可恢复。',
     '90'
@@ -5571,6 +5606,24 @@ async function purgeOldSessions() {
     );
     await loadHistory(els.historySearch.value.trim());
     loadAuditLog();
+
+    // 当前打开的会诊可能已被清理；确认后再清空界面，避免继续展示已删除内容
+    if (sessionId) {
+      const current = sessionId;
+      let purged = false;
+      try {
+        const check = await fetch(
+          `/api/sessions/${encodeURIComponent(current)}/messages?limit=1`
+        );
+        if (check.ok) {
+          const info = await check.json().catch(() => ({}));
+          purged = Array.isArray(info.messages) && info.messages.length === 0;
+        }
+      } catch {
+        purged = false;
+      }
+      if (purged && sessionId === current) clearCurrentSession();
+    }
   } catch (err) {
     setDiagStatus(`清理失败：${err.message || err}`, true);
   } finally {
@@ -6428,12 +6481,14 @@ async function loadMetricTrend() {
       + `&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== metricTrendRequestSeq) return;
     renderMetricTrend(data.metrics || [], metric);
   } catch {
-    // 趋势加载失败不影响记录列表
+    // 切换档案后请求失败时清空趋势，避免显示上一个患者的曲线
+    if (requestSeq !== metricTrendRequestSeq) return;
+    renderMetricTrend([], metric);
   }
 }
 
@@ -6657,7 +6712,7 @@ async function loadMetricOverview() {
     const res = await fetch(
       `/api/metrics/latest?${params.toString()}`
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const items = (await res.json()).metrics || [];
     if (requestSeq !== metricOverviewRequestSeq) return;
 
@@ -6692,7 +6747,10 @@ async function loadMetricOverview() {
 
     els.metricOverview.hidden = count === 0;
   } catch {
-    // 概览加载失败不影响表单与列表
+    // 切换档案后请求失败时清空概览，避免把上一个患者的数值留在界面上
+    if (requestSeq !== metricOverviewRequestSeq) return;
+    els.metricOverviewGrid.replaceChildren();
+    els.metricOverview.hidden = true;
   }
 }
 
@@ -7415,7 +7473,7 @@ async function enableReminderNotifications() {
   }
 }
 
-function maybeNotifyDueReminders(items) {
+async function maybeNotifyDueReminders(items) {
   if (!('Notification' in window) || Notification.permission !== 'granted') {
     return;
   }
@@ -7442,11 +7500,31 @@ function maybeNotifyDueReminders(items) {
   const body = titles
     ? `有${parts.join('，')}：${titles}${total > 3 ? ' 等' : ''}`
     : `有${parts.join('，')}。`;
+  const options = {
+    body,
+    tag: 'medix-reminders',
+    icon: '/static/icons/icon-192.png',
+    badge: '/static/icons/icon-192.png',
+  };
   try {
-    new Notification('MediX 随访提醒', { body, tag: 'medix-reminders' });
+    // 移动端浏览器不允许 new Notification，必须走 Service Worker；
+    // 桌面端没有可用 Worker 时再回退到构造函数
+    let registration = null;
+    if ('serviceWorker' in navigator) {
+      registration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+    }
+    if (registration && typeof registration.showNotification === 'function') {
+      await registration.showNotification('MediX 随访提醒', options);
+    } else {
+      new Notification('MediX 随访提醒', options);
+    }
     safeStorageSet(REMINDER_NOTIFIED_KEY, today);
   } catch {
-    // 通知构造失败时忽略
+    // 发送失败不记录“已提醒”，下次刷新重试
+    setRemindersStatus('浏览器未能发送到期通知，请检查站点通知权限。', true);
   }
 }
 
@@ -8755,7 +8833,7 @@ function renderSymptoms(items) {
   renderSymptomTrend(items);
   if (
     editingSymptomId
-    && !items.some((item) => item.id === editingSymptomId)
+    && !symptomItemsCache.some((item) => item.id === editingSymptomId)
   ) {
     resetSymptomForm();
   }
@@ -8826,13 +8904,19 @@ async function loadSymptoms() {
       `/api/symptoms?limit=100000&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== symptomRequestSeq) return;
     symptomItemsCache = data.symptoms || [];
     renderSymptoms(filterSymptoms(symptomItemsCache));
   } catch {
-    // 症状加载失败不影响健康记录
+    // 加载失败必须清空旧档案的记录，避免把上一个患者的数据留在界面上
+    if (requestSeq !== symptomRequestSeq) return;
+    symptomItemsCache = [];
+    renderSymptoms([]);
+    els.symptomEmpty.textContent = '症状记录加载失败，请稍后重试。';
+    els.symptomEmpty.hidden = false;
+    setSymptomStatus('症状记录加载失败，请稍后重试。', true);
   }
 }
 
@@ -9256,13 +9340,19 @@ async function loadMedications() {
       `/api/medications?limit=1000&profile=${encodeURIComponent(profile)}`
       + `&days=${days}`
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== medicationRequestSeq) return;
     medicationItemsCache = data.medications || [];
     renderMedications(filterMedications(medicationItemsCache));
   } catch {
-    // 用药清单加载失败不影响健康记录
+    // 同上：失败时清空旧档案的用药清单
+    if (requestSeq !== medicationRequestSeq) return;
+    medicationItemsCache = [];
+    renderMedications([]);
+    els.medicationEmpty.textContent = '用药清单加载失败，请稍后重试。';
+    els.medicationEmpty.hidden = false;
+    setMedicationStatus('用药清单加载失败，请稍后重试。', true);
   }
 }
 
@@ -9323,13 +9413,17 @@ async function loadMedicationLogs() {
     const res = await fetch(
       `/api/medication-logs?limit=20&profile=${encodeURIComponent(profile)}`
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== medicationLogRequestSeq) return;
     medicationLogItemsCache = data.logs || [];
     renderMedicationLogs(medicationLogItemsCache);
   } catch {
-    // 打卡历史加载失败不影响用药清单
+    if (requestSeq !== medicationLogRequestSeq) return;
+    medicationLogItemsCache = [];
+    renderMedicationLogs([]);
+    els.medicationLogEmpty.textContent = '打卡记录加载失败，请稍后重试。';
+    els.medicationLogEmpty.hidden = false;
   }
 }
 
@@ -11638,20 +11732,20 @@ async function handleLaunchAction() {
 }
 
 async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 0) {
-  if (!sessionId) return;
+  if (!sessionId) return false;
   const expectedSession = sessionId;
 
   try {
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(expectedSession)}/messages?limit=200`
     );
-    if (!res.ok) return;
+    if (!res.ok) return false;
 
     const data = await res.json();
-    if (sessionId !== expectedSession || busy) return;
+    if (sessionId !== expectedSession || busy) return false;
 
     const messages = data.messages || [];
-    if (!messages.length) return;
+    if (!messages.length) return false;
 
     const newestAssistantId = messages.reduce(
       (max, message) => message.role === 'assistant'
@@ -11677,7 +11771,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           && messages.slice(questionIndex + 1).some(
             (message) => message.role === 'assistant'
           );
-        if (!persisted) return;
+        if (!persisted) return false;
       } else {
         // 本轮提问和回答都必须比中止前的最大消息 ID 更新；否则只是同文本的
         // 旧问答，不能覆盖刚停止的提问与“已停止”卡片
@@ -11687,7 +11781,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
             && (Number(message.id) || 0) > baselineMessageId
         );
         if (!persistedQuestion || newestAssistantId <= baselineMessageId) {
-          return;
+          return false;
         }
       }
     }
@@ -11695,8 +11789,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     els.readout.session.textContent = shortSession(expectedSession);
     renderStoredMessages(messages, expectedSession, data.profile || '');
     setVitals('idle', '已恢复上次会诊');
+    return true;
   } catch {
     // 服务未启动或尚无记录时保持空状态
+    return false;
   }
 }
 
@@ -11924,7 +12020,9 @@ async function send(question) {
     working.remove();
 
     if (err.name === 'AbortError') {
-      renderStopped({ question, askTurn });
+      // 流式期间关闭了 live 播报，终态卡片需要重新开启后才会被读出
+      els.thread.setAttribute('aria-live', 'polite');
+      renderStopped({ question, askTurn, baselineMessageId });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
@@ -11937,7 +12035,13 @@ async function send(question) {
       } catch {
         // 已结束的请求忽略
       }
-      renderError(err.message || String(err), { question, askTurn });
+      els.thread.setAttribute('aria-live', 'polite');
+      // 传输错误也可能发生在服务端已保存之后：稍后核对并恢复，避免重试重复落库
+      renderError(
+        err.message || String(err),
+        { question, askTurn, baselineMessageId }
+      );
+      scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '中断';
       logStep(`中断：${err.message || err}`, false);
