@@ -431,6 +431,10 @@ const els = {
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
   medicationFrequency: document.getElementById('medication-frequency'),
+  medicationStock: document.getElementById('medication-stock'),
+  medicationStockUnit: document.getElementById('medication-stock-unit'),
+  medicationLowStock: document.getElementById('medication-low-stock'),
+  medicationExpiry: document.getElementById('medication-expiry'),
   medicationNote: document.getElementById('medication-note'),
   medicationActive: document.getElementById('medication-active'),
   medicationSave: document.getElementById('medication-save'),
@@ -7665,12 +7669,26 @@ function renderTodayMeds(medications) {
     strong.textContent = item.name;
     const meta = document.createElement('span');
     meta.className = 'today-meds-meta';
+    const stockAlert = item.out_of_stock
+      ? '缺货'
+      : item.low_stock
+        ? `库存 ${Number(item.stock).toLocaleString('zh-CN', {
+          maximumFractionDigits: 2,
+        })}${item.stock_unit || ''}`
+        : '';
+    const expiryAlert = item.expired
+      ? `已过期 ${item.expiry_date}`
+      : item.expiring_soon
+        ? `有效期 ${item.expiry_date}`
+        : '';
     meta.textContent = [
       item.dose,
       item.profile,
       Number(item.today_count) > 0
         ? `今日 ${Number(item.today_count)} 次`
         : '今日未打卡',
+      stockAlert,
+      expiryAlert,
     ].filter(Boolean).join(' · ');
     name.append(strong, meta);
 
@@ -8719,6 +8737,69 @@ async function scheduleMetricFollowUp(item) {
   els.reminderTitle.focus();
 }
 
+async function restockMedication(item) {
+  const unit = item.stock_unit || '单位';
+  const current = item.stock === null || item.stock === undefined
+    ? ''
+    : String(item.stock);
+  const input = window.prompt(
+    `更新「${item.name}」的剩余库存（${unit}），留空表示不管理库存`,
+    current
+  );
+  if (input === null) return;
+  const text = input.trim();
+  let stock = null;
+  if (text) {
+    const value = Number(text);
+    if (!Number.isFinite(value) || value < 0) {
+      setMedicationStatus('库存应为非负数字。', true);
+      return;
+    }
+    stock = value;
+  }
+  try {
+    const res = await fetch(`/api/medications/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stock }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setMedicationStatus(
+      stock === null ? '已关闭库存管理。' : '已更新库存。'
+    );
+    await Promise.all([loadMedications(), loadMedicationLogs()]);
+    refreshOverview();
+  } catch (err) {
+    setMedicationStatus(`更新库存失败：${err.message || err}`, true);
+  }
+}
+
+async function createMedicationAlertReminder(item, kind) {
+  const label = kind === 'stock' ? '补货提醒' : '到期提醒';
+  try {
+    const res = await fetch(
+      `/api/medications/${item.id}/reminder?kind=${kind}`,
+      { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setMedicationStatus(
+      data.created
+        ? `已创建${label}。`
+        : `该药物已有未完成的${label}。`
+    );
+    refreshReminderBadge();
+    refreshOverview();
+  } catch (err) {
+    setMedicationStatus(`创建${label}失败：${err.message || err}`, true);
+  }
+}
+
 async function scheduleMedicationReminder(item) {
   await openReminders();
   reminderMedicationId = Number(item.id) || 0;
@@ -9652,6 +9733,10 @@ function resetMedicationForm() {
   els.medicationName.value = '';
   els.medicationDose.value = '';
   els.medicationFrequency.value = '';
+  els.medicationStock.value = '';
+  els.medicationStockUnit.value = '';
+  els.medicationLowStock.value = '0';
+  els.medicationExpiry.value = '';
   els.medicationNote.value = '';
   els.medicationActive.checked = true;
   els.medicationSave.textContent = '添加药物';
@@ -9722,6 +9807,39 @@ function renderMedications(items) {
     badge.textContent = item.active ? '在用' : '停用';
     title.append(' ', badge);
 
+    if (item.stock !== null && item.stock !== undefined) {
+      const stockBadge = document.createElement('span');
+      stockBadge.className = 'medication-stock-badge'
+        + (
+          item.out_of_stock
+            ? ' is-out'
+            : item.low_stock ? ' is-low' : ''
+        );
+      stockBadge.textContent =
+        `库存 ${Number(item.stock).toLocaleString('zh-CN', {
+          maximumFractionDigits: 2,
+        })}${item.stock_unit || ''}`;
+      title.append(' ', stockBadge);
+    }
+    if (item.expiry_date) {
+      const expiryBadge = document.createElement('span');
+      expiryBadge.className = 'medication-expiry-badge'
+        + (
+          item.expired
+            ? ' is-expired'
+            : item.expiring_soon ? ' is-soon' : ''
+        );
+      if (item.expired) {
+        expiryBadge.textContent = `已过期 ${item.expiry_date}`;
+      } else if (item.expiring_soon) {
+        expiryBadge.textContent =
+          `有效期 ${item.expiry_date}（${Number(item.days_to_expiry)} 天）`;
+      } else {
+        expiryBadge.textContent = `有效期 ${item.expiry_date}`;
+      }
+      title.append(' ', expiryBadge);
+    }
+
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
     const metaParts = [
@@ -9789,6 +9907,44 @@ function renderMedications(items) {
     log.setAttribute('aria-label', `记录一次用药：${item.name}`);
     log.addEventListener('click', () => logMedication(item));
 
+    let restock = null;
+    if (item.stock !== null && item.stock !== undefined) {
+      restock = document.createElement('button');
+      restock.type = 'button';
+      restock.className = 'metric-edit';
+      restock.textContent = '库存';
+      restock.setAttribute('aria-label', `更新库存：${item.name}`);
+      restock.addEventListener('click', () => restockMedication(item));
+    }
+
+    let stockReminder = null;
+    if (item.low_stock) {
+      stockReminder = document.createElement('button');
+      stockReminder.type = 'button';
+      stockReminder.className = 'metric-edit';
+      stockReminder.textContent = '补货提醒';
+      stockReminder.setAttribute(
+        'aria-label', `为低库存药物创建补货提醒：${item.name}`
+      );
+      stockReminder.addEventListener(
+        'click', () => createMedicationAlertReminder(item, 'stock')
+      );
+    }
+
+    let expiryReminder = null;
+    if (item.expired || item.expiring_soon) {
+      expiryReminder = document.createElement('button');
+      expiryReminder.type = 'button';
+      expiryReminder.className = 'metric-edit';
+      expiryReminder.textContent = '到期提醒';
+      expiryReminder.setAttribute(
+        'aria-label', `为临期药物创建到期提醒：${item.name}`
+      );
+      expiryReminder.addEventListener(
+        'click', () => createMedicationAlertReminder(item, 'expiry')
+      );
+    }
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -9804,6 +9960,9 @@ function renderMedications(items) {
     del.addEventListener('click', () => deleteMedication(item));
 
     actions.append(toggle, log, remind);
+    if (restock) actions.appendChild(restock);
+    if (stockReminder) actions.appendChild(stockReminder);
+    if (expiryReminder) actions.appendChild(expiryReminder);
     if (Number(item.today_count) > 0) {
       const undo = document.createElement('button');
       undo.type = 'button';
@@ -10979,6 +11138,17 @@ function editMedication(item) {
   els.medicationName.value = item.name || '';
   els.medicationDose.value = item.dose || '';
   els.medicationFrequency.value = item.frequency || '';
+  els.medicationStock.value = item.stock === null || item.stock === undefined
+    ? ''
+    : String(item.stock);
+  els.medicationStockUnit.value = item.stock_unit || '';
+  els.medicationLowStock.value = String(
+    item.low_stock_threshold === null
+      || item.low_stock_threshold === undefined
+      ? 0
+      : item.low_stock_threshold
+  );
+  els.medicationExpiry.value = String(item.expiry_date || '').slice(0, 10);
   els.medicationNote.value = item.note || '';
   els.medicationActive.checked = Boolean(item.active);
   els.medicationSave.textContent = '保存修改';
@@ -10995,6 +11165,20 @@ async function saveMedication() {
     return;
   }
   const editingId = editingMedicationId;
+  const stockText = (els.medicationStock.value || '').trim();
+  const stock = stockText === '' ? null : Number(stockText);
+  if (stock !== null && (!Number.isFinite(stock) || stock < 0)) {
+    setMedicationStatus('库存应为非负数字。', true);
+    els.medicationStock.focus();
+    return;
+  }
+  const thresholdText = (els.medicationLowStock.value || '').trim();
+  const threshold = thresholdText === '' ? 0 : Number(thresholdText);
+  if (!Number.isFinite(threshold) || threshold < 0) {
+    setMedicationStatus('低库存阈值应为非负数字。', true);
+    els.medicationLowStock.focus();
+    return;
+  }
   const payload = {
     profile: editingId
       ? editingMedicationProfile
@@ -11004,6 +11188,10 @@ async function saveMedication() {
     frequency: (els.medicationFrequency.value || '').trim(),
     note: (els.medicationNote.value || '').trim(),
     active: els.medicationActive.checked,
+    stock,
+    stock_unit: (els.medicationStockUnit.value || '').trim(),
+    low_stock_threshold: threshold,
+    expiry_date: els.medicationExpiry.value || '',
   };
 
   medicationSaving = true;
