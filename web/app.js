@@ -464,6 +464,7 @@ const els = {
   medicationReminders: document.getElementById('medication-reminders'),
   medicationImport: document.getElementById('medication-import'),
   medicationTemplate: document.getElementById('medication-template'),
+  medicationLogAll: document.getElementById('medication-log-all'),
   medicationImportFile: document.getElementById('medication-import-file'),
   calcInteractionsLoad: document.getElementById('calc-interactions-load'),
   metricsEmpty: document.getElementById('metrics-empty'),
@@ -10441,6 +10442,64 @@ async function logMedication(item) {
   }
 }
 
+async function logAllMedications() {
+  const button = els.medicationLogAll;
+  if (!button || button.disabled) return;
+  const pending = (medicationItemsCache || []).filter(
+    (item) => item.active && !Number(item.today_count)
+  );
+  if (!pending.length) {
+    setMedicationStatus('今天的在用药物都已打卡。');
+    return;
+  }
+  if (!window.confirm(
+    `为今天尚未打卡的 ${pending.length} 种药物各记录一次？`
+  )) {
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = '打卡中…';
+  let success = 0;
+  let failed = 0;
+  try {
+    for (const item of pending) {
+      if (medicationLogBusy.has(item.id)) {
+        failed += 1;
+        continue;
+      }
+      medicationLogBusy.add(item.id);
+      try {
+        const res = await fetch(`/api/medications/${item.id}/logs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+        await completeDueMedicationReminder(item);
+        success += 1;
+      } catch {
+        failed += 1;
+      } finally {
+        medicationLogBusy.delete(item.id);
+      }
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = '全部打卡';
+  }
+
+  const message = `已打卡 ${success} 种药物`
+    + (failed ? `，${failed} 种失败` : '')
+    + '。';
+  setMedicationStatus(message, failed > 0);
+  setTodayMedsStatus(message, failed > 0);
+  await loadMedications();
+  loadMedicationLogs();
+  await refreshOverview();
+  refreshReminderBadge();
+}
+
 async function undoMedicationLog(item) {
   if (medicationLogBusy.has(item.id)) return;
   if (!window.confirm(`撤销「${item.name}」最近一次用药记录？`)) return;
@@ -13532,6 +13591,7 @@ els.symptomTemplate?.addEventListener('click', () => {
 els.medicationTemplate?.addEventListener('click', () => {
   downloadCsvTemplate('medications');
 });
+els.medicationLogAll?.addEventListener('click', logAllMedications);
 els.remindersTemplate?.addEventListener('click', () => {
   downloadCsvTemplate('reminders');
 });
