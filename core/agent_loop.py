@@ -565,6 +565,17 @@ class AgentLoop:
                     if fixed_answer != final_answer:
                         logger.info("🔧 输出已自动修复")
                         final_answer = fixed_answer
+                        # 修复后复核一次，避免“已修复”但仍有违规（如截断后仍超长）
+                        recheck = self.validator.validate_output(
+                            agent.agent_id,
+                            final_answer,
+                            user_input=user_input,
+                        )
+                        if not recheck.get("valid"):
+                            logger.warning(
+                                "⚠️ 自动修复后仍有违规: "
+                                f"{recheck.get('violations')}"
+                            )
 
         result = {
             'answer': final_answer,

@@ -40,6 +40,14 @@ class AutoFixer:
                 fixed_output = self.fix_high_risk_warning(
                     fixed_output, user_input
                 )
+            elif str(fix_type).startswith("truncate_response:"):
+                try:
+                    limit = int(str(fix_type).split(":", 1)[1])
+                except (TypeError, ValueError):
+                    continue
+                fixed_output = self.fix_excessive_length(
+                    fixed_output, limit
+                )
 
         if fixed_output != output:
             logger.info("🔧 输出已自动修复")

@@ -47,6 +47,33 @@ def _parse_list_items(text: str) -> List[str]:
     return items
 
 
+#: 合成结果使用【】标记的固定小节；正文里也可能出现【核心原则】等来源标题
+_SECTION_HEADERS = (
+    "关键发现", "证据等级", "置信度", "信息冲突", "综合总结", "建议",
+    "信息来源",
+)
+_SECTION_PATTERN = re.compile(
+    r"【(?P<name>"
+    + "|".join(re.escape(name) for name in _SECTION_HEADERS)
+    + r")】(?P<body>.*?)(?=【(?:"
+    + "|".join(re.escape(name) for name in _SECTION_HEADERS)
+    + r")】|$)",
+    re.DOTALL,
+)
+
+
+def _extract_section(response: str, name: str) -> str:
+    """提取指定【小节】，止于下一个已知小节标题而不是任意【。
+
+    指南正文常含【核心原则】这类方括号小标题，按任意【 截断会把
+    小节内容误判为空。
+    """
+    for match in _SECTION_PATTERN.finditer(str(response or "")):
+        if match.group("name") == name:
+            return match.group("body").strip()
+    return ""
+
+
 @dataclass
 class ResearchReport:
     """研究报告数据结构"""
@@ -58,6 +85,7 @@ class ResearchReport:
     conflicts: List[str] = field(default_factory=list)  # 信息冲突
     summary: str = ""  # 综合总结
     recommendations: List[str] = field(default_factory=list)  # 建议
+    failed: bool = False  # 综合过程失败，不等同于 C 级证据
     created_at: datetime = field(default_factory=datetime.now)
 
 
@@ -121,10 +149,12 @@ class EvidenceSynthesizer:
 
         except Exception as e:
             logger.error(f"Evidence synthesis error: {e}")
-            # 返回空报告
+            # 明确标记失败，避免把“没有综合成功”当作 C 级证据交付
             return ResearchReport(
                 query=query,
-                summary=f"综合失败：{str(e)}"
+                summary=f"综合失败：{str(e)}",
+                evidence_level="",
+                failed=True,
             )
 
     def _build_synthesis_prompt(
@@ -209,25 +239,25 @@ class EvidenceSynthesizer:
         report = ResearchReport(query=query)
 
         # 提取关键发现
-        findings_match = re.search(r'【关键发现】(.*?)【', response, re.DOTALL)
-        if findings_match:
-            report.key_findings = _parse_list_items(findings_match.group(1))
+        findings_text = _extract_section(response, "关键发现")
+        if findings_text:
+            report.key_findings = _parse_list_items(findings_text)
 
-        # 提取证据等级
-        evidence_match = re.search(r'【证据等级】(.*?)【', response, re.DOTALL)
-        if evidence_match:
-            evidence_text = evidence_match.group(1).strip()
-            if 'A级' in evidence_text or 'A 级' in evidence_text:
-                report.evidence_level = "A"
-            elif 'B级' in evidence_text or 'B 级' in evidence_text:
-                report.evidence_level = "B"
+        # 提取证据等级：优先显式标签，避免正文里的 "A 级" 覆盖真实等级
+        evidence_text = _extract_section(response, "证据等级")
+        if evidence_text:
+            labeled = re.search(
+                r"证据等级\s*[：:]?\s*[【\[]?\s*([ABC])", evidence_text
+            )
+            if labeled:
+                report.evidence_level = labeled.group(1)
             else:
-                report.evidence_level = "C"
+                grades = re.findall(r"(?<![A-Za-z])([ABC])\s*级", evidence_text)
+                report.evidence_level = grades[0] if grades else "C"
 
         # 提取置信度
-        confidence_match = re.search(r'【置信度】(.*?)【', response, re.DOTALL)
-        if confidence_match:
-            confidence_text = confidence_match.group(1).strip()
+        confidence_text = _extract_section(response, "置信度")
+        if confidence_text:
             # 尝试提取数字
             numbers = re.findall(r'0\.\d+|\d+\.\d+', confidence_text)
             if numbers:
@@ -239,9 +269,8 @@ class EvidenceSynthesizer:
             report.confidence = 0.5
 
         # 提取信息冲突
-        conflicts_match = re.search(r'【信息冲突】(.*?)【', response, re.DOTALL)
-        if conflicts_match:
-            conflicts_text = conflicts_match.group(1).strip()
+        conflicts_text = _extract_section(response, "信息冲突")
+        if conflicts_text:
             normalized = re.sub(
                 r'[\s。．.；;，,、:：\-*•]', '', conflicts_text
             )
@@ -251,18 +280,18 @@ class EvidenceSynthesizer:
                 report.conflicts = _parse_list_items(conflicts_text)
 
         # 提取综合总结
-        summary_match = re.search(r'【综合总结】(.*?)【', response, re.DOTALL)
-        if summary_match:
-            report.summary = summary_match.group(1).strip()
+        summary_text = _extract_section(response, "综合总结")
+        if summary_text:
+            report.summary = summary_text
         else:
             # 降级：使用整个响应
             report.summary = response[:500]
 
         # 提取建议
-        recommendations_match = re.search(r'【建议】(.*?)(?:【|$)', response, re.DOTALL)
-        if recommendations_match:
+        recommendations_text = _extract_section(response, "建议")
+        if recommendations_text:
             report.recommendations = _parse_list_items(
-                recommendations_match.group(1)
+                recommendations_text
             )
 
         # 收集来源

@@ -118,11 +118,20 @@ def parse_guideline_meta(content: str) -> Dict[str, str]:
 
 
 def format_guideline(content: str, metadata: Dict[str, Any]) -> str:
-    """格式化临床指南信息"""
-    parsed = parse_guideline_meta(content)
+    """格式化临床指南信息（非首块不解析正文标题）。"""
+    try:
+        chunk_id = int(metadata.get("chunk_id") or 0)
+    except (TypeError, ValueError):
+        chunk_id = 0
+    parsed = (
+        parse_guideline_meta(content)
+        if chunk_id == 0
+        else {"title": "", "organization": "", "year": ""}
+    )
+    disease = metadata.get("disease", "N/A")
     output = [
         "【临床诊疗指南】\n",
-        f"指南名称：{parsed['title'] or metadata.get('disease', 'N/A')}",
+        f"指南名称：{parsed['title'] or f'{disease}相关临床指南'}",
         f"发布机构：{parsed['organization'] or metadata.get('organization', 'N/A')}",
         f"发布年份：{parsed['year'] or metadata.get('year', 'N/A')}",
         f"\n内容：\n{content}"

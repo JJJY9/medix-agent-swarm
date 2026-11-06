@@ -20,7 +20,8 @@ pymilvus>=2.3.0
 # 搜索和研究
 requests==2.32.0
 beautifulsoup4==4.12.3
-duckduckgo-search==6.3.5
+# ddgs 是 duckduckgo-search 的维护版；旧包与 primp 2.x 不兼容
+ddgs>=9.0.0
 
 # 数据处理
 pandas>=2.0.0
