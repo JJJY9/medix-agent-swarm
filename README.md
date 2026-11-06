@@ -279,11 +279,12 @@ npm install -D playwright
 | GET | `/api/profile-names` | 所有数据表中出现过的档案名（含已删除档案留下的历史名字） |
 | GET | `/api/sessions/export` | 导出全部会话、消息与元数据为 JSON |
 | GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile`/`risk` 筛选导出会话列表 CSV（带 BOM，含风险等级） |
-| POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息（不可恢复，写入审计） |
+| POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息，并同步清理长期记忆与会诊总结（不可恢复，写入审计；本地备份不受影响） |
 | POST | `/api/sessions/import` | 导入备份 JSON（会话、档案、指标、目标、提醒、症状、用药、打卡与操作审计；重复记录跳过） |
 | GET | `/api/backups` | 列出本地自动备份（最多 50 份，含大小与修改时间） |
 | POST | `/api/backups` | 立即创建一份本地备份（受 `MEDIX_BACKUP_KEEP` 保留策略约束） |
 | POST | `/api/backups/{name}/restore` | 恢复指定本地备份（校验文件名与 SHA-256，重复记录跳过，写入审计） |
+| DELETE | `/api/backups/{name}` | 删除指定本地备份（需 `confirm=true`，校验文件名，写入审计） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
 | GET | `/api/profiles` | 常用患者档案列表（服务端持久化） |
 | GET | `/api/family/overview` | 家庭健康总览：按档案汇总最近指标、用药打卡、待办提醒、近期症状与会诊（含最近一次会诊风险，`days`，默认 7） |

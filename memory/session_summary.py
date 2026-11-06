@@ -356,7 +356,7 @@ class SessionSummaryManager:
             # 总结是可选功能，目录不可写不应拖垮整个协调器
             logger.warning(f"会话总结目录不可用: {e}")
 
-    def _get_summary_path(self, session_id: str) -> Path:
+    def _get_summary_path(self, session_id: str, create: bool = True) -> Path:
         """获取会话总结文件路径（会话 ID 只保留安全字符，防止路径穿越）。"""
         safe_id = re.sub(
             r"[^\w.-]", "_", str(session_id or "")
@@ -370,8 +370,33 @@ class SessionSummaryManager:
         if not date_str or date_str in {".", ".."}:
             date_str = "unknown"
         date_dir = self.base_dir / date_str
-        date_dir.mkdir(parents=True, exist_ok=True)
+        if create:
+            date_dir.mkdir(parents=True, exist_ok=True)
         return date_dir / f"{safe_id}.md"
+
+    def delete_summary(self, session_id: str) -> bool:
+        """删除会话总结文件；返回是否真的删除了文件。
+
+        删除后若日期目录已空则一并移除，避免留下空目录。
+        """
+        try:
+            summary_path = self._get_summary_path(session_id, create=False)
+        except OSError as e:
+            logger.warning(f"定位会话总结失败: {e}")
+            return False
+        try:
+            summary_path.unlink()
+        except FileNotFoundError:
+            return False
+        except OSError as e:
+            logger.warning(f"删除会话总结失败: {e}")
+            return False
+        try:
+            summary_path.parent.rmdir()
+        except OSError:
+            pass
+        logger.info(f"Deleted session summary: {session_id}")
+        return True
 
     def save_summary(self, summary: SessionSummary):
         """保存会话总结"""

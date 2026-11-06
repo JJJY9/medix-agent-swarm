@@ -200,3 +200,18 @@ def resolve_backup(
 def latest_backup(directory: Optional[Path] = None) -> Optional[Path]:
     backups = list_backups(directory)
     return backups[0] if backups else None
+
+
+def delete_backup(name: str, directory: Optional[Path] = None) -> bool:
+    """删除指定本地备份文件。
+
+    文件名先经过 resolve_backup 校验（拒绝路径穿越），不存在时抛
+    FileNotFoundError，供 API 映射为 404。
+    """
+    path = resolve_backup(name, directory)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        raise
+    logger.info(f"Deleted local backup: {path.name}")
+    return True
