@@ -33,20 +33,37 @@ class AutoFixer:
         """
         fixed_output = output
 
-        for fix_type in auto_fixable:
+        fix_types = [str(item) for item in auto_fixable]
+        truncations = [
+            item for item in fix_types
+            if item.startswith("truncate_response:")
+        ]
+        others = [
+            item for item in fix_types
+            if not item.startswith("truncate_response:")
+        ]
+
+        # 先截断再补免责声明/警告，否则补在末尾的声明会被截掉。
+        # 给后续追加内容预留 200 字，避免修复后又超长。
+        reserve = 200 if any(
+            item in ("add_disclaimer", "add_emergency_warning")
+            for item in others
+        ) else 0
+        for fix_type in truncations:
+            try:
+                limit = int(fix_type.split(":", 1)[1])
+            except (TypeError, ValueError):
+                continue
+            fixed_output = self.fix_excessive_length(
+                fixed_output, max(100, limit - reserve)
+            )
+
+        for fix_type in others:
             if fix_type == "add_disclaimer":
                 fixed_output = self.fix_missing_disclaimer(fixed_output)
             elif fix_type == "add_emergency_warning":
                 fixed_output = self.fix_high_risk_warning(
                     fixed_output, user_input
-                )
-            elif str(fix_type).startswith("truncate_response:"):
-                try:
-                    limit = int(str(fix_type).split(":", 1)[1])
-                except (TypeError, ValueError):
-                    continue
-                fixed_output = self.fix_excessive_length(
-                    fixed_output, limit
                 )
 
         if fixed_output != output:

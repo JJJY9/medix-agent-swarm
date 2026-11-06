@@ -449,7 +449,8 @@ _NEGATED_USE_PREFIX = re.compile(
 )
 #: 「没有停用」「不要停药」表示仍在用药，不能当作未用药
 _NEGATED_STOP_PREFIX = re.compile(
-    r"(?:没有|没|未|无|不要|不用|不必|不需要|无需|避免|并非)"
+    r"(?:没有|没|未|无|不要|不用|不必|不需要|无需|避免|并非"
+    r"|不能|不可|不宜|不让|不应|不准|别)"
     r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停服|停止服用|不再服用)\s*$"
 )
 #: 明确停药/停服的表述才算当前未用药
@@ -603,8 +604,12 @@ def _positive_allergy_field(value: Any) -> str:
             or "不过敏" in clause
         ):
             continue
-        # 「过敏原：阿莫西林阴性」是阴性结果，不是过敏史
-        if any(word in clause for word in _ALLERGY_RESULT_WORDS):
+        # 「过敏原：阿莫西林阴性」是阴性结果；但「磺胺过敏（未查）」
+        # 已明确写了过敏，不能因为括号里的检查状态整段丢弃
+        if (
+            any(word in clause for word in _ALLERGY_RESULT_WORDS)
+            and not re.search(r"过敏(?!原)", clause)
+        ):
             continue
         kept.append(clause)
     return " ".join(kept).lower()

@@ -576,6 +576,18 @@ class AgentLoop:
                                 "⚠️ 自动修复后仍有违规: "
                                 f"{recheck.get('violations')}"
                             )
+                            # 再尝试一轮可自动修复项（例如截断后补回声明）
+                            if (
+                                self.auto_fixer
+                                and recheck.get("auto_fixable")
+                            ):
+                                second_pass = self.auto_fixer.fix_output(
+                                    final_answer,
+                                    recheck.get("auto_fixable"),
+                                    user_input=user_input,
+                                )
+                                if second_pass != final_answer:
+                                    final_answer = second_pass
 
         result = {
             'answer': final_answer,
