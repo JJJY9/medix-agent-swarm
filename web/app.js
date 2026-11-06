@@ -13920,9 +13920,9 @@ async function prefillFib4FromLab() {
     const alt = findLabItem(items, 'alt');
     const platelets = findLabItem(items, 'platelets');
     const missing = [];
-    if (!labNumber(ast)) missing.push('AST');
-    if (!labNumber(alt)) missing.push('ALT');
-    if (!labNumber(platelets)) missing.push('血小板');
+    if (labNumber(ast) === null) missing.push('AST');
+    if (labNumber(alt) === null) missing.push('ALT');
+    if (labNumber(platelets) === null) missing.push('血小板');
     if (missing.length) {
       setCalcStatus(
         `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
@@ -13955,7 +13955,7 @@ async function prefillMeldFromLab() {
     const creatinineValue = labCreatinineMgDl(creatinine);
     const missing = [];
     if (!bilirubinValue) missing.push('总胆红素');
-    if (!labNumber(inr)) missing.push('INR');
+    if (labNumber(inr) === null) missing.push('INR');
     if (!creatinineValue) missing.push('肌酐');
     if (missing.length) {
       setCalcStatus(
