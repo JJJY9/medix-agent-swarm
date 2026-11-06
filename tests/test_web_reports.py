@@ -914,6 +914,19 @@ def test_app_js_profile_scoping_and_refresh(client):
     ) in app_js
 
 
+def test_calculator_sex_requires_explicit_selection(client):
+    index = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert index.count(
+        '<option value="" disabled selected>请选择</option>'
+    ) >= 2
+    assert 'id="calc-egfr-sex" required' in index
+    assert 'id="calc-chads-sex" required' in index
+    assert "请选择性别后再计算 eGFR" in app_js
+    assert "请选择性别后再计算 CHA₂DS₂-VASc" in app_js
+
+
 def test_app_js_medication_review_hardening(client):
     app_js = client.get("/static/app.js").text.replace("\r\n", "\n")
     css = client.get("/static/styles.css").text
