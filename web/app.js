@@ -443,6 +443,27 @@ const els = {
   appointmentEmpty: document.getElementById('appointment-empty'),
   appointmentSearch: document.getElementById('appointment-search'),
   appointmentSummary: document.getElementById('appointment-summary'),
+  labSection: document.getElementById('lab-section'),
+  labItem: document.getElementById('lab-item'),
+  labPanel: document.getElementById('lab-panel'),
+  labValue: document.getElementById('lab-value'),
+  labUnit: document.getElementById('lab-unit'),
+  labRefLow: document.getElementById('lab-ref-low'),
+  labRefHigh: document.getElementById('lab-ref-high'),
+  labTime: document.getElementById('lab-time'),
+  labName: document.getElementById('lab-name'),
+  labNote: document.getElementById('lab-note'),
+  labSave: document.getElementById('lab-save'),
+  labExport: document.getElementById('lab-export'),
+  labImport: document.getElementById('lab-import'),
+  labTemplate: document.getElementById('lab-template'),
+  labImportFile: document.getElementById('lab-import-file'),
+  labCancel: document.getElementById('lab-cancel'),
+  labStatus: document.getElementById('lab-status'),
+  labList: document.getElementById('lab-list'),
+  labEmpty: document.getElementById('lab-empty'),
+  labSearch: document.getElementById('lab-search'),
+  labSummary: document.getElementById('lab-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4143,11 +4164,13 @@ async function refreshAfterBackupImport(result) {
     result.metrics || result.symptoms || result.reminders
     || result.medications || result.medication_logs
     || result.vaccinations || result.appointments
+    || result.lab_results
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
     if (result.vaccinations) loadVaccinations();
     if (result.appointments) loadAppointments();
+    if (result.lab_results) loadLabs();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6864,6 +6887,7 @@ async function refreshMetrics() {
   loadSymptoms();
   loadVaccinations();
   loadAppointments();
+  loadLabs();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -8079,6 +8103,14 @@ function renderFamilyOverview(data) {
             : '')
       ));
     }
+    const labs = profile.labs || {};
+    if (labs.abnormal) {
+      const items = (labs.items || []).filter(Boolean);
+      chips.appendChild(familyChip(
+        `化验异常 ${labs.abnormal} 项`
+        + (items.length ? ` · ${items.join('；')}` : '')
+      ));
+    }
     const consultations = profile.consultations || {};
     if (consultations.count) {
       const chip = familyChip(
@@ -8172,6 +8204,8 @@ function familyOverviewText(data) {
     if (nextVisit.title) {
       parts.push(`下次就诊 ${String(nextVisit.scheduled_at || '').slice(0, 10)}`);
     }
+    const labs = profile.labs || {};
+    if (labs.abnormal) parts.push(`化验异常 ${labs.abnormal} 项`);
     const consultations = profile.consultations || {};
     if (consultations.count) {
       const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
@@ -10141,6 +10175,366 @@ async function createAppointmentReminder(item) {
   }
 }
 
+let editingLabId = null;
+let editingLabProfile = '';
+let labSaving = false;
+let labRequestSeq = 0;
+let labItemsCache = [];
+let labSearchTimer = null;
+
+function setLabStatus(text, isError = false) {
+  if (!els.labStatus) return;
+  els.labStatus.textContent = text || '';
+  els.labStatus.hidden = !text;
+  els.labStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetLabForm() {
+  editingLabId = null;
+  editingLabProfile = '';
+  els.labItem.value = '';
+  els.labPanel.value = '';
+  els.labValue.value = '';
+  els.labUnit.value = '';
+  els.labRefLow.value = '';
+  els.labRefHigh.value = '';
+  els.labTime.value = metricNowLocal();
+  els.labName.value = '';
+  els.labNote.value = '';
+  els.labSave.textContent = '保存化验结果';
+  els.labCancel.hidden = true;
+}
+
+function filterLabs(items) {
+  const query = els.labSearch
+    ? String(els.labSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [
+      item.item, item.panel, item.unit, item.lab_name,
+      item.note, item.profile,
+    ]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function formatLabValue(item) {
+  const value = Number(item.value);
+  return Number.isFinite(value)
+    ? value.toLocaleString('zh-CN', { maximumFractionDigits: 6 })
+    : String(item.value || '');
+}
+
+function renderLabs(items) {
+  if (!els.labList) return;
+  els.labList.replaceChildren();
+  els.labEmpty.hidden = items.length > 0;
+  const query = els.labSearch
+    ? String(els.labSearch.value || '').trim()
+    : '';
+  els.labEmpty.textContent = query
+    ? `没有匹配「${query}」的化验结果。`
+    : '还没有化验结果。';
+  const abnormal = items.filter((item) => item.abnormal).length;
+  if (items.length) {
+    els.labSummary.hidden = false;
+    els.labSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (abnormal ? ` · 异常 ${abnormal} 项` : '');
+  } else {
+    els.labSummary.hidden = true;
+  }
+  if (
+    editingLabId
+    && !labItemsCache.some((item) => item.id === editingLabId)
+  ) {
+    resetLabForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.item || '化验';
+    const valueBadge = document.createElement('span');
+    valueBadge.className = 'lab-normal-badge';
+    valueBadge.textContent =
+      `${formatLabValue(item)}${item.unit ? ` ${item.unit}` : ''}`;
+    title.append(' ', valueBadge);
+    if (item.abnormal) {
+      const flag = document.createElement('span');
+      flag.className = 'lab-abnormal-badge';
+      flag.textContent = item.abnormal_low ? '偏低' : '偏高';
+      title.append(' ', flag);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      String(item.tested_at || '').replace('T', ' ').slice(0, 16),
+      item.ref_text ? `参考 ${item.ref_text}` : '',
+      item.panel,
+      item.lab_name,
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑化验结果：${item.item}`);
+    edit.addEventListener('click', () => editLab(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除化验结果：${item.item}`);
+    del.addEventListener('click', () => deleteLab(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.labList.appendChild(li);
+  }
+}
+
+async function loadLabs() {
+  if (!els.labList) return;
+  const requestSeq = ++labRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/lab-results?limit=100000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== labRequestSeq) return;
+    labItemsCache = data.lab_results || [];
+    renderLabs(filterLabs(labItemsCache));
+  } catch {
+    if (requestSeq !== labRequestSeq) return;
+    labItemsCache = [];
+    renderLabs([]);
+    els.labEmpty.textContent = '化验结果加载失败，请稍后重试。';
+    els.labEmpty.hidden = false;
+    setLabStatus('化验结果加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportLabsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/lab-results/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-lab-results-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setLabStatus('已导出台账 CSV。');
+  } catch (err) {
+    setLabStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+async function importLabsCsv(file) {
+  if (!file) return;
+  setLabStatus('正在导入化验结果…');
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/lab-results/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    setLabStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetricProfileOptions();
+    await loadLabs();
+    refreshOverview();
+  } catch (err) {
+    setLabStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.labImportFile.value = '';
+  }
+}
+
+async function downloadLabTemplate() {
+  try {
+    const res = await fetch('/api/templates/lab-results');
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      'medix-lab-results-template.csv',
+      'text/csv;charset=utf-8'
+    );
+    setLabStatus('已下载化验结果模板。');
+  } catch (err) {
+    setLabStatus(`下载模板失败：${err.message || err}`, true);
+  }
+}
+
+function editLab(item) {
+  editingLabId = item.id;
+  editingLabProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.labItem.value = item.item || '';
+  els.labPanel.value = item.panel || '';
+  els.labValue.value = String(item.value ?? '');
+  els.labUnit.value = item.unit || '';
+  els.labRefLow.value =
+    item.ref_low === null || item.ref_low === undefined
+      ? ''
+      : String(item.ref_low);
+  els.labRefHigh.value =
+    item.ref_high === null || item.ref_high === undefined
+      ? ''
+      : String(item.ref_high);
+  els.labTime.value = String(item.tested_at || '').slice(0, 16);
+  els.labName.value = item.lab_name || '';
+  els.labNote.value = item.note || '';
+  els.labSave.textContent = '保存修改';
+  els.labCancel.hidden = false;
+  els.labItem.focus();
+}
+
+function parseLabBound(value, label) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const number = Number(text);
+  if (!Number.isFinite(number)) {
+    throw new Error(`${label}应为数字`);
+  }
+  return number;
+}
+
+async function saveLab() {
+  if (labSaving) return;
+  const item = (els.labItem.value || '').trim();
+  if (!item) {
+    setLabStatus('请填写化验项目。', true);
+    els.labItem.focus();
+    return;
+  }
+  const valueText = (els.labValue.value || '').trim();
+  const value = Number(valueText);
+  if (valueText === '' || !Number.isFinite(value)) {
+    setLabStatus('化验数值应为数字。', true);
+    els.labValue.focus();
+    return;
+  }
+  let refLow = null;
+  let refHigh = null;
+  try {
+    refLow = parseLabBound(els.labRefLow.value, '参考下限');
+    refHigh = parseLabBound(els.labRefHigh.value, '参考上限');
+  } catch (err) {
+    setLabStatus(err.message || String(err), true);
+    return;
+  }
+  if (refLow !== null && refHigh !== null && refLow > refHigh) {
+    setLabStatus('参考下限不能高于参考上限。', true);
+    els.labRefLow.focus();
+    return;
+  }
+  const editingId = editingLabId;
+  const payload = {
+    profile: editingId
+      ? editingLabProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    item,
+    panel: (els.labPanel.value || '').trim(),
+    value,
+    unit: (els.labUnit.value || '').trim(),
+    ref_low: refLow,
+    ref_high: refHigh,
+    tested_at: els.labTime.value || metricNowLocal(),
+    lab_name: (els.labName.value || '').trim(),
+    note: (els.labNote.value || '').trim(),
+  };
+  labSaving = true;
+  els.labSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/lab-results/${editingId}` : '/api/lab-results',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetLabForm();
+    setLabStatus(editingId ? '已保存修改。' : '已保存化验结果。');
+    await loadLabs();
+    refreshOverview();
+  } catch (err) {
+    setLabStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    labSaving = false;
+    els.labSave.disabled = false;
+  }
+}
+
+async function deleteLab(item) {
+  if (!window.confirm(`删除化验结果「${item.item}」？`)) return;
+  try {
+    const res = await fetch(`/api/lab-results/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingLabId === item.id) resetLabForm();
+    setLabStatus('已删除化验结果。');
+    await loadLabs();
+    refreshOverview();
+  } catch (err) {
+    setLabStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -10787,6 +11181,7 @@ const TIMELINE_TYPE_LABELS = {
   medication: '用药',
   vaccination: '疫苗',
   appointment: '就诊',
+  lab: '化验',
   consultation: '会诊',
 };
 
@@ -10867,7 +11262,9 @@ function renderTimeline(data) {
       alertBadge.className = 'timeline-alert';
       alertBadge.textContent = event.type === 'vaccination'
         ? '到期'
-        : event.type === 'appointment' ? '就诊' : '超标';
+        : event.type === 'appointment'
+          ? '就诊'
+          : event.type === 'lab' ? '异常' : '超标';
       title.appendChild(alertBadge);
     }
 
@@ -14514,6 +14911,47 @@ els.appointmentSearch.addEventListener('input', () => {
   clearTimeout(appointmentSearchTimer);
   appointmentSearchTimer = setTimeout(() => {
     renderAppointments(filterAppointments(appointmentItemsCache));
+  }, 200);
+});
+els.labSave.addEventListener('click', saveLab);
+els.labExport.addEventListener('click', exportLabsCsv);
+els.labImport.addEventListener('click', () => {
+  els.labImportFile.click();
+});
+els.labImportFile.addEventListener('change', () => {
+  const file = els.labImportFile.files && els.labImportFile.files[0];
+  if (file) importLabsCsv(file);
+});
+els.labTemplate.addEventListener('click', downloadLabTemplate);
+els.labCancel.addEventListener('click', () => {
+  resetLabForm();
+  setLabStatus('已取消编辑。');
+});
+if (els.labSection) {
+  els.labSection.addEventListener('toggle', () => {
+    if (els.labSection.open && !els.labTime.value) {
+      els.labTime.value = metricNowLocal();
+    }
+  });
+}
+for (const input of [
+  els.labItem, els.labPanel, els.labValue, els.labUnit,
+  els.labRefLow, els.labRefHigh, els.labTime,
+  els.labName, els.labNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveLab();
+    }
+  });
+}
+els.labSearch.addEventListener('input', () => {
+  clearTimeout(labSearchTimer);
+  labSearchTimer = setTimeout(() => {
+    renderLabs(filterLabs(labItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {

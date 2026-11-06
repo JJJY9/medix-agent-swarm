@@ -815,6 +815,53 @@
       <ul class="metrics-list" id="appointment-list"></ul>
       <p class="metrics-empty" id="appointment-empty" hidden>还没有就诊预约。</p>
     </details>
+    <details class="lab-section" id="lab-section">
+      <summary>化验结果</summary>
+      <p class="calc-hint">登记血常规、肝肾功能、血糖血脂等化验值，自动标记偏高/偏低，随健康时间线与档案一起导出。</p>
+      <div class="symptom-form">
+        <label class="calc-field">项目
+          <input id="lab-item" type="text" maxlength="80" placeholder="如：ALT">
+        </label>
+        <label class="calc-field">分组
+          <input id="lab-panel" type="text" maxlength="60" placeholder="如：肝功能">
+        </label>
+        <label class="calc-field">数值
+          <input id="lab-value" type="number" step="any" inputmode="decimal" placeholder="如：28">
+        </label>
+        <label class="calc-field">单位
+          <input id="lab-unit" type="text" maxlength="20" placeholder="如：U/L">
+        </label>
+        <label class="calc-field">参考下限（可选）
+          <input id="lab-ref-low" type="number" step="any" inputmode="decimal" placeholder="如：7">
+        </label>
+        <label class="calc-field">参考上限（可选）
+          <input id="lab-ref-high" type="number" step="any" inputmode="decimal" placeholder="如：40">
+        </label>
+        <label class="calc-field">检测时间
+          <input id="lab-time" type="datetime-local">
+        </label>
+        <label class="calc-field">化验机构（可选）
+          <input id="lab-name" type="text" maxlength="80" placeholder="如：市医院检验科">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="lab-note" type="text" maxlength="300" placeholder="如：空腹">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="lab-save">保存化验结果</button>
+          <button type="button" class="btn-quiet" id="lab-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="lab-import">导入 CSV</button>
+          <button type="button" class="btn-quiet" id="lab-template" title="下载可导入化验结果的 CSV 模板">模板</button>
+          <input type="file" id="lab-import-file" accept=".csv,text/csv" hidden>
+          <button type="button" class="btn-quiet" id="lab-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="lab-status" role="status" hidden></p>
+      <label class="sr-only" for="lab-search">搜索化验结果</label>
+      <input class="symptom-search" id="lab-search" type="search" placeholder="搜索项目、分组、机构或档案">
+      <p class="symptom-summary" id="lab-summary" hidden></p>
+      <ul class="metrics-list" id="lab-list"></ul>
+      <p class="metrics-empty" id="lab-empty" hidden>还没有化验结果。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>
@@ -955,6 +1002,7 @@
           <option value="medication">用药</option>
           <option value="vaccination">疫苗</option>
           <option value="appointment">就诊</option>
+          <option value="lab">化验</option>
           <option value="consultation">会诊</option>
         </select>
         <label class="sr-only" for="timeline-search">搜索时间线</label>
