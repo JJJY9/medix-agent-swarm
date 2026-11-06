@@ -22,7 +22,9 @@ self.addEventListener('install', (event) => {
     } catch (error) {
       console.warn('[medix-sw] 外壳安装失败，保留旧版本缓存', error);
       await caches.delete(CACHE_NAME);
-      return;
+      // 必须让 install 失败：否则新 Worker 会激活并删除旧缓存，
+      // 而新缓存又不完整，离线外壳会彻底丢失
+      throw error;
     }
     await self.skipWaiting();
   })());

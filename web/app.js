@@ -1060,12 +1060,29 @@ function detectRisk(text) {
   // 注意「高危人群」「高风险人群」是在描述人群，不是风险等级
   const plain = [
     { level: 'emergency', re: /紧急状态/ },
-    { level: 'high', re: /高风险(?!人群)|高度风险|高危(?!人群)/ },
-    { level: 'medium', re: /中风险|中等风险|中危(?!人群)/ },
-    { level: 'low', re: /低风险|风险较低|风险不高|低危(?!人群)/ },
+    { level: 'high', re: /高风险(?!人群|因素)|高度风险|高危(?!人群|因素)/ },
+    { level: 'medium', re: /中风险(?!人群|因素)|中等风险|中危(?!人群|因素)/ },
+    { level: 'low', re: /低风险(?!人群|因素)|风险较低|风险不高|低危(?!人群|因素)/ },
   ];
+  const negatedAt = (value, index) => {
+    const prefix = value.slice(Math.max(0, index - 8), index);
+    return /(?:不属于|不是|并非|排除|未见|无明显|没有|无|非|不)\s*$/.test(prefix);
+  };
+  const hasPositiveMatch = (value, pattern) => {
+    const global = new RegExp(
+      pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+    );
+    let match;
+    while ((match = global.exec(value)) !== null) {
+      if (!negatedAt(value, match.index)) return true;
+      if (match.index === global.lastIndex) global.lastIndex += 1;
+    }
+    return false;
+  };
   for (const row of plain) {
-    if (row.re.test(text)) return { level: row.level, label: levelLabels[row.level] };
+    if (hasPositiveMatch(text, row.re)) {
+      return { level: row.level, label: levelLabels[row.level] };
+    }
   }
 
   if (/立即就医|急救|拨打\s*120|危及生命/.test(text)) {
@@ -1926,9 +1943,10 @@ function buildVisitSummaryHtml({
       : fmt(first));
     const unit = METRIC_UNITS[metric] || '';
     const average = pair(v1.avg, v2.avg, formatStatNumber);
-    const range = pair(v1.min, v2.min, formatStatNumber)
-      + '–'
-      + pair(v1.max, v2.max, formatStatNumber);
+    const range = metric === 'bp'
+      ? `收缩压 ${formatStatNumber(v1.min)}–${formatStatNumber(v1.max)}；`
+        + `舒张压 ${formatStatNumber(v2.min)}–${formatStatNumber(v2.max)}`
+      : `${formatStatNumber(v1.min)}–${formatStatNumber(v1.max)}`;
     const targetText = summary.target
       ? `${summary.within_target}/${summary.count}`
       : '—';
@@ -6541,8 +6559,16 @@ function renderMetricSummary(data) {
 
   addChip('记录', `${count} 条`);
   addChip('平均', pair(v1.avg, v2.avg, formatStatNumber) + unit);
-  addChip('最高', pair(v1.max, v2.max, formatStatNumber));
-  addChip('最低', pair(v1.min, v2.min, formatStatNumber));
+  if (isBp) {
+    // 收缩压/舒张压的极值来自不同记录，不能拼成一次“180/110”的测量值
+    addChip('收缩压最高', formatStatNumber(v1.max));
+    addChip('收缩压最低', formatStatNumber(v1.min));
+    addChip('舒张压最高', formatStatNumber(v2.max));
+    addChip('舒张压最低', formatStatNumber(v2.min));
+  } else {
+    addChip('最高', formatStatNumber(v1.max) + unit);
+    addChip('最低', formatStatNumber(v1.min) + unit);
+  }
 
   const hasPrev1 = v1.prev_avg !== null && v1.prev_avg !== undefined;
   const hasPrev2 = v2.prev_avg !== null && v2.prev_avg !== undefined;
@@ -7064,11 +7090,12 @@ function frequencyRepeatDays(frequency) {
   if (/(每两周|每2周|每两星期|每两个星期|每隔一周|隔周)/.test(text)) {
     return 14;
   }
+  // “每隔1天/隔日”表示每 2 天一次，必须先于通用数字天数匹配
+  if (/(隔日|隔天|每隔一天|每隔1天|每两天|每二天)/.test(text)) return 2;
   const everyDays = text.match(/每\s*隔?\s*(\d+)\s*天/);
   if (everyDays) {
     return Math.max(1, Math.min(365, Number(everyDays[1]) || 1));
   }
-  if (/(隔日|隔天|每隔一天|每隔1天|每两天|每二天)/.test(text)) return 2;
   if (/(每周|每星期|每礼拜)/.test(text)) return 7;
   if (/(每月|每个月)/.test(text)) return 30;
   if (/(每日|每天|每晚|每早|一日|睡前|晨起)/.test(text)) return 1;
@@ -7139,6 +7166,7 @@ function renderReminderCalendar(items) {
     const cell = document.createElement('button');
     cell.type = 'button';
     cell.className = 'reminders-calendar-day';
+    cell.dataset.date = date;
     if (date === today) cell.classList.add('is-today');
     if (date === reminderCalendarDay) cell.classList.add('is-selected');
     cell.setAttribute(
@@ -7165,6 +7193,12 @@ function renderReminderCalendar(items) {
     cell.addEventListener('click', () => {
       reminderCalendarDay = reminderCalendarDay === date ? '' : date;
       refreshReminderViews();
+      // 月历会整棵重建，焦点会掉回 body；尽量恢复到选中/今天
+      const focusTarget = grid.querySelector(
+        `[data-date="${reminderCalendarDay}"]`
+      ) || grid.querySelector('.reminders-calendar-day.is-today')
+        || grid.querySelector('.reminders-calendar-day');
+      if (focusTarget) focusTarget.focus();
     });
     grid.appendChild(cell);
   }
@@ -10500,17 +10534,15 @@ async function deleteMedication(item) {
 }
 
 async function loadMedicationsIntoInteractions() {
-  const profile = els.metricProfile.value || els.profileSelect.value || '';
-  const mainProfile = els.profileSelect.value || '';
-  if (
-    els.calcInteractionsAllergies
-    && !els.calcInteractionsAllergies.value.trim()
-    && (!els.metricProfile.value || els.metricProfile.value === mainProfile)
-  ) {
+  // 只使用主界面的当前档案；健康记录抽屉的筛选值可能停留在其他患者
+  const profile = els.profileSelect.value || '';
+  if (els.calcInteractionsAllergies) {
     const allergies = String(
       readPatientContext().allergies || ''
     ).trim();
-    if (allergies) els.calcInteractionsAllergies.value = allergies;
+    if (allergies && !els.calcInteractionsAllergies.value.trim()) {
+      els.calcInteractionsAllergies.value = allergies;
+    }
   }
   try {
     const res = await fetch(
@@ -10805,6 +10837,12 @@ function openCalc() {
   els.calcOpen.setAttribute('aria-expanded', 'true');
 
   const context = readPatientContext();
+  // 每次打开都按当前患者重置过敏史，避免沿用上一患者/上次带入的内容
+  if (els.calcInteractionsAllergies) {
+    els.calcInteractionsAllergies.value = String(
+      context.allergies || ''
+    ).trim();
+  }
   const age = Number.parseInt(context.age, 10);
   if (Number.isFinite(age)) {
     els.calcEgfrAge.value = String(age);
@@ -12556,6 +12594,8 @@ async function renamePatientProfile() {
 
     await initProfiles();
     setActiveProfile(data.name);
+    // 家庭概览缓存仍保留旧档案名，重命名后立即刷新
+    await loadFamilyOverview();
     setVitals('idle', '档案已重命名');
   } catch (err) {
     window.alert(`重命名档案失败：${err.message || err}`);
@@ -13411,7 +13451,8 @@ els.contextPanel.addEventListener('change', updateContextSummary);
 
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});
-  els.profileSelect.value = '';
+  // 同时清除 activeProfileName 与 sessionStorage，避免刷新后旧档案被重新选中
+  setActiveProfile('');
   els.ctxAge.focus();
 });
 
