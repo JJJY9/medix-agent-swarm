@@ -260,6 +260,9 @@ class ReminderRequest(StrictRequestModel):
     medication_id: int = Field(
         0, ge=0, le=MAX_SQLITE_INT, description="关联的用药记录 ID（用药提醒）"
     )
+    vaccination_id: int = Field(
+        0, ge=0, le=MAX_SQLITE_INT, description="关联的疫苗接种记录 ID"
+    )
 
 
 class ReminderUpdateRequest(StrictRequestModel):
@@ -505,6 +508,26 @@ class MedicationUpdateRequest(StrictRequestModel):
     active: Optional[bool] = None
 
 
+class VaccinationRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    vaccine_name: str = Field(..., min_length=1, max_length=80)
+    dose_number: int = Field(1, ge=1, le=20, description="第几剂")
+    vaccinated_at: str = Field("", max_length=40, description="接种日期")
+    next_due: str = Field("", max_length=40, description="下一剂应种日期")
+    note: str = Field("", max_length=300)
+
+
+class VaccinationUpdateRequest(StrictRequestModel):
+    """部分更新疫苗接种记录：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    vaccine_name: Optional[str] = Field(None, min_length=1, max_length=80)
+    dose_number: Optional[int] = Field(None, ge=1, le=20)
+    vaccinated_at: Optional[str] = Field(None, max_length=40)
+    next_due: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+
+
 class SymptomRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
@@ -521,6 +544,8 @@ class SymptomUpdateRequest(StrictRequestModel):
     severity: Optional[int] = Field(None, ge=0, le=10)
     recorded_at: Optional[str] = Field(None, max_length=40)
     note: Optional[str] = Field(None, max_length=300)
+
+
 class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
@@ -1927,7 +1952,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
     keys = (
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
-        "audit_log",
+        "vaccinations", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -2640,6 +2665,177 @@ async def delete_medication_log(log_id: SafeIntPath):
     return {"ok": True, "id": log_id}
 
 
+@app.get("/api/vaccinations")
+async def list_vaccinations(
+    profile: Optional[str] = None, limit: int = 1000
+):
+    """疫苗接种记录（按接种日期倒序，可按档案筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    items = await asyncio.to_thread(
+        get_session_store().list_vaccinations, profile, limit
+    )
+    return {"vaccinations": items}
+
+
+@app.post("/api/vaccinations")
+async def add_vaccination(request: VaccinationRequest):
+    """新增一条疫苗接种记录。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_vaccination,
+            request.profile,
+            request.vaccine_name,
+            request.dose_number,
+            request.vaccinated_at,
+            request.next_due,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("vaccination.create", str(item["id"]))
+    return {"ok": True, "vaccination": item}
+
+
+@app.patch("/api/vaccinations/{vaccination_id}")
+async def update_vaccination(
+    vaccination_id: SafeIntPath,
+    request: VaccinationUpdateRequest,
+):
+    """部分更新一条疫苗接种记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(
+        store.get_vaccination, vaccination_id
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_vaccination,
+            vaccination_id,
+            merged.get("profile") or "",
+            merged.get("vaccine_name") or "",
+            merged.get("dose_number"),
+            merged.get("vaccinated_at") or "",
+            merged.get("next_due") or "",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("vaccination.update", str(item["id"]))
+    return {"ok": True, "vaccination": item}
+
+
+@app.delete("/api/vaccinations/{vaccination_id}")
+async def delete_vaccination(vaccination_id: SafeIntPath):
+    """删除一条疫苗接种记录。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_vaccination, vaccination_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(
+        store.delete_vaccination, vaccination_id
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("vaccination.delete", str(vaccination_id))
+    return {"ok": True, "id": vaccination_id}
+
+
+@app.get("/api/vaccinations/export.csv")
+async def export_vaccinations_csv(profile: Optional[str] = None):
+    """导出疫苗接种记录 CSV（带 BOM），可按档案筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_vaccinations, profile, 100000
+    )
+    rows = [[
+        "接种日期", "患者档案", "疫苗名称", "剂次", "下一剂", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("vaccinated_at", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("vaccine_name", "")),
+            int(item.get("dose_number") or 0),
+            csv_safe_cell(item.get("next_due", "")),
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-vaccinations-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/vaccinations/{vaccination_id}/reminder")
+async def create_vaccination_reminder(vaccination_id: SafeIntPath):
+    """为下一剂接种创建提前 7 天的提醒；已有未完成提醒时直接返回。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_vaccination, vaccination_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    due_at = str(item.get("next_due") or "").strip()
+    if not due_at:
+        raise HTTPException(status_code=400, detail="请先填写下一剂日期")
+    existing = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    for reminder in existing:
+        if (
+            int(reminder.get("vaccination_id") or 0)
+            == int(vaccination_id)
+            and not reminder.get("done")
+        ):
+            return {
+                "ok": True, "created": False, "reminder": reminder,
+            }
+    title = (
+        f"接种：{item.get('vaccine_name') or '疫苗'}"
+        f"（第{int(item.get('dose_number') or 1)}剂）"
+    )[:120]
+    reminder = await asyncio.to_thread(
+        store.add_reminder,
+        title,
+        due_at,
+        "疫苗接种提醒",
+        "",
+        item.get("profile") or "",
+        7,
+        0,
+        "",
+        0,
+        int(vaccination_id),
+    )
+    await record_audit(
+        "vaccination.reminder", str(item["id"])
+    )
+    return {"ok": True, "created": True, "reminder": reminder}
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -3268,6 +3464,9 @@ async def health_timeline(
     raw_logs = await asyncio.to_thread(
         store.list_medication_logs, None, profile, 100000, 0, window_days
     )
+    raw_vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, profile, 100000
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -3370,6 +3569,24 @@ async def health_timeline(
             "alert": False,
         })
 
+    for item in raw_vaccinations:
+        at = str(item.get("vaccinated_at") or "")
+        if not in_window(at):
+            continue
+        next_due = str(item.get("next_due") or "")[:10]
+        today = datetime.now().strftime("%Y-%m-%d")
+        events.append({
+            "type": "vaccination",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("vaccine_name") or "疫苗接种",
+            "value": f"第 {int(item.get('dose_number') or 1)} 剂"
+            + (f" · 下一剂 {next_due}" if next_due else ""),
+            "note": item.get("note", ""),
+            "alert": bool(next_due and next_due <= today),
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -3399,7 +3616,7 @@ async def health_timeline(
         return (event["at"], 1, str(event_id or ""))
 
     events.sort(key=sort_key, reverse=True)
-    if type in {"metric", "symptom", "medication", "consultation"}:
+    if type in {"metric", "symptom", "medication", "vaccination", "consultation"}:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
         events = [event for event in events if event.get("alert")]
@@ -3454,6 +3671,7 @@ async def export_timeline_csv(
         "metric": "指标",
         "symptom": "症状",
         "medication": "用药",
+        "vaccination": "疫苗",
         "consultation": "会诊",
     }
     events = data["events"]
@@ -4136,6 +4354,9 @@ async def family_overview(days: int = 7):
     symptoms = await asyncio.to_thread(
         store.list_symptoms, None, 100000, days
     )
+    vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, None, 100000
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -4257,6 +4478,28 @@ async def family_overview(days: int = 7):
                 "recorded_at": item.get("recorded_at", ""),
             }
 
+    vaccinations_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in vaccinations:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = vaccinations_by_profile.setdefault(profile, {
+            "count": 0, "latest": None, "next_due": "", "overdue": 0,
+        })
+        entry["count"] += 1
+        if entry["latest"] is None:
+            entry["latest"] = {
+                "vaccine_name": item.get("vaccine_name", ""),
+                "dose_number": int(item.get("dose_number") or 0),
+                "vaccinated_at": item.get("vaccinated_at", ""),
+            }
+        due = str(item.get("next_due") or "")[:10]
+        if due:
+            if due < today:
+                entry["overdue"] += 1
+            elif not entry["next_due"] or due < entry["next_due"]:
+                entry["next_due"] = due
+
     sessions_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in sessions:
         profile = item.get("profile") or ""
@@ -4289,12 +4532,16 @@ async def family_overview(days: int = 7):
         symptom = symptoms_by_profile.get(name, {
             "count": 0, "latest": None,
         })
+        vaccination = vaccinations_by_profile.get(name, {
+            "count": 0, "latest": None, "next_due": "", "overdue": 0,
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
         activity_candidates = [
             metrics[0]["measured_at"] if metrics else "",
             (symptom.get("latest") or {}).get("recorded_at") or "",
+            (vaccination.get("latest") or {}).get("vaccinated_at") or "",
             consultation.get("latest_at") or "",
             medication.get("last_taken_at") or "",
         ]
@@ -4307,6 +4554,9 @@ async def family_overview(days: int = 7):
             or str(
                 (symptom.get("latest") or {}).get("recorded_at") or ""
             )[:10] == today
+            or str(
+                (vaccination.get("latest") or {}).get("vaccinated_at") or ""
+            )[:10] == today
             or medication.get("taken_today")
             or str(consultation.get("latest_at") or "")[:10] == today
         )
@@ -4317,6 +4567,7 @@ async def family_overview(days: int = 7):
             "medications": medication,
             "reminders": reminder,
             "symptoms": symptom,
+            "vaccinations": vaccination,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -4346,6 +4597,7 @@ async def export_family_overview_csv(days: int = 7):
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
+        "疫苗接种",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -4387,6 +4639,24 @@ async def export_family_overview_csv(days: int = 7):
             "medium": "中危",
             "low": "低危",
         }.get(consultations.get("risk") or "", "")
+        vaccinations_info = item.get("vaccinations") or {}
+        vaccination_text = ""
+        if vaccinations_info.get("count"):
+            vaccination_text = str(vaccinations_info.get("count"))
+            latest_vaccination = vaccinations_info.get("latest") or {}
+            if latest_vaccination.get("vaccine_name"):
+                vaccination_text += (
+                    f"（最近 {latest_vaccination['vaccine_name']}"
+                    f" 第{int(latest_vaccination.get('dose_number') or 1)}剂）"
+                )
+            if vaccinations_info.get("overdue"):
+                vaccination_text += (
+                    f"，逾期 {int(vaccinations_info['overdue'])}"
+                )
+            elif vaccinations_info.get("next_due"):
+                vaccination_text += (
+                    f"，下一剂 {vaccinations_info['next_due']}"
+                )
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -4401,6 +4671,7 @@ async def export_family_overview_csv(days: int = 7):
                 + (f"（{risk_label}）" if risk_label else "")
             ),
             csv_safe_cell(item.get("last_activity", "")),
+            csv_safe_cell(vaccination_text),
         ])
 
     buffer = io.StringIO()
@@ -4517,6 +4788,9 @@ async def export_health_dossier(
     )
     medications = await asyncio.to_thread(
         store.list_medications, profile_key, False, 100000
+    )
+    vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, profile_key, 100000
     )
     if profile_key:
         reminders = await asyncio.to_thread(
@@ -4642,6 +4916,23 @@ async def export_health_dossier(
             lines.append(detail)
     else:
         lines.append("- 暂无用药记录")
+    lines.append("")
+
+    lines.append("## 疫苗接种")
+    if vaccinations:
+        for item in vaccinations:
+            detail = (
+                f"- {str(item.get('vaccinated_at') or '')[:10]} "
+                f"{item.get('vaccine_name') or '疫苗'} "
+                f"第{int(item.get('dose_number') or 1)}剂"
+            )
+            if item.get("next_due"):
+                detail += f"，下一剂 {item['next_due']}"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂无疫苗接种记录")
     lines.append("")
 
     lines.append("## 待办提醒")
@@ -4805,6 +5096,7 @@ async def add_reminder(request: ReminderRequest):
             request.repeat_days,
             request.repeat_until,
             request.medication_id,
+            request.vaccination_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
