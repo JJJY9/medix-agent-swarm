@@ -22,7 +22,7 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional
+from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -718,6 +718,86 @@ CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def _convert_import_metric(
+    metric: str, unit: str, value1: float, value2: Optional[float]
+) -> Optional[Tuple[float, Optional[float]]]:
+    """把导入行的单位换算为系统规范单位；未知单位返回 None。"""
+    from memory.session_store import METRIC_TYPES
+
+    canonical = METRIC_TYPES.get(metric, (None, "", None))[1]
+    text = (
+        str(unit or "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("℃", "°c")
+        .replace("℉", "°f")
+    )
+    if not text or text == canonical.lower():
+        return value1, value2
+
+    identity = {
+        "weight": {"kg", "千克", "公斤"},
+        "waist": {"cm", "厘米"},
+        "temperature": {"°c", "c", "摄氏", "摄氏度", "celsius"},
+        "glucose": {"mmol/l", "mmol", "毫摩尔/升"},
+        "bp": {"mmhg", "毫米汞柱"},
+        "heart_rate": {"次/分", "bpm", "/min", "次每分"},
+        "spo2": {"%", "percent", "百分比"},
+        "phq9": {"分"}, "gad7": {"分"}, "cat": {"分"},
+        "ess": {"分"}, "auditc": {"分"}, "mmrc": {"级"},
+    }
+    if text in identity.get(metric, set()):
+        return value1, value2
+
+    if metric == "weight":
+        factor = {
+            "lb": 0.45359237, "lbs": 0.45359237, "磅": 0.45359237,
+            "斤": 0.5, "g": 0.001, "克": 0.001,
+        }.get(text)
+        if factor is None:
+            return None
+        return (
+            value1 * factor,
+            value2 * factor if value2 is not None else None,
+        )
+
+    if metric == "waist":
+        factor = {"in": 2.54, "inch": 2.54, "英寸": 2.54, "吋": 2.54}.get(
+            text
+        )
+        if factor is None:
+            return None
+        return value1 * factor, value2
+
+    if metric == "temperature":
+        if text in {"°f", "f", "华氏", "华氏度", "fahrenheit"}:
+            def to_celsius(value: float) -> float:
+                return (value - 32) * 5 / 9
+
+            return (
+                to_celsius(value1),
+                to_celsius(value2) if value2 is not None else None,
+            )
+        return None
+
+    if metric == "glucose":
+        if text in {"mg/dl", "mgdl", "毫克/分升"}:
+            return value1 / 18.0182, value2
+        return None
+
+    if metric == "bp":
+        if text in {"kpa", "千帕"}:
+            factor = 7.50062
+            return (
+                value1 * factor,
+                value2 * factor if value2 is not None else None,
+            )
+        return None
+
+    return None
 
 
 _RISK_TAG_PATTERN = re.compile(
@@ -3801,6 +3881,15 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
             except (TypeError, ValueError):
                 invalid += 1
                 continue
+
+        converted = _convert_import_metric(
+            metric, mapped.get("unit", ""), value1, value2
+        )
+        if converted is None:
+            # 未知单位不能静默按规范单位入库
+            invalid += 1
+            continue
+        value1, value2 = converted
 
         records.append({
             "profile": mapped.get("profile", ""),
