@@ -470,6 +470,10 @@ class MetricRequest(StrictRequestModel):
     value1: float
     value2: Optional[float] = None
     measured_at: str = Field("", max_length=40, description="测量时间（ISO）")
+    context: str = Field(
+        "", max_length=20,
+        description="测量情境：bp=morning/evening，glucose=fasting/postprandial/bedtime/random",
+    )
     note: str = Field("", max_length=300)
 
 
@@ -484,6 +488,7 @@ class MetricUpdateRequest(StrictRequestModel):
     value1: Optional[float] = None
     value2: Optional[float] = None
     measured_at: Optional[str] = Field(None, max_length=40)
+    context: Optional[str] = Field(None, max_length=20)
     note: Optional[str] = Field(None, max_length=300)
 
 
@@ -845,9 +850,9 @@ def csv_restore_cell(value: Any) -> str:
 #: CSV 导入模板：列名与导出文件保持一致，示例行帮助用户直接开始录入
 CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "metrics": {
-        "headers": ["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"],
+        "headers": ["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "情境", "备注"],
         "example": [
-            "2026-01-01T08:00", "妈妈", "血压", "130", "85", "mmHg", "晨起测量",
+            "2026-01-01T08:00", "妈妈", "血压", "130", "85", "mmHg", "晨起", "晨起测量",
         ],
     },
     "symptoms": {
@@ -4618,7 +4623,9 @@ async def health_timeline(
 ):
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
-    from memory.session_store import METRIC_TYPES, metric_over_target
+    from memory.session_store import (
+        METRIC_TYPES, metric_context_label, metric_over_target,
+    )
 
     day = str(date or "").strip()
     if day:
@@ -4710,6 +4717,12 @@ async def health_timeline(
         else:
             value = format_value(item["value1"])
         unit = str(item.get("unit") or "").strip()
+        context_label = metric_context_label(
+            item["metric"], item.get("context")
+        )
+        value_text = f"{value} {unit}".strip()
+        if context_label:
+            value_text += f"（{context_label}）"
         target = target_map.get(
             (item.get("profile") or "", item["metric"])
         )
@@ -4732,7 +4745,7 @@ async def health_timeline(
             "id": item.get("id"),
             "profile": item.get("profile", ""),
             "title": label,
-            "value": f"{value} {unit}".strip(),
+            "value": value_text,
             "note": item.get("note", ""),
             "alert": alert,
             "critical": bool(critical_alerts),
@@ -5205,6 +5218,7 @@ async def add_metric(request: MetricRequest):
         request.value2,
         request.measured_at,
         request.note,
+        request.context,
     )
     if item is None:
         raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
@@ -5242,6 +5256,7 @@ async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
         merged.get("value2"),
         merged.get("measured_at") or "",
         merged.get("note") or "",
+        merged.get("context") or "",
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
@@ -5307,7 +5322,12 @@ async def export_metrics_csv(
         "mmrc": "mMRC 分级",
     }
 
-    rows = [["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"]]
+    rows = [[
+        "测量时间", "患者档案", "指标", "数值1", "数值2", "单位",
+        "情境", "备注",
+    ]]
+    from memory.session_store import metric_context_label
+
     for item in reversed(items):
         rows.append([
             item.get("measured_at", ""),
@@ -5316,6 +5336,11 @@ async def export_metrics_csv(
             item.get("value1", ""),
             item.get("value2", "") if item.get("value2") is not None else "",
             item.get("unit", ""),
+            csv_safe_cell(
+                metric_context_label(
+                    item.get("metric", ""), item.get("context")
+                )
+            ),
             csv_safe_cell(item.get("note", "")),
         ])
 
@@ -5371,6 +5396,7 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
         "数值1": "value1",
         "数值2": "value2",
         "单位": "unit",
+        "情境": "context",
         "备注": "note",
     }
     metric_alias = {
@@ -5449,12 +5475,27 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
             continue
         value1, value2 = converted
 
+        context_text = mapped.get("context", "")
+        context_map = {
+            "晨起": "morning",
+            "睡前": "bedtime",
+            "空腹": "fasting",
+            "餐后": "postprandial",
+            "随机": "random",
+        }
+        context = context_map.get(context_text, context_text)
+        if metric == "bp" and context == "bedtime":
+            context = "evening"
+        elif metric == "glucose" and context == "evening":
+            context = "bedtime"
+
         records.append({
             "profile": mapped.get("profile", ""),
             "metric": metric,
             "value1": value1,
             "value2": value2,
             "measured_at": mapped.get("measured_at", ""),
+            "context": context,
             "note": mapped.get("note", ""),
         })
 
@@ -6267,6 +6308,7 @@ async def export_health_dossier(
         LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
         adherence_rate,
+        metric_context_label,
         metric_over_target,
     )
 
@@ -6446,6 +6488,11 @@ async def export_health_dossier(
                 value += f"/{float(item['value2']):g}"
             target = target_map.get(metric)
             details = [str(item.get("measured_at") or "").replace("T", " ")[:16]]
+            context_label = metric_context_label(
+                metric, item.get("context")
+            )
+            if context_label:
+                details.append(context_label)
             if target is not None and metric_over_target(
                 metric, item["value1"], item.get("value2"), target
             ):

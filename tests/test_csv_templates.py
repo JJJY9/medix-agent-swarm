@@ -10,7 +10,10 @@ import memory
 from memory.session_store import SessionStore
 
 EXPECTED_HEADERS = {
-    "metrics": ["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"],
+    "metrics": [
+        "测量时间", "患者档案", "指标", "数值1", "数值2", "单位",
+        "情境", "备注",
+    ],
     "symptoms": ["记录时间", "患者档案", "症状", "程度", "备注"],
     "medications": [
         "药物名称", "剂量", "频次", "患者档案", "状态", "备注",

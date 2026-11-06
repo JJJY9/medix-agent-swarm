@@ -172,6 +172,28 @@ METRIC_TYPES = {
 }
 MAX_METRIC_NOTE_LENGTH = 300
 
+#: 指标的测量情境（血压晨起/睡前，血糖空腹/餐后等）
+METRIC_CONTEXTS = {
+    "bp": ("morning", "evening"),
+    "glucose": ("fasting", "postprandial", "bedtime", "random"),
+}
+METRIC_CONTEXT_LABELS = {
+    "morning": "晨起",
+    "evening": "睡前",
+    "fasting": "空腹",
+    "postprandial": "餐后",
+    "bedtime": "睡前",
+    "random": "随机",
+}
+
+
+def metric_context_label(metric: str, context: Any) -> str:
+    """返回情境中文名；未设置或不支持的类型返回空串。"""
+    key = str(context or "").strip()
+    if not key or key not in METRIC_CONTEXTS.get(str(metric or ""), ()):
+        return ""
+    return METRIC_CONTEXT_LABELS.get(key, "")
+
 #: 血压分级（中国高血压防治指南 2018 成人标准），供统计分布使用。
 BP_GRADE_KEYS = ("normal", "high_normal", "grade1", "grade2", "grade3", "low")
 
@@ -342,10 +364,17 @@ def _normalize_metric(
     value2: Any,
     measured_at: str,
     note: str,
+    context: str = "",
 ) -> Optional[Dict[str, Any]]:
     """校验一条健康指标记录；无效时返回 None。"""
     metric = str(metric or "").strip()
     if metric not in METRIC_TYPES:
+        return None
+    context_key = str(context or "").strip().lower()
+    allowed_contexts = METRIC_CONTEXTS.get(metric, ())
+    if not allowed_contexts:
+        context_key = ""
+    elif context_key and context_key not in allowed_contexts:
         return None
 
     _, unit, (low, high) = METRIC_TYPES[metric]
@@ -382,6 +411,7 @@ def _normalize_metric(
         "value2": round(second, 2) if second is not None else None,
         "unit": unit,
         "measured_at": measured_at,
+        "context": context_key,
         "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
     }
 
@@ -1376,6 +1406,7 @@ class SessionStore:
                     value2      REAL,
                     unit        TEXT NOT NULL DEFAULT '',
                     measured_at TEXT NOT NULL,
+                    context     TEXT NOT NULL DEFAULT '',
                     note        TEXT NOT NULL DEFAULT '',
                     created_at  TEXT NOT NULL
                 );
@@ -1664,32 +1695,15 @@ class SessionStore:
                 """
             )
 
-            # 旧版本用药表没有库存、单位与有效期字段，就地迁移
-            medication_columns = {
+            metric_columns = {
                 row["name"]
                 for row in self._conn.execute(
-                    "PRAGMA table_info(medications)"
+                    "PRAGMA table_info(health_metrics)"
                 )
             }
-            for column, ddl in (
-                ("stock", "REAL"),
-                ("stock_unit", "TEXT NOT NULL DEFAULT ''"),
-                ("low_stock_threshold", "REAL NOT NULL DEFAULT 0"),
-                ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
-            ):
-                if column not in medication_columns:
-                    self._conn.execute(
-                        f"ALTER TABLE medications ADD COLUMN {column} {ddl}"
-                    )
-            log_columns = {
-                row["name"]
-                for row in self._conn.execute(
-                    "PRAGMA table_info(medication_logs)"
-                )
-            }
-            if "stock_delta" not in log_columns:
+            if "context" not in metric_columns:
                 self._conn.execute(
-                    "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
+                    "ALTER TABLE health_metrics ADD COLUMN context TEXT NOT NULL DEFAULT ''"
                 )
 
             # 旧版本用药表没有库存、单位与有效期字段，就地迁移
@@ -3151,6 +3165,7 @@ class SessionStore:
                         raw.get("value2"),
                         raw.get("measured_at", ""),
                         raw.get("note", ""),
+                        raw.get("context", ""),
                     )
                     if normalized is None:
                         continue
@@ -3159,7 +3174,7 @@ class SessionStore:
                         SELECT 1 FROM health_metrics
                          WHERE profile = ? AND metric = ? AND measured_at = ?
                            AND value1 = ? AND IFNULL(value2, -1) = IFNULL(?, -1)
-                           AND note = ?
+                           AND note = ? AND context = ?
                         """,
                         (
                             normalized["profile"],
@@ -3168,6 +3183,7 @@ class SessionStore:
                             normalized["value1"],
                             normalized["value2"],
                             normalized["note"],
+                            normalized["context"],
                         ),
                     ).fetchone()
                     if exists:
@@ -3176,9 +3192,9 @@ class SessionStore:
                         """
                         INSERT INTO health_metrics(
                             profile, metric, value1, value2, unit,
-                            measured_at, note, created_at
+                            measured_at, context, note, created_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             normalized["profile"],
@@ -3187,6 +3203,7 @@ class SessionStore:
                             normalized["value2"],
                             normalized["unit"],
                             normalized["measured_at"],
+                            normalized["context"],
                             normalized["note"],
                             now,
                         ),
@@ -4320,10 +4337,11 @@ class SessionStore:
         value2: Any = None,
         measured_at: str = "",
         note: str = "",
+        context: str = "",
     ) -> Optional[Dict[str, Any]]:
         """新增一条健康指标记录；字段无效时返回 None。"""
         normalized = _normalize_metric(
-            profile, metric, value1, value2, measured_at, note
+            profile, metric, value1, value2, measured_at, note, context
         )
         if normalized is None:
             return None
@@ -4334,9 +4352,9 @@ class SessionStore:
                 """
                 INSERT INTO health_metrics(
                     profile, metric, value1, value2, unit,
-                    measured_at, note, created_at
+                    measured_at, context, note, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized["profile"],
@@ -4345,6 +4363,7 @@ class SessionStore:
                     normalized["value2"],
                     normalized["unit"],
                     normalized["measured_at"],
+                    normalized["context"],
                     normalized["note"],
                     now,
                 ),
@@ -4374,7 +4393,7 @@ class SessionStore:
             offset = 0
         sql = """
             SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, note, created_at
+                   measured_at, context, note, created_at
               FROM health_metrics
         """
         conditions: List[str] = []
@@ -4435,7 +4454,7 @@ class SessionStore:
         sql = f"""
             WITH ranked AS (
                 SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, note, created_at,
+                       measured_at, context, note, created_at,
                        ROW_NUMBER() OVER (
                            PARTITION BY metric
                            ORDER BY measured_at DESC, id DESC
@@ -4443,7 +4462,7 @@ class SessionStore:
                   FROM health_metrics{where}
             )
             SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, note, created_at
+                   measured_at, context, note, created_at
               FROM ranked
              WHERE rn = 1
              ORDER BY measured_at DESC
@@ -4457,7 +4476,7 @@ class SessionStore:
         sql = """
             WITH ranked AS (
                 SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, note, created_at,
+                       measured_at, context, note, created_at,
                        ROW_NUMBER() OVER (
                            PARTITION BY profile, metric
                            ORDER BY measured_at DESC, id DESC
@@ -4465,7 +4484,7 @@ class SessionStore:
                   FROM health_metrics
             )
             SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, note, created_at
+                   measured_at, context, note, created_at
               FROM ranked
              WHERE rn = 1
              ORDER BY profile, metric
@@ -4548,7 +4567,7 @@ class SessionStore:
             latest_row = self._conn.execute(
                 f"""
                 SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, note, created_at
+                       measured_at, context, note, created_at
                   FROM health_metrics
                  WHERE {where}
                  ORDER BY measured_at DESC, id DESC
@@ -6140,7 +6159,7 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, note, created_at
+                       measured_at, context, note, created_at
                   FROM health_metrics
                  WHERE id = ?
                 """,
@@ -6157,6 +6176,7 @@ class SessionStore:
         value2: Any = None,
         measured_at: str = "",
         note: str = "",
+        context: str = "",
     ) -> Optional[Dict[str, Any]]:
         """更新一条健康指标记录；记录不存在或字段无效时返回 None。"""
         try:
@@ -6165,7 +6185,7 @@ class SessionStore:
             return None
 
         normalized = _normalize_metric(
-            profile, metric, value1, value2, measured_at, note
+            profile, metric, value1, value2, measured_at, note, context
         )
         if normalized is None:
             return None
@@ -6180,7 +6200,7 @@ class SessionStore:
                 """
                 UPDATE health_metrics
                    SET profile = ?, metric = ?, value1 = ?, value2 = ?,
-                       unit = ?, measured_at = ?, note = ?
+                       unit = ?, measured_at = ?, context = ?, note = ?
                  WHERE id = ?
                 """,
                 (
@@ -6190,6 +6210,7 @@ class SessionStore:
                     normalized["value2"],
                     normalized["unit"],
                     normalized["measured_at"],
+                    normalized["context"],
                     normalized["note"],
                     metric_id,
                 ),
