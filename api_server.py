@@ -491,6 +491,16 @@ class MedicationRequest(StrictRequestModel):
     frequency: str = Field("", max_length=60, description="频次，如 每日一次")
     note: str = Field("", max_length=300)
     active: bool = True
+    stock: Optional[float] = Field(
+        None, ge=0, le=1000000, description="剩余库存；空表示不管理库存"
+    )
+    stock_unit: str = Field("", max_length=10, description="库存单位，如 片")
+    low_stock_threshold: float = Field(
+        0, ge=0, le=1000000, description="低库存阈值"
+    )
+    expiry_date: str = Field(
+        "", max_length=40, description="有效期 YYYY-MM-DD"
+    )
 
 
 class MedicationLogRequest(StrictRequestModel):
@@ -507,6 +517,10 @@ class MedicationUpdateRequest(StrictRequestModel):
     frequency: Optional[str] = Field(None, max_length=60)
     note: Optional[str] = Field(None, max_length=300)
     active: Optional[bool] = None
+    stock: Optional[float] = Field(None, ge=0, le=1000000)
+    stock_unit: Optional[str] = Field(None, max_length=10)
+    low_stock_threshold: Optional[float] = Field(None, ge=0, le=1000000)
+    expiry_date: Optional[str] = Field(None, max_length=40)
 
 
 class VaccinationRequest(StrictRequestModel):
@@ -732,9 +746,13 @@ CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         ],
     },
     "medications": {
-        "headers": ["药物名称", "剂量", "频次", "患者档案", "状态", "备注"],
+        "headers": [
+            "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
+            "库存", "库存单位", "低库存阈值", "有效期",
+        ],
         "example": [
             "氨氯地平", "5 mg", "每日一次", "妈妈", "在用", "早餐后",
+            "30", "片", "7", "2027-01-01",
         ],
     },
     "reminders": {
@@ -2316,10 +2334,20 @@ async def export_medications_csv(
     rows = [[
         "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
         "今日次数", "近7天次数", "最近服用", "近7天应服", "依从率",
+        "剩余库存", "库存单位", "低库存阈值", "有效期", "库存与效期提示",
     ]]
     for item in items:
         expected = int(item.get("expected_week_doses") or 0)
         taken = int(item.get("week_count") or 0)
+        alerts = []
+        if item.get("out_of_stock"):
+            alerts.append("缺货")
+        elif item.get("low_stock"):
+            alerts.append("库存偏低")
+        if item.get("expired"):
+            alerts.append("已过期")
+        elif item.get("expiring_soon"):
+            alerts.append("即将过期")
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(item.get("dose", "")),
@@ -2333,6 +2361,11 @@ async def export_medications_csv(
             str(expected) if expected else "",
             str(adherence_rate(taken, expected))
             if expected else "",
+            "" if item.get("stock") is None else f"{item['stock']:g}",
+            csv_safe_cell(item.get("stock_unit", "")),
+            f"{float(item.get('low_stock_threshold') or 0):g}",
+            csv_safe_cell(item.get("expiry_date", "")),
+            csv_safe_cell("、".join(alerts)),
         ])
 
     buffer = io.StringIO()
@@ -2436,6 +2469,11 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
         "档案": "profile",
         "状态": "active",
         "备注": "note",
+        "库存": "stock",
+        "剩余库存": "stock",
+        "库存单位": "stock_unit",
+        "低库存阈值": "low_stock_threshold",
+        "有效期": "expiry_date",
     }
 
     records = []
@@ -2466,6 +2504,10 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             "frequency": mapped.get("frequency", ""),
             "note": mapped.get("note", ""),
             "active": active not in ("停用", "0", "false", "False", "否"),
+            "stock": mapped.get("stock") or None,
+            "stock_unit": mapped.get("stock_unit", ""),
+            "low_stock_threshold": mapped.get("low_stock_threshold") or 0,
+            "expiry_date": mapped.get("expiry_date", ""),
         })
 
     if not records:
@@ -2506,9 +2548,15 @@ async def add_medication(request: MedicationRequest):
         request.frequency,
         request.note,
         request.active,
+        request.stock,
+        request.stock_unit,
+        request.low_stock_threshold,
+        request.expiry_date,
     )
     if item is None:
-        raise HTTPException(status_code=400, detail="药物名称不能为空")
+        raise HTTPException(
+            status_code=400, detail="药物名称、库存或有效期不正确"
+        )
     await record_audit(
         "medication.create", str(item["id"])
     )
@@ -2528,6 +2576,13 @@ async def update_medication(
         raise HTTPException(status_code=404, detail="记录不存在")
 
     merged = {**existing, **request.model_dump(exclude_unset=True)}
+    fields = request.model_dump(exclude_unset=True)
+    extra: Dict[str, Any] = {}
+    for key in (
+        "stock", "stock_unit", "low_stock_threshold", "expiry_date",
+    ):
+        if key in fields:
+            extra[key] = merged.get(key)
     item = await asyncio.to_thread(
         store.update_medication,
         medication_id,
@@ -2537,9 +2592,12 @@ async def update_medication(
         merged.get("frequency") or "",
         merged.get("note") or "",
         bool(merged.get("active", True)),
+        **extra,
     )
     if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+        raise HTTPException(
+            status_code=404, detail="记录不存在或内容不正确"
+        )
     await record_audit(
         "medication.update", str(item["id"])
     )
@@ -2622,6 +2680,69 @@ async def add_medication_log(
         f"{log['medication_id']}·{log['taken_at']}",
     )
     return {"ok": True, "log": log}
+
+
+@app.post("/api/medications/{medication_id}/reminder")
+async def create_medication_alert_reminder(
+    medication_id: SafeIntPath, kind: str = "stock"
+):
+    """为低库存或临期药物创建一次性提醒；已有未完成提醒时直接返回。"""
+    from memory import get_session_store
+
+    kind = str(kind or "").strip().lower()
+    if kind not in {"stock", "expiry"}:
+        raise HTTPException(status_code=400, detail="不支持的提醒类型")
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_medication, medication_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="药物不存在")
+
+    today = datetime.now().date()
+    if kind == "stock":
+        if item.get("stock") is None:
+            raise HTTPException(status_code=400, detail="该药物未登记库存")
+        title = f"补货：{item.get('name') or '药物'}"[:120]
+        due_at = today.strftime("%Y-%m-%d")
+        note = "库存偏低，请及时补货"
+    else:
+        expiry = str(item.get("expiry_date") or "")[:10]
+        if not expiry:
+            raise HTTPException(status_code=400, detail="该药物未登记有效期")
+        try:
+            expiry_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="有效期格式不正确")
+        title = f"药物到期：{item.get('name') or '药物'}"[:120]
+        reminder_date = expiry_date - timedelta(days=30)
+        due_at = max(reminder_date, today).strftime("%Y-%m-%d")
+        note = f"有效期至 {expiry}，请检查并更换"
+
+    reminders = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    for reminder in reminders:
+        if (
+            int(reminder.get("medication_id") or 0) == int(medication_id)
+            and not reminder.get("done")
+            and reminder.get("title") == title
+        ):
+            return {"ok": True, "created": False, "reminder": reminder}
+
+    reminder = await asyncio.to_thread(
+        store.add_reminder,
+        title,
+        due_at,
+        note,
+        "",
+        item.get("profile") or "",
+        0,
+        0,
+        "",
+        int(medication_id),
+        0,
+    )
+    await record_audit("medication.reminder", str(medication_id))
+    return {"ok": True, "created": True, "reminder": reminder}
 
 
 @app.get("/api/medication-logs")
@@ -4422,9 +4543,25 @@ async def family_overview(days: int = 7):
             "last_taken_at": "",
             "week_count": 0,
             "expected_week_doses": 0,
+            "low_stock": 0,
+            "expiring": 0,
+            "expired": 0,
+            "stock_alerts": [],
         })
         entry["active"] += 1
         entry["taken_today"] += int(item.get("today_count") or 0)
+        if item.get("low_stock"):
+            entry["low_stock"] += 1
+        if item.get("expired"):
+            entry["expired"] += 1
+        elif item.get("expiring_soon"):
+            entry["expiring"] += 1
+        if (
+            item.get("low_stock")
+            or item.get("expired")
+            or item.get("expiring_soon")
+        ) and len(entry["stock_alerts"]) < 3:
+            entry["stock_alerts"].append(item.get("name") or "")
         expected_week = int(item.get("expected_week_doses") or 0)
         # 无明确频次（必要时/每月一次等）的药物只展示次数，不进入
         # 家庭依从率的分子
@@ -4527,6 +4664,8 @@ async def family_overview(days: int = 7):
         medication = medications_by_profile.get(name, {
             "active": 0, "taken_today": 0, "names": [],
             "last_taken_at": "", "adherence": None,
+            "low_stock": 0, "expiring": 0, "expired": 0,
+            "stock_alerts": [],
         })
         reminder = reminders_by_profile.get(name, {
             "pending": 0, "overdue": 0, "due_today": 0,
@@ -4599,7 +4738,7 @@ async def export_family_overview_csv(days: int = 7):
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
-        "疫苗接种",
+        "疫苗接种", "用药库存",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -4659,6 +4798,19 @@ async def export_family_overview_csv(days: int = 7):
                 vaccination_text += (
                     f"，下一剂 {vaccinations_info['next_due']}"
                 )
+        stock_parts = []
+        if medications.get("low_stock"):
+            stock_parts.append(f"库存偏低 {medications['low_stock']} 种")
+        if medications.get("expired"):
+            stock_parts.append(f"已过期 {medications['expired']} 种")
+        elif medications.get("expiring"):
+            stock_parts.append(f"即将过期 {medications['expiring']} 种")
+        names = [
+            name for name in (medications.get("stock_alerts") or []) if name
+        ]
+        if names:
+            stock_parts.append("；".join(names))
+        stock_text = "，".join(stock_parts)
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -4674,6 +4826,7 @@ async def export_family_overview_csv(days: int = 7):
             ),
             csv_safe_cell(item.get("last_activity", "")),
             csv_safe_cell(vaccination_text),
+            csv_safe_cell(stock_text),
         ])
 
     buffer = io.StringIO()
@@ -4914,6 +5067,19 @@ async def export_health_dossier(
                 if expected:
                     rate = adherence_rate(item.get("week_count"), expected)
                     detail += f"，依从率 {rate}%"
+            if item.get("stock") is not None:
+                unit = item.get("stock_unit") or ""
+                detail += f"；库存 {item['stock']:g}{unit}"
+                if item.get("out_of_stock"):
+                    detail += "（缺货）"
+                elif item.get("low_stock"):
+                    detail += "（偏低）"
+            if item.get("expiry_date"):
+                detail += f"；有效期 {item['expiry_date']}"
+                if item.get("expired"):
+                    detail += "（已过期）"
+                elif item.get("expiring_soon"):
+                    detail += "（即将过期）"
             detail += "）"
             lines.append(detail)
     else:

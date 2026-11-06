@@ -787,6 +787,18 @@
         <label class="calc-field">频次
           <input id="medication-frequency" type="text" maxlength="60" placeholder="如：每日一次">
         </label>
+        <label class="calc-field">剩余库存（可选）
+          <input id="medication-stock" type="number" min="0" step="0.01" inputmode="decimal" placeholder="留空表示不管理库存">
+        </label>
+        <label class="calc-field">库存单位
+          <input id="medication-stock-unit" type="text" maxlength="10" placeholder="如：片、粒、ml">
+        </label>
+        <label class="calc-field">低库存阈值
+          <input id="medication-low-stock" type="number" min="0" step="0.01" inputmode="decimal" value="0">
+        </label>
+        <label class="calc-field">有效期（可选）
+          <input id="medication-expiry" type="date">
+        </label>
         <label class="calc-field">备注（可选）
           <input id="medication-note" type="text" maxlength="300" placeholder="如：早餐后">
         </label>

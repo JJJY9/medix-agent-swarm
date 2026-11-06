@@ -3924,6 +3924,48 @@ html[data-theme="dark"] .medication-active-badge.is-inactive {
   background: var(--paper-2);
 }
 
+.medication-stock-badge,
+.medication-expiry-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+  border-radius: 999px;
+}
+
+.medication-stock-badge.is-low,
+.medication-expiry-badge.is-soon {
+  color: #8a5a00;
+  background: #fbefd2;
+}
+
+.medication-stock-badge.is-out,
+.medication-expiry-badge.is-expired {
+  color: #fff;
+  background: #b4472f;
+}
+
+html[data-theme="dark"] .medication-stock-badge,
+html[data-theme="dark"] .medication-expiry-badge {
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+html[data-theme="dark"] .medication-stock-badge.is-low,
+html[data-theme="dark"] .medication-expiry-badge.is-soon {
+  color: #f0c36d;
+  background: #3a2d14;
+}
+
+html[data-theme="dark"] .medication-stock-badge.is-out,
+html[data-theme="dark"] .medication-expiry-badge.is-expired {
+  color: #fff;
+  background: #8f3826;
+}
+
 
 .symptom-section {
   margin-top: 10px;

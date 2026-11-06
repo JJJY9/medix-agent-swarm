@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -28,6 +29,10 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db
 
 #: SQLite 参数绑定只接受有符号 64 位整数，超出会抛 OverflowError
 MAX_SQLITE_INT = 2**63 - 1
+
+
+#: 用于区分「未提供字段」与显式空值
+_UNSET = object()
 
 
 def _bounded_offset(offset: Any) -> int:
@@ -318,6 +323,74 @@ def _normalize_profile_name(value: Any) -> str:
 
 MAX_MEDICATION_NAME_LENGTH = 120
 MAX_MEDICATION_TEXT_LENGTH = 60
+MAX_MEDICATION_STOCK = 1000000.0
+MAX_MEDICATION_UNIT_LENGTH = 10
+
+
+def _normalize_medication_quantity(
+    value: Any, *, allow_none: bool
+) -> Optional[float]:
+    """校验库存/阈值：非负有限数，最多两位小数；空值按调用方决定。"""
+    if value is None or (
+        isinstance(value, str) and not value.strip()
+    ):
+        return None if allow_none else 0.0
+    if isinstance(value, bool):
+        raise ValueError("库存应为非负数字")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("库存应为非负数字")
+    if (
+        not math.isfinite(number)
+        or number < 0
+        or number > MAX_MEDICATION_STOCK
+    ):
+        raise ValueError("库存应为 0–1000000 的数字")
+    return round(number, 2)
+
+
+def _normalize_medication_expiry(value: Any) -> str:
+    """校验药品有效期：空值表示未登记，否则规范为 YYYY-MM-DD。"""
+    text = str(value or "").strip()[:40]
+    if not text:
+        return ""
+    canonical = _canonical_local_time(text)
+    if canonical is None:
+        raise ValueError("有效期格式应为 YYYY-MM-DD 或 ISO 时间")
+    return canonical[:10]
+
+
+def _medication_stock_fields(
+    row: Dict[str, Any], today: str
+) -> Dict[str, Any]:
+    """补充库存与效期告警字段，供列表、首页与家庭总览复用。"""
+    stock = row.get("stock")
+    threshold = float(row.get("low_stock_threshold") or 0)
+    expiry = str(row.get("expiry_date") or "")[:10]
+    days_to_expiry: Optional[int] = None
+    if expiry:
+        try:
+            days_to_expiry = (
+                datetime.strptime(expiry, "%Y-%m-%d").date()
+                - datetime.strptime(today, "%Y-%m-%d").date()
+            ).days
+        except ValueError:
+            days_to_expiry = None
+    return {
+        "stock": None if stock is None else round(float(stock), 2),
+        "stock_unit": str(row.get("stock_unit") or ""),
+        "low_stock_threshold": threshold,
+        "expiry_date": expiry,
+        "low_stock": stock is not None and float(stock) <= threshold,
+        "out_of_stock": stock is not None and float(stock) <= 0,
+        "days_to_expiry": days_to_expiry,
+        "expired": days_to_expiry is not None and days_to_expiry < 0,
+        "expiring_soon": (
+            days_to_expiry is not None and 0 <= days_to_expiry <= 30
+        ),
+    }
+
 
 #: 常见中文数字，用于解析「每日三次」这类频次描述
 _CN_DIGITS = {
@@ -415,6 +488,10 @@ def _normalize_medication(
     frequency: str,
     note: str,
     active: Any = True,
+    stock: Any = None,
+    stock_unit: str = "",
+    low_stock_threshold: Any = 0,
+    expiry_date: str = "",
 ) -> Optional[Dict[str, Any]]:
     """校验一条用药记录；无效时返回 None。"""
     name = " ".join(str(name or "").split())[:MAX_MEDICATION_NAME_LENGTH]
@@ -426,6 +503,16 @@ def _normalize_medication(
         active_flag = 1 if str(active).strip().lower() in {
             "1", "true", "on", "yes"
         } else 0
+    try:
+        normalized_stock = _normalize_medication_quantity(
+            stock, allow_none=True
+        )
+        normalized_threshold = _normalize_medication_quantity(
+            low_stock_threshold, allow_none=False
+        )
+        normalized_expiry = _normalize_medication_expiry(expiry_date)
+    except ValueError:
+        return None
     return {
         "profile": _normalize_profile_name(profile),
         "name": name,
@@ -435,6 +522,12 @@ def _normalize_medication(
         )[:MAX_MEDICATION_TEXT_LENGTH],
         "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
         "active": bool(active_flag),
+        "stock": normalized_stock,
+        "stock_unit": " ".join(str(stock_unit or "").split())[
+            :MAX_MEDICATION_UNIT_LENGTH
+        ],
+        "low_stock_threshold": normalized_threshold or 0.0,
+        "expiry_date": normalized_expiry,
     }
 
 
@@ -931,6 +1024,10 @@ class SessionStore:
                     frequency  TEXT NOT NULL DEFAULT '',
                     note       TEXT NOT NULL DEFAULT '',
                     active     INTEGER NOT NULL DEFAULT 1,
+                    stock      REAL,
+                    stock_unit TEXT NOT NULL DEFAULT '',
+                    low_stock_threshold REAL NOT NULL DEFAULT 0,
+                    expiry_date TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -942,6 +1039,7 @@ class SessionStore:
                     profile       TEXT NOT NULL DEFAULT '',
                     taken_at      TEXT NOT NULL,
                     note          TEXT NOT NULL DEFAULT '',
+                    stock_delta   REAL NOT NULL DEFAULT 0,
                     created_at    TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_medication_logs_med_time
@@ -1077,6 +1175,34 @@ class SessionStore:
                     ON reminders(vaccination_id, done)
                 """
             )
+
+            # 旧版本用药表没有库存、单位与有效期字段，就地迁移
+            medication_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medications)"
+                )
+            }
+            for column, ddl in (
+                ("stock", "REAL"),
+                ("stock_unit", "TEXT NOT NULL DEFAULT ''"),
+                ("low_stock_threshold", "REAL NOT NULL DEFAULT 0"),
+                ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column not in medication_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE medications ADD COLUMN {column} {ddl}"
+                    )
+            log_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medication_logs)"
+                )
+            }
+            if "stock_delta" not in log_columns:
+                self._conn.execute(
+                    "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
+                )
 
             # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
             for table, column in (
@@ -2641,6 +2767,10 @@ class SessionStore:
                         raw.get("frequency", ""),
                         raw.get("note", ""),
                         raw.get("active", True),
+                        raw.get("stock"),
+                        raw.get("stock_unit", ""),
+                        raw.get("low_stock_threshold", 0),
+                        raw.get("expiry_date", ""),
                     )
                     if normalized is None:
                         continue
@@ -2666,13 +2796,18 @@ class SessionStore:
                             """
                             INSERT INTO medications(
                                 profile, name, dose, frequency, note, active,
-                                created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                stock, stock_unit, low_stock_threshold,
+                                expiry_date, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 normalized["profile"], normalized["name"],
                                 normalized["dose"], normalized["frequency"],
                                 normalized["note"], normalized["active"],
+                                normalized["stock"],
+                                normalized["stock_unit"],
+                                normalized["low_stock_threshold"],
+                                normalized["expiry_date"],
                                 created_at, updated_at,
                             ),
                         )
@@ -2769,17 +2904,25 @@ class SessionStore:
                     imported_log_counts[log_key] = seen + 1
                     if seen < existing_log_counts[log_key]:
                         continue
+                    try:
+                        stock_delta = float(raw.get("stock_delta") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        stock_delta = 0.0
+                    if not math.isfinite(stock_delta):
+                        stock_delta = 0.0
                     self._conn.execute(
                         """
                         INSERT INTO medication_logs(
-                            medication_id, profile, taken_at, note, created_at
-                        ) VALUES (?, ?, ?, ?, ?)
+                            medication_id, profile, taken_at, note,
+                            stock_delta, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             target["id"],
                             target["profile"],
                             taken_at,
                             note,
+                            stock_delta,
                             created_at,
                         ),
                     )
@@ -4008,10 +4151,15 @@ class SessionStore:
         frequency: str = "",
         note: str = "",
         active: Any = True,
+        stock: Any = None,
+        stock_unit: str = "",
+        low_stock_threshold: Any = 0,
+        expiry_date: str = "",
     ) -> Optional[Dict[str, Any]]:
         """新增一条用药记录；无效时返回 None。"""
         normalized = _normalize_medication(
-            profile, name, dose, frequency, note, active
+            profile, name, dose, frequency, note, active,
+            stock, stock_unit, low_stock_threshold, expiry_date,
         )
         if normalized is None:
             return None
@@ -4021,8 +4169,9 @@ class SessionStore:
                 """
                 INSERT INTO medications(
                     profile, name, dose, frequency, note, active,
+                    stock, stock_unit, low_stock_threshold, expiry_date,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized["profile"],
@@ -4031,13 +4180,23 @@ class SessionStore:
                     normalized["frequency"],
                     normalized["note"],
                     normalized["active"],
+                    normalized["stock"],
+                    normalized["stock_unit"],
+                    normalized["low_stock_threshold"],
+                    normalized["expiry_date"],
                     now,
                     now,
                 ),
             )
             medication_id = int(cursor.lastrowid)
-        return {"id": medication_id, **normalized, "created_at": now,
+        data = {"id": medication_id, **normalized, "created_at": now,
                 "updated_at": now}
+        return {
+            **data,
+            **_medication_stock_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
 
     def list_medications(
         self,
@@ -4073,6 +4232,7 @@ class SessionStore:
             rows = self._conn.execute(
                 f"""
                 SELECT id, profile, name, dose, frequency, note, active,
+                       stock, stock_unit, low_stock_threshold, expiry_date,
                        created_at, updated_at,
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
@@ -4107,6 +4267,7 @@ class SessionStore:
         return [
             {
                 **dict(row),
+                **_medication_stock_fields(dict(row), today),
                 "active": bool(row["active"]),
                 "today_count": int(row["today_count"] or 0),
                 "week_count": int(row["week_count"] or 0),
@@ -4132,6 +4293,7 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
+                       stock, stock_unit, low_stock_threshold, expiry_date,
                        created_at, updated_at
                   FROM medications WHERE id = ?
                 """,
@@ -4139,7 +4301,14 @@ class SessionStore:
             ).fetchone()
         if row is None:
             return None
-        return {**dict(row), "active": bool(row["active"])}
+        data = dict(row)
+        return {
+            **data,
+            **_medication_stock_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+            "active": bool(row["active"]),
+        }
 
     def update_medication(
         self,
@@ -4150,30 +4319,53 @@ class SessionStore:
         frequency: str = "",
         note: str = "",
         active: Any = True,
+        stock: Any = _UNSET,
+        stock_unit: Any = _UNSET,
+        low_stock_threshold: Any = _UNSET,
+        expiry_date: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
         """更新一条用药记录；不存在或无效时返回 None。"""
         try:
             medication_id = int(medication_id)
         except (TypeError, ValueError, OverflowError):
             return None
-        normalized = _normalize_medication(
-            profile, name, dose, frequency, note, active
-        )
-        if normalized is None:
-            return None
         now = self._now()
         with self._lock, self._conn:
             previous = self._conn.execute(
-                "SELECT profile, name FROM medications WHERE id = ?",
+                """
+                SELECT profile, name, stock, stock_unit,
+                       low_stock_threshold, expiry_date
+                  FROM medications WHERE id = ?
+                """,
                 (medication_id,),
             ).fetchone()
             if previous is None:
                 return None
+            normalized = _normalize_medication(
+                profile,
+                name,
+                dose,
+                frequency,
+                note,
+                active,
+                previous["stock"] if stock is _UNSET else stock,
+                previous["stock_unit"]
+                if stock_unit is _UNSET else stock_unit,
+                previous["low_stock_threshold"]
+                if low_stock_threshold is _UNSET else low_stock_threshold,
+                previous["expiry_date"]
+                if expiry_date is _UNSET else expiry_date,
+            )
+            if normalized is None:
+                return None
+            reset_stock = stock is not _UNSET
             cursor = self._conn.execute(
                 """
                 UPDATE medications
                    SET profile = ?, name = ?, dose = ?, frequency = ?,
-                       note = ?, active = ?, updated_at = ?
+                       note = ?, active = ?, stock = ?, stock_unit = ?,
+                       low_stock_threshold = ?, expiry_date = ?,
+                       updated_at = ?
                  WHERE id = ?
                 """,
                 (
@@ -4183,12 +4375,25 @@ class SessionStore:
                     normalized["frequency"],
                     normalized["note"],
                     normalized["active"],
+                    normalized["stock"],
+                    normalized["stock_unit"],
+                    normalized["low_stock_threshold"],
+                    normalized["expiry_date"],
                     now,
                     medication_id,
                 ),
             )
             if cursor.rowcount == 0:
                 return None
+            if reset_stock:
+                # 手动盘点后，历史打卡不再影响新的库存基线
+                self._conn.execute(
+                    """
+                    UPDATE medication_logs SET stock_delta = 0
+                     WHERE medication_id = ?
+                    """,
+                    (medication_id,),
+                )
             self._conn.execute(
                 """
                 UPDATE medication_logs
@@ -4235,6 +4440,7 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
+                       stock, stock_unit, low_stock_threshold, expiry_date,
                        created_at, updated_at
                   FROM medications WHERE id = ?
                 """,
@@ -4242,7 +4448,14 @@ class SessionStore:
             ).fetchone()
         if row is None:
             return None
-        return {**dict(row), "active": bool(row["active"])}
+        data = dict(row)
+        return {
+            **data,
+            **_medication_stock_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+            "active": bool(row["active"]),
+        }
 
     def delete_medication(self, medication_id: int) -> bool:
         try:
@@ -4296,22 +4509,39 @@ class SessionStore:
         now = datetime.now().isoformat(timespec="microseconds")
         with self._lock, self._conn:
             medication = self._conn.execute(
-                "SELECT id, profile FROM medications WHERE id = ?",
+                "SELECT id, profile, stock FROM medications WHERE id = ?",
                 (medication_id,),
             ).fetchone()
             if medication is None:
                 return None
+            stock = medication["stock"]
+            stock_delta = 0.0
+            stock_after: Optional[float] = None
+            if stock is not None:
+                stock_before = max(0.0, float(stock))
+                stock_delta = -min(1.0, stock_before)
+                stock_after = round(stock_before + stock_delta, 2)
+                self._conn.execute(
+                    """
+                    UPDATE medications
+                       SET stock = ?, updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (stock_after, now, medication_id),
+                )
             cursor = self._conn.execute(
                 """
                 INSERT INTO medication_logs(
-                    medication_id, profile, taken_at, note, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    medication_id, profile, taken_at, note, stock_delta,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     medication["id"],
                     medication["profile"],
                     taken_at,
                     note,
+                    stock_delta,
                     now,
                 ),
             )
@@ -4322,6 +4552,8 @@ class SessionStore:
             "profile": medication["profile"],
             "taken_at": taken_at,
             "note": note,
+            "stock_delta": stock_delta,
+            "stock_after": stock_after,
             "created_at": now,
         }
 
@@ -4363,7 +4595,8 @@ class SessionStore:
             rows = self._conn.execute(
                 f"""
                 SELECT l.id, l.medication_id, l.profile, l.taken_at, l.note,
-                       l.created_at, m.name AS medication_name,
+                       l.stock_delta, l.created_at,
+                       m.name AS medication_name,
                        m.dose AS medication_dose
                   FROM medication_logs l
                   LEFT JOIN medications m ON m.id = l.medication_id{where}
@@ -4383,7 +4616,8 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT l.id, l.medication_id, l.profile, l.taken_at, l.note,
-                       l.created_at, m.name AS medication_name
+                       l.stock_delta, l.created_at,
+                       m.name AS medication_name
                   FROM medication_logs l
                   LEFT JOIN medications m ON m.id = l.medication_id
                  WHERE l.id = ?
@@ -4398,9 +4632,31 @@ class SessionStore:
         except (TypeError, ValueError, OverflowError):
             return False
         with self._lock, self._conn:
+            row = self._conn.execute(
+                """
+                SELECT medication_id, stock_delta
+                  FROM medication_logs WHERE id = ?
+                """,
+                (log_id,),
+            ).fetchone()
+            if row is None:
+                return False
             cursor = self._conn.execute(
                 "DELETE FROM medication_logs WHERE id = ?", (log_id,)
             )
+            if cursor.rowcount > 0 and float(row["stock_delta"] or 0):
+                self._conn.execute(
+                    """
+                    UPDATE medications
+                       SET stock = ROUND(stock - ?, 2), updated_at = ?
+                     WHERE id = ? AND stock IS NOT NULL
+                    """,
+                    (
+                        float(row["stock_delta"]),
+                        self._now(),
+                        int(row["medication_id"]),
+                    ),
+                )
             return cursor.rowcount > 0
 
     def get_metric(self, metric_id: int) -> Optional[Dict[str, Any]]:

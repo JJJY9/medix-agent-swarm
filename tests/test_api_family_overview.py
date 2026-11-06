@@ -295,7 +295,7 @@ def test_family_overview_csv_export(client_and_store):
     assert rows[0] == [
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", "近30天症状", "近30天会诊", "最近活动",
-        "疫苗接种",
+        "疫苗接种", "用药库存",
     ]
     mom = next(row for row in rows[1:] if row[0] == "妈妈")
     assert mom[8] == "近 30 天 0 次"
