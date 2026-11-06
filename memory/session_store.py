@@ -2785,15 +2785,17 @@ class SessionStore:
                     # 数据行一律插入新 id，撞号时不能静默丢弃
                     if reminder_id > 0:
                         same_id = self._conn.execute(
-                            "SELECT id, title FROM reminders WHERE id = ?",
+                            "SELECT id, title, profile FROM reminders WHERE id = ?",
                             (reminder_id,),
                         ).fetchone()
                         if (
                             same_id is not None
                             and int(same_id["id"]) in pre_existing_reminder_ids
                             and str(same_id["title"]) == title
+                            and _normalize_profile_name(same_id["profile"])
+                            == profile
                         ):
-                            # 同一编号同标题视为已导入（日期可能被改过）
+                            # 同一编号、同标题、同档案才视为已导入
                             raw_reminder_id_map[reminder_id] = int(
                                 same_id["id"]
                             )
