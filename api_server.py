@@ -183,6 +183,7 @@ class ImportSessionsRequest(StrictRequestModel):
     medication_logs: Optional[List[Dict[str, Any]]] = None
     vaccinations: Optional[List[Dict[str, Any]]] = None
     appointments: Optional[List[Dict[str, Any]]] = None
+    lab_results: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -573,6 +574,34 @@ class AppointmentUpdateRequest(StrictRequestModel):
     note: Optional[str] = Field(None, max_length=300)
 
 
+class LabResultRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    panel: str = Field("", max_length=60, description="化验分组，如肝功能")
+    item: str = Field(..., min_length=1, max_length=80, description="化验项目")
+    value: float = Field(..., ge=-1000000000, le=1000000000)
+    unit: str = Field("", max_length=20)
+    ref_low: Optional[float] = Field(None, ge=-1000000000, le=1000000000)
+    ref_high: Optional[float] = Field(None, ge=-1000000000, le=1000000000)
+    tested_at: str = Field("", max_length=40, description="检测时间")
+    lab_name: str = Field("", max_length=80, description="化验机构")
+    note: str = Field("", max_length=300)
+
+
+class LabResultUpdateRequest(StrictRequestModel):
+    """部分更新化验结果：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    panel: Optional[str] = Field(None, max_length=60)
+    item: Optional[str] = Field(None, min_length=1, max_length=80)
+    value: Optional[float] = Field(None, ge=-1000000000, le=1000000000)
+    unit: Optional[str] = Field(None, max_length=20)
+    ref_low: Optional[float] = Field(None, ge=-1000000000, le=1000000000)
+    ref_high: Optional[float] = Field(None, ge=-1000000000, le=1000000000)
+    tested_at: Optional[str] = Field(None, max_length=40)
+    lab_name: Optional[str] = Field(None, max_length=80)
+    note: Optional[str] = Field(None, max_length=300)
+
+
 class SymptomRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
@@ -789,6 +818,16 @@ CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "headers": ["到期日", "内容", "档案", "状态", "提前天数", "重复天数", "备注"],
         "example": [
             "2026-01-10", "复查血压", "妈妈", "待完成", "1", "0", "带上次化验单",
+        ],
+    },
+    "lab-results": {
+        "headers": [
+            "检测时间", "患者档案", "分组", "项目", "数值", "单位",
+            "参考下限", "参考上限", "化验机构", "备注",
+        ],
+        "example": [
+            "2026-01-01T08:00", "妈妈", "肝功能", "ALT", "28", "U/L",
+            "7", "40", "市医院检验科", "空腹",
         ],
     },
 }
@@ -1975,6 +2014,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "medication_logs": request.medication_logs,
         "vaccinations": request.vaccinations,
         "appointments": request.appointments,
+        "lab_results": request.lab_results,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -2003,7 +2043,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
     keys = (
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
-        "vaccinations", "appointments", "audit_log",
+        "vaccinations", "appointments", "lab_results", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -3192,6 +3232,276 @@ async def create_appointment_reminder(appointment_id: SafeIntPath):
     return {"ok": True, "created": True, "reminder": reminder}
 
 
+@app.get("/api/lab-results")
+async def list_lab_results(
+    profile: Optional[str] = None,
+    item: Optional[str] = None,
+    panel: Optional[str] = None,
+    days: int = 0,
+    limit: int = 1000,
+    offset: int = 0,
+):
+    """化验结果列表（可按档案、项目、分组与最近天数筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    offset = _bounded_offset(offset)
+    days = max(0, min(int(days or 0), 3650))
+    items = await asyncio.to_thread(
+        get_session_store().list_lab_results,
+        profile, item, panel, days, limit, offset,
+    )
+    return {"lab_results": items}
+
+
+@app.get("/api/lab-results/latest")
+async def latest_lab_results(profile: Optional[str] = None):
+    """每个化验项目最近一次结果，用于计算器预填与摘要。"""
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().latest_lab_results, profile
+    )
+    return {"lab_results": items}
+
+
+@app.post("/api/lab-results")
+async def add_lab_result(request: LabResultRequest):
+    """新增一条化验结果。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_lab_result,
+            request.profile,
+            request.item,
+            request.value,
+            request.unit,
+            request.ref_low,
+            request.ref_high,
+            request.tested_at,
+            request.panel,
+            request.lab_name,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("lab.create", str(item["id"]))
+    return {"ok": True, "lab_result": item}
+
+
+@app.patch("/api/lab-results/{lab_id}")
+async def update_lab_result(
+    lab_id: SafeIntPath, request: LabResultUpdateRequest
+):
+    """部分更新一条化验结果。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_lab_result, lab_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_lab_result,
+            lab_id,
+            merged.get("profile") or "",
+            merged.get("item") or "",
+            merged.get("value"),
+            merged.get("unit") or "",
+            merged.get("ref_low"),
+            merged.get("ref_high"),
+            merged.get("tested_at") or "",
+            merged.get("panel") or "",
+            merged.get("lab_name") or "",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("lab.update", str(item["id"]))
+    return {"ok": True, "lab_result": item}
+
+
+@app.delete("/api/lab-results/{lab_id}")
+async def delete_lab_result(lab_id: SafeIntPath):
+    """删除一条化验结果。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_lab_result, lab_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_lab_result, lab_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("lab.delete", str(lab_id))
+    return {"ok": True, "id": lab_id}
+
+
+@app.get("/api/lab-results/export.csv")
+async def export_lab_results_csv(
+    profile: Optional[str] = None,
+    item: Optional[str] = None,
+    panel: Optional[str] = None,
+    days: int = 0,
+):
+    """导出化验结果 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    days = max(0, min(int(days or 0), 3650))
+    items = await asyncio.to_thread(
+        get_session_store().list_lab_results,
+        profile, item, panel, days, 100000, 0,
+    )
+    rows = [[
+        "检测时间", "患者档案", "分组", "项目", "数值", "单位",
+        "参考下限", "参考上限", "结果提示", "化验机构", "备注", "ID",
+    ]]
+    for row in items:
+        if row.get("abnormal_low"):
+            flag = "偏低"
+        elif row.get("abnormal_high"):
+            flag = "偏高"
+        else:
+            flag = ""
+        rows.append([
+            csv_safe_cell(row.get("tested_at", "")),
+            csv_safe_cell(row.get("profile", "")),
+            csv_safe_cell(row.get("panel", "")),
+            csv_safe_cell(row.get("item", "")),
+            f"{float(row.get('value') or 0):g}",
+            csv_safe_cell(row.get("unit", "")),
+            "" if row.get("ref_low") is None
+            else f"{float(row['ref_low']):g}",
+            "" if row.get("ref_high") is None
+            else f"{float(row['ref_high']):g}",
+            flag,
+            csv_safe_cell(row.get("lab_name", "")),
+            csv_safe_cell(row.get("note", "")),
+            int(row.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-lab-results-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/lab-results/import")
+async def import_lab_results_csv(
+    request: Request, file: UploadFile = File(...)
+):
+    """从导出的 CSV 格式导入化验结果，重复记录自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+    field_alias = {
+        "检测时间": "tested_at",
+        "日期": "tested_at",
+        "时间": "tested_at",
+        "患者档案": "profile",
+        "档案": "profile",
+        "分组": "panel",
+        "化验分组": "panel",
+        "项目": "item",
+        "化验项目": "item",
+        "数值": "value",
+        "结果": "value",
+        "单位": "unit",
+        "参考下限": "ref_low",
+        "下限": "ref_low",
+        "参考上限": "ref_high",
+        "上限": "ref_high",
+        "化验机构": "lab_name",
+        "机构": "lab_name",
+        "备注": "note",
+    }
+    records = []
+    invalid = 0
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
+    for row in csv_rows:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            mapped[field_alias.get(key.strip(), key.strip())] = (
+                csv_restore_cell(value).strip()
+            )
+        item_name = mapped.get("item", "")
+        if not item_name:
+            invalid += 1
+            continue
+        records.append({
+            "profile": mapped.get("profile", ""),
+            "panel": mapped.get("panel", ""),
+            "item": item_name,
+            "value": mapped.get("value", ""),
+            "unit": mapped.get("unit", ""),
+            "ref_low": mapped.get("ref_low") or None,
+            "ref_high": mapped.get("ref_high") or None,
+            "tested_at": mapped.get("tested_at", ""),
+            "lab_name": mapped.get("lab_name", ""),
+            "note": mapped.get("note", ""),
+        })
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的化验结果（无效 {invalid} 行）",
+        )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"lab_results": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    imported = int(result.get("lab_results", 0))
+    await record_audit(
+        "lab.import", detail=f"imported={imported} invalid={invalid}"
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -3826,6 +4136,9 @@ async def health_timeline(
     raw_appointments = await asyncio.to_thread(
         store.list_appointments, profile, None, False, 100000, 0
     )
+    raw_lab_results = await asyncio.to_thread(
+        store.list_lab_results, profile, None, None, 0, 100000, 0
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -3979,6 +4292,28 @@ async def health_timeline(
             ),
         })
 
+    for item in raw_lab_results:
+        at = str(item.get("tested_at") or "")
+        if not in_window(at):
+            continue
+        value = f"{float(item.get('value') or 0):g}"
+        unit = str(item.get("unit") or "")
+        if unit:
+            value += f" {unit}"
+        ref_text = str(item.get("ref_text") or "")
+        if ref_text:
+            value += f"（参考 {ref_text}）"
+        events.append({
+            "type": "lab",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("item") or "化验结果",
+            "value": value,
+            "note": item.get("note", ""),
+            "alert": bool(item.get("abnormal")),
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -4010,7 +4345,7 @@ async def health_timeline(
     events.sort(key=sort_key, reverse=True)
     if type in {
         "metric", "symptom", "medication", "vaccination",
-        "appointment", "consultation",
+        "appointment", "lab", "consultation",
     }:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
@@ -4068,6 +4403,7 @@ async def export_timeline_csv(
         "medication": "用药",
         "vaccination": "疫苗",
         "appointment": "就诊",
+        "lab": "化验",
         "consultation": "会诊",
     }
     events = data["events"]
@@ -4756,6 +5092,9 @@ async def family_overview(days: int = 7):
     appointments = await asyncio.to_thread(
         store.list_appointments, None, None, False, 100000, 0
     )
+    lab_results = await asyncio.to_thread(
+        store.list_lab_results, None, None, None, 0, 100000, 0
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -4915,6 +5254,26 @@ async def family_overview(days: int = 7):
             elif not entry["next_due"] or due < entry["next_due"]:
                 entry["next_due"] = due
 
+    labs_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in lab_results:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = labs_by_profile.setdefault(profile, {
+            "count": 0, "abnormal": 0, "items": [],
+        })
+        entry["count"] += 1
+        if item.get("abnormal"):
+            entry["abnormal"] += 1
+            if len(entry["items"]) < 3:
+                value = f"{float(item.get('value') or 0):g}"
+                unit = str(item.get("unit") or "")
+                if unit:
+                    value += f" {unit}"
+                entry["items"].append(
+                    f"{item.get('item') or '化验'} {value}".strip()
+                )
+
     appointments_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in appointments:
         profile = item.get("profile") or ""
@@ -4979,6 +5338,9 @@ async def family_overview(days: int = 7):
         appointment = appointments_by_profile.get(name, {
             "upcoming": 0, "next": None,
         })
+        labs = labs_by_profile.get(name, {
+            "count": 0, "abnormal": 0, "items": [],
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -5013,6 +5375,7 @@ async def family_overview(days: int = 7):
             "symptoms": symptom,
             "vaccinations": vaccination,
             "appointments": appointment,
+            "labs": labs,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -5042,7 +5405,7 @@ async def export_family_overview_csv(days: int = 7):
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
-        "疫苗接种", "用药库存", "下次就诊",
+        "疫苗接种", "用药库存", "下次就诊", "化验异常",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -5135,6 +5498,15 @@ async def export_family_overview_csv(days: int = 7):
                 )
         else:
             visit_text = ""
+        labs_info = item.get("labs") or {}
+        lab_text = ""
+        if labs_info.get("count"):
+            lab_text = f"近 {days} 天 {int(labs_info['count'])} 条"
+            if labs_info.get("abnormal"):
+                lab_text += f"，异常 {int(labs_info['abnormal'])} 项"
+            names = [name for name in (labs_info.get("items") or []) if name]
+            if names:
+                lab_text += "（" + "；".join(names) + "）"
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -5152,6 +5524,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(vaccination_text),
             csv_safe_cell(stock_text),
             csv_safe_cell(visit_text),
+            csv_safe_cell(lab_text),
         ])
 
     buffer = io.StringIO()
@@ -5275,6 +5648,9 @@ async def export_health_dossier(
     appointments = await asyncio.to_thread(
         store.list_appointments, profile_key, None, False, 100000, 0
     )
+    lab_results = await asyncio.to_thread(
+        store.list_lab_results, profile_key, None, None, 0, 100000, 0
+    )
     if profile_key:
         reminders = await asyncio.to_thread(
             store.list_reminders, False, profile_key
@@ -5361,6 +5737,35 @@ async def export_health_dossier(
             lines.append(f"- {label}：{value} {unit}{suffix}")
     else:
         lines.append("- 暂无健康指标记录")
+    lines.append("")
+
+    lines.append("## 最近化验")
+    if lab_results:
+        for item in lab_results:
+            value = f"{float(item.get('value') or 0):g}"
+            unit = str(item.get("unit") or "")
+            if unit:
+                value += f" {unit}"
+            suffix = ""
+            if item.get("abnormal_low"):
+                suffix = "（偏低）"
+            elif item.get("abnormal_high"):
+                suffix = "（偏高）"
+            ref_text = str(item.get("ref_text") or "")
+            details = [
+                str(item.get("tested_at") or "").replace("T", " ")[:16],
+            ]
+            if ref_text:
+                details.append(f"参考 {ref_text}")
+            if item.get("lab_name"):
+                details.append(str(item["lab_name"]))
+            detail = f"- {item.get('item') or '化验'}：{value}{suffix}"
+            detail += f"（{'，'.join(part for part in details if part)}）"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂未记录化验结果")
     lines.append("")
 
     lines.append(f"## 近 {days} 天症状")

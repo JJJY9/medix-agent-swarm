@@ -4012,6 +4012,48 @@ html[data-theme="dark"] .medication-expiry-badge.is-expired {
   color: var(--ink-soft);
 }
 
+.lab-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.lab-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.lab-abnormal-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: #b4472f;
+}
+
+.lab-normal-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: #1f7a4d;
+  background: #e7f5ec;
+}
+
+html[data-theme="dark"] .lab-normal-badge {
+  color: #7ee2a8;
+  background: #14301f;
+}
+
 .appointment-status-badge {
   display: inline-block;
   margin-left: 4px;

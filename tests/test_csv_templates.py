@@ -17,6 +17,10 @@ EXPECTED_HEADERS = {
         "库存", "库存单位", "低库存阈值", "有效期",
     ],
     "reminders": ["到期日", "内容", "档案", "状态", "提前天数", "重复天数", "备注"],
+    "lab-results": [
+        "检测时间", "患者档案", "分组", "项目", "数值", "单位",
+        "参考下限", "参考上限", "化验机构", "备注",
+    ],
 }
 
 
@@ -60,6 +64,7 @@ def test_templates_can_be_imported(client_and_store):
         "symptoms": "/api/symptoms/import",
         "medications": "/api/medications/import",
         "reminders": "/api/reminders/import",
+        "lab-results": "/api/lab-results/import",
     }
     for kind, endpoint in endpoints.items():
         template = client.get(f"/api/templates/{kind}").content
@@ -77,3 +82,4 @@ def test_templates_can_be_imported(client_and_store):
     assert client.get(
         "/api/reminders", params={"include_done": True}
     ).json()["reminders"]
+    assert client.get("/api/lab-results").json()["lab_results"]

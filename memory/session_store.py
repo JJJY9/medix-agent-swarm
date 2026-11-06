@@ -71,6 +71,13 @@ MAX_APPOINTMENT_TITLE_LENGTH = 120
 MAX_APPOINTMENT_TEXT_LENGTH = 60
 MAX_APPOINTMENT_NOTE_LENGTH = 300
 APPOINTMENT_STATUSES = ("upcoming", "completed", "cancelled")
+#: 化验结果
+MAX_LAB_ITEM_LENGTH = 80
+MAX_LAB_PANEL_LENGTH = 60
+MAX_LAB_UNIT_LENGTH = 20
+MAX_LAB_NAME_LENGTH = 80
+MAX_LAB_NOTE_LENGTH = 300
+MAX_LAB_VALUE = 1000000000.0
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -98,6 +105,7 @@ IMPORT_LIST_LIMITS = {
     "medication_logs": 100000,
     "vaccinations": 100000,
     "appointments": 100000,
+    "lab_results": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -705,6 +713,100 @@ def _appointment_view_fields(
     }
 
 
+def _normalize_lab_bound(value: Any, label: str) -> Optional[float]:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{label}应为数字")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{label}应为数字")
+    if not math.isfinite(number) or abs(number) > MAX_LAB_VALUE:
+        raise ValueError(f"{label}超出支持范围")
+    return round(number, 4)
+
+
+def _normalize_lab_result(
+    profile: str,
+    panel: str,
+    item: str,
+    value: Any,
+    unit: str,
+    ref_low: Any,
+    ref_high: Any,
+    tested_at: str,
+    lab_name: str,
+    note: str,
+) -> Dict[str, Any]:
+    """校验一条化验结果；非法时抛出 ValueError。"""
+    item_name = " ".join(str(item or "").split())[:MAX_LAB_ITEM_LENGTH]
+    if not item_name:
+        raise ValueError("化验项目不能为空")
+    if isinstance(value, bool):
+        raise ValueError("化验数值应为数字")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("化验数值应为数字")
+    if not math.isfinite(number) or abs(number) > MAX_LAB_VALUE:
+        raise ValueError("化验数值超出支持范围")
+    low = _normalize_lab_bound(ref_low, "参考下限")
+    high = _normalize_lab_bound(ref_high, "参考上限")
+    if low is not None and high is not None and low > high:
+        raise ValueError("参考下限不能高于参考上限")
+    tested = str(tested_at or "").strip()[:40]
+    if not tested:
+        tested = datetime.now().isoformat(timespec="minutes")
+    else:
+        tested = _canonical_local_time(tested)
+        if tested is None:
+            raise ValueError("检测时间格式应为 YYYY-MM-DD 或 ISO 时间")
+        if _is_future_timestamp(tested):
+            raise ValueError("检测时间不能晚于当前时间")
+    return {
+        "profile": _normalize_profile_name(profile),
+        "panel": " ".join(str(panel or "").split())[:MAX_LAB_PANEL_LENGTH],
+        "item": item_name,
+        "value": round(number, 6),
+        "unit": " ".join(str(unit or "").split())[:MAX_LAB_UNIT_LENGTH],
+        "ref_low": low,
+        "ref_high": high,
+        "tested_at": tested,
+        "lab_name": " ".join(str(lab_name or "").split())[
+            :MAX_LAB_NAME_LENGTH
+        ],
+        "note": " ".join(str(note or "").split())[:MAX_LAB_NOTE_LENGTH],
+    }
+
+
+def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """补充参考范围文本与偏高/偏低标记。"""
+    value = float(row.get("value") or 0)
+    low = row.get("ref_low")
+    high = row.get("ref_high")
+    low_value = None if low is None else float(low)
+    high_value = None if high is None else float(high)
+    abnormal_low = low_value is not None and value < low_value
+    abnormal_high = high_value is not None and value > high_value
+    if low_value is not None and high_value is not None:
+        ref_text = f"{low_value:g}–{high_value:g}"
+    elif low_value is not None:
+        ref_text = f"≥{low_value:g}"
+    elif high_value is not None:
+        ref_text = f"≤{high_value:g}"
+    else:
+        ref_text = ""
+    return {
+        "ref_low": low_value,
+        "ref_high": high_value,
+        "ref_text": ref_text,
+        "abnormal_low": abnormal_low,
+        "abnormal_high": abnormal_high,
+        "abnormal": abnormal_low or abnormal_high,
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -932,6 +1034,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "medication_logs",
     "vaccinations",
     "appointments",
+    "lab_results",
     "audit_log",
 )
 
@@ -1154,6 +1257,25 @@ class SessionStore:
                     ON appointments(profile, scheduled_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_appointments_status_time
                     ON appointments(status, scheduled_at);
+                CREATE TABLE IF NOT EXISTS lab_results (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile    TEXT NOT NULL DEFAULT '',
+                    panel      TEXT NOT NULL DEFAULT '',
+                    item       TEXT NOT NULL,
+                    value      REAL NOT NULL,
+                    unit       TEXT NOT NULL DEFAULT '',
+                    ref_low    REAL,
+                    ref_high   REAL,
+                    tested_at  TEXT NOT NULL,
+                    lab_name   TEXT NOT NULL DEFAULT '',
+                    note       TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_results_profile_time
+                    ON lab_results(profile, tested_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_lab_results_item_time
+                    ON lab_results(item, tested_at DESC);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1452,6 +1574,7 @@ class SessionStore:
                 ("medication_logs", "profile"),
                 ("vaccinations", "profile"),
                 ("appointments", "profile"),
+                ("lab_results", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2497,6 +2620,7 @@ class SessionStore:
             "medication_logs": self.list_medication_logs(limit=100000),
             "vaccinations": self.list_vaccinations(limit=100000),
             "appointments": self.list_appointments(limit=100000),
+            "lab_results": self.list_lab_results(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -2525,6 +2649,7 @@ class SessionStore:
         raw_medication_logs = data.get("medication_logs")
         raw_vaccinations = data.get("vaccinations")
         raw_appointments = data.get("appointments")
+        raw_lab_results = data.get("lab_results")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -2536,6 +2661,7 @@ class SessionStore:
             or isinstance(raw_medication_logs, list)
             or isinstance(raw_vaccinations, list)
             or isinstance(raw_appointments, list)
+            or isinstance(raw_lab_results, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -2550,6 +2676,9 @@ class SessionStore:
             and not isinstance(raw_symptoms, list)
             and not isinstance(raw_medications, list)
             and not isinstance(raw_medication_logs, list)
+            and not isinstance(raw_vaccinations, list)
+            and not isinstance(raw_appointments, list)
+            and not isinstance(raw_lab_results, list)
             and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
@@ -2566,6 +2695,7 @@ class SessionStore:
             ("medication_logs", "用药打卡", raw_medication_logs),
             ("vaccinations", "疫苗接种", raw_vaccinations),
             ("appointments", "就诊预约", raw_appointments),
+            ("lab_results", "化验结果", raw_lab_results),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -3189,6 +3319,62 @@ class SessionStore:
                     if raw_id > 0 and appointment_id > 0:
                         raw_appointment_id_map[raw_id] = appointment_id
 
+            lab_results_imported = 0
+            if isinstance(raw_lab_results, list):
+                for raw in raw_lab_results[
+                    :IMPORT_LIST_LIMITS["lab_results"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_lab_result(
+                            raw.get("profile") or "",
+                            raw.get("panel") or "",
+                            raw.get("item") or "",
+                            raw.get("value"),
+                            raw.get("unit") or "",
+                            raw.get("ref_low"),
+                            raw.get("ref_high"),
+                            raw.get("tested_at") or "",
+                            raw.get("lab_name") or "",
+                            raw.get("note") or "",
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM lab_results
+                         WHERE profile = ? AND item = ? AND tested_at = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["item"],
+                            normalized["tested_at"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO lab_results(
+                            profile, panel, item, value, unit, ref_low,
+                            ref_high, tested_at, lab_name, note,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"], normalized["panel"],
+                            normalized["item"], normalized["value"],
+                            normalized["unit"], normalized["ref_low"],
+                            normalized["ref_high"], normalized["tested_at"],
+                            normalized["lab_name"], normalized["note"],
+                            str(raw.get("created_at") or now)[:40],
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    lab_results_imported += 1
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -3434,6 +3620,7 @@ class SessionStore:
             "medication_logs": medication_logs_imported,
             "vaccinations": vaccinations_imported,
             "appointments": appointments_imported,
+            "lab_results": lab_results_imported,
             "audit_log": audit_imported,
         }
 
@@ -3687,6 +3874,7 @@ class SessionStore:
                     ("medication_logs", "profile"),
                     ("vaccinations", "profile"),
                     ("appointments", "profile"),
+                    ("lab_results", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -3733,6 +3921,7 @@ class SessionStore:
                 "medication_logs",
                 "vaccinations",
                 "appointments",
+                "lab_results",
                 "sessions",
             ):
                 self._conn.execute(
@@ -4362,6 +4551,201 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM appointments WHERE id = ?",
                 (int(appointment_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_lab_result(
+        self,
+        profile: str,
+        item: str,
+        value: Any,
+        unit: str = "",
+        ref_low: Any = None,
+        ref_high: Any = None,
+        tested_at: str = "",
+        panel: str = "",
+        lab_name: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """新增一条化验结果并返回完整行。"""
+        normalized = _normalize_lab_result(
+            profile, panel, item, value, unit,
+            ref_low, ref_high, tested_at, lab_name, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO lab_results(
+                    profile, panel, item, value, unit, ref_low, ref_high,
+                    tested_at, lab_name, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["panel"],
+                    normalized["item"], normalized["value"],
+                    normalized["unit"], normalized["ref_low"],
+                    normalized["ref_high"], normalized["tested_at"],
+                    normalized["lab_name"], normalized["note"],
+                    now, now,
+                ),
+            )
+            lab_id = int(cursor.lastrowid)
+        data = {"id": lab_id, **normalized, "created_at": now,
+                "updated_at": now}
+        return {**data, **_lab_result_view_fields(data)}
+
+    def update_lab_result(
+        self,
+        lab_id: int,
+        profile: str,
+        item: str,
+        value: Any,
+        unit: str = "",
+        ref_low: Any = None,
+        ref_high: Any = None,
+        tested_at: str = "",
+        panel: str = "",
+        lab_name: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条化验结果；记录不存在时返回 None。"""
+        normalized = _normalize_lab_result(
+            profile, panel, item, value, unit,
+            ref_low, ref_high, tested_at, lab_name, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE lab_results
+                   SET profile = ?, panel = ?, item = ?, value = ?,
+                       unit = ?, ref_low = ?, ref_high = ?, tested_at = ?,
+                       lab_name = ?, note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["panel"],
+                    normalized["item"], normalized["value"],
+                    normalized["unit"], normalized["ref_low"],
+                    normalized["ref_high"], normalized["tested_at"],
+                    normalized["lab_name"], normalized["note"], now,
+                    int(lab_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_lab_result(lab_id)
+
+    def get_lab_result(self, lab_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, panel, item, value, unit, ref_low,
+                       ref_high, tested_at, lab_name, note,
+                       created_at, updated_at
+                  FROM lab_results WHERE id = ?
+                """,
+                (int(lab_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        return {**data, **_lab_result_view_fields(data)}
+
+    def list_lab_results(
+        self,
+        profile: Optional[str] = None,
+        item: Optional[str] = None,
+        panel: Optional[str] = None,
+        days: int = 0,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        try:
+            offset = _bounded_offset(offset)
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        item_key = " ".join(str(item or "").split())[:MAX_LAB_ITEM_LENGTH]
+        if item_key:
+            conditions.append("item = ?")
+            params.append(item_key)
+        panel_key = " ".join(str(panel or "").split())[:MAX_LAB_PANEL_LENGTH]
+        if panel_key:
+            conditions.append("panel = ?")
+            params.append(panel_key)
+        cutoff = _days_cutoff(days)
+        if cutoff:
+            conditions.append("substr(tested_at, 1, 10) >= ?")
+            params.append(cutoff[:10])
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, panel, item, value, unit, ref_low,
+                       ref_high, tested_at, lab_name, note,
+                       created_at, updated_at
+                  FROM lab_results
+                 {where}
+                 ORDER BY tested_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+        return [
+            {**dict(row), **_lab_result_view_fields(dict(row))}
+            for row in rows
+        ]
+
+    def latest_lab_results(
+        self, profile: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """每个化验项目最近一次结果，用于计算器预填与摘要。"""
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT id, profile, panel, item, value, unit, ref_low,
+                           ref_high, tested_at, lab_name, note,
+                           created_at, updated_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY item
+                               ORDER BY tested_at DESC, id DESC
+                           ) AS row_number
+                      FROM lab_results
+                     {where}
+                )
+                WHERE row_number = 1
+                ORDER BY item ASC
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                **{key: row[key] for key in row.keys()
+                   if key != "row_number"},
+                **_lab_result_view_fields(dict(row)),
+            }
+            for row in rows
+        ]
+
+    def delete_lab_result(self, lab_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM lab_results WHERE id = ?",
+                (int(lab_id),),
             )
             return cursor.rowcount > 0
 
