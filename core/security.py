@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import logging
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -159,3 +160,34 @@ def configure_server_logging() -> None:
                 )
             except Exception:
                 pass
+    install_access_log_query_filter()
+
+
+class _AccessLogQueryFilter(logging.Filter):
+    """删除 uvicorn 访问日志中的查询串，避免患者搜索词/档案名入日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            args = record.args
+            if isinstance(args, tuple) and len(args) >= 3:
+                path = args[2]
+                if isinstance(path, str) and "?" in path:
+                    updated = list(args)
+                    updated[2] = path.split("?", 1)[0] + "?<redacted>"
+                    record.args = tuple(updated)
+        except Exception:
+            pass
+        return True
+
+
+def install_access_log_query_filter() -> None:
+    """给 uvicorn.access 安装查询串脱敏过滤器（可重复调用）。"""
+    try:
+        access_logger = logging.getLogger("uvicorn.access")
+        if not any(
+            isinstance(item, _AccessLogQueryFilter)
+            for item in access_logger.filters
+        ):
+            access_logger.addFilter(_AccessLogQueryFilter())
+    except Exception:
+        pass

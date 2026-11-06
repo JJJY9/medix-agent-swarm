@@ -104,7 +104,11 @@ class WebSearchTool:
 
         for attempt in range(retry_count + 1):
             try:
-                logger.info(f"Web searching (attempt {attempt + 1}): {query} (max_results={max_results})")
+                logger.info(
+                    f"Web searching (attempt {attempt + 1}): "
+                    f"query_length={len(str(query or ''))} "
+                    f"(max_results={max_results})"
+                )
 
                 # 在查询中添加医学相关关键词，提高结果相关性
                 enhanced_query = f"{query} 医学" if "医学" not in query else query
@@ -161,10 +165,16 @@ class WebSearchTool:
                         break
 
                 if results:
-                    logger.info(f"Found {len(results)} results for: {query}")
+                    logger.info(
+                        f"Found {len(results)} results "
+                        f"(query_length={len(str(query or ''))})"
+                    )
                     return results
                 else:
-                    logger.warning(f"No results found for: {query}")
+                    logger.warning(
+                        "No results found "
+                        f"(query_length={len(str(query or ''))})"
+                    )
 
             except Exception as e:
                 logger.warning(f"Web search error (attempt {attempt + 1}): {e}")

@@ -34,7 +34,7 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
             "recommendation": "就医建议"
         }
     """
-    logger.info(f"Assessing risk: symptoms={symptoms}")
+    logger.info(f"Assessing risk: symptom_length={len(str(symptoms or ''))}")
 
     symptoms = str(symptoms or "").strip()
     symptom_list = [s.strip() for s in symptoms.split(",") if s.strip()]

@@ -34,7 +34,10 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
             "organization": "发布机构"
         }
     """
-    logger.info(f"Searching clinical guidelines for: {query} (max_results={max_results})")
+    logger.info(
+        "Searching clinical guidelines: "
+        f"query_length={len(str(query or ''))}, max_results={max_results}"
+    )
 
     try:
         max_results = int(max_results)
@@ -89,7 +92,10 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
         }
     else:
         # 未找到相关内容
-        logger.warning(f"No clinical guidelines found in vector DB for {query}")
+        logger.warning(
+            "No clinical guidelines found in vector DB "
+            f"(query_length={len(str(query or ''))})"
+        )
         return {
             "answer": f"未找到'{query}'的相关临床指南，建议使用更具体的疾病名称或联系专业机构获取权威指南。",
             "guideline_title": "",
