@@ -291,7 +291,7 @@ def test_medications_csv_export_includes_counts(client_and_store):
     assert rows[1][8] != ""
     assert rows[1][9] == ""
     assert rows[1][10] == ""
-    assert rows[1][11:] == ["", "", "0", "", ""]
+    assert rows[1][11:16] == ["", "", "0", "", ""]
 
     client.delete(f"/api/medications/{medication['id']}")
     imported = client.post(
@@ -371,7 +371,8 @@ def test_medications_csv_export_and_import(client_and_store):
     assert text.splitlines()[0] == (
         "药物名称,剂量,频次,患者档案,状态,备注,"
         "今日次数,近7天次数,最近服用,近7天应服,依从率,"
-        "剩余库存,库存单位,低库存阈值,有效期,库存与效期提示"
+        "剩余库存,库存单位,低库存阈值,有效期,库存与效期提示,"
+        "开始日期,停药日期,停药原因"
     )
     assert "氨氯地平" in text
     assert "布洛芬" not in text

@@ -217,7 +217,7 @@ def test_medication_stock_csv_roundtrip(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][11:] == [
+    assert rows[0][11:16] == [
         "剩余库存", "库存单位", "低库存阈值", "有效期", "库存与效期提示",
     ]
     assert rows[1][11] == "12"

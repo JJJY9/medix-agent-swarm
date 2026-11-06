@@ -513,6 +513,9 @@ class MedicationRequest(StrictRequestModel):
     expiry_date: str = Field(
         "", max_length=40, description="有效期 YYYY-MM-DD"
     )
+    started_at: str = Field("", max_length=40, description="开始用药日期")
+    stopped_at: str = Field("", max_length=40, description="停药日期")
+    stop_reason: str = Field("", max_length=200, description="停药原因")
 
 
 class MedicationLogRequest(StrictRequestModel):
@@ -533,6 +536,9 @@ class MedicationUpdateRequest(StrictRequestModel):
     stock_unit: Optional[str] = Field(None, max_length=10)
     low_stock_threshold: Optional[float] = Field(None, ge=0, le=1000000)
     expiry_date: Optional[str] = Field(None, max_length=40)
+    started_at: Optional[str] = Field(None, max_length=40)
+    stopped_at: Optional[str] = Field(None, max_length=40)
+    stop_reason: Optional[str] = Field(None, max_length=200)
 
 
 class VaccinationRequest(StrictRequestModel):
@@ -865,10 +871,11 @@ CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "headers": [
             "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
             "库存", "库存单位", "低库存阈值", "有效期",
+            "开始日期", "停药日期", "停药原因",
         ],
         "example": [
             "氨氯地平", "5 mg", "每日一次", "妈妈", "在用", "早餐后",
-            "30", "片", "7", "2027-01-01",
+            "30", "片", "7", "2027-01-01", "2026-01-01", "", "",
         ],
     },
     "reminders": {
@@ -2482,6 +2489,7 @@ async def export_medications_csv(
         "药物名称", "剂量", "频次", "患者档案", "状态", "备注",
         "今日次数", "近7天次数", "最近服用", "近7天应服", "依从率",
         "剩余库存", "库存单位", "低库存阈值", "有效期", "库存与效期提示",
+        "开始日期", "停药日期", "停药原因",
     ]]
     for item in items:
         expected = int(item.get("expected_week_doses") or 0)
@@ -2513,6 +2521,9 @@ async def export_medications_csv(
             f"{float(item.get('low_stock_threshold') or 0):g}",
             csv_safe_cell(item.get("expiry_date", "")),
             csv_safe_cell("、".join(alerts)),
+            csv_safe_cell(item.get("started_at", "")),
+            csv_safe_cell(item.get("stopped_at", "")),
+            csv_safe_cell(item.get("stop_reason", "")),
         ])
 
     buffer = io.StringIO()
@@ -2621,6 +2632,10 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
         "库存单位": "stock_unit",
         "低库存阈值": "low_stock_threshold",
         "有效期": "expiry_date",
+        "开始日期": "started_at",
+        "开始用药": "started_at",
+        "停药日期": "stopped_at",
+        "停药原因": "stop_reason",
     }
 
     records = []
@@ -2655,6 +2670,9 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             "stock_unit": mapped.get("stock_unit", ""),
             "low_stock_threshold": mapped.get("low_stock_threshold") or 0,
             "expiry_date": mapped.get("expiry_date", ""),
+            "started_at": mapped.get("started_at", ""),
+            "stopped_at": mapped.get("stopped_at", ""),
+            "stop_reason": mapped.get("stop_reason", ""),
         })
 
     if not records:
@@ -2699,6 +2717,9 @@ async def add_medication(request: MedicationRequest):
         request.stock_unit,
         request.low_stock_threshold,
         request.expiry_date,
+        request.started_at,
+        request.stopped_at,
+        request.stop_reason,
     )
     if item is None:
         raise HTTPException(
@@ -2727,6 +2748,7 @@ async def update_medication(
     extra: Dict[str, Any] = {}
     for key in (
         "stock", "stock_unit", "low_stock_threshold", "expiry_date",
+        "started_at", "stopped_at", "stop_reason",
     ):
         if key in fields:
             extra[key] = merged.get(key)
@@ -6584,6 +6606,12 @@ async def export_health_dossier(
                     detail += "（已过期）"
                 elif item.get("expiring_soon"):
                     detail += "（即将过期）"
+            if item.get("started_at"):
+                detail += f"；开始 {item['started_at']}"
+            if item.get("stopped_at"):
+                detail += f"；停药 {item['stopped_at']}"
+                if item.get("stop_reason"):
+                    detail += f"（{item['stop_reason']}）"
             detail += "）"
             lines.append(detail)
     else:

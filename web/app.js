@@ -508,6 +508,9 @@ const els = {
   medicationStockUnit: document.getElementById('medication-stock-unit'),
   medicationLowStock: document.getElementById('medication-low-stock'),
   medicationExpiry: document.getElementById('medication-expiry'),
+  medicationStartedAt: document.getElementById('medication-started-at'),
+  medicationStoppedAt: document.getElementById('medication-stopped-at'),
+  medicationStopReason: document.getElementById('medication-stop-reason'),
   medicationNote: document.getElementById('medication-note'),
   medicationActive: document.getElementById('medication-active'),
   medicationSave: document.getElementById('medication-save'),
@@ -11352,6 +11355,9 @@ function resetMedicationForm() {
   els.medicationStockUnit.value = '';
   els.medicationLowStock.value = '0';
   els.medicationExpiry.value = '';
+  els.medicationStartedAt.value = '';
+  els.medicationStoppedAt.value = '';
+  els.medicationStopReason.value = '';
   els.medicationNote.value = '';
   els.medicationActive.checked = true;
   els.medicationSave.textContent = '添加药物';
@@ -11487,6 +11493,12 @@ function renderMedications(items) {
     }
     if (item.last_taken_at) {
       metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
+    }
+    if (item.started_at) {
+      metaParts.push(`开始 ${item.started_at}`);
+    }
+    if (item.stopped_at) {
+      metaParts.push(`停药 ${item.stopped_at}`);
     }
     meta.textContent = metaParts.join(' · ');
 
@@ -12773,6 +12785,11 @@ function editMedication(item) {
       : item.low_stock_threshold
   );
   els.medicationExpiry.value = String(item.expiry_date || '').slice(0, 10);
+  els.medicationStartedAt.value =
+    String(item.started_at || '').slice(0, 10);
+  els.medicationStoppedAt.value =
+    String(item.stopped_at || '').slice(0, 10);
+  els.medicationStopReason.value = item.stop_reason || '';
   els.medicationNote.value = item.note || '';
   els.medicationActive.checked = Boolean(item.active);
   els.medicationSave.textContent = '保存修改';
@@ -12816,6 +12833,9 @@ async function saveMedication() {
     stock_unit: (els.medicationStockUnit.value || '').trim(),
     low_stock_threshold: threshold,
     expiry_date: els.medicationExpiry.value || '',
+    started_at: els.medicationStartedAt.value || '',
+    stopped_at: els.medicationStoppedAt.value || '',
+    stop_reason: (els.medicationStopReason.value || '').trim(),
   };
 
   medicationSaving = true;
