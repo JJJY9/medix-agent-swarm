@@ -223,7 +223,10 @@ class MedicalKnowledgeBase:
         Returns:
             文档列表，每个文档包含 id, content, metadata, score
         """
-        logger.debug(f"Searching for: {query} (top_k={top_k}, filter_type={filter_type})")
+        logger.debug(
+            f"Searching knowledge base (query length={len(str(query or ''))}, "
+            f"top_k={top_k}, filter_type={filter_type})"
+        )
 
         # 向量化查询
         query_vector = self.embedding_model.encode([query])[0]

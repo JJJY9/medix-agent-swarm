@@ -469,25 +469,29 @@ class SwarmCoordinator:
         # 注意：短期记忆已经在 Agent Loop 中保存了，这里不需要重复保存
 
         # 保存到长期记忆
-        try:
-            memory_id = await asyncio.to_thread(
-                self.long_term_memory.add_session_summary,
-                session_id=session_id,
-                question=question,
-                answer=final_answer,
-                user_id=memory_scope,
-                metadata={
-                    "mode": mode,
-                    "subtasks_count": len(subtasks),
-                    "total_time": (end_time - start_time).total_seconds(),
-                },
-            )
-            if memory_id:
-                logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
-            else:
-                logger.warning(f"Long-term memory not saved (session={session_id}, mode={mode})")
-        except Exception as e:
-            logger.error(f"Failed to save to long-term memory: {e}")
+        if self.session_store.is_session_deleted(session_id):
+            # 会诊进行中用户已删除会话：不能再把总结写回外部记忆
+            logger.info(f"Session deleted, skip long-term memory (session={session_id})")
+        else:
+            try:
+                memory_id = await asyncio.to_thread(
+                    self.long_term_memory.add_session_summary,
+                    session_id=session_id,
+                    question=question,
+                    answer=final_answer,
+                    user_id=memory_scope,
+                    metadata={
+                        "mode": mode,
+                        "subtasks_count": len(subtasks),
+                        "total_time": (end_time - start_time).total_seconds(),
+                    },
+                )
+                if memory_id:
+                    logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
+                else:
+                    logger.warning(f"Long-term memory not saved (session={session_id}, mode={mode})")
+            except Exception as e:
+                logger.error(f"Failed to save to long-term memory: {e}")
 
         # 持久化到 SQLite，供历史列表与重启恢复使用
         result['assistant_message_id'] = await asyncio.to_thread(
@@ -639,9 +643,15 @@ class SwarmCoordinator:
                 start_time=start_time,
                 end_time=end_time
             )
-            await asyncio.to_thread(
-                self.session_manager.save_summary, summary
-            )
+            if self.session_store.is_session_deleted(session_id):
+                # 会话已删除，不再落盘包含主诉的总结文件
+                logger.info(
+                    f"Session deleted, skip session summary (session={session_id})"
+                )
+            else:
+                await asyncio.to_thread(
+                    self.session_manager.save_summary, summary
+                )
         except Exception as e:
             logger.error(f"Failed to generate session summary: {e}")
 
@@ -649,29 +659,34 @@ class SwarmCoordinator:
         # Agent Loop 保存了完整的对话历史（user + assistant + tool messages）
 
         # 保存到 Mem0 长期记忆
-        try:
-            # 保存会话总结
-            memory_id = await asyncio.to_thread(
-                self.long_term_memory.add_session_summary,
-                session_id=session_id,
-                question=question,
-                answer=final_answer,
-                user_id=memory_scope or session_memory_scope(session_id),
-                metadata={
-                    "mode": "swarm",
-                    "agents_count": len(shared_context.agent_contributions),
-                    "total_time": (end_time - start_time).total_seconds(),
-                    "timeout_occurred": timeout_occurred
-                },
+        if self.session_store.is_session_deleted(session_id):
+            logger.info(
+                f"Session deleted, skip Mem0 summary (session={session_id})"
             )
+        else:
+            try:
+                # 保存会话总结
+                memory_id = await asyncio.to_thread(
+                    self.long_term_memory.add_session_summary,
+                    session_id=session_id,
+                    question=question,
+                    answer=final_answer,
+                    user_id=memory_scope or session_memory_scope(session_id),
+                    metadata={
+                        "mode": "swarm",
+                        "agents_count": len(shared_context.agent_contributions),
+                        "total_time": (end_time - start_time).total_seconds(),
+                        "timeout_occurred": timeout_occurred
+                    },
+                )
 
-            if memory_id:
-                logger.info(f"Saved to Mem0 long-term memory (session={session_id})")
-            else:
-                logger.warning(f"Mem0 long-term memory not saved (session={session_id})")
+                if memory_id:
+                    logger.info(f"Saved to Mem0 long-term memory (session={session_id})")
+                else:
+                    logger.warning(f"Mem0 long-term memory not saved (session={session_id})")
 
-        except Exception as e:
-            logger.error(f"Failed to save to Mem0: {e}")
+            except Exception as e:
+                logger.error(f"Failed to save to Mem0: {e}")
 
         # 发布 Swarm 完成事件
         shared_context.publish_event(Event(

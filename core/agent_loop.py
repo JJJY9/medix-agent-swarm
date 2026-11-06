@@ -205,7 +205,7 @@ class AgentLoop:
                         for tool_call in to_execute:
                             # 增加计数
                             tool_call_count += 1
-                            logger.debug(f"Executing: {tool_call.name}({tool_call.arguments}) - 第 {tool_call_count} 次调用")
+                            logger.debug(f"Executing: {tool_call.name} (args length={len(str(tool_call.arguments or ''))}) - 第 {tool_call_count} 次调用")
 
                             # Harness Engineering: 验证调用
                             if self.validator:
