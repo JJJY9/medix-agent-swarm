@@ -30,7 +30,9 @@ def test_summary_path_stays_inside_base_dir(tmp_path):
         assert path.resolve().is_relative_to(base.resolve())
         assert path.suffix == ".md"
 
-    assert manager._get_summary_path("会话-1").name == "会话-1.md"
+    # 文件名带原始 ID 的短哈希，避免清理后同名的会话互相覆盖
+    name = manager._get_summary_path("会话-1").name
+    assert name.startswith("会话-1-") and name.endswith(".md")
 
 
 def test_registered_secret_is_redacted():

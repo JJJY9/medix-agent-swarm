@@ -69,7 +69,9 @@ def get_backup_dir() -> Path:
     return Path(raw).expanduser() if raw else DEFAULT_BACKUP_DIR
 
 
-def _prune_backups(directory: Path, keep: int) -> None:
+def _prune_backups(
+    directory: Path, keep: int, protect: Optional[Path] = None
+) -> None:
     backups = sorted(
         (
             path
@@ -79,7 +81,13 @@ def _prune_backups(directory: Path, keep: int) -> None:
         key=_backup_sort_key,
         reverse=True,
     )
-    for path in backups[keep:]:
+    # 刚创建的备份必须保留：即使系统时钟回拨导致文件名排在旧备份之后
+    candidates = [
+        path for path in backups
+        if protect is None or path.name != protect.name
+    ]
+    keep_others = max(0, keep - (1 if protect is not None else 0))
+    for path in candidates[keep_others:]:
         try:
             path.unlink()
             logger.info(f"Removed old local backup: {path.name}")
@@ -168,6 +176,7 @@ def create_backup(
         _prune_backups(
             target_dir,
             max(1, keep if keep is not None else get_backup_keep()),
+            protect=path,
         )
 
     logger.info(f"Created local backup: {path.name}")
