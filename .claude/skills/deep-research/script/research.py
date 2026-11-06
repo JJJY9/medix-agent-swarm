@@ -67,13 +67,14 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
         # - recommendations: List[str]
 
         data_sources = _describe_data_sources(report.sources)
+        failed = bool(getattr(report, "failed", False))
         return {
             "answer": format_research_report(query, report, data_sources),
             "findings": report.key_findings,
             "confidence": "high" if report.confidence > 0.7 else "medium" if report.confidence > 0.4 else "low",
             "source_count": len(report.sources),
             "evidence_level": report.evidence_level,
-            "status": "completed",
+            "status": "error" if failed else "completed",
             "data_sources": data_sources
         }
 
@@ -129,8 +130,11 @@ def format_research_report(query: str, report, data_sources: str = "") -> str:
     if report.summary:
         output.append(f"综合分析：\n{report.summary}\n")
 
-    # 证据等级
-    output.append(f"证据等级：{report.evidence_level} 级")
+    # 证据等级；综合失败时没有等级可言
+    if report.evidence_level:
+        output.append(f"证据等级：{report.evidence_level} 级")
+    else:
+        output.append("证据等级：未生成（综合失败）")
 
     # 置信度
     confidence_percent = f"{report.confidence:.0%}"

@@ -120,6 +120,8 @@ class DeepResearchWorkflow:
                             # Milvus 返回的是字典列表
                             kb_results.extend(result)
 
+        # 多个子查询经常命中同一网页，按 URL 去重后再综合
+        web_results = self._dedupe_web_results(web_results)
         logger.info(f"Collected {len(web_results)} web results, {len(kb_results)} KB results")
         # 多个子查询经常命中同一段指南，去重后再交给证据综合，
         # 否则同一段内容会占满引用位并挤掉其他证据
@@ -140,6 +142,20 @@ class DeepResearchWorkflow:
 
         logger.info("DeepResearch completed")
         return report
+
+    @staticmethod
+    def _dedupe_web_results(items: List[Any]) -> List[Any]:
+        """按 URL 去重网页结果，保留首次出现的条目。"""
+        seen = set()
+        deduped = []
+        for item in items:
+            url = str(getattr(item, "url", "") or "").strip().lower()
+            key = url.rstrip("/")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
 
     @staticmethod
     def _dedupe_kb_results(

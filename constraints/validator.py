@@ -259,6 +259,12 @@ class ConstraintValidator:
             max_length = max_length_constraint.get('max_response_length')
             if len(output) > max_length:
                 violations.append(f"回答过长（{len(output)} > {max_length}字）")
+                try:
+                    limit = int(max_length)
+                except (TypeError, ValueError):
+                    limit = 0
+                if limit > 0:
+                    auto_fixable.append(f"truncate_response:{limit}")
 
         # 检查高危症状必须建议就医（复用急症红旗规则，识别否定与语境）
         if 'must_recommend_doctor_visit_if_high_risk' in all_constraints:

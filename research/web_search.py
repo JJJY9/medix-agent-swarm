@@ -5,6 +5,7 @@
 """
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from loguru import logger
 import asyncio
 import httpx
@@ -19,11 +20,16 @@ except ImportError:  # 离线测试环境可能没有安装 beautifulsoup4
 try:
     try:
         from ddgs import DDGS
+        # ddgs 支持的命名后端
+        _DDGS_BACKENDS = ("bing", "duckduckgo", "auto")
     except ImportError:
         from duckduckgo_search import DDGS
+        # 旧版 duckduckgo_search 只接受 api/html/lite
+        _DDGS_BACKENDS = ("api", "html", "lite")
     DDGS_AVAILABLE = True
 except ImportError:
     DDGS_AVAILABLE = False
+    _DDGS_BACKENDS = ()
     logger.error("DDGS not available. Install with: pip install ddgs")
 
 
@@ -107,9 +113,10 @@ class WebSearchTool:
                 results = []
                 search_results = []
 
-                # 尝试多个后端：bing → duckduckgo → auto
+                # 尝试多个后端：bing → duckduckgo → auto（旧包为 api/html/lite）
                 backend_errors = []
-                for backend in ("bing", "duckduckgo", "auto"):
+                backends = _DDGS_BACKENDS or ("auto",)
+                for backend in backends:
                     try:
                         ddgs = DDGS()
                         # DDGS.text 是同步阻塞调用，必须放到线程里，
@@ -189,11 +196,29 @@ class WebSearchTool:
         if allowed_domains is None:
             allowed_domains = self.medical_domains
 
-        filtered = []
-        for result in results:
-            # 检查 URL 是否包含白名单域名
-            if any(domain in result.url for domain in allowed_domains):
-                filtered.append(result)
+        normalized_domains = [
+            str(domain or "").strip().lower().strip(".")
+            for domain in allowed_domains
+            if str(domain or "").strip()
+        ]
+
+        def host_allowed(url: str) -> bool:
+            try:
+                host = (
+                    urlsplit(str(url or "")).hostname or ""
+                ).lower().rstrip(".")
+            except ValueError:
+                return False
+            if not host:
+                return False
+            return any(
+                host == domain or host.endswith("." + domain)
+                for domain in normalized_domains
+            )
+
+        filtered = [
+            result for result in results if host_allowed(result.url)
+        ]
 
         logger.info(f"Filtered {len(filtered)}/{len(results)} results by domain")
         return filtered
