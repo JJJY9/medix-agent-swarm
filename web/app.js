@@ -10442,6 +10442,45 @@ function formatLabValue(item) {
     : String(item.value || '');
 }
 
+function renderLabSparkline(series) {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  const width = 132;
+  const height = 30;
+  const pad = 3;
+  const values = series
+    .map((row) => Number(row.value))
+    .filter((value) => Number.isFinite(value));
+  if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const x = (index) => (
+    pad + ((width - pad * 2) * index) / (values.length - 1)
+  );
+  const y = (value) => (
+    height - pad - ((height - pad * 2) * (value - min)) / range
+  );
+  const svg = svgEl('svg', {
+    viewBox: `0 0 ${width} ${height}`,
+    class: 'lab-sparkline',
+    'aria-hidden': 'true',
+  });
+  svg.appendChild(svgEl('polyline', {
+    points: values.map((value, index) => (
+      `${x(index).toFixed(1)},${y(value).toFixed(1)}`
+    )).join(' '),
+    class: 'lab-sparkline-line',
+  }));
+  const last = values.length - 1;
+  svg.appendChild(svgEl('circle', {
+    cx: x(last).toFixed(1),
+    cy: y(values[last]).toFixed(1),
+    r: 2.2,
+    class: 'lab-sparkline-dot',
+  }));
+  return svg;
+}
+
 function renderLabs(items) {
   if (!els.labList) return;
   els.labList.replaceChildren();
@@ -10467,6 +10506,7 @@ function renderLabs(items) {
   ) {
     resetLabForm();
   }
+  const sparklineSeen = new Set();
 
   for (const item of items) {
     const li = document.createElement('li');
@@ -10501,6 +10541,21 @@ function renderLabs(items) {
     ].filter(Boolean).join(' · ');
 
     main.append(title, meta);
+    const series = (labItemsCache || [])
+      .filter((row) => (
+        row.item === item.item
+        && (row.unit || '') === (item.unit || '')
+      ))
+      .sort((a, b) => (
+        String(a.tested_at || '').localeCompare(String(b.tested_at || ''))
+      ))
+      .slice(-20);
+    const sparkline = renderLabSparkline(series);
+    const sparkKey = `${item.item}\u0000${item.unit || ''}`;
+    if (sparkline && !sparklineSeen.has(sparkKey)) {
+      sparklineSeen.add(sparkKey);
+      main.appendChild(sparkline);
+    }
     if (item.note) {
       const note = document.createElement('span');
       note.className = 'metric-note';
