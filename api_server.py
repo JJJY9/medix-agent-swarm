@@ -13,6 +13,7 @@ MediX 多智能体医疗助手 - Web API 服务
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import sys
@@ -1120,7 +1121,7 @@ async def require_access_token(request: Request, call_next):
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
-                headers={"Retry-After": str(max(1, int(retry_after)))},
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             ))
 
     if path in DIAGNOSE_PATHS:
@@ -1134,7 +1135,7 @@ async def require_access_token(request: Request, call_next):
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
-                headers={"Retry-After": str(max(1, int(retry_after)))},
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             ))
 
     knowledge_write = path in KNOWLEDGE_WRITE_PATHS or (
@@ -1152,7 +1153,7 @@ async def require_access_token(request: Request, call_next):
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
-                headers={"Retry-After": str(max(1, int(retry_after)))},
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
             ))
 
     response = add_security_headers(
@@ -6108,7 +6109,7 @@ def _empty_answer_reason() -> str:
 def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> Dict[str, Any]:
     """把 coordinator 的原始返回值整理成前端直接可用的结构。"""
     raw_agents = result.get("agents_involved") or []
-    return sanitize_json({
+    payload = {
         "answer": result.get("answer", ""),
         "disclaimer": result.get("disclaimer", ""),
         "suggestions": result.get("suggestions") or [],
@@ -6139,7 +6140,8 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
         "session_id": result.get("session_id"),
         "assistant_message_id": result.get("assistant_message_id"),
         "route_reason": result.get("route_reason"),
-    })
+    }
+    return sanitize_json(strip_lone_surrogates(payload))
 
 
 @app.post("/api/chat")
@@ -6209,9 +6211,11 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
     async def event_stream() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:
+            # 模型输出可能包含孤立代理码位，直接 encode 会让流中断
+            safe_payload = strip_lone_surrogates(payload)
             return (
                 "data: "
-                + json.dumps(payload, ensure_ascii=False, default=str)
+                + json.dumps(safe_payload, ensure_ascii=False, default=str)
                 + "\n\n"
             )
 

@@ -822,6 +822,18 @@ class SwarmCoordinator:
             )
             shared_context.complete_subtask(subtask.id, worker.agent_id, result)
             logger.info(f"{worker.agent_id}: Completed {subtask.type}")
+        except asyncio.CancelledError as e:
+            # 超时/断连会取消 gather，Worker 已消耗的 token 仍需计入本轮
+            failed_usage = getattr(e, "usage", None)
+            failed_calls = int(getattr(e, "llm_calls", 0) or 0)
+            if failed_usage or failed_calls:
+                shared_context.data.setdefault(
+                    "failed_usage", []
+                ).append({
+                    "usage": failed_usage or {},
+                    "llm_calls": failed_calls,
+                })
+            raise
         except Exception as e:
             logger.error(f"{worker.agent_id}: Error in {subtask.type}: {e}")
             # 失败子任务已消耗的 token 也要计入本轮用量
