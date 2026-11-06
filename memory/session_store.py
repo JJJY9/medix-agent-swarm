@@ -1309,6 +1309,34 @@ class SessionStore:
                     "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
                 )
 
+            # 旧版本用药表没有库存、单位与有效期字段，就地迁移
+            medication_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medications)"
+                )
+            }
+            for column, ddl in (
+                ("stock", "REAL"),
+                ("stock_unit", "TEXT NOT NULL DEFAULT ''"),
+                ("low_stock_threshold", "REAL NOT NULL DEFAULT 0"),
+                ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column not in medication_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE medications ADD COLUMN {column} {ddl}"
+                    )
+            log_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medication_logs)"
+                )
+            }
+            if "stock_delta" not in log_columns:
+                self._conn.execute(
+                    "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
+                )
+
             # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
             for table, column in (
                 ("health_metrics", "measured_at"),
