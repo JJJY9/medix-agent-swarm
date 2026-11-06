@@ -6349,6 +6349,16 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
       badge.textContent = metricGrade.label;
       value.append(' ', badge);
     }
+    const criticalAlerts = Array.isArray(item.critical_alerts)
+      ? item.critical_alerts
+      : [];
+    if (criticalAlerts.length) {
+      const badge = document.createElement('span');
+      badge.className = 'metric-critical-badge';
+      badge.textContent = '危急值';
+      badge.title = criticalAlerts.map((row) => row.message).join(' ');
+      value.append(' ', badge);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -8041,9 +8051,21 @@ function renderFamilyOverview(data) {
     chips.className = 'family-card-chips';
     for (const item of (profile.metrics || []).slice(0, 3)) {
       const unit = item.unit ? ` ${item.unit}` : '';
+      const critical = Array.isArray(item.critical_alerts)
+        && item.critical_alerts.length > 0;
       chips.appendChild(familyChip(
-        `${item.label} ${item.value}${unit}${item.over_target ? ' 超标' : ''}`,
-        item.over_target ? 'family-chip-alert' : ''
+        `${item.label} ${item.value}${unit}`
+        + (critical ? ' 危急' : item.over_target ? ' 超标' : ''),
+        critical || item.over_target ? 'family-chip-alert' : ''
+      ));
+    }
+    const criticalInfo = profile.critical_alerts || {};
+    if (criticalInfo.count) {
+      const names = (criticalInfo.items || []).filter(Boolean);
+      chips.appendChild(familyChip(
+        `危急值 ${criticalInfo.count} 项`
+        + (names.length ? ` · ${names.join('；')}` : ''),
+        'family-chip-alert'
       ));
     }
     const medications = profile.medications || {};
@@ -8178,8 +8200,21 @@ function familyOverviewText(data) {
     if (metrics.length) {
       parts.push(metrics.map((item) => (
         `${item.label} ${item.value}${item.unit ? ` ${item.unit}` : ''}`
-        + (item.over_target ? '（超标）' : '')
+        + (
+          Array.isArray(item.critical_alerts)
+          && item.critical_alerts.length
+            ? '（危急）'
+            : item.over_target ? '（超标）' : ''
+        )
       )).join('、'));
+    }
+    const criticalInfo = profile.critical_alerts || {};
+    if (criticalInfo.count) {
+      const names = (criticalInfo.items || []).filter(Boolean);
+      parts.push(
+        `危急值 ${criticalInfo.count} 项`
+        + (names.length ? `（${names.join('；')}）` : '')
+      );
     }
     const medications = profile.medications || {};
     if (medications.active) {
@@ -11260,11 +11295,13 @@ function renderTimeline(data) {
     if (event.alert) {
       const alertBadge = document.createElement('span');
       alertBadge.className = 'timeline-alert';
-      alertBadge.textContent = event.type === 'vaccination'
-        ? '到期'
-        : event.type === 'appointment'
-          ? '就诊'
-          : event.type === 'lab' ? '异常' : '超标';
+      alertBadge.textContent = event.critical
+        ? '危急'
+        : event.type === 'vaccination'
+          ? '到期'
+          : event.type === 'appointment'
+            ? '就诊'
+            : event.type === 'lab' ? '异常' : '超标';
       title.appendChild(alertBadge);
     }
 
@@ -12198,7 +12235,17 @@ async function addMetricRecord() {
       throw new Error(detail);
     }
 
-    setMetricsStatus(editing ? '已更新记录。' : '已保存记录。');
+    const alerts = Array.isArray(data.critical_alerts)
+      ? data.critical_alerts
+      : [];
+    if (alerts.length) {
+      setMetricsStatus(
+        `⚠ ${alerts.map((row) => row.message).join(' ')}`,
+        true
+      );
+    } else {
+      setMetricsStatus(editing ? '已更新记录。' : '已保存记录。');
+    }
     resetMetricForm();
     await refreshMetrics();
   } catch (err) {

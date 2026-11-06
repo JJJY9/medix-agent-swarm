@@ -234,10 +234,10 @@ def test_lab_results_in_timeline_dossier_and_family(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-1] == "化验异常"
+    assert rows[0][-2] == "化验异常"
     row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "异常 1 项" in row[-1]
-    assert "血红蛋白" in row[-1]
+    assert "异常 1 项" in row[-2]
+    assert "血红蛋白" in row[-2]
 
 
 def test_lab_results_backup_roundtrip_and_profile_rename(

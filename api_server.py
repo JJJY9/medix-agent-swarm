@@ -2325,6 +2325,12 @@ async def list_metrics(
         get_session_store().list_metrics,
         profile, metric, limit, days, offset, q,
     )
+    from memory.session_store import critical_metric_alerts
+
+    for item in items:
+        item["critical_alerts"] = critical_metric_alerts(
+            item.get("metric"), item.get("value1"), item.get("value2")
+        )
     return {"metrics": items}
 
 
@@ -3757,6 +3763,12 @@ async def latest_metrics(profile: Optional[str] = None, days: int = 0):
     items = await asyncio.to_thread(
         get_session_store().latest_metrics, profile, days
     )
+    from memory.session_store import critical_metric_alerts
+
+    for item in items:
+        item["critical_alerts"] = critical_metric_alerts(
+            item.get("metric"), item.get("value1"), item.get("value2")
+        )
     return {"metrics": items}
 
 
@@ -4198,6 +4210,13 @@ async def health_timeline(
                 item["metric"], item["value1"], item.get("value2"), target
             )
         )
+        from memory.session_store import critical_metric_alerts
+
+        critical_alerts = critical_metric_alerts(
+            item["metric"], item["value1"], item.get("value2")
+        )
+        if critical_alerts:
+            alert = True
         events.append({
             "type": "metric",
             "at": at,
@@ -4207,6 +4226,10 @@ async def health_timeline(
             "value": f"{value} {unit}".strip(),
             "note": item.get("note", ""),
             "alert": alert,
+            "critical": bool(critical_alerts),
+            "critical_message": (
+                critical_alerts[0]["message"] if critical_alerts else ""
+            ),
         })
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
@@ -4517,6 +4540,15 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
                 target,
             ):
                 entry["alerts"] += 1
+            else:
+                from memory.session_store import critical_metric_alerts
+
+                if critical_metric_alerts(
+                    item["metric"],
+                    item.get("value1"),
+                    item.get("value2"),
+                ):
+                    entry["alerts"] += 1
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
         if in_month(at):
@@ -4638,8 +4670,13 @@ async def add_metric(request: MetricRequest):
     )
     if item is None:
         raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
+    from memory.session_store import critical_metric_alerts
+
+    alerts = critical_metric_alerts(
+        item.get("metric"), item.get("value1"), item.get("value2")
+    )
     await record_audit("metric.create", f"{item['id']}·{item['metric']}")
-    return {"ok": True, "metric": item}
+    return {"ok": True, "metric": item, "critical_alerts": alerts}
 
 
 @app.patch("/api/metrics/{metric_id}")
@@ -4670,8 +4707,13 @@ async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
     )
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+    from memory.session_store import critical_metric_alerts
+
+    alerts = critical_metric_alerts(
+        item.get("metric"), item.get("value1"), item.get("value2")
+    )
     await record_audit("metric.update", f"{item['id']}·{item['metric']}")
-    return {"ok": True, "metric": item}
+    return {"ok": True, "metric": item, "critical_alerts": alerts}
 
 
 @app.delete("/api/metrics/{metric_id}")
@@ -5125,6 +5167,9 @@ async def family_overview(days: int = 7):
         return text
 
     metrics_by_profile: Dict[str, List[Dict[str, Any]]] = {}
+    critical_by_profile: Dict[str, Dict[str, Any]] = {}
+    from memory.session_store import critical_metric_alerts
+
     for item in latest_metrics:
         profile = item.get("profile") or ""
         if not profile:
@@ -5137,6 +5182,18 @@ async def family_overview(days: int = 7):
             over_target = metric_over_target(
                 metric, item.get("value1"), item.get("value2"), target
             )
+        alerts = critical_metric_alerts(
+            metric, item.get("value1"), item.get("value2")
+        )
+        if alerts:
+            entry = critical_by_profile.setdefault(profile, {
+                "count": 0, "items": [],
+            })
+            entry["count"] += 1
+            if len(entry["items"]) < 3:
+                entry["items"].append(
+                    f"{label} {format_metric_value(item)}"
+                )
         metrics_by_profile.setdefault(profile, []).append({
             "metric": metric,
             "label": label,
@@ -5144,6 +5201,7 @@ async def family_overview(days: int = 7):
             "unit": item.get("unit") or default_unit,
             "measured_at": item.get("measured_at", ""),
             "over_target": over_target,
+            "critical_alerts": alerts,
         })
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
@@ -5341,6 +5399,9 @@ async def family_overview(days: int = 7):
         labs = labs_by_profile.get(name, {
             "count": 0, "abnormal": 0, "items": [],
         })
+        critical = critical_by_profile.get(name, {
+            "count": 0, "items": [],
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -5376,6 +5437,7 @@ async def family_overview(days: int = 7):
             "vaccinations": vaccination,
             "appointments": appointment,
             "labs": labs,
+            "critical_alerts": critical,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -5405,7 +5467,7 @@ async def export_family_overview_csv(days: int = 7):
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
-        "疫苗接种", "用药库存", "下次就诊", "化验异常",
+        "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -5507,6 +5569,15 @@ async def export_family_overview_csv(days: int = 7):
             names = [name for name in (labs_info.get("items") or []) if name]
             if names:
                 lab_text += "（" + "；".join(names) + "）"
+        critical_info = item.get("critical_alerts") or {}
+        critical_text = ""
+        if critical_info.get("count"):
+            critical_text = f"{int(critical_info['count'])} 项"
+            names = [
+                name for name in (critical_info.get("items") or []) if name
+            ]
+            if names:
+                critical_text += "（" + "；".join(names) + "）"
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -5525,6 +5596,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(stock_text),
             csv_safe_cell(visit_text),
             csv_safe_cell(lab_text),
+            csv_safe_cell(critical_text),
         ])
 
     buffer = io.StringIO()
@@ -5732,6 +5804,12 @@ async def export_health_dossier(
                 metric, item["value1"], item.get("value2"), target
             ):
                 details.append("超标")
+            from memory.session_store import critical_metric_alerts
+
+            if critical_metric_alerts(
+                metric, item["value1"], item.get("value2")
+            ):
+                details.append("危急值")
             details = [part for part in details if part]
             suffix = f"（{'，'.join(details)}）" if details else ""
             lines.append(f"- {label}：{value} {unit}{suffix}")
