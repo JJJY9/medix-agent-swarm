@@ -166,6 +166,27 @@ def test_vaccinations_export_csv(client_and_store):
     assert rows[1][3] == "1"
 
 
+def test_vaccinations_api_backup_roundtrip(client_and_store):
+    client, _store = client_and_store
+    due = _future_days(21)
+    item = client.post("/api/vaccinations", json={
+        "profile": "妈妈",
+        "vaccine_name": "流感疫苗",
+        "dose_number": 1,
+        "next_due": due,
+    }).json()["vaccination"]
+
+    export = client.get("/api/sessions/export")
+    assert export.status_code == 200
+    data = export.json()
+    assert data["vaccinations"][0]["id"] == item["id"]
+    assert data["vaccinations"][0]["next_due"] == due
+
+    imported = client.post("/api/sessions/import", json=data)
+    assert imported.status_code == 200
+    assert imported.json()["vaccinations"] == 0
+
+
 def test_vaccinations_in_timeline_and_dossier(client_and_store):
     client, _store = client_and_store
     today = datetime.now().strftime("%Y-%m-%d")
