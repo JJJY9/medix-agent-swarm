@@ -1666,24 +1666,19 @@ async def export_sessions_csv(
     if risk_filter and risk_filter not in RISK_FILTER_VALUES:
         raise HTTPException(status_code=400, detail="不支持的风险筛选")
 
-    items: List[Dict[str, Any]] = []
-    offset = 0
-    while True:
-        batch = await asyncio.to_thread(
-            store.list_sessions,
-            200,
-            query,
-            offset,
-            favorites_only,
-            days,
-            archived,
-            tag,
-            profile,
-        )
-        items.extend(batch)
-        if len(batch) < 200:
-            break
-        offset += len(batch)
+    # 一次查询读取全部结果：分页 OFFSET 期间若有会话被更新，
+    # updated_at 排序会让同一行跨页漂移，导致导出漏行或重复
+    items = await asyncio.to_thread(
+        store.list_sessions,
+        100000,
+        query,
+        0,
+        favorites_only,
+        days,
+        archived,
+        tag,
+        profile,
+    )
 
     if risk_filter:
         filtered = []
@@ -2774,7 +2769,8 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         if prev_start <= str(item.get("taken_at") or "")[:10] < start
     ]
     raw_sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile, prev_start, "", 2000
+        store.list_sessions_for_timeline,
+        profile, prev_start, f"{end}T23:59:59", 100000,
     )
     sessions = [
         item for item in raw_sessions
@@ -2788,10 +2784,11 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     ]
     risk_level = ""
     if profile is not None and sessions:
-        latest_answers = await asyncio.to_thread(
-            store.latest_session_answers_by_profile
-        )
         profile_key = _normalized_profile_key(profile)
+        latest_answers = await asyncio.to_thread(
+            store.latest_session_answers_by_profile,
+            profile_key == "",
+        )
         for item in latest_answers:
             if (item.get("profile") or "") == profile_key:
                 risk_level = parse_risk_level(item.get("last_answer"))
@@ -2989,7 +2986,7 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             due_soon += 1
 
     streak = _streak_info(
-        await asyncio.to_thread(store.recorded_days, profile, 365)
+        await asyncio.to_thread(store.recorded_days, profile, 3650)
     )
 
     return {
@@ -3095,7 +3092,7 @@ async def health_timeline(
     )
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
-        profile, start, session_end, max(500, limit), True,
+        profile, start, session_end, 100000, True,
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
@@ -3341,7 +3338,8 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         store.list_medication_logs, None, profile, 100000, 0, 0
     )
     raw_sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile, start, "", 2000, True
+        store.list_sessions_for_timeline,
+        profile, start, f"{end}T23:59:59", 100000, True,
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
@@ -3484,7 +3482,7 @@ async def health_streak(profile: Optional[str] = None):
     from memory import get_session_store
 
     store = get_session_store()
-    days = await asyncio.to_thread(store.recorded_days, profile, 365)
+    days = await asyncio.to_thread(store.recorded_days, profile, 3650)
     info = _streak_info(days)
     info["profile"] = profile or ""
     return info
@@ -3906,13 +3904,13 @@ async def family_overview(days: int = 7):
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, None, cutoff, "", 2000
+        store.list_sessions_for_timeline, None, cutoff, "", 100000
     )
     latest_answers = await asyncio.to_thread(
         store.latest_session_answers_by_profile
     )
     recorded_days = await asyncio.to_thread(
-        store.recorded_days_by_profile, 365
+        store.recorded_days_by_profile, 3650
     )
     risk_by_profile: Dict[str, str] = {}
     for item in latest_answers:
@@ -4113,7 +4111,7 @@ async def export_family_overview_csv(days: int = 7):
     days = data["days"]
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
-        "待办提醒", "近7天症状", "近7天会诊", "最近活动",
+        "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -4299,10 +4297,10 @@ async def export_health_dossier(
             if not (item.get("profile") or "")
         ]
     sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile_key, cutoff, "", 200, True
+        store.list_sessions_for_timeline, profile_key, cutoff, "", 100000, True
     )
     streak = _streak_info(
-        await asyncio.to_thread(store.recorded_days, profile_key, 365)
+        await asyncio.to_thread(store.recorded_days, profile_key, 3650)
     )
 
     lines: List[str] = [

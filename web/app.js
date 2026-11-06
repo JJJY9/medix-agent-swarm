@@ -9829,7 +9829,7 @@ function updateTimelineMore(data) {
   if (!els.timelineMore) return;
   const loaded = (data.events || []).length;
   const total = Number(data.total) || loaded;
-  els.timelineMore.hidden = !(total > loaded && timelineLimit < 500);
+  els.timelineMore.hidden = !(total > loaded && timelineLimit < 2000);
 }
 
 let compareRequestSeq = 0;
@@ -13156,8 +13156,8 @@ if (els.timelineRiskOnly) {
 }
 if (els.timelineMore) {
   els.timelineMore.addEventListener('click', () => {
-    if (timelineLimit >= 500) return;
-    timelineLimit = 500;
+    if (timelineLimit >= 2000) return;
+    timelineLimit = Math.min(timelineLimit + 300, 2000);
     loadTimeline();
   });
 }
