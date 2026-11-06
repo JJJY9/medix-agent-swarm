@@ -175,6 +175,10 @@ def test_knowledge_search_filters_by_type():
         "/api/knowledge/search",
         params={"q": "高血压", "filter_type": "lifestyle"},
     )
+    symptoms = client.get(
+        "/api/knowledge/search",
+        params={"q": "高血压", "filter_type": "symptoms"},
+    )
     invalid = client.get(
         "/api/knowledge/search",
         params={"q": "高血压", "filter_type": "unknown"},
@@ -183,7 +187,20 @@ def test_knowledge_search_filters_by_type():
     assert filtered.status_code == 200
     assert filtered.json()["filter_type"] == "lifestyle"
     assert filtered.json()["results"][0]["type"] == "lifestyle"
+    assert symptoms.status_code == 200
+    assert symptoms.json()["filter_type"] == "symptoms"
     assert invalid.status_code == 400
+
+
+def test_knowledge_update_accepts_body_up_to_upload_limit():
+    client = TestClient(api_server.app)
+
+    response = client.put(
+        "/api/knowledge/documents/a.md",
+        json={"content": "医" * 800000},
+    )
+
+    assert response.status_code == 200
 
 
 def test_knowledge_search_empty_query():

@@ -142,6 +142,27 @@ def test_preview_missing_and_traversal(service):
     assert svc.preview_document("../../etc/passwd") is None
 
 
+def test_upload_cannot_shadow_builtin_document(service):
+    svc, _ = service
+
+    with pytest.raises(ValueError, match="内置文档"):
+        svc.save_upload("20_guideline_hypertension.txt", b"user copy")
+
+    svc.upload_dir.joinpath("20_guideline_hypertension.txt").write_bytes(
+        b"legacy shadow copy"
+    )
+    listed = svc.list_documents()["documents"]
+    matches = [
+        item for item in listed
+        if item["filename"] == "20_guideline_hypertension.txt"
+    ]
+    assert len(matches) == 1
+    assert matches[0]["builtin"] is True
+    preview = svc.preview_document("20_guideline_hypertension.txt")
+    assert preview["builtin"] is True
+    assert "高血压诊疗指南" in preview["content"]
+
+
 def test_duplicate_upload_gets_unique_name(service):
     svc, _ = service
 
