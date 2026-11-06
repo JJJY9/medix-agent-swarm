@@ -104,5 +104,5 @@ curl -X DELETE http://127.0.0.1:8000/api/backups/<name> \
 ## 相关测试
 
 ```bash
-python -m pytest tests/test_auto_backup.py tests/test_api_backup_restore.py tests/test_backup_consistency.py -q
+python -m pytest tests/test_auto_backup.py tests/test_api_backup_restore.py tests/test_backup_consistency.py tests/test_lifecycle_erasure.py -q
 ```
