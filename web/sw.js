@@ -1,5 +1,7 @@
 /* MediX 离线外壳：只缓存静态资源，不缓存任何 /api/ 数据。 */
-const CACHE_NAME = 'medix-shell-v2';
+// __MEDIX_BUILD__ 由服务端替换为前端资源构建号：任一页面资源变化都会
+// 改变 sw.js 字节，触发浏览器安装新 Worker 与新缓存代。
+const CACHE_NAME = 'medix-shell-__MEDIX_BUILD__';
 const SHELL = [
   '/',
   '/static/styles.css',
@@ -10,46 +12,20 @@ const SHELL = [
   '/static/icons/icon-512.png',
 ];
 
-//: 有缓存时最多等网络这么久；超时先用缓存，避免网络挂起导致白屏
-const NETWORK_TIMEOUT_MS = 3500;
-
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(async (cache) => {
-        const results = await Promise.allSettled(
-          SHELL.map((url) => cache.add(url))
-        );
-        const failed = [];
-        results.forEach((result, index) => {
-          if (result.status === 'rejected') failed.push(SHELL[index]);
-        });
-        if (!failed.length) return;
-
-        // 升级期间个别资源可能暂时不可用，先从旧版本缓存补齐再删旧缓存
-        const oldKeys = (await caches.keys())
-          .filter((key) => key !== CACHE_NAME);
-        for (const key of oldKeys) {
-          const oldCache = await caches.open(key);
-          for (const url of failed) {
-            if (await cache.match(url)) continue;
-            const response = await oldCache.match(url);
-            if (response) await cache.put(url, response);
-          }
-        }
-
-        const stillMissing = [];
-        for (const url of SHELL) {
-          if (!(await cache.match(url))) stillMissing.push(url);
-        }
-        if (stillMissing.length) {
-          console.warn(
-            `[medix-sw] ${stillMissing.length} 个外壳资源未能缓存，离线功能可能不完整`
-          );
-        }
-      })
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    try {
+      // 整代原子安装；任一资源失败就放弃新缓存，继续使用完整旧版本，
+      // 不能把不同版本的 index/app.js 混在同一个缓存里
+      await cache.addAll(SHELL);
+    } catch (error) {
+      console.warn('[medix-sw] 外壳安装失败，保留旧版本缓存', error);
+      await caches.delete(CACHE_NAME);
+      return;
+    }
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (event) => {
@@ -61,22 +37,6 @@ self.addEventListener('activate', (event) => {
       .then(() => self.clients.claim())
   );
 });
-
-//: 网络响应成功时顺手写入缓存；失败时返回 null，由调用方回退缓存
-function fetchAndCache(request) {
-  return fetch(request).then(
-    (response) => {
-      if (response && response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE_NAME)
-          .then((cache) => cache.put(request, copy))
-          .catch(() => {});
-      }
-      return response;
-    },
-    () => null
-  );
-}
 
 function offlineResponse(request) {
   return caches.match('/').then((shell) => {
@@ -97,21 +57,20 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) return;
 
   event.respondWith((async () => {
-    const cached = await caches.match(request);
-    const network = fetchAndCache(request);
+    // 外壳优先用当前缓存代，保证 HTML/JS/CSS 来自同一版本；
+    // 新版本通过新的 sw.js 构建号安装后整体切换
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(request);
+    if (cached) return cached;
 
-    if (!cached) {
-      // 没有缓存时等待网络（即使较慢），失败才显示离线提示
-      const response = await network;
-      if (response) return response;
+    try {
+      const response = await fetch(request);
+      if (response && response.ok) {
+        await cache.put(request, response.clone());
+      }
+      return response;
+    } catch {
       return offlineResponse(request);
     }
-
-    const timeout = new Promise((resolve) => {
-      setTimeout(() => resolve(null), NETWORK_TIMEOUT_MS);
-    });
-    const response = await Promise.race([network, timeout]);
-    // 超时先用缓存；网络响应稍后返回时仍会写入缓存
-    return response || cached;
   })());
 });

@@ -11890,6 +11890,7 @@ const OFFLINE_BANNER =
 let swRegistration = null;
 let swHadController = false;
 let swUpdateReady = false;
+let loadedWebBuild = null;
 
 function checkStatus() {
   if (!checkStatusPromise) {
@@ -11904,6 +11905,13 @@ async function checkStatusOnce() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
+
+    // 资产更新不会改变 service worker（旧实现），轮询状态里的构建号
+    // 能覆盖只改 HTML/JS/CSS 的发布
+    if (data.web_build) {
+      if (!loadedWebBuild) loadedWebBuild = data.web_build;
+      else if (loadedWebBuild !== data.web_build) showUpdateBanner();
+    }
 
     pricing = data.pricing || null;
     updateCostDisplay();
@@ -13628,8 +13636,12 @@ if ('serviceWorker' in navigator) {
 
   window.addEventListener('load', registerServiceWorker);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !swRegistration) {
-      registerServiceWorker();
+    if (document.visibilityState === 'visible') {
+      if (swRegistration) {
+        swRegistration.update().catch(() => {});
+      } else {
+        registerServiceWorker();
+      }
     }
   });
 }
