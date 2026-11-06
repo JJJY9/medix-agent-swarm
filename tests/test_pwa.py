@@ -29,20 +29,26 @@ def test_service_worker_is_served_at_root_scope(client):
 
     assert response.status_code == 200
     assert response.headers["service-worker-allowed"] == "/"
-    assert "medix-shell-v2" in response.text
+    assert "medix-shell-" in response.text
+    assert "__MEDIX_BUILD__" not in response.text
+    assert api_server.WEB_BUILD_ID in response.text
     assert "/api/" in response.text
 
 
-def test_service_worker_install_is_resilient_and_has_timeout(client):
+def test_status_exposes_web_build(client):
+    data = client.get("/api/status").json()
+
+    assert data["web_build"] == api_server.WEB_BUILD_ID
+
+
+def test_service_worker_install_is_atomic_and_versioned(client):
     sw = client.get("/sw.js").text
 
-    assert "Promise.allSettled" in sw
-    assert "oldCache.match(url)" in sw
-    assert "NETWORK_TIMEOUT_MS" in sw
-    assert "Promise.race([network, timeout])" in sw
-    assert "if (!cached)" in sw
-    assert "self.skipWaiting()" in sw
-    assert "caches.match('/')" in sw
+    assert "cache.addAll(SHELL)" in sw
+    assert "caches.delete(CACHE_NAME)" in sw
+    assert "await self.skipWaiting()" in sw
+    assert "if (cached) return cached" in sw
+    assert "NETWORK_TIMEOUT_MS" not in sw
 
 
 def test_app_js_keeps_offline_state_and_handles_sw_updates(client):
@@ -57,6 +63,8 @@ def test_app_js_keeps_offline_state_and_handles_sw_updates(client):
     assert "installPromptUsed" in app_js
     assert "document.getElementById('sw-refresh')" in app_js
     assert "describeServiceWorker" in app_js
+    assert "loadedWebBuild" in app_js
+    assert "swRegistration.update()" in app_js
 
 
 def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):

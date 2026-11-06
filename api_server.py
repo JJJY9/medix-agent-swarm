@@ -57,6 +57,21 @@ from core.backup import MAX_BACKUP_FILE_BYTES
 
 WEB_DIR = project_root / "web"
 
+
+def _compute_web_build_id() -> str:
+    """用前端资源内容生成构建号，供缓存版本与更新提示使用。"""
+    digest = hashlib.sha256()
+    for name in ("index.html", "app.js", "styles.css", "theme-init.js", "sw.js"):
+        path = WEB_DIR / name
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            continue
+    return digest.hexdigest()[:12]
+
+
+WEB_BUILD_ID = _compute_web_build_id()
+
 # Agent 展示名，供前端协作面板使用
 AGENT_LABELS = {
     "consultation_agent": "健康咨询",
@@ -1188,6 +1203,7 @@ async def get_status(request: Request):
 
     return {
         "ok": state.startup_error is None,
+        "web_build": WEB_BUILD_ID,
         "startup_error": startup_error,
         "auth_required": bool(get_access_token()),
         "llm_configured": bool(api_key),
@@ -6220,8 +6236,11 @@ async def service_worker():
     sw_file = WEB_DIR / "sw.js"
     if not sw_file.exists():
         raise HTTPException(status_code=404, detail="Service Worker 不存在")
-    return FileResponse(
-        sw_file,
+    content = sw_file.read_text(encoding="utf-8").replace(
+        "__MEDIX_BUILD__", WEB_BUILD_ID
+    )
+    return Response(
+        content=content,
         media_type="application/javascript",
         headers={
             "Cache-Control": "no-cache",
