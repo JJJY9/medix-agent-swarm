@@ -691,6 +691,35 @@ def csv_restore_cell(value: Any) -> str:
     return text
 
 
+#: CSV 导入模板：列名与导出文件保持一致，示例行帮助用户直接开始录入
+CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "metrics": {
+        "headers": ["测量时间", "患者档案", "指标", "数值1", "数值2", "单位", "备注"],
+        "example": [
+            "2026-01-01T08:00", "妈妈", "血压", "130", "85", "mmHg", "晨起测量",
+        ],
+    },
+    "symptoms": {
+        "headers": ["记录时间", "患者档案", "症状", "程度", "备注"],
+        "example": [
+            "2026-01-01T09:00", "妈妈", "头痛", "4", "休息后缓解",
+        ],
+    },
+    "medications": {
+        "headers": ["药物名称", "剂量", "频次", "患者档案", "状态", "备注"],
+        "example": [
+            "氨氯地平", "5 mg", "每日一次", "妈妈", "在用", "早餐后",
+        ],
+    },
+    "reminders": {
+        "headers": ["到期日", "内容", "档案", "状态", "提前天数", "重复天数", "备注"],
+        "example": [
+            "2026-01-10", "复查血压", "妈妈", "待完成", "1", "0", "带上次化验单",
+        ],
+    },
+}
+
+
 _RISK_TAG_PATTERN = re.compile(
     r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:为是]\s*[\*「【\s]*"
     r"(中等风险|中等|中风险|紧急|高危|中危|低危"
@@ -1172,6 +1201,30 @@ async def require_access_token(request: Request, call_next):
 async def verify_access_token():
     """受保护的轻量接口，供前端确认访问令牌是否有效。"""
     return {"ok": True}
+
+
+@app.get("/api/templates/{kind}")
+async def download_csv_template(kind: str):
+    """下载健康数据导入模板（带 BOM，列名与导入器一致）。"""
+    import csv
+    import io
+
+    template = CSV_IMPORT_TEMPLATES.get(str(kind or "").strip().lower())
+    if template is None:
+        raise HTTPException(status_code=404, detail="模板不存在")
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(
+        [template["headers"], template["example"]]
+    )
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="medix-{kind}-template.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 AUDIT_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$")

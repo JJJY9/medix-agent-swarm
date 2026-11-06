@@ -302,6 +302,7 @@ const els = {
   remindersExport: document.getElementById('reminders-export'),
   remindersExportIcs: document.getElementById('reminders-export-ics'),
   remindersImport: document.getElementById('reminders-import'),
+  remindersTemplate: document.getElementById('reminders-template'),
   remindersImportFile: document.getElementById('reminders-import-file'),
   reminderPlanInterval: document.getElementById('reminder-plan-interval'),
   reminderPlanUnit: document.getElementById('reminder-plan-unit'),
@@ -376,6 +377,7 @@ const els = {
   metricCancel: document.getElementById('metric-cancel'),
   metricExport: document.getElementById('metric-export'),
   metricImport: document.getElementById('metric-import'),
+  metricTemplate: document.getElementById('metric-template'),
   metricImportFile: document.getElementById('metric-import-file'),
   metricTrend: document.getElementById('metric-trend'),
   metricTrendTitle: document.getElementById('metric-trend-title'),
@@ -399,6 +401,7 @@ const els = {
   symptomSave: document.getElementById('symptom-save'),
   symptomExport: document.getElementById('symptom-export'),
   symptomImport: document.getElementById('symptom-import'),
+  symptomTemplate: document.getElementById('symptom-template'),
   symptomImportFile: document.getElementById('symptom-import-file'),
   symptomCancel: document.getElementById('symptom-cancel'),
   symptomStatus: document.getElementById('symptom-status'),
@@ -460,6 +463,7 @@ const els = {
   medicationLogsExport: document.getElementById('medication-logs-export'),
   medicationReminders: document.getElementById('medication-reminders'),
   medicationImport: document.getElementById('medication-import'),
+  medicationTemplate: document.getElementById('medication-template'),
   medicationImportFile: document.getElementById('medication-import-file'),
   calcInteractionsLoad: document.getElementById('calc-interactions-load'),
   metricsEmpty: document.getElementById('metrics-empty'),
@@ -1512,6 +1516,25 @@ function downloadFile(content, filename, mimeType = 'text/markdown;charset=utf-8
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/** 下载健康数据导入模板，列名与服务端导入器保持一致。 */
+async function downloadCsvTemplate(kind) {
+  try {
+    const res = await fetch(
+      `/api/templates/${encodeURIComponent(kind)}`, { cache: 'no-store' }
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const text = await res.text();
+    downloadFile(
+      text, `medix-${kind}-template.csv`, 'text/csv;charset=utf-8'
+    );
+  } catch (err) {
+    window.alert(`下载模板失败：${err.message || err}`);
+  }
 }
 
 function downloadMarkdown(payload, question) {
@@ -13495,6 +13518,20 @@ els.historyImportFile.addEventListener('change', importHistoryBackup);
 els.historyRestore?.addEventListener('click', restoreBackup);
 els.historyBackupNow?.addEventListener('click', createLocalBackup);
 els.historyManageBackups?.addEventListener('click', manageLocalBackups);
+
+// 导入模板下载：列名与服务端导入器保持一致
+els.metricTemplate?.addEventListener('click', () => {
+  downloadCsvTemplate('metrics');
+});
+els.symptomTemplate?.addEventListener('click', () => {
+  downloadCsvTemplate('symptoms');
+});
+els.medicationTemplate?.addEventListener('click', () => {
+  downloadCsvTemplate('medications');
+});
+els.remindersTemplate?.addEventListener('click', () => {
+  downloadCsvTemplate('reminders');
+});
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;
