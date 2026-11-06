@@ -4228,6 +4228,34 @@ html[data-theme="dark"] .allergy-severity-badge.is-severe {
   background: #e7f5ec;
 }
 
+.lab-sparkline {
+  display: block;
+  width: 132px;
+  height: 30px;
+  margin-top: 4px;
+  overflow: visible;
+}
+
+.lab-sparkline-line {
+  fill: none;
+  stroke: #4b7bb5;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lab-sparkline-dot {
+  fill: #4b7bb5;
+}
+
+html[data-theme="dark"] .lab-sparkline-line {
+  stroke: #8ab8f0;
+}
+
+html[data-theme="dark"] .lab-sparkline-dot {
+  fill: #8ab8f0;
+}
+
 html[data-theme="dark"] .lab-normal-badge {
   color: #7ee2a8;
   background: #14301f;
