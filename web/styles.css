@@ -3997,6 +3997,73 @@ html[data-theme="dark"] .medication-expiry-badge.is-expired {
   color: var(--ink-soft);
 }
 
+.appointment-section {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px dashed var(--rule);
+  border-radius: var(--radius);
+  background: var(--paper-2);
+}
+
+.appointment-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.appointment-status-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+.appointment-status-badge.is-upcoming {
+  color: #1f5fa8;
+  background: #e5f0fb;
+}
+
+.appointment-status-badge.is-completed {
+  color: #1f7a4d;
+  background: #e7f5ec;
+}
+
+.appointment-status-badge.is-cancelled {
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+.appointment-soon-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: #8a5a00;
+  background: #fbefd2;
+}
+
+html[data-theme="dark"] .appointment-status-badge.is-upcoming {
+  color: #8ab8f0;
+  background: #16283d;
+}
+
+html[data-theme="dark"] .appointment-status-badge.is-completed {
+  color: #7ee2a8;
+  background: #14301f;
+}
+
+html[data-theme="dark"] .appointment-soon-badge {
+  color: #f0c36d;
+  background: #3a2d14;
+}
+
 .vaccination-dose-badge,
 .vaccination-due-badge {
   display: inline-block;

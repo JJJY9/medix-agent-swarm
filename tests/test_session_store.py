@@ -480,6 +480,7 @@ def test_import_data_roundtrip(tmp_path):
             "medications": 0,
             "medication_logs": 0,
             "vaccinations": 0,
+            "appointments": 0,
             "audit_log": 0,
         }
         messages = target.get_messages("s1")

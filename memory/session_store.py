@@ -66,6 +66,11 @@ MAX_REMINDER_NOTE_LENGTH = 300
 MAX_VACCINE_NAME_LENGTH = 80
 MAX_VACCINATION_NOTE_LENGTH = 300
 MAX_VACCINE_DOSE = 20
+#: 就诊预约
+MAX_APPOINTMENT_TITLE_LENGTH = 120
+MAX_APPOINTMENT_TEXT_LENGTH = 60
+MAX_APPOINTMENT_NOTE_LENGTH = 300
+APPOINTMENT_STATUSES = ("upcoming", "completed", "cancelled")
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -92,6 +97,7 @@ IMPORT_LIST_LIMITS = {
     "medications": 100000,
     "medication_logs": 100000,
     "vaccinations": 100000,
+    "appointments": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -629,6 +635,76 @@ def _normalize_vaccination(
     }
 
 
+def _normalize_appointment(
+    profile: str,
+    title: str,
+    department: str,
+    doctor: str,
+    location: str,
+    scheduled_at: str,
+    status: str,
+    note: str,
+) -> Dict[str, Any]:
+    """校验一条就诊预约；非法时抛出 ValueError。"""
+    name = " ".join(str(title or "").split())[:MAX_APPOINTMENT_TITLE_LENGTH]
+    if not name:
+        raise ValueError("就诊主题不能为空")
+    scheduled = str(scheduled_at or "").strip()[:40]
+    if not scheduled:
+        raise ValueError("请填写就诊时间")
+    scheduled = _canonical_local_time(scheduled)
+    if scheduled is None:
+        raise ValueError("就诊时间格式应为 YYYY-MM-DD 或 ISO 时间")
+    status_key = str(status or "upcoming").strip().lower()
+    if status_key not in APPOINTMENT_STATUSES:
+        raise ValueError("就诊状态应为 upcoming/completed/cancelled")
+    return {
+        "profile": _normalize_profile_name(profile),
+        "title": name,
+        "department": " ".join(str(department or "").split())[
+            :MAX_APPOINTMENT_TEXT_LENGTH
+        ],
+        "doctor": " ".join(str(doctor or "").split())[
+            :MAX_APPOINTMENT_TEXT_LENGTH
+        ],
+        "location": " ".join(str(location or "").split())[
+            :MAX_APPOINTMENT_TEXT_LENGTH
+        ],
+        "scheduled_at": scheduled,
+        "status": status_key,
+        "note": " ".join(str(note or "").split())[
+            :MAX_APPOINTMENT_NOTE_LENGTH
+        ],
+    }
+
+
+def _appointment_view_fields(
+    row: Dict[str, Any], today: str
+) -> Dict[str, Any]:
+    """补充倒计时与是否临近字段，供列表、首页与家庭总览复用。"""
+    scheduled = str(row.get("scheduled_at") or "")[:16]
+    status = str(row.get("status") or "upcoming")
+    days_until: Optional[int] = None
+    if scheduled:
+        try:
+            days_until = (
+                datetime.strptime(scheduled[:10], "%Y-%m-%d").date()
+                - datetime.strptime(today, "%Y-%m-%d").date()
+            ).days
+        except ValueError:
+            days_until = None
+    return {
+        "days_until": days_until,
+        "is_today": days_until == 0,
+        "is_past": days_until is not None and days_until < 0,
+        "soon": (
+            status == "upcoming"
+            and days_until is not None
+            and 0 <= days_until <= 7
+        ),
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -855,6 +931,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "medications",
     "medication_logs",
     "vaccinations",
+    "appointments",
     "audit_log",
 )
 
@@ -999,6 +1076,7 @@ class SessionStore:
                     repeats_from INTEGER NOT NULL DEFAULT 0,
                     medication_id INTEGER NOT NULL DEFAULT 0,
                     vaccination_id INTEGER NOT NULL DEFAULT 0,
+                    appointment_id INTEGER NOT NULL DEFAULT 0,
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -1059,6 +1137,23 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_vaccinations_profile_time
                     ON vaccinations(profile, vaccinated_at DESC);
+                CREATE TABLE IF NOT EXISTS appointments (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile      TEXT NOT NULL DEFAULT '',
+                    title        TEXT NOT NULL,
+                    department   TEXT NOT NULL DEFAULT '',
+                    doctor       TEXT NOT NULL DEFAULT '',
+                    location     TEXT NOT NULL DEFAULT '',
+                    scheduled_at TEXT NOT NULL,
+                    status       TEXT NOT NULL DEFAULT 'upcoming',
+                    note         TEXT NOT NULL DEFAULT '',
+                    created_at   TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_appointments_profile_time
+                    ON appointments(profile, scheduled_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_appointments_status_time
+                    ON appointments(status, scheduled_at);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1163,6 +1258,10 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN vaccination_id INTEGER NOT NULL DEFAULT 0"
                 )
+            if "appointment_id" not in reminder_columns:
+                self._conn.execute(
+                    "ALTER TABLE reminders ADD COLUMN appointment_id INTEGER NOT NULL DEFAULT 0"
+                )
             self._conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_reminders_medication
@@ -1175,6 +1274,40 @@ class SessionStore:
                     ON reminders(vaccination_id, done)
                 """
             )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_reminders_appointment
+                    ON reminders(appointment_id, done)
+                """
+            )
+
+            # 旧版本用药表没有库存、单位与有效期字段，就地迁移
+            medication_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medications)"
+                )
+            }
+            for column, ddl in (
+                ("stock", "REAL"),
+                ("stock_unit", "TEXT NOT NULL DEFAULT ''"),
+                ("low_stock_threshold", "REAL NOT NULL DEFAULT 0"),
+                ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column not in medication_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE medications ADD COLUMN {column} {ddl}"
+                    )
+            log_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(medication_logs)"
+                )
+            }
+            if "stock_delta" not in log_columns:
+                self._conn.execute(
+                    "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
+                )
 
             # 旧版本用药表没有库存、单位与有效期字段，就地迁移
             medication_columns = {
@@ -1318,6 +1451,7 @@ class SessionStore:
                 ("medications", "profile"),
                 ("medication_logs", "profile"),
                 ("vaccinations", "profile"),
+                ("appointments", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2362,6 +2496,7 @@ class SessionStore:
             "medications": self.list_medications(limit=100000),
             "medication_logs": self.list_medication_logs(limit=100000),
             "vaccinations": self.list_vaccinations(limit=100000),
+            "appointments": self.list_appointments(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -2389,6 +2524,7 @@ class SessionStore:
         raw_medications = data.get("medications")
         raw_medication_logs = data.get("medication_logs")
         raw_vaccinations = data.get("vaccinations")
+        raw_appointments = data.get("appointments")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -2399,6 +2535,7 @@ class SessionStore:
             or isinstance(raw_medications, list)
             or isinstance(raw_medication_logs, list)
             or isinstance(raw_vaccinations, list)
+            or isinstance(raw_appointments, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -2428,6 +2565,7 @@ class SessionStore:
             ("medications", "用药", raw_medications),
             ("medication_logs", "用药打卡", raw_medication_logs),
             ("vaccinations", "疫苗接种", raw_vaccinations),
+            ("appointments", "就诊预约", raw_appointments),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -2989,6 +3127,68 @@ class SessionStore:
                     if raw_id > 0 and vaccination_id > 0:
                         raw_vaccination_id_map[raw_id] = vaccination_id
 
+            appointments_imported = 0
+            raw_appointment_id_map: Dict[int, int] = {}
+            if isinstance(raw_appointments, list):
+                for raw in raw_appointments[
+                    :IMPORT_LIST_LIMITS["appointments"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_appointment(
+                            raw.get("profile") or "",
+                            raw.get("title") or "",
+                            raw.get("department") or "",
+                            raw.get("doctor") or "",
+                            raw.get("location") or "",
+                            raw.get("scheduled_at") or "",
+                            raw.get("status") or "upcoming",
+                            raw.get("note") or "",
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    raw_id = _safe_db_id(raw.get("id"))
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM appointments
+                         WHERE profile = ? AND title = ?
+                           AND scheduled_at = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["title"],
+                            normalized["scheduled_at"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        appointment_id = int(duplicate["id"])
+                    else:
+                        cursor = self._conn.execute(
+                            """
+                            INSERT INTO appointments(
+                                profile, title, department, doctor, location,
+                                scheduled_at, status, note,
+                                created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                normalized["profile"], normalized["title"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["location"],
+                                normalized["scheduled_at"],
+                                normalized["status"], normalized["note"],
+                                str(raw.get("created_at") or now)[:40],
+                                str(raw.get("updated_at") or now)[:40],
+                            ),
+                        )
+                        appointment_id = int(cursor.lastrowid)
+                        appointments_imported += 1
+                    if raw_id > 0 and appointment_id > 0:
+                        raw_appointment_id_map[raw_id] = appointment_id
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -3084,6 +3284,12 @@ class SessionStore:
                     vaccination_id = raw_vaccination_id_map.get(
                         raw_vaccination_id, 0
                     )
+                    raw_appointment_id = _safe_db_id(
+                        raw.get("appointment_id")
+                    )
+                    appointment_id = raw_appointment_id_map.get(
+                        raw_appointment_id, 0
+                    )
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -3148,16 +3354,17 @@ class SessionStore:
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, medication_id, vaccination_id, done,
+                            repeats_from, medication_id, vaccination_id,
+                            appointment_id, done,
                             created_at, updated_at
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            0, medication_id, vaccination_id, done,
-                            created_at, updated_at,
+                            0, medication_id, vaccination_id, appointment_id,
+                            done, created_at, updated_at,
                         ),
                     )
                     new_reminder_id = int(cursor.lastrowid or 0)
@@ -3226,6 +3433,7 @@ class SessionStore:
             "medications": medications_imported,
             "medication_logs": medication_logs_imported,
             "vaccinations": vaccinations_imported,
+            "appointments": appointments_imported,
             "audit_log": audit_imported,
         }
 
@@ -3478,6 +3686,7 @@ class SessionStore:
                     ("medications", "profile"),
                     ("medication_logs", "profile"),
                     ("vaccinations", "profile"),
+                    ("appointments", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -3523,6 +3732,7 @@ class SessionStore:
                 "medications",
                 "medication_logs",
                 "vaccinations",
+                "appointments",
                 "sessions",
             ):
                 self._conn.execute(
@@ -3991,6 +4201,167 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM vaccinations WHERE id = ?",
                 (int(vaccination_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_appointment(
+        self,
+        profile: str,
+        title: str,
+        department: str = "",
+        doctor: str = "",
+        location: str = "",
+        scheduled_at: str = "",
+        status: str = "upcoming",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """新增一条就诊预约并返回完整行。"""
+        normalized = _normalize_appointment(
+            profile, title, department, doctor, location,
+            scheduled_at, status, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO appointments(
+                    profile, title, department, doctor, location,
+                    scheduled_at, status, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["title"],
+                    normalized["department"], normalized["doctor"],
+                    normalized["location"], normalized["scheduled_at"],
+                    normalized["status"], normalized["note"], now, now,
+                ),
+            )
+            appointment_id = int(cursor.lastrowid)
+        data = {"id": appointment_id, **normalized, "created_at": now,
+                "updated_at": now}
+        return {
+            **data,
+            **_appointment_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+    def update_appointment(
+        self,
+        appointment_id: int,
+        profile: str,
+        title: str,
+        department: str = "",
+        doctor: str = "",
+        location: str = "",
+        scheduled_at: str = "",
+        status: str = "upcoming",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条就诊预约；记录不存在时返回 None。"""
+        normalized = _normalize_appointment(
+            profile, title, department, doctor, location,
+            scheduled_at, status, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE appointments
+                   SET profile = ?, title = ?, department = ?, doctor = ?,
+                       location = ?, scheduled_at = ?, status = ?,
+                       note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["title"],
+                    normalized["department"], normalized["doctor"],
+                    normalized["location"], normalized["scheduled_at"],
+                    normalized["status"], normalized["note"], now,
+                    int(appointment_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_appointment(appointment_id)
+
+    def get_appointment(
+        self, appointment_id: int
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, title, department, doctor, location,
+                       scheduled_at, status, note, created_at, updated_at
+                  FROM appointments WHERE id = ?
+                """,
+                (int(appointment_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            **data,
+            **_appointment_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+    def list_appointments(
+        self,
+        profile: Optional[str] = None,
+        status: Optional[str] = None,
+        upcoming: bool = False,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        try:
+            offset = _bounded_offset(offset)
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        status_key = str(status or "").strip().lower()
+        if status_key:
+            if status_key not in APPOINTMENT_STATUSES:
+                raise ValueError("就诊状态应为 upcoming/completed/cancelled")
+            conditions.append("status = ?")
+            params.append(status_key)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if upcoming:
+            conditions.append("status = 'upcoming'")
+            conditions.append("substr(scheduled_at, 1, 10) >= ?")
+            params.append(today)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, title, department, doctor, location,
+                       scheduled_at, status, note, created_at, updated_at
+                  FROM appointments
+                 {where}
+                 ORDER BY scheduled_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                **_appointment_view_fields(dict(row), today),
+            }
+            for row in rows
+        ]
+
+    def delete_appointment(self, appointment_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM appointments WHERE id = ?",
+                (int(appointment_id),),
             )
             return cursor.rowcount > 0
 
@@ -4957,6 +5328,7 @@ class SessionStore:
         repeat_until: str = "",
         medication_id: int = 0,
         vaccination_id: int = 0,
+        appointment_id: int = 0,
     ) -> Dict[str, Any]:
         """新增一条随访提醒，日期接受 YYYY-MM-DD 或 ISO 时间。"""
         title = " ".join(str(title or "").split())[:MAX_REMINDER_TITLE_LENGTH]
@@ -4971,6 +5343,7 @@ class SessionStore:
         repeat_until = _normalize_reminder_repeat_until(repeat_until)
         medication_id = _safe_db_id(medication_id)
         vaccination_id = _safe_db_id(vaccination_id)
+        appointment_id = _safe_db_id(appointment_id)
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
@@ -4978,13 +5351,13 @@ class SessionStore:
                 INSERT INTO reminders(
                     title, note, due_at, session_id, profile, advance_days,
                     repeat_days, repeat_until, medication_id, vaccination_id,
-                    done, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    appointment_id, done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     title, note, due_at, session_id, profile,
                     advance_days, repeat_days, repeat_until,
-                    medication_id, vaccination_id, now, now,
+                    medication_id, vaccination_id, appointment_id, now, now,
                 ),
             )
             reminder_id = int(cursor.lastrowid)
@@ -5000,6 +5373,7 @@ class SessionStore:
             "repeat_until": repeat_until,
             "medication_id": medication_id,
             "vaccination_id": vaccination_id,
+            "appointment_id": appointment_id,
             "done": False,
             "created_at": now,
             "updated_at": now,
@@ -5012,7 +5386,8 @@ class SessionStore:
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
                        repeat_days, repeat_until, repeats_from, medication_id,
-                       vaccination_id, done, created_at, updated_at
+                       vaccination_id, appointment_id, done, created_at,
+                       updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
@@ -5039,7 +5414,8 @@ class SessionStore:
                 f"""
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
                        repeat_days, repeat_until, repeats_from, medication_id,
-                       vaccination_id, done, created_at, updated_at
+                       vaccination_id, appointment_id, done, created_at,
+                       updated_at
                   FROM reminders{where}
                  ORDER BY done ASC, due_at ASC, id ASC
                 """,
@@ -5068,8 +5444,8 @@ class SessionStore:
                 """
                 SELECT id, title, note, due_at, session_id, profile,
                        advance_days, repeat_days, repeat_until,
-                       repeats_from, medication_id, vaccination_id, done,
-                       created_at, updated_at
+                       repeats_from, medication_id, vaccination_id,
+                       appointment_id, done, created_at, updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (reminder_id,),
@@ -5117,9 +5493,10 @@ class SessionStore:
                         INSERT INTO reminders(
                             title, note, due_at, session_id, profile,
                             advance_days, repeat_days, repeat_until,
-                            repeats_from, medication_id, vaccination_id, done,
+                            repeats_from, medication_id, vaccination_id,
+                            appointment_id, done,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                         """,
                         (
                             row["title"], row["note"], next_due,
@@ -5127,7 +5504,7 @@ class SessionStore:
                             row["advance_days"], repeat_days,
                             repeat_until, reminder_id,
                             row["medication_id"], row["vaccination_id"],
-                            now, now,
+                            row["appointment_id"], now, now,
                         ),
                     )
                     next_id = int(cursor.lastrowid)
@@ -5144,6 +5521,7 @@ class SessionStore:
                         "repeats_from": reminder_id,
                         "medication_id": row["medication_id"],
                         "vaccination_id": row["vaccination_id"],
+                        "appointment_id": row["appointment_id"],
                         "done": False,
                         "created_at": now,
                         "updated_at": now,
@@ -5265,7 +5643,8 @@ class SessionStore:
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
                        repeat_days, repeat_until, repeats_from, medication_id,
-                       vaccination_id, done, created_at, updated_at
+                       vaccination_id, appointment_id, done, created_at,
+                       updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
@@ -5312,7 +5691,8 @@ class SessionStore:
                 """
                 SELECT id, title, note, due_at, session_id, profile, advance_days,
                        repeat_days, repeat_until, repeats_from, medication_id,
-                       vaccination_id, done, created_at, updated_at
+                       vaccination_id, appointment_id, done, created_at,
+                       updated_at
                   FROM reminders WHERE id = ?
                 """,
                 (int(reminder_id),),
