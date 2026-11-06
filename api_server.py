@@ -182,6 +182,7 @@ class ImportSessionsRequest(StrictRequestModel):
     medications: Optional[List[Dict[str, Any]]] = None
     medication_logs: Optional[List[Dict[str, Any]]] = None
     vaccinations: Optional[List[Dict[str, Any]]] = None
+    appointments: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -263,6 +264,9 @@ class ReminderRequest(StrictRequestModel):
     )
     vaccination_id: int = Field(
         0, ge=0, le=MAX_SQLITE_INT, description="关联的疫苗接种记录 ID"
+    )
+    appointment_id: int = Field(
+        0, ge=0, le=MAX_SQLITE_INT, description="关联的就诊预约 ID"
     )
 
 
@@ -540,6 +544,32 @@ class VaccinationUpdateRequest(StrictRequestModel):
     dose_number: Optional[int] = Field(None, ge=1, le=20)
     vaccinated_at: Optional[str] = Field(None, max_length=40)
     next_due: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+
+
+class AppointmentRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    title: str = Field(..., min_length=1, max_length=120)
+    department: str = Field("", max_length=60, description="科室")
+    doctor: str = Field("", max_length=60, description="医生")
+    location: str = Field("", max_length=60, description="就诊地点")
+    scheduled_at: str = Field(
+        ..., min_length=8, max_length=40, description="就诊时间"
+    )
+    status: str = Field("upcoming", max_length=20)
+    note: str = Field("", max_length=300)
+
+
+class AppointmentUpdateRequest(StrictRequestModel):
+    """部分更新就诊预约：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    department: Optional[str] = Field(None, max_length=60)
+    doctor: Optional[str] = Field(None, max_length=60)
+    location: Optional[str] = Field(None, max_length=60)
+    scheduled_at: Optional[str] = Field(None, min_length=8, max_length=40)
+    status: Optional[str] = Field(None, max_length=20)
     note: Optional[str] = Field(None, max_length=300)
 
 
@@ -1944,6 +1974,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "medications": request.medications,
         "medication_logs": request.medication_logs,
         "vaccinations": request.vaccinations,
+        "appointments": request.appointments,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -1972,7 +2003,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
     keys = (
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
-        "vaccinations", "audit_log",
+        "vaccinations", "appointments", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -2959,6 +2990,208 @@ async def create_vaccination_reminder(vaccination_id: SafeIntPath):
     return {"ok": True, "created": True, "reminder": reminder}
 
 
+@app.get("/api/appointments")
+async def list_appointments(
+    profile: Optional[str] = None,
+    status: Optional[str] = None,
+    upcoming: bool = False,
+    limit: int = 1000,
+    offset: int = 0,
+):
+    """就诊预约列表（可按档案、状态与是否只看待就诊筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    offset = _bounded_offset(offset)
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_appointments,
+            profile, status, upcoming, limit, offset,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"appointments": items}
+
+
+@app.post("/api/appointments")
+async def add_appointment(request: AppointmentRequest):
+    """新增一条就诊预约。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_appointment,
+            request.profile,
+            request.title,
+            request.department,
+            request.doctor,
+            request.location,
+            request.scheduled_at,
+            request.status,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("appointment.create", str(item["id"]))
+    return {"ok": True, "appointment": item}
+
+
+@app.patch("/api/appointments/{appointment_id}")
+async def update_appointment(
+    appointment_id: SafeIntPath,
+    request: AppointmentUpdateRequest,
+):
+    """部分更新一条就诊预约。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(
+        store.get_appointment, appointment_id
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_appointment,
+            appointment_id,
+            merged.get("profile") or "",
+            merged.get("title") or "",
+            merged.get("department") or "",
+            merged.get("doctor") or "",
+            merged.get("location") or "",
+            merged.get("scheduled_at") or "",
+            merged.get("status") or "upcoming",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("appointment.update", str(item["id"]))
+    return {"ok": True, "appointment": item}
+
+
+@app.delete("/api/appointments/{appointment_id}")
+async def delete_appointment(appointment_id: SafeIntPath):
+    """删除一条就诊预约。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(
+        store.get_appointment, appointment_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_appointment, appointment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("appointment.delete", str(appointment_id))
+    return {"ok": True, "id": appointment_id}
+
+
+@app.get("/api/appointments/export.csv")
+async def export_appointments_csv(profile: Optional[str] = None):
+    """导出就诊预约 CSV（带 BOM），可按档案筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_appointments, profile, None, False, 100000, 0
+    )
+    status_labels = {
+        "upcoming": "待就诊",
+        "completed": "已完成",
+        "cancelled": "已取消",
+    }
+    rows = [[
+        "就诊时间", "患者档案", "主题", "科室", "医生", "地点",
+        "状态", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("scheduled_at", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("title", "")),
+            csv_safe_cell(item.get("department", "")),
+            csv_safe_cell(item.get("doctor", "")),
+            csv_safe_cell(item.get("location", "")),
+            status_labels.get(item.get("status") or "", ""),
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-appointments-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/appointments/{appointment_id}/reminder")
+async def create_appointment_reminder(appointment_id: SafeIntPath):
+    """为待就诊预约创建提前 1 天的提醒；已有未完成提醒时直接返回。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_appointment, appointment_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if item.get("status") != "upcoming":
+        raise HTTPException(status_code=400, detail="只能为待就诊预约创建提醒")
+    scheduled = str(item.get("scheduled_at") or "")
+    try:
+        scheduled_dt = datetime.fromisoformat(scheduled)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="就诊时间格式不正确")
+    today = datetime.now().date()
+    reminder_date = scheduled_dt.date() - timedelta(days=1)
+    due_at = max(reminder_date, today).strftime("%Y-%m-%d")
+    title = f"就诊：{item.get('title') or '就诊'}"[:120]
+    detail_parts = [
+        scheduled.replace("T", " ")[:16],
+        item.get("department") or "",
+        item.get("doctor") or "",
+        item.get("location") or "",
+    ]
+    note = " ".join(part for part in detail_parts if part)[:300]
+
+    reminders = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    for reminder in reminders:
+        if (
+            int(reminder.get("appointment_id") or 0)
+            == int(appointment_id)
+            and not reminder.get("done")
+        ):
+            return {"ok": True, "created": False, "reminder": reminder}
+
+    reminder = await asyncio.to_thread(
+        store.add_reminder,
+        title,
+        due_at,
+        note,
+        "",
+        item.get("profile") or "",
+        0,
+        0,
+        "",
+        0,
+        0,
+        int(appointment_id),
+    )
+    await record_audit("appointment.reminder", str(appointment_id))
+    return {"ok": True, "created": True, "reminder": reminder}
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -3590,6 +3823,9 @@ async def health_timeline(
     raw_vaccinations = await asyncio.to_thread(
         store.list_vaccinations, profile, 100000
     )
+    raw_appointments = await asyncio.to_thread(
+        store.list_appointments, profile, None, False, 100000, 0
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -3710,6 +3946,39 @@ async def health_timeline(
             "alert": bool(next_due and next_due <= today),
         })
 
+    for item in raw_appointments:
+        at = str(item.get("scheduled_at") or "")
+        if not in_window(at):
+            continue
+        status_labels = {
+            "upcoming": "待就诊",
+            "completed": "已完成",
+            "cancelled": "已取消",
+        }
+        details = [
+            item.get("department") or "",
+            item.get("doctor") or "",
+            item.get("location") or "",
+        ]
+        details = [part for part in details if part]
+        value = " · ".join(details)
+        label = status_labels.get(item.get("status") or "", "")
+        if label:
+            value = f"{label} · {value}" if value else label
+        events.append({
+            "type": "appointment",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("title") or "就诊预约",
+            "value": value,
+            "note": item.get("note", ""),
+            "alert": bool(
+                item.get("status") == "upcoming"
+                and (item.get("soon") or item.get("is_past"))
+            ),
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -3739,7 +4008,10 @@ async def health_timeline(
         return (event["at"], 1, str(event_id or ""))
 
     events.sort(key=sort_key, reverse=True)
-    if type in {"metric", "symptom", "medication", "vaccination", "consultation"}:
+    if type in {
+        "metric", "symptom", "medication", "vaccination",
+        "appointment", "consultation",
+    }:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
         events = [event for event in events if event.get("alert")]
@@ -3795,6 +4067,7 @@ async def export_timeline_csv(
         "symptom": "症状",
         "medication": "用药",
         "vaccination": "疫苗",
+        "appointment": "就诊",
         "consultation": "会诊",
     }
     events = data["events"]
@@ -4480,6 +4753,9 @@ async def family_overview(days: int = 7):
     vaccinations = await asyncio.to_thread(
         store.list_vaccinations, None, 100000
     )
+    appointments = await asyncio.to_thread(
+        store.list_appointments, None, None, False, 100000, 0
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -4639,6 +4915,30 @@ async def family_overview(days: int = 7):
             elif not entry["next_due"] or due < entry["next_due"]:
                 entry["next_due"] = due
 
+    appointments_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in appointments:
+        profile = item.get("profile") or ""
+        if not profile:
+            continue
+        entry = appointments_by_profile.setdefault(profile, {
+            "upcoming": 0, "next": None,
+        })
+        if item.get("status") != "upcoming" or item.get("is_past"):
+            continue
+        entry["upcoming"] += 1
+        current = entry["next"]
+        if current is None or str(item.get("scheduled_at") or "") < str(
+            current.get("scheduled_at") or ""
+        ):
+            entry["next"] = {
+                "id": item.get("id"),
+                "title": item.get("title", ""),
+                "scheduled_at": item.get("scheduled_at", ""),
+                "department": item.get("department", ""),
+                "doctor": item.get("doctor", ""),
+                "days_until": item.get("days_until"),
+            }
+
     sessions_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in sessions:
         profile = item.get("profile") or ""
@@ -4676,6 +4976,9 @@ async def family_overview(days: int = 7):
         vaccination = vaccinations_by_profile.get(name, {
             "count": 0, "latest": None, "next_due": "", "overdue": 0,
         })
+        appointment = appointments_by_profile.get(name, {
+            "upcoming": 0, "next": None,
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -4709,6 +5012,7 @@ async def family_overview(days: int = 7):
             "reminders": reminder,
             "symptoms": symptom,
             "vaccinations": vaccination,
+            "appointments": appointment,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -4738,7 +5042,7 @@ async def export_family_overview_csv(days: int = 7):
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
-        "疫苗接种", "用药库存",
+        "疫苗接种", "用药库存", "下次就诊",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -4811,6 +5115,26 @@ async def export_family_overview_csv(days: int = 7):
         if names:
             stock_parts.append("；".join(names))
         stock_text = "，".join(stock_parts)
+        appointment_info = item.get("appointments") or {}
+        next_visit = appointment_info.get("next") or {}
+        if next_visit:
+            visit_text = (
+                f"{str(next_visit.get('scheduled_at') or '')[:16]} "
+                f"{next_visit.get('title') or '就诊'}"
+            )
+            if next_visit.get("department"):
+                visit_text += f"（{next_visit['department']}）"
+            days_until = next_visit.get("days_until")
+            if days_until == 0:
+                visit_text += " · 今天"
+            elif isinstance(days_until, int) and days_until > 0:
+                visit_text += f" · {days_until} 天后"
+            if int(appointment_info.get("upcoming") or 0) > 1:
+                visit_text += (
+                    f"；共 {int(appointment_info['upcoming'])} 个待就诊"
+                )
+        else:
+            visit_text = ""
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -4827,6 +5151,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(item.get("last_activity", "")),
             csv_safe_cell(vaccination_text),
             csv_safe_cell(stock_text),
+            csv_safe_cell(visit_text),
         ])
 
     buffer = io.StringIO()
@@ -4946,6 +5271,9 @@ async def export_health_dossier(
     )
     vaccinations = await asyncio.to_thread(
         store.list_vaccinations, profile_key, 100000
+    )
+    appointments = await asyncio.to_thread(
+        store.list_appointments, profile_key, None, False, 100000, 0
     )
     if profile_key:
         reminders = await asyncio.to_thread(
@@ -5101,6 +5429,35 @@ async def export_health_dossier(
             lines.append(detail)
     else:
         lines.append("- 暂无疫苗接种记录")
+    lines.append("")
+
+    lines.append("## 就诊预约")
+    if appointments:
+        status_labels = {
+            "upcoming": "待就诊",
+            "completed": "已完成",
+            "cancelled": "已取消",
+        }
+        for item in appointments:
+            detail = (
+                f"- {str(item.get('scheduled_at') or '').replace('T', ' ')[:16]} "
+                f"{item.get('title') or '就诊'}"
+                f"（{status_labels.get(item.get('status') or '', '')}"
+            )
+            extras = [
+                item.get("department") or "",
+                item.get("doctor") or "",
+                item.get("location") or "",
+            ]
+            extras = [part for part in extras if part]
+            if extras:
+                detail += "，" + " · ".join(extras)
+            detail += "）"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂无就诊预约")
     lines.append("")
 
     lines.append("## 待办提醒")
@@ -5265,6 +5622,7 @@ async def add_reminder(request: ReminderRequest):
             request.repeat_until,
             request.medication_id,
             request.vaccination_id,
+            request.appointment_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

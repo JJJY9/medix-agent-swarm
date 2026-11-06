@@ -427,6 +427,22 @@ const els = {
   vaccinationEmpty: document.getElementById('vaccination-empty'),
   vaccinationSearch: document.getElementById('vaccination-search'),
   vaccinationSummary: document.getElementById('vaccination-summary'),
+  appointmentSection: document.getElementById('appointment-section'),
+  appointmentTitle: document.getElementById('appointment-title'),
+  appointmentDepartment: document.getElementById('appointment-department'),
+  appointmentDoctor: document.getElementById('appointment-doctor'),
+  appointmentLocation: document.getElementById('appointment-location'),
+  appointmentTime: document.getElementById('appointment-time'),
+  appointmentStatusSelect: document.getElementById('appointment-status'),
+  appointmentNote: document.getElementById('appointment-note'),
+  appointmentSave: document.getElementById('appointment-save'),
+  appointmentExport: document.getElementById('appointment-export'),
+  appointmentCancel: document.getElementById('appointment-cancel'),
+  appointmentStatusText: document.getElementById('appointment-status-text'),
+  appointmentList: document.getElementById('appointment-list'),
+  appointmentEmpty: document.getElementById('appointment-empty'),
+  appointmentSearch: document.getElementById('appointment-search'),
+  appointmentSummary: document.getElementById('appointment-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4126,11 +4142,12 @@ async function refreshAfterBackupImport(result) {
   if (
     result.metrics || result.symptoms || result.reminders
     || result.medications || result.medication_logs
-    || result.vaccinations
+    || result.vaccinations || result.appointments
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
     if (result.vaccinations) loadVaccinations();
+    if (result.appointments) loadAppointments();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6846,6 +6863,7 @@ async function refreshMetrics() {
   await loadMetricOverview();
   loadSymptoms();
   loadVaccinations();
+  loadAppointments();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -8042,6 +8060,25 @@ function renderFamilyOverview(data) {
         + (latest.symptom ? ` · ${latest.symptom} ${latest.severity}/10` : '')
       ));
     }
+    const appointment = profile.appointments || {};
+    const nextVisit = appointment.next || {};
+    if (nextVisit.title) {
+      const when = String(nextVisit.scheduled_at || '').slice(0, 16)
+        .replace('T', ' ');
+      const daysUntil = nextVisit.days_until === null
+        || nextVisit.days_until === undefined
+        ? null
+        : Number(nextVisit.days_until);
+      chips.appendChild(familyChip(
+        `就诊 ${nextVisit.title}`
+        + (when ? ` · ${when}` : '')
+        + (daysUntil === 0
+          ? ' · 今天'
+          : Number.isFinite(daysUntil) && daysUntil > 0
+            ? ` · ${daysUntil} 天后`
+            : '')
+      ));
+    }
     const consultations = profile.consultations || {};
     if (consultations.count) {
       const chip = familyChip(
@@ -8130,6 +8167,11 @@ function familyOverviewText(data) {
     }
     const symptom = profile.symptoms || {};
     if (symptom.count) parts.push(`症状 ${symptom.count} 条`);
+    const appointment = profile.appointments || {};
+    const nextVisit = appointment.next || {};
+    if (nextVisit.title) {
+      parts.push(`下次就诊 ${String(nextVisit.scheduled_at || '').slice(0, 10)}`);
+    }
     const consultations = profile.consultations || {};
     if (consultations.count) {
       const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
@@ -9710,6 +9752,395 @@ async function scheduleVaccinationReminder(item) {
   }
 }
 
+let editingAppointmentId = null;
+let editingAppointmentProfile = '';
+let appointmentSaving = false;
+let appointmentRequestSeq = 0;
+let appointmentItemsCache = [];
+let appointmentSearchTimer = null;
+let appointmentReminderBusy = new Set();
+
+const APPOINTMENT_STATUS_LABELS = {
+  upcoming: '待就诊',
+  completed: '已完成',
+  cancelled: '已取消',
+};
+
+function setAppointmentStatusText(text, isError = false) {
+  if (!els.appointmentStatusText) return;
+  els.appointmentStatusText.textContent = text || '';
+  els.appointmentStatusText.hidden = !text;
+  els.appointmentStatusText.classList.toggle('error', Boolean(isError));
+}
+
+function resetAppointmentForm() {
+  editingAppointmentId = null;
+  editingAppointmentProfile = '';
+  els.appointmentTitle.value = '';
+  els.appointmentDepartment.value = '';
+  els.appointmentDoctor.value = '';
+  els.appointmentLocation.value = '';
+  els.appointmentTime.value = metricNowLocal();
+  els.appointmentStatusSelect.value = 'upcoming';
+  els.appointmentNote.value = '';
+  els.appointmentSave.textContent = '保存预约';
+  els.appointmentCancel.hidden = true;
+}
+
+function appointmentCountdown(item) {
+  const days = Number(item.days_until);
+  if (!Number.isFinite(days) || item.status !== 'upcoming') return '';
+  if (item.is_past) return '已过就诊时间';
+  if (days === 0) return '今天';
+  if (days === 1) return '明天';
+  return `${days} 天后`;
+}
+
+function filterAppointments(items) {
+  const query = els.appointmentSearch
+    ? String(els.appointmentSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [
+      item.title, item.department, item.doctor,
+      item.location, item.note, item.profile,
+    ]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderAppointments(items) {
+  if (!els.appointmentList) return;
+  els.appointmentList.replaceChildren();
+  els.appointmentEmpty.hidden = items.length > 0;
+  const query = els.appointmentSearch
+    ? String(els.appointmentSearch.value || '').trim()
+    : '';
+  els.appointmentEmpty.textContent = query
+    ? `没有匹配「${query}」的就诊预约。`
+    : '还没有就诊预约。';
+  const upcoming = items.filter(
+    (item) => item.status === 'upcoming' && !item.is_past
+  ).length;
+  if (items.length) {
+    els.appointmentSummary.hidden = false;
+    els.appointmentSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (upcoming ? ` · 待就诊 ${upcoming} 条` : '');
+  } else {
+    els.appointmentSummary.hidden = true;
+  }
+  if (
+    editingAppointmentId
+    && !appointmentItemsCache.some(
+      (item) => item.id === editingAppointmentId
+    )
+  ) {
+    resetAppointmentForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.title || '就诊预约';
+    const statusBadge = document.createElement('span');
+    statusBadge.className = 'appointment-status-badge '
+      + `is-${item.status || 'upcoming'}`;
+    statusBadge.textContent =
+      APPOINTMENT_STATUS_LABELS[item.status] || '待就诊';
+    title.append(' ', statusBadge);
+    const countdown = appointmentCountdown(item);
+    if (countdown) {
+      const soonBadge = document.createElement('span');
+      soonBadge.className = 'appointment-soon-badge';
+      soonBadge.textContent = countdown;
+      title.append(' ', soonBadge);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      String(item.scheduled_at || '').replace('T', ' ').slice(0, 16),
+      item.department,
+      item.doctor,
+      item.location,
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    if (item.status === 'upcoming') {
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'metric-edit';
+      done.textContent = '完成';
+      done.setAttribute('aria-label', `标记就诊已完成：${item.title}`);
+      done.addEventListener(
+        'click', () => updateAppointmentStatus(item, 'completed')
+      );
+
+      const cancelled = document.createElement('button');
+      cancelled.type = 'button';
+      cancelled.className = 'metric-edit';
+      cancelled.textContent = '取消';
+      cancelled.setAttribute('aria-label', `取消就诊预约：${item.title}`);
+      cancelled.addEventListener(
+        'click', () => updateAppointmentStatus(item, 'cancelled')
+      );
+
+      const remind = document.createElement('button');
+      remind.type = 'button';
+      remind.className = 'metric-edit';
+      remind.textContent = '提醒';
+      remind.setAttribute('aria-label', `为就诊创建提醒：${item.title}`);
+      remind.addEventListener(
+        'click', () => createAppointmentReminder(item)
+      );
+      actions.append(done, cancelled, remind);
+    } else {
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'metric-edit';
+      restore.textContent = '恢复待就诊';
+      restore.setAttribute('aria-label', `恢复为待就诊：${item.title}`);
+      restore.addEventListener(
+        'click', () => updateAppointmentStatus(item, 'upcoming')
+      );
+      actions.appendChild(restore);
+    }
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑就诊预约：${item.title}`);
+    edit.addEventListener('click', () => editAppointment(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除就诊预约：${item.title}`);
+    del.addEventListener('click', () => deleteAppointment(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.appointmentList.appendChild(li);
+  }
+}
+
+async function loadAppointments() {
+  if (!els.appointmentList) return;
+  const requestSeq = ++appointmentRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/appointments?limit=100000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== appointmentRequestSeq) return;
+    appointmentItemsCache = data.appointments || [];
+    renderAppointments(filterAppointments(appointmentItemsCache));
+  } catch {
+    if (requestSeq !== appointmentRequestSeq) return;
+    appointmentItemsCache = [];
+    renderAppointments([]);
+    els.appointmentEmpty.textContent =
+      '就诊预约加载失败，请稍后重试。';
+    els.appointmentEmpty.hidden = false;
+    setAppointmentStatusText('就诊预约加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportAppointmentsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/appointments/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-appointments-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setAppointmentStatusText('已导出就诊预约 CSV。');
+  } catch (err) {
+    setAppointmentStatusText(`导出失败：${err.message || err}`, true);
+  }
+}
+
+function editAppointment(item) {
+  editingAppointmentId = item.id;
+  editingAppointmentProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.appointmentTitle.value = item.title || '';
+  els.appointmentDepartment.value = item.department || '';
+  els.appointmentDoctor.value = item.doctor || '';
+  els.appointmentLocation.value = item.location || '';
+  els.appointmentTime.value =
+    String(item.scheduled_at || '').slice(0, 16);
+  els.appointmentStatusSelect.value = item.status || 'upcoming';
+  els.appointmentNote.value = item.note || '';
+  els.appointmentSave.textContent = '保存修改';
+  els.appointmentCancel.hidden = false;
+  els.appointmentTitle.focus();
+}
+
+async function saveAppointment() {
+  if (appointmentSaving) return;
+  const title = (els.appointmentTitle.value || '').trim();
+  if (!title) {
+    setAppointmentStatusText('请填写就诊主题。', true);
+    els.appointmentTitle.focus();
+    return;
+  }
+  const scheduledAt = els.appointmentTime.value
+    || metricNowLocal();
+  const editingId = editingAppointmentId;
+  const payload = {
+    profile: editingId
+      ? editingAppointmentProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    title,
+    department: (els.appointmentDepartment.value || '').trim(),
+    doctor: (els.appointmentDoctor.value || '').trim(),
+    location: (els.appointmentLocation.value || '').trim(),
+    scheduled_at: scheduledAt,
+    status: els.appointmentStatusSelect.value || 'upcoming',
+    note: (els.appointmentNote.value || '').trim(),
+  };
+
+  appointmentSaving = true;
+  els.appointmentSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId
+        ? `/api/appointments/${editingId}`
+        : '/api/appointments',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetAppointmentForm();
+    setAppointmentStatusText(
+      editingId ? '已保存修改。' : '已保存就诊预约。'
+    );
+    await loadAppointments();
+    refreshOverview();
+  } catch (err) {
+    setAppointmentStatusText(`保存失败：${err.message || err}`, true);
+  } finally {
+    appointmentSaving = false;
+    els.appointmentSave.disabled = false;
+  }
+}
+
+async function updateAppointmentStatus(item, status) {
+  if (status === 'cancelled' && !window.confirm(
+    `取消就诊预约「${item.title}」？`
+  )) return;
+  try {
+    const res = await fetch(`/api/appointments/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setAppointmentStatusText(
+      `已标记为${APPOINTMENT_STATUS_LABELS[status] || status}。`
+    );
+    await loadAppointments();
+    refreshOverview();
+    refreshReminderBadge();
+  } catch (err) {
+    setAppointmentStatusText(`更新状态失败：${err.message || err}`, true);
+  }
+}
+
+async function deleteAppointment(item) {
+  if (!window.confirm(`删除就诊预约「${item.title}」？`)) return;
+  try {
+    const res = await fetch(`/api/appointments/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingAppointmentId === item.id) resetAppointmentForm();
+    setAppointmentStatusText('已删除就诊预约。');
+    await loadAppointments();
+    refreshOverview();
+    refreshReminderBadge();
+  } catch (err) {
+    setAppointmentStatusText(`删除失败：${err.message || err}`, true);
+  }
+}
+
+async function createAppointmentReminder(item) {
+  if (appointmentReminderBusy.has(item.id)) return;
+  appointmentReminderBusy.add(item.id);
+  setAppointmentStatusText('正在创建就诊提醒…');
+  try {
+    const res = await fetch(
+      `/api/appointments/${item.id}/reminder`, { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setAppointmentStatusText(
+      data.created
+        ? '已创建就诊提醒（提前 1 天）。'
+        : '该预约已有未完成的就诊提醒。'
+    );
+    refreshReminderBadge();
+    refreshOverview();
+  } catch (err) {
+    setAppointmentStatusText(`创建提醒失败：${err.message || err}`, true);
+  } finally {
+    appointmentReminderBusy.delete(item.id);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -10355,6 +10786,7 @@ const TIMELINE_TYPE_LABELS = {
   symptom: '症状',
   medication: '用药',
   vaccination: '疫苗',
+  appointment: '就诊',
   consultation: '会诊',
 };
 
@@ -10435,14 +10867,16 @@ function renderTimeline(data) {
       alertBadge.className = 'timeline-alert';
       alertBadge.textContent = event.type === 'vaccination'
         ? '到期'
-        : '超标';
+        : event.type === 'appointment' ? '就诊' : '超标';
       title.appendChild(alertBadge);
     }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
     meta.textContent = [
-      event.type === 'vaccination'
+      (
+        event.type === 'vaccination' || event.type === 'appointment'
+      )
         ? String(event.at || '').slice(0, 10)
         : formatTime(event.at),
       event.value,
@@ -14047,6 +14481,39 @@ els.vaccinationSearch.addEventListener('input', () => {
   clearTimeout(vaccinationSearchTimer);
   vaccinationSearchTimer = setTimeout(() => {
     renderVaccinations(filterVaccinations(vaccinationItemsCache));
+  }, 200);
+});
+els.appointmentSave.addEventListener('click', saveAppointment);
+els.appointmentExport.addEventListener('click', exportAppointmentsCsv);
+els.appointmentCancel.addEventListener('click', () => {
+  resetAppointmentForm();
+  setAppointmentStatusText('已取消编辑。');
+});
+if (els.appointmentSection) {
+  els.appointmentSection.addEventListener('toggle', () => {
+    if (els.appointmentSection.open && !els.appointmentTime.value) {
+      els.appointmentTime.value = metricNowLocal();
+    }
+  });
+}
+for (const input of [
+  els.appointmentTitle, els.appointmentDepartment,
+  els.appointmentDoctor, els.appointmentLocation,
+  els.appointmentTime, els.appointmentNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveAppointment();
+    }
+  });
+}
+els.appointmentSearch.addEventListener('input', () => {
+  clearTimeout(appointmentSearchTimer);
+  appointmentSearchTimer = setTimeout(() => {
+    renderAppointments(filterAppointments(appointmentItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {
