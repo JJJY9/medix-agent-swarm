@@ -352,7 +352,11 @@ class AgentLoop:
                             'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
                             'iterations': state.iteration,
                             'warning': 'finalize_failed',
-                            'error': str(e)
+                            'error': str(e),
+                            # 降级也要保留已消耗的用量，避免费用与预算统计漏记
+                            'usage': dict(usage),
+                            'llm_calls': llm_calls,
+                            'sources': merge_sources(sources),
                         }
                         state.mark_completed(result)
                         break
@@ -417,7 +421,10 @@ class AgentLoop:
                         'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
                         'iterations': state.iteration,
                         'warning': 'max_iterations_reached',
-                        'error': str(e)
+                        'error': str(e),
+                        'usage': dict(usage),
+                        'llm_calls': llm_calls,
+                        'sources': merge_sources(sources),
                     }
                     state.mark_completed(result)
 
@@ -426,6 +433,12 @@ class AgentLoop:
 
         except Exception as e:
             logger.error(f"Agent Loop failed: {e}")
+            # 失败前已经消耗的 token 也要带出去，供上层统计费用与预算
+            try:
+                e.usage = dict(usage)
+                e.llm_calls = llm_calls
+            except Exception:
+                pass
             state.mark_failed(str(e))
             raise
         finally:
@@ -481,10 +494,15 @@ class AgentLoop:
                 )
             except LLMError:
                 # 已经推送过增量时不要再重试或重新生成，
-                # 否则前端会把两段回答拼接在一起
+                # 否则前端会把两段回答拼接在一起；但必须明确标记内容不完整，
+                # 避免截断的医疗建议被当作完整答复保存与展示
                 if chunks:
                     logger.warning("流式回答中断，保留已推送的部分内容")
-                    return "".join(chunks)
+                    partial = "".join(chunks)
+                    note = "\n\n（回答不完整：生成过程中网络中断，请重试。）"
+                    if on_token is not None:
+                        on_token(note)
+                    return partial + note
                 raise
             finally:
                 if usage is not None:

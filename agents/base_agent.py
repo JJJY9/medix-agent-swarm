@@ -179,18 +179,29 @@ class BaseAgent(ABC):
         """
         shared = shared_context if shared_context is not None else self.shared_context
 
-        # 使用 subtask.description 作为输入；带上患者背景信息，
-        # 让诊断 / 研究 Agent 也能看到年龄、病程等结构化上下文。
+        # 使用 subtask.description 作为任务重点；同时保留原始主诉，
+        # 否则 Worker 只能看到“评估胸痛风险”这类泛化描述，丢失具体症状
         patient_context = {}
         session_id = None
+        original_question = ""
         if shared is not None:
-            patient_context = getattr(shared, "data", {}).get(
-                "patient_context", {}
-            ) or {}
+            shared_data = getattr(shared, "data", {}) or {}
+            patient_context = shared_data.get("patient_context", {}) or {}
+            original_question = str(
+                shared_data.get("original_question") or ""
+            ).strip()
             session_id = getattr(shared, "session_id", None)
 
+        task_description = str(subtask.description or "").strip()
+        question = task_description
+        if original_question and original_question not in task_description:
+            question = (
+                f"{original_question}\n\n本次任务重点：{task_description}"
+            )
+
         input_data = {
-            'question': subtask.description,
+            'question': question,
+            'memory_question': original_question or task_description,
             'subtask_id': subtask.id,
             'subtask_type': subtask.type,
             'context': patient_context,

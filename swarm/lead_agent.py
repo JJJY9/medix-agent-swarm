@@ -534,20 +534,22 @@ class LeadAgent:
             )
             completed_agents.append(contrib.agent_id)
 
-        # 如果发生超时，添加说明
+        # 未完成模块（超时或出错）都要在汇总里说明，不能只处理超时
+        all_subtasks = list(shared_context.task_decomposition.values())
+        incomplete_tasks = [
+            subtask.type for subtask in all_subtasks
+            if subtask.status.value != "completed"
+        ]
         timeout_note = ""
-        if timeout_occurred:
-            all_subtasks = shared_context.task_decomposition.values()
-            # 协调器在汇总前会把未完成的子任务标成 failed，
-            # 因此这里以「未完成」而非某个具体状态来判断
-            incomplete_tasks = [
-                subtask.type for subtask in all_subtasks
-                if subtask.status.value != "completed"
-            ]
-            if incomplete_tasks:
-                timeout_note = f"""
+        if incomplete_tasks:
+            reason = (
+                "由于系统响应超时"
+                if timeout_occurred
+                else "由于部分分析模块出错"
+            )
+            timeout_note = f"""
 
-**注意**：由于系统响应超时，以下分析模块未能完成：{', '.join(incomplete_tasks)}
+**注意**：{reason}，以下分析模块未能完成：{', '.join(incomplete_tasks)}
 以下是基于已完成的 {len(completed_agents)} 个 Agent 的部分分析结果。"""
 
         synthesis_prompt = f"""你是医疗 Swarm 的 Lead Agent，负责汇总多个专业 Agent 的分析结果。
@@ -567,7 +569,7 @@ class LeadAgent:
 4. 包含【风险评估】【诊断分析】【医学证据】等模块（如果相关 Agent 提供了）
 5. 给出【核心建议】
 6. 添加【免责声明】
-{"7. 如果有分析模块未完成，在答案中明确说明" if timeout_occurred else ""}
+{"7. 如果有分析模块未完成，在答案中明确说明" if incomplete_tasks else ""}
 
 **输出格式**：
 【风险评估】 (如果有)
