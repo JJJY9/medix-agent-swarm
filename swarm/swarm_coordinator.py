@@ -15,7 +15,7 @@ from typing import Callable, Dict, Any, Optional, List
 from loguru import logger
 
 from core import LLMClient
-from core.context import public_context
+from core.context import format_context, public_context
 from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
 from core.citations import merge_sources
@@ -348,10 +348,16 @@ class SwarmCoordinator:
         }
 
         # Step 1: LeadAgent 分解任务
+        # 追问的指代（“那还要继续吃吗”）必须让分解阶段看到最近对话；
+        # memory_scope 是内部字段，仍不能传给模型
+        lead_context = {
+            key: value for key, value in enhanced_context.items()
+            if key not in ("memory_scope", "historical_cases")
+        }
         lead_usage: Dict[str, int] = {}
         assessment = await self.lead_agent.assess_and_decompose(
             question,
-            public_context(enhanced_context),
+            format_context(lead_context, include_internal=True) or "无",
             usage_out=lead_usage,
         )
         # 约束兜底：高危症状/指南类问题必须包含对应 Agent
@@ -543,6 +549,8 @@ class SwarmCoordinator:
 
         # 创建 SharedContext
         shared_context = SharedContext(session_id=session_id)
+        # Worker 需要原始主诉才能看到具体症状，而不只是分解出的任务描述
+        shared_context.data["original_question"] = question
         # 让每个 Worker 在处理子任务时都能看到患者背景与最近对话
         shared_context.data["patient_context"] = worker_context
         if memory_scope:
@@ -708,15 +716,21 @@ class SwarmCoordinator:
 
         agent_contributions, sources = self._collect_insights(shared_context)
 
+        failed_usage_entries = shared_context.data.get("failed_usage") or []
         usage_total = merge_usages(
             lead_usage or {},
             synthesis_usage,
             *[entry.get("usage") for entry in agent_contributions],
+            *[entry.get("usage") for entry in failed_usage_entries],
         )
         llm_calls = (
             1  # LeadAgent 分解
             + (1 if had_contributions else 0)  # 有贡献时才真正调用汇总
             + sum(int(entry.get("llm_calls") or 0) for entry in agent_contributions)
+            + sum(
+                int(entry.get("llm_calls") or 0)
+                for entry in failed_usage_entries
+            )
         )
 
         result = {
@@ -739,11 +753,23 @@ class SwarmCoordinator:
         # 提取建议和免责声明（简化实现）
         result['suggestions'] = self._extract_suggestions(final_answer)
 
-        # 根据是否超时调整免责声明
-        if timeout_occurred and not completed_agents:
-            result['disclaimer'] = "由于系统超时，未能提供完整分析。建议简化问题重试，或在紧急情况下立即就医。"
-        elif timeout_occurred:
-            result['disclaimer'] = f"以上分析基于 {len(completed_agents)} 个 Agent 的部分协作结果（部分分析模块超时未完成），仅供参考，不能替代医生诊断。"
+        # 根据是否超时/是否有失败模块调整免责声明
+        if not completed_agents:
+            reason = "系统响应超时" if timeout_occurred else "分析模块未能完成"
+            result['disclaimer'] = (
+                f"由于{reason}，未能提供完整分析。"
+                "建议简化问题重试，或在紧急情况下立即就医。"
+            )
+        elif failed_subtasks:
+            detail = (
+                "部分分析模块超时未完成"
+                if timeout_occurred
+                else f"{len(failed_subtasks)} 个分析模块未能完成"
+            )
+            result['disclaimer'] = (
+                f"以上分析基于 {len(completed_agents)} 个 Agent 的部分协作结果"
+                f"（{detail}），仅供参考，不能替代医生诊断。"
+            )
         else:
             result['disclaimer'] = "以上分析基于多个专业 Agent 的协作，仅供参考，不能替代医生诊断。"
 
@@ -798,6 +824,16 @@ class SwarmCoordinator:
             logger.info(f"{worker.agent_id}: Completed {subtask.type}")
         except Exception as e:
             logger.error(f"{worker.agent_id}: Error in {subtask.type}: {e}")
+            # 失败子任务已消耗的 token 也要计入本轮用量
+            failed_usage = getattr(e, "usage", None)
+            failed_calls = int(getattr(e, "llm_calls", 0) or 0)
+            if failed_usage or failed_calls:
+                shared_context.data.setdefault(
+                    "failed_usage", []
+                ).append({
+                    "usage": failed_usage or {},
+                    "llm_calls": failed_calls,
+                })
             try:
                 shared_context.fail_subtask(subtask.id, worker.agent_id, str(e))
             except ValueError as state_error:

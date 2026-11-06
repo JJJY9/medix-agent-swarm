@@ -105,8 +105,10 @@ def test_complete_text_keeps_partial_stream_on_error():
         FakeStreamAgent(), [], on_token=chunks.append
     ))
 
-    assert text == "已推送的部分"
-    assert chunks == ["已推送的部分"]
+    assert text.startswith("已推送的部分")
+    assert "回答不完整" in text
+    assert chunks[0] == "已推送的部分"
+    assert "回答不完整" in chunks[-1]
 
 
 class FailingPostProcessAgent:
