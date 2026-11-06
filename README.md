@@ -281,6 +281,7 @@ npm install -D playwright
 | GET | `/api/sessions/export.csv` | 按 `q`/`favorite`/`days`/`archived`/`tag`/`profile`/`risk` 筛选导出会话列表 CSV（带 BOM，含风险等级） |
 | POST | `/api/maintenance/purge` | 删除指定天数以前的会诊及其消息，并同步清理长期记忆与会诊总结（不可恢复，写入审计；本地备份不受影响） |
 | POST | `/api/sessions/import` | 导入备份 JSON（会话、档案、指标、目标、提醒、症状、用药、打卡与操作审计；重复记录跳过） |
+| GET | `/api/templates/{kind}` | 下载 CSV 导入模板（`metrics`/`symptoms`/`medications`/`reminders`，带 BOM 与示例行） |
 | GET | `/api/backups` | 列出本地自动备份（最多 50 份，含大小与修改时间） |
 | POST | `/api/backups` | 立即创建一份本地备份（受 `MEDIX_BACKUP_KEEP` 保留策略约束） |
 | POST | `/api/backups/{name}/restore` | 恢复指定本地备份（校验文件名与 SHA-256，重复记录跳过，写入审计） |
