@@ -910,6 +910,39 @@
       <ul class="metrics-list" id="allergy-list"></ul>
       <p class="metrics-empty" id="allergy-empty" hidden>还没有过敏史记录。</p>
     </details>
+    <details class="care-section" id="care-section">
+      <summary>复查计划</summary>
+      <p class="calc-hint">为糖化、血脂、眼底、肾功能等设置复查间隔；完成后自动顺延下次日期，并为临期项目创建提醒。</p>
+      <div class="symptom-form">
+        <label class="calc-field">复查项目
+          <input id="care-title" type="text" maxlength="120" placeholder="如：糖化血红蛋白">
+        </label>
+        <label class="calc-field">间隔天数
+          <input id="care-interval" type="number" min="1" max="3650" step="1" inputmode="numeric" value="90">
+        </label>
+        <label class="calc-field">下次复查日期
+          <input id="care-next-due" type="date">
+        </label>
+        <label class="calc-field">上次完成日期（可选）
+          <input id="care-last-done" type="date">
+        </label>
+        <label class="calc-check"><input type="checkbox" id="care-active" checked> 启用</label>
+        <label class="calc-field">备注（可选）
+          <input id="care-note" type="text" maxlength="300" placeholder="如：空腹，提前预约">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="care-save">保存复查计划</button>
+          <button type="button" class="btn-quiet" id="care-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="care-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="care-status" role="status" hidden></p>
+      <label class="sr-only" for="care-search">搜索复查计划</label>
+      <input class="symptom-search" id="care-search" type="search" placeholder="搜索复查项目、备注或档案">
+      <p class="symptom-summary" id="care-summary" hidden></p>
+      <ul class="metrics-list" id="care-list"></ul>
+      <p class="metrics-empty" id="care-empty" hidden>还没有复查计划。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>
@@ -1051,6 +1084,7 @@
           <option value="vaccination">疫苗</option>
           <option value="appointment">就诊</option>
           <option value="lab">化验</option>
+          <option value="care">复查</option>
           <option value="consultation">会诊</option>
         </select>
         <label class="sr-only" for="timeline-search">搜索时间线</label>

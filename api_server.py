@@ -185,6 +185,7 @@ class ImportSessionsRequest(StrictRequestModel):
     appointments: Optional[List[Dict[str, Any]]] = None
     lab_results: Optional[List[Dict[str, Any]]] = None
     allergies: Optional[List[Dict[str, Any]]] = None
+    care_items: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -625,6 +626,32 @@ class AllergyUpdateRequest(StrictRequestModel):
     active: Optional[bool] = None
     noted_at: Optional[str] = Field(None, max_length=40)
     note: Optional[str] = Field(None, max_length=300)
+
+
+class CareItemRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    title: str = Field(..., min_length=1, max_length=120)
+    interval_days: int = Field(30, ge=1, le=3650)
+    last_done_at: str = Field("", max_length=40)
+    next_due_at: str = Field("", max_length=40)
+    note: str = Field("", max_length=300)
+    active: bool = True
+
+
+class CareItemUpdateRequest(StrictRequestModel):
+    """部分更新复查计划：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    interval_days: Optional[int] = Field(None, ge=1, le=3650)
+    last_done_at: Optional[str] = Field(None, max_length=40)
+    next_due_at: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+    active: Optional[bool] = None
+
+
+class CareDoneRequest(StrictRequestModel):
+    done_at: str = Field("", max_length=40)
 
 
 class SymptomRequest(StrictRequestModel):
@@ -2051,6 +2078,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "appointments": request.appointments,
         "lab_results": request.lab_results,
         "allergies": request.allergies,
+        "care_items": request.care_items,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -2080,7 +2108,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
         "vaccinations", "appointments", "lab_results", "allergies",
-        "audit_log",
+        "care_items", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -3788,6 +3816,204 @@ async def import_allergies_csv(
     }
 
 
+@app.get("/api/care-items")
+async def list_care_items(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    overdue: bool = False,
+    limit: int = 1000,
+):
+    """复查计划列表（可按档案、状态与逾期筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    items = await asyncio.to_thread(
+        get_session_store().list_care_items,
+        profile, active_only, overdue, limit,
+    )
+    return {"care_items": items}
+
+
+@app.post("/api/care-items")
+async def add_care_item(request: CareItemRequest):
+    """新增一条复查计划。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_care_item,
+            request.profile,
+            request.title,
+            request.interval_days,
+            request.last_done_at,
+            request.next_due_at,
+            request.note,
+            request.active,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("care.create", str(item["id"]))
+    return {"ok": True, "care_item": item}
+
+
+@app.patch("/api/care-items/{care_id}")
+async def update_care_item(
+    care_id: SafeIntPath, request: CareItemUpdateRequest
+):
+    """部分更新一条复查计划。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_care_item, care_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_care_item,
+            care_id,
+            merged.get("profile") or "",
+            merged.get("title") or "",
+            merged.get("interval_days") or 30,
+            merged.get("last_done_at") or "",
+            merged.get("next_due_at") or "",
+            merged.get("note") or "",
+            bool(merged.get("active", True)),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("care.update", str(item["id"]))
+    return {"ok": True, "care_item": item}
+
+
+@app.post("/api/care-items/{care_id}/done")
+async def done_care_item(
+    care_id: SafeIntPath, request: CareDoneRequest
+):
+    """记录一次复查完成并顺延下次日期。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().mark_care_item_done,
+            care_id,
+            request.done_at,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("care.done", str(care_id))
+    return {"ok": True, "care_item": item}
+
+
+@app.delete("/api/care-items/{care_id}")
+async def delete_care_item(care_id: SafeIntPath):
+    """删除一条复查计划。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_care_item, care_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_care_item, care_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("care.delete", str(care_id))
+    return {"ok": True, "id": care_id}
+
+
+@app.get("/api/care-items/export.csv")
+async def export_care_items_csv(profile: Optional[str] = None):
+    """导出复查计划 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_care_items,
+        profile, False, False, 100000,
+    )
+    rows = [[
+        "复查项目", "患者档案", "间隔天数", "上次完成", "下次复查",
+        "状态", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("title", "")),
+            csv_safe_cell(item.get("profile", "")),
+            int(item.get("interval_days") or 0),
+            csv_safe_cell(item.get("last_done_at", "")),
+            csv_safe_cell(item.get("next_due_at", "")),
+            "启用" if item.get("active") else "停用",
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-care-plan-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/care-items/{care_id}/reminder")
+async def create_care_item_reminder(care_id: SafeIntPath):
+    """为复查计划创建提前 7 天的提醒；已有未完成提醒时直接返回。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_care_item, care_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    due = str(item.get("next_due_at") or "")[:10]
+    if not due:
+        raise HTTPException(status_code=400, detail="请先填写下次复查日期")
+    try:
+        due_date = datetime.strptime(due, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="下次复查日期格式不正确")
+    today = datetime.now().date()
+    reminder_due = max(due_date - timedelta(days=7), today)
+    title = f"复查：{item.get('title') or '复查'}"[:120]
+    note = f"下次复查 {due}"
+    reminders = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    for reminder in reminders:
+        if (
+            not reminder.get("done")
+            and reminder.get("title") == title
+            and str(reminder.get("due_at") or "")[:10]
+            == reminder_due.strftime("%Y-%m-%d")
+        ):
+            return {"ok": True, "created": False, "reminder": reminder}
+    reminder = await asyncio.to_thread(
+        store.add_reminder,
+        title,
+        reminder_due.strftime("%Y-%m-%d"),
+        note,
+        "",
+        item.get("profile") or "",
+        0,
+        0,
+        "",
+        0,
+        0,
+        0,
+    )
+    await record_audit("care.reminder", str(care_id))
+    return {"ok": True, "created": True, "reminder": reminder}
+
+
 @app.get("/api/symptoms")
 async def list_symptoms(
     profile: Optional[str] = None,
@@ -4431,6 +4657,9 @@ async def health_timeline(
     raw_lab_results = await asyncio.to_thread(
         store.list_lab_results, profile, None, None, 0, 100000, 0
     )
+    raw_care_items = await asyncio.to_thread(
+        store.list_care_items, profile, False, False, 100000
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -4617,6 +4846,34 @@ async def health_timeline(
             "alert": bool(item.get("abnormal")),
         })
 
+    for item in raw_care_items:
+        if not item.get("active"):
+            continue
+        at = str(item.get("next_due_at") or "")
+        if not in_window(at):
+            continue
+        days_until = item.get("days_until")
+        value_parts = []
+        if item.get("interval_days"):
+            value_parts.append(f"每 {int(item['interval_days'])} 天")
+        if days_until is not None:
+            if item.get("overdue"):
+                value_parts.append(f"已逾期 {abs(int(days_until))} 天")
+            elif days_until == 0:
+                value_parts.append("今天到期")
+            else:
+                value_parts.append(f"{int(days_until)} 天后")
+        events.append({
+            "type": "care",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("title") or "复查计划",
+            "value": " · ".join(value_parts),
+            "note": item.get("note", ""),
+            "alert": bool(item.get("overdue") or item.get("due_soon")),
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -4648,7 +4905,7 @@ async def health_timeline(
     events.sort(key=sort_key, reverse=True)
     if type in {
         "metric", "symptom", "medication", "vaccination",
-        "appointment", "lab", "consultation",
+        "appointment", "lab", "care", "consultation",
     }:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
@@ -4707,6 +4964,7 @@ async def export_timeline_csv(
         "vaccination": "疫苗",
         "appointment": "就诊",
         "lab": "化验",
+        "care": "复查",
         "consultation": "会诊",
     }
     events = data["events"]
@@ -5417,6 +5675,9 @@ async def family_overview(days: int = 7):
     lab_results = await asyncio.to_thread(
         store.list_lab_results, None, None, None, 0, 100000, 0
     )
+    care_items = await asyncio.to_thread(
+        store.list_care_items, None, False, False, 100000
+    )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline, None, cutoff, "", 100000
@@ -5612,6 +5873,34 @@ async def family_overview(days: int = 7):
                     f"{item.get('item') or '化验'} {value}".strip()
                 )
 
+    care_by_profile: Dict[str, Dict[str, Any]] = {}
+    for item in care_items:
+        profile = item.get("profile") or ""
+        if not profile or not item.get("active"):
+            continue
+        entry = care_by_profile.setdefault(profile, {
+            "overdue": 0, "due_soon": 0, "next": None, "items": [],
+        })
+        if item.get("overdue"):
+            entry["overdue"] += 1
+        if item.get("due_soon"):
+            entry["due_soon"] += 1
+        due = str(item.get("next_due_at") or "")
+        if due and (
+            entry["next"] is None
+            or due < str(entry["next"].get("next_due_at") or "")
+        ):
+            entry["next"] = {
+                "id": item.get("id"),
+                "title": item.get("title", ""),
+                "next_due_at": due,
+                "days_until": item.get("days_until"),
+            }
+        if (
+            item.get("overdue") or item.get("due_soon")
+        ) and len(entry["items"]) < 3:
+            entry["items"].append(item.get("title") or "")
+
     appointments_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in appointments:
         profile = item.get("profile") or ""
@@ -5682,6 +5971,9 @@ async def family_overview(days: int = 7):
         critical = critical_by_profile.get(name, {
             "count": 0, "items": [],
         })
+        care = care_by_profile.get(name, {
+            "overdue": 0, "due_soon": 0, "next": None, "items": [],
+        })
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
@@ -5718,6 +6010,7 @@ async def family_overview(days: int = 7):
             "appointments": appointment,
             "labs": labs,
             "critical_alerts": critical,
+            "care_plan": care,
             "consultations": {
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
@@ -5748,6 +6041,7 @@ async def export_family_overview_csv(days: int = 7):
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
         "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
+        "复查计划",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -5858,6 +6152,18 @@ async def export_family_overview_csv(days: int = 7):
             ]
             if names:
                 critical_text += "（" + "；".join(names) + "）"
+        care_info = item.get("care_plan") or {}
+        care_parts = []
+        if care_info.get("overdue"):
+            care_parts.append(f"逾期 {int(care_info['overdue'])} 项")
+        if care_info.get("due_soon"):
+            care_parts.append(f"近 7 天 {int(care_info['due_soon'])} 项")
+        next_care = care_info.get("next") or {}
+        if next_care.get("title"):
+            care_parts.append(
+                f"{next_care['title']} {next_care.get('next_due_at', '')}"
+            )
+        care_text = "，".join(care_parts)
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -5877,6 +6183,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(visit_text),
             csv_safe_cell(lab_text),
             csv_safe_cell(critical_text),
+            csv_safe_cell(care_text),
         ])
 
     buffer = io.StringIO()
@@ -6006,6 +6313,9 @@ async def export_health_dossier(
     allergies = await asyncio.to_thread(
         store.list_allergies, profile_key, False, None, "", 1000
     )
+    care_items = await asyncio.to_thread(
+        store.list_care_items, profile_key, False, False, 1000
+    )
     if profile_key:
         reminders = await asyncio.to_thread(
             store.list_reminders, False, profile_key
@@ -6082,6 +6392,25 @@ async def export_health_dossier(
             lines.append(detail)
     else:
         lines.append("- 暂未记录过敏史")
+    lines.append("")
+
+    lines.append("## 复查计划")
+    if care_items:
+        for item in care_items:
+            status = "启用" if item.get("active") else "停用"
+            detail = (
+                f"- {item.get('title') or '复查'}"
+                f"（每 {int(item.get('interval_days') or 0)} 天"
+                f"，下次 {item.get('next_due_at') or '—'}"
+                f"，{status}）"
+            )
+            if item.get("last_done_at"):
+                detail += f"，上次 {item['last_done_at']}"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂未设置复查计划")
     lines.append("")
 
     lines.append("## 指标目标")
