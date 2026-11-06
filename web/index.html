@@ -862,6 +862,54 @@
       <ul class="metrics-list" id="lab-list"></ul>
       <p class="metrics-empty" id="lab-empty" hidden>还没有化验结果。</p>
     </details>
+    <details class="allergy-section" id="allergy-section">
+      <summary>过敏史</summary>
+      <p class="calc-hint">结构化记录药物、食物与环境过敏；会诊与相互作用检查会自动带上在用过敏原。</p>
+      <div class="symptom-form">
+        <label class="calc-field">过敏原
+          <input id="allergy-substance" type="text" maxlength="80" placeholder="如：青霉素">
+        </label>
+        <label class="calc-field">过敏反应（可选）
+          <input id="allergy-reaction" type="text" maxlength="120" placeholder="如：皮疹、呼吸困难">
+        </label>
+        <label class="calc-field">严重程度
+          <select id="allergy-severity">
+            <option value="mild">轻度</option>
+            <option value="moderate" selected>中度</option>
+            <option value="severe">重度</option>
+          </select>
+        </label>
+        <label class="calc-field">类型
+          <select id="allergy-kind">
+            <option value="drug" selected>药物</option>
+            <option value="food">食物</option>
+            <option value="environment">环境</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label class="calc-field">发现时间（可选）
+          <input id="allergy-noted-at" type="date">
+        </label>
+        <label class="calc-check"><input type="checkbox" id="allergy-active" checked> 仍在关注</label>
+        <label class="calc-field">备注（可选）
+          <input id="allergy-note" type="text" maxlength="300" placeholder="如：曾出现全身荨麻疹">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="allergy-save">保存过敏史</button>
+          <button type="button" class="btn-quiet" id="allergy-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="allergy-import">导入 CSV</button>
+          <button type="button" class="btn-quiet" id="allergy-template" title="下载可导入过敏史的 CSV 模板">模板</button>
+          <input type="file" id="allergy-import-file" accept=".csv,text/csv" hidden>
+          <button type="button" class="btn-quiet" id="allergy-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="allergy-status" role="status" hidden></p>
+      <label class="sr-only" for="allergy-search">搜索过敏史</label>
+      <input class="symptom-search" id="allergy-search" type="search" placeholder="搜索过敏原、反应或档案">
+      <p class="symptom-summary" id="allergy-summary" hidden></p>
+      <ul class="metrics-list" id="allergy-list"></ul>
+      <p class="metrics-empty" id="allergy-empty" hidden>还没有过敏史记录。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>

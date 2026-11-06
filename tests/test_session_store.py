@@ -482,6 +482,7 @@ def test_import_data_roundtrip(tmp_path):
             "vaccinations": 0,
             "appointments": 0,
             "lab_results": 0,
+            "allergies": 0,
             "audit_log": 0,
         }
         messages = target.get_messages("s1")

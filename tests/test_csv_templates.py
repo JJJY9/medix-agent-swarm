@@ -21,6 +21,10 @@ EXPECTED_HEADERS = {
         "检测时间", "患者档案", "分组", "项目", "数值", "单位",
         "参考下限", "参考上限", "化验机构", "备注",
     ],
+    "allergies": [
+        "过敏原", "患者档案", "过敏反应", "严重程度", "类型",
+        "状态", "发现时间", "备注",
+    ],
 }
 
 
@@ -65,6 +69,7 @@ def test_templates_can_be_imported(client_and_store):
         "medications": "/api/medications/import",
         "reminders": "/api/reminders/import",
         "lab-results": "/api/lab-results/import",
+        "allergies": "/api/allergies/import",
     }
     for kind, endpoint in endpoints.items():
         template = client.get(f"/api/templates/{kind}").content
@@ -83,3 +88,4 @@ def test_templates_can_be_imported(client_and_store):
         "/api/reminders", params={"include_done": True}
     ).json()["reminders"]
     assert client.get("/api/lab-results").json()["lab_results"]
+    assert client.get("/api/allergies").json()["allergies"]
