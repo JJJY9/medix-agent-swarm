@@ -184,6 +184,7 @@ class ImportSessionsRequest(StrictRequestModel):
     vaccinations: Optional[List[Dict[str, Any]]] = None
     appointments: Optional[List[Dict[str, Any]]] = None
     lab_results: Optional[List[Dict[str, Any]]] = None
+    allergies: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -602,6 +603,30 @@ class LabResultUpdateRequest(StrictRequestModel):
     note: Optional[str] = Field(None, max_length=300)
 
 
+class AllergyRequest(StrictRequestModel):
+    profile: str = Field("", max_length=40, description="关联的患者档案名称")
+    substance: str = Field(..., min_length=1, max_length=80, description="过敏原")
+    reaction: str = Field("", max_length=120, description="过敏反应")
+    severity: str = Field("moderate", max_length=20)
+    kind: str = Field("drug", max_length=20)
+    active: bool = True
+    noted_at: str = Field("", max_length=40, description="发现时间")
+    note: str = Field("", max_length=300)
+
+
+class AllergyUpdateRequest(StrictRequestModel):
+    """部分更新过敏史：未给出的字段保持原值。"""
+
+    profile: Optional[str] = Field(None, max_length=40)
+    substance: Optional[str] = Field(None, min_length=1, max_length=80)
+    reaction: Optional[str] = Field(None, max_length=120)
+    severity: Optional[str] = Field(None, max_length=20)
+    kind: Optional[str] = Field(None, max_length=20)
+    active: Optional[bool] = None
+    noted_at: Optional[str] = Field(None, max_length=40)
+    note: Optional[str] = Field(None, max_length=300)
+
+
 class SymptomRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
@@ -828,6 +853,16 @@ CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "example": [
             "2026-01-01T08:00", "妈妈", "肝功能", "ALT", "28", "U/L",
             "7", "40", "市医院检验科", "空腹",
+        ],
+    },
+    "allergies": {
+        "headers": [
+            "过敏原", "患者档案", "过敏反应", "严重程度", "类型",
+            "状态", "发现时间", "备注",
+        ],
+        "example": [
+            "青霉素", "妈妈", "皮疹", "重度", "药物", "在用",
+            "2020-05-01", "曾出现全身荨麻疹",
         ],
     },
 }
@@ -2015,6 +2050,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "vaccinations": request.vaccinations,
         "appointments": request.appointments,
         "lab_results": request.lab_results,
+        "allergies": request.allergies,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
@@ -2043,7 +2079,8 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
     keys = (
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
-        "vaccinations", "appointments", "lab_results", "audit_log",
+        "vaccinations", "appointments", "lab_results", "allergies",
+        "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -3499,6 +3536,249 @@ async def import_lab_results_csv(
     imported = int(result.get("lab_results", 0))
     await record_audit(
         "lab.import", detail=f"imported={imported} invalid={invalid}"
+    )
+    return {
+        "ok": True,
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "invalid": invalid,
+    }
+
+
+@app.get("/api/allergies")
+async def list_allergies(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    kind: Optional[str] = None,
+    q: str = "",
+    limit: int = 1000,
+):
+    """过敏史列表（可按档案、类型、状态与关键字筛选）。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 1000), 100000))
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_allergies,
+            profile, active_only, kind, q, limit,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"allergies": items}
+
+
+@app.post("/api/allergies")
+async def add_allergy(request: AllergyRequest):
+    """新增一条过敏史。"""
+    from memory import get_session_store
+
+    try:
+        item = await asyncio.to_thread(
+            get_session_store().add_allergy,
+            request.profile,
+            request.substance,
+            request.reaction,
+            request.severity,
+            request.kind,
+            request.active,
+            request.noted_at,
+            request.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await record_audit("allergy.create", str(item["id"]))
+    return {"ok": True, "allergy": item}
+
+
+@app.patch("/api/allergies/{allergy_id}")
+async def update_allergy(
+    allergy_id: SafeIntPath, request: AllergyUpdateRequest
+):
+    """部分更新一条过敏史。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    existing = await asyncio.to_thread(store.get_allergy, allergy_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    try:
+        item = await asyncio.to_thread(
+            store.update_allergy,
+            allergy_id,
+            merged.get("profile") or "",
+            merged.get("substance") or "",
+            merged.get("reaction") or "",
+            merged.get("severity") or "moderate",
+            merged.get("kind") or "drug",
+            bool(merged.get("active", True)),
+            merged.get("noted_at") or "",
+            merged.get("note") or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("allergy.update", str(item["id"]))
+    return {"ok": True, "allergy": item}
+
+
+@app.delete("/api/allergies/{allergy_id}")
+async def delete_allergy(allergy_id: SafeIntPath):
+    """删除一条过敏史。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_allergy, allergy_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    ok = await asyncio.to_thread(store.delete_allergy, allergy_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    await record_audit("allergy.delete", str(allergy_id))
+    return {"ok": True, "id": allergy_id}
+
+
+@app.get("/api/allergies/export.csv")
+async def export_allergies_csv(profile: Optional[str] = None):
+    """导出过敏史 CSV（带 BOM），可按档案筛选。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_allergies, profile, False, None, "", 100000
+    )
+    severity_labels = {
+        "mild": "轻度",
+        "moderate": "中度",
+        "severe": "重度",
+    }
+    kind_labels = {
+        "drug": "药物",
+        "food": "食物",
+        "environment": "环境",
+        "other": "其他",
+    }
+    rows = [[
+        "过敏原", "患者档案", "过敏反应", "严重程度", "类型",
+        "状态", "发现时间", "备注", "ID",
+    ]]
+    for item in items:
+        rows.append([
+            csv_safe_cell(item.get("substance", "")),
+            csv_safe_cell(item.get("profile", "")),
+            csv_safe_cell(item.get("reaction", "")),
+            severity_labels.get(item.get("severity") or "", ""),
+            kind_labels.get(item.get("kind") or "", ""),
+            "在用" if item.get("active") else "已停用",
+            csv_safe_cell(item.get("noted_at", "")),
+            csv_safe_cell(item.get("note", "")),
+            int(item.get("id") or 0),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = f"medix-allergies-{datetime.now().strftime('%Y%m%d')}.csv"
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/allergies/import")
+async def import_allergies_csv(
+    request: Request, file: UploadFile = File(...)
+):
+    """从导出的 CSV 格式导入过敏史，重复记录自动跳过。"""
+    import csv
+    import io
+
+    from memory import get_session_store
+
+    if _request_content_length(request) > 5 * 1024 * 1024 + 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    raw = await file.read(5 * 1024 * 1024 + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="CSV 文件为空")
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件超过 5 MB")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("gb18030")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="CSV 编码无法识别")
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV 缺少表头")
+    field_alias = {
+        "过敏原": "substance",
+        "物质": "substance",
+        "患者档案": "profile",
+        "档案": "profile",
+        "过敏反应": "reaction",
+        "反应": "reaction",
+        "严重程度": "severity",
+        "程度": "severity",
+        "类型": "kind",
+        "状态": "active",
+        "发现时间": "noted_at",
+        "备注": "note",
+    }
+    severity_map = {"轻度": "mild", "中度": "moderate", "重度": "severe"}
+    kind_map = {"药物": "drug", "食物": "food", "环境": "environment", "其他": "other"}
+    records = []
+    invalid = 0
+    try:
+        csv_rows = list(reader)
+    except csv.Error as e:
+        logger.warning(f"CSV 解析失败: {e}")
+        raise HTTPException(status_code=400, detail="CSV 格式错误，请检查文件内容。")
+    for row in csv_rows:
+        mapped = {}
+        for key, value in row.items():
+            if not key:
+                continue
+            mapped[field_alias.get(key.strip(), key.strip())] = (
+                csv_restore_cell(value).strip()
+            )
+        substance = mapped.get("substance", "")
+        if not substance:
+            invalid += 1
+            continue
+        severity = mapped.get("severity", "")
+        kind = mapped.get("kind", "")
+        active = mapped.get("active", "")
+        records.append({
+            "profile": mapped.get("profile", ""),
+            "substance": substance,
+            "reaction": mapped.get("reaction", ""),
+            "severity": severity_map.get(severity, severity or "moderate"),
+            "kind": kind_map.get(kind, kind or "drug"),
+            "active": active not in ("已停用", "停用", "0", "false", "False", "否"),
+            "noted_at": mapped.get("noted_at", ""),
+            "note": mapped.get("note", ""),
+        })
+    if not records:
+        raise HTTPException(
+            status_code=400,
+            detail=f"没有可导入的过敏史（无效 {invalid} 行）",
+        )
+    try:
+        result = await asyncio.to_thread(
+            get_session_store().import_data, {"allergies": records}
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    imported = int(result.get("allergies", 0))
+    await record_audit(
+        "allergy.import", detail=f"imported={imported} invalid={invalid}"
     )
     return {
         "ok": True,
@@ -5723,6 +6003,9 @@ async def export_health_dossier(
     lab_results = await asyncio.to_thread(
         store.list_lab_results, profile_key, None, None, 0, 100000, 0
     )
+    allergies = await asyncio.to_thread(
+        store.list_allergies, profile_key, False, None, "", 1000
+    )
     if profile_key:
         reminders = await asyncio.to_thread(
             store.list_reminders, False, profile_key
@@ -5765,6 +6048,40 @@ async def export_health_dossier(
         f"- 连续记录：已连续 {streak['current']} 天"
         f"（近 30 天记录 {streak['days_last_30']} 天）"
     )
+    lines.append("")
+
+    lines.append("## 过敏史")
+    if allergies:
+        severity_labels = {
+            "mild": "轻度",
+            "moderate": "中度",
+            "severe": "重度",
+        }
+        kind_labels = {
+            "drug": "药物",
+            "food": "食物",
+            "environment": "环境",
+            "other": "其他",
+        }
+        for item in allergies:
+            detail = f"- {item.get('substance') or '过敏原'}"
+            extras = [
+                item.get("reaction") or "",
+                severity_labels.get(item.get("severity") or "", ""),
+                kind_labels.get(item.get("kind") or "", ""),
+            ]
+            extras = [part for part in extras if part]
+            if extras:
+                detail += f"（{'，'.join(extras)}）"
+            if not item.get("active"):
+                detail += "（已停用）"
+            if item.get("noted_at"):
+                detail += f"，发现于 {item['noted_at']}"
+            if item.get("note"):
+                detail += f"（{item['note']}）"
+            lines.append(detail)
+    else:
+        lines.append("- 暂未记录过敏史")
     lines.append("")
 
     lines.append("## 指标目标")
@@ -7707,6 +8024,63 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
     return sanitize_json(strip_lone_surrogates(payload))
 
 
+def _allergy_text_for_context(items: List[Dict[str, Any]]) -> str:
+    severity_labels = {
+        "mild": "轻度",
+        "moderate": "中度",
+        "severe": "重度",
+    }
+    parts = []
+    for item in items:
+        substance = str(item.get("substance") or "").strip()
+        if not substance:
+            continue
+        detail = []
+        if item.get("reaction"):
+            detail.append(str(item["reaction"]))
+        label = severity_labels.get(item.get("severity") or "", "")
+        if label:
+            detail.append(label)
+        parts.append(
+            substance + (f"（{'，'.join(detail)}）" if detail else "")
+        )
+    return "；".join(parts)
+
+
+async def _attach_structured_allergies(
+    context: Dict[str, Any], profile: str
+) -> Dict[str, Any]:
+    """把结构化过敏史并入会诊上下文；失败时保留原上下文。"""
+    from memory import get_session_store
+
+    if not profile:
+        return context
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_allergies,
+            profile, True, None, "", 1000,
+        )
+    except Exception:
+        return context
+    if not items:
+        return context
+    merged = dict(context)
+    existing = str(merged.get("allergies") or "").strip()
+    if existing:
+        extra_items = [
+            item for item in items
+            if item.get("substance")
+            and str(item["substance"]) not in existing
+        ]
+        extra_text = _allergy_text_for_context(extra_items)
+        if not extra_text:
+            return merged
+        merged["allergies"] = f"{existing}；{extra_text}"
+    else:
+        merged["allergies"] = _allergy_text_for_context(items)
+    return merged
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """同步接口：等 Swarm 全部跑完再返回。"""
@@ -7717,6 +8091,9 @@ async def chat(request: ChatRequest):
     memory_context = dict(request.context or {})
     memory_context["memory_scope"] = _memory_scope(
         memory_profile, session_id
+    )
+    memory_context = await _attach_structured_allergies(
+        memory_context, memory_profile
     )
 
     async with state.lock:
@@ -7769,8 +8146,13 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     memory_context["memory_scope"] = _memory_scope(
         memory_profile, session_id
     )
-    triage = detect_red_flags(request.question, request.context)
-    medication_safety = check_medication_safety(request.question, request.context)
+    memory_context = await _attach_structured_allergies(
+        memory_context, memory_profile
+    )
+    triage = detect_red_flags(request.question, memory_context)
+    medication_safety = check_medication_safety(
+        request.question, memory_context
+    )
 
     async def event_stream() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:

@@ -464,6 +464,25 @@ const els = {
   labEmpty: document.getElementById('lab-empty'),
   labSearch: document.getElementById('lab-search'),
   labSummary: document.getElementById('lab-summary'),
+  allergySection: document.getElementById('allergy-section'),
+  allergySubstance: document.getElementById('allergy-substance'),
+  allergyReaction: document.getElementById('allergy-reaction'),
+  allergySeverity: document.getElementById('allergy-severity'),
+  allergyKind: document.getElementById('allergy-kind'),
+  allergyNotedAt: document.getElementById('allergy-noted-at'),
+  allergyActive: document.getElementById('allergy-active'),
+  allergyNote: document.getElementById('allergy-note'),
+  allergySave: document.getElementById('allergy-save'),
+  allergyExport: document.getElementById('allergy-export'),
+  allergyImport: document.getElementById('allergy-import'),
+  allergyTemplate: document.getElementById('allergy-template'),
+  allergyImportFile: document.getElementById('allergy-import-file'),
+  allergyCancel: document.getElementById('allergy-cancel'),
+  allergyStatus: document.getElementById('allergy-status'),
+  allergyList: document.getElementById('allergy-list'),
+  allergyEmpty: document.getElementById('allergy-empty'),
+  allergySearch: document.getElementById('allergy-search'),
+  allergySummary: document.getElementById('allergy-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4164,13 +4183,14 @@ async function refreshAfterBackupImport(result) {
     result.metrics || result.symptoms || result.reminders
     || result.medications || result.medication_logs
     || result.vaccinations || result.appointments
-    || result.lab_results
+    || result.lab_results || result.allergies
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
     if (result.vaccinations) loadVaccinations();
     if (result.appointments) loadAppointments();
     if (result.lab_results) loadLabs();
+    if (result.allergies) loadAllergies();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6898,6 +6918,7 @@ async function refreshMetrics() {
   loadVaccinations();
   loadAppointments();
   loadLabs();
+  loadAllergies();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -10570,6 +10591,329 @@ async function deleteLab(item) {
   }
 }
 
+let editingAllergyId = null;
+let editingAllergyProfile = '';
+let allergySaving = false;
+let allergyRequestSeq = 0;
+let allergyItemsCache = [];
+let allergySearchTimer = null;
+
+const ALLERGY_SEVERITY_LABELS = {
+  mild: '轻度',
+  moderate: '中度',
+  severe: '重度',
+};
+
+const ALLERGY_KIND_LABELS = {
+  drug: '药物',
+  food: '食物',
+  environment: '环境',
+  other: '其他',
+};
+
+function setAllergyStatus(text, isError = false) {
+  if (!els.allergyStatus) return;
+  els.allergyStatus.textContent = text || '';
+  els.allergyStatus.hidden = !text;
+  els.allergyStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetAllergyForm() {
+  editingAllergyId = null;
+  editingAllergyProfile = '';
+  els.allergySubstance.value = '';
+  els.allergyReaction.value = '';
+  els.allergySeverity.value = 'moderate';
+  els.allergyKind.value = 'drug';
+  els.allergyNotedAt.value = '';
+  els.allergyActive.checked = true;
+  els.allergyNote.value = '';
+  els.allergySave.textContent = '保存过敏史';
+  els.allergyCancel.hidden = true;
+}
+
+function filterAllergies(items) {
+  const query = els.allergySearch
+    ? String(els.allergySearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [item.substance, item.reaction, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderAllergies(items) {
+  if (!els.allergyList) return;
+  els.allergyList.replaceChildren();
+  els.allergyEmpty.hidden = items.length > 0;
+  const query = els.allergySearch
+    ? String(els.allergySearch.value || '').trim()
+    : '';
+  els.allergyEmpty.textContent = query
+    ? `没有匹配「${query}」的过敏史。`
+    : '还没有过敏史记录。';
+  const activeCount = items.filter((item) => item.active).length;
+  if (items.length) {
+    els.allergySummary.hidden = false;
+    els.allergySummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (activeCount ? ` · 在用 ${activeCount} 条` : '');
+  } else {
+    els.allergySummary.hidden = true;
+  }
+  if (
+    editingAllergyId
+    && !allergyItemsCache.some((item) => item.id === editingAllergyId)
+  ) {
+    resetAllergyForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.substance || '过敏原';
+    const severity = document.createElement('span');
+    severity.className = 'allergy-severity-badge '
+      + `is-${item.severity || 'moderate'}`;
+    severity.textContent =
+      ALLERGY_SEVERITY_LABELS[item.severity] || '中度';
+    title.append(' ', severity);
+    const kind = document.createElement('span');
+    kind.className = 'allergy-kind-badge';
+    kind.textContent = ALLERGY_KIND_LABELS[item.kind] || '其他';
+    title.append(' ', kind);
+    if (!item.active) {
+      const inactive = document.createElement('span');
+      inactive.className = 'allergy-kind-badge';
+      inactive.textContent = '已停用';
+      title.append(' ', inactive);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      item.reaction,
+      item.noted_at ? `发现于 ${item.noted_at}` : '',
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑过敏史：${item.substance}`);
+    edit.addEventListener('click', () => editAllergy(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除过敏史：${item.substance}`);
+    del.addEventListener('click', () => deleteAllergy(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.allergyList.appendChild(li);
+  }
+}
+
+async function loadAllergies() {
+  if (!els.allergyList) return;
+  const requestSeq = ++allergyRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/allergies?limit=1000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== allergyRequestSeq) return;
+    allergyItemsCache = data.allergies || [];
+    renderAllergies(filterAllergies(allergyItemsCache));
+  } catch {
+    if (requestSeq !== allergyRequestSeq) return;
+    allergyItemsCache = [];
+    renderAllergies([]);
+    els.allergyEmpty.textContent = '过敏史加载失败，请稍后重试。';
+    els.allergyEmpty.hidden = false;
+    setAllergyStatus('过敏史加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportAllergiesCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/allergies/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-allergies-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setAllergyStatus('已导出过敏史 CSV。');
+  } catch (err) {
+    setAllergyStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+async function importAllergiesCsv(file) {
+  if (!file) return;
+  setAllergyStatus('正在导入过敏史…');
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/allergies/import', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const parts = [`已导入 ${data.imported || 0} 条`];
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    setAllergyStatus(parts.join('，') + '。', data.imported === 0);
+    await refreshMetricProfileOptions();
+    await loadAllergies();
+    refreshOverview();
+  } catch (err) {
+    setAllergyStatus(`导入失败：${err.message || err}`, true);
+  } finally {
+    els.allergyImportFile.value = '';
+  }
+}
+
+async function downloadAllergyTemplate() {
+  try {
+    const res = await fetch('/api/templates/allergies');
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      'medix-allergies-template.csv',
+      'text/csv;charset=utf-8'
+    );
+    setAllergyStatus('已下载过敏史模板。');
+  } catch (err) {
+    setAllergyStatus(`下载模板失败：${err.message || err}`, true);
+  }
+}
+
+function editAllergy(item) {
+  editingAllergyId = item.id;
+  editingAllergyProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.allergySubstance.value = item.substance || '';
+  els.allergyReaction.value = item.reaction || '';
+  els.allergySeverity.value = item.severity || 'moderate';
+  els.allergyKind.value = item.kind || 'drug';
+  els.allergyNotedAt.value = String(item.noted_at || '').slice(0, 10);
+  els.allergyActive.checked = Boolean(item.active);
+  els.allergyNote.value = item.note || '';
+  els.allergySave.textContent = '保存修改';
+  els.allergyCancel.hidden = false;
+  els.allergySubstance.focus();
+}
+
+async function saveAllergy() {
+  if (allergySaving) return;
+  const substance = (els.allergySubstance.value || '').trim();
+  if (!substance) {
+    setAllergyStatus('请填写过敏原。', true);
+    els.allergySubstance.focus();
+    return;
+  }
+  const editingId = editingAllergyId;
+  const payload = {
+    profile: editingId
+      ? editingAllergyProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    substance,
+    reaction: (els.allergyReaction.value || '').trim(),
+    severity: els.allergySeverity.value || 'moderate',
+    kind: els.allergyKind.value || 'drug',
+    active: els.allergyActive.checked,
+    noted_at: els.allergyNotedAt.value || '',
+    note: (els.allergyNote.value || '').trim(),
+  };
+  allergySaving = true;
+  els.allergySave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/allergies/${editingId}` : '/api/allergies',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetAllergyForm();
+    setAllergyStatus(editingId ? '已保存修改。' : '已保存过敏史。');
+    await loadAllergies();
+    refreshOverview();
+  } catch (err) {
+    setAllergyStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    allergySaving = false;
+    els.allergySave.disabled = false;
+  }
+}
+
+async function deleteAllergy(item) {
+  if (!window.confirm(`删除过敏史「${item.substance}」？`)) return;
+  try {
+    const res = await fetch(`/api/allergies/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingAllergyId === item.id) resetAllergyForm();
+    setAllergyStatus('已删除过敏史。');
+    await loadAllergies();
+    refreshOverview();
+  } catch (err) {
+    setAllergyStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -12116,6 +12460,30 @@ async function loadMedicationsIntoInteractions() {
     ).trim();
     if (allergies && !els.calcInteractionsAllergies.value.trim()) {
       els.calcInteractionsAllergies.value = allergies;
+    }
+    try {
+      const allergyRes = await fetch(
+        '/api/allergies?active_only=true&limit=200'
+        + `&profile=${encodeURIComponent(profile)}`
+      );
+      if (allergyRes.ok) {
+        const structured = (await allergyRes.json()).allergies || [];
+        const text = structured
+          .map((row) => String(row.substance || '').trim())
+          .filter(Boolean)
+          .join('、');
+        if (
+          text
+          && !els.calcInteractionsAllergies.value.includes(text)
+        ) {
+          const current = els.calcInteractionsAllergies.value.trim();
+          els.calcInteractionsAllergies.value = current
+            ? `${current}、${text}`
+            : text;
+        }
+      }
+    } catch {
+      // 结构化过敏史加载失败不影响用药清单带入
     }
   }
   try {
@@ -14999,6 +15367,40 @@ els.labSearch.addEventListener('input', () => {
   clearTimeout(labSearchTimer);
   labSearchTimer = setTimeout(() => {
     renderLabs(filterLabs(labItemsCache));
+  }, 200);
+});
+els.allergySave.addEventListener('click', saveAllergy);
+els.allergyExport.addEventListener('click', exportAllergiesCsv);
+els.allergyImport.addEventListener('click', () => {
+  els.allergyImportFile.click();
+});
+els.allergyImportFile.addEventListener('change', () => {
+  const file = els.allergyImportFile.files
+    && els.allergyImportFile.files[0];
+  if (file) importAllergiesCsv(file);
+});
+els.allergyTemplate.addEventListener('click', downloadAllergyTemplate);
+els.allergyCancel.addEventListener('click', () => {
+  resetAllergyForm();
+  setAllergyStatus('已取消编辑。');
+});
+for (const input of [
+  els.allergySubstance, els.allergyReaction, els.allergyNotedAt,
+  els.allergyNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveAllergy();
+    }
+  });
+}
+els.allergySearch.addEventListener('input', () => {
+  clearTimeout(allergySearchTimer);
+  allergySearchTimer = setTimeout(() => {
+    renderAllergies(filterAllergies(allergyItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {

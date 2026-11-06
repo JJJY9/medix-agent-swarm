@@ -78,6 +78,12 @@ MAX_LAB_UNIT_LENGTH = 20
 MAX_LAB_NAME_LENGTH = 80
 MAX_LAB_NOTE_LENGTH = 300
 MAX_LAB_VALUE = 1000000000.0
+#: 过敏史
+MAX_ALLERGY_SUBSTANCE_LENGTH = 80
+MAX_ALLERGY_REACTION_LENGTH = 120
+MAX_ALLERGY_NOTE_LENGTH = 300
+ALLERGY_SEVERITIES = ("mild", "moderate", "severe")
+ALLERGY_KINDS = ("drug", "food", "environment", "other")
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -106,6 +112,7 @@ IMPORT_LIST_LIMITS = {
     "vaccinations": 100000,
     "appointments": 100000,
     "lab_results": 100000,
+    "allergies": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -883,6 +890,58 @@ def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_allergy(
+    profile: str,
+    substance: str,
+    reaction: str,
+    severity: str,
+    kind: str,
+    active: Any,
+    noted_at: str,
+    note: str,
+) -> Dict[str, Any]:
+    """校验一条过敏史；非法时抛出 ValueError。"""
+    name = " ".join(str(substance or "").split())[
+        :MAX_ALLERGY_SUBSTANCE_LENGTH
+    ]
+    if not name:
+        raise ValueError("过敏原不能为空")
+    severity_key = str(severity or "moderate").strip().lower()
+    if severity_key not in ALLERGY_SEVERITIES:
+        raise ValueError("严重程度应为 mild/moderate/severe")
+    kind_key = str(kind or "drug").strip().lower()
+    if kind_key not in ALLERGY_KINDS:
+        raise ValueError("过敏类型应为 drug/food/environment/other")
+    if isinstance(active, bool):
+        active_flag = 1 if active else 0
+    else:
+        active_flag = 1 if str(active).strip().lower() in {
+            "1", "true", "on", "yes"
+        } else 0
+    noted = str(noted_at or "").strip()[:40]
+    if noted:
+        noted = _canonical_local_time(noted)
+        if noted is None:
+            raise ValueError("发现时间格式应为 YYYY-MM-DD 或 ISO 时间")
+        if _is_future_timestamp(noted):
+            raise ValueError("发现时间不能晚于当前时间")
+        noted = noted[:10]
+    return {
+        "profile": _normalize_profile_name(profile),
+        "substance": name,
+        "reaction": " ".join(str(reaction or "").split())[
+            :MAX_ALLERGY_REACTION_LENGTH
+        ],
+        "severity": severity_key,
+        "kind": kind_key,
+        "active": bool(active_flag),
+        "noted_at": noted,
+        "note": " ".join(str(note or "").split())[
+            :MAX_ALLERGY_NOTE_LENGTH
+        ],
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -1111,6 +1170,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "vaccinations",
     "appointments",
     "lab_results",
+    "allergies",
     "audit_log",
 )
 
@@ -1352,6 +1412,21 @@ class SessionStore:
                     ON lab_results(profile, tested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_lab_results_item_time
                     ON lab_results(item, tested_at DESC);
+                CREATE TABLE IF NOT EXISTS allergies (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile    TEXT NOT NULL DEFAULT '',
+                    substance  TEXT NOT NULL,
+                    reaction   TEXT NOT NULL DEFAULT '',
+                    severity   TEXT NOT NULL DEFAULT 'moderate',
+                    kind       TEXT NOT NULL DEFAULT 'drug',
+                    active     INTEGER NOT NULL DEFAULT 1,
+                    noted_at   TEXT NOT NULL DEFAULT '',
+                    note       TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_allergies_profile
+                    ON allergies(profile, active, substance);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1651,6 +1726,7 @@ class SessionStore:
                 ("vaccinations", "profile"),
                 ("appointments", "profile"),
                 ("lab_results", "profile"),
+                ("allergies", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2697,6 +2773,7 @@ class SessionStore:
             "vaccinations": self.list_vaccinations(limit=100000),
             "appointments": self.list_appointments(limit=100000),
             "lab_results": self.list_lab_results(limit=100000),
+            "allergies": self.list_allergies(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -2726,6 +2803,7 @@ class SessionStore:
         raw_vaccinations = data.get("vaccinations")
         raw_appointments = data.get("appointments")
         raw_lab_results = data.get("lab_results")
+        raw_allergies = data.get("allergies")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -2738,6 +2816,7 @@ class SessionStore:
             or isinstance(raw_vaccinations, list)
             or isinstance(raw_appointments, list)
             or isinstance(raw_lab_results, list)
+            or isinstance(raw_allergies, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -2755,6 +2834,7 @@ class SessionStore:
             and not isinstance(raw_vaccinations, list)
             and not isinstance(raw_appointments, list)
             and not isinstance(raw_lab_results, list)
+            and not isinstance(raw_allergies, list)
             and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
@@ -2772,6 +2852,7 @@ class SessionStore:
             ("vaccinations", "疫苗接种", raw_vaccinations),
             ("appointments", "就诊预约", raw_appointments),
             ("lab_results", "化验结果", raw_lab_results),
+            ("allergies", "过敏史", raw_allergies),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -3451,6 +3532,58 @@ class SessionStore:
                     )
                     lab_results_imported += 1
 
+            allergies_imported = 0
+            if isinstance(raw_allergies, list):
+                for raw in raw_allergies[
+                    :IMPORT_LIST_LIMITS["allergies"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_allergy(
+                            raw.get("profile") or "",
+                            raw.get("substance") or "",
+                            raw.get("reaction") or "",
+                            raw.get("severity") or "moderate",
+                            raw.get("kind") or "drug",
+                            raw.get("active", True),
+                            raw.get("noted_at") or "",
+                            raw.get("note") or "",
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM allergies
+                         WHERE profile = ? AND substance = ? AND kind = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["substance"],
+                            normalized["kind"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO allergies(
+                            profile, substance, reaction, severity, kind,
+                            active, noted_at, note, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"], normalized["substance"],
+                            normalized["reaction"], normalized["severity"],
+                            normalized["kind"], normalized["active"],
+                            normalized["noted_at"], normalized["note"],
+                            str(raw.get("created_at") or now)[:40],
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    allergies_imported += 1
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -3697,6 +3830,7 @@ class SessionStore:
             "vaccinations": vaccinations_imported,
             "appointments": appointments_imported,
             "lab_results": lab_results_imported,
+            "allergies": allergies_imported,
             "audit_log": audit_imported,
         }
 
@@ -3951,6 +4085,7 @@ class SessionStore:
                     ("vaccinations", "profile"),
                     ("appointments", "profile"),
                     ("lab_results", "profile"),
+                    ("allergies", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -3998,6 +4133,7 @@ class SessionStore:
                 "vaccinations",
                 "appointments",
                 "lab_results",
+                "allergies",
                 "sessions",
             ):
                 self._conn.execute(
@@ -4822,6 +4958,152 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM lab_results WHERE id = ?",
                 (int(lab_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_allergy(
+        self,
+        profile: str,
+        substance: str,
+        reaction: str = "",
+        severity: str = "moderate",
+        kind: str = "drug",
+        active: Any = True,
+        noted_at: str = "",
+        note: str = "",
+    ) -> Dict[str, Any]:
+        """新增一条过敏史并返回完整行。"""
+        normalized = _normalize_allergy(
+            profile, substance, reaction, severity, kind,
+            active, noted_at, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO allergies(
+                    profile, substance, reaction, severity, kind,
+                    active, noted_at, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["substance"],
+                    normalized["reaction"], normalized["severity"],
+                    normalized["kind"], normalized["active"],
+                    normalized["noted_at"], normalized["note"], now, now,
+                ),
+            )
+            allergy_id = int(cursor.lastrowid)
+        return {
+            "id": allergy_id, **normalized,
+            "created_at": now, "updated_at": now,
+        }
+
+    def update_allergy(
+        self,
+        allergy_id: int,
+        profile: str,
+        substance: str,
+        reaction: str = "",
+        severity: str = "moderate",
+        kind: str = "drug",
+        active: Any = True,
+        noted_at: str = "",
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条过敏史；记录不存在时返回 None。"""
+        normalized = _normalize_allergy(
+            profile, substance, reaction, severity, kind,
+            active, noted_at, note,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE allergies
+                   SET profile = ?, substance = ?, reaction = ?,
+                       severity = ?, kind = ?, active = ?,
+                       noted_at = ?, note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["substance"],
+                    normalized["reaction"], normalized["severity"],
+                    normalized["kind"], normalized["active"],
+                    normalized["noted_at"], normalized["note"], now,
+                    int(allergy_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_allergy(allergy_id)
+
+    def get_allergy(self, allergy_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, substance, reaction, severity, kind,
+                       active, noted_at, note, created_at, updated_at
+                  FROM allergies WHERE id = ?
+                """,
+                (int(allergy_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {**dict(row), "active": bool(row["active"])}
+
+    def list_allergies(
+        self,
+        profile: Optional[str] = None,
+        active_only: bool = False,
+        kind: Optional[str] = None,
+        q: str = "",
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        if active_only:
+            conditions.append("active = 1")
+        kind_key = str(kind or "").strip().lower()
+        if kind_key:
+            if kind_key not in ALLERGY_KINDS:
+                raise ValueError("过敏类型应为 drug/food/environment/other")
+            conditions.append("kind = ?")
+            params.append(kind_key)
+        query = str(q or "").strip()
+        if query:
+            like = f"%{query}%"
+            conditions.append(
+                "(substance LIKE ? OR reaction LIKE ? OR note LIKE ?)"
+            )
+            params.extend([like, like, like])
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, substance, reaction, severity, kind,
+                       active, noted_at, note, created_at, updated_at
+                  FROM allergies
+                 {where}
+                 ORDER BY active DESC, kind ASC, substance ASC, id ASC
+                 LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [
+            {**dict(row), "active": bool(row["active"])}
+            for row in rows
+        ]
+
+    def delete_allergy(self, allergy_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM allergies WHERE id = ?",
+                (int(allergy_id),),
             )
             return cursor.rowcount > 0
 
