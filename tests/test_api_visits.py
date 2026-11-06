@@ -180,9 +180,9 @@ def test_visits_in_timeline_dossier_and_family(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-1] == "最近就诊"
+    assert rows[0][-2] == "最近就诊"
     row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "白内障术后复查" in row[-1]
+    assert "白内障术后复查" in row[-2]
 
 
 def test_visits_backup_roundtrip_and_profile_rename(
