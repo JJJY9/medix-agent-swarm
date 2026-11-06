@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import json
+import threading
 from loguru import logger
 
 # Harness Engineering: 熵管理
@@ -120,6 +121,9 @@ class ShortTermMemory:
             self._local_fallback_at: Dict[str, datetime] = {}
         if not hasattr(self, "_cleared_sessions"):
             self._cleared_sessions: set[str] = set()
+        if not hasattr(self, "_state_lock"):
+            # 串行化 load→modify→save 与清理/墓碑变更，避免并发下把已删会话写回
+            self._state_lock = threading.RLock()
         if hasattr(self, '_initialized'):
             if getattr(self, 'storage_type', None) not in (None, storage_type):
                 logger.warning(
@@ -191,6 +195,14 @@ class ShortTermMemory:
         Returns:
             ConversationHistory 对象
         """
+        with self._state_lock:
+            return self._create_session_locked(session_id, metadata)
+
+    def _create_session_locked(
+        self,
+        session_id: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> ConversationHistory:
         history = ConversationHistory(
             session_id=session_id,
             metadata=metadata or {}
@@ -227,6 +239,15 @@ class ShortTermMemory:
             role: 消息角色（user/assistant/tool）
             content: 消息内容
         """
+        with self._state_lock:
+            self._add_message_locked(session_id, role, content)
+
+    def _add_message_locked(
+        self,
+        session_id: str,
+        role: str,
+        content: str
+    ):
         local_history = self.sessions.get(session_id)
         if self.storage_type == "redis" and self.redis_client:
             if session_id in self._cleared_sessions:
@@ -299,6 +320,12 @@ class ShortTermMemory:
         Returns:
             ConversationHistory 对象，如果不存在返回 None
         """
+        with self._state_lock:
+            return self._get_session_locked(session_id)
+
+    def _get_session_locked(
+        self, session_id: str
+    ) -> Optional[ConversationHistory]:
         if session_id in self._cleared_sessions:
             # 墓碑期间忽略 Redis 中的旧值，但清理后新写入的本地副本仍可读
             local = self.sessions.get(session_id)
@@ -314,17 +341,24 @@ class ShortTermMemory:
             return self.sessions.get(session_id)
         elif self.storage_type == "redis" and self.redis_client:
             history = self._load_from_redis(session_id)
+            # Redis 写入失败后本地兜底副本可能比 Redis 更新；
+            # 只要兜底未过期且更新更晚，就优先返回本地，避免丢上一轮对话
+            local = self.sessions.get(session_id)
+            fallback_at = self._local_fallback_at.get(session_id)
+            local_fresh = (
+                local is not None
+                and fallback_at is not None
+                and (datetime.now() - fallback_at).total_seconds() <= 3600
+            )
+            if local_fresh and (
+                history is None
+                or len(local.messages) > len(history.messages)
+                or local.last_updated > history.last_updated
+            ):
+                return local
             if history is not None:
                 return history
-            # Redis 读取失败/尚无数据时使用进程内兜底副本，但只保留 1 小时，
-            # 避免 Redis 键过期后旧会话被无限续用
-            local = self.sessions.get(session_id)
-            if local is None:
-                return None
-            fallback_at = self._local_fallback_at.get(session_id)
-            if fallback_at is None or (
-                datetime.now() - fallback_at
-            ).total_seconds() > 3600:
+            if not local_fresh:
                 self.sessions.pop(session_id, None)
                 self._local_fallback_at.pop(session_id, None)
                 return None
@@ -439,6 +473,10 @@ class ShortTermMemory:
         Returns:
             Redis 删除是否成功；本地存储始终视为成功。
         """
+        with self._state_lock:
+            return self._clear_session_locked(session_id)
+
+    def _clear_session_locked(self, session_id: str) -> bool:
         self._cleared_sessions.add(session_id)
         if len(self._cleared_sessions) > 1000:
             # 墓碑只用于避免本次进程内的会话复活，限制集合规模

@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import hashlib
 import json
 import re
+import uuid
 from loguru import logger
 
 
@@ -356,11 +358,16 @@ class SessionSummaryManager:
             # 总结是可选功能，目录不可写不应拖垮整个协调器
             logger.warning(f"会话总结目录不可用: {e}")
 
-    def _get_summary_path(self, session_id: str, create: bool = True) -> Path:
-        """获取会话总结文件路径（会话 ID 只保留安全字符，防止路径穿越）。"""
-        safe_id = re.sub(
-            r"[^\w.-]", "_", str(session_id or "")
-        )[:120]
+    def _get_summary_path(
+        self, session_id: str, create: bool = True, hashed: bool = True
+    ) -> Path:
+        """获取会话总结文件路径（会话 ID 只保留安全字符，防止路径穿越）。
+
+        文件名附加原始会话 ID 的短哈希，保证 ``a:b`` 与 ``a_b`` 这类
+        清理后相同的 ID 不会互相覆盖；``hashed=False`` 用于兼容旧文件。
+        """
+        raw_id = str(session_id or "")
+        safe_id = re.sub(r"[^\w.-]", "_", raw_id)[:120]
         if not safe_id or safe_id in {".", ".."}:
             safe_id = "unknown"
         date_str = (
@@ -372,31 +379,43 @@ class SessionSummaryManager:
         date_dir = self.base_dir / date_str
         if create:
             date_dir.mkdir(parents=True, exist_ok=True)
-        return date_dir / f"{safe_id}.md"
+        if hashed:
+            digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:10]
+            filename = f"{safe_id}-{digest}.md"
+        else:
+            filename = f"{safe_id}.md"
+        return date_dir / filename
 
     def delete_summary(self, session_id: str) -> bool:
         """删除会话总结文件；返回是否真的删除了文件。
 
         删除后若日期目录已空则一并移除，避免留下空目录。
+        旧版本文件名为纯安全化 ID，这里一并清理。
         """
-        try:
-            summary_path = self._get_summary_path(session_id, create=False)
-        except OSError as e:
-            logger.warning(f"定位会话总结失败: {e}")
-            return False
-        try:
-            summary_path.unlink()
-        except FileNotFoundError:
-            return False
-        except OSError as e:
-            logger.warning(f"删除会话总结失败: {e}")
-            return False
-        try:
-            summary_path.parent.rmdir()
-        except OSError:
-            pass
-        logger.info(f"Deleted session summary: {session_id}")
-        return True
+        deleted = False
+        for hashed in (True, False):
+            try:
+                summary_path = self._get_summary_path(
+                    session_id, create=False, hashed=hashed
+                )
+            except OSError as e:
+                logger.warning(f"定位会话总结失败: {e}")
+                continue
+            try:
+                summary_path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                logger.warning(f"删除会话总结失败: {e}")
+                continue
+            deleted = True
+            try:
+                summary_path.parent.rmdir()
+            except OSError:
+                pass
+        if deleted:
+            logger.info(f"Deleted session summary: {session_id}")
+        return deleted
 
     def save_summary(self, summary: SessionSummary):
         """保存会话总结"""
@@ -404,7 +423,10 @@ class SessionSummaryManager:
         try:
             summary_path = self._get_summary_path(summary.session_id)
             content = summary.to_markdown()
-            temp_path = summary_path.with_name(summary_path.name + ".tmp")
+            # 每次写入使用唯一临时名，多个实例并发保存同一会话也不会写坏
+            temp_path = summary_path.with_name(
+                f"{summary_path.name}.{uuid.uuid4().hex}.tmp"
+            )
             temp_path.write_text(content, encoding="utf-8")
             temp_path.replace(summary_path)
             logger.info(f"Saved session summary: {summary.session_id}")
@@ -419,7 +441,7 @@ class SessionSummaryManager:
     def load_summary(self, session_id: str) -> Optional[SessionSummary]:
         """加载会话总结（尚未实现完整反序列化，保留安全占位）。"""
         try:
-            summary_path = self._get_summary_path(session_id)
+            summary_path = self._get_summary_path(session_id, create=False)
             if not summary_path.exists():
                 return None
             # 这里可以实现从 Markdown 解析回 SessionSummary

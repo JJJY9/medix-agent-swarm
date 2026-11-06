@@ -2030,15 +2030,25 @@ class SessionStore:
         """汇总当前自然月的用量。"""
         today = datetime.now().date()
         start = today.replace(day=1).isoformat()
+        if today.month == 12:
+            next_month = today.replace(
+                year=today.year + 1, month=1, day=1
+            ).isoformat()
+        else:
+            next_month = today.replace(
+                month=today.month + 1, day=1
+            ).isoformat()
 
         with self._lock:
             rows = self._conn.execute(
                 """
                 SELECT metadata
                   FROM messages
-                 WHERE role = 'assistant' AND created_at >= ?
+                 WHERE role = 'assistant'
+                   AND created_at >= ?
+                   AND created_at < ?
                 """,
-                (start,),
+                (start, next_month),
             ).fetchall()
 
         totals = _new_usage_entry()
@@ -2302,6 +2312,8 @@ class SessionStore:
                         profile,
                     ),
                 )
+                # 显式恢复备份即重新启用该会话，解除删除墓碑
+                self._deleted_sessions.pop(session_id, None)
                 self._conn.executemany(
                     """
                     INSERT INTO messages(session_id, role, content, metadata, created_at)
@@ -2916,9 +2928,17 @@ class SessionStore:
 
     def archive_older_than(self, days: int) -> int:
         """把最后更新早于 N 天的未归档会话自动归档，返回处理数量。"""
-        cutoff = _days_cutoff(days)
-        if not cutoff:
+        try:
+            days = int(days or 0)
+        except (TypeError, ValueError):
             return 0
+        if days <= 0:
+            return 0
+        # 自动归档按“最后更新于 N×24 小时之前”计算，而不是从今天零点起算，
+        # 否则 days=1 会把昨天深夜更新的会话提前归档
+        cutoff = (
+            datetime.now() - timedelta(days=days)
+        ).isoformat(timespec="seconds")
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 """
