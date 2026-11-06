@@ -1255,11 +1255,13 @@ def test_purge_sessions_before(store, monkeypatch):
 
     assert store.purge_sessions_before("") == {
         "sessions": 0, "messages": 0, "session_ids": [],
+        "session_profiles": {},
     }
     result = store.purge_sessions_before("2026-01-01T12:00:00")
 
     assert result == {
         "sessions": 1, "messages": 2, "session_ids": ["s1"],
+        "session_profiles": {"s1": ""},
     }
     assert [item["id"] for item in store.list_sessions()] == ["s2"]
     assert store.get_messages("s1") == []

@@ -64,6 +64,23 @@ curl -X POST http://127.0.0.1:8000/api/backups/<name>/restore \
 
 恢复成功写入 `session.import` 审计，详情包含 `source=backup:<name>`。
 
+## 删除备份
+
+Web 端：在历史抽屉点击“管理备份”，选择最近 10 份中的一份确认删除。删除后备份文件从服务器磁盘移除，无法再恢复。
+
+API：
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/api/backups/<name> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $MEDIX_ACCESS_TOKEN" \
+  -d '{"confirm": true}'
+```
+
+文件名同样经过路径穿越校验；成功写入 `backup.delete` 审计，文件不存在返回 404。
+
+> **注意**：维护清理（`POST /api/maintenance/purge`）只删除数据库与会诊总结中的旧会诊，**不会**删除历史本地备份。如果清理是为了隐私（例如转手设备），请同时用“管理备份”删除仍含旧数据的备份。
+
 ## 安全注意事项
 
 - `data/` 已在 `.gitignore` 中；不要把备份 JSON 提交到 Git 或上传到不可信位置。

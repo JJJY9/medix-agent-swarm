@@ -11,7 +11,7 @@ Mem0 优势：
 - 云端或本地 Qdrant 存储
 - 内置去重和摘要
 """
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Iterator
 from datetime import datetime
 from loguru import logger
 import math
@@ -246,6 +246,120 @@ class LongTermMemory:
         except Exception as e:
             logger.error(f"Failed to search similar sessions: {e}")
             return []
+
+    # ===== 删除（隐私 / 数据留存） =====
+
+    @staticmethod
+    def _extract_memories(result: Any) -> List[Dict[str, Any]]:
+        """兼容 Mem0 不同版本 get_all 的返回结构。"""
+        if isinstance(result, dict):
+            items = result.get("results", result.get("memories", []))
+        elif isinstance(result, list):
+            items = result
+        else:
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def _iter_memories(
+        self, user_id: str, max_pages: int = 20, page_size: int = 100
+    ) -> Iterator[Dict[str, Any]]:
+        """分页遍历某个命名空间下的全部记忆。"""
+        page = 1
+        while page <= max_pages:
+            try:
+                result = self.mem0.get_all(
+                    user_id=user_id, page=page, page_size=page_size
+                )
+            except TypeError:
+                # 旧版客户端不支持 page/page_size，退回一次性读取
+                try:
+                    result = self.mem0.get_all(
+                        filters={"user_id": user_id}
+                    )
+                except TypeError:
+                    result = self.mem0.get_all(user_id=user_id)
+                yield from self._extract_memories(result)
+                return
+            batch = self._extract_memories(result)
+            for item in batch:
+                yield item
+            if len(batch) < page_size:
+                return
+            page += 1
+
+    def _delete_memory(self, memory_id: str) -> bool:
+        try:
+            self.mem0.delete(memory_id=memory_id)
+            return True
+        except TypeError:
+            self.mem0.delete(memory_id)
+            return True
+
+    def _delete_matching(
+        self, user_id: str, predicate
+    ) -> int:
+        """按 metadata 条件逐条删除记忆，返回删除条数。"""
+        deleted = 0
+        try:
+            for item in self._iter_memories(user_id):
+                metadata = item.get("metadata")
+                if not isinstance(metadata, dict):
+                    continue
+                if not predicate(metadata):
+                    continue
+                memory_id = item.get("id")
+                if not memory_id:
+                    continue
+                try:
+                    if self._delete_memory(str(memory_id)):
+                        deleted += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete Mem0 memory {memory_id}: {e}"
+                    )
+        except Exception as e:
+            logger.error(f"Failed to list Mem0 memories for deletion: {e}")
+        return deleted
+
+    def delete_session_summary(
+        self, session_id: str, user_id: str = "medix_local"
+    ) -> int:
+        """删除某个会话写入指定命名空间的记忆。
+
+        档案作用域由多个会话共享，因此只能按 metadata.session_id
+        精确删除，不能清空整个 user_id 命名空间。
+        """
+        if not self.enabled:
+            return 0
+        scope = session_memory_scope(session_id)
+        deleted = self._delete_matching(
+            str(user_id or "medix_local")[:120],
+            lambda meta: str(meta.get("session_id") or "") == scope,
+        )
+        if deleted:
+            logger.info(
+                f"Deleted {deleted} Mem0 memories for session {scope[:12]}…"
+            )
+        return deleted
+
+    def delete_scope(self, user_id: str) -> int:
+        """删除一个命名空间下的全部记忆（删除患者档案时使用）。"""
+        if not self.enabled:
+            return 0
+        scope = str(user_id or "medix_local")[:120]
+        try:
+            result = self.mem0.delete_all(user_id=scope)
+            if isinstance(result, dict):
+                for key in ("deleted", "count", "deleted_count"):
+                    value = result.get(key)
+                    if isinstance(value, int):
+                        return value
+            return 0
+        except Exception as e:
+            logger.warning(
+                f"Mem0 delete_all failed, falling back to per-item: {e}"
+            )
+            return self._delete_matching(scope, lambda meta: True)
 
 
 

@@ -57,6 +57,7 @@ const els = {
   historyImportFile: document.getElementById('history-import-file'),
   historyBackupNow: document.getElementById('history-backup-now'),
   historyRestore: document.getElementById('history-restore'),
+  historyManageBackups: document.getElementById('history-manage-backups'),
   historyRange: document.getElementById('history-range'),
   historyTag: document.getElementById('history-tag'),
   historyRiskFilter: document.getElementById('history-risk-filter'),
@@ -4255,6 +4256,79 @@ async function restoreBackup() {
   }
 }
 
+async function manageLocalBackups() {
+  const btn = els.historyManageBackups;
+  if (!btn || btn.disabled) return;
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '读取备份…';
+
+  try {
+    const res = await fetch('/api/backups', { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+
+    const candidates = (data.backups || []).slice(0, 10);
+    if (!candidates.length) {
+      window.alert('暂无本地备份。');
+      return;
+    }
+
+    const options = candidates.map((item, index) => {
+      const when = item.modified_at ? formatTime(item.modified_at) : item.name;
+      const size = item.size
+        ? `，${Math.max(1, Math.round(item.size / 1024))} KB`
+        : '';
+      return `${index + 1}. ${item.name}（${when}${size}）`;
+    }).join('\n');
+    const answer = window.prompt(
+      `输入要删除的备份序号（留空或取消则不删除）：\n${options}`, ''
+    );
+    if (answer === null || !answer.trim()) return;
+
+    const index = Number(answer) - 1;
+    if (
+      !Number.isInteger(index)
+      || index < 0
+      || index >= candidates.length
+    ) {
+      window.alert('请输入列表中的有效序号。');
+      return;
+    }
+
+    const target = candidates[index];
+    if (!window.confirm(
+      `删除本地备份「${target.name}」？删除后无法恢复。`
+    )) {
+      return;
+    }
+
+    btn.textContent = '删除中…';
+    const del = await fetch(
+      `/api/backups/${encodeURIComponent(target.name)}`,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      }
+    );
+    const result = await del.json().catch(() => ({}));
+    if (!del.ok) throw new Error(result.detail || `服务返回 ${del.status}`);
+
+    btn.textContent = '已删除';
+    await loadHomeGlance();
+  } catch (err) {
+    btn.textContent = '删除失败';
+    window.alert(`删除本地备份失败：${err.message || err}`);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.disabled = false;
+    }, 1600);
+  }
+}
+
 let lastFocused = null;
 
 function openHistory() {
@@ -5471,7 +5545,8 @@ async function purgeOldSessions() {
     return;
   }
   if (!window.confirm(
-    `将永久删除 ${days} 天以前的会诊及其消息，确定继续？`
+    `将永久删除 ${days} 天以前的会诊及其消息（本地备份文件不会被自动删除，`
+    + '如需清除请使用“管理备份”），确定继续？'
   )) {
     return;
   }
@@ -13274,6 +13349,7 @@ els.historyImport.addEventListener('click', () => els.historyImportFile.click())
 els.historyImportFile.addEventListener('change', importHistoryBackup);
 els.historyRestore?.addEventListener('click', restoreBackup);
 els.historyBackupNow?.addEventListener('click', createLocalBackup);
+els.historyManageBackups?.addEventListener('click', manageLocalBackups);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;

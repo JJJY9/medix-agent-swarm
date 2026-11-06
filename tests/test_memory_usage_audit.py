@@ -250,6 +250,7 @@ def test_purge_uses_datetime_comparison_for_space_timestamps(tmp_path, monkeypat
 
         assert result == {
             "sessions": 1, "messages": 2, "session_ids": ["old"],
+            "session_profiles": {"old": ""},
         }
         assert [item["id"] for item in store.list_sessions()] == ["legacy"]
         assert store.get_messages("old") == []
@@ -269,6 +270,7 @@ def test_purge_cleans_orphan_messages(tmp_path):
 
         assert result == {
             "sessions": 0, "messages": 2, "session_ids": [],
+            "session_profiles": {},
         }
     finally:
         store.close()
