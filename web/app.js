@@ -13588,7 +13588,18 @@ async function saveMedication() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     resetMedicationForm();
-    setMedicationStatus(editingId ? '已保存修改。' : '已添加药物。');
+    const safetyAlerts = data.safety && Array.isArray(data.safety.alerts)
+      ? data.safety.alerts
+      : [];
+    if (safetyAlerts.length) {
+      setMedicationStatus(
+        '⚠ 用药安全提示：'
+        + safetyAlerts.map((row) => row.title || row.detail || '').join('；'),
+        false
+      );
+    } else {
+      setMedicationStatus(editingId ? '已保存修改。' : '已添加药物。');
+    }
     await loadMedications();
     refreshOverview();
   } catch (err) {

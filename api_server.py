@@ -2752,13 +2752,55 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     }
 
 
+async def _medication_safety_for_profile(
+    store: Any, profile: str
+) -> Dict[str, Any]:
+    """按当前档案的在用药物与过敏史检查新增/修改后的用药安全。"""
+    from core.medication_safety import check_medication_safety
+
+    active = await asyncio.to_thread(
+        store.list_medications, profile, True, 1000
+    )
+    names = [
+        str(item.get("name") or "").strip()
+        for item in active
+        if item.get("name")
+    ]
+    allergies = await asyncio.to_thread(
+        store.list_allergies, profile, True, None, "", 1000
+    )
+    allergy_parts = []
+    for item in allergies:
+        substance = str(item.get("substance") or "").strip()
+        if substance:
+            allergy_parts.append(substance)
+    profiles = await asyncio.to_thread(store.list_profiles)
+    profile_key = _normalized_profile_key(profile)
+    for saved in profiles:
+        if saved.get("name") == profile_key:
+            context_allergies = str(
+                (saved.get("context") or {}).get("allergies") or ""
+            ).strip()
+            if context_allergies:
+                allergy_parts.append(context_allergies)
+            break
+    return check_medication_safety(
+        "",
+        {
+            "medications": "、".join(names),
+            "allergies": "；".join(allergy_parts),
+        },
+    )
+
+
 @app.post("/api/medications")
 async def add_medication(request: MedicationRequest):
     """新增一条用药记录。"""
     from memory import get_session_store
 
+    store = get_session_store()
     item = await asyncio.to_thread(
-        get_session_store().add_medication,
+        store.add_medication,
         request.profile,
         request.name,
         request.dose,
@@ -2780,7 +2822,10 @@ async def add_medication(request: MedicationRequest):
     await record_audit(
         "medication.create", str(item["id"])
     )
-    return {"ok": True, "medication": item}
+    safety = await _medication_safety_for_profile(
+        store, item.get("profile") or ""
+    )
+    return {"ok": True, "medication": item, "safety": safety}
 
 
 @app.patch("/api/medications/{medication_id}")
@@ -2822,7 +2867,10 @@ async def update_medication(
     await record_audit(
         "medication.update", str(item["id"])
     )
-    return {"ok": True, "medication": item}
+    safety = await _medication_safety_for_profile(
+        store, item.get("profile") or ""
+    )
+    return {"ok": True, "medication": item, "safety": safety}
 
 
 @app.delete("/api/medications/{medication_id}")
