@@ -26,6 +26,14 @@ from core.backup import (
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db"
 
+#: SQLite 参数绑定只接受有符号 64 位整数，超出会抛 OverflowError
+MAX_SQLITE_INT = 2**63 - 1
+
+
+def _bounded_offset(offset: Any) -> int:
+    """把分页偏移限制在 SQLite 可绑定范围内。"""
+    return max(0, min(int(offset or 0), MAX_SQLITE_INT))
+
 #: 会诊标题取第一轮主诉的前 40 个字符
 MAX_TITLE_LENGTH = 40
 #: 历史列表里展示的答复预览长度
@@ -1144,7 +1152,7 @@ class SessionStore:
         archived 为 None 时返回全部（备份导出用）；False 只看未归档；True 只看已归档。
         """
         limit = max(1, min(int(limit or 50), 200))
-        offset = max(0, int(offset or 0))
+        offset = _bounded_offset(offset)
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
                    s.archived, s.tags, s.profile,
@@ -3189,7 +3197,7 @@ class SessionStore:
         """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
         try:
-            offset = max(0, int(offset or 0))
+            offset = _bounded_offset(offset)
         except (TypeError, ValueError, OverflowError):
             offset = 0
         sql = """
@@ -3526,7 +3534,7 @@ class SessionStore:
         """按记录时间倒序返回症状，可按档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
         try:
-            offset = max(0, int(offset or 0))
+            offset = _bounded_offset(offset)
         except (TypeError, ValueError, OverflowError):
             offset = 0
 
@@ -3681,7 +3689,7 @@ class SessionStore:
         """按名称返回用药清单，可按档案、在用状态与最近天数筛选。"""
         limit = max(1, min(int(limit or 1000), 100000))
         try:
-            offset = max(0, int(offset or 0))
+            offset = _bounded_offset(offset)
         except (TypeError, ValueError, OverflowError):
             offset = 0
         try:
@@ -3967,7 +3975,7 @@ class SessionStore:
         """按服用时间倒序返回到药记录，可按药物、档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
         try:
-            offset = max(0, int(offset or 0))
+            offset = _bounded_offset(offset)
         except (TypeError, ValueError, OverflowError):
             offset = 0
         conditions: List[str] = []

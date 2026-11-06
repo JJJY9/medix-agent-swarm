@@ -21,15 +21,18 @@ import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Literal, Optional
+from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Path as ApiPath
+from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 project_root = Path(__file__).parent
@@ -51,7 +54,11 @@ from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.pricing import get_pricing
 from core.budget import get_token_budget
-from core.serialization import sanitize_json
+from core.serialization import (
+    contains_lone_surrogate,
+    sanitize_json,
+    strip_lone_surrogates,
+)
 from core.session_context import session_memory_scope
 from core.backup import MAX_BACKUP_FILE_BYTES
 
@@ -83,7 +90,47 @@ AGENT_LABELS = {
 
 # ===== 请求 / 响应模型 =====
 
-class ChatRequest(BaseModel):
+# SQLite INTEGER 是有符号 64 位；超出范围的值在绑定参数时抛 OverflowError
+MAX_SQLITE_INT = 2**63 - 1
+#: 路径里的数据库 ID：必须是正整数且落在 SQLite 可绑定范围内
+SafeIntPath = Annotated[int, ApiPath(ge=1, le=MAX_SQLITE_INT)]
+
+
+def _reject_lone_surrogates(value: Any, path: str = "输入") -> None:
+    """递归拒绝含孤立 UTF-16 代理码位的字符串。
+
+    JSON 允许 ``\\ud800`` 这样的转义，但孤立代理码位无法编码成 UTF-8，
+    会在哈希命名空间或写入 SQLite 时抛 UnicodeEncodeError（HTTP 500）。
+    """
+    if isinstance(value, str):
+        if contains_lone_surrogate(value):
+            raise ValueError(f"{path}包含无效的 Unicode 字符")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and contains_lone_surrogate(key):
+                raise ValueError(f"{path}包含无效的 Unicode 字符")
+            _reject_lone_surrogates(item, path)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_lone_surrogates(item, path)
+
+
+class StrictRequestModel(BaseModel):
+    """请求体基类：在进入业务逻辑前拒绝孤立代理码位。"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_strings(cls, data):
+        _reject_lone_surrogates(data)
+        return data
+
+
+def _bounded_offset(offset: Any) -> int:
+    """把分页偏移限制在 SQLite 可绑定范围内，避免超大整数触发 500。"""
+    return max(0, min(int(offset or 0), MAX_SQLITE_INT))
+
+
+class ChatRequest(StrictRequestModel):
     question: str = Field(..., min_length=1, description="用户健康问题")
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     context: Optional[Dict[str, Any]] = Field(None, description="额外上下文（年龄、既往史等）")
@@ -113,11 +160,11 @@ class SessionResponse(BaseModel):
     session_id: str
 
 
-class RenameSessionRequest(BaseModel):
+class RenameSessionRequest(StrictRequestModel):
     title: str = Field(..., min_length=1, max_length=40, description="新的会话标题")
 
 
-class ImportSessionsRequest(BaseModel):
+class ImportSessionsRequest(StrictRequestModel):
     version: Optional[int] = None
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
     profiles: Optional[List[Dict[str, Any]]] = None
@@ -131,27 +178,27 @@ class ImportSessionsRequest(BaseModel):
     checksum: Optional[str] = None
 
 
-class FavoriteRequest(BaseModel):
+class FavoriteRequest(StrictRequestModel):
     favorite: bool
 
 
-class ArchiveRequest(BaseModel):
+class ArchiveRequest(StrictRequestModel):
     archived: bool
 
 
-class TagsRequest(BaseModel):
+class TagsRequest(StrictRequestModel):
     tags: List[str] = Field(default_factory=list)
 
 
-class PurgeRequest(BaseModel):
+class PurgeRequest(StrictRequestModel):
     days: int = Field(..., ge=1, le=3650, description="删除多少天以前的会诊")
 
 
-class ConfirmRequest(BaseModel):
+class ConfirmRequest(StrictRequestModel):
     confirm: bool = Field(False, description="确认执行该操作")
 
 
-class BulkSessionsRequest(BaseModel):
+class BulkSessionsRequest(StrictRequestModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
 
@@ -163,7 +210,7 @@ class BulkTagsRequest(BulkSessionsRequest):
     tags: List[str] = Field(default_factory=list)
 
 
-class FeedbackRequest(BaseModel):
+class FeedbackRequest(StrictRequestModel):
     message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
     rating: int = Field(
         ...,
@@ -174,7 +221,7 @@ class FeedbackRequest(BaseModel):
     comment: str = Field("", max_length=500, description="可选反馈备注")
 
 
-class ProfileRequest(BaseModel):
+class ProfileRequest(StrictRequestModel):
     name: str = Field(..., min_length=1, max_length=40, description="档案名称")
     context: Dict[str, Any] = Field(
         default_factory=dict,
@@ -182,11 +229,11 @@ class ProfileRequest(BaseModel):
     )
 
 
-class ProfileRenameRequest(BaseModel):
+class ProfileRenameRequest(StrictRequestModel):
     new_name: str = Field(..., min_length=1, max_length=40)
 
 
-class ReminderRequest(BaseModel):
+class ReminderRequest(StrictRequestModel):
     title: str = Field(..., min_length=1, max_length=120, description="提醒内容")
     due_at: str = Field(
         ..., min_length=8, max_length=32, description="YYYY-MM-DD 或 ISO 时间"
@@ -206,7 +253,7 @@ class ReminderRequest(BaseModel):
     )
 
 
-class ReminderUpdateRequest(BaseModel):
+class ReminderUpdateRequest(StrictRequestModel):
     title: Optional[str] = Field(None, max_length=120)
     due_at: Optional[str] = Field(None, max_length=32)
     note: Optional[str] = Field(None, max_length=300)
@@ -216,19 +263,19 @@ class ReminderUpdateRequest(BaseModel):
     repeat_until: Optional[str] = Field(None, max_length=32)
 
 
-class BmiRequest(BaseModel):
+class BmiRequest(StrictRequestModel):
     height_cm: float = Field(..., gt=50, lt=260, description="身高（厘米）")
     weight_kg: float = Field(..., gt=10, lt=400, description="体重（千克）")
 
 
-class EgfrRequest(BaseModel):
+class EgfrRequest(StrictRequestModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     sex: Literal["male", "female"]
     creatinine: float = Field(..., gt=0, lt=3000, description="血肌酐")
     unit: Literal["mg/dL", "umol/L", "μmol/L", "µmol/L"] = "mg/dL"
 
 
-class ChadsVascRequest(BaseModel):
+class ChadsVascRequest(StrictRequestModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     sex: Literal["male", "female"]
     chf: bool = False
@@ -238,7 +285,7 @@ class ChadsVascRequest(BaseModel):
     vascular_disease: bool = False
 
 
-class Curb65Request(BaseModel):
+class Curb65Request(StrictRequestModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     confusion: bool = False
     urea: float = Field(..., ge=0, le=100, description="尿素氮（mmol/L）")
@@ -247,7 +294,7 @@ class Curb65Request(BaseModel):
     diastolic_bp: float = Field(..., ge=0, le=200, description="舒张压（mmHg）")
 
 
-class ChildPughRequest(BaseModel):
+class ChildPughRequest(StrictRequestModel):
     bilirubin: int = Field(..., ge=1, le=3)
     albumin: int = Field(..., ge=1, le=3)
     inr: int = Field(..., ge=1, le=3)
@@ -255,34 +302,34 @@ class ChildPughRequest(BaseModel):
     encephalopathy: int = Field(..., ge=1, le=3)
 
 
-class Phq9Request(BaseModel):
+class Phq9Request(StrictRequestModel):
     answers: List[int] = Field(..., min_length=9, max_length=9)
 
 
-class Gad7Request(BaseModel):
+class Gad7Request(StrictRequestModel):
     answers: List[int] = Field(..., min_length=7, max_length=7)
 
 
-class AuditCRequest(BaseModel):
+class AuditCRequest(StrictRequestModel):
     q1: Literal[0, 1, 2, 3, 4]
     q2: Literal[0, 1, 2, 3, 4]
     q3: Literal[0, 1, 2, 3, 4]
     sex: Literal["", "male", "female"] = ""
 
 
-class MmrcRequest(BaseModel):
+class MmrcRequest(StrictRequestModel):
     grade: Literal[0, 1, 2, 3, 4]
 
 
-class CatRequest(BaseModel):
+class CatRequest(StrictRequestModel):
     answers: List[int] = Field(..., min_length=8, max_length=8)
 
 
-class EssRequest(BaseModel):
+class EssRequest(StrictRequestModel):
     answers: List[int] = Field(..., min_length=8, max_length=8)
 
 
-class HasBledRequest(BaseModel):
+class HasBledRequest(StrictRequestModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     hypertension: bool = False
     abnormal_renal: bool = False
@@ -294,13 +341,13 @@ class HasBledRequest(BaseModel):
     alcohol: bool = False
 
 
-class GcsRequest(BaseModel):
+class GcsRequest(StrictRequestModel):
     eye: int = Field(..., ge=1, le=4, description="睁眼反应")
     verbal: int = Field(..., ge=1, le=5, description="语言反应")
     motor: int = Field(..., ge=1, le=6, description="运动反应")
 
 
-class WellsDvtRequest(BaseModel):
+class WellsDvtRequest(StrictRequestModel):
     active_cancer: bool = False
     paralysis_or_immobilization: bool = False
     bedridden_or_surgery: bool = False
@@ -313,7 +360,7 @@ class WellsDvtRequest(BaseModel):
     alternative_diagnosis: bool = False
 
 
-class WellsPeRequest(BaseModel):
+class WellsPeRequest(StrictRequestModel):
     clinical_signs_dvt: bool = False
     pe_more_likely: bool = False
     heart_rate_gt_100: bool = False
@@ -323,34 +370,34 @@ class WellsPeRequest(BaseModel):
     malignancy: bool = False
 
 
-class InteractionsRequest(BaseModel):
+class InteractionsRequest(StrictRequestModel):
     drugs: str = Field(
         ..., min_length=1, max_length=1000, description="药物列表，可换行或顿号分隔"
     )
     allergies: str = Field("", max_length=200, description="可选过敏史")
 
 
-class QsofaRequest(BaseModel):
+class QsofaRequest(StrictRequestModel):
     respiratory_rate: float = Field(..., gt=0, le=80, description="呼吸频率（次/分）")
     systolic_bp: float = Field(..., gt=0, le=300, description="收缩压（mmHg）")
     altered_mentation: bool = False
 
 
-class Fib4Request(BaseModel):
+class Fib4Request(StrictRequestModel):
     age: int = Field(..., ge=18, le=120, description="年龄（岁）")
     ast: float = Field(..., gt=0, le=10000, description="AST（U/L）")
     alt: float = Field(..., gt=0, le=10000, description="ALT（U/L）")
     platelets: float = Field(..., gt=0, le=2000, description="血小板（×10⁹/L）")
 
 
-class MeldRequest(BaseModel):
+class MeldRequest(StrictRequestModel):
     bilirubin: float = Field(..., gt=0, le=100, description="总胆红素（mg/dL）")
     inr: float = Field(..., gt=0, le=20, description="INR")
     creatinine: float = Field(..., gt=0, le=30, description="血肌酐（mg/dL）")
     dialysis: bool = False
 
 
-class StopBangRequest(BaseModel):
+class StopBangRequest(StrictRequestModel):
     snoring: bool = False
     tired: bool = False
     observed_apnea: bool = False
@@ -361,7 +408,7 @@ class StopBangRequest(BaseModel):
     male: bool = False
 
 
-class PaduaRequest(BaseModel):
+class PaduaRequest(StrictRequestModel):
     active_cancer: bool = False
     previous_vte: bool = False
     reduced_mobility: bool = False
@@ -375,7 +422,7 @@ class PaduaRequest(BaseModel):
     hormonal_treatment: bool = False
 
 
-class Abcd2Request(BaseModel):
+class Abcd2Request(StrictRequestModel):
     age_ge_60: bool = False
     bp_ge_140_90: bool = False
     unilateral_weakness: bool = False
@@ -385,7 +432,7 @@ class Abcd2Request(BaseModel):
     diabetes: bool = False
 
 
-class MorseFallRequest(BaseModel):
+class MorseFallRequest(StrictRequestModel):
     history_of_falling: Literal[0, 25] = 0
     secondary_diagnosis: Literal[0, 15] = 0
     ambulatory_aid: Literal[0, 15, 30] = 0
@@ -394,7 +441,7 @@ class MorseFallRequest(BaseModel):
     mental_status: Literal[0, 15] = 0
 
 
-class MetricRequest(BaseModel):
+class MetricRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
@@ -406,7 +453,7 @@ class MetricRequest(BaseModel):
     note: str = Field("", max_length=300)
 
 
-class MetricUpdateRequest(BaseModel):
+class MetricUpdateRequest(StrictRequestModel):
     """部分更新健康指标：只修改请求里显式给出的字段。"""
 
     profile: Optional[str] = Field(None, max_length=40)
@@ -424,7 +471,7 @@ class MetricUpdateRequest(BaseModel):
 
 
 
-class MedicationRequest(BaseModel):
+class MedicationRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     name: str = Field(..., min_length=1, max_length=120)
     dose: str = Field("", max_length=60, description="剂量，如 5 mg")
@@ -433,12 +480,12 @@ class MedicationRequest(BaseModel):
     active: bool = True
 
 
-class MedicationLogRequest(BaseModel):
+class MedicationLogRequest(StrictRequestModel):
     taken_at: str = Field("", max_length=40, description="服用时间（ISO），默认当前时间")
     note: str = Field("", max_length=300)
 
 
-class MedicationUpdateRequest(BaseModel):
+class MedicationUpdateRequest(StrictRequestModel):
     """部分更新用药记录：未给出的字段保持原值。"""
 
     profile: Optional[str] = Field(None, max_length=40)
@@ -449,7 +496,7 @@ class MedicationUpdateRequest(BaseModel):
     active: Optional[bool] = None
 
 
-class SymptomRequest(BaseModel):
+class SymptomRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     symptom: str = Field(..., min_length=1, max_length=120)
     severity: int = Field(..., ge=0, le=10, description="严重程度 0–10")
@@ -457,7 +504,7 @@ class SymptomRequest(BaseModel):
     note: str = Field("", max_length=300)
 
 
-class SymptomUpdateRequest(BaseModel):
+class SymptomUpdateRequest(StrictRequestModel):
     """部分更新症状记录：未给出的字段保持原值。"""
 
     profile: Optional[str] = Field(None, max_length=40)
@@ -465,7 +512,7 @@ class SymptomUpdateRequest(BaseModel):
     severity: Optional[int] = Field(None, ge=0, le=10)
     recorded_at: Optional[str] = Field(None, max_length=40)
     note: Optional[str] = Field(None, max_length=300)
-class MetricTargetRequest(BaseModel):
+class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
@@ -475,7 +522,7 @@ class MetricTargetRequest(BaseModel):
     value2: Optional[float] = Field(None, description="血压目标舒张压")
 
 
-class UpdateDocumentRequest(BaseModel):
+class UpdateDocumentRequest(StrictRequestModel):
     content: str = Field(..., min_length=1)
 
 
@@ -611,11 +658,27 @@ async def _link_patient_profile(session_id: str, raw_profile: str) -> None:
         logger.warning(f"关联患者档案失败（忽略）: {redact_secrets(str(e))}")
 
 
+_CSV_DANGEROUS_LEADING = ("=", "+", "-", "@", "\t", "\r")
+
+
 def csv_safe_cell(value: Any) -> str:
-    """防止 CSV 单元格被表格软件当作公式执行。"""
+    """防止 CSV 单元格被表格软件当作公式执行。
+
+    以撇号开头的真实数据同样加一层撇号，保证导出→导入可无损还原。
+    """
     text = str(value if value is not None else "")
-    if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+    if text[:1] in _CSV_DANGEROUS_LEADING or text[:1] == "'":
         return "'" + text
+    return text
+
+
+def csv_restore_cell(value: Any) -> str:
+    """还原导出时为防止公式执行而加上的前导撇号。"""
+    text = str(value if value is not None else "")
+    if text[:1] == "'" and (
+        text[1:2] == "'" or text[1:2] in _CSV_DANGEROUS_LEADING
+    ):
+        return text[1:]
     return text
 
 
@@ -949,6 +1012,19 @@ async def redacting_http_exception_handler(
             for key, value in detail.items()
         }
     return await http_exception_handler(request, exc)
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitized_validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> Response:
+    """422 详情会回显原始输入，先替换孤立代理码位再渲染。
+
+    否则 Starlette 用 ensure_ascii=False 编码响应体时会再次抛
+    UnicodeEncodeError，把本应 422 的请求变成 500。
+    """
+    detail = strip_lone_surrogates(jsonable_encoder(exc.errors()))
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -1292,7 +1368,7 @@ async def list_sessions(
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 50), 200))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     days = max(0, min(int(days or 0), 365))
     query = q or ""
     favorites_only = bool(favorite)
@@ -1921,7 +1997,7 @@ async def list_metrics(
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
     days = max(0, min(int(days or 0), 3650))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     items = await asyncio.to_thread(
         get_session_store().list_metrics,
         profile, metric, limit, days, offset, q,
@@ -1962,7 +2038,7 @@ async def list_medications(
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 1000), 100000))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     days = max(1, min(int(days or 7), 365))
     items = await asyncio.to_thread(
         get_session_store().list_medications,
@@ -2142,7 +2218,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             if not key:
                 continue
             name = key.strip()
-            mapped[field_alias.get(name, name)] = (value or "").strip()
+            mapped[field_alias.get(name, name)] = csv_restore_cell(value).strip()
 
         name = mapped.get("name", "")
         if not name:
@@ -2207,7 +2283,7 @@ async def add_medication(request: MedicationRequest):
 
 @app.patch("/api/medications/{medication_id}")
 async def update_medication(
-    medication_id: int, request: MedicationUpdateRequest
+    medication_id: SafeIntPath, request: MedicationUpdateRequest
 ):
     """部分更新一条用药记录；未提供的字段保持原值。"""
     from memory import get_session_store
@@ -2237,7 +2313,7 @@ async def update_medication(
 
 
 @app.delete("/api/medications/{medication_id}")
-async def delete_medication(medication_id: int):
+async def delete_medication(medication_id: SafeIntPath):
     """删除一条用药记录。"""
     from memory import get_session_store
 
@@ -2256,7 +2332,7 @@ async def delete_medication(medication_id: int):
 
 @app.get("/api/medications/{medication_id}/logs")
 async def list_medication_logs(
-    medication_id: int,
+    medication_id: SafeIntPath,
     limit: int = 100,
     offset: int = 0,
     days: int = 0,
@@ -2269,7 +2345,7 @@ async def list_medication_logs(
     if item is None:
         raise HTTPException(status_code=404, detail="药物不存在")
     limit = max(1, min(int(limit or 100), 1000))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     days = max(0, min(int(days or 0), 3650))
     logs = await asyncio.to_thread(
         store.list_medication_logs,
@@ -2284,7 +2360,7 @@ async def list_medication_logs(
 
 @app.post("/api/medications/{medication_id}/logs")
 async def add_medication_log(
-    medication_id: int,
+    medication_id: SafeIntPath,
     request: MedicationLogRequest,
 ):
     """记录一次用药（打卡）。"""
@@ -2316,7 +2392,7 @@ async def list_all_medication_logs(
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 100), 1000))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     days = max(0, min(int(days or 0), 3650))
     logs = await asyncio.to_thread(
         get_session_store().list_medication_logs,
@@ -2330,7 +2406,7 @@ async def list_all_medication_logs(
 
 
 @app.delete("/api/medication-logs/{log_id}")
-async def delete_medication_log(log_id: int):
+async def delete_medication_log(log_id: SafeIntPath):
     """撤销一条用药记录。"""
     from memory import get_session_store
 
@@ -2360,7 +2436,7 @@ async def list_symptoms(
 
     limit = max(1, min(int(limit or 100), 100000))
     days = max(0, min(int(days or 0), 3650))
-    offset = max(0, int(offset or 0))
+    offset = _bounded_offset(offset)
     items = await asyncio.to_thread(
         get_session_store().list_symptoms, profile, limit, days, offset
     )
@@ -2461,7 +2537,7 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
             if not key:
                 continue
             name = key.strip()
-            mapped[field_alias.get(name, name)] = (value or "").strip()
+            mapped[field_alias.get(name, name)] = csv_restore_cell(value).strip()
 
         symptom = mapped.get("symptom", "")
         if not symptom:
@@ -2539,7 +2615,7 @@ async def add_symptom(request: SymptomRequest):
 
 
 @app.patch("/api/symptoms/{symptom_id}")
-async def update_symptom(symptom_id: int, request: SymptomUpdateRequest):
+async def update_symptom(symptom_id: SafeIntPath, request: SymptomUpdateRequest):
     """部分更新一条症状记录；未提供的字段保持原值。"""
     from memory import get_session_store
 
@@ -2572,7 +2648,7 @@ async def update_symptom(symptom_id: int, request: SymptomUpdateRequest):
 
 
 @app.delete("/api/symptoms/{symptom_id}")
-async def delete_symptom(symptom_id: int):
+async def delete_symptom(symptom_id: SafeIntPath):
     """删除一条症状记录。"""
     from memory import get_session_store
 
@@ -3391,7 +3467,7 @@ async def add_metric(request: MetricRequest):
 
 
 @app.patch("/api/metrics/{metric_id}")
-async def update_metric(metric_id: int, request: MetricUpdateRequest):
+async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
     """部分更新一条健康指标记录；未提供的字段保持原值。"""
     from memory import get_session_store
 
@@ -3423,7 +3499,7 @@ async def update_metric(metric_id: int, request: MetricUpdateRequest):
 
 
 @app.delete("/api/metrics/{metric_id}")
-async def delete_metric(metric_id: int):
+async def delete_metric(metric_id: SafeIntPath):
     from memory import get_session_store
 
     ok = await asyncio.to_thread(
@@ -3586,7 +3662,7 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
             if not key:
                 continue
             name = key.strip()
-            mapped[field_alias.get(name, name)] = (value or "").strip()
+            mapped[field_alias.get(name, name)] = csv_restore_cell(value).strip()
 
         metric = mapped.get("metric", "")
         metric = metric_alias.get(metric, metric)
@@ -4744,7 +4820,7 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             if not key:
                 continue
             name = key.strip()
-            mapped[field_alias.get(name, name)] = (value or "").strip()
+            mapped[field_alias.get(name, name)] = csv_restore_cell(value).strip()
 
         title = mapped.get("title", "")
         due_at = mapped.get("due_at", "")
@@ -4819,7 +4895,7 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
 
 
 @app.post("/api/reminders/{reminder_id}/complete")
-async def complete_reminder(reminder_id: int):
+async def complete_reminder(reminder_id: SafeIntPath):
     """把随访提醒标记为已完成。"""
     from memory import get_session_store
 
@@ -4837,7 +4913,7 @@ async def complete_reminder(reminder_id: int):
 
 
 @app.post("/api/reminders/{reminder_id}/reopen")
-async def reopen_reminder(reminder_id: int):
+async def reopen_reminder(reminder_id: SafeIntPath):
     """把已完成的随访提醒恢复为待完成。"""
     from memory import get_session_store
 
@@ -4853,7 +4929,7 @@ async def reopen_reminder(reminder_id: int):
 
 
 @app.patch("/api/reminders/{reminder_id}")
-async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
+async def update_reminder(reminder_id: SafeIntPath, request: ReminderUpdateRequest):
     """修改随访提醒的内容、日期或备注。"""
     from memory import get_session_store
 
@@ -4888,7 +4964,7 @@ async def update_reminder(reminder_id: int, request: ReminderUpdateRequest):
 
 
 @app.post("/api/reminders/{reminder_id}/snooze")
-async def snooze_reminder(reminder_id: int, days: int = 7):
+async def snooze_reminder(reminder_id: SafeIntPath, days: int = 7):
     """把随访提醒推迟若干天（默认 7 天）。"""
     from memory import get_session_store
 
@@ -4907,7 +4983,7 @@ async def snooze_reminder(reminder_id: int, days: int = 7):
 
 
 @app.delete("/api/reminders/{reminder_id}")
-async def delete_reminder(reminder_id: int):
+async def delete_reminder(reminder_id: SafeIntPath):
     """删除随访提醒。"""
     from memory import get_session_store
 
