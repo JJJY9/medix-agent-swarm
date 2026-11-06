@@ -26,6 +26,28 @@ def _date(days):
     return (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
 
 
+def test_visit_can_link_to_appointment(client_and_store):
+    client, _store = client_and_store
+    appointment = client.post("/api/appointments", json={
+        "profile": "妈妈",
+        "title": "心内科复诊",
+        "department": "心内科",
+        "scheduled_at": f"{_date(0)}T09:00",
+        "status": "completed",
+    }).json()["appointment"]
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "appointment_id": appointment["id"],
+        "visit_date": _date(0),
+        "department": "心内科",
+        "diagnosis": "高血压复诊",
+    }).json()["visit"]
+
+    assert visit["appointment_id"] == appointment["id"]
+    listed = client.get("/api/visits").json()["visits"]
+    assert listed[0]["appointment_id"] == appointment["id"]
+
+
 def test_visits_api_roundtrip(client_and_store):
     client, _store = client_and_store
     created = client.post("/api/visits", json={
