@@ -84,6 +84,10 @@ MAX_ALLERGY_REACTION_LENGTH = 120
 MAX_ALLERGY_NOTE_LENGTH = 300
 ALLERGY_SEVERITIES = ("mild", "moderate", "severe")
 ALLERGY_KINDS = ("drug", "food", "environment", "other")
+#: 复查计划
+MAX_CARE_TITLE_LENGTH = 120
+MAX_CARE_NOTE_LENGTH = 300
+MAX_CARE_INTERVAL_DAYS = 3650
 REMINDER_DATE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$"
 )
@@ -113,6 +117,7 @@ IMPORT_LIST_LIMITS = {
     "appointments": 100000,
     "lab_results": 100000,
     "allergies": 100000,
+    "care_items": 100000,
     "reminders": 100000,
     "audit_log": 100000,
 }
@@ -942,6 +947,96 @@ def _normalize_allergy(
     }
 
 
+def _normalize_care_item(
+    profile: str,
+    title: str,
+    interval_days: Any,
+    last_done_at: str,
+    next_due_at: str,
+    note: str,
+    active: Any,
+) -> Dict[str, Any]:
+    """校验一条复查计划；非法时抛出 ValueError。"""
+    name = " ".join(str(title or "").split())[:MAX_CARE_TITLE_LENGTH]
+    if not name:
+        raise ValueError("复查项目不能为空")
+    if isinstance(interval_days, bool):
+        raise ValueError("复查间隔应为 1–3650 天")
+    try:
+        interval = int(interval_days)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("复查间隔应为 1–3650 天")
+    if interval < 1 or interval > MAX_CARE_INTERVAL_DAYS:
+        raise ValueError("复查间隔应为 1–3650 天")
+
+    last_done = str(last_done_at or "").strip()[:40]
+    if last_done:
+        normalized_last = _canonical_local_time(last_done)
+        if normalized_last is None:
+            raise ValueError("上次完成时间格式应为 YYYY-MM-DD 或 ISO 时间")
+        if _is_future_timestamp(normalized_last):
+            raise ValueError("上次完成时间不能晚于当前时间")
+        last_done = normalized_last[:10]
+    else:
+        last_done = ""
+
+    due_text = str(next_due_at or "").strip()[:40]
+    if due_text:
+        normalized_due = _canonical_local_time(due_text)
+        if normalized_due is None:
+            raise ValueError("下次复查日期格式应为 YYYY-MM-DD 或 ISO 时间")
+        due = normalized_due[:10]
+    else:
+        base = (
+            datetime.strptime(last_done, "%Y-%m-%d").date()
+            if last_done else datetime.now().date()
+        )
+        due = (base + timedelta(days=interval)).strftime("%Y-%m-%d")
+    if last_done and due < last_done:
+        raise ValueError("下次复查日期不能早于上次完成日期")
+
+    if isinstance(active, bool):
+        active_flag = 1 if active else 0
+    else:
+        active_flag = 1 if str(active).strip().lower() in {
+            "1", "true", "on", "yes"
+        } else 0
+    return {
+        "profile": _normalize_profile_name(profile),
+        "title": name,
+        "interval_days": interval,
+        "last_done_at": last_done,
+        "next_due_at": due,
+        "note": " ".join(str(note or "").split())[
+            :MAX_CARE_NOTE_LENGTH
+        ],
+        "active": bool(active_flag),
+    }
+
+
+def _care_item_view_fields(
+    row: Dict[str, Any], today: str
+) -> Dict[str, Any]:
+    """补充复查倒计时与逾期/临期标记。"""
+    due = str(row.get("next_due_at") or "")[:10]
+    days_until: Optional[int] = None
+    if due:
+        try:
+            days_until = (
+                datetime.strptime(due, "%Y-%m-%d").date()
+                - datetime.strptime(today, "%Y-%m-%d").date()
+            ).days
+        except ValueError:
+            days_until = None
+    active = bool(row.get("active"))
+    return {
+        "days_until": days_until,
+        "overdue": active and days_until is not None and days_until < 0,
+        "due_today": active and days_until == 0,
+        "due_soon": active and days_until is not None and 0 <= days_until <= 7,
+    }
+
+
 def _normalize_reminder_due(value: Any) -> str:
     due = str(value or "").strip()[:32]
     if not due or not REMINDER_DATE_PATTERN.match(due):
@@ -1171,6 +1266,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "appointments",
     "lab_results",
     "allergies",
+    "care_items",
     "audit_log",
 )
 
@@ -1427,6 +1523,20 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_allergies_profile
                     ON allergies(profile, active, substance);
+                CREATE TABLE IF NOT EXISTS care_items (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile       TEXT NOT NULL DEFAULT '',
+                    title         TEXT NOT NULL,
+                    interval_days INTEGER NOT NULL DEFAULT 30,
+                    last_done_at  TEXT NOT NULL DEFAULT '',
+                    next_due_at   TEXT NOT NULL,
+                    note          TEXT NOT NULL DEFAULT '',
+                    active        INTEGER NOT NULL DEFAULT 1,
+                    created_at    TEXT NOT NULL,
+                    updated_at    TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_care_items_profile_due
+                    ON care_items(profile, active, next_due_at);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -1727,6 +1837,7 @@ class SessionStore:
                 ("appointments", "profile"),
                 ("lab_results", "profile"),
                 ("allergies", "profile"),
+                ("care_items", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -2774,6 +2885,7 @@ class SessionStore:
             "appointments": self.list_appointments(limit=100000),
             "lab_results": self.list_lab_results(limit=100000),
             "allergies": self.list_allergies(limit=100000),
+            "care_items": self.list_care_items(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         return payload
@@ -2804,6 +2916,7 @@ class SessionStore:
         raw_appointments = data.get("appointments")
         raw_lab_results = data.get("lab_results")
         raw_allergies = data.get("allergies")
+        raw_care_items = data.get("care_items")
         raw_audit = data.get("audit_log")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
@@ -2817,6 +2930,7 @@ class SessionStore:
             or isinstance(raw_appointments, list)
             or isinstance(raw_lab_results, list)
             or isinstance(raw_allergies, list)
+            or isinstance(raw_care_items, list)
             or isinstance(raw_audit, list)
         ):
             raw_sessions = []
@@ -2835,6 +2949,7 @@ class SessionStore:
             and not isinstance(raw_appointments, list)
             and not isinstance(raw_lab_results, list)
             and not isinstance(raw_allergies, list)
+            and not isinstance(raw_care_items, list)
             and not isinstance(raw_audit, list)
         ):
             raise ValueError("备份文件中没有会话。")
@@ -2853,6 +2968,7 @@ class SessionStore:
             ("appointments", "就诊预约", raw_appointments),
             ("lab_results", "化验结果", raw_lab_results),
             ("allergies", "过敏史", raw_allergies),
+            ("care_items", "复查计划", raw_care_items),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
         ):
@@ -3584,6 +3700,57 @@ class SessionStore:
                     )
                     allergies_imported += 1
 
+            care_items_imported = 0
+            if isinstance(raw_care_items, list):
+                for raw in raw_care_items[
+                    :IMPORT_LIST_LIMITS["care_items"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        normalized = _normalize_care_item(
+                            raw.get("profile") or "",
+                            raw.get("title") or "",
+                            raw.get("interval_days") or 30,
+                            raw.get("last_done_at") or "",
+                            raw.get("next_due_at") or "",
+                            raw.get("note") or "",
+                            raw.get("active", True),
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id FROM care_items
+                         WHERE profile = ? AND title = ?
+                        """,
+                        (
+                            normalized["profile"],
+                            normalized["title"],
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO care_items(
+                            profile, title, interval_days, last_done_at,
+                            next_due_at, note, active, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            normalized["profile"], normalized["title"],
+                            normalized["interval_days"],
+                            normalized["last_done_at"],
+                            normalized["next_due_at"], normalized["note"],
+                            normalized["active"],
+                            str(raw.get("created_at") or now)[:40],
+                            str(raw.get("updated_at") or now)[:40],
+                        ),
+                    )
+                    care_items_imported += 1
+
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
@@ -3831,6 +3998,7 @@ class SessionStore:
             "appointments": appointments_imported,
             "lab_results": lab_results_imported,
             "allergies": allergies_imported,
+            "care_items": care_items_imported,
             "audit_log": audit_imported,
         }
 
@@ -4086,6 +4254,7 @@ class SessionStore:
                     ("appointments", "profile"),
                     ("lab_results", "profile"),
                     ("allergies", "profile"),
+                    ("care_items", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -4134,6 +4303,7 @@ class SessionStore:
                 "appointments",
                 "lab_results",
                 "allergies",
+                "care_items",
                 "sessions",
             ):
                 self._conn.execute(
@@ -5104,6 +5274,194 @@ class SessionStore:
             cursor = self._conn.execute(
                 "DELETE FROM allergies WHERE id = ?",
                 (int(allergy_id),),
+            )
+            return cursor.rowcount > 0
+
+    def add_care_item(
+        self,
+        profile: str,
+        title: str,
+        interval_days: Any = 30,
+        last_done_at: str = "",
+        next_due_at: str = "",
+        note: str = "",
+        active: Any = True,
+    ) -> Dict[str, Any]:
+        """新增一条复查计划并返回完整行。"""
+        normalized = _normalize_care_item(
+            profile, title, interval_days, last_done_at,
+            next_due_at, note, active,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO care_items(
+                    profile, title, interval_days, last_done_at,
+                    next_due_at, note, active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized["profile"], normalized["title"],
+                    normalized["interval_days"], normalized["last_done_at"],
+                    normalized["next_due_at"], normalized["note"],
+                    normalized["active"], now, now,
+                ),
+            )
+            care_id = int(cursor.lastrowid)
+        data = {"id": care_id, **normalized, "created_at": now,
+                "updated_at": now}
+        return {
+            **data,
+            **_care_item_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+        }
+
+    def update_care_item(
+        self,
+        care_id: int,
+        profile: str,
+        title: str,
+        interval_days: Any = 30,
+        last_done_at: str = "",
+        next_due_at: str = "",
+        note: str = "",
+        active: Any = True,
+    ) -> Optional[Dict[str, Any]]:
+        """整体更新一条复查计划；记录不存在时返回 None。"""
+        normalized = _normalize_care_item(
+            profile, title, interval_days, last_done_at,
+            next_due_at, note, active,
+        )
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE care_items
+                   SET profile = ?, title = ?, interval_days = ?,
+                       last_done_at = ?, next_due_at = ?, note = ?,
+                       active = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    normalized["profile"], normalized["title"],
+                    normalized["interval_days"], normalized["last_done_at"],
+                    normalized["next_due_at"], normalized["note"],
+                    normalized["active"], now, int(care_id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_care_item(care_id)
+
+    def get_care_item(self, care_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, title, interval_days, last_done_at,
+                       next_due_at, note, active, created_at, updated_at
+                  FROM care_items WHERE id = ?
+                """,
+                (int(care_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            **data,
+            **_care_item_view_fields(
+                data, datetime.now().strftime("%Y-%m-%d")
+            ),
+            "active": bool(row["active"]),
+        }
+
+    def list_care_items(
+        self,
+        profile: Optional[str] = None,
+        active_only: bool = False,
+        overdue: bool = False,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 1000), 100000))
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        if active_only:
+            conditions.append("active = 1")
+        today = datetime.now().strftime("%Y-%m-%d")
+        if overdue:
+            conditions.append("active = 1")
+            conditions.append("next_due_at < ?")
+            params.append(today)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, title, interval_days, last_done_at,
+                       next_due_at, note, active, created_at, updated_at
+                  FROM care_items
+                 {where}
+                 ORDER BY active DESC,
+                          CASE WHEN active = 1 THEN next_due_at END ASC,
+                          next_due_at DESC, id DESC
+                 LIMIT ?
+                """,
+                [*params, limit],
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                **_care_item_view_fields(dict(row), today),
+                "active": bool(row["active"]),
+            }
+            for row in rows
+        ]
+
+    def mark_care_item_done(
+        self, care_id: int, done_at: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """记录一次复查完成，并按间隔推算下次复查日期。"""
+        item = self.get_care_item(care_id)
+        if item is None:
+            return None
+        done_text = str(done_at or "").strip()[:40]
+        if done_text:
+            done_text = _canonical_local_time(done_text)
+            if done_text is None:
+                raise ValueError("完成时间格式应为 YYYY-MM-DD 或 ISO 时间")
+            if _is_future_timestamp(done_text):
+                raise ValueError("完成时间不能晚于当前时间")
+            done_text = done_text[:10]
+        else:
+            done_text = datetime.now().strftime("%Y-%m-%d")
+        try:
+            done_date = datetime.strptime(done_text, "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError("完成时间格式应为 YYYY-MM-DD")
+        interval = max(1, int(item.get("interval_days") or 1))
+        next_due = (done_date + timedelta(days=interval)).strftime("%Y-%m-%d")
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE care_items
+                   SET last_done_at = ?, next_due_at = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (done_text, next_due, now, int(care_id)),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_care_item(care_id)
+
+    def delete_care_item(self, care_id: int) -> bool:
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "DELETE FROM care_items WHERE id = ?",
+                (int(care_id),),
             )
             return cursor.rowcount > 0
 

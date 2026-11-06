@@ -245,10 +245,10 @@ def test_vaccinations_in_family_overview(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-5] == "疫苗接种"
+    assert rows[0][-6] == "疫苗接种"
     grandma_row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "肺炎疫苗" in grandma_row[-5]
-    assert due in grandma_row[-5]
+    assert "肺炎疫苗" in grandma_row[-6]
+    assert due in grandma_row[-6]
 
 
 def test_vaccination_backup_roundtrip_and_profile_rename(

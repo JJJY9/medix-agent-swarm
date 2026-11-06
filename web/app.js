@@ -483,6 +483,21 @@ const els = {
   allergyEmpty: document.getElementById('allergy-empty'),
   allergySearch: document.getElementById('allergy-search'),
   allergySummary: document.getElementById('allergy-summary'),
+  careSection: document.getElementById('care-section'),
+  careTitle: document.getElementById('care-title'),
+  careInterval: document.getElementById('care-interval'),
+  careNextDue: document.getElementById('care-next-due'),
+  careLastDone: document.getElementById('care-last-done'),
+  careActive: document.getElementById('care-active'),
+  careNote: document.getElementById('care-note'),
+  careSave: document.getElementById('care-save'),
+  careExport: document.getElementById('care-export'),
+  careCancel: document.getElementById('care-cancel'),
+  careStatus: document.getElementById('care-status'),
+  careList: document.getElementById('care-list'),
+  careEmpty: document.getElementById('care-empty'),
+  careSearch: document.getElementById('care-search'),
+  careSummary: document.getElementById('care-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4184,6 +4199,7 @@ async function refreshAfterBackupImport(result) {
     || result.medications || result.medication_logs
     || result.vaccinations || result.appointments
     || result.lab_results || result.allergies
+    || result.care_items
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
@@ -4191,6 +4207,7 @@ async function refreshAfterBackupImport(result) {
     if (result.appointments) loadAppointments();
     if (result.lab_results) loadLabs();
     if (result.allergies) loadAllergies();
+    if (result.care_items) loadCareItems();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6919,6 +6936,7 @@ async function refreshMetrics() {
   loadAppointments();
   loadLabs();
   loadAllergies();
+  loadCareItems();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -8089,6 +8107,20 @@ function renderFamilyOverview(data) {
         'family-chip-alert'
       ));
     }
+    const care = profile.care_plan || {};
+    const nextCare = care.next || {};
+    if (care.overdue || care.due_soon || nextCare.title) {
+      let careText = '复查';
+      if (care.overdue) careText += ` 逾期 ${care.overdue} 项`;
+      if (care.due_soon) careText += ` 近 7 天 ${care.due_soon} 项`;
+      if (nextCare.title) {
+        careText += ` · ${nextCare.title} ${nextCare.next_due_at || ''}`;
+      }
+      chips.appendChild(familyChip(
+        careText,
+        care.overdue ? 'family-chip-alert' : ''
+      ));
+    }
     const medications = profile.medications || {};
     if (medications.active) {
       const chip = familyChip(
@@ -8262,6 +8294,12 @@ function familyOverviewText(data) {
     }
     const labs = profile.labs || {};
     if (labs.abnormal) parts.push(`化验异常 ${labs.abnormal} 项`);
+    const care = profile.care_plan || {};
+    if (care.overdue) {
+      parts.push(`复查逾期 ${care.overdue} 项`);
+    } else if (care.due_soon) {
+      parts.push(`复查近 7 天 ${care.due_soon} 项`);
+    }
     const consultations = profile.consultations || {};
     if (consultations.count) {
       const riskLabel = HEALTH_RISK_LABELS[consultations.risk];
@@ -10914,6 +10952,347 @@ async function deleteAllergy(item) {
   }
 }
 
+let editingCareId = null;
+let editingCareProfile = '';
+let careSaving = false;
+let careRequestSeq = 0;
+let careItemsCache = [];
+let careSearchTimer = null;
+let careReminderBusy = new Set();
+
+function setCareStatus(text, isError = false) {
+  if (!els.careStatus) return;
+  els.careStatus.textContent = text || '';
+  els.careStatus.hidden = !text;
+  els.careStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetCareForm() {
+  editingCareId = null;
+  editingCareProfile = '';
+  els.careTitle.value = '';
+  els.careInterval.value = '90';
+  els.careNextDue.value = '';
+  els.careLastDone.value = '';
+  els.careActive.checked = true;
+  els.careNote.value = '';
+  els.careSave.textContent = '保存复查计划';
+  els.careCancel.hidden = true;
+}
+
+function careDueText(item) {
+  const days = Number(item.days_until);
+  if (!item.active) return '已停用';
+  if (!Number.isFinite(days)) return '';
+  if (item.overdue) return `已逾期 ${Math.abs(days)} 天`;
+  if (days === 0) return '今天';
+  if (days <= 7) return `${days} 天后`;
+  return `${days} 天后`;
+}
+
+function filterCareItems(items) {
+  const query = els.careSearch
+    ? String(els.careSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [item.title, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderCareItems(items) {
+  if (!els.careList) return;
+  els.careList.replaceChildren();
+  els.careEmpty.hidden = items.length > 0;
+  const query = els.careSearch
+    ? String(els.careSearch.value || '').trim()
+    : '';
+  els.careEmpty.textContent = query
+    ? `没有匹配「${query}」的复查计划。`
+    : '还没有复查计划。';
+  const overdue = items.filter((item) => item.overdue).length;
+  const dueSoon = items.filter((item) => item.due_soon).length;
+  if (items.length) {
+    els.careSummary.hidden = false;
+    els.careSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (overdue ? ` · 逾期 ${overdue} 条` : '')
+      + (dueSoon ? ` · 近 7 天 ${dueSoon} 条` : '');
+  } else {
+    els.careSummary.hidden = true;
+  }
+  if (
+    editingCareId
+    && !careItemsCache.some((item) => item.id === editingCareId)
+  ) {
+    resetCareForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.title || '复查';
+    const dueBadge = document.createElement('span');
+    dueBadge.className = 'care-due-badge'
+      + (
+        !item.active
+          ? ' is-inactive'
+          : item.overdue ? ' is-overdue' : item.due_soon ? ' is-soon' : ''
+      );
+    dueBadge.textContent = careDueText(item);
+    title.append(' ', dueBadge);
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      `每 ${Number(item.interval_days) || 0} 天`,
+      `下次 ${item.next_due_at || '—'}`,
+      item.last_done_at ? `上次 ${item.last_done_at}` : '',
+    ].filter(Boolean).join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    if (item.active) {
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'metric-edit';
+      done.textContent = '完成';
+      done.setAttribute('aria-label', `标记复查已完成：${item.title}`);
+      done.addEventListener('click', () => markCareDone(item));
+      actions.appendChild(done);
+
+      const remind = document.createElement('button');
+      remind.type = 'button';
+      remind.className = 'metric-edit';
+      remind.textContent = '提醒';
+      remind.setAttribute('aria-label', `为复查创建提醒：${item.title}`);
+      remind.addEventListener('click', () => createCareReminder(item));
+      actions.appendChild(remind);
+    }
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑复查计划：${item.title}`);
+    edit.addEventListener('click', () => editCareItem(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除复查计划：${item.title}`);
+    del.addEventListener('click', () => deleteCareItem(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.careList.appendChild(li);
+  }
+}
+
+async function loadCareItems() {
+  if (!els.careList) return;
+  const requestSeq = ++careRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/care-items?limit=1000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== careRequestSeq) return;
+    careItemsCache = data.care_items || [];
+    renderCareItems(filterCareItems(careItemsCache));
+  } catch {
+    if (requestSeq !== careRequestSeq) return;
+    careItemsCache = [];
+    renderCareItems([]);
+    els.careEmpty.textContent = '复查计划加载失败，请稍后重试。';
+    els.careEmpty.hidden = false;
+    setCareStatus('复查计划加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportCareItemsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/care-items/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-care-plan-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setCareStatus('已导出复查计划 CSV。');
+  } catch (err) {
+    setCareStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+function editCareItem(item) {
+  editingCareId = item.id;
+  editingCareProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.careTitle.value = item.title || '';
+  els.careInterval.value = String(item.interval_days || 30);
+  els.careNextDue.value = String(item.next_due_at || '').slice(0, 10);
+  els.careLastDone.value = String(item.last_done_at || '').slice(0, 10);
+  els.careActive.checked = Boolean(item.active);
+  els.careNote.value = item.note || '';
+  els.careSave.textContent = '保存修改';
+  els.careCancel.hidden = false;
+  els.careTitle.focus();
+}
+
+async function saveCareItem() {
+  if (careSaving) return;
+  const title = (els.careTitle.value || '').trim();
+  if (!title) {
+    setCareStatus('请填写复查项目。', true);
+    els.careTitle.focus();
+    return;
+  }
+  const interval = Number(els.careInterval.value);
+  if (!Number.isFinite(interval) || interval < 1) {
+    setCareStatus('间隔天数应为正整数。', true);
+    els.careInterval.focus();
+    return;
+  }
+  const editingId = editingCareId;
+  const payload = {
+    profile: editingId
+      ? editingCareProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    title,
+    interval_days: Math.round(interval),
+    next_due_at: els.careNextDue.value || '',
+    last_done_at: els.careLastDone.value || '',
+    active: els.careActive.checked,
+    note: (els.careNote.value || '').trim(),
+  };
+  careSaving = true;
+  els.careSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId ? `/api/care-items/${editingId}` : '/api/care-items',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetCareForm();
+    setCareStatus(editingId ? '已保存修改。' : '已保存复查计划。');
+    await loadCareItems();
+    refreshOverview();
+  } catch (err) {
+    setCareStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    careSaving = false;
+    els.careSave.disabled = false;
+  }
+}
+
+async function markCareDone(item) {
+  try {
+    const res = await fetch(`/api/care-items/${item.id}/done`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const nextDue = data.care_item ? data.care_item.next_due_at : '';
+    setCareStatus(
+      `已记录复查完成${nextDue ? `，下次 ${nextDue}` : ''}。`
+    );
+    await loadCareItems();
+    refreshOverview();
+  } catch (err) {
+    setCareStatus(`记录完成失败：${err.message || err}`, true);
+  }
+}
+
+async function createCareReminder(item) {
+  if (careReminderBusy.has(item.id)) return;
+  careReminderBusy.add(item.id);
+  setCareStatus('正在创建复查提醒…');
+  try {
+    const res = await fetch(
+      `/api/care-items/${item.id}/reminder`, { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setCareStatus(
+      data.created ? '已创建复查提醒（提前 7 天）。' : '该复查已有未完成的提醒。'
+    );
+    refreshReminderBadge();
+    refreshOverview();
+  } catch (err) {
+    setCareStatus(`创建提醒失败：${err.message || err}`, true);
+  } finally {
+    careReminderBusy.delete(item.id);
+  }
+}
+
+async function deleteCareItem(item) {
+  if (!window.confirm(`删除复查计划「${item.title}」？`)) return;
+  try {
+    const res = await fetch(`/api/care-items/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingCareId === item.id) resetCareForm();
+    setCareStatus('已删除复查计划。');
+    await loadCareItems();
+    refreshOverview();
+    refreshReminderBadge();
+  } catch (err) {
+    setCareStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -11561,6 +11940,7 @@ const TIMELINE_TYPE_LABELS = {
   vaccination: '疫苗',
   appointment: '就诊',
   lab: '化验',
+  care: '复查',
   consultation: '会诊',
 };
 
@@ -15401,6 +15781,31 @@ els.allergySearch.addEventListener('input', () => {
   clearTimeout(allergySearchTimer);
   allergySearchTimer = setTimeout(() => {
     renderAllergies(filterAllergies(allergyItemsCache));
+  }, 200);
+});
+els.careSave.addEventListener('click', saveCareItem);
+els.careExport.addEventListener('click', exportCareItemsCsv);
+els.careCancel.addEventListener('click', () => {
+  resetCareForm();
+  setCareStatus('已取消编辑。');
+});
+for (const input of [
+  els.careTitle, els.careInterval, els.careNextDue,
+  els.careLastDone, els.careNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveCareItem();
+    }
+  });
+}
+els.careSearch.addEventListener('input', () => {
+  clearTimeout(careSearchTimer);
+  careSearchTimer = setTimeout(() => {
+    renderCareItems(filterCareItems(careItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {
