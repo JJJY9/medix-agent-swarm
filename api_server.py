@@ -5445,6 +5445,21 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             item for item in reminders
             if (item.get("profile") or "") == profile_key
         ]
+    vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, profile, 100000
+    )
+    appointments = await asyncio.to_thread(
+        store.list_appointments, profile, None, False, 100000, 0
+    )
+    lab_results = await asyncio.to_thread(
+        store.list_lab_results, profile, None, None, 0, 100000, 0
+    )
+    care_items = await asyncio.to_thread(
+        store.list_care_items, profile, False, False, 100000
+    )
+    visits = await asyncio.to_thread(
+        store.list_visit_records, profile, 0, "", 100000
+    )
 
     days: Dict[str, Dict[str, int]] = {}
 
@@ -5452,7 +5467,8 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         return days.setdefault(day_key, {
             "metrics": 0, "symptoms": 0, "doses": 0,
             "consultations": 0, "reminders_due": 0, "reminders_done": 0,
-            "alerts": 0,
+            "vaccinations": 0, "appointments": 0, "labs": 0,
+            "care_due": 0, "visits": 0, "alerts": 0,
         })
 
     def in_month(value: Any) -> bool:
@@ -5511,13 +5527,40 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             entry["reminders_done"] += 1
         else:
             entry["reminders_due"] += 1
+    for item in vaccinations:
+        at = str(item.get("vaccinated_at") or "")
+        if in_month(at):
+            bucket(at[:10])["vaccinations"] += 1
+    for item in appointments:
+        at = str(item.get("scheduled_at") or "")
+        if in_month(at):
+            bucket(at[:10])["appointments"] += 1
+    for item in lab_results:
+        at = str(item.get("tested_at") or "")
+        if not in_month(at):
+            continue
+        entry = bucket(at[:10])
+        entry["labs"] += 1
+        if item.get("abnormal"):
+            entry["alerts"] += 1
+    for item in care_items:
+        if not item.get("active"):
+            continue
+        at = str(item.get("next_due_at") or "")
+        if in_month(at):
+            bucket(at[:10])["care_due"] += 1
+    for item in visits:
+        at = str(item.get("visit_date") or "")
+        if in_month(at):
+            bucket(at[:10])["visits"] += 1
 
     totals = {
         key: sum(entry[key] for entry in days.values())
         for key in (
             "metrics", "symptoms", "doses",
             "consultations", "reminders_due", "reminders_done",
-            "alerts",
+            "vaccinations", "appointments", "labs", "care_due",
+            "visits", "alerts",
         )
     }
     return {
@@ -5546,6 +5589,7 @@ async def export_health_calendar_csv(
     rows = [[
         "日期", "指标", "症状", "用药打卡", "会诊",
         "待办提醒", "已完成提醒", "异常",
+        "疫苗", "预约", "化验", "复查", "就诊",
     ]]
     for day in range(1, last_day + 1):
         key = f"{month_key}-{day:02d}"
@@ -5559,6 +5603,11 @@ async def export_health_calendar_csv(
             str(int(entry.get("reminders_due") or 0)),
             str(int(entry.get("reminders_done") or 0)),
             str(int(entry.get("alerts") or 0)),
+            str(int(entry.get("vaccinations") or 0)),
+            str(int(entry.get("appointments") or 0)),
+            str(int(entry.get("labs") or 0)),
+            str(int(entry.get("care_due") or 0)),
+            str(int(entry.get("visits") or 0)),
         ])
 
     buffer = io.StringIO()
