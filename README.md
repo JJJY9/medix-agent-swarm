@@ -785,6 +785,23 @@ REDIS_CONFIG = {
 }
 ```
 
+### 服务端环境变量
+
+以下变量都可以写在 `.env` 中，未设置时使用括号内默认值：
+
+| 变量 | 说明 |
+| --- | --- |
+| `MEDIX_API_KEY` / `MEDIX_BASE_URL` / `MEDIX_MODEL` | 覆盖 LLM 的密钥、地址与模型名（默认取 `config.py`） |
+| `MEDIX_ACCESS_TOKEN` | 访问令牌；设置后所有 API 需要 `Authorization: Bearer <token>`（默认关闭） |
+| `MEDIX_LOG_LEVEL` | 服务日志级别（默认 `INFO`）；调试可设为 `DEBUG` |
+| `MEDIX_RATE_LIMIT` | 每个客户端每分钟会诊请求上限（默认 30，`0` 表示关闭） |
+| `MEDIX_TIMEOUT` | 模型请求超时秒数（默认 60） |
+| `MEDIX_MONTHLY_TOKEN_BUDGET` | 每月 Token 预算（默认 0，不启用） |
+| `MEDIX_PRICE_INPUT` / `MEDIX_PRICE_OUTPUT` / `MEDIX_CURRENCY` | 每百万 Token 价格与货币符号，用于费用展示 |
+| `MEDIX_SESSION_DB` | SQLite 会话数据库路径（默认 `data/sessions.db`） |
+| `MEDIX_AUTO_ARCHIVE_DAYS` | 超过 N 天未更新的会话自动归档（默认 0，关闭） |
+| `MEDIX_AUTO_BACKUP_HOURS` / `MEDIX_BACKUP_KEEP` / `MEDIX_BACKUP_DIR` | 自动备份间隔、保留份数与目录（默认关闭 / 7 / `data/backups`） |
+
 ### 记忆系统配置
 
 本系统支持两层记忆机制：**短期记忆（会话级）** 和 **长期记忆（跨会话）**。
