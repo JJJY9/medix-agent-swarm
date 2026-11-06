@@ -370,6 +370,8 @@ const els = {
   metricSystolic: document.getElementById('metric-systolic'),
   metricDiastolic: document.getElementById('metric-diastolic'),
   metricSingleWrap: document.getElementById('metric-single-wrap'),
+  metricContextWrap: document.getElementById('metric-context-wrap'),
+  metricContext: document.getElementById('metric-context'),
   metricUnit: document.getElementById('metric-unit'),
   metricValue: document.getElementById('metric-value'),
   metricTime: document.getElementById('metric-time'),
@@ -5973,6 +5975,15 @@ const METRIC_UNITS = {
   auditc: '分',
   mmrc: '级',
 };
+const METRIC_CONTEXT_OPTIONS = {
+  bp: [['morning', '晨起'], ['evening', '睡前']],
+  glucose: [
+    ['fasting', '空腹'],
+    ['postprandial', '餐后'],
+    ['bedtime', '睡前'],
+    ['random', '随机'],
+  ],
+};
 const METRIC_NAMES = {
   bp: '血压',
   weight: '体重',
@@ -6299,6 +6310,23 @@ function setMetricType(type) {
   els.metricValue.step = isScore ? '1' : '0.1';
   els.metricValue.min = isScore ? '0' : '';
   els.metricReference.textContent = METRIC_REFERENCES[value] || '';
+  const contextOptions = METRIC_CONTEXT_OPTIONS[value] || [];
+  const previous = els.metricContext.value;
+  els.metricContext.replaceChildren();
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = '未指定';
+  els.metricContext.appendChild(blank);
+  for (const [key, label] of contextOptions) {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = label;
+    els.metricContext.appendChild(option);
+  }
+  els.metricContextWrap.hidden = !contextOptions.length;
+  els.metricContext.value = contextOptions.some(
+    ([key]) => key === previous
+  ) ? previous : '';
 }
 
 async function refreshMetricProfileOptions() {
@@ -6399,11 +6427,14 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
+    const contextLabel = (METRIC_CONTEXT_OPTIONS[item.metric] || [])
+      .find(([key]) => key === item.context)?.[1] || '';
     meta.textContent = [
       METRIC_NAMES[item.metric] || item.metric,
       item.profile || '未指定档案',
+      contextLabel,
       formatTime(item.measured_at),
-    ].join(' · ');
+    ].filter(Boolean).join(' · ');
 
     main.append(value, meta);
     if (item.note) {
@@ -8873,6 +8904,7 @@ function resetMetricForm() {
   els.metricSystolic.value = '';
   els.metricDiastolic.value = '';
   els.metricValue.value = '';
+  els.metricContext.value = '';
   els.metricNote.value = '';
   els.metricTime.value = metricNowLocal();
   els.metricAdd.textContent = '保存记录';
@@ -12914,6 +12946,7 @@ function editMetricRecord(item) {
   }
 
   els.metricTime.value = String(item.measured_at || '').slice(0, 16);
+  els.metricContext.value = item.context || '';
   els.metricNote.value = item.note || '';
   els.metricAdd.textContent = '保存修改';
   els.metricCancel.hidden = false;
@@ -12971,6 +13004,7 @@ async function addMetricRecord() {
           value1,
           value2,
           measured_at: measuredAt,
+          context: els.metricContext.value || '',
           note,
         }),
       }
