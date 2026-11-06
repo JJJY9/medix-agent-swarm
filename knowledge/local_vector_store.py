@@ -51,6 +51,8 @@ class LocalVectorStore:
         self.db_path = Path(db_path)
         self.store_path = self.db_path.with_suffix(self.db_path.suffix + ".local.json")
         self.collections: Dict[str, Dict[str, Any]] = {}
+        #: 索引文件损坏时记录原因，搜索/统计会显式报错而不是静默返回空
+        self.load_error = ""
         self._load()
 
     # ===== 持久化 =====
@@ -65,6 +67,7 @@ class LocalVectorStore:
                 self.collections[name] = coll
             logger.info(f"Loaded local vector store: {self.store_path}")
         except Exception as e:
+            self.load_error = str(e)
             logger.error(f"Failed to load local vector store: {e}")
 
     def _save(self):
@@ -86,6 +89,8 @@ class LocalVectorStore:
             )
             temp_path.write_text(payload, encoding="utf-8")
             os.replace(temp_path, self.store_path)
+            # 成功落盘后之前“文件损坏”的状态已解除（重建可恢复）
+            self.load_error = ""
         except Exception as e:
             logger.error(f"Failed to save local vector store: {e}")
             raise
@@ -142,6 +147,10 @@ class LocalVectorStore:
         output_fields: Optional[List[str]] = None,
         **kwargs,
     ) -> List[List[Dict[str, Any]]]:
+        if self.load_error:
+            raise RuntimeError(
+                f"本地向量索引加载失败，请重建知识库: {self.load_error}"
+            )
         coll = self.collections.get(collection_name)
         if coll is None or len(coll["contents"]) == 0:
             return [[]]
@@ -192,7 +201,20 @@ class LocalVectorStore:
         self.collections.pop(collection_name, None)
         self._save()
 
+    def rename_collection(self, old_name: str, new_name: str):
+        """原子改名：仅移动内存中的引用后一次性落盘。"""
+        if old_name not in self.collections:
+            raise ValueError(f"Collection not found: {old_name}")
+        if new_name in self.collections:
+            raise ValueError(f"Collection already exists: {new_name}")
+        self.collections[new_name] = self.collections.pop(old_name)
+        self._save()
+
     def describe_collection(self, collection_name: str) -> Dict[str, Any]:
+        if self.load_error:
+            raise RuntimeError(
+                f"本地向量索引加载失败，请重建知识库: {self.load_error}"
+            )
         coll = self.collections.get(collection_name)
         if coll is None:
             return {}

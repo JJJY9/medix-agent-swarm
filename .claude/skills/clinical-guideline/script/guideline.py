@@ -55,7 +55,17 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
     if results and results[0]["score"] > 0.1:
         doc = results[0]
         metadata = doc["metadata"]
-        parsed = parse_guideline_meta(doc["content"])
+        # 只有首块包含标题与发布信息；后续块从中间截断，解析出的“标题”
+        # 会是正文片段，因此只在 chunk 0 上解析
+        try:
+            chunk_id = int(metadata.get("chunk_id") or 0)
+        except (TypeError, ValueError):
+            chunk_id = 0
+        parsed = (
+            parse_guideline_meta(doc["content"])
+            if chunk_id == 0
+            else {"title": "", "organization": "", "year": ""}
+        )
         # max_results 是调用方要求的条数，全部格式化而不是只返回第一条
         answer_parts = [
             format_guideline(item["content"], item["metadata"])

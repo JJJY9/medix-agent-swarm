@@ -121,6 +121,10 @@ class DeepResearchWorkflow:
                             kb_results.extend(result)
 
         logger.info(f"Collected {len(web_results)} web results, {len(kb_results)} KB results")
+        # 多个子查询经常命中同一段指南，去重后再交给证据综合，
+        # 否则同一段内容会占满引用位并挤掉其他证据
+        kb_results = self._dedupe_kb_results(kb_results)
+        logger.info(f"Deduplicated to {len(kb_results)} KB results")
 
         # Step 3: 证据综合
         report = await self.synthesizer.synthesize(
@@ -136,6 +140,40 @@ class DeepResearchWorkflow:
 
         logger.info("DeepResearch completed")
         return report
+
+    @staticmethod
+    def _dedupe_kb_results(
+        items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """按 (doc_id, chunk_id) 去重，同块保留得分最高的结果。"""
+        deduped: List[Dict[str, Any]] = []
+        positions: Dict[Any, int] = {}
+        scores: Dict[Any, float] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            doc_id = metadata.get("doc_id") or item.get("id")
+            chunk_id = metadata.get("chunk_id")
+            if doc_id is None and chunk_id is None:
+                key = ("content", str(item.get("content") or ""))
+            else:
+                key = (doc_id, chunk_id)
+            try:
+                score = float(item.get("score") or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+            if key in positions:
+                if score > scores.get(key, 0.0):
+                    deduped[positions[key]] = item
+                    scores[key] = score
+                continue
+            positions[key] = len(deduped)
+            scores[key] = score
+            deduped.append(item)
+        return deduped
 
     async def _search_milvus(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
