@@ -9405,7 +9405,7 @@ function renderVaccinations(items) {
     meta.className = 'metric-meta';
     meta.textContent = [
       item.profile || '未指定档案',
-      formatTime(item.vaccinated_at),
+      String(item.vaccinated_at || '').replace('T', ' ').slice(0, 16),
     ].join(' · ');
 
     main.append(title, meta);
@@ -10274,14 +10274,18 @@ function renderTimeline(data) {
     if (event.alert) {
       const alertBadge = document.createElement('span');
       alertBadge.className = 'timeline-alert';
-      alertBadge.textContent = '超标';
+      alertBadge.textContent = event.type === 'vaccination'
+        ? '到期'
+        : '超标';
       title.appendChild(alertBadge);
     }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
     meta.textContent = [
-      formatTime(event.at),
+      event.type === 'vaccination'
+        ? String(event.at || '').slice(0, 10)
+        : formatTime(event.at),
       event.value,
       event.profile || '未指定档案',
     ].filter(Boolean).join(' · ');

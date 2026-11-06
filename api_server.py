@@ -181,6 +181,7 @@ class ImportSessionsRequest(StrictRequestModel):
     symptoms: Optional[List[Dict[str, Any]]] = None
     medications: Optional[List[Dict[str, Any]]] = None
     medication_logs: Optional[List[Dict[str, Any]]] = None
+    vaccinations: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
@@ -1924,6 +1925,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "symptoms": request.symptoms,
         "medications": request.medications,
         "medication_logs": request.medication_logs,
+        "vaccinations": request.vaccinations,
         "audit_log": request.audit_log,
         "checksum": request.checksum,
     }
