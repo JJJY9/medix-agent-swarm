@@ -52,7 +52,7 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
         }
 
     # 急症红旗优先：胸痛伴呼吸困难、意识改变等直接判为紧急
-    from core.triage import detect_red_flags
+    from core.triage import detect_red_flags, has_positive_mention
 
     triage = detect_red_flags(symptoms)
 
@@ -78,7 +78,7 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
     if risk_level != "emergency":
         for symptom in symptom_list:
             for high_risk in high_risk_symptoms:
-                if high_risk in symptom:
+                if has_positive_mention(symptom, high_risk):
                     risk_level = "high"
                     reasons.append(f"检测到高风险症状：{symptom}")
                     break
@@ -86,7 +86,10 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
     # 检查中等风险特征
     if risk_level == "low":
         for symptom in symptom_list:
-            if any(keyword in symptom for keyword in medium_risk_keywords):
+            if any(
+                has_positive_mention(symptom, keyword)
+                for keyword in medium_risk_keywords
+            ):
                 risk_level = "medium"
                 reasons.append(f"症状描述提示需要关注：{symptom}")
 

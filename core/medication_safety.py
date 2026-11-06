@@ -362,6 +362,13 @@ INTERACTION_RULES: Tuple[Tuple[str, str, str, str], ...] = (
         "raas_blockers",
         "ACEI/ARB 类降压药可能升高锂盐血药浓度，增加锂中毒风险；请医生评估并监测。",
     ),
+    (
+        "锂盐与噻嗪类利尿剂",
+        "lithium",
+        "thiazides",
+        "噻嗪类利尿剂会减少锂的肾脏排泄，可能引起锂中毒；"
+        "合用或调整剂量时请医生监测血锂浓度和中毒症状。",
+    ),
 )
 
 ALCOHOL_TERMS = (
@@ -595,6 +602,9 @@ def _positive_allergy_field(value: Any) -> str:
             re.search(r"(?:没有|否认|无|未|并非)[^，。；]{0,8}过敏", clause)
             or "不过敏" in clause
         ):
+            continue
+        # 「过敏原：阿莫西林阴性」是阴性结果，不是过敏史
+        if any(word in clause for word in _ALLERGY_RESULT_WORDS):
             continue
         kept.append(clause)
     return " ".join(kept).lower()
