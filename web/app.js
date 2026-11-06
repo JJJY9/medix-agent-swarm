@@ -12962,6 +12962,11 @@ function renderCalendar(data) {
     ['doses', '药', '用药打卡'],
     ['consultations', '诊', '会诊'],
     ['reminders_due', '提', '待办提醒'],
+    ['vaccinations', '苗', '疫苗'],
+    ['appointments', '约', '预约'],
+    ['labs', '化', '化验'],
+    ['care_due', '查', '复查'],
+    ['visits', '记', '就诊记录'],
     ['alerts', '警', '异常'],
   ];
   for (let day = 1; day <= totalDays; day += 1) {
@@ -13026,6 +13031,21 @@ function renderCalendar(data) {
     }
     if (Number(totals.reminders_done)) {
       parts.push(`已完成提醒 ${totals.reminders_done} 条`);
+    }
+    if (Number(totals.vaccinations)) {
+      parts.push(`疫苗 ${totals.vaccinations} 次`);
+    }
+    if (Number(totals.appointments)) {
+      parts.push(`预约 ${totals.appointments} 次`);
+    }
+    if (Number(totals.labs)) {
+      parts.push(`化验 ${totals.labs} 条`);
+    }
+    if (Number(totals.care_due)) {
+      parts.push(`复查 ${totals.care_due} 项`);
+    }
+    if (Number(totals.visits)) {
+      parts.push(`就诊 ${totals.visits} 次`);
     }
     if (Number(totals.alerts)) {
       parts.push(`异常 ${totals.alerts} 条`);

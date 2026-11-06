@@ -129,6 +129,50 @@ def test_health_calendar_aggregates_month(client_and_store):
     assert unassigned["days"] == {}
 
 
+def test_health_calendar_aggregates_extended_events(client_and_store):
+    client, _store = client_and_store
+
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "流感疫苗",
+        "vaccinated_at": "2026-10-02",
+    })
+    client.post("/api/appointments", json={
+        "profile": "妈妈", "title": "心内科复诊",
+        "scheduled_at": "2026-10-03T09:00",
+    })
+    client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "ALT", "value": 60,
+        "unit": "U/L", "ref_low": 7, "ref_high": 40,
+        "tested_at": "2026-10-04T08:00",
+    })
+    client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "糖化血红蛋白",
+        "interval_days": 90, "next_due_at": "2026-10-05",
+    })
+    client.post("/api/visits", json={
+        "profile": "妈妈", "diagnosis": "高血压复诊",
+        "visit_date": "2026-10-06",
+    })
+
+    data = client.get(
+        "/api/health/calendar",
+        params={"profile": "妈妈", "month": "2026-10"},
+    ).json()
+
+    assert data["days"]["2026-10-02"]["vaccinations"] == 1
+    assert data["days"]["2026-10-03"]["appointments"] == 1
+    assert data["days"]["2026-10-04"]["labs"] == 1
+    assert data["days"]["2026-10-04"]["alerts"] == 1
+    assert data["days"]["2026-10-05"]["care_due"] == 1
+    assert data["days"]["2026-10-06"]["visits"] == 1
+    assert data["totals"]["vaccinations"] == 1
+    assert data["totals"]["appointments"] == 1
+    assert data["totals"]["labs"] == 1
+    assert data["totals"]["care_due"] == 1
+    assert data["totals"]["visits"] == 1
+    assert data["totals"]["alerts"] == 1
+
+
 def test_health_calendar_defaults_to_current_month(client_and_store):
     client, _store = client_and_store
     today = datetime.now().strftime("%Y-%m-%d")
@@ -217,6 +261,7 @@ def test_health_calendar_csv_export(client_and_store):
     assert rows[0] == [
         "日期", "指标", "症状", "用药打卡", "会诊",
         "待办提醒", "已完成提醒", "异常",
+        "疫苗", "预约", "化验", "复查", "就诊",
     ]
     assert len(rows) == 32
     last = next(row for row in rows[1:] if row[0] == "2026-10-31")
@@ -236,5 +281,6 @@ def test_health_calendar_empty_month(client_and_store):
     assert data["totals"] == {
         "metrics": 0, "symptoms": 0, "doses": 0,
         "consultations": 0, "reminders_due": 0, "reminders_done": 0,
-        "alerts": 0,
+        "vaccinations": 0, "appointments": 0, "labs": 0,
+        "care_due": 0, "visits": 0, "alerts": 0,
     }
