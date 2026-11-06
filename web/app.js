@@ -1528,9 +1528,12 @@ async function downloadCsvTemplate(kind) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
-    const text = await res.text();
+    // Response.text() 会丢掉服务端的 BOM，改用原始字节保证 Excel 正确识别中文
+    const buffer = await res.arrayBuffer();
     downloadFile(
-      text, `medix-${kind}-template.csv`, 'text/csv;charset=utf-8'
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-${kind}-template.csv`,
+      'text/csv;charset=utf-8'
     );
   } catch (err) {
     window.alert(`下载模板失败：${err.message || err}`);
@@ -2696,9 +2699,9 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
     if (busy) return;
     button.disabled = true;
     // 传输中断不代表服务端没有保存：先核对本轮问答，已落库时恢复而不是重发
-    if (retry.baselineMessageId) {
+    if (sessionId) {
       const restored = await restoreCurrentSession(
-        retry.question, retry.baselineMessageId
+        retry.question, Number(retry.baselineMessageId) || 0
       );
       if (restored) {
         retry.askTurn?.remove();

@@ -87,7 +87,7 @@ class KnowledgeService:
     def _describe(self, path: Path, builtin: bool) -> Optional[Dict[str, Any]]:
         if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
             return None
-        metadata = infer_metadata(path.name, "")
+        metadata = infer_metadata(path.name, "", is_upload=not builtin)
         return {
             "filename": path.name,
             "size": path.stat().st_size,
@@ -146,7 +146,7 @@ class KnowledgeService:
 
         builtin = path.parent == self.docs_dir
         try:
-            document = load_document(path)
+            document = load_document(path, is_upload=not builtin)
         except Exception as e:
             raise ValueError(f"读取文档失败：{e}") from e
         if not document:

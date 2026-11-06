@@ -277,7 +277,9 @@ HEAD_TRAUMA_TERMS = (
     "头部外伤", "头部受伤", "头部撞击", "头部被撞", "头部着地",
     "头部撞到", "撞到头部", "撞到头", "碰到头部", "碰到头",
     "磕到头部", "磕到头", "头碰到", "头撞到", "头磕到", "头着地",
-    "摔到头",
+    "摔到头", "后脑勺着地", "后脑着地", "后脑勺撞", "后脑勺磕",
+    "后脑勺碰", "磕破头", "磕破了头", "撞破头", "撞破了头",
+    "脑袋磕", "脑袋撞", "脑袋碰", "头磕破", "头撞破",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -291,6 +293,12 @@ _CONTEXT_INACTIVE_MARKERS = (
     "已结束", "结束后", "已停", "停用", "停药", "停了", "已完成",
     "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
     "否认", "未曾", "从未", "过敏",
+)
+
+#: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
+_NEGATED_STOP_PATTERN = re.compile(
+    r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|并非)"
+    r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用)"
 )
 
 _AGE_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:岁|周岁|years?|yrs?|y)", re.I)
@@ -369,6 +377,10 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+            continue
+        if _NEGATED_STOP_PATTERN.search(clause):
+            # 「未停用华法林」是仍在用药，不能被“停用”关键字过滤掉
+            kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
             continue
