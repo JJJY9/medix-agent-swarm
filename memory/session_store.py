@@ -34,6 +34,17 @@ def _bounded_offset(offset: Any) -> int:
     """把分页偏移限制在 SQLite 可绑定范围内。"""
     return max(0, min(int(offset or 0), MAX_SQLITE_INT))
 
+
+def _safe_db_id(value: Any) -> int:
+    """把导入数据里的 id 限制在 SQLite 可绑定范围，越界按 0 处理。"""
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if parsed < 0 or parsed > MAX_SQLITE_INT:
+        return 0
+    return parsed
+
 #: 会诊标题取第一轮主诉的前 40 个字符
 MAX_TITLE_LENGTH = 40
 #: 历史列表里展示的答复预览长度
@@ -738,6 +749,9 @@ class SessionStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # 已删除会话的墓碑：阻止进行中的会诊在删除后把会话写回来
+        self._deleted_sessions: Dict[str, None] = {}
+        self._max_deleted_sessions = 4096
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -999,7 +1013,10 @@ class SessionStore:
         """确保会话存在；已有会话不会被覆盖，档案只在为空时补上。"""
         now = self._now()
         profile = _normalize_profile_name(profile)
+        session_id = str(session_id or "").strip()
         with self._lock, self._conn:
+            # 显式重新创建同一编号时解除墓碑
+            self._deleted_sessions.pop(session_id, None)
             self._conn.execute(
                 """
                 INSERT OR IGNORE INTO sessions(id, title, profile, created_at, updated_at)
@@ -1015,6 +1032,22 @@ class SessionStore:
                     """,
                     (profile, session_id),
                 )
+
+    def mark_session_deleted(self, session_id: str) -> None:
+        """登记已删除会话，阻止仍在进行的会诊把数据写回。"""
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        with self._lock:
+            self._deleted_sessions[session_id] = None
+            while len(self._deleted_sessions) > self._max_deleted_sessions:
+                self._deleted_sessions.pop(
+                    next(iter(self._deleted_sessions))
+                )
+
+    def is_session_deleted(self, session_id: str) -> bool:
+        with self._lock:
+            return str(session_id or "").strip() in self._deleted_sessions
 
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
@@ -1087,6 +1120,7 @@ class SessionStore:
         """
         question = (question or "").strip()
         answer = (answer or "").strip()
+        session_id = str(session_id or "").strip()
         if not session_id or not question:
             return None
 
@@ -1100,6 +1134,9 @@ class SessionStore:
         assistant_id: Optional[int] = None
 
         with self._lock, self._conn:
+            # 删除与保存共用同一把锁：若会话已删除，禁止进行中的会诊写回
+            if session_id in self._deleted_sessions:
+                return None
             self._conn.execute(
                 """
                 INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at)
@@ -2673,16 +2710,10 @@ class SessionStore:
                         )
                     except ValueError:
                         repeat_until = ""
-                    try:
-                        repeats_from = int(raw.get("repeats_from") or 0)
-                    except (TypeError, ValueError, OverflowError):
-                        repeats_from = 0
-                    try:
-                        raw_medication_id = int(
-                            raw.get("medication_id") or 0
-                        )
-                    except (TypeError, ValueError, OverflowError):
-                        raw_medication_id = 0
+                    repeats_from = _safe_db_id(raw.get("repeats_from"))
+                    raw_medication_id = _safe_db_id(
+                        raw.get("medication_id")
+                    )
                     mapped_medication = medication_id_map.get(
                         raw_medication_id
                     )
@@ -2727,10 +2758,7 @@ class SessionStore:
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
 
-                    try:
-                        reminder_id = int(raw.get("id") or 0)
-                    except (TypeError, ValueError, OverflowError):
-                        reminder_id = 0
+                    reminder_id = _safe_db_id(raw.get("id"))
 
                     # 备份里的自增 id 只用于重建 repeats_from 关系；
                     # 数据行一律插入新 id，撞号时不能静默丢弃
@@ -2972,6 +3000,9 @@ class SessionStore:
             return cursor.rowcount > 0
 
     def delete_session(self, session_id: str) -> bool:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return False
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM sessions WHERE id = ?", (session_id,)
@@ -2979,6 +3010,12 @@ class SessionStore:
             self._conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
+            # 与 save_exchange 共用锁：先登记墓碑，进行中的会诊无法再写回
+            self._deleted_sessions[session_id] = None
+            while len(self._deleted_sessions) > self._max_deleted_sessions:
+                self._deleted_sessions.pop(
+                    next(iter(self._deleted_sessions))
+                )
             return cursor.rowcount > 0
 
     def list_profiles(self) -> List[Dict[str, Any]]:
@@ -3076,8 +3113,6 @@ class SessionStore:
         new_name = " ".join(str(new_name or "").split())[:MAX_PROFILE_NAME_LENGTH]
         if not old_name or not new_name:
             raise ValueError("档案名称不能为空")
-        if old_name == new_name:
-            return new_name
 
         with self._lock, self._conn:
             def _profile_rows(name: str) -> bool:
@@ -3101,6 +3136,8 @@ class SessionStore:
 
             if not _profile_rows(old_name):
                 return None
+            if old_name == new_name:
+                return new_name
             # metric_targets 只作为配置在下面合并，不作为占用依据
             if _profile_rows(new_name):
                 raise ValueError("新档案名称已存在")
@@ -4316,10 +4353,7 @@ class SessionStore:
         advance_days = _normalize_reminder_advance(advance_days)
         repeat_days = _normalize_reminder_repeat_days(repeat_days)
         repeat_until = _normalize_reminder_repeat_until(repeat_until)
-        try:
-            medication_id = max(0, int(medication_id or 0))
-        except (TypeError, ValueError, OverflowError):
-            medication_id = 0
+        medication_id = _safe_db_id(medication_id)
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
@@ -4711,6 +4745,13 @@ class SessionStore:
                  WHERE session_id NOT IN (SELECT id FROM sessions)
                 """
             ).rowcount
+            # 进行中的会诊不能在清理后把这些会话写回
+            for session_id in session_ids:
+                self._deleted_sessions[session_id] = None
+            while len(self._deleted_sessions) > self._max_deleted_sessions:
+                self._deleted_sessions.pop(
+                    next(iter(self._deleted_sessions))
+                )
         return {
             "sessions": int(sessions_deleted),
             "messages": int(messages_deleted),

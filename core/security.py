@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
@@ -109,5 +110,34 @@ def install_log_redaction() -> None:
                 pass
 
         logger.configure(patcher=_patcher)
+    except Exception:
+        pass
+
+
+_server_logging_configured = False
+
+
+def configure_server_logging() -> None:
+    """配置 API 服务日志的安全默认值。
+
+    loguru 默认 handler 使用 DEBUG 级别且 ``diagnose=True``，未捕获异常的
+    回溯会打印栈帧局部变量（请求体、问诊上下文），把患者内容写进日志。
+    这里显式关闭 backtrace/diagnose，并默认使用 INFO 级别。
+    """
+    global _server_logging_configured
+    if _server_logging_configured:
+        return
+    _server_logging_configured = True
+    try:
+        from loguru import logger
+
+        level = (os.getenv("MEDIX_LOG_LEVEL") or "INFO").strip().upper()
+        logger.remove()
+        logger.add(
+            sys.stderr,
+            level=level or "INFO",
+            backtrace=False,
+            diagnose=False,
+        )
     except Exception:
         pass

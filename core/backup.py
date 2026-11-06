@@ -71,7 +71,11 @@ def get_backup_dir() -> Path:
 
 def _prune_backups(directory: Path, keep: int) -> None:
     backups = sorted(
-        directory.glob(f"{BACKUP_PREFIX}*.json"),
+        (
+            path
+            for path in directory.glob(f"{BACKUP_PREFIX}*.json")
+            if _BACKUP_NAME.match(path.name)
+        ),
         key=_backup_sort_key,
         reverse=True,
     )

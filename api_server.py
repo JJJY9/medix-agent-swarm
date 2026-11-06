@@ -43,8 +43,14 @@ from core.console import ensure_utf8_stdio
 
 ensure_utf8_stdio()
 
-from core.security import install_log_redaction, redact_secrets, sanitize_base_url
+from core.security import (
+    configure_server_logging,
+    install_log_redaction,
+    redact_secrets,
+    sanitize_base_url,
+)
 install_log_redaction()
+configure_server_logging()
 
 from core.auth import get_access_token, is_authorized, request_token
 from core.retention import get_auto_archive_days
@@ -211,7 +217,9 @@ class BulkTagsRequest(BulkSessionsRequest):
 
 
 class FeedbackRequest(StrictRequestModel):
-    message_id: int = Field(..., ge=1, description="会诊答复的消息 id")
+    message_id: int = Field(
+        ..., ge=1, le=MAX_SQLITE_INT, description="会诊答复的消息 id"
+    )
     rating: int = Field(
         ...,
         ge=-1,
@@ -249,7 +257,7 @@ class ReminderRequest(StrictRequestModel):
     )
     repeat_until: str = Field("", max_length=32, description="重复截止日期")
     medication_id: int = Field(
-        0, ge=0, description="关联的用药记录 ID（用药提醒）"
+        0, ge=0, le=MAX_SQLITE_INT, description="关联的用药记录 ID（用药提醒）"
     )
 
 
@@ -3844,6 +3852,7 @@ async def delete_profile(name: str):
 async def rename_profile(name: str, request: ProfileRenameRequest):
     """重命名患者档案，并同步健康指标中的档案名。"""
     from memory import get_session_store
+    from memory.session_store import _normalize_profile_name
 
     try:
         new_name = await asyncio.to_thread(
@@ -3853,7 +3862,8 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
         raise HTTPException(status_code=409, detail=str(e))
     if new_name is None:
         raise HTTPException(status_code=404, detail="档案不存在")
-    if new_name != name:
+    # 路径里的旧名称可能含多余空格；只有规范化后确实改名才清理旧命名空间
+    if new_name != _normalize_profile_name(name):
         # 旧命名空间无法原地改名；删除它，避免旧患者病史在新名字下被召回
         await asyncio.to_thread(_erase_long_term_scope, name)
     await record_audit("profile.rename", name, new_name)
@@ -6028,13 +6038,20 @@ def _erase_long_term_entries(entries: List[Any]) -> None:
 
     for profile, session_id in entries:
         try:
-            scope = _memory_scope(profile, session_id)
-            if _normalize_profile_name(profile):
-                memory.delete_session_summary(session_id, user_id=scope)
-            else:
-                memory.delete_scope(scope)
+            # 会话可能先以无档案状态写入自己的命名空间，之后才绑定档案；
+            # 两次写入落在不同 user_id 下，因此两边都要清理
+            memory.delete_scope(session_memory_scope(session_id))
         except Exception as e:
-            logger.warning(f"清理长期记忆失败（忽略）: {redact_secrets(str(e))}")
+            logger.warning(f"清理会话记忆失败（忽略）: {redact_secrets(str(e))}")
+        if _normalize_profile_name(profile):
+            try:
+                memory.delete_session_summary(
+                    session_id, user_id=_memory_scope(profile, session_id)
+                )
+            except Exception as e:
+                logger.warning(
+                    f"清理档案记忆失败（忽略）: {redact_secrets(str(e))}"
+                )
 
 
 def _erase_long_term_scope(profile: str) -> None:
