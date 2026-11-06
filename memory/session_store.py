@@ -164,6 +164,82 @@ MAX_METRIC_NOTE_LENGTH = 300
 BP_GRADE_KEYS = ("normal", "high_normal", "grade1", "grade2", "grade3", "low")
 
 
+def critical_metric_alerts(
+    metric: str, value1: Any, value2: Any = None
+) -> List[Dict[str, str]]:
+    """返回指标达到危急值时的提示；无危急值时返回空列表。"""
+    metric = str(metric or "")
+    try:
+        first = float(value1)
+    except (TypeError, ValueError, OverflowError):
+        return []
+    second: Optional[float] = None
+    if value2 is not None and value2 != "":
+        try:
+            second = float(value2)
+        except (TypeError, ValueError, OverflowError):
+            second = None
+
+    alerts: List[Dict[str, str]] = []
+    if metric == "bp":
+        systolic = first
+        diastolic = second if second is not None else 0.0
+        display = (
+            f"{systolic:g}/{diastolic:g}"
+            if second is not None else f"{systolic:g}"
+        )
+        if systolic >= 180 or (second is not None and diastolic >= 120):
+            alerts.append({
+                "level": "critical",
+                "message": f"血压 {display} mmHg 达到危急值，请立即就医或拨打 120。",
+            })
+        elif systolic < 90 or (second is not None and diastolic < 60):
+            alerts.append({
+                "level": "critical",
+                "message": f"血压 {display} mmHg 偏低，如伴头晕、乏力请及时就医。",
+            })
+    elif metric == "glucose":
+        if first <= 3.9:
+            alerts.append({
+                "level": "critical",
+                "message": f"血糖 {first:g} mmol/L 偏低，警惕低血糖，请及时处理。",
+            })
+        elif first >= 16.7:
+            alerts.append({
+                "level": "critical",
+                "message": f"血糖 {first:g} mmol/L 明显升高，警惕高血糖急症，请及时就医。",
+            })
+    elif metric == "temperature":
+        if first >= 39.0:
+            alerts.append({
+                "level": "critical",
+                "message": f"体温 {first:g} °C，高热请及时就医。",
+            })
+        elif first <= 35.0:
+            alerts.append({
+                "level": "critical",
+                "message": f"体温 {first:g} °C 偏低，警惕低体温，请及时就医。",
+            })
+    elif metric == "heart_rate":
+        if first > 120:
+            alerts.append({
+                "level": "critical",
+                "message": f"心率 {first:g} 次/分偏快，请及时就医。",
+            })
+        elif first < 50:
+            alerts.append({
+                "level": "critical",
+                "message": f"心率 {first:g} 次/分偏慢，请及时就医。",
+            })
+    elif metric == "spo2":
+        if first < 90:
+            alerts.append({
+                "level": "critical",
+                "message": f"血氧饱和度 {first:g}%，请立即就医或拨打 120。",
+            })
+    return alerts
+
+
 def classify_bp_grade(systolic: Any, diastolic: Any) -> Optional[str]:
     """按诊室血压分级；收缩压与舒张压分属不同级别时取较高者。"""
     try:
