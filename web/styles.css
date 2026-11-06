@@ -1719,6 +1719,22 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   .compare-body { grid-template-columns: 1fr; }
 }
 
+@media (max-width: 520px) {
+  /* 手机上两列展示首页概览，避免 7 张卡片拉出过长的滚动 */
+  .home-glance {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .home-glance-card {
+    padding: 9px 10px;
+  }
+  .home-glance-value {
+    font-size: 13px;
+  }
+  .home-glance-sub {
+    font-size: 11.5px;
+  }
+}
+
 .drawer-head {
   flex: none;
   display: flex;
