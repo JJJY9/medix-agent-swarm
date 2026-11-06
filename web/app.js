@@ -10738,11 +10738,16 @@ function submitBmi(event) {
 
 function submitEgfr(event) {
   event.preventDefault();
+  const sex = els.calcEgfrSex.value;
+  if (!sex) {
+    window.alert('请选择性别后再计算 eGFR。');
+    return;
+  }
   runCalc(
     '/api/tools/egfr',
     {
       age: Number(els.calcEgfrAge.value),
-      sex: els.calcEgfrSex.value,
+      sex,
       creatinine: Number(els.calcEgfrCreatinine.value),
       unit: els.calcEgfrUnit.value,
     },
@@ -10759,11 +10764,16 @@ function submitEgfr(event) {
 
 function submitChads(event) {
   event.preventDefault();
+  const sex = els.calcChadsSex.value;
+  if (!sex) {
+    window.alert('请选择性别后再计算 CHA₂DS₂-VASc。');
+    return;
+  }
   runCalc(
     '/api/tools/chads-vasc',
     {
       age: Number(els.calcChadsAge.value),
-      sex: els.calcChadsSex.value,
+      sex,
       chf: els.calcChadsChf.checked,
       hypertension: els.calcChadsHypertension.checked,
       diabetes: els.calcChadsDiabetes.checked,

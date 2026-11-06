@@ -74,6 +74,13 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("胺碘酮", ("胺碘酮", "amiodarone")),
         ("维拉帕米", ("维拉帕米", "verapamil")),
     ),
+    "amiodarone": (
+        ("胺碘酮", ("胺碘酮", "amiodarone")),
+    ),
+    "fluoroquinolones": (
+        ("左氧氟沙星", ("左氧氟沙星", "levofloxacin")),
+        ("环丙沙星", ("环丙沙星", "ciprofloxacin")),
+    ),
     "clopidogrel": (
         ("氯吡格雷", ("氯吡格雷", "clopidogrel")),
     ),
@@ -234,6 +241,18 @@ INTERACTION_RULES: Tuple[Tuple[str, str, str, str], ...] = (
         "digoxin",
         "digoxin_toxicity",
         "合用可能升高地高辛血药浓度，增加中毒风险（恶心、心悸、视力异常等），通常需要监测血药浓度并调整剂量。",
+    ),
+    (
+        "华法林与胺碘酮",
+        "warfarin",
+        "amiodarone",
+        "胺碘酮会抑制华法林代谢，可能显著升高 INR 并增加出血风险；合用或调整剂量时请医生监测凝血指标。",
+    ),
+    (
+        "华法林与氟喹诺酮类",
+        "warfarin",
+        "fluoroquinolones",
+        "左氧氟沙星、环丙沙星等氟喹诺酮类可能增强华法林作用，合用期间请医生监测 INR 和出血迹象。",
     ),
     (
         "氯吡格雷与奥美拉唑",
@@ -421,6 +440,16 @@ _NEGATED_USE_PREFIX = re.compile(
     r"(?:没有|没吃|没喝|未用|未服|未|否认|并非|无需|不用|不要|避免|不需要|不必|无)"
     r"[^，。；,.!?！？\n]{0,4}$"
 )
+#: 「没有停用」「不要停药」表示仍在用药，不能当作未用药
+_NEGATED_STOP_PREFIX = re.compile(
+    r"(?:没有|没|未|无|不要|不用|不必|不需要|无需|避免|并非)"
+    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停服|停止服用|不再服用)\s*$"
+)
+#: 明确停药/停服的表述才算当前未用药
+_STOPPED_USE_PREFIX = re.compile(
+    r"(?:已经|已|刚刚|刚|最近|早就|现已|目前)?\s*"
+    r"(?:停用|停药|停服|停止服用|不再服用|停了)\s*$"
+)
 
 
 def _alias_matches(text: str, alias: str) -> bool:
@@ -435,15 +464,27 @@ def _alias_matches(text: str, alias: str) -> bool:
             text,
         ):
             prefix = text[max(0, match.start() - 6):match.start()]
-            if not _NEGATED_USE_PREFIX.search(prefix):
+            if _NEGATED_STOP_PREFIX.search(prefix):
+                # 「没有停用」= 仍在服用
                 return True
+            if (
+                _STOPPED_USE_PREFIX.search(prefix)
+                or _NEGATED_USE_PREFIX.search(prefix)
+            ):
+                continue
+            return True
         return False
 
     start = text.find(alias_lower)
     while start != -1:
         end = start + len(alias_lower)
         prefix = text[max(0, start - 6):start]
-        if _NEGATED_USE_PREFIX.search(prefix):
+        if _NEGATED_STOP_PREFIX.search(prefix):
+            return True
+        if (
+            _STOPPED_USE_PREFIX.search(prefix)
+            or _NEGATED_USE_PREFIX.search(prefix)
+        ):
             start = text.find(alias_lower, end)
             continue
 
