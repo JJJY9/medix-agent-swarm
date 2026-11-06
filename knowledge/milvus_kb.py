@@ -128,6 +128,17 @@ class MedicalKnowledgeBase:
         Returns:
             文本块列表
         """
+        # Embedding 模型有最大序列长度，超出部分会被静默截断；
+        # 按字符分块时至少把块长限制在模型上限内
+        max_tokens = getattr(self.embedding_model, "max_seq_length", 0)
+        try:
+            max_tokens = int(max_tokens or 0)
+        except (TypeError, ValueError):
+            max_tokens = 0
+        if max_tokens > 0:
+            chunk_size = min(chunk_size, max_tokens)
+            overlap = min(overlap, max(1, chunk_size // 4))
+
         if len(text) <= chunk_size:
             return [text]
 
@@ -194,11 +205,44 @@ class MedicalKnowledgeBase:
                 "metadata": json.dumps(chunk["metadata"], ensure_ascii=False)
             })
 
-        # 先完成分块与向量化，再替换旧 collection：
-        # 向量化失败（模型未就绪/内存不足）时保留原有索引
+        # 先完成分块与向量化；重建时先写入临时 collection，
+        # 成功后再原子替换，避免插入失败把旧索引清空
         if replace_existing:
-            self.delete_collection()
-            self._ensure_collection()
+            staging_name = f"{self.collection_name}__staging"
+            if self.milvus_client.has_collection(staging_name):
+                self.milvus_client.drop_collection(staging_name)
+            self.milvus_client.create_collection(
+                collection_name=staging_name,
+                dimension=self.embedding_dim,
+                metric_type="COSINE",
+                auto_id=True,
+            )
+            try:
+                self.milvus_client.insert(staging_name, data)
+            except Exception:
+                self.milvus_client.drop_collection(staging_name)
+                raise
+
+            try:
+                if self.milvus_client.has_collection(self.collection_name):
+                    self.milvus_client.drop_collection(self.collection_name)
+                self.milvus_client.rename_collection(
+                    staging_name, self.collection_name
+                )
+                logger.info(f"Successfully replaced with {len(data)} chunks")
+                return len(data)
+            except Exception as e:
+                # 后端不支持 rename 时退回“清空后重建”，此时数据已在
+                # staging 中写入过一次，二次插入失败的概率显著降低
+                logger.warning(f"原子替换索引失败，回退到重建: {e}")
+                if self.milvus_client.has_collection(self.collection_name):
+                    self.milvus_client.drop_collection(self.collection_name)
+                self._ensure_collection()
+                self.milvus_client.insert(self.collection_name, data)
+                if self.milvus_client.has_collection(staging_name):
+                    self.milvus_client.drop_collection(staging_name)
+                logger.info(f"Successfully added {len(data)} chunks")
+                return len(data)
 
         # 插入
         self.milvus_client.insert(self.collection_name, data)
@@ -278,11 +322,28 @@ class MedicalKnowledgeBase:
             logger.info(f"Deleted collection: {self.collection_name}")
 
     def count_documents(self) -> int:
-        """统计文档数量"""
+        """统计向量块数量。"""
+        load_error = getattr(self.milvus_client, "load_error", "")
+        if load_error:
+            raise RuntimeError(
+                f"本地向量索引加载失败，请重建知识库: {load_error}"
+            )
+        try:
+            # MilvusClient.describe_collection 不返回向量行数，
+            # 行数由 get_collection_stats 提供
+            stats = self.milvus_client.get_collection_stats(
+                self.collection_name
+            )
+            if isinstance(stats, dict) and "row_count" in stats:
+                return int(stats.get("row_count") or 0)
+        except (AttributeError, TypeError):
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to read collection stats: {e}")
         try:
             stats = self.milvus_client.describe_collection(self.collection_name)
             # Note: Milvus Lite may not return accurate count, this is a best-effort
-            return stats.get("num_entities", 0)
+            return int(stats.get("num_entities", 0) or 0)
         except Exception as e:
             logger.warning(f"Failed to count documents: {e}")
             return 0

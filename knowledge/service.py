@@ -240,8 +240,27 @@ class KnowledgeService:
     def _rebuild_locked(self, replace_existing: bool = True) -> Dict[str, Any]:
         builtin_documents = load_documents_from_directory(self.docs_dir)
         uploaded_documents = load_documents_from_directory(
-            self.upload_dir, id_prefix="upload_"
+            self.upload_dir, id_prefix="upload_", is_upload=True
         )
+        # 历史遗留的同名上传虽然不在列表中展示，也不能进入索引，
+        # 否则会与内置文档一起返回陈旧内容
+        builtin_names = {
+            path.name for path in self.docs_dir.iterdir() if path.is_file()
+        }
+        shadowed_count = 0
+        filtered_uploads = []
+        for document in uploaded_documents:
+            filename = str(
+                (document.get("metadata") or {}).get("filename") or ""
+            )
+            if filename in builtin_names:
+                shadowed_count += 1
+                logger.warning(
+                    f"Skipping upload shadowed by builtin document: {filename}"
+                )
+                continue
+            filtered_uploads.append(document)
+        uploaded_documents = filtered_uploads
         documents = []
         seen_contents = set()
         duplicate_count = 0
@@ -286,6 +305,7 @@ class KnowledgeService:
             "builtin_documents": len(builtin_documents),
             "uploaded_documents": len(uploaded_documents),
             "duplicate_documents": duplicate_count,
+            "shadowed_uploads": shadowed_count,
         }
 
     @staticmethod

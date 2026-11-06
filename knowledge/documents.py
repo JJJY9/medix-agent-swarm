@@ -79,18 +79,24 @@ def extract_pdf_text(path: Path) -> str:
     return "\n".join(pages)
 
 
-def infer_metadata(filename: str, content: str) -> Dict[str, str]:
-    """根据文件名前缀和内容推断类型、来源与疾病名。"""
+def infer_metadata(
+    filename: str, content: str, is_upload: bool = False
+) -> Dict[str, str]:
+    """根据文件名前缀和内容推断类型、来源与疾病名。
+
+    用户上传的文档不套用内置数据集的命名约定，统一标记为「自定义文档」，
+    避免被当作权威指南/生活方式数据库引用。
+    """
     stem = Path(filename).stem
     parts = stem.split("_", 2)
     file_num = parts[0]
     category = parts[1].lower() if len(parts) > 1 else ""
 
     doc_type = "general"
-    source = "医学知识库"
-    if category in _CATEGORY_TYPES:
+    source = "自定义文档" if is_upload else "医学知识库"
+    if not is_upload and category in _CATEGORY_TYPES:
         doc_type, source = _CATEGORY_TYPES[category]
-    elif file_num.isdigit():
+    elif not is_upload and file_num.isdigit():
         number = int(file_num)
         for limit, candidate_type, candidate_source in _DOC_TYPES:
             if number < limit:
@@ -101,7 +107,8 @@ def infer_metadata(filename: str, content: str) -> Dict[str, str]:
     # 只有「数字_已知类别_疾病」这种约定命名才把第三段当疾病名
     disease = ""
     if (
-        len(parts) > 2
+        not is_upload
+        and len(parts) > 2
         and file_num.isdigit()
         and category in _CATEGORY_TYPES
     ):
@@ -120,7 +127,9 @@ def infer_metadata(filename: str, content: str) -> Dict[str, str]:
     }
 
 
-def load_document(path: Path, id_prefix: str = "") -> Optional[Dict[str, Any]]:
+def load_document(
+    path: Path, id_prefix: str = "", is_upload: bool = False
+) -> Optional[Dict[str, Any]]:
     """加载单个文档；无法解析或内容为空时返回 None。"""
     suffix = path.suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
@@ -139,7 +148,7 @@ def load_document(path: Path, id_prefix: str = "") -> Optional[Dict[str, Any]]:
             f"文档内容不能超过 {MAX_DOCUMENT_CHARS} 个字符。"
         )
 
-    metadata = infer_metadata(path.name, content)
+    metadata = infer_metadata(path.name, content, is_upload=is_upload)
     return {
         # 带上扩展名，避免 a.md 与 a.txt 生成同一个 doc_id 后在来源卡片中互相覆盖
         "id": f"{id_prefix}{metadata['type']}_{path.stem}_{suffix.lstrip('.')}",
@@ -150,7 +159,8 @@ def load_document(path: Path, id_prefix: str = "") -> Optional[Dict[str, Any]]:
 
 def load_documents_from_directory(
     doc_dir: Path,
-    id_prefix: str = ""
+    id_prefix: str = "",
+    is_upload: bool = False,
 ) -> List[Dict[str, Any]]:
     """加载目录下所有支持的文档，解析失败的文件跳过并记录日志。"""
     doc_dir = Path(doc_dir)
@@ -163,7 +173,9 @@ def load_documents_from_directory(
         if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
             continue
         try:
-            document = load_document(path, id_prefix=id_prefix)
+            document = load_document(
+                path, id_prefix=id_prefix, is_upload=is_upload
+            )
         except Exception as e:
             logger.error(f"Failed to load {path.name}: {e}")
             continue
