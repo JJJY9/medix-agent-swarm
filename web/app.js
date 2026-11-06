@@ -303,6 +303,7 @@ const els = {
   remindersExportIcs: document.getElementById('reminders-export-ics'),
   remindersImport: document.getElementById('reminders-import'),
   remindersTemplate: document.getElementById('reminders-template'),
+  remindersCompleteDue: document.getElementById('reminders-complete-due'),
   remindersImportFile: document.getElementById('reminders-import-file'),
   reminderPlanInterval: document.getElementById('reminder-plan-interval'),
   reminderPlanUnit: document.getElementById('reminder-plan-unit'),
@@ -8444,6 +8445,53 @@ async function completeReminder(item) {
   }
 }
 
+async function completeDueReminders() {
+  const button = els.remindersCompleteDue;
+  if (!button || button.disabled || reminderActionBusy) return;
+  const today = todayLocalDate();
+  const due = (reminderItemsCache || []).filter(
+    (item) => !item.done && String(item.due_at || '').slice(0, 10) <= today
+  );
+  if (!due.length) {
+    setRemindersStatus('今天没有到期或逾期的提醒。');
+    return;
+  }
+  if (!window.confirm(
+    `将 ${due.length} 条今天到期或已逾期的提醒标记为完成？`
+  )) {
+    return;
+  }
+
+  reminderActionBusy = true;
+  button.disabled = true;
+  button.textContent = '处理中…';
+  let success = 0;
+  let failed = 0;
+  try {
+    for (const item of due) {
+      try {
+        const res = await fetch(`/api/reminders/${item.id}/complete`, {
+          method: 'POST',
+        });
+        if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  } finally {
+    reminderActionBusy = false;
+    button.disabled = false;
+    button.textContent = '完成今日到期';
+  }
+
+  const message = `已完成 ${success} 条提醒`
+    + (failed ? `，${failed} 条失败` : '')
+    + '。';
+  setRemindersStatus(message, failed > 0);
+  await loadReminders();
+}
+
 async function reopenReminder(item) {
   if (reminderActionBusy) return;
   reminderActionBusy = true;
@@ -13595,6 +13643,7 @@ els.medicationLogAll?.addEventListener('click', logAllMedications);
 els.remindersTemplate?.addEventListener('click', () => {
   downloadCsvTemplate('reminders');
 });
+els.remindersCompleteDue?.addEventListener('click', completeDueReminders);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;
