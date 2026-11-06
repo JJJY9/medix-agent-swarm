@@ -413,6 +413,20 @@ const els = {
   symptomSummary: document.getElementById('symptom-summary'),
   symptomTrend: document.getElementById('symptom-trend'),
   symptomTrendChart: document.getElementById('symptom-trend-chart'),
+  vaccinationSection: document.getElementById('vaccination-section'),
+  vaccinationName: document.getElementById('vaccination-name'),
+  vaccinationDose: document.getElementById('vaccination-dose'),
+  vaccinationDate: document.getElementById('vaccination-date'),
+  vaccinationNextDue: document.getElementById('vaccination-next-due'),
+  vaccinationNote: document.getElementById('vaccination-note'),
+  vaccinationSave: document.getElementById('vaccination-save'),
+  vaccinationExport: document.getElementById('vaccination-export'),
+  vaccinationCancel: document.getElementById('vaccination-cancel'),
+  vaccinationStatus: document.getElementById('vaccination-status'),
+  vaccinationList: document.getElementById('vaccination-list'),
+  vaccinationEmpty: document.getElementById('vaccination-empty'),
+  vaccinationSearch: document.getElementById('vaccination-search'),
+  vaccinationSummary: document.getElementById('vaccination-summary'),
   medicationSection: document.getElementById('medication-section'),
   medicationName: document.getElementById('medication-name'),
   medicationDose: document.getElementById('medication-dose'),
@@ -4108,9 +4122,11 @@ async function refreshAfterBackupImport(result) {
   if (
     result.metrics || result.symptoms || result.reminders
     || result.medications || result.medication_logs
+    || result.vaccinations
   ) {
     await refreshMetricProfileOptions();
     loadSymptoms();
+    if (result.vaccinations) loadVaccinations();
     if (result.medications || result.medication_logs) loadMedications();
     if (result.medication_logs) loadMedicationLogs();
     refreshReminderBadge();
@@ -6825,6 +6841,7 @@ async function refreshMetrics() {
   await loadMetricWeekly();
   await loadMetricOverview();
   loadSymptoms();
+  loadVaccinations();
   loadMedications();
   loadMedicationLogs();
   loadWeeklySummary();
@@ -9258,6 +9275,360 @@ async function deleteSymptom(item) {
   }
 }
 
+let editingVaccinationId = null;
+let editingVaccinationProfile = '';
+let vaccinationSaving = false;
+let vaccinationRequestSeq = 0;
+let vaccinationItemsCache = [];
+let vaccinationSearchTimer = null;
+let vaccinationReminderBusy = new Set();
+
+function setVaccinationStatus(text, isError = false) {
+  if (!els.vaccinationStatus) return;
+  els.vaccinationStatus.textContent = text || '';
+  els.vaccinationStatus.hidden = !text;
+  els.vaccinationStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetVaccinationForm() {
+  editingVaccinationId = null;
+  editingVaccinationProfile = '';
+  els.vaccinationName.value = '';
+  els.vaccinationDose.value = '1';
+  els.vaccinationDate.value = todayLocalDate();
+  els.vaccinationNextDue.value = '';
+  els.vaccinationNote.value = '';
+  els.vaccinationSave.textContent = '保存接种记录';
+  els.vaccinationCancel.hidden = true;
+}
+
+function vaccinationDueInfo(item) {
+  const due = String(item.next_due || '').slice(0, 10);
+  if (!due) return null;
+  const today = todayLocalDate();
+  if (due < today) {
+    return { text: `下一剂 ${due} · 已逾期`, className: 'is-overdue' };
+  }
+  const diff = Math.round(
+    (
+      Date.parse(`${due}T00:00:00`)
+      - Date.parse(`${today}T00:00:00`)
+    ) / 86400000
+  );
+  if (diff === 0) {
+    return { text: `下一剂 ${due} · 今天`, className: 'is-soon' };
+  }
+  if (diff <= 30) {
+    return {
+      text: `下一剂 ${due} · ${diff} 天后`,
+      className: 'is-soon',
+    };
+  }
+  return { text: `下一剂 ${due}`, className: '' };
+}
+
+function filterVaccinations(items) {
+  const query = els.vaccinationSearch
+    ? String(els.vaccinationSearch.value || '').trim().toLowerCase()
+    : '';
+  if (!query) return items;
+  return items.filter((item) => (
+    [item.vaccine_name, item.note, item.profile]
+      .map((value) => String(value || ''))
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  ));
+}
+
+function renderVaccinations(items) {
+  if (!els.vaccinationList) return;
+  els.vaccinationList.replaceChildren();
+  els.vaccinationEmpty.hidden = items.length > 0;
+  const query = els.vaccinationSearch
+    ? String(els.vaccinationSearch.value || '').trim()
+    : '';
+  els.vaccinationEmpty.textContent = query
+    ? `没有匹配「${query}」的疫苗接种记录。`
+    : '还没有疫苗接种记录。';
+  const today = todayLocalDate();
+  const overdue = items.filter((item) => {
+    const due = String(item.next_due || '').slice(0, 10);
+    return due && due < today;
+  }).length;
+  if (items.length) {
+    els.vaccinationSummary.hidden = false;
+    const latest = items[0];
+    els.vaccinationSummary.textContent =
+      `${query ? '筛选' : '全部'} ${items.length} 条`
+      + (latest && latest.vaccine_name
+        ? ` · 最近 ${latest.vaccine_name}`
+        : '')
+      + (overdue ? ` · 逾期 ${overdue} 条` : '');
+  } else {
+    els.vaccinationSummary.hidden = true;
+  }
+  if (
+    editingVaccinationId
+    && !vaccinationItemsCache.some(
+      (item) => item.id === editingVaccinationId
+    )
+  ) {
+    resetVaccinationForm();
+  }
+
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.vaccine_name || '疫苗';
+    const dose = document.createElement('span');
+    dose.className = 'vaccination-dose-badge';
+    dose.textContent = `第 ${Number(item.dose_number) || 1} 剂`;
+    title.append(' ', dose);
+
+    const dueInfo = vaccinationDueInfo(item);
+    if (dueInfo) {
+      const dueBadge = document.createElement('span');
+      dueBadge.className = 'vaccination-due-badge '
+        + dueInfo.className;
+      dueBadge.textContent = dueInfo.text;
+      title.append(' ', dueBadge);
+    }
+
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      item.profile || '未指定档案',
+      formatTime(item.vaccinated_at),
+    ].join(' · ');
+
+    main.append(title, meta);
+    if (item.note) {
+      const note = document.createElement('span');
+      note.className = 'metric-note';
+      note.textContent = item.note;
+      main.appendChild(note);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+
+    if (item.next_due) {
+      const remind = document.createElement('button');
+      remind.type = 'button';
+      remind.className = 'metric-edit';
+      remind.textContent = '提醒';
+      remind.setAttribute(
+        'aria-label',
+        `为 ${item.vaccine_name} 下一剂设置提醒`
+      );
+      remind.addEventListener(
+        'click', () => scheduleVaccinationReminder(item)
+      );
+      actions.appendChild(remind);
+    }
+
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'metric-edit';
+    edit.textContent = '编辑';
+    edit.setAttribute(
+      'aria-label', `编辑疫苗记录：${item.vaccine_name}`
+    );
+    edit.addEventListener('click', () => editVaccination(item));
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute(
+      'aria-label', `删除疫苗记录：${item.vaccine_name}`
+    );
+    del.addEventListener('click', () => deleteVaccination(item));
+
+    actions.append(edit, del);
+    li.append(main, actions);
+    els.vaccinationList.appendChild(li);
+  }
+}
+
+async function loadVaccinations() {
+  if (!els.vaccinationList) return;
+  const requestSeq = ++vaccinationRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/vaccinations?limit=100000&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== vaccinationRequestSeq) return;
+    vaccinationItemsCache = data.vaccinations || [];
+    renderVaccinations(filterVaccinations(vaccinationItemsCache));
+  } catch {
+    if (requestSeq !== vaccinationRequestSeq) return;
+    vaccinationItemsCache = [];
+    renderVaccinations([]);
+    els.vaccinationEmpty.textContent =
+      '疫苗接种记录加载失败，请稍后重试。';
+    els.vaccinationEmpty.hidden = false;
+    setVaccinationStatus('疫苗接种记录加载失败，请稍后重试。', true);
+  }
+}
+
+async function exportVaccinationsCsv() {
+  const params = new URLSearchParams({
+    profile: els.metricProfile ? els.metricProfile.value : '',
+  });
+  try {
+    const res = await fetch(
+      `/api/vaccinations/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-vaccinations-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setVaccinationStatus('已导出疫苗接种 CSV。');
+  } catch (err) {
+    setVaccinationStatus(`导出失败：${err.message || err}`, true);
+  }
+}
+
+function editVaccination(item) {
+  editingVaccinationId = item.id;
+  editingVaccinationProfile = item.profile || '';
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.vaccinationName.value = item.vaccine_name || '';
+  els.vaccinationDose.value = String(item.dose_number || 1);
+  els.vaccinationDate.value = String(item.vaccinated_at || '').slice(0, 10);
+  els.vaccinationNextDue.value = String(item.next_due || '').slice(0, 10);
+  els.vaccinationNote.value = item.note || '';
+  els.vaccinationSave.textContent = '保存修改';
+  els.vaccinationCancel.hidden = false;
+  els.vaccinationName.focus();
+}
+
+async function saveVaccination() {
+  if (vaccinationSaving) return;
+  const name = (els.vaccinationName.value || '').trim();
+  if (!name) {
+    setVaccinationStatus('请填写疫苗名称。', true);
+    els.vaccinationName.focus();
+    return;
+  }
+  const vaccinatedAt = els.vaccinationDate.value || todayLocalDate();
+  const nextDue = els.vaccinationNextDue.value || '';
+  if (nextDue && nextDue < vaccinatedAt) {
+    setVaccinationStatus('下一剂日期不能早于接种日期。', true);
+    els.vaccinationNextDue.focus();
+    return;
+  }
+  const editingId = editingVaccinationId;
+  const payload = {
+    profile: editingId
+      ? editingVaccinationProfile
+      : (els.metricProfile ? els.metricProfile.value : ''),
+    vaccine_name: name,
+    dose_number: Number(els.vaccinationDose.value) || 1,
+    vaccinated_at: vaccinatedAt,
+    next_due: nextDue,
+    note: (els.vaccinationNote.value || '').trim(),
+  };
+
+  vaccinationSaving = true;
+  els.vaccinationSave.disabled = true;
+  try {
+    const res = await fetch(
+      editingId
+        ? `/api/vaccinations/${editingId}`
+        : '/api/vaccinations',
+      {
+        method: editingId ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    resetVaccinationForm();
+    setVaccinationStatus(
+      editingId ? '已保存修改。' : '已保存接种记录。'
+    );
+    await loadVaccinations();
+    refreshOverview();
+  } catch (err) {
+    setVaccinationStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    vaccinationSaving = false;
+    els.vaccinationSave.disabled = false;
+  }
+}
+
+async function deleteVaccination(item) {
+  if (!window.confirm(`删除疫苗记录「${item.vaccine_name}」？`)) return;
+  try {
+    const res = await fetch(
+      `/api/vaccinations/${item.id}`, { method: 'DELETE' }
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (editingVaccinationId === item.id) resetVaccinationForm();
+    setVaccinationStatus('已删除疫苗记录。');
+    await loadVaccinations();
+    refreshOverview();
+  } catch (err) {
+    setVaccinationStatus(`删除失败：${err.message || err}`, true);
+  }
+}
+
+async function scheduleVaccinationReminder(item) {
+  if (!item.next_due) {
+    setVaccinationStatus('请先填写下一剂日期。', true);
+    return;
+  }
+  if (vaccinationReminderBusy.has(item.id)) return;
+  vaccinationReminderBusy.add(item.id);
+  setVaccinationStatus('正在创建接种提醒…');
+  try {
+    const res = await fetch(
+      `/api/vaccinations/${item.id}/reminder`, { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setVaccinationStatus(
+      data.created
+        ? '已创建接种提醒（提前 7 天）。'
+        : '该疫苗已有未完成的接种提醒。'
+    );
+    refreshReminderBadge();
+    refreshOverview();
+  } catch (err) {
+    setVaccinationStatus(`创建提醒失败：${err.message || err}`, true);
+  } finally {
+    vaccinationReminderBusy.delete(item.id);
+  }
+}
+
 let editingMedicationId = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
@@ -9824,6 +10195,7 @@ const TIMELINE_TYPE_LABELS = {
   metric: '指标',
   symptom: '症状',
   medication: '用药',
+  vaccination: '疫苗',
   consultation: '会诊',
 };
 
@@ -13421,6 +13793,38 @@ els.symptomSearch.addEventListener('input', () => {
   clearTimeout(symptomSearchTimer);
   symptomSearchTimer = setTimeout(() => {
     renderSymptoms(filterSymptoms(symptomItemsCache));
+  }, 200);
+});
+els.vaccinationSave.addEventListener('click', saveVaccination);
+els.vaccinationExport.addEventListener('click', exportVaccinationsCsv);
+els.vaccinationCancel.addEventListener('click', () => {
+  resetVaccinationForm();
+  setVaccinationStatus('已取消编辑。');
+});
+if (els.vaccinationSection) {
+  els.vaccinationSection.addEventListener('toggle', () => {
+    if (els.vaccinationSection.open && !els.vaccinationDate.value) {
+      els.vaccinationDate.value = todayLocalDate();
+    }
+  });
+}
+for (const input of [
+  els.vaccinationName, els.vaccinationDose,
+  els.vaccinationDate, els.vaccinationNextDue, els.vaccinationNote,
+]) {
+  if (!input) continue;
+  input.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      saveVaccination();
+    }
+  });
+}
+els.vaccinationSearch.addEventListener('input', () => {
+  clearTimeout(vaccinationSearchTimer);
+  vaccinationSearchTimer = setTimeout(() => {
+    renderVaccinations(filterVaccinations(vaccinationItemsCache));
   }, 200);
 });
 els.medicationSearch.addEventListener('input', () => {

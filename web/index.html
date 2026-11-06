@@ -741,6 +741,38 @@
       <ul class="metrics-list" id="symptom-list"></ul>
       <p class="metrics-empty" id="symptom-empty" hidden>还没有症状记录。</p>
     </details>
+    <details class="vaccination-section" id="vaccination-section">
+      <summary>疫苗接种</summary>
+      <p class="calc-hint">记录每剂疫苗的接种日期与下一剂时间，可为下一剂创建提前 7 天的随访提醒。</p>
+      <div class="symptom-form">
+        <label class="calc-field">疫苗名称
+          <input id="vaccination-name" type="text" maxlength="80" placeholder="如：流感疫苗、乙肝疫苗">
+        </label>
+        <label class="calc-field">剂次
+          <input id="vaccination-dose" type="number" min="1" max="20" step="1" value="1" inputmode="numeric">
+        </label>
+        <label class="calc-field">接种日期
+          <input id="vaccination-date" type="date">
+        </label>
+        <label class="calc-field">下一剂日期（可选）
+          <input id="vaccination-next-due" type="date">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input id="vaccination-note" type="text" maxlength="300" placeholder="如：接种部位、批号或反应">
+        </label>
+        <div class="metrics-actions">
+          <button type="button" class="btn-quiet" id="vaccination-save">保存接种记录</button>
+          <button type="button" class="btn-quiet" id="vaccination-export">导出 CSV</button>
+          <button type="button" class="btn-quiet" id="vaccination-cancel" hidden>取消编辑</button>
+        </div>
+      </div>
+      <p class="metrics-status" id="vaccination-status" role="status" hidden></p>
+      <label class="sr-only" for="vaccination-search">搜索疫苗</label>
+      <input class="symptom-search" id="vaccination-search" type="search" placeholder="搜索疫苗、备注或档案">
+      <p class="symptom-summary" id="vaccination-summary" hidden></p>
+      <ul class="metrics-list" id="vaccination-list"></ul>
+      <p class="metrics-empty" id="vaccination-empty" hidden>还没有疫苗接种记录。</p>
+    </details>
 
     <details class="medication-section" id="medication-section">
       <summary>用药清单</summary>
@@ -867,6 +899,7 @@
           <option value="metric">指标</option>
           <option value="symptom">症状</option>
           <option value="medication">用药</option>
+          <option value="vaccination">疫苗</option>
           <option value="consultation">会诊</option>
         </select>
         <label class="sr-only" for="timeline-search">搜索时间线</label>
