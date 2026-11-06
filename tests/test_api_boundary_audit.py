@@ -41,9 +41,11 @@ def test_profile_save_is_audited(client):
     audit = client.get("/api/audit", params={"limit": 10}).json()["actions"]
 
     assert any(
-        item["action"] == "profile.save" and item["target"] == "张三"
+        item["action"] == "profile.save"
+        and item["target"].startswith("profile:")
         for item in audit
     )
+    assert all("张三" not in item["target"] for item in audit)
 
 
 def test_snooze_rejects_completed_reminder(client):
