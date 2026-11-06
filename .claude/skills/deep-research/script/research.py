@@ -28,7 +28,8 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
         }
     """
     logger.info(
-        f"Starting deep research: query={query}, "
+        "Starting deep research: "
+        f"query_length={len(str(query or ''))}, "
         f"max_results_scale={max_results_scale}"
     )
 

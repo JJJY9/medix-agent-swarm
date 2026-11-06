@@ -34,7 +34,7 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
             "possible_diseases": ["可能疾病1", "可能疾病2"]
         }
     """
-    logger.info(f"Analyzing symptoms: {symptoms}")
+    logger.info(f"Analyzing symptoms: length={len(str(symptoms or ''))}")
 
     # 将症状字符串转换为列表
     symptom_list = [s.strip() for s in symptoms.split(",") if s.strip()]

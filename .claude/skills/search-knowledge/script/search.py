@@ -35,7 +35,10 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
             "query": "原始查询"
         }
     """
-    logger.info(f"Searching knowledge base: query={query}, max_results={max_results}")
+    logger.info(
+        "Searching knowledge base: "
+        f"query_length={len(str(query or ''))}, max_results={max_results}"
+    )
 
     # 获取知识库单例（避免重复加载模型）
     kb = await asyncio.to_thread(get_knowledge_base)

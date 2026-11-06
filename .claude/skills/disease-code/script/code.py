@@ -33,7 +33,9 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             "category": "疾病分类"
         }
     """
-    logger.info(f"Searching ICD-10 code for disease: {disease_name}")
+    logger.info(
+        f"Searching ICD-10 code: disease_length={len(str(disease_name or ''))}"
+    )
 
     # 使用知识库单例
     kb = await asyncio.to_thread(get_knowledge_base)
@@ -64,7 +66,10 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
         }
 
     # 未找到匹配小节
-    logger.warning(f"No ICD-10 code found in vector DB for {disease_name}")
+    logger.warning(
+        "No ICD-10 code found in vector DB "
+        f"(disease_length={len(str(disease_name or ''))})"
+    )
     return {
         "answer": f"未找到'{disease_name}'的ICD-10编码，建议使用更标准的疾病名称或联系医生咨询。",
         "icd10_code": "",

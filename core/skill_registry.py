@@ -159,7 +159,10 @@ class SkillRegistry:
             }
 
         try:
-            logger.debug(f"Executing skill: {name} with args: {kwargs}")
+            logger.debug(
+                f"Executing skill: {name} "
+                f"(arg keys={sorted(str(key) for key in kwargs)})"
+            )
 
             if skill['is_async']:
                 # Async skill

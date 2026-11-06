@@ -76,7 +76,9 @@ class DeepResearchWorkflow:
         Returns:
             研究报告
         """
-        logger.info(f"Starting DeepResearch for: {question}")
+        logger.info(
+            f"Starting DeepResearch: question_length={len(str(question or ''))}"
+        )
 
         # Step 1: 查询规划
         sub_queries = await self._plan_queries(question)
@@ -204,7 +206,10 @@ class DeepResearchWorkflow:
         """
         try:
             results = self.knowledge_base.search(query=query, top_k=top_k, filter_type=None)
-            logger.debug(f"Milvus search returned {len(results)} results for: {query[:50]}...")
+            logger.debug(
+                f"Milvus search returned {len(results)} results "
+                f"(query_length={len(str(query or ''))})"
+            )
             return results
         except Exception as e:
             logger.error(f"Milvus search failed: {e}")

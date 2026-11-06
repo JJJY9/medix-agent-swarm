@@ -125,7 +125,9 @@ class EvidenceSynthesizer:
         Returns:
             研究报告
         """
-        logger.info(f"Synthesizing evidence for: {query}")
+        logger.info(
+            f"Synthesizing evidence: query_length={len(str(query or ''))}"
+        )
 
         if web_results is None:
             web_results = []
