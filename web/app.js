@@ -501,6 +501,7 @@ const els = {
   careSearch: document.getElementById('care-search'),
   careSummary: document.getElementById('care-summary'),
   visitSection: document.getElementById('visit-section'),
+  visitAppointmentId: document.getElementById('visit-appointment-id'),
   visitDate: document.getElementById('visit-date'),
   visitDepartment: document.getElementById('visit-department'),
   visitDoctor: document.getElementById('visit-doctor'),
@@ -10159,6 +10160,16 @@ function renderAppointments(items) {
         'click', () => updateAppointmentStatus(item, 'upcoming')
       );
       actions.appendChild(restore);
+
+      const record = document.createElement('button');
+      record.type = 'button';
+      record.className = 'metric-edit';
+      record.textContent = '记录就诊';
+      record.setAttribute('aria-label', `补记就诊记录：${item.title}`);
+      record.addEventListener(
+        'click', () => startVisitFromAppointment(item)
+      );
+      actions.appendChild(record);
     }
 
     const edit = document.createElement('button');
@@ -11415,6 +11426,7 @@ function setVisitStatus(text, isError = false) {
 function resetVisitForm() {
   editingVisitId = null;
   editingVisitProfile = '';
+  els.visitAppointmentId.value = '';
   els.visitDate.value = todayLocalDate();
   els.visitDepartment.value = '';
   els.visitDoctor.value = '';
@@ -11589,6 +11601,26 @@ async function exportVisitsCsv() {
   }
 }
 
+function startVisitFromAppointment(item) {
+  resetVisitForm();
+  const hasProfile = els.metricProfile
+    ? Array.from(els.metricProfile.options)
+      .some((option) => option.value === item.profile)
+    : false;
+  if (hasProfile) els.metricProfile.value = item.profile;
+  els.visitAppointmentId.value = String(item.id || '');
+  els.visitDate.value = todayLocalDate();
+  els.visitDepartment.value = item.department || '';
+  els.visitDoctor.value = item.doctor || '';
+  els.visitFacility.value = item.location || '';
+  els.visitDiagnosis.value = item.title || '';
+  const section = document.getElementById('visit-section');
+  if (section) section.open = true;
+  els.visitDiagnosis.focus();
+  els.visitDiagnosis.scrollIntoView({ block: 'center' });
+  setVisitStatus('已从预约带入，请补全诊断、医嘱与处方。');
+}
+
 function editVisit(item) {
   editingVisitId = item.id;
   editingVisitProfile = item.profile || '';
@@ -11597,6 +11629,7 @@ function editVisit(item) {
       .some((option) => option.value === item.profile)
     : false;
   if (hasProfile) els.metricProfile.value = item.profile;
+  els.visitAppointmentId.value = String(item.appointment_id || '');
   els.visitDate.value = String(item.visit_date || '').slice(0, 10);
   els.visitDepartment.value = item.department || '';
   els.visitDoctor.value = item.doctor || '';
@@ -11620,6 +11653,7 @@ async function saveVisit() {
     profile: editingId
       ? editingVisitProfile
       : (els.metricProfile ? els.metricProfile.value : ''),
+    appointment_id: Number(els.visitAppointmentId.value) || 0,
     visit_date: visitDate,
     department: (els.visitDepartment.value || '').trim(),
     doctor: (els.visitDoctor.value || '').trim(),
