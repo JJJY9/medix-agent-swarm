@@ -789,8 +789,16 @@ def _canonical_json_value(value: Any) -> Any:
 
 
 def _backup_checksum(payload: Dict[str, Any]) -> str:
-    """计算备份内容的 SHA-256；只覆盖可往返的业务字段。"""
-    body = {key: payload.get(key) for key in _BACKUP_CHECKSUM_FIELDS}
+    """计算备份内容的 SHA-256；只覆盖可往返的业务字段。
+
+    旧版本备份可能缺少后续新增的字段，校验时跳过缺失字段，
+    保证升级后仍能导入历史备份。
+    """
+    body = {
+        key: payload[key]
+        for key in _BACKUP_CHECKSUM_FIELDS
+        if key in payload
+    }
     canonical = json.dumps(
         _canonical_json_value(body),
         ensure_ascii=False,
