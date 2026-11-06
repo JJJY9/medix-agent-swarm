@@ -1070,16 +1070,25 @@ function detectRisk(text) {
     { level: 'medium', re: /中风险(?!人群|因素)|中等风险|中危(?!人群|因素)/ },
     { level: 'low', re: /低风险(?!人群|因素)|风险较低|风险不高|低危(?!人群|因素)/ },
   ];
-  const negatedAt = (value, index) => {
-    const prefix = value.slice(Math.max(0, index - 8), index);
-    return /(?:不属于|不是|并非|排除|未见|无明显|没有|无|非|不)\s*$/.test(prefix);
-  };
+  const prefixAt = (value, index) => value.slice(
+    Math.max(0, index - 12), index
+  );
+  const ruleOutAt = (value, index) => (
+    /(?:不|不能|无法|难以|未能|未|没有?)\s*(?:完全|明确|彻底)?\s*排除\s*$/
+      .test(prefixAt(value, index))
+  );
+  const negatedAt = (value, index) => (
+    /(?:不属于|不是|并非|排除|未见|没有|无明显|无|非|不)(?:明显|任何|明确|相关|特殊)?\s*$/
+      .test(prefixAt(value, index))
+  );
   const hasPositiveMatch = (value, pattern) => {
     const global = new RegExp(
       pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
     );
     let match;
     while ((match = global.exec(value)) !== null) {
+      // “不排除高危”是双重否定，风险仍然存在
+      if (ruleOutAt(value, match.index)) return true;
       if (!negatedAt(value, match.index)) return true;
       if (match.index === global.lastIndex) global.lastIndex += 1;
     }

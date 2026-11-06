@@ -740,7 +740,12 @@ _RISK_KEYWORD_PATTERNS = (
     ),
 )
 _RISK_NEGATION_PATTERN = re.compile(
-    r"(?:不属于|不是|并非|排除|未见|无明显|没有|无|非|不)\s*$"
+    r"(?:不属于|不是|并非|排除|未见|没有|无明显|无|非|不)"
+    r"(?:明显|任何|明确|相关|特殊)?\s*$"
+)
+#: 「不排除/不能排除/未排除高危」是双重否定，表示风险仍然存在
+_RISK_RULE_OUT_PATTERN = re.compile(
+    r"(?:不|不能|无法|难以|未能|未|没有?)\s*(?:完全|明确|彻底)?\s*排除\s*$"
 )
 _RISK_TAG_LEVELS = {
     "紧急": "emergency",
@@ -780,7 +785,10 @@ def parse_risk_level(text: Any) -> str:
         return _RISK_TAG_LEVELS.get(tagged.group(1), "")
     for level, pattern in _RISK_KEYWORD_PATTERNS:
         for match in pattern.finditer(content):
-            prefix = content[max(0, match.start() - 6):match.start()]
+            prefix = content[max(0, match.start() - 12):match.start()]
+            # 「不排除高危」= 高危仍有可能，不能按否定跳过
+            if _RISK_RULE_OUT_PATTERN.search(prefix):
+                return level
             if _RISK_NEGATION_PATTERN.search(prefix):
                 continue
             return level

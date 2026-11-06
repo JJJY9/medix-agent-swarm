@@ -32,7 +32,9 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
             "categories": ["diet", "exercise", "lifestyle", "medication"]
         }
     """
-    logger.info(f"Recommending lifestyle for: {diagnosis}")
+    logger.info(
+        f"Recommending lifestyle: diagnosis_length={len(str(diagnosis or ''))}"
+    )
 
     # 使用知识库单例
     kb = await asyncio.to_thread(get_knowledge_base)
@@ -57,7 +59,10 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
         }
     else:
         # 未找到相关内容
-        logger.warning(f"No lifestyle advice found in vector DB for {diagnosis}")
+        logger.warning(
+            "No lifestyle advice found in vector DB "
+            f"(diagnosis_length={len(str(diagnosis or ''))})"
+        )
         return {
             "answer": f"未找到关于'{diagnosis}'的生活方式建议，请尝试更具体的疾病名称或联系医生咨询。",
             "diagnosis": diagnosis,
