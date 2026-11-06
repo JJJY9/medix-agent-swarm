@@ -457,6 +457,7 @@ MAX_MEDICATION_NAME_LENGTH = 120
 MAX_MEDICATION_TEXT_LENGTH = 60
 MAX_MEDICATION_STOCK = 1000000.0
 MAX_MEDICATION_UNIT_LENGTH = 10
+MAX_MEDICATION_STOP_REASON_LENGTH = 200
 
 
 def _normalize_medication_quantity(
@@ -613,6 +614,18 @@ def _expected_week_doses(
     return expected_doses_for_period(frequency, created_at, now, 7)
 
 
+def _normalize_medication_date(value: Any, label: str) -> str:
+    text = str(value or "").strip()[:40]
+    if not text:
+        return ""
+    canonical = _canonical_local_time(text)
+    if canonical is None:
+        raise ValueError(f"{label}格式应为 YYYY-MM-DD 或 ISO 时间")
+    if _is_future_timestamp(canonical):
+        raise ValueError(f"{label}不能晚于当前时间")
+    return canonical[:10]
+
+
 def _normalize_medication(
     profile: str,
     name: str,
@@ -624,6 +637,9 @@ def _normalize_medication(
     stock_unit: str = "",
     low_stock_threshold: Any = 0,
     expiry_date: str = "",
+    started_at: str = "",
+    stopped_at: str = "",
+    stop_reason: str = "",
 ) -> Optional[Dict[str, Any]]:
     """校验一条用药记录；无效时返回 None。"""
     name = " ".join(str(name or "").split())[:MAX_MEDICATION_NAME_LENGTH]
@@ -643,6 +659,18 @@ def _normalize_medication(
             low_stock_threshold, allow_none=False
         )
         normalized_expiry = _normalize_medication_expiry(expiry_date)
+        normalized_started = _normalize_medication_date(
+            started_at, "开始日期"
+        )
+        normalized_stopped = _normalize_medication_date(
+            stopped_at, "停药日期"
+        )
+        if (
+            normalized_started
+            and normalized_stopped
+            and normalized_stopped < normalized_started
+        ):
+            raise ValueError("停药日期不能早于开始日期")
     except ValueError:
         return None
     return {
@@ -660,6 +688,11 @@ def _normalize_medication(
         ],
         "low_stock_threshold": normalized_threshold or 0.0,
         "expiry_date": normalized_expiry,
+        "started_at": normalized_started,
+        "stopped_at": normalized_stopped,
+        "stop_reason": " ".join(str(stop_reason or "").split())[
+            :MAX_MEDICATION_STOP_REASON_LENGTH
+        ],
     }
 
 
@@ -1472,6 +1505,9 @@ class SessionStore:
                     stock_unit TEXT NOT NULL DEFAULT '',
                     low_stock_threshold REAL NOT NULL DEFAULT 0,
                     expiry_date TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL DEFAULT '',
+                    stopped_at TEXT NOT NULL DEFAULT '',
+                    stop_reason TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -1718,6 +1754,9 @@ class SessionStore:
                 ("stock_unit", "TEXT NOT NULL DEFAULT ''"),
                 ("low_stock_threshold", "REAL NOT NULL DEFAULT 0"),
                 ("expiry_date", "TEXT NOT NULL DEFAULT ''"),
+                ("started_at", "TEXT NOT NULL DEFAULT ''"),
+                ("stopped_at", "TEXT NOT NULL DEFAULT ''"),
+                ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in medication_columns:
                     self._conn.execute(
@@ -3329,6 +3368,9 @@ class SessionStore:
                         raw.get("stock_unit", ""),
                         raw.get("low_stock_threshold", 0),
                         raw.get("expiry_date", ""),
+                        raw.get("started_at", ""),
+                        raw.get("stopped_at", ""),
+                        raw.get("stop_reason", ""),
                     )
                     if normalized is None:
                         continue
@@ -3355,8 +3397,9 @@ class SessionStore:
                             INSERT INTO medications(
                                 profile, name, dose, frequency, note, active,
                                 stock, stock_unit, low_stock_threshold,
-                                expiry_date, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                expiry_date, started_at, stopped_at,
+                                stop_reason, created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 normalized["profile"], normalized["name"],
@@ -3366,6 +3409,9 @@ class SessionStore:
                                 normalized["stock_unit"],
                                 normalized["low_stock_threshold"],
                                 normalized["expiry_date"],
+                                normalized["started_at"],
+                                normalized["stopped_at"],
+                                normalized["stop_reason"],
                                 created_at, updated_at,
                             ),
                         )
@@ -5645,11 +5691,15 @@ class SessionStore:
         stock_unit: str = "",
         low_stock_threshold: Any = 0,
         expiry_date: str = "",
+        started_at: str = "",
+        stopped_at: str = "",
+        stop_reason: str = "",
     ) -> Optional[Dict[str, Any]]:
         """新增一条用药记录；无效时返回 None。"""
         normalized = _normalize_medication(
             profile, name, dose, frequency, note, active,
             stock, stock_unit, low_stock_threshold, expiry_date,
+            started_at, stopped_at, stop_reason,
         )
         if normalized is None:
             return None
@@ -5660,8 +5710,9 @@ class SessionStore:
                 INSERT INTO medications(
                     profile, name, dose, frequency, note, active,
                     stock, stock_unit, low_stock_threshold, expiry_date,
+                    started_at, stopped_at, stop_reason,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     normalized["profile"],
@@ -5674,6 +5725,9 @@ class SessionStore:
                     normalized["stock_unit"],
                     normalized["low_stock_threshold"],
                     normalized["expiry_date"],
+                    normalized["started_at"],
+                    normalized["stopped_at"],
+                    normalized["stop_reason"],
                     now,
                     now,
                 ),
@@ -5723,6 +5777,7 @@ class SessionStore:
                 f"""
                 SELECT id, profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
+                       started_at, stopped_at, stop_reason,
                        created_at, updated_at,
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
@@ -5784,6 +5839,7 @@ class SessionStore:
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
+                       started_at, stopped_at, stop_reason,
                        created_at, updated_at
                   FROM medications WHERE id = ?
                 """,
@@ -5813,6 +5869,9 @@ class SessionStore:
         stock_unit: Any = _UNSET,
         low_stock_threshold: Any = _UNSET,
         expiry_date: Any = _UNSET,
+        started_at: Any = _UNSET,
+        stopped_at: Any = _UNSET,
+        stop_reason: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
         """更新一条用药记录；不存在或无效时返回 None。"""
         try:
@@ -5824,7 +5883,8 @@ class SessionStore:
             previous = self._conn.execute(
                 """
                 SELECT profile, name, stock, stock_unit,
-                       low_stock_threshold, expiry_date
+                       low_stock_threshold, expiry_date,
+                       started_at, stopped_at, stop_reason
                   FROM medications WHERE id = ?
                 """,
                 (medication_id,),
@@ -5845,6 +5905,12 @@ class SessionStore:
                 if low_stock_threshold is _UNSET else low_stock_threshold,
                 previous["expiry_date"]
                 if expiry_date is _UNSET else expiry_date,
+                previous["started_at"]
+                if started_at is _UNSET else started_at,
+                previous["stopped_at"]
+                if stopped_at is _UNSET else stopped_at,
+                previous["stop_reason"]
+                if stop_reason is _UNSET else stop_reason,
             )
             if normalized is None:
                 return None
@@ -5855,6 +5921,7 @@ class SessionStore:
                    SET profile = ?, name = ?, dose = ?, frequency = ?,
                        note = ?, active = ?, stock = ?, stock_unit = ?,
                        low_stock_threshold = ?, expiry_date = ?,
+                       started_at = ?, stopped_at = ?, stop_reason = ?,
                        updated_at = ?
                  WHERE id = ?
                 """,
@@ -5869,6 +5936,9 @@ class SessionStore:
                     normalized["stock_unit"],
                     normalized["low_stock_threshold"],
                     normalized["expiry_date"],
+                    normalized["started_at"],
+                    normalized["stopped_at"],
+                    normalized["stop_reason"],
                     now,
                     medication_id,
                 ),
@@ -5931,6 +6001,7 @@ class SessionStore:
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
+                       started_at, stopped_at, stop_reason,
                        created_at, updated_at
                   FROM medications WHERE id = ?
                 """,
