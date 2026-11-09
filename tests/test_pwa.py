@@ -113,6 +113,7 @@ def test_manifest_ships_shortcuts(client):
     assert "/?action=reminders" in urls
     assert "/?action=reminders&calendar=1" in urls
     assert "/?action=metrics" in urls
+    assert "/?action=search" in urls
 
 
 def test_index_links_manifest_and_registers_worker(client):

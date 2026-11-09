@@ -285,6 +285,11 @@ const els = {
   metricsDrawer: document.getElementById('metrics-drawer'),
   metricsBackdrop: document.getElementById('metrics-backdrop'),
   metricsClose: document.getElementById('metrics-close'),
+  healthSearchToggle: document.getElementById('health-search-toggle'),
+  healthSearchInput: document.getElementById('health-search-input'),
+  healthSearchClear: document.getElementById('health-search-clear'),
+  healthSearchStatus: document.getElementById('health-search-status'),
+  healthSearchResults: document.getElementById('health-search-results'),
   healthDossierExport: document.getElementById('health-dossier-export'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
@@ -7099,6 +7104,7 @@ async function openMetrics() {
   els.metricsBackdrop.hidden = false;
   syncPageInert();
   els.metricsOpen.setAttribute('aria-expanded', 'true');
+  els.healthSearchToggle.setAttribute('aria-expanded', 'true');
   setMetricsStatus('');
   await refreshMetricProfileOptions();
   const activeProfile = els.profileSelect.value;
@@ -7123,9 +7129,352 @@ function closeMetrics(restoreFocus = false) {
   els.metricsBackdrop.hidden = true;
   syncPageInert();
   els.metricsOpen.setAttribute('aria-expanded', 'false');
+  els.healthSearchToggle.setAttribute('aria-expanded', 'false');
   if (restoreFocus && metricsFocused instanceof HTMLElement) {
     metricsFocused.focus();
   }
+}
+
+/* ---------- 全局健康搜索 ---------- */
+
+const HEALTH_SEARCH_LABELS = {
+  metric: '指标',
+  symptom: '症状',
+  medication: '用药',
+  lab: '化验',
+  vaccination: '疫苗',
+  appointment: '预约',
+  care: '复查',
+  visit: '就诊',
+  allergy: '过敏',
+  condition: '慢病',
+  reminder: '提醒',
+};
+
+let healthSearchTimer = null;
+let healthSearchSeq = 0;
+let healthSearchQuery = '';
+
+function setHealthSearchStatus(text, isError = false) {
+  if (!els.healthSearchStatus) return;
+  els.healthSearchStatus.textContent = text || '';
+  els.healthSearchStatus.hidden = !text;
+  els.healthSearchStatus.classList.toggle('error', Boolean(isError));
+}
+
+function hideHealthSearchResults() {
+  if (els.healthSearchResults) {
+    els.healthSearchResults.hidden = true;
+    els.healthSearchResults.replaceChildren();
+  }
+  setHealthSearchStatus('');
+}
+
+async function openHealthSearch() {
+  if (!metricsOpen) {
+    const opening = openMetrics();
+    if (els.healthSearchInput) {
+      els.healthSearchInput.focus();
+      els.healthSearchInput.select();
+    }
+    await opening;
+    return;
+  }
+  if (els.healthSearchInput) {
+    els.healthSearchInput.focus();
+    els.healthSearchInput.select();
+  }
+}
+
+async function runHealthSearch(rawQuery) {
+  const query = String(rawQuery || '').trim();
+  healthSearchQuery = query;
+  if (els.healthSearchClear) {
+    els.healthSearchClear.hidden = !query;
+  }
+  const seq = ++healthSearchSeq;
+  if (!query) {
+    hideHealthSearchResults();
+    return;
+  }
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  setHealthSearchStatus('正在搜索…');
+  try {
+    const res = await fetch(
+      `/api/health/search?q=${encodeURIComponent(query)}`
+      + `&limit=200&profile=${encodeURIComponent(profile)}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (seq !== healthSearchSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    renderHealthSearchResults(data);
+  } catch (err) {
+    if (seq !== healthSearchSeq) return;
+    if (els.healthSearchResults) {
+      els.healthSearchResults.hidden = true;
+      els.healthSearchResults.replaceChildren();
+    }
+    setHealthSearchStatus(`搜索失败：${err.message || err}`, true);
+  }
+}
+
+function renderHealthSearchResults(data) {
+  if (!els.healthSearchResults) return;
+  const query = String(data.query || healthSearchQuery || '');
+  const results = data.results || [];
+  els.healthSearchResults.replaceChildren();
+  els.healthSearchResults.hidden = false;
+  if (!results.length) {
+    setHealthSearchStatus(`没有匹配「${query}」的记录。`);
+    return;
+  }
+  const counts = data.counts || {};
+  const total = Number(data.total) || results.length;
+  const summaryParts = Object.entries(counts)
+    .filter(([, value]) => Number(value) > 0)
+    .map(([key, value]) => (
+      `${HEALTH_SEARCH_LABELS[key] || key} ${Number(value)}`
+    ));
+  setHealthSearchStatus(
+    `共 ${total} 条`
+    + (total > results.length ? `，显示 ${results.length} 条` : '')
+    + (summaryParts.length ? `：${summaryParts.join(' · ')}` : '')
+  );
+  const grouped = new Map();
+  for (const item of results) {
+    const key = item.type || 'other';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  }
+  for (const [typeKey, items] of grouped) {
+    const group = document.createElement('section');
+    group.className = 'health-search-group';
+    const title = document.createElement('h3');
+    title.className = 'health-search-group-title';
+    const typeTotal = Number(counts[typeKey]) || items.length;
+    title.textContent = `${HEALTH_SEARCH_LABELS[typeKey] || typeKey}`
+      + `（${items.length}`
+      + (typeTotal > items.length ? ` / ${typeTotal}` : '')
+      + '）';
+    group.appendChild(title);
+    const list = document.createElement('ul');
+    list.className = 'metrics-list';
+    for (const item of items) {
+      list.appendChild(renderHealthSearchItem(item, query));
+    }
+    group.appendChild(list);
+    els.healthSearchResults.appendChild(group);
+  }
+}
+
+function renderHealthSearchItem(item, query) {
+  const li = document.createElement('li');
+  li.className = 'metric-item search-result';
+  li.tabIndex = 0;
+  li.setAttribute('role', 'button');
+  li.setAttribute(
+    'aria-label', `查看${item.label || ''}：${item.title || ''}`
+  );
+  const main = document.createElement('div');
+  main.className = 'metric-main';
+  const badge = document.createElement('span');
+  badge.className =
+    `timeline-badge timeline-badge-${item.type || 'metric'}`;
+  badge.textContent = item.label || item.type || '';
+  const title = document.createElement('strong');
+  title.className = 'metric-value';
+  setHighlightedText(title, item.title || '', query);
+  const meta = document.createElement('span');
+  meta.className = 'metric-meta';
+  meta.textContent = [
+    item.profile || '未指定档案',
+    String(item.at || '').replace('T', ' ').slice(0, 16),
+  ].filter(Boolean).join(' · ');
+  main.append(badge, title, meta);
+  if (item.detail) {
+    const detail = document.createElement('span');
+    detail.className = 'metric-note';
+    setHighlightedText(detail, item.detail, query);
+    main.appendChild(detail);
+  }
+  li.appendChild(main);
+  const open = () => locateHealthRecord(item, query);
+  li.addEventListener('click', open);
+  li.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      open();
+    }
+  });
+  return li;
+}
+
+const HEALTH_SECTION_TARGETS = {
+  symptom: {
+    section: 'symptom-section',
+    search: 'symptom-search',
+    loader: loadSymptoms,
+    render: () => renderSymptoms(filterSymptoms(symptomItemsCache)),
+  },
+  vaccination: {
+    section: 'vaccination-section',
+    search: 'vaccination-search',
+    loader: loadVaccinations,
+    render: () => renderVaccinations(
+      filterVaccinations(vaccinationItemsCache)
+    ),
+  },
+  appointment: {
+    section: 'appointment-section',
+    search: 'appointment-search',
+    loader: loadAppointments,
+    render: () => renderAppointments(
+      filterAppointments(appointmentItemsCache)
+    ),
+  },
+  lab: {
+    section: 'lab-section',
+    search: 'lab-search',
+    loader: loadLabs,
+    render: () => renderLabs(filterLabs(labItemsCache)),
+  },
+  allergy: {
+    section: 'allergy-section',
+    search: 'allergy-search',
+    loader: loadAllergies,
+    render: () => renderAllergies(filterAllergies(allergyItemsCache)),
+  },
+  care: {
+    section: 'care-section',
+    search: 'care-search',
+    loader: loadCareItems,
+    render: () => renderCareItems(filterCareItems(careItemsCache)),
+  },
+  visit: {
+    section: 'visit-section',
+    search: 'visit-search',
+    loader: loadVisits,
+    render: () => renderVisits(filterVisits(visitItemsCache)),
+  },
+  condition: {
+    section: 'condition-section',
+    search: 'condition-search',
+    loader: loadConditions,
+    render: () => renderConditions(
+      filterConditions(conditionItemsCache)
+    ),
+  },
+  medication: {
+    section: 'medication-section',
+    search: 'medication-search',
+    loader: loadMedications,
+    render: () => {
+      const status = document.getElementById(
+        'medication-status-filter'
+      );
+      if (status) status.value = '';
+      renderMedications(filterMedications(medicationItemsCache));
+    },
+  },
+};
+
+async function locateHealthRecord(item, query = '') {
+  if (!item) return;
+  if (item.type === 'reminder') {
+    closeMetrics();
+    await openReminders();
+    if (els.remindersProfile) {
+      els.remindersProfile.value = item.profile || '';
+    }
+    if (reminderCalendarDay) {
+      reminderCalendarDay = '';
+      renderReminderCalendar(reminderItemsCache);
+      if (els.remindersCalendarClear) {
+        els.remindersCalendarClear.hidden = true;
+      }
+    }
+    if (els.remindersOverdueOnly) {
+      els.remindersOverdueOnly.checked = false;
+    }
+    if (els.remindersShowDone) {
+      els.remindersShowDone.checked = Boolean(item.done);
+    }
+    await loadReminders();
+    if (els.remindersSearch) {
+      els.remindersSearch.value = query || '';
+      refreshReminderViews();
+      els.remindersSearch.focus();
+    }
+    const list = document.getElementById('reminders-list');
+    if (list) list.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  const profile = item.profile || '';
+  if (els.metricProfile) els.metricProfile.value = profile;
+  await openMetrics();
+  if (els.metricProfile && els.metricProfile.value !== profile) {
+    els.metricProfile.value = profile;
+    els.metricProfile.dispatchEvent(
+      new Event('change', { bubbles: true })
+    );
+  }
+  hideHealthSearchResults();
+  if (els.healthSearchInput) els.healthSearchInput.value = '';
+  if (els.healthSearchClear) els.healthSearchClear.hidden = true;
+  if (item.type === 'metric') {
+    if (els.metricType && item.metric) {
+      els.metricType.value = item.metric;
+      setMetricType(item.metric);
+      els.metricType.dispatchEvent(
+        new Event('change', { bubbles: true })
+      );
+    }
+    const atDate = String(item.at || '').slice(0, 10);
+    let daysOld = 0;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(atDate)) {
+      const measured = new Date(`${atDate}T00:00:00`);
+      if (!Number.isNaN(measured.getTime())) {
+        daysOld = Math.floor(
+          (Date.now() - measured.getTime()) / 86400000
+        );
+      }
+    }
+    if (daysOld > 90) {
+      // 超过指标列表可选范围时，直接定位到当天的时间线
+      selectCalendarDay(atDate);
+      return;
+    }
+    if (els.metricRange && els.metricRange.value !== '90') {
+      els.metricRange.value = '90';
+      els.metricRange.dispatchEvent(
+        new Event('change', { bubbles: true })
+      );
+    }
+    const list = document.getElementById('metrics-list');
+    if (list) list.scrollIntoView({ block: 'start' });
+    if (els.metricType) els.metricType.focus();
+    return;
+  }
+  const target = HEALTH_SECTION_TARGETS[item.type];
+  if (!target) return;
+  const section = document.getElementById(target.section);
+  if (section) section.open = true;
+  try {
+    await target.loader();
+  } catch {
+    // 各面板会自行展示加载错误，这里保持分区打开即可
+  }
+  const search = document.getElementById(target.search);
+  if (search) {
+    search.value = query || '';
+    target.render();
+    search.focus();
+  } else {
+    target.render();
+  }
+  if (section) section.scrollIntoView({ block: 'start' });
 }
 
 /* ---------- 随访提醒 ---------- */
@@ -10048,10 +10397,16 @@ function filterAppointments(items) {
     ? String(els.appointmentSearch.value || '').trim().toLowerCase()
     : '';
   if (!query) return items;
+  const statusLabels = {
+    upcoming: '待就诊',
+    completed: '已完成',
+    cancelled: '已取消',
+  };
   return items.filter((item) => (
     [
       item.title, item.department, item.doctor,
       item.location, item.note, item.profile,
+      statusLabels[item.status] || item.status,
     ]
       .map((value) => String(value || ''))
       .join(' ')
@@ -10436,7 +10791,10 @@ function filterLabs(items) {
   return items.filter((item) => (
     [
       item.item, item.panel, item.unit, item.lab_name,
-      item.note, item.profile,
+      item.note, item.profile, item.ref_text,
+      item.abnormal
+        ? (item.abnormal_high ? '偏高' : '偏低')
+        : '',
     ]
       .map((value) => String(value || ''))
       .join(' ')
@@ -10860,7 +11218,12 @@ function filterAllergies(items) {
     : '';
   if (!query) return items;
   return items.filter((item) => (
-    [item.substance, item.reaction, item.note, item.profile]
+    [
+      item.substance, item.reaction, item.note, item.profile,
+      ALLERGY_SEVERITY_LABELS[item.severity],
+      ALLERGY_KIND_LABELS[item.kind],
+      item.active ? '' : '已停用',
+    ]
       .map((value) => String(value || ''))
       .join(' ')
       .toLowerCase()
@@ -11180,7 +11543,10 @@ function filterCareItems(items) {
     : '';
   if (!query) return items;
   return items.filter((item) => (
-    [item.title, item.note, item.profile]
+    [
+      item.title, item.note, item.profile,
+      item.active ? '' : '已停用',
+    ]
       .map((value) => String(value || ''))
       .join(' ')
       .toLowerCase()
@@ -11889,7 +12255,11 @@ function filterConditions(items) {
     : '';
   if (!query) return items;
   return items.filter((item) => (
-    [item.name, item.icd10, item.note, item.profile]
+    [
+      item.name, item.icd10, item.note, item.profile,
+      CONDITION_STATUS_LABELS[item.status],
+      CONDITION_SEVERITY_LABELS[item.severity],
+    ]
       .map((value) => String(value || ''))
       .join(' ')
       .toLowerCase()
@@ -12219,7 +12589,10 @@ function filterMedications(items) {
     if (status === 'active' && !item.active) return false;
     if (status === 'inactive' && item.active) return false;
     if (!query) return true;
-    return [item.name, item.dose, item.frequency, item.note, item.profile]
+    return [
+      item.name, item.dose, item.frequency, item.note, item.profile,
+      item.active ? '在用' : '停用',
+    ]
       .map((value) => String(value || ''))
       .join(' ')
       .toLowerCase()
@@ -15502,6 +15875,16 @@ async function handleLaunchAction() {
       reminderCalendarOpen = true;
       renderReminderCalendar(reminderItemsCache);
     }
+  } else if (action === 'search') {
+    await openMetrics();
+    const searchQuery = (params.get('q') || '').trim();
+    if (searchQuery) {
+      if (els.healthSearchInput) {
+        els.healthSearchInput.value = searchQuery;
+      }
+      await runHealthSearch(searchQuery);
+    }
+    if (els.healthSearchInput) els.healthSearchInput.focus();
   } else if (action === 'metrics') {
     openMetrics();
     if (params.get('symptoms') === '1' && els.symptomSection) {
@@ -16733,6 +17116,34 @@ els.calcSave.addEventListener('click', async () => {
 
 els.metricsOpen.addEventListener('click', openMetrics);
 els.metricsClose.addEventListener('click', () => closeMetrics(true));
+els.healthSearchToggle.addEventListener('click', openHealthSearch);
+els.healthSearchInput.addEventListener('input', (event) => {
+  if (event.isComposing) return;
+  if (healthSearchTimer) clearTimeout(healthSearchTimer);
+  healthSearchTimer = setTimeout(() => {
+    healthSearchTimer = null;
+    runHealthSearch(els.healthSearchInput.value);
+  }, 250);
+});
+els.healthSearchInput.addEventListener('keydown', (event) => {
+  if (event.isComposing || event.key !== 'Enter') return;
+  event.preventDefault();
+  if (healthSearchTimer) {
+    clearTimeout(healthSearchTimer);
+    healthSearchTimer = null;
+  }
+  runHealthSearch(els.healthSearchInput.value);
+});
+els.healthSearchClear.addEventListener('click', () => {
+  if (healthSearchTimer) {
+    clearTimeout(healthSearchTimer);
+    healthSearchTimer = null;
+  }
+  els.healthSearchInput.value = '';
+  els.healthSearchClear.hidden = true;
+  hideHealthSearchResults();
+  els.healthSearchInput.focus();
+});
 if (els.healthDossierExport) {
   els.healthDossierExport.addEventListener('click', exportHealthDossier);
 }
@@ -16846,6 +17257,11 @@ els.metricType.addEventListener('change', () => {
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', refreshMetrics);
+els.metricProfile.addEventListener('change', () => {
+  if (healthSearchQuery && els.healthSearchInput) {
+    runHealthSearch(els.healthSearchInput.value);
+  }
+});
 els.metricRange.addEventListener('change', () => {
   storeFilter(HEALTH_FILTER_KEYS.metricRange, els.metricRange.value);
   refreshMetrics();
@@ -17536,6 +17952,24 @@ els.compareClose.addEventListener('click', () => closeCompare(true));
 els.compareBackdrop.addEventListener('click', () => closeCompare(true));
 
 document.addEventListener('keydown', (e) => {
+  if (
+    (e.ctrlKey || e.metaKey)
+    && e.shiftKey
+    && e.key.toLowerCase() === 'k'
+  ) {
+    e.preventDefault();
+    if (authGateOpen) {
+      els.authToken.focus();
+      return;
+    }
+    if (!metricsOpen) {
+      openHealthSearch();
+    } else if (els.healthSearchInput) {
+      els.healthSearchInput.focus();
+    }
+    return;
+  }
+
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     if (authGateOpen) {

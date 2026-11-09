@@ -1784,6 +1784,62 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 }
 .drawer-search:focus { outline: none; border-color: var(--clinic); }
 
+.health-search {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.health-search-input {
+  flex: 1 1 180px;
+  margin: 0;
+}
+
+.health-search-status {
+  width: 100%;
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.health-search-status.error { color: var(--danger, #b42318); }
+
+.health-search-results {
+  margin: 0 0 14px;
+}
+
+.health-search-group {
+  margin: 0 0 10px;
+}
+
+.health-search-group-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.search-result {
+  cursor: pointer;
+}
+
+.search-result:hover,
+.search-result:focus-visible {
+  border-color: var(--clinic);
+  outline: none;
+}
+
+.search-result mark {
+  padding: 0 1px;
+  color: inherit;
+  background: var(--clinic-soft);
+  border-radius: 2px;
+}
+
 .history-toolbar {
   flex: none;
   display: flex;
