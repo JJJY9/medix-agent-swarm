@@ -229,10 +229,10 @@ def test_appointments_in_timeline_dossier_and_family(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-6] == "下次就诊"
+    assert rows[0][-7] == "下次就诊"
     row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "眼科复查" in row[-6]
-    assert "2 天后" in row[-6]
+    assert "眼科复查" in row[-7]
+    assert "2 天后" in row[-7]
 
 
 def test_appointments_backup_roundtrip_and_profile_rename(

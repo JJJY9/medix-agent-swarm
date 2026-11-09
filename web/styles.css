@@ -554,6 +554,36 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   color: var(--triage-1);
 }
 
+.family-attention-badge {
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+.family-attention-badge.is-danger {
+  color: #fff;
+  background: #b4472f;
+}
+
+.family-attention-badge.is-warning {
+  color: #8a5a00;
+  background: #fbefd2;
+}
+
+.family-attention-badge.is-info {
+  color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
+html[data-theme="dark"] .family-attention-badge.is-warning {
+  color: #f0c36d;
+  background: #3a2d14;
+}
+
 .family-card-chips {
   display: flex;
   flex-wrap: wrap;
