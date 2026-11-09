@@ -12536,6 +12536,157 @@ function weeklySummaryLines(data) {
   }
   lines.push(['用药', medicationText]);
 
+  const formatValue = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number)
+      ? number.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
+      : String(value == null ? '' : value);
+  };
+
+  const labs = data.labs || {};
+  let labText = `${rangeDaysLabel(days)}没有化验记录`;
+  if (labs.count) {
+    labText = `${labs.count} 条`;
+    if (labs.abnormal) labText += `，异常 ${labs.abnormal} 项`;
+    if (labs.items && labs.items.length) {
+      labText += `（${labs.items.map((item) => (
+        `${item.item} ${formatValue(item.value)}`
+        + `${item.unit ? ` ${item.unit}` : ''}`
+        + `${item.abnormal_low ? ' 偏低' : ' 偏高'}`
+      )).join('、')}）`;
+    }
+    if (labs.prev_count !== null && labs.prev_count !== undefined) {
+      const diff = labs.count - Number(labs.prev_count);
+      labText += diff === 0
+        ? '；较上期持平'
+        : `；较上期${diff > 0 ? '增加' : '减少'} ${Math.abs(diff)} 条`;
+      if (
+        labs.prev_abnormal !== null
+        && labs.prev_abnormal !== undefined
+        && Number(labs.prev_abnormal) !== Number(labs.abnormal)
+      ) {
+        const abnormalDiff = Number(labs.abnormal) - Number(labs.prev_abnormal);
+        labText += abnormalDiff > 0
+          ? `，异常增加 ${abnormalDiff} 项`
+          : `，异常减少 ${Math.abs(abnormalDiff)} 项`;
+      }
+    }
+  }
+  lines.push(['化验', labText]);
+
+  const contexts = data.metric_contexts || {};
+  const contextParts = [];
+  for (const [metric, rows] of Object.entries(contexts)) {
+    if (!Array.isArray(rows) || !rows.length) continue;
+    const metricLabel = METRIC_NAMES[metric] || metric;
+    const text = rows.map((row) => (
+      `${row.label} ${formatValue(row.avg_value1)}`
+      + (row.avg_value2 !== null && row.avg_value2 !== undefined
+        ? `/${formatValue(row.avg_value2)}`
+        : '')
+      + `（${row.count} 次）`
+    )).join('、');
+    contextParts.push(`${metricLabel}：${text}`);
+  }
+  if (contextParts.length) {
+    lines.push(['分情境均值', contextParts.join('；')]);
+  }
+
+  const critical = data.critical_alerts || {};
+  if (Number(critical.count)) {
+    let criticalText = `${critical.count} 项`;
+    if (critical.items && critical.items.length) {
+      criticalText += `（${critical.items.join('、')}）`;
+    }
+    lines.push(['危急值', criticalText]);
+  }
+
+  const vaccinations = data.vaccinations || {};
+  const vaccineParts = [];
+  if (Number(vaccinations.count)) {
+    vaccineParts.push(`近 ${days} 天接种 ${vaccinations.count} 剂`);
+  }
+  if (Number(vaccinations.overdue)) {
+    vaccineParts.push(`逾期 ${vaccinations.overdue} 剂`);
+  }
+  if (vaccinations.upcoming && vaccinations.upcoming.length) {
+    vaccineParts.push(
+      `未来 7 天 ${vaccinations.upcoming.map((item) => (
+        `${item.vaccine_name || '疫苗'}`
+        + ` 第${Number(item.dose_number) || 1}剂 ${item.next_due || ''}`
+      )).join('、')}`
+    );
+  }
+  if (vaccineParts.length) {
+    lines.push(['疫苗', vaccineParts.join('，')]);
+  }
+
+  const care = data.care_plan || {};
+  const careParts = [];
+  if (Number(care.completed)) {
+    careParts.push(`近 ${days} 天完成 ${care.completed} 项`);
+  }
+  if (Number(care.overdue)) {
+    careParts.push(`逾期 ${care.overdue} 项`);
+  }
+  if (Number(care.due_in_7_days)) {
+    careParts.push(`未来 7 天 ${care.due_in_7_days} 项`);
+  }
+  if (care.items && care.items.length) {
+    careParts.push(
+      care.items.map((item) => (
+        `${item.title || '复查'} ${item.next_due_at || ''}`
+      )).join('、')
+    );
+  }
+  if (careParts.length) {
+    lines.push(['复查计划', careParts.join('，')]);
+  }
+
+  const appointments = data.appointments || {};
+  const visits = data.visits || {};
+  const visitParts = [];
+  if (appointments.upcoming && appointments.upcoming.length) {
+    visitParts.push(
+      `未来 7 天预约 ${appointments.upcoming.map((item) => (
+        `${String(item.scheduled_at || '').slice(0, 10)}`
+        + ` ${item.title || '就诊'}`
+      )).join('、')}`
+    );
+  }
+  if (Number(appointments.overdue)) {
+    visitParts.push(`逾期未就诊 ${appointments.overdue} 个`);
+  }
+  if (Number(appointments.completed)) {
+    visitParts.push(`近 ${days} 天完成 ${appointments.completed} 个预约`);
+  }
+  if (Number(visits.count)) {
+    visitParts.push(`就诊 ${visits.count} 次`);
+  }
+  if (visits.latest && visits.latest.diagnosis) {
+    visitParts.push(`最近诊断 ${visits.latest.diagnosis}`);
+  }
+  if (visits.upcoming_followups && visits.upcoming_followups.length) {
+    visitParts.push(
+      `未来复诊 ${visits.upcoming_followups.map((item) => (
+        `${item.next_followup_date || ''}`
+        + ` ${item.diagnosis || '复查'}`
+      )).join('、')}`
+    );
+  }
+  if (visitParts.length) {
+    lines.push(['就诊与预约', visitParts.join('；')]);
+  }
+
+  const conditions = data.conditions || {};
+  if (Number(conditions.active)) {
+    let conditionText = `${conditions.active} 项`;
+    if (conditions.names && conditions.names.length) {
+      conditionText += `（${conditions.names.join('、')}）`;
+    }
+    lines.push(['慢病清单', conditionText]);
+  }
+
   const consultations = data.consultations || {};
   const consultCount = Number(consultations.count) || 0;
   let consultationText = `${rangeDaysLabel(days)}没有会诊`;
