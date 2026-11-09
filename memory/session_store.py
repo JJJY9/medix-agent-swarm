@@ -123,6 +123,7 @@ IMPORT_LIST_LIMITS = {
     "symptoms": 100000,
     "medications": 100000,
     "medication_logs": 100000,
+    "medication_history": 100000,
     "vaccinations": 100000,
     "appointments": 100000,
     "lab_results": 100000,
@@ -1466,6 +1467,7 @@ _BACKUP_CHECKSUM_FIELDS = (
     "symptoms",
     "medications",
     "medication_logs",
+    "medication_history",
     "vaccinations",
     "appointments",
     "lab_results",
@@ -1669,6 +1671,16 @@ class SessionStore:
                     ON medication_logs(medication_id, taken_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_medication_logs_profile_time
                     ON medication_logs(profile, taken_at DESC);
+                CREATE TABLE IF NOT EXISTS medication_history (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medication_id INTEGER NOT NULL,
+                    profile       TEXT NOT NULL DEFAULT '',
+                    action        TEXT NOT NULL DEFAULT 'update',
+                    detail        TEXT NOT NULL DEFAULT '',
+                    changed_at    TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_medication_history_med
+                    ON medication_history(medication_id, changed_at DESC);
                 CREATE TABLE IF NOT EXISTS vaccinations (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile       TEXT NOT NULL DEFAULT '',
@@ -3128,6 +3140,9 @@ class SessionStore:
             "symptoms": self.list_symptoms(limit=100000),
             "medications": self.list_medications(limit=100000),
             "medication_logs": self.list_medication_logs(limit=100000),
+            "medication_history": self.list_medication_history(
+                limit=100000
+            ),
             "vaccinations": self.list_vaccinations(limit=100000),
             "appointments": self.list_appointments(limit=100000),
             "lab_results": self.list_lab_results(limit=100000),
@@ -3161,6 +3176,7 @@ class SessionStore:
         raw_symptoms = data.get("symptoms")
         raw_medications = data.get("medications")
         raw_medication_logs = data.get("medication_logs")
+        raw_medication_history = data.get("medication_history")
         raw_vaccinations = data.get("vaccinations")
         raw_appointments = data.get("appointments")
         raw_lab_results = data.get("lab_results")
@@ -3177,6 +3193,7 @@ class SessionStore:
             or isinstance(raw_symptoms, list)
             or isinstance(raw_medications, list)
             or isinstance(raw_medication_logs, list)
+            or isinstance(raw_medication_history, list)
             or isinstance(raw_vaccinations, list)
             or isinstance(raw_appointments, list)
             or isinstance(raw_lab_results, list)
@@ -3198,6 +3215,7 @@ class SessionStore:
             and not isinstance(raw_symptoms, list)
             and not isinstance(raw_medications, list)
             and not isinstance(raw_medication_logs, list)
+            and not isinstance(raw_medication_history, list)
             and not isinstance(raw_vaccinations, list)
             and not isinstance(raw_appointments, list)
             and not isinstance(raw_lab_results, list)
@@ -3219,6 +3237,7 @@ class SessionStore:
             ("symptoms", "症状记录", raw_symptoms),
             ("medications", "用药", raw_medications),
             ("medication_logs", "用药打卡", raw_medication_logs),
+            ("medication_history", "用药变更", raw_medication_history),
             ("vaccinations", "疫苗接种", raw_vaccinations),
             ("appointments", "就诊预约", raw_appointments),
             ("lab_results", "化验结果", raw_lab_results),
@@ -3735,6 +3754,51 @@ class SessionStore:
                         ),
                     )
                     medication_logs_imported += 1
+
+            medication_history_imported = 0
+            if isinstance(raw_medication_history, list):
+                for raw in raw_medication_history[
+                    :IMPORT_LIST_LIMITS["medication_history"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        target = medication_id_map.get(
+                            int(raw.get("medication_id"))
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        target = None
+                    if target is None:
+                        continue
+                    action = " ".join(
+                        str(raw.get("action") or "update").split()
+                    )[:20] or "update"
+                    detail = " ".join(
+                        str(raw.get("detail") or "").split()
+                    )[:300]
+                    changed_at = str(raw.get("changed_at") or now)[:40]
+                    exists = self._conn.execute(
+                        """
+                        SELECT 1 FROM medication_history
+                         WHERE medication_id = ? AND action = ?
+                           AND detail = ? AND changed_at = ?
+                        """,
+                        (target["id"], action, detail, changed_at),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO medication_history(
+                            medication_id, profile, action, detail, changed_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            target["id"], target["profile"],
+                            action, detail, changed_at,
+                        ),
+                    )
+                    medication_history_imported += 1
 
             vaccinations_imported = 0
             raw_vaccination_id_map: Dict[int, int] = {}
@@ -4375,6 +4439,7 @@ class SessionStore:
             "symptoms": symptoms_imported,
             "medications": medications_imported,
             "medication_logs": medication_logs_imported,
+            "medication_history": medication_history_imported,
             "vaccinations": vaccinations_imported,
             "appointments": appointments_imported,
             "lab_results": lab_results_imported,
@@ -6378,6 +6443,52 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def _insert_medication_history(
+        self,
+        medication_id: int,
+        profile: str,
+        action: str,
+        detail: str,
+        changed_at: str,
+    ) -> None:
+        """在用药事务内追加一条变更记录。"""
+        self._conn.execute(
+            """
+            INSERT INTO medication_history(
+                medication_id, profile, action, detail, changed_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(medication_id),
+                _normalize_profile_name(profile),
+                str(action or "update")[:20],
+                " ".join(str(detail or "").split())[:300],
+                str(changed_at or self._now())[:40],
+            ),
+        )
+
+    def list_medication_history(
+        self,
+        medication_id: Optional[int] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """按时间倒序返回用药变更记录，可按药物筛选。"""
+        limit = max(1, min(int(limit or 1000), 100000))
+        sql = (
+            "SELECT id, medication_id, profile, action, detail, changed_at "
+            "FROM medication_history"
+        )
+        params: List[Any] = []
+        if medication_id is not None:
+            sql += " WHERE medication_id = ?"
+            params.append(_safe_db_id(medication_id))
+        sql += " ORDER BY changed_at DESC, id DESC LIMIT ?"
+        with self._lock:
+            rows = self._conn.execute(
+                sql, [*params, limit]
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_medication(
         self,
         profile: str,
@@ -6432,6 +6543,20 @@ class SessionStore:
                 ),
             )
             medication_id = int(cursor.lastrowid)
+            creation = " ".join(
+                part for part in (
+                    normalized["name"],
+                    normalized["dose"],
+                    normalized["frequency"],
+                ) if part
+            )
+            self._insert_medication_history(
+                medication_id,
+                normalized["profile"],
+                "create",
+                f"创建：{creation}" if creation else "创建用药记录",
+                now,
+            )
         data = {"id": medication_id, **normalized, "created_at": now,
                 "updated_at": now}
         return {
@@ -6581,8 +6706,8 @@ class SessionStore:
         with self._lock, self._conn:
             previous = self._conn.execute(
                 """
-                SELECT profile, name, stock, stock_unit,
-                       low_stock_threshold, expiry_date,
+                SELECT profile, name, dose, frequency, active,
+                       stock, stock_unit, low_stock_threshold, expiry_date,
                        started_at, stopped_at, stop_reason
                   FROM medications WHERE id = ?
                 """,
@@ -6696,6 +6821,63 @@ class SessionStore:
                         f"用药：{previous['name']}",
                     ),
                 )
+            changes: List[str] = []
+            if previous["name"] != normalized["name"]:
+                changes.append(
+                    f"药名 {previous['name']} → {normalized['name']}"
+                )
+            if previous["dose"] != normalized["dose"]:
+                changes.append(
+                    f"剂量 {previous['dose'] or '—'} → "
+                    f"{normalized['dose'] or '—'}"
+                )
+            if previous["frequency"] != normalized["frequency"]:
+                changes.append(
+                    f"频次 {previous['frequency'] or '—'} → "
+                    f"{normalized['frequency'] or '—'}"
+                )
+            was_active = bool(int(previous["active"] or 0))
+            now_active = bool(int(normalized["active"] or 0))
+            if was_active != now_active:
+                if now_active:
+                    changes.append("重新启用")
+                else:
+                    reason = normalized["stop_reason"]
+                    changes.append(
+                        f"停药{('：' + reason) if reason else ''}"
+                    )
+            if previous["started_at"] != normalized["started_at"]:
+                changes.append(
+                    f"开始日期 {previous['started_at'] or '—'} → "
+                    f"{normalized['started_at'] or '—'}"
+                )
+            if previous["stopped_at"] != normalized["stopped_at"]:
+                changes.append(
+                    f"停药日期 {previous['stopped_at'] or '—'} → "
+                    f"{normalized['stopped_at'] or '—'}"
+                )
+            if (
+                previous["stop_reason"] != normalized["stop_reason"]
+                and not (was_active and not now_active)
+            ):
+                changes.append(
+                    f"停药原因 {previous['stop_reason'] or '—'} → "
+                    f"{normalized['stop_reason'] or '—'}"
+                )
+            if changes:
+                if was_active and not now_active:
+                    action = "stop"
+                elif not was_active and now_active:
+                    action = "start"
+                else:
+                    action = "update"
+                self._insert_medication_history(
+                    medication_id,
+                    normalized["profile"],
+                    action,
+                    "；".join(changes),
+                    now,
+                )
             row = self._conn.execute(
                 """
                 SELECT id, profile, name, dose, frequency, note, active,
@@ -6738,6 +6920,10 @@ class SessionStore:
             )
             self._conn.execute(
                 "DELETE FROM medication_logs WHERE medication_id = ?",
+                (medication_id,),
+            )
+            self._conn.execute(
+                "DELETE FROM medication_history WHERE medication_id = ?",
                 (medication_id,),
             )
             self._conn.execute(

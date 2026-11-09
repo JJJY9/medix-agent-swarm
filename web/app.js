@@ -12168,6 +12168,9 @@ let medicationItemsCache = [];
 let medicationLogItemsCache = [];
 let medicationLogBusy = new Set();
 let medicationReminderBusy = false;
+let medicationHistoryCache = new Map();
+let medicationHistoryOpen = new Set();
+let medicationHistoryBusy = new Set();
 
 function setMedicationStatus(text, isError = false) {
   if (!els.medicationStatus) return;
@@ -12340,6 +12343,25 @@ function renderMedications(items) {
       note.textContent = item.note;
       main.appendChild(note);
     }
+    if (medicationHistoryOpen.has(item.id)) {
+      const rows = medicationHistoryCache.get(item.id) || [];
+      if (!rows.length) {
+        const empty = document.createElement('span');
+        empty.className = 'metric-note';
+        empty.textContent = '暂无变更记录。';
+        main.appendChild(empty);
+      }
+      for (const row of rows) {
+        const entry = document.createElement('span');
+        entry.className = 'metric-note medication-history-entry';
+        const when = String(row.changed_at || '')
+          .replace('T', ' ')
+          .slice(0, 16);
+        entry.textContent =
+          `${when} · ${row.detail || row.action || '变更'}`;
+        main.appendChild(entry);
+      }
+    }
 
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
@@ -12364,6 +12386,15 @@ function renderMedications(items) {
     log.textContent = '打卡';
     log.setAttribute('aria-label', `记录一次用药：${item.name}`);
     log.addEventListener('click', () => logMedication(item));
+
+    const history = document.createElement('button');
+    history.type = 'button';
+    history.className = 'metric-edit';
+    history.textContent = medicationHistoryOpen.has(item.id)
+      ? '收起历史'
+      : '历史';
+    history.setAttribute('aria-label', `查看用药变更历史：${item.name}`);
+    history.addEventListener('click', () => toggleMedicationHistory(item));
 
     let restock = null;
     if (item.stock !== null && item.stock !== undefined) {
@@ -12417,7 +12448,7 @@ function renderMedications(items) {
     del.setAttribute('aria-label', `删除药物：${item.name}`);
     del.addEventListener('click', () => deleteMedication(item));
 
-    actions.append(toggle, log, remind);
+    actions.append(toggle, log, history, remind);
     if (restock) actions.appendChild(restock);
     if (stockReminder) actions.appendChild(stockReminder);
     if (expiryReminder) actions.appendChild(expiryReminder);
@@ -12436,9 +12467,44 @@ function renderMedications(items) {
   }
 }
 
+async function toggleMedicationHistory(item) {
+  if (medicationHistoryOpen.has(item.id)) {
+    medicationHistoryOpen.delete(item.id);
+    renderMedications(filterMedications(medicationItemsCache));
+    return;
+  }
+  medicationHistoryOpen.add(item.id);
+  if (!medicationHistoryCache.has(item.id)) {
+    if (medicationHistoryBusy.has(item.id)) return;
+    medicationHistoryBusy.add(item.id);
+    try {
+      const res = await fetch(
+        `/api/medications/${item.id}/history?limit=100`
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || `服务返回 ${res.status}`);
+      }
+      medicationHistoryCache.set(item.id, data.history || []);
+    } catch (err) {
+      medicationHistoryOpen.delete(item.id);
+      setMedicationStatus(
+        `加载用药历史失败：${err.message || err}`, true
+      );
+      medicationHistoryBusy.delete(item.id);
+      renderMedications(filterMedications(medicationItemsCache));
+      return;
+    }
+    medicationHistoryBusy.delete(item.id);
+  }
+  renderMedications(filterMedications(medicationItemsCache));
+}
+
 async function loadMedications() {
   if (!els.medicationList) return;
   const requestSeq = ++medicationRequestSeq;
+  medicationHistoryCache.clear();
+  medicationHistoryOpen.clear();
   const profile = els.metricProfile.value;
   const days = Number(els.medicationRange && els.medicationRange.value) || 7;
   try {
