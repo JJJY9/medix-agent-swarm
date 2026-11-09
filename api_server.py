@@ -5127,15 +5127,27 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "sum1": 0.0,
             "sum2": 0.0,
             "with_second": 0,
+            "max1": None,
+            "max2": None,
             "latest": None,
             "target": None,
             "within": 0,
         })
         entry["count"] += 1
-        entry["sum1"] += float(item["value1"])
+        first_value = float(item["value1"])
+        entry["sum1"] += first_value
+        entry["max1"] = (
+            first_value if entry["max1"] is None
+            else max(entry["max1"], first_value)
+        )
         if item.get("value2") is not None:
-            entry["sum2"] += float(item["value2"])
+            second_value = float(item["value2"])
+            entry["sum2"] += second_value
             entry["with_second"] += 1
+            entry["max2"] = (
+                second_value if entry["max2"] is None
+                else max(entry["max2"], second_value)
+            )
         if entry["latest"] is None:
             entry["latest"] = item
         target = target_map.get(
@@ -5182,6 +5194,8 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
                 round(entry["sum2"] / entry["with_second"], 2)
                 if entry["with_second"] else None
             ),
+            "max_value1": entry["max1"],
+            "max_value2": entry["max2"],
             "latest": entry["latest"],
             "target": entry["target"],
             "within_target": (
@@ -5387,6 +5401,12 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         if today <= str(item.get("next_followup_date") or "")[:10]
         <= horizon
     ]
+    overdue_followups = [
+        item for item in raw_visits
+        if str(item.get("next_followup_date") or "")[:10]
+        and str(item.get("next_followup_date") or "")[:10] < today
+        and not item.get("followup_scheduled")
+    ]
     latest_visit = raw_visits[0] if raw_visits else None
 
     active_conditions = await asyncio.to_thread(
@@ -5515,6 +5535,16 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         "vaccinations": {
             "count": len(vaccinations_in_period),
             "overdue": len(vaccine_overdue),
+            "overdue_items": [
+                {
+                    "vaccine_name": item.get("vaccine_name", ""),
+                    "next_due": item.get("next_due", ""),
+                }
+                for item in sorted(
+                    vaccine_overdue,
+                    key=lambda row: str(row.get("next_due") or ""),
+                )[:5]
+            ],
             "upcoming": [
                 {
                     "vaccine_name": item.get("vaccine_name", ""),
@@ -5546,8 +5576,19 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         },
         "appointments": {
             "in_period": len(appointments_in_period),
+            "total": len(appointments),
             "completed": len(appointments_done),
             "overdue": len(appointments_overdue),
+            "overdue_items": [
+                {
+                    "title": item.get("title", ""),
+                    "scheduled_at": item.get("scheduled_at", ""),
+                }
+                for item in sorted(
+                    appointments_overdue,
+                    key=lambda row: str(row.get("scheduled_at") or ""),
+                )[:5]
+            ],
             "upcoming": [
                 {
                     "title": item.get("title", ""),
@@ -5573,9 +5614,26 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
                     "next_followup_date": latest_visit.get(
                         "next_followup_date", ""
                     ),
+                    "followup_scheduled": bool(
+                        latest_visit.get("followup_scheduled")
+                    ),
                 }
                 if latest_visit else None
             ),
+            "overdue_followups": [
+                {
+                    "diagnosis": item.get("diagnosis", ""),
+                    "next_followup_date": item.get(
+                        "next_followup_date", ""
+                    ),
+                }
+                for item in sorted(
+                    overdue_followups,
+                    key=lambda row: str(
+                        row.get("next_followup_date") or ""
+                    ),
+                )[:5]
+            ],
             "upcoming_followups": [
                 {
                     "diagnosis": item.get("diagnosis", ""),
@@ -5602,6 +5660,389 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "items": critical_items,
         },
         "streak": streak,
+    }
+
+
+HEALTH_INSIGHT_LEVEL_ORDER = {"danger": 0, "warning": 1, "info": 2, "ok": 3}
+
+
+def _health_insight(
+    key: str,
+    level: str,
+    title: str,
+    detail: str = "",
+    action: str = "",
+    section: str = "",
+    metric: str = "",
+) -> Dict[str, str]:
+    return {
+        "key": key,
+        "level": level,
+        "title": str(title)[:120],
+        "detail": str(detail)[:200],
+        "action": str(action)[:160],
+        "section": section,
+        "metric": metric,
+    }
+
+
+def _build_health_insights(
+    report: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """把近 N 天健康汇总转成按优先级排序的可执行提示。"""
+    from memory.session_store import METRIC_TYPES
+
+    days = int(report.get("days") or 7)
+    insights: List[Dict[str, str]] = []
+
+    critical = report.get("critical_alerts") or {}
+    if critical.get("count"):
+        insights.append(_health_insight(
+            "critical",
+            "danger",
+            f"近 {days} 天出现 {critical['count']} 次危急值",
+            "、".join(critical.get("items") or [])[:200],
+            "请立即复测；如仍异常，联系医生或前往急诊。",
+            "metric",
+        ))
+
+    for row in (report.get("metrics") or {}).get("by_metric") or []:
+        metric = str(row.get("metric") or "")
+        label, unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+        count = int(row.get("count") or 0)
+        if count <= 0:
+            continue
+        target = row.get("target") or None
+        within = row.get("within_target")
+        avg1 = float(row.get("avg_value1") or 0)
+        avg2 = float(row.get("avg_value2") or 0)
+        if target and within is not None:
+            over = count - int(within)
+            if over > 0:
+                target_text = f"{float(target['value1']):g}"
+                if target.get("value2") is not None:
+                    target_text += f"/{float(target['value2']):g}"
+                latest = row.get("latest") or {}
+                latest_text = ""
+                if latest:
+                    latest_text = (
+                        "，最近 "
+                        + _health_search_number(latest.get("value1"))
+                    )
+                    if latest.get("value2") is not None:
+                        latest_text += (
+                            "/"
+                            + _health_search_number(latest.get("value2"))
+                        )
+                insights.append(_health_insight(
+                    f"metric_{metric}",
+                    "warning" if over >= 2 else "info",
+                    f"{label} {over} 次超出目标（共 {count} 次）",
+                    f"目标 {target_text} {unit}{latest_text}".strip(),
+                    "复测后仍超标时，与医生确认是否需要调整方案。",
+                    "metric",
+                    metric=metric,
+                ))
+        elif metric == "bp":
+            max1 = float(row.get("max_value1") or 0)
+            max2 = float(row.get("max_value2") or 0)
+            if max1 >= 160 or max2 >= 100:
+                insights.append(_health_insight(
+                    "metric_bp_single",
+                    "warning",
+                    f"单次血压最高 {max1:g}/{max2:g} mmHg",
+                    f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。",
+                    "单次明显升高也需要复测；持续偏高请咨询医生。",
+                    "metric",
+                    metric="bp",
+                ))
+            elif max1 >= 140 or max2 >= 90:
+                insights.append(_health_insight(
+                    "metric_bp_single",
+                    "info",
+                    f"有血压读数达到 {max1:g}/{max2:g} mmHg",
+                    f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
+                    "建议早晚测量并记录。",
+                    "设置血压目标后可自动判断是否达标。",
+                    "metric",
+                    metric="bp",
+                ))
+        elif metric == "glucose":
+            contexts = {
+                str(item.get("context") or "unspecified"): item
+                for item in (report.get("metric_contexts") or {})
+                .get("glucose", [])
+            }
+            fasting = contexts.get("fasting") or contexts.get(
+                "unspecified"
+            )
+            postprandial = contexts.get("postprandial")
+            if fasting and float(fasting.get("avg_value1") or 0) >= 7:
+                insights.append(_health_insight(
+                    "metric_glucose_fasting",
+                    "info",
+                    f"空腹/未分情境血糖平均 "
+                    f"{float(fasting['avg_value1']):g} mmol/L 偏高",
+                    f"共 {fasting.get('count')} 次；"
+                    "建议按空腹与餐后分别记录。",
+                    "如多次偏高，请咨询医生。",
+                    "metric",
+                    metric="glucose",
+                ))
+            elif (
+                postprandial
+                and float(postprandial.get("avg_value1") or 0) >= 11.1
+            ):
+                insights.append(_health_insight(
+                    "metric_glucose_postprandial",
+                    "info",
+                    f"餐后血糖平均 "
+                    f"{float(postprandial['avg_value1']):g} mmol/L 明显偏高",
+                    f"共 {postprandial.get('count')} 次。",
+                    "如多次偏高，请咨询医生。",
+                    "metric",
+                    metric="glucose",
+                ))
+
+    symptoms = report.get("symptoms") or {}
+    max_severity = int(symptoms.get("max_severity") or 0)
+    if max_severity >= 7:
+        insights.append(_health_insight(
+            "symptoms_severe",
+            "warning",
+            f"近 {days} 天出现重度症状（最高 {max_severity}/10）",
+            "、".join(
+                str(item.get("symptom") or "")
+                for item in (symptoms.get("top") or [])[:3]
+            ),
+            "若症状持续或加重，请及时就医。",
+            "symptom",
+        ))
+
+    consultations = report.get("consultations") or {}
+    if consultations.get("risk") in {"high", "emergency"}:
+        insights.append(_health_insight(
+            "consultation_risk",
+            "warning",
+            "最近一次会诊提示较高风险",
+            f"近 {days} 天会诊 {consultations.get('count', 0)} 次。",
+            "请按会诊建议尽快线下就医或复诊。",
+            "",
+        ))
+
+    adherence = (report.get("medications") or {}).get("adherence") or {}
+    if adherence.get("expected", 0) >= 3 and adherence.get("rate", 100) < 60:
+        rate = int(adherence.get("rate") or 0)
+        insights.append(_health_insight(
+            "adherence",
+            "warning" if rate < 40 else "info",
+            f"近 {days} 天用药打卡 {rate}%",
+            f"应服 {adherence.get('expected')} 次，"
+            f"已打卡 {adherence.get('taken')} 次。",
+            "漏服较多时可调整用药提醒或与医生确认服药方案。",
+            "medication",
+        ))
+
+    labs = report.get("labs") or {}
+    if labs.get("abnormal"):
+        items = labs.get("items") or []
+        detail = "、".join(
+            f"{item.get('item', '')} "
+            f"{_health_search_number(item.get('value'))}"
+            f"{item.get('unit') or ''}"
+            for item in items[:5]
+        )
+        insights.append(_health_insight(
+            "labs",
+            "warning",
+            f"近 {days} 天 {labs['abnormal']} 项化验异常",
+            detail,
+            "请结合参考范围复查，必要时咨询医生。",
+            "lab",
+        ))
+
+    care = report.get("care_plan") or {}
+    if care.get("overdue"):
+        overdue_items = [
+            item for item in care.get("items") or []
+            if item.get("overdue")
+        ]
+        insights.append(_health_insight(
+            "care_overdue",
+            "warning",
+            f"{care['overdue']} 项复查已逾期",
+            "、".join(
+                f"{item.get('title', '')}（{item.get('next_due_at', '')}）"
+                for item in overdue_items[:5]
+            ),
+            "请尽快安排复查并记录结果。",
+            "care",
+        ))
+    elif care.get("due_in_7_days"):
+        insights.append(_health_insight(
+            "care_due_soon",
+            "info",
+            f"未来 7 天有 {care['due_in_7_days']} 项复查到期",
+            "、".join(
+                item.get("title", "")
+                for item in (care.get("items") or [])[:5]
+            ),
+            "可提前预约检查。",
+            "care",
+        ))
+
+    vaccines = report.get("vaccinations") or {}
+    if vaccines.get("overdue"):
+        insights.append(_health_insight(
+            "vaccine_overdue",
+            "info",
+            f"{vaccines['overdue']} 剂疫苗已逾期",
+            "、".join(
+                f"{item.get('vaccine_name', '')}"
+                f"（{item.get('next_due', '')}）"
+                for item in (vaccines.get("overdue_items") or [])[:5]
+            ),
+            "请核对接种记录并咨询接种点。",
+            "vaccination",
+        ))
+    elif vaccines.get("upcoming"):
+        first = vaccines["upcoming"][0]
+        insights.append(_health_insight(
+            "vaccine_upcoming",
+            "info",
+            f"疫苗 {first.get('vaccine_name')} 将在 "
+            f"{first.get('next_due')} 到期",
+            f"第 {first.get('dose_number') or 1} 剂",
+            "",
+            "vaccination",
+        ))
+
+    appointments = report.get("appointments") or {}
+    if appointments.get("overdue"):
+        insights.append(_health_insight(
+            "appointment_overdue",
+            "info",
+            f"{appointments['overdue']} 个就诊预约已过期未更新",
+            "、".join(
+                f"{item.get('title', '')}"
+                f"（{str(item.get('scheduled_at') or '')[:16].replace('T', ' ')}）"
+                for item in (appointments.get("overdue_items") or [])[:5]
+            ),
+            "请确认实际就诊情况并更新状态。",
+            "appointment",
+        ))
+    if appointments.get("upcoming"):
+        first = appointments["upcoming"][0]
+        insights.append(_health_insight(
+            "appointment_upcoming",
+            "info",
+            f"下一次就诊：{first.get('title') or '就诊'}",
+            " · ".join(part for part in (
+                str(first.get("scheduled_at") or "")
+                .replace("T", " ")[:16],
+                first.get("department") or "",
+                first.get("doctor") or "",
+            ) if part),
+            "可提前一天创建就诊提醒。",
+            "appointment",
+        ))
+
+    visits = report.get("visits") or {}
+    followups = visits.get("upcoming_followups") or []
+    overdue_followups = visits.get("overdue_followups") or []
+    if overdue_followups:
+        first = overdue_followups[0]
+        insights.append(_health_insight(
+            "followup_overdue",
+            "warning",
+            f"复诊已逾期（{first.get('next_followup_date')}）",
+            first.get("diagnosis") or "",
+            "请尽快联系医院安排复诊。",
+            "visit",
+        ))
+    elif followups:
+        first = followups[0]
+        insights.append(_health_insight(
+            "followup_upcoming",
+            "info",
+            f"下次复诊：{first.get('next_followup_date')}",
+            first.get("diagnosis") or "",
+            "可一键安排复诊预约与提醒。",
+            "visit",
+        ))
+
+    reminders = report.get("reminders") or {}
+    if reminders.get("overdue"):
+        insights.append(_health_insight(
+            "reminder_overdue",
+            "warning",
+            f"{reminders['overdue']} 条提醒已逾期",
+            "请处理后标记完成或调整时间。",
+            "",
+            "reminder",
+        ))
+    elif reminders.get("due_in_7_days"):
+        insights.append(_health_insight(
+            "reminder_due_soon",
+            "info",
+            f"未来 7 天有 {reminders['due_in_7_days']} 条提醒到期",
+            "",
+            "",
+            "reminder",
+        ))
+
+    if not insights:
+        record_count = (
+            int((report.get("metrics") or {}).get("count") or 0)
+            + int((report.get("symptoms") or {}).get("count") or 0)
+            + int((report.get("labs") or {}).get("count") or 0)
+            + int((report.get("visits") or {}).get("count") or 0)
+            + int((report.get("appointments") or {}).get("total") or 0)
+            + int((report.get("care_plan") or {}).get("due_in_period") or 0)
+            + int((report.get("vaccinations") or {}).get("count") or 0)
+            + int((report.get("medications") or {}).get("active") or 0)
+            + int((report.get("reminders") or {}).get("pending") or 0)
+        )
+        if record_count == 0:
+            insights.append(_health_insight(
+                "no_data",
+                "info",
+                f"近 {days} 天还没有健康记录",
+                "可以从记录一次血压、血糖或症状开始。",
+                "",
+                "metric",
+            ))
+        else:
+            insights.append(_health_insight(
+                "all_clear",
+                "ok",
+                "暂未发现需要特别关注的问题",
+                "继续保持记录，提示会随数据自动更新。",
+                "",
+                "",
+            ))
+
+    insights.sort(
+        key=lambda item: HEALTH_INSIGHT_LEVEL_ORDER.get(item["level"], 9)
+    )
+    return insights[:8]
+
+
+@app.get("/api/health/insights")
+async def health_insights(profile: Optional[str] = None, days: int = 30):
+    """基于近 N 天健康数据的规则化提示。"""
+    report = await weekly_report(profile=profile, days=days)
+    insights = _build_health_insights(report)
+    counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
+    for item in insights:
+        counts[item["level"]] = counts.get(item["level"], 0) + 1
+    return {
+        "profile": report.get("profile") or "",
+        "days": report.get("days"),
+        "start": report.get("start"),
+        "end": report.get("end"),
+        "counts": counts,
+        "insights": insights,
     }
 
 
