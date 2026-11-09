@@ -479,6 +479,7 @@ def test_import_data_roundtrip(tmp_path):
             "symptoms": 0,
             "medications": 0,
             "medication_logs": 0,
+            "medication_history": 0,
             "vaccinations": 0,
             "appointments": 0,
             "lab_results": 0,
