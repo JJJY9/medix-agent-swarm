@@ -4425,6 +4425,89 @@ async def export_visits_csv(profile: Optional[str] = None):
     )
 
 
+#: 慢病模板：匹配疾病后一键生成复查计划与指标目标
+CHRONIC_CARE_TEMPLATES = (
+    {
+        "key": "hypertension",
+        "name": "高血压",
+        "keywords": ("高血压",),
+        "icd10_prefixes": ("I10", "I11", "I12", "I13", "I15"),
+        "care_items": (
+            ("血脂", 180),
+            ("肾功能与电解质", 180),
+            ("尿常规", 180),
+            ("眼底检查", 365),
+        ),
+        "targets": (("bp", 130, 80),),
+    },
+    {
+        "key": "diabetes",
+        "name": "糖尿病",
+        "keywords": ("糖尿病",),
+        "icd10_prefixes": ("E10", "E11", "E13", "E14"),
+        "care_items": (
+            ("糖化血红蛋白", 90),
+            ("尿微量白蛋白/肌酐比", 180),
+            ("血脂", 180),
+            ("眼底检查", 365),
+            ("足部检查", 365),
+        ),
+        "targets": (("glucose", 7.0, None),),
+    },
+    {
+        "key": "ckd",
+        "name": "慢性肾脏病",
+        "keywords": ("慢性肾脏病", "肾功能不全", "CKD"),
+        "icd10_prefixes": ("N18",),
+        "care_items": (
+            ("血肌酐与 eGFR", 90),
+            ("尿蛋白定量", 90),
+            ("电解质", 90),
+            ("血脂", 180),
+        ),
+        "targets": (("bp", 130, 80),),
+    },
+    {
+        "key": "dyslipidemia",
+        "name": "血脂异常",
+        "keywords": ("血脂异常", "高脂血症", "高血脂"),
+        "icd10_prefixes": ("E78",),
+        "care_items": (
+            ("血脂", 180),
+            ("肝功能", 180),
+        ),
+        "targets": (),
+    },
+)
+
+
+def _condition_template(
+    condition: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """按疾病名称关键字或 ICD-10 前缀匹配慢病模板。"""
+    name = str(condition.get("name") or "")
+    icd10 = str(condition.get("icd10") or "").strip().upper()
+    for template in CHRONIC_CARE_TEMPLATES:
+        if any(word in name for word in template["keywords"]):
+            return template
+        if icd10 and any(
+            icd10.startswith(prefix)
+            for prefix in template["icd10_prefixes"]
+        ):
+            return template
+    return None
+
+
+def _annotate_condition_template(
+    item: Dict[str, Any],
+) -> Dict[str, Any]:
+    """为慢病记录补充前端识别模板用的字段。"""
+    template = _condition_template(item)
+    item["template_key"] = template["key"] if template else ""
+    item["template_name"] = template["name"] if template else ""
+    return item
+
+
 @app.get("/api/conditions")
 async def list_conditions(
     profile: Optional[str] = None,
@@ -4443,6 +4526,7 @@ async def list_conditions(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    items = [_annotate_condition_template(item) for item in items]
     return {"conditions": items}
 
 
@@ -4465,7 +4549,10 @@ async def add_condition(request: ConditionRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await record_audit("condition.create", str(item["id"]))
-    return {"ok": True, "condition": item}
+    return {
+        "ok": True,
+        "condition": _annotate_condition_template(item),
+    }
 
 
 @app.patch("/api/conditions/{condition_id}")
@@ -4497,7 +4584,73 @@ async def update_condition(
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在")
     await record_audit("condition.update", str(item["id"]))
-    return {"ok": True, "condition": item}
+    return {
+        "ok": True,
+        "condition": _annotate_condition_template(item),
+    }
+
+
+@app.post("/api/conditions/{condition_id}/apply-template")
+async def apply_condition_template(condition_id: SafeIntPath):
+    """按慢病类型一键生成复查计划与指标目标；已有项目自动跳过。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    condition = await asyncio.to_thread(store.get_condition, condition_id)
+    if condition is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    template = _condition_template(condition)
+    if template is None:
+        raise HTTPException(status_code=400, detail="该慢病暂无可用模板")
+    profile = condition.get("profile") or ""
+
+    existing = await asyncio.to_thread(
+        store.list_care_items, profile, True, False, 100000
+    )
+    existing_titles = {str(row.get("title") or "") for row in existing}
+    today = datetime.now().date()
+    created_items = []
+    skipped_titles = []
+    for title, interval in template["care_items"]:
+        if title in existing_titles:
+            skipped_titles.append(title)
+            continue
+        item = await asyncio.to_thread(
+            store.add_care_item,
+            profile,
+            title,
+            interval,
+            "",
+            (today + timedelta(days=interval)).strftime("%Y-%m-%d"),
+            f"慢病模板：{condition.get('name') or template['name']}",
+            True,
+        )
+        created_items.append(item)
+        existing_titles.add(title)
+
+    targets = await asyncio.to_thread(store.list_metric_targets, profile)
+    existing_metrics = {row.get("metric") for row in targets}
+    created_targets = []
+    skipped_targets = []
+    for metric, value1, value2 in template["targets"]:
+        if metric in existing_metrics:
+            skipped_targets.append(metric)
+            continue
+        target = await asyncio.to_thread(
+            store.set_metric_target, profile, metric, value1, value2
+        )
+        if target is not None:
+            created_targets.append(target)
+
+    await record_audit("condition.template", str(condition_id))
+    return {
+        "ok": True,
+        "template": template["name"],
+        "care_items_created": created_items,
+        "care_items_skipped": skipped_titles,
+        "targets_created": created_targets,
+        "targets_skipped": skipped_targets,
+    }
 
 
 @app.delete("/api/conditions/{condition_id}")
