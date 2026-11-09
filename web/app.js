@@ -164,12 +164,14 @@ const els = {
   calcCurbRr: document.getElementById('calc-curb-rr'),
   calcCurbSbp: document.getElementById('calc-curb-sbp'),
   calcCurbDbp: document.getElementById('calc-curb-dbp'),
+  calcCurbLab: document.getElementById('calc-curb-lab'),
   calcFormChildPugh: document.getElementById('calc-form-child-pugh'),
   calcChildBilirubin: document.getElementById('calc-child-bilirubin'),
   calcChildAlbumin: document.getElementById('calc-child-albumin'),
   calcChildInr: document.getElementById('calc-child-inr'),
   calcChildAscites: document.getElementById('calc-child-ascites'),
   calcChildEncephalopathy: document.getElementById('calc-child-encephalopathy'),
+  calcChildPughLab: document.getElementById('calc-child-pugh-lab'),
   calcFormPhq9: document.getElementById('calc-form-phq9'),
   calcPhq9Questions: document.getElementById('calc-phq9-questions'),
   calcFormGad7: document.getElementById('calc-form-gad7'),
@@ -14245,49 +14247,18 @@ async function exportMetricsCsv() {
 let calcFocused = null;
 let currentCalcAction = null;
 
-const LAB_PREFILL_ALIASES = {
-  creatinine: ['肌酐', 'creatinine', 'scr'],
-  ast: ['谷草转氨酶', 'ast', 'got'],
-  alt: ['谷丙转氨酶', 'alt', 'gpt'],
-  platelets: ['血小板', 'plt', 'platelet'],
-  bilirubin: ['总胆红素', '胆红素', 'tbil', 'bilirubin'],
-  inr: ['国际标准化', 'inr'],
-};
-
-function normalizeLabName(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[\s\-_()（）]/g, '');
-}
-
-function findLabItem(items, key) {
-  const aliases = LAB_PREFILL_ALIASES[key] || [];
-  return (items || []).find((item) => {
-    const name = normalizeLabName(item.item);
-    return aliases.some((alias) => name.includes(normalizeLabName(alias)));
-  }) || null;
-}
-
-function labNumber(item) {
-  const value = Number(item && item.value);
-  return Number.isFinite(value) ? value : null;
-}
-
-function labCreatinineMgDl(item) {
-  const value = labNumber(item);
-  if (value === null) return null;
-  const unit = String((item && item.unit) || '').toLowerCase();
-  if (unit.includes('mg')) return { value, converted: false };
-  return { value: value / 88.4, converted: true };
-}
-
-function labBilirubinMgDl(item) {
-  const value = labNumber(item);
-  if (value === null) return null;
-  const unit = String((item && item.unit) || '').toLowerCase();
-  if (unit.includes('mg')) return { value, converted: false };
-  return { value: value / 17.1, converted: true };
-}
+const {
+  findLabItem,
+  labNumber,
+  labCreatinineMgDl,
+  labBilirubinMgDl,
+  labBilirubinUmolL,
+  labAlbuminGL,
+  labUreaMmolL,
+  childPughBilirubinScore,
+  childPughAlbuminScore,
+  childPughInrScore,
+} = window.MedixLabPrefill || {};
 
 async function loadLatestLabItems() {
   const profile = els.profileSelect ? els.profileSelect.value || '' : '';
@@ -14307,6 +14278,10 @@ function fillCalcAgeSex() {
   const fib4Age = document.getElementById('calc-fib4-age');
   if (fib4Age && Number.isFinite(age) && !Number(fib4Age.value)) {
     fib4Age.value = String(age);
+  }
+  const curbAge = document.getElementById('calc-curb-age');
+  if (curbAge && Number.isFinite(age) && !Number(curbAge.value)) {
+    curbAge.value = String(age);
   }
   if (
     (context.sex === '女' || context.sex === '男')
@@ -14407,6 +14382,103 @@ async function prefillMeldFromLab() {
       + (bilirubinValue.converted || creatinineValue.converted
         ? '，胆红素/肌酐已换算为 mg/dL。'
         : '。')
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
+async function loadLatestBpMetric() {
+  const profile = els.profileSelect ? els.profileSelect.value || '' : '';
+  const res = await fetch(
+    `/api/metrics?metric=bp&limit=1&profile=${encodeURIComponent(profile)}`
+  );
+  if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+  const data = await res.json();
+  return (data.metrics || [])[0] || null;
+}
+
+async function prefillChildPughFromLab() {
+  try {
+    const items = await loadLatestLabItems();
+    const bilirubin = findLabItem(items, 'bilirubin');
+    const albumin = findLabItem(items, 'albumin');
+    const inr = findLabItem(items, 'inr');
+    const bilirubinValue = labBilirubinUmolL(bilirubin);
+    const albuminValue = labAlbuminGL(albumin);
+    const missing = [];
+    if (!bilirubinValue) missing.push('总胆红素');
+    if (!albuminValue) missing.push('白蛋白');
+    if (labNumber(inr) === null) missing.push('INR');
+    if (missing.length) {
+      setCalcStatus(
+        `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
+        true
+      );
+      return;
+    }
+    const bilirubinScore = childPughBilirubinScore(bilirubinValue.value);
+    const albuminScore = childPughAlbuminScore(albuminValue.value);
+    const inrValue = labNumber(inr);
+    const inrScore = childPughInrScore(inrValue);
+    els.calcChildBilirubin.value = String(bilirubinScore);
+    els.calcChildAlbumin.value = String(albuminScore);
+    els.calcChildInr.value = String(inrScore);
+    setCalcStatus(
+      `已带入总胆红素 ${Math.round(bilirubinValue.value * 10) / 10} `
+      + `μmol/L（${bilirubinScore} 分）、白蛋白 `
+      + `${Math.round(albuminValue.value * 10) / 10} g/L`
+      + `（${albuminScore} 分）、INR ${inrValue}（${inrScore} 分）`
+      + (bilirubinValue.converted || albuminValue.converted
+        ? '，已按单位换算。' : '。')
+      + '腹水与肝性脑病请按临床情况选择。'
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
+async function prefillCurb65FromLab() {
+  try {
+    fillCalcAgeSex();
+    const items = await loadLatestLabItems();
+    const urea = findLabItem(items, 'urea');
+    const ureaValue = labUreaMmolL(urea);
+    if (!ureaValue) {
+      setCalcStatus(
+        '未找到最近的尿素氮化验结果，请先在化验结果中登记。',
+        true
+      );
+      return;
+    }
+    els.calcCurbUrea.value = String(
+      Math.round(ureaValue.value * 10) / 10
+    );
+    let bp = null;
+    let bpFailed = false;
+    try {
+      bp = await loadLatestBpMetric();
+    } catch {
+      bpFailed = true;
+    }
+    let bpText = '';
+    if (bp && Number(bp.value1) > 0) {
+      els.calcCurbSbp.value = String(Math.round(Number(bp.value1)));
+      if (Number(bp.value2) > 0) {
+        els.calcCurbDbp.value = String(Math.round(Number(bp.value2)));
+      }
+      bpText = `、血压 ${Math.round(Number(bp.value1))}`
+        + (Number(bp.value2) > 0
+          ? `/${Math.round(Number(bp.value2))}`
+          : '')
+        + ' mmHg';
+    } else {
+      bpText = bpFailed ? '（血压读取失败，可稍后重试）' : '（暂无血压记录）';
+    }
+    setCalcStatus(
+      `已带入尿素氮 ${Math.round(ureaValue.value * 10) / 10} mmol/L`
+      + (urea && ureaValue.converted ? '（已按单位换算）' : '')
+      + `${bpText}（最近一次）；呼吸频率与意识状态请按实际情况填写。`
     );
   } catch (err) {
     setCalcStatus(`带入化验失败：${err.message || err}`, true);
@@ -16622,7 +16694,9 @@ els.calcFib4Lab.addEventListener('click', prefillFib4FromLab);
 els.calcMeldLab.addEventListener('click', prefillMeldFromLab);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
+els.calcCurbLab.addEventListener('click', prefillCurb65FromLab);
 els.calcFormChildPugh.addEventListener('submit', submitChildPugh);
+els.calcChildPughLab.addEventListener('click', prefillChildPughFromLab);
 els.calcFormPhq9.addEventListener('submit', submitPhq9);
 els.calcFormAuditc.addEventListener('submit', submitAuditC);
 els.calcFormMmrc.addEventListener('submit', submitMmrc);

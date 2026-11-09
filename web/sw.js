@@ -6,6 +6,7 @@ const SHELL = [
   '/',
   '/static/styles.css',
   '/static/app.js',
+  '/static/lab-prefill-core.js',
   '/static/theme-init.js',
   '/static/manifest.webmanifest',
   '/static/icons/icon-192.png',
