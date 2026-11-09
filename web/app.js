@@ -11416,10 +11416,19 @@ async function markCareDone(item) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     const nextDue = data.care_item ? data.care_item.next_due_at : '';
+    const reminderDue = data.reminder
+      ? String(data.reminder.due_at || '').slice(0, 10)
+      : '';
     setCareStatus(
-      `已记录复查完成${nextDue ? `，下次 ${nextDue}` : ''}。`
+      `已记录复查完成${nextDue ? `，下次 ${nextDue}` : ''}`
+      + (
+        data.reminder_created
+          ? `，已创建提前 7 天提醒${reminderDue ? `（${reminderDue}）` : ''}。`
+          : '。'
+      )
     );
     await loadCareItems();
+    refreshReminderBadge();
     refreshOverview();
   } catch (err) {
     setCareStatus(`记录完成失败：${err.message || err}`, true);
@@ -11473,6 +11482,7 @@ let visitSaving = false;
 let visitRequestSeq = 0;
 let visitItemsCache = [];
 let visitSearchTimer = null;
+let visitFollowupBusy = new Set();
 
 function setVisitStatus(text, isError = false) {
   if (!els.visitStatus) return;
@@ -11557,6 +11567,12 @@ function renderVisits(items) {
       followup.textContent = `复诊 ${item.next_followup_date}`;
       title.append(' ', followup);
     }
+    if (item.followup_scheduled) {
+      const scheduled = document.createElement('span');
+      scheduled.className = 'care-due-badge is-soon';
+      scheduled.textContent = '已安排复诊';
+      title.append(' ', scheduled);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -11590,6 +11606,21 @@ function renderVisits(items) {
 
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
+
+    if (item.next_followup_date) {
+      const followup = document.createElement('button');
+      followup.type = 'button';
+      followup.className = 'metric-edit';
+      followup.textContent = item.followup_scheduled
+        ? '复诊已安排'
+        : '安排复诊';
+      followup.setAttribute(
+        'aria-label',
+        `为就诊记录安排复诊：${item.diagnosis || ''}`
+      );
+      followup.addEventListener('click', () => scheduleVisitFollowup(item));
+      actions.appendChild(followup);
+    }
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -11746,6 +11777,42 @@ async function saveVisit() {
   } finally {
     visitSaving = false;
     els.visitSave.disabled = false;
+  }
+}
+
+async function scheduleVisitFollowup(item) {
+  if (visitFollowupBusy.has(item.id)) return;
+  visitFollowupBusy.add(item.id);
+  setVisitStatus('正在安排复诊…');
+  try {
+    const res = await fetch(
+      `/api/visits/${item.id}/schedule-followup`, { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const appointment = data.appointment || {};
+    const when = String(appointment.scheduled_at || '')
+      .replace('T', ' ')
+      .slice(0, 16);
+    if (data.appointment_created) {
+      setVisitStatus(
+        `已创建复诊预约${when ? `（${when}）` : ''}，并生成提前 1 天提醒。`
+      );
+    } else {
+      setVisitStatus(
+        `该复诊已安排过预约${when ? `（${when}）` : ''}，无需重复创建。`
+      );
+    }
+    await loadVisits();
+    loadAppointments();
+    refreshReminderBadge();
+    refreshOverview();
+  } catch (err) {
+    setVisitStatus(`安排复诊失败：${err.message || err}`, true);
+  } finally {
+    visitFollowupBusy.delete(item.id);
   }
 }
 

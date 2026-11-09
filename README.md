@@ -363,13 +363,14 @@ npm install -D playwright
 | GET | `/api/care-items` | 复查计划列表（可按 `profile`/`active_only`/`overdue` 筛选，附带倒计时与逾期标记） |
 | POST | `/api/care-items` | 新增复查计划（项目、间隔天数、上次完成与下次复查日期） |
 | PATCH | `/api/care-items/{id}` | 部分更新复查计划 |
-| POST | `/api/care-items/{id}/done` | 记录复查完成并按间隔自动顺延下次日期 |
+| POST | `/api/care-items/{id}/done` | 记录复查完成、按间隔自动顺延下次日期，并自动创建下次复查提醒 |
 | DELETE | `/api/care-items/{id}` | 删除复查计划 |
 | GET | `/api/care-items/export.csv` | 导出复查计划 CSV（带 BOM，可按 `profile` 筛选） |
 | POST | `/api/care-items/{id}/reminder` | 为复查计划创建提前 7 天的提醒；已有未完成提醒时直接返回 |
 | GET | `/api/visits` | 就诊记录列表（可按 `profile`/`days`/`q` 筛选，附带下次复诊倒计时） |
 | POST | `/api/visits` | 新增就诊记录（日期、科室、医生、机构、诊断、医嘱、处方、下次复诊与备注） |
 | PATCH | `/api/visits/{id}` | 部分更新就诊记录 |
+| POST | `/api/visits/{id}/schedule-followup` | 按下次复诊日期一键创建预约与提前 1 天提醒（重复调用复用已有安排） |
 | DELETE | `/api/visits/{id}` | 删除就诊记录 |
 | GET | `/api/visits/export.csv` | 导出就诊记录 CSV（带 BOM，可按 `profile` 筛选） |
 | GET | `/api/conditions` | 慢病/健康问题清单（可按 `profile`/`active_only`/`status` 筛选） |
