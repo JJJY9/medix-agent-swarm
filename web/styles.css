@@ -460,6 +460,10 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   font-size: 14px;
 }
 
+.home-glance-card.is-alert .home-glance-value {
+  color: var(--triage-1);
+}
+
 .home-glance-sub {
   font-size: 12px;
   color: var(--ink-soft);
