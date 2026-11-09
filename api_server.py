@@ -181,6 +181,7 @@ class ImportSessionsRequest(StrictRequestModel):
     symptoms: Optional[List[Dict[str, Any]]] = None
     medications: Optional[List[Dict[str, Any]]] = None
     medication_logs: Optional[List[Dict[str, Any]]] = None
+    medication_history: Optional[List[Dict[str, Any]]] = None
     vaccinations: Optional[List[Dict[str, Any]]] = None
     appointments: Optional[List[Dict[str, Any]]] = None
     lab_results: Optional[List[Dict[str, Any]]] = None
@@ -2136,6 +2137,7 @@ async def import_sessions(request: ImportSessionsRequest):
         "symptoms": request.symptoms,
         "medications": request.medications,
         "medication_logs": request.medication_logs,
+        "medication_history": request.medication_history,
         "vaccinations": request.vaccinations,
         "appointments": request.appointments,
         "lab_results": request.lab_results,
@@ -2171,8 +2173,9 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
     keys = (
         "imported", "skipped", "profiles", "metrics", "targets",
         "reminders", "symptoms", "medications", "medication_logs",
-        "vaccinations", "appointments", "lab_results", "allergies",
-        "care_items", "visit_records", "conditions", "audit_log",
+        "medication_history", "vaccinations", "appointments",
+        "lab_results", "allergies", "care_items", "visit_records",
+        "conditions", "audit_log",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -2926,6 +2929,24 @@ async def list_medication_logs(
         days,
     )
     return {"logs": logs}
+
+
+@app.get("/api/medications/{medication_id}/history")
+async def list_medication_history(
+    medication_id: SafeIntPath, limit: int = 100
+):
+    """某个药物的变更历史（创建、剂量/频次调整、启停等，按时间倒序）。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(store.get_medication, medication_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="药物不存在")
+    limit = max(1, min(int(limit or 100), 100000))
+    history = await asyncio.to_thread(
+        store.list_medication_history, medication_id, limit
+    )
+    return {"medication_id": medication_id, "history": history}
 
 
 @app.post("/api/medications/{medication_id}/logs")
