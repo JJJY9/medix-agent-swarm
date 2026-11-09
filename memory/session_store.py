@@ -1191,6 +1191,9 @@ def _visit_record_view_fields(
         "followup_overdue": (
             days_until is not None and days_until < 0
         ),
+        "followup_scheduled": bool(
+            int(row.get("followup_appointment_id") or 0)
+        ),
     }
 
 
@@ -1756,6 +1759,8 @@ class SessionStore:
                     advice             TEXT NOT NULL DEFAULT '',
                     prescription       TEXT NOT NULL DEFAULT '',
                     next_followup_date TEXT NOT NULL DEFAULT '',
+                    followup_appointment_id INTEGER NOT NULL DEFAULT 0,
+                    followup_reminder_id    INTEGER NOT NULL DEFAULT 0,
                     note               TEXT NOT NULL DEFAULT '',
                     created_at         TEXT NOT NULL,
                     updated_at         TEXT NOT NULL
@@ -1913,6 +1918,21 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE health_metrics ADD COLUMN context TEXT NOT NULL DEFAULT ''"
                 )
+
+            # 旧版本就诊记录没有复诊安排关联，就地迁移
+            visit_columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(visit_records)"
+                )
+            }
+            for column in (
+                "followup_appointment_id", "followup_reminder_id",
+            ):
+                if column not in visit_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE visit_records ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                    )
 
             # 旧版本用药表没有库存、单位与有效期字段，就地迁移
             medication_columns = {
@@ -5303,7 +5323,18 @@ class SessionStore:
                 "DELETE FROM appointments WHERE id = ?",
                 (int(appointment_id),),
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount == 0:
+                return False
+            # 复诊安排随预约删除回到未安排状态，便于重新一键安排
+            self._conn.execute(
+                """
+                UPDATE visit_records
+                   SET followup_appointment_id = 0, updated_at = ?
+                 WHERE followup_appointment_id = ?
+                """,
+                (self._now(), int(appointment_id)),
+            )
+            return True
 
     def add_lab_result(
         self,
@@ -5907,6 +5938,14 @@ class SessionStore:
         )
         now = self._now()
         with self._lock, self._conn:
+            old_row = self._conn.execute(
+                """
+                SELECT next_followup_date, followup_appointment_id,
+                       followup_reminder_id
+                  FROM visit_records WHERE id = ?
+                """,
+                (int(visit_id),),
+            ).fetchone()
             cursor = self._conn.execute(
                 """
                 UPDATE visit_records
@@ -5928,7 +5967,52 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 复诊日期变化后旧的一键安排失效，回到可重新安排状态
+            if (
+                old_row is not None
+                and str(old_row["next_followup_date"] or "")
+                != normalized["next_followup_date"]
+                and (
+                    int(old_row["followup_appointment_id"] or 0)
+                    or int(old_row["followup_reminder_id"] or 0)
+                )
+            ):
+                self._conn.execute(
+                    """
+                    UPDATE visit_records
+                       SET followup_appointment_id = 0,
+                           followup_reminder_id = 0
+                     WHERE id = ?
+                    """,
+                    (int(visit_id),),
+                )
         return self.get_visit_record(visit_id)
+
+    def set_visit_followup_links(
+        self,
+        visit_id: int,
+        appointment_id: Any = 0,
+        reminder_id: Any = 0,
+    ) -> bool:
+        """记录就诊复诊安排对应的预约与提醒；记录不存在时返回 False。"""
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE visit_records
+                   SET followup_appointment_id = ?,
+                       followup_reminder_id = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    _safe_db_id(appointment_id),
+                    _safe_db_id(reminder_id),
+                    now,
+                    int(visit_id),
+                ),
+            )
+            return cursor.rowcount > 0
 
     def get_visit_record(
         self, visit_id: int
@@ -5938,7 +6022,8 @@ class SessionStore:
                 """
                 SELECT id, profile, appointment_id, visit_date, department,
                        doctor, facility, diagnosis, advice, prescription,
-                       next_followup_date, note, created_at, updated_at
+                       next_followup_date, followup_appointment_id,
+                       followup_reminder_id, note, created_at, updated_at
                   FROM visit_records WHERE id = ?
                 """,
                 (int(visit_id),),
@@ -5984,7 +6069,8 @@ class SessionStore:
                 f"""
                 SELECT id, profile, appointment_id, visit_date, department,
                        doctor, facility, diagnosis, advice, prescription,
-                       next_followup_date, note, created_at, updated_at
+                       next_followup_date, followup_appointment_id,
+                       followup_reminder_id, note, created_at, updated_at
                   FROM visit_records
                  {where}
                  ORDER BY visit_date DESC, id DESC

@@ -3943,6 +3943,50 @@ async def import_allergies_csv(
     }
 
 
+async def _ensure_care_item_reminder(store, item):
+    """按复查计划的下次日期创建提前 7 天的提醒；已有提醒时复用。
+
+    返回 (reminder, created)；下次日期缺失或格式不正确时返回 (None, False)。
+    """
+    due = str(item.get("next_due_at") or "")[:10]
+    if not due:
+        return None, False
+    try:
+        due_date = datetime.strptime(due, "%Y-%m-%d").date()
+    except ValueError:
+        return None, False
+    today = datetime.now().date()
+    reminder_due = max(due_date - timedelta(days=7), today)
+    title = f"复查：{item.get('title') or '复查'}"[:120]
+    note = f"下次复查 {due}"
+    reminders = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    for reminder in reminders:
+        if (
+            not reminder.get("done")
+            and reminder.get("title") == title
+            and str(reminder.get("due_at") or "")[:10]
+            == reminder_due.strftime("%Y-%m-%d")
+        ):
+            return reminder, False
+    reminder = await asyncio.to_thread(
+        store.add_reminder,
+        title,
+        reminder_due.strftime("%Y-%m-%d"),
+        note,
+        "",
+        item.get("profile") or "",
+        0,
+        0,
+        "",
+        0,
+        0,
+        0,
+    )
+    return reminder, True
+
+
 @app.get("/api/care-items")
 async def list_care_items(
     profile: Optional[str] = None,
@@ -4019,12 +4063,13 @@ async def update_care_item(
 async def done_care_item(
     care_id: SafeIntPath, request: CareDoneRequest
 ):
-    """记录一次复查完成并顺延下次日期。"""
+    """记录一次复查完成、顺延下次日期，并自动创建下次复查提醒。"""
     from memory import get_session_store
 
+    store = get_session_store()
     try:
         item = await asyncio.to_thread(
-            get_session_store().mark_care_item_done,
+            store.mark_care_item_done,
             care_id,
             request.done_at,
         )
@@ -4032,8 +4077,19 @@ async def done_care_item(
         raise HTTPException(status_code=400, detail=str(e))
     if item is None:
         raise HTTPException(status_code=404, detail="记录不存在")
+    reminder = None
+    reminder_created = False
+    if item.get("active"):
+        reminder, reminder_created = await _ensure_care_item_reminder(
+            store, item
+        )
     await record_audit("care.done", str(care_id))
-    return {"ok": True, "care_item": item}
+    return {
+        "ok": True,
+        "care_item": item,
+        "reminder": reminder,
+        "reminder_created": reminder_created,
+    }
 
 
 @app.delete("/api/care-items/{care_id}")
@@ -4105,40 +4161,15 @@ async def create_care_item_reminder(care_id: SafeIntPath):
     if not due:
         raise HTTPException(status_code=400, detail="请先填写下次复查日期")
     try:
-        due_date = datetime.strptime(due, "%Y-%m-%d").date()
+        datetime.strptime(due, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail="下次复查日期格式不正确")
-    today = datetime.now().date()
-    reminder_due = max(due_date - timedelta(days=7), today)
-    title = f"复查：{item.get('title') or '复查'}"[:120]
-    note = f"下次复查 {due}"
-    reminders = await asyncio.to_thread(
-        store.list_reminders, True, item.get("profile") or ""
-    )
-    for reminder in reminders:
-        if (
-            not reminder.get("done")
-            and reminder.get("title") == title
-            and str(reminder.get("due_at") or "")[:10]
-            == reminder_due.strftime("%Y-%m-%d")
-        ):
-            return {"ok": True, "created": False, "reminder": reminder}
-    reminder = await asyncio.to_thread(
-        store.add_reminder,
-        title,
-        reminder_due.strftime("%Y-%m-%d"),
-        note,
-        "",
-        item.get("profile") or "",
-        0,
-        0,
-        "",
-        0,
-        0,
-        0,
-    )
-    await record_audit("care.reminder", str(care_id))
-    return {"ok": True, "created": True, "reminder": reminder}
+    reminder, created = await _ensure_care_item_reminder(store, item)
+    if reminder is None:
+        raise HTTPException(status_code=400, detail="下次复查日期格式不正确")
+    if created:
+        await record_audit("care.reminder", str(care_id))
+    return {"ok": True, "created": created, "reminder": reminder}
 
 
 @app.get("/api/visits")
@@ -4220,6 +4251,119 @@ async def update_visit(
         raise HTTPException(status_code=404, detail="记录不存在")
     await record_audit("visit.update", str(item["id"]))
     return {"ok": True, "visit": item}
+
+
+@app.post("/api/visits/{visit_id}/schedule-followup")
+async def schedule_visit_followup(visit_id: SafeIntPath):
+    """按就诊记录的下次复诊日期创建预约，并生成提前 1 天提醒。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    visit = await asyncio.to_thread(store.get_visit_record, visit_id)
+    if visit is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    followup_date = str(visit.get("next_followup_date") or "")[:10]
+    if not followup_date:
+        raise HTTPException(
+            status_code=400, detail="该就诊记录没有填写下次复诊日期"
+        )
+    try:
+        followup_day = datetime.strptime(followup_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="下次复诊日期格式不正确")
+
+    appointment = None
+    appointment_created = False
+    linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
+    if linked_appointment_id:
+        appointment = await asyncio.to_thread(
+            store.get_appointment, linked_appointment_id
+        )
+        if appointment and appointment.get("status") == "cancelled":
+            appointment = None
+    if appointment is None:
+        title = (
+            f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
+        )[:120]
+        appointment = await asyncio.to_thread(
+            store.add_appointment,
+            visit.get("profile") or "",
+            title,
+            visit.get("department") or "",
+            visit.get("doctor") or "",
+            visit.get("facility") or "",
+            f"{followup_date}T09:00",
+            "upcoming",
+            f"由就诊记录 #{visit_id} 自动创建",
+        )
+        appointment_created = True
+
+    reminder = None
+    reminder_created = False
+    linked_reminder_id = int(visit.get("followup_reminder_id") or 0)
+    if linked_reminder_id:
+        reminder = await asyncio.to_thread(
+            store.get_reminder, linked_reminder_id
+        )
+        if (
+            reminder
+            and int(reminder.get("appointment_id") or 0)
+            != int(appointment["id"])
+        ):
+            reminder = None
+    if reminder is None:
+        reminders = await asyncio.to_thread(
+            store.list_reminders, True, visit.get("profile") or ""
+        )
+        for candidate in reminders:
+            if int(candidate.get("appointment_id") or 0) == int(
+                appointment["id"]
+            ):
+                reminder = candidate
+                break
+    if reminder is None:
+        today = datetime.now().date()
+        reminder_due = max(followup_day - timedelta(days=1), today)
+        title = (
+            f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
+        )[:120]
+        note = " ".join(
+            part for part in (
+                f"复诊 {followup_date}",
+                visit.get("department") or "",
+                visit.get("doctor") or "",
+            ) if part
+        )[:300]
+        reminder = await asyncio.to_thread(
+            store.add_reminder,
+            title,
+            reminder_due.strftime("%Y-%m-%d"),
+            note,
+            "",
+            visit.get("profile") or "",
+            0,
+            0,
+            "",
+            0,
+            0,
+            int(appointment["id"]),
+        )
+        reminder_created = True
+
+    await asyncio.to_thread(
+        store.set_visit_followup_links,
+        visit_id,
+        appointment["id"],
+        reminder["id"],
+    )
+    await record_audit("visit.followup", str(visit_id))
+    return {
+        "ok": True,
+        "appointment": appointment,
+        "appointment_created": appointment_created,
+        "reminder": reminder,
+        "reminder_created": reminder_created,
+    }
 
 
 @app.delete("/api/visits/{visit_id}")
