@@ -4216,6 +4216,48 @@ html[data-theme="dark"] .condition-status-badge.is-controlled {
   background: var(--paper-2);
 }
 
+.insight-level-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  background: var(--paper-2);
+}
+
+.insight-level-badge.is-danger {
+  color: #fff;
+  background: #b4472f;
+}
+
+.insight-level-badge.is-warning {
+  color: #8a5a00;
+  background: #fbefd2;
+}
+
+.insight-level-badge.is-info {
+  color: var(--clinic);
+  background: var(--clinic-soft);
+}
+
+.insight-level-badge.is-ok {
+  color: #1e6b45;
+  background: #e3f3e9;
+}
+
+html[data-theme="dark"] .insight-level-badge.is-warning {
+  color: #f0c36d;
+  background: #3a2d14;
+}
+
+html[data-theme="dark"] .insight-level-badge.is-ok {
+  color: #7fd1a5;
+  background: #16321f;
+}
+
 html[data-theme="dark"] .care-due-badge.is-soon {
   color: #f0c36d;
   background: #3a2d14;

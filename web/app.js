@@ -290,6 +290,10 @@ const els = {
   healthSearchClear: document.getElementById('health-search-clear'),
   healthSearchStatus: document.getElementById('health-search-status'),
   healthSearchResults: document.getElementById('health-search-results'),
+  insightSection: document.getElementById('insight-section'),
+  insightSummary: document.getElementById('insight-summary'),
+  insightList: document.getElementById('insight-list'),
+  insightEmpty: document.getElementById('insight-empty'),
   healthDossierExport: document.getElementById('health-dossier-export'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
@@ -7014,6 +7018,7 @@ async function loadMetricOverview() {
 }
 
 async function refreshMetrics() {
+  loadHealthInsights();
   updateMetricTargetDisplay();
   await loadMetrics();
   await loadMetricTrend();
@@ -8829,6 +8834,7 @@ function refreshOverview() {
     loadWeeklySummary(),
     loadTimeline(),
     loadFamilyOverview(),
+    loadHealthInsights(),
   ]);
 }
 
@@ -13284,6 +13290,115 @@ function weeklySummaryLines(data) {
     ]);
   }
   return lines;
+}
+
+const INSIGHT_LEVEL_LABELS = {
+  danger: '危急',
+  warning: '需关注',
+  info: '提示',
+  ok: '正常',
+};
+
+let healthInsightRequestSeq = 0;
+
+function setInsightSummary(data) {
+  if (!els.insightSummary) return;
+  const counts = data.counts || {};
+  const parts = [];
+  if (Number(counts.danger)) parts.push(`危急 ${counts.danger}`);
+  if (Number(counts.warning)) parts.push(`需关注 ${counts.warning}`);
+  if (Number(counts.info)) parts.push(`提示 ${counts.info}`);
+  els.insightSummary.textContent = parts.length
+    ? `· ${parts.join(' · ')}`
+    : '· 暂无';
+}
+
+async function loadHealthInsights() {
+  if (!els.insightList) return;
+  const requestSeq = ++healthInsightRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/health/insights?days=30`
+      + `&profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) {
+      throw new Error(`服务返回 ${res.status}`);
+    }
+    const data = await res.json();
+    if (requestSeq !== healthInsightRequestSeq) return;
+    renderHealthInsights(data);
+  } catch {
+    if (requestSeq !== healthInsightRequestSeq) return;
+    if (els.insightList) els.insightList.replaceChildren();
+    els.insightEmpty.textContent = '健康提示加载失败，请稍后重试。';
+    els.insightEmpty.hidden = false;
+  }
+}
+
+function renderHealthInsights(data) {
+  if (!els.insightList) return;
+  els.insightList.replaceChildren();
+  const insights = data.insights || [];
+  setInsightSummary(data);
+  els.insightEmpty.hidden = insights.length > 0;
+  els.insightEmpty.textContent = '暂未发现需要特别关注的问题。';
+  for (const item of insights) {
+    const li = document.createElement('li');
+    li.className = 'metric-item insight-item';
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.title || '';
+    const badge = document.createElement('span');
+    badge.className = `insight-level-badge is-${item.level || 'info'}`;
+    badge.textContent = INSIGHT_LEVEL_LABELS[item.level] || '提示';
+    title.append(' ', badge);
+    main.appendChild(title);
+    if (item.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'metric-meta';
+      detail.textContent = item.detail;
+      main.appendChild(detail);
+    }
+    if (item.action) {
+      const action = document.createElement('span');
+      action.className = 'metric-note';
+      action.textContent = item.action;
+      main.appendChild(action);
+    }
+    li.appendChild(main);
+    if (item.section) {
+      const actions = document.createElement('div');
+      actions.className = 'metric-item-actions';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'metric-edit';
+      open.textContent = '查看';
+      open.setAttribute('aria-label', `查看相关记录：${item.title}`);
+      open.addEventListener(
+        'click', () => openInsightSection(item)
+      );
+      actions.appendChild(open);
+      li.appendChild(actions);
+    }
+    els.insightList.appendChild(li);
+  }
+}
+
+function openInsightSection(insight) {
+  const section = typeof insight === 'string'
+    ? insight
+    : insight && insight.section;
+  if (!section) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  if (section === 'metric') {
+    const metric = insight && insight.metric ? insight.metric : '';
+    locateHealthRecord({ type: 'metric', profile, metric }, '');
+    return;
+  }
+  locateHealthRecord({ type: section, profile }, '');
 }
 
 function renderWeeklySummary(data) {
