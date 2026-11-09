@@ -341,6 +341,7 @@ const els = {
   homeGlanceSymptoms: document.getElementById('home-glance-symptoms'),
   homeGlanceMedications: document.getElementById('home-glance-medications'),
   homeGlanceSummary: document.getElementById('home-glance-summary'),
+  homeGlanceInsight: document.getElementById('home-glance-insight'),
   homeGlanceBackup: document.getElementById('home-glance-backup'),
   familyOverview: document.getElementById('family-overview'),
   familyOverviewList: document.getElementById('family-overview-list'),
@@ -8256,7 +8257,9 @@ function setTodayMedsStatus(text, isError = false) {
   els.todayMedsStatus.classList.toggle('error', Boolean(isError));
 }
 
-function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
+function renderHomeGlance(
+  reminders, metrics, symptoms, medications, weekly, insights, profile
+) {
   if (!els.homeGlance) return;
 
   const pending = (reminders || []).filter((item) => !item.done);
@@ -8392,6 +8395,29 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
   } else {
     els.homeGlanceSummary.hidden = true;
   }
+  if (els.homeGlanceInsight) {
+    const top = insights && (insights.insights || [])[0];
+    if (!top) {
+      els.homeGlanceInsight.hidden = true;
+      els.homeGlanceInsight.classList.remove('is-alert');
+    } else {
+      const levelLabel = INSIGHT_LEVEL_LABELS[top.level] || '提示';
+      els.homeGlanceInsight.hidden = false;
+      els.homeGlanceInsight.classList.toggle(
+        'is-alert',
+        top.level === 'danger' || top.level === 'warning'
+      );
+      els.homeGlanceInsight.replaceChildren(
+        ...homeGlanceLine(
+          profile ? `健康提示 · ${profile}` : '健康提示',
+          top.title || '暂无需要关注',
+          `${levelLabel}`
+          + (top.detail ? ` · ${top.detail}` : '')
+          + ' · 点击查看健康提示'
+        )
+      );
+    }
+  }
   if (els.homeGlanceBackup) {
     const lastBackup = readLastBackupAt();
     let backupValue = '还没有导出备份';
@@ -8414,15 +8440,22 @@ function renderHomeGlance(reminders, metrics, symptoms, medications, weekly) {
 async function loadHomeGlance() {
   if (!els.homeGlance) return;
   const requestSeq = ++homeGlanceRequestSeq;
+  const profile = els.profileSelect ? els.profileSelect.value || '' : '';
+  const insightsUrl = profile
+    ? `/api/health/insights?days=30`
+      + `&profile=${encodeURIComponent(profile)}`
+    : '/api/health/insights?days=30';
   try {
     const [
       remindersRes, metricsRes, symptomsRes, medicationsRes, weeklyRes,
+      insightsRes,
     ] = await Promise.all([
       fetch('/api/reminders'),
       fetch('/api/metrics/latest'),
       fetch('/api/symptoms?limit=1').catch(() => null),
       fetch('/api/medications?active_only=true&limit=50').catch(() => null),
       fetch('/api/reports/weekly').catch(() => null),
+      fetch(insightsUrl).catch(() => null),
     ]);
     if (!remindersRes.ok || !metricsRes.ok) {
       if (requestSeq === homeGlanceRequestSeq) {
@@ -8448,8 +8481,14 @@ async function loadHomeGlance() {
     const weeklyPayload = weeklyRes && weeklyRes.ok
       ? await weeklyRes.json().catch(() => null)
       : null;
+    const insightsPayload = insightsRes && insightsRes.ok
+      ? await insightsRes.json().catch(() => null)
+      : null;
     if (requestSeq !== homeGlanceRequestSeq) return;
-    renderHomeGlance(reminders, metrics, symptoms, medications, weeklyPayload);
+    renderHomeGlance(
+      reminders, metrics, symptoms, medications, weeklyPayload,
+      insightsPayload, profile
+    );
   } catch {
     if (requestSeq === homeGlanceRequestSeq) {
       els.homeGlance.hidden = true;
@@ -16687,6 +16726,7 @@ async function initProfiles() {
     // 服务暂不可用时不阻塞主界面；恢复后刷新页面即可重新加载
   }
   loadFamilyOverview();
+  loadHomeGlance();
 }
 
 function readStoredProfile() {
@@ -16811,6 +16851,7 @@ async function savePatientProfile() {
     if (data.profile) profilesCache[data.profile.name] = data.profile;
     refreshProfileOptions(name);
     loadFamilyOverview();
+    loadHomeGlance();
   } catch (err) {
     window.alert(`保存档案失败：${err.message || err}`);
   }
@@ -16846,6 +16887,7 @@ async function renamePatientProfile() {
     setActiveProfile(data.name);
     // 家庭概览缓存仍保留旧档案名，重命名后立即刷新
     await loadFamilyOverview();
+    loadHomeGlance();
     setVitals('idle', '档案已重命名');
   } catch (err) {
     window.alert(`重命名档案失败：${err.message || err}`);
@@ -16872,6 +16914,7 @@ async function deletePatientProfile() {
     delete profilesCache[name];
     refreshProfileOptions('');
     loadFamilyOverview();
+    loadHomeGlance();
     if (wasSelected) applyPatientContext({});
   } catch (err) {
     window.alert(`删除档案失败：${err.message || err}`);
@@ -16916,6 +16959,7 @@ async function applySelectedProfile() {
   } else {
     applyPatientContext({});
   }
+  loadHomeGlance();
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -17855,6 +17899,30 @@ els.homeGlanceSummary.addEventListener('click', () => {
   openMetrics();
   if (els.weeklySummarySection) els.weeklySummarySection.open = true;
 });
+if (els.homeGlanceInsight) {
+  els.homeGlanceInsight.addEventListener('click', async () => {
+    const profile = els.profileSelect ? els.profileSelect.value : '';
+    if (!profile) {
+      const overview = document.getElementById('family-overview');
+      const thread = document.getElementById('thread');
+      if (overview && !overview.hidden && thread) {
+        const top = overview.getBoundingClientRect().top
+          - thread.getBoundingClientRect().top
+          + thread.scrollTop - 60;
+        thread.scrollTo({ top, behavior: 'smooth' });
+        return;
+      }
+    }
+    if (els.metricProfile && profile) {
+      els.metricProfile.value = profile;
+    }
+    await openMetrics();
+    if (els.insightSection) {
+      els.insightSection.open = true;
+      els.insightSection.scrollIntoView({ block: 'start' });
+    }
+  });
+}
 if (els.homeGlanceBackup) {
   els.homeGlanceBackup.addEventListener('click', async () => {
     await exportHistoryBackup();
