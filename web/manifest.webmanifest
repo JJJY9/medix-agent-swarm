@@ -55,6 +55,18 @@
           "type": "image/png"
         }
       ]
+    },
+    {
+      "name": "健康搜索",
+      "short_name": "搜索",
+      "url": "/?action=search",
+      "icons": [
+        {
+          "src": "/static/icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
     }
   ],
   "icons": [

@@ -51,6 +51,16 @@
       <button
         type="button"
         class="btn-quiet"
+        id="health-search-toggle"
+        aria-haspopup="dialog"
+        aria-expanded="false"
+        aria-controls="metrics-drawer"
+        aria-keyshortcuts="Control+Shift+K Meta+Shift+K"
+        title="健康搜索（Ctrl+Shift+K）"
+      >健康搜索</button>
+      <button
+        type="button"
+        class="btn-quiet"
         id="history-toggle"
         aria-haspopup="dialog"
         aria-expanded="false"
@@ -572,7 +582,21 @@
       <button type="button" class="drawer-close" id="metrics-close" aria-label="关闭健康记录">×</button>
     </span>
   </div>
+  <div class="health-search">
+    <label class="sr-only" for="health-search-input">搜索健康档案</label>
+    <input
+      type="search"
+      id="health-search-input"
+      class="drawer-search health-search-input"
+      placeholder="搜索指标、症状、用药、化验、就诊、慢病…"
+      autocomplete="off"
+      aria-describedby="health-search-status"
+    >
+    <button type="button" class="btn-quiet" id="health-search-clear" hidden>清除</button>
+    <span class="health-search-status" id="health-search-status" role="status" hidden></span>
+  </div>
   <div class="metrics-body">
+    <div class="health-search-results" id="health-search-results" hidden></div>
     <div class="metrics-form">
       <label class="calc-field">患者档案
         <select id="metric-profile">

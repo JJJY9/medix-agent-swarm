@@ -77,7 +77,7 @@ def _compute_web_build_id() -> str:
     digest = hashlib.sha256()
     for name in (
         "index.html", "app.js", "lab-prefill-core.js", "styles.css",
-        "theme-init.js", "sw.js",
+        "theme-init.js", "sw.js", "manifest.webmanifest",
     ):
         path = WEB_DIR / name
         try:
@@ -6030,6 +6030,372 @@ async def export_timeline_csv(
             "Cache-Control": "no-store",
         },
     )
+
+
+HEALTH_SEARCH_TYPE_LABELS = {
+    "metric": "指标",
+    "symptom": "症状",
+    "medication": "用药",
+    "lab": "化验",
+    "vaccination": "疫苗",
+    "appointment": "预约",
+    "care": "复查",
+    "visit": "就诊",
+    "allergy": "过敏",
+    "condition": "慢病",
+    "reminder": "提醒",
+}
+HEALTH_SEARCH_TYPE_ORDER = tuple(HEALTH_SEARCH_TYPE_LABELS)
+HEALTH_SEARCH_MAX_QUERY_CHARS = 80
+HEALTH_SEARCH_PER_TYPE_LIMIT = 20
+
+
+def _health_search_text(*fields: Any) -> str:
+    return " ".join(str(field or "") for field in fields).lower()
+
+
+def _health_search_number(value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        return f"{value:g}"
+    return str(value)
+
+
+@app.get("/api/health/search")
+async def health_search(
+    q: str = "",
+    profile: Optional[str] = None,
+    limit: int = 50,
+):
+    """跨健康记录搜索：指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病与提醒。"""
+    from memory import get_session_store
+    from memory.session_store import METRIC_TYPES, metric_context_label
+
+    query = " ".join(str(q or "").split())[:HEALTH_SEARCH_MAX_QUERY_CHARS]
+    if not query:
+        raise HTTPException(status_code=400, detail="请输入搜索关键字")
+    key = query.lower()
+    limit = max(1, min(int(limit or 50), 200))
+    store = get_session_store()
+
+    (
+        metrics, symptoms, medications, labs, vaccinations,
+        appointments, care_items, visits, allergies, conditions,
+        reminders,
+    ) = await asyncio.gather(
+        asyncio.to_thread(
+            store.list_metrics, profile, None, 100000, 0, 0, ""
+        ),
+        asyncio.to_thread(store.list_symptoms, profile, 100000, 0, 0),
+        asyncio.to_thread(
+            store.list_medications, profile, False, 100000, 0, 7
+        ),
+        asyncio.to_thread(
+            store.list_lab_results, profile, None, None, 0, 100000, 0
+        ),
+        asyncio.to_thread(store.list_vaccinations, profile, 100000),
+        asyncio.to_thread(
+            store.list_appointments, profile, None, False, 100000, 0
+        ),
+        asyncio.to_thread(
+            store.list_care_items, profile, False, False, 100000
+        ),
+        asyncio.to_thread(store.list_visit_records, profile, 0, "", 100000),
+        asyncio.to_thread(
+            store.list_allergies, profile, False, None, "", 100000
+        ),
+        asyncio.to_thread(
+            store.list_conditions, profile, False, None, 100000
+        ),
+        asyncio.to_thread(store.list_reminders, True, profile),
+    )
+
+    buckets: Dict[str, List[Dict[str, Any]]] = {
+        type_key: [] for type_key in HEALTH_SEARCH_TYPE_ORDER
+    }
+
+    def add(
+        type_key: str,
+        row: Dict[str, Any],
+        matched: bool,
+        title: str,
+        detail: str,
+        at: Any,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not matched:
+            return
+        item = {
+            "type": type_key,
+            "label": HEALTH_SEARCH_TYPE_LABELS[type_key],
+            "id": int(row.get("id") or 0),
+            "profile": row.get("profile") or "",
+            "title": str(title)[:120],
+            "detail": str(detail)[:200],
+            "at": str(at or "")[:19],
+        }
+        if extra:
+            item.update(extra)
+        buckets[type_key].append(item)
+
+    for row in metrics:
+        metric = str(row.get("metric") or "")
+        label, unit, _ = METRIC_TYPES.get(metric, (metric, "", None))
+        context = metric_context_label(metric, row.get("context"))
+        value1 = _health_search_number(row.get("value1"))
+        value2 = _health_search_number(row.get("value2"))
+        value_text = f"{value1}/{value2}" if value2 else value1
+        matched = key in _health_search_text(
+            label, metric, unit, context, row.get("note")
+        )
+        add(
+            "metric", row, matched,
+            f"{label} {value_text} {unit}".strip(),
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                context,
+                row.get("note") or "",
+            ) if part),
+            row.get("measured_at"),
+            {"metric": metric},
+        )
+
+    for row in symptoms:
+        severity = _health_search_number(row.get("severity"))
+        matched = key in _health_search_text(
+            row.get("symptom"), row.get("note")
+        )
+        add(
+            "symptom", row, matched,
+            f"{row.get('symptom') or '症状'} {severity}/10",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                row.get("note") or "",
+            ) if part),
+            row.get("recorded_at"),
+        )
+
+    for row in medications:
+        active = bool(row.get("active"))
+        matched = key in _health_search_text(
+            row.get("name"), row.get("dose"), row.get("frequency"),
+            "在用" if active else "停用", row.get("note"),
+        )
+        add(
+            "medication", row, matched,
+            f"{row.get('name') or '药物'} {row.get('dose') or ''}".strip(),
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                row.get("frequency") or "",
+                "在用" if active else "停用",
+                row.get("note") or "",
+            ) if part),
+            row.get("updated_at") or row.get("started_at")
+            or row.get("created_at"),
+        )
+
+    for row in labs:
+        abnormal = (
+            "偏高" if row.get("abnormal_high")
+            else "偏低" if row.get("abnormal_low") else ""
+        )
+        value = _health_search_number(row.get("value"))
+        matched = key in _health_search_text(
+            row.get("item"), row.get("panel"), row.get("lab_name"),
+            row.get("unit"), row.get("ref_text"), abnormal, row.get("note"),
+        )
+        add(
+            "lab", row, matched,
+            f"{row.get('item') or '化验'} {value} "
+            f"{row.get('unit') or ''}".strip(),
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                row.get("panel") or "",
+                row.get("lab_name") or "",
+                abnormal,
+                f"参考 {row.get('ref_text')}" if row.get("ref_text") else "",
+                row.get("note") or "",
+            ) if part),
+            row.get("tested_at"),
+        )
+
+    for row in vaccinations:
+        dose = _health_search_number(row.get("dose_number")) or "1"
+        matched = key in _health_search_text(
+            row.get("vaccine_name"), row.get("note")
+        )
+        add(
+            "vaccination", row, matched,
+            f"{row.get('vaccine_name') or '疫苗'} 第{dose}剂",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                f"下一剂 {row.get('next_due')}" if row.get("next_due") else "",
+                row.get("note") or "",
+            ) if part),
+            row.get("vaccinated_at"),
+        )
+
+    for row in appointments:
+        status = {
+            "upcoming": "待就诊",
+            "completed": "已完成",
+            "cancelled": "已取消",
+        }.get(str(row.get("status") or ""), str(row.get("status") or ""))
+        matched = key in _health_search_text(
+            row.get("title"), row.get("department"), row.get("doctor"),
+            row.get("location"), status, row.get("note"),
+        )
+        add(
+            "appointment", row, matched,
+            row.get("title") or "就诊预约",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                status,
+                row.get("department") or "",
+                row.get("doctor") or "",
+                row.get("location") or "",
+                row.get("scheduled_at") or "",
+                row.get("note") or "",
+            ) if part),
+            row.get("scheduled_at"),
+        )
+
+    for row in care_items:
+        interval = _health_search_number(row.get("interval_days"))
+        matched = key in _health_search_text(
+            row.get("title"),
+            "已停用" if not row.get("active") else "",
+            row.get("note"),
+        )
+        add(
+            "care", row, matched,
+            row.get("title") or "复查",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                f"每 {interval} 天" if interval else "",
+                f"下次 {row.get('next_due_at')}"
+                if row.get("next_due_at") else "",
+                "已停用" if not row.get("active") else "",
+                row.get("note") or "",
+            ) if part),
+            row.get("next_due_at"),
+        )
+
+    for row in visits:
+        matched = key in _health_search_text(
+            row.get("diagnosis"), row.get("department"), row.get("doctor"),
+            row.get("facility"), row.get("advice"),
+            row.get("prescription"), row.get("note"),
+        )
+        add(
+            "visit", row, matched,
+            row.get("diagnosis") or "就诊记录",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                row.get("visit_date") or "",
+                row.get("department") or "",
+                row.get("doctor") or "",
+                row.get("facility") or "",
+                row.get("advice") or "",
+                row.get("prescription") or "",
+                row.get("note") or "",
+            ) if part),
+            row.get("visit_date"),
+        )
+
+    severity_labels = {"mild": "轻度", "moderate": "中度", "severe": "重度"}
+    kind_labels = {
+        "drug": "药物",
+        "food": "食物",
+        "environment": "环境",
+        "other": "其他",
+    }
+    for row in allergies:
+        severity = severity_labels.get(str(row.get("severity") or ""), "")
+        kind = kind_labels.get(str(row.get("kind") or ""), "")
+        matched = key in _health_search_text(
+            row.get("substance"), row.get("reaction"), severity, kind,
+            "已停用" if not row.get("active") else "",
+            row.get("note"),
+        )
+        add(
+            "allergy", row, matched,
+            row.get("substance") or "过敏原",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                kind,
+                severity,
+                row.get("reaction") or "",
+                "已停用" if not row.get("active") else "",
+                row.get("note") or "",
+            ) if part),
+            row.get("noted_at"),
+        )
+
+    status_labels = {
+        "active": "管理中",
+        "controlled": "已控制",
+        "resolved": "已痊愈",
+    }
+    for row in conditions:
+        status = status_labels.get(str(row.get("status") or ""), "")
+        severity = severity_labels.get(str(row.get("severity") or ""), "")
+        matched = key in _health_search_text(
+            row.get("name"), row.get("icd10"), status, severity,
+            row.get("note"),
+        )
+        add(
+            "condition", row, matched,
+            row.get("name") or "慢病",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                status,
+                severity,
+                row.get("icd10") or "",
+                row.get("note") or "",
+            ) if part),
+            row.get("diagnosed_at") or row.get("updated_at"),
+        )
+
+    for row in reminders:
+        done = bool(row.get("done"))
+        matched = key in _health_search_text(
+            row.get("title"),
+            "已完成" if done else "待处理",
+            row.get("note"),
+        )
+        add(
+            "reminder", row, matched,
+            row.get("title") or "提醒",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                f"到期 {row.get('due_at')}" if row.get("due_at") else "",
+                "已完成" if done else "待处理",
+                row.get("note") or "",
+            ) if part),
+            row.get("due_at"),
+        )
+
+    counts = {
+        type_key: len(items) for type_key, items in buckets.items()
+    }
+    results: List[Dict[str, Any]] = []
+    for type_key in HEALTH_SEARCH_TYPE_ORDER:
+        items = sorted(
+            buckets[type_key], key=lambda item: item["at"], reverse=True
+        )
+        results.extend(items[:HEALTH_SEARCH_PER_TYPE_LIMIT])
+    results.sort(key=lambda item: (item["at"], item["id"]), reverse=True)
+    shown = results[:limit]
+    return {
+        "query": query,
+        "total": sum(counts.values()),
+        "returned": len(shown),
+        "truncated": sum(counts.values()) > len(shown),
+        "counts": counts,
+        "results": shown,
+    }
 
 
 @app.get("/api/health/calendar")
