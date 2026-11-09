@@ -8511,6 +8511,14 @@ function renderFamilyOverview(data) {
     const name = document.createElement('strong');
     name.textContent = profile.name;
     head.appendChild(name);
+    const attention = profile.attention || {};
+    if (attention.level && attention.level !== 'ok') {
+      const badge = document.createElement('span');
+      badge.className = `family-attention-badge is-${attention.level}`;
+      badge.textContent = attention.label || '';
+      if (attention.detail) badge.title = attention.detail;
+      head.appendChild(badge);
+    }
     const contextText = familyContextText(profile.context);
     if (contextText) {
       const meta = document.createElement('span');

@@ -85,6 +85,8 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert mom["consultations"]["count"] == 1
     assert mom["last_activity"]
     assert mom["recorded_today"] is True
+    assert mom["attention"]["level"] == "warning"
+    assert mom["attention"]["label"] == "逾期提醒 1 条"
 
     child = profiles["孩子"]
     assert child["metrics"] == []
@@ -92,6 +94,33 @@ def test_family_overview_summarizes_profiles(client_and_store):
     assert child["symptoms"]["count"] == 0
     assert child["last_activity"] == ""
     assert child["recorded_today"] is False
+    assert child["attention"]["level"] == "ok"
+    assert data["profiles"][0]["name"] == "妈妈"
+
+
+def test_family_overview_attention_puts_critical_first(client_and_store):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={"name": "爸爸", "context": {}})
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 190, "value2": 130,
+        "measured_at": f"{today}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 70,
+        "measured_at": f"{today}T08:00",
+    })
+
+    data = client.get("/api/family/overview").json()
+
+    mom = next(item for item in data["profiles"] if item["name"] == "妈妈")
+    dad = next(item for item in data["profiles"] if item["name"] == "爸爸")
+    assert mom["attention"]["level"] == "danger"
+    assert "危急值" in mom["attention"]["label"]
+    assert mom["attention"]["detail"]
+    assert dad["attention"]["level"] == "ok"
+    assert data["profiles"][0]["name"] == "妈妈"
 
 
 def test_family_overview_medication_activity_and_due_today(client_and_store):
@@ -296,7 +325,7 @@ def test_family_overview_csv_export(client_and_store):
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", "近30天症状", "近30天会诊", "最近活动",
         "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
-        "复查计划", "最近就诊", "慢病",
+        "复查计划", "最近就诊", "慢病", "关注提示",
     ]
     mom = next(row for row in rows[1:] if row[0] == "妈妈")
     assert mom[8] == "近 30 天 0 次"
@@ -306,3 +335,4 @@ def test_family_overview_csv_export(client_and_store):
     assert "超标" in mom[3]
     assert mom[6].startswith("待办 1")
     assert mom[7] == "0"
+    assert mom[18]

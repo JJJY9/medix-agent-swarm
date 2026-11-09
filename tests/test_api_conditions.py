@@ -201,9 +201,9 @@ def test_conditions_in_dossier_and_family(client_and_store):
     rows = list(csv.reader(
         io.StringIO(export.content.decode("utf-8-sig"))
     ))
-    assert rows[0][-1] == "慢病"
+    assert rows[0][-2] == "慢病"
     row = next(row for row in rows[1:] if row[0] == "奶奶")
-    assert "慢性肾脏病 3 期" in row[-1]
+    assert "慢性肾脏病 3 期" in row[-2]
 
 
 def test_conditions_backup_roundtrip_and_profile_rename(

@@ -7554,6 +7554,140 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     return {"ok": True, "old_name": name, "name": new_name}
 
 
+FAMILY_ATTENTION_ORDER = {"danger": 0, "warning": 1, "info": 2, "ok": 3}
+
+
+def _family_attention(
+    *,
+    critical: Dict[str, Any],
+    consultation_risk: str,
+    labs: Dict[str, Any],
+    reminders: Dict[str, Any],
+    care: Dict[str, Any],
+    symptoms: Dict[str, Any],
+    medications: Dict[str, Any],
+    vaccinations: Dict[str, Any],
+    appointments: Dict[str, Any],
+    metrics: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    """从家庭总览已聚合的数据中提取最需要关注的一条提示。"""
+    if critical.get("count"):
+        return {
+            "level": "danger",
+            "label": f"危急值 {critical['count']} 项",
+            "detail": "、".join(critical.get("items") or [])[:120],
+        }
+    if consultation_risk in {"high", "emergency"}:
+        return {
+            "level": "warning",
+            "label": "最近会诊提示高风险",
+            "detail": "",
+        }
+    if reminders.get("overdue"):
+        return {
+            "level": "warning",
+            "label": f"逾期提醒 {reminders['overdue']} 条",
+            "detail": "",
+        }
+    if care.get("overdue"):
+        return {
+            "level": "warning",
+            "label": f"复查逾期 {care['overdue']} 项",
+            "detail": "、".join(
+                care.get("overdue_items")
+                or care.get("items") or []
+            )[:120],
+        }
+    max_severity = int(symptoms.get("max_severity") or 0)
+    if max_severity >= 7:
+        return {
+            "level": "warning",
+            "label": "近期重度症状",
+            "detail": f"{symptoms.get('severe_symptom') or ''} "
+            f"{max_severity}/10".strip(),
+        }
+    if labs.get("abnormal"):
+        return {
+            "level": "warning",
+            "label": f"化验异常 {labs['abnormal']} 项",
+            "detail": "、".join(labs.get("items") or [])[:120],
+        }
+    over_target = [
+        item for item in (metrics or []) if item.get("over_target")
+    ]
+    if over_target:
+        return {
+            "level": "warning",
+            "label": f"指标超标 {len(over_target)} 项",
+            "detail": "、".join(
+                f"{item.get('label', '')} {item.get('value', '')}"
+                f"{item.get('unit') or ''}"
+                for item in over_target[:3]
+            )[:120],
+        }
+    if medications.get("expired") or medications.get("low_stock"):
+        parts = []
+        if medications.get("expired"):
+            parts.append(f"过期 {medications['expired']} 种")
+        if medications.get("low_stock"):
+            parts.append(f"低库存 {medications['low_stock']} 种")
+        return {
+            "level": "warning",
+            "label": "用药库存提醒",
+            "detail": "、".join(parts),
+        }
+    adherence = medications.get("adherence") or {}
+    if adherence.get("expected", 0) >= 3 and adherence.get("rate", 100) < 60:
+        return {
+            "level": "info",
+            "label": f"用药打卡 {int(adherence['rate'])}%",
+            "detail": "",
+        }
+    if vaccinations.get("overdue"):
+        return {
+            "level": "info",
+            "label": f"疫苗逾期 {vaccinations['overdue']} 剂",
+            "detail": vaccinations.get("next_due") or "",
+        }
+    if reminders.get("due_today"):
+        return {
+            "level": "info",
+            "label": f"今天有 {reminders['due_today']} 条提醒",
+            "detail": "",
+        }
+    if care.get("due_soon"):
+        return {
+            "level": "info",
+            "label": f"复查临近 {care['due_soon']} 项",
+            "detail": "、".join(care.get("items") or [])[:120],
+        }
+    next_appointment = appointments.get("next") or {}
+    days_until = next_appointment.get("days_until")
+    if (
+        next_appointment.get("title")
+        and isinstance(days_until, int)
+        and 0 <= days_until <= 7
+    ):
+        when = str(next_appointment.get("scheduled_at") or "")
+        return {
+            "level": "info",
+            "label": "有近期就诊预约",
+            "detail": " ".join(
+                part for part in (
+                    next_appointment.get("title") or "",
+                    when[:16].replace("T", " "),
+                ) if part
+            )[:120],
+        }
+    if medications.get("expiring"):
+        return {
+            "level": "info",
+            "label": f"药物即将过期 {medications['expiring']} 种",
+            "detail": "",
+        }
+    return {"level": "ok", "label": "暂无需要关注", "detail": ""}
+
+
 @app.get("/api/family/overview")
 async def family_overview(days: int = 7):
     """家庭健康总览：按档案汇总最近指标、用药、提醒、症状与会诊。"""
@@ -7594,7 +7728,7 @@ async def family_overview(days: int = 7):
         store.list_appointments, None, None, False, 100000, 0
     )
     lab_results = await asyncio.to_thread(
-        store.list_lab_results, None, None, None, 0, 100000, 0
+        store.list_lab_results, None, None, None, days, 100000, 0
     )
     care_items = await asyncio.to_thread(
         store.list_care_items, None, False, False, 100000
@@ -7748,13 +7882,18 @@ async def family_overview(days: int = 7):
         if not profile:
             continue
         entry = symptoms_by_profile.setdefault(profile, {
-            "count": 0, "latest": None,
+            "count": 0, "latest": None, "max_severity": 0,
+            "severe_symptom": "",
         })
         entry["count"] += 1
+        severity = int(item.get("severity") or 0)
+        if severity > int(entry["max_severity"] or 0):
+            entry["max_severity"] = severity
+            entry["severe_symptom"] = item.get("symptom", "")
         if entry["latest"] is None:
             entry["latest"] = {
                 "symptom": item.get("symptom", ""),
-                "severity": int(item.get("severity") or 0),
+                "severity": severity,
                 "recorded_at": item.get("recorded_at", ""),
             }
 
@@ -7838,9 +7977,14 @@ async def family_overview(days: int = 7):
             continue
         entry = care_by_profile.setdefault(profile, {
             "overdue": 0, "due_soon": 0, "next": None, "items": [],
+            "overdue_items": [],
         })
         if item.get("overdue"):
             entry["overdue"] += 1
+            if len(entry["overdue_items"]) < 3:
+                entry["overdue_items"].append(
+                    item.get("title") or ""
+                )
         if item.get("due_soon"):
             entry["due_soon"] += 1
         due = str(item.get("next_due_at") or "")
@@ -7915,7 +8059,8 @@ async def family_overview(days: int = 7):
             "pending": 0, "overdue": 0, "due_today": 0,
         })
         symptom = symptoms_by_profile.get(name, {
-            "count": 0, "latest": None,
+            "count": 0, "latest": None, "max_severity": 0,
+            "severe_symptom": "",
         })
         vaccination = vaccinations_by_profile.get(name, {
             "count": 0, "latest": None, "next_due": "", "overdue": 0,
@@ -7931,6 +8076,7 @@ async def family_overview(days: int = 7):
         })
         care = care_by_profile.get(name, {
             "overdue": 0, "due_soon": 0, "next": None, "items": [],
+            "overdue_items": [],
         })
         visits = visits_by_profile.get(name, {
             "count": 0, "latest": None,
@@ -7963,6 +8109,21 @@ async def family_overview(days: int = 7):
             or medication.get("taken_today")
             or str(consultation.get("latest_at") or "")[:10] == today
         )
+        attention = _family_attention(
+            critical=critical,
+            consultation_risk=(
+                risk_by_profile.get(name, "")
+                if consultation.get("count") else ""
+            ),
+            labs=labs,
+            reminders=reminder,
+            care=care,
+            symptoms=symptom,
+            medications=medication,
+            vaccinations=vaccination,
+            appointments=appointment,
+            metrics=metrics,
+        )
         profiles.append({
             "name": name,
             "context": contexts.get(name) or {},
@@ -7981,6 +8142,7 @@ async def family_overview(days: int = 7):
                 **consultation,
                 "risk": risk_by_profile.get(name, ""),
             },
+            "attention": attention,
             "last_activity": last_activity,
             "recorded_today": recorded_today,
             "streak": _streak_info(
@@ -7991,6 +8153,12 @@ async def family_overview(days: int = 7):
     profiles.sort(
         key=lambda item: (item["last_activity"], item["name"]),
         reverse=True,
+    )
+    # 稳定排序：需要关注的成员排在前面，同级别内保持最近活动顺序
+    profiles.sort(
+        key=lambda item: FAMILY_ATTENTION_ORDER.get(
+            (item.get("attention") or {}).get("level"), 9
+        )
     )
     return {"days": days, "profiles": profiles}
 
@@ -8007,7 +8175,7 @@ async def export_family_overview_csv(days: int = 7):
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
         "疫苗接种", "用药库存", "下次就诊", "化验异常", "危急值",
-        "复查计划", "最近就诊", "慢病",
+        "复查计划", "最近就诊", "慢病", "关注提示",
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
@@ -8160,6 +8328,10 @@ async def export_family_overview_csv(days: int = 7):
             ]
             if names:
                 condition_text += "（" + "；".join(names) + "）"
+        attention_info = item.get("attention") or {}
+        attention_text = attention_info.get("label") or ""
+        if attention_info.get("detail"):
+            attention_text += f"（{attention_info['detail']}）"
         rows.append([
             csv_safe_cell(item.get("name", "")),
             csv_safe_cell(context.get("age", "")),
@@ -8182,6 +8354,7 @@ async def export_family_overview_csv(days: int = 7):
             csv_safe_cell(care_text),
             csv_safe_cell(visit_record_text),
             csv_safe_cell(condition_text),
+            csv_safe_cell(attention_text),
         ])
 
     buffer = io.StringIO()
