@@ -11840,6 +11840,7 @@ let conditionSaving = false;
 let conditionRequestSeq = 0;
 let conditionItemsCache = [];
 let conditionSearchTimer = null;
+let conditionTemplateBusy = new Set();
 
 const CONDITION_STATUS_LABELS = {
   active: '管理中',
@@ -11937,6 +11938,12 @@ function renderConditions(items) {
     severityBadge.textContent =
       CONDITION_SEVERITY_LABELS[item.severity] || '中度';
     title.append(' ', severityBadge);
+    if (item.template_key) {
+      const templateBadge = document.createElement('span');
+      templateBadge.className = 'allergy-kind-badge';
+      templateBadge.textContent = `模板：${item.template_name}`;
+      title.append(' ', templateBadge);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -11956,6 +11963,20 @@ function renderConditions(items) {
 
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
+
+    if (item.template_key) {
+      const template = document.createElement('button');
+      template.type = 'button';
+      template.className = 'metric-edit';
+      template.textContent = '套用模板';
+      template.setAttribute(
+        'aria-label', `按慢病模板生成复查计划：${item.name}`
+      );
+      template.addEventListener(
+        'click', () => applyConditionTemplate(item)
+      );
+      actions.appendChild(template);
+    }
 
     const edit = document.createElement('button');
     edit.type = 'button';
@@ -11997,6 +12018,36 @@ async function loadConditions() {
     els.conditionEmpty.textContent = '慢病清单加载失败，请稍后重试。';
     els.conditionEmpty.hidden = false;
     setConditionStatus('慢病清单加载失败，请稍后重试。', true);
+  }
+}
+
+async function applyConditionTemplate(item) {
+  if (conditionTemplateBusy.has(item.id)) return;
+  conditionTemplateBusy.add(item.id);
+  setConditionStatus(`正在套用「${item.template_name || '慢病'}」模板…`);
+  try {
+    const res = await fetch(
+      `/api/conditions/${item.id}/apply-template`, { method: 'POST' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const created = (data.care_items_created || []).length;
+    const skipped = (data.care_items_skipped || []).length;
+    const targets = (data.targets_created || []).length;
+    setConditionStatus(
+      `已按「${data.template}」模板生成复查 ${created} 项`
+      + (skipped ? `、跳过已有 ${skipped} 项` : '')
+      + (targets ? `，并设置指标目标 ${targets} 项。` : '。')
+    );
+    await loadCareItems();
+    loadMetricTargets();
+    refreshOverview();
+  } catch (err) {
+    setConditionStatus(`套用模板失败：${err.message || err}`, true);
+  } finally {
+    conditionTemplateBusy.delete(item.id);
   }
 }
 
