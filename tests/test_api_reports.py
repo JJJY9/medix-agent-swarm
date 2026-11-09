@@ -388,3 +388,85 @@ def test_weekly_report_lists_active_medication_without_logs(client_and_store):
     assert medications["adherence"] == {
         "expected": 1, "taken": 0, "rate": 0,
     }
+
+
+def test_weekly_report_integrates_new_health_records(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    upcoming = (now + timedelta(days=3)).strftime("%Y-%m-%d")
+
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 130, "value2": 80,
+        "measured_at": f"{yesterday}T08:00", "context": "morning",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 142, "value2": 90,
+        "measured_at": f"{yesterday}T20:00", "context": "evening",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "glucose", "value1": 6.1,
+        "measured_at": f"{yesterday}T07:00", "context": "fasting",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "glucose", "value1": 8.5,
+        "measured_at": f"{yesterday}T19:00", "context": "postprandial",
+    })
+    client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "ALT", "value": 60,
+        "unit": "U/L", "ref_low": 7, "ref_high": 40,
+        "tested_at": f"{yesterday}T09:00",
+    })
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "流感疫苗",
+        "vaccinated_at": yesterday, "next_due": upcoming,
+    })
+    client.post("/api/appointments", json={
+        "profile": "妈妈", "title": "心内科复诊",
+        "scheduled_at": f"{upcoming}T09:00",
+    })
+    client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "糖化血红蛋白",
+        "interval_days": 90, "next_due_at": upcoming,
+    })
+    client.post("/api/visits", json={
+        "profile": "妈妈", "diagnosis": "高血压复诊",
+        "visit_date": today, "next_followup_date": upcoming,
+    })
+    client.post("/api/conditions", json={
+        "profile": "妈妈", "name": "原发性高血压",
+        "status": "active",
+    })
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "妈妈"}
+    ).json()
+
+    assert report["labs"]["count"] == 1
+    assert report["labs"]["abnormal"] == 1
+    assert report["labs"]["items"][0]["item"] == "ALT"
+    assert report["vaccinations"]["count"] == 1
+    assert report["vaccinations"]["upcoming"][0]["vaccine_name"] == "流感疫苗"
+    assert report["care_plan"]["due_in_7_days"] == 1
+    assert report["care_plan"]["items"][0]["title"] == "糖化血红蛋白"
+    assert report["appointments"]["upcoming"][0]["title"] == "心内科复诊"
+    assert report["visits"]["count"] == 1
+    assert report["visits"]["latest"]["diagnosis"] == "高血压复诊"
+    assert report["visits"]["upcoming_followups"][0]["diagnosis"] == "高血压复诊"
+    assert report["conditions"]["active"] == 1
+    assert "原发性高血压" in report["conditions"]["names"]
+
+    bp_contexts = {
+        row["context"]: row for row in report["metric_contexts"]["bp"]
+    }
+    assert bp_contexts["morning"]["label"] == "晨起"
+    assert bp_contexts["morning"]["avg_value1"] == 130.0
+    assert bp_contexts["evening"]["avg_value2"] == 90.0
+    glucose_contexts = {
+        row["context"]: row for row in report["metric_contexts"]["glucose"]
+    }
+    assert glucose_contexts["fasting"]["label"] == "空腹"
+    assert glucose_contexts["postprandial"]["avg_value1"] == 8.5

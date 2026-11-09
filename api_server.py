@@ -4789,8 +4789,11 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         }
 
     from memory.session_store import (
+        METRIC_TYPES,
         adherence_rate,
+        critical_metric_alerts,
         expected_doses_for_period,
+        metric_context_label,
         metric_over_target,
     )
 
@@ -4956,6 +4959,179 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
         elif due <= horizon:
             due_soon += 1
 
+    raw_labs = await asyncio.to_thread(
+        store.list_lab_results, profile, None, None, days * 2, 100000, 0
+    )
+    lab_results = [
+        item for item in raw_labs
+        if start <= str(item.get("tested_at") or "")[:10] <= end
+    ]
+    previous_labs = [
+        item for item in raw_labs
+        if prev_start <= str(item.get("tested_at") or "")[:10] < start
+    ]
+    abnormal_labs = [item for item in lab_results if item.get("abnormal")]
+    previous_abnormal = [
+        item for item in previous_labs if item.get("abnormal")
+    ]
+    lab_rows = [
+        {
+            "item": item.get("item", ""),
+            "value": item.get("value"),
+            "unit": item.get("unit", ""),
+            "tested_at": item.get("tested_at", ""),
+            "abnormal_low": bool(item.get("abnormal_low")),
+            "abnormal_high": bool(item.get("abnormal_high")),
+        }
+        for item in sorted(
+            abnormal_labs,
+            key=lambda row: str(row.get("tested_at") or ""),
+            reverse=True,
+        )[:8]
+    ]
+
+    vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, profile, 100000
+    )
+    vaccinations_in_period = [
+        item for item in vaccinations
+        if start <= str(item.get("vaccinated_at") or "")[:10] <= end
+    ]
+    vaccine_overdue = [
+        item for item in vaccinations
+        if str(item.get("next_due") or "")[:10]
+        and str(item.get("next_due") or "")[:10] < today
+    ]
+    vaccine_upcoming = [
+        item for item in vaccinations
+        if today <= str(item.get("next_due") or "")[:10] <= horizon
+    ]
+
+    appointments = await asyncio.to_thread(
+        store.list_appointments, profile, None, False, 100000, 0
+    )
+    appointments_in_period = [
+        item for item in appointments
+        if start <= str(item.get("scheduled_at") or "")[:10] <= end
+    ]
+    appointments_done = [
+        item for item in appointments_in_period
+        if item.get("status") == "completed"
+    ]
+    appointments_upcoming = [
+        item for item in appointments
+        if item.get("status") == "upcoming"
+        and today <= str(item.get("scheduled_at") or "")[:10] <= horizon
+    ]
+    appointments_overdue = [
+        item for item in appointments
+        if item.get("status") == "upcoming"
+        and str(item.get("scheduled_at") or "")[:10] < today
+    ]
+
+    care_items = await asyncio.to_thread(
+        store.list_care_items, profile, False, False, 100000
+    )
+    care_active = [item for item in care_items if item.get("active")]
+    care_due_period = [
+        item for item in care_active
+        if start <= str(item.get("next_due_at") or "")[:10] <= end
+    ]
+    care_overdue = [
+        item for item in care_active
+        if str(item.get("next_due_at") or "")[:10] < today
+    ]
+    care_due_soon = [
+        item for item in care_active
+        if today <= str(item.get("next_due_at") or "")[:10] <= horizon
+    ]
+    care_completed = [
+        item for item in care_items
+        if start <= str(item.get("last_done_at") or "")[:10] <= end
+    ]
+
+    raw_visits = await asyncio.to_thread(
+        store.list_visit_records, profile, days * 2, "", 100000
+    )
+    visits = [
+        item for item in raw_visits
+        if start <= str(item.get("visit_date") or "")[:10] <= end
+    ]
+    previous_visits = [
+        item for item in raw_visits
+        if prev_start <= str(item.get("visit_date") or "")[:10] < start
+    ]
+    upcoming_followups = [
+        item for item in raw_visits
+        if today <= str(item.get("next_followup_date") or "")[:10]
+        <= horizon
+    ]
+    latest_visit = raw_visits[0] if raw_visits else None
+
+    active_conditions = await asyncio.to_thread(
+        store.list_conditions, profile, True, None, 100000
+    )
+
+    context_groups: dict = {}
+    for item in metrics:
+        metric = item.get("metric") or ""
+        if metric not in ("bp", "glucose"):
+            continue
+        context_key = str(item.get("context") or "")
+        entry = context_groups.setdefault(metric, {}).setdefault(
+            context_key or "unspecified",
+            {
+                "context": context_key or "unspecified",
+                "label": metric_context_label(metric, context_key) or "未指定",
+                "count": 0,
+                "sum1": 0.0,
+                "sum2": 0.0,
+                "with_second": 0,
+            },
+        )
+        entry["count"] += 1
+        entry["sum1"] += float(item.get("value1") or 0)
+        if item.get("value2") is not None:
+            entry["sum2"] += float(item.get("value2") or 0)
+            entry["with_second"] += 1
+    metric_contexts = {
+        metric: [
+            {
+                "context": row["context"],
+                "label": row["label"],
+                "count": row["count"],
+                "avg_value1": round(row["sum1"] / row["count"], 2),
+                "avg_value2": (
+                    round(row["sum2"] / row["with_second"], 2)
+                    if row["with_second"] else None
+                ),
+            }
+            for row in sorted(
+                groups.values(), key=lambda row: row["context"]
+            )
+        ]
+        for metric, groups in context_groups.items()
+    }
+
+    critical_count = 0
+    critical_items = []
+    for item in metrics:
+        alerts = critical_metric_alerts(
+            item.get("metric"), item.get("value1"), item.get("value2")
+        )
+        if not alerts:
+            continue
+        critical_count += 1
+        if len(critical_items) < 5:
+            label = METRIC_TYPES.get(
+                item.get("metric"), (item.get("metric"), "", (0, 0))
+            )[0]
+            value = f"{float(item.get('value1') or 0):g}"
+            if item.get("value2") is not None:
+                value += f"/{float(item['value2']):g}"
+            unit = item.get("unit") or ""
+            critical_items.append(f"{label} {value} {unit}".strip())
+
     streak = _streak_info(
         await asyncio.to_thread(store.recorded_days, profile, 3650)
     )
@@ -5007,6 +5183,102 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
             "count": len(sessions),
             "prev_count": len(previous_sessions),
             "risk": risk_level,
+        },
+        "labs": {
+            "count": len(lab_results),
+            "abnormal": len(abnormal_labs),
+            "prev_count": len(previous_labs),
+            "prev_abnormal": len(previous_abnormal),
+            "items": lab_rows,
+        },
+        "vaccinations": {
+            "count": len(vaccinations_in_period),
+            "overdue": len(vaccine_overdue),
+            "upcoming": [
+                {
+                    "vaccine_name": item.get("vaccine_name", ""),
+                    "dose_number": item.get("dose_number"),
+                    "next_due": item.get("next_due", ""),
+                }
+                for item in sorted(
+                    vaccine_upcoming,
+                    key=lambda row: str(row.get("next_due") or ""),
+                )[:5]
+            ],
+        },
+        "care_plan": {
+            "due_in_period": len(care_due_period),
+            "completed": len(care_completed),
+            "overdue": len(care_overdue),
+            "due_in_7_days": len(care_due_soon),
+            "items": [
+                {
+                    "title": item.get("title", ""),
+                    "next_due_at": item.get("next_due_at", ""),
+                    "overdue": bool(item.get("overdue")),
+                }
+                for item in sorted(
+                    care_overdue + care_due_soon,
+                    key=lambda row: str(row.get("next_due_at") or ""),
+                )[:5]
+            ],
+        },
+        "appointments": {
+            "in_period": len(appointments_in_period),
+            "completed": len(appointments_done),
+            "overdue": len(appointments_overdue),
+            "upcoming": [
+                {
+                    "title": item.get("title", ""),
+                    "scheduled_at": item.get("scheduled_at", ""),
+                    "department": item.get("department", ""),
+                    "doctor": item.get("doctor", ""),
+                }
+                for item in sorted(
+                    appointments_upcoming,
+                    key=lambda row: str(row.get("scheduled_at") or ""),
+                )[:5]
+            ],
+        },
+        "visits": {
+            "count": len(visits),
+            "prev_count": len(previous_visits),
+            "latest": (
+                {
+                    "visit_date": latest_visit.get("visit_date", ""),
+                    "diagnosis": latest_visit.get("diagnosis", ""),
+                    "department": latest_visit.get("department", ""),
+                    "doctor": latest_visit.get("doctor", ""),
+                    "next_followup_date": latest_visit.get(
+                        "next_followup_date", ""
+                    ),
+                }
+                if latest_visit else None
+            ),
+            "upcoming_followups": [
+                {
+                    "diagnosis": item.get("diagnosis", ""),
+                    "next_followup_date": item.get(
+                        "next_followup_date", ""
+                    ),
+                }
+                for item in sorted(
+                    upcoming_followups,
+                    key=lambda row: str(row.get("next_followup_date") or ""),
+                )[:5]
+            ],
+        },
+        "conditions": {
+            "active": len(active_conditions),
+            "names": [
+                item.get("name") for item in active_conditions[:5]
+                if item.get("name")
+            ],
+        },
+        "metric_contexts": metric_contexts,
+        "critical_alerts": {
+            "count": critical_count,
+            "items": critical_items,
         },
         "streak": streak,
     }
