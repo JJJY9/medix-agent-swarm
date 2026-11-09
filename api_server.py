@@ -75,7 +75,10 @@ WEB_DIR = project_root / "web"
 def _compute_web_build_id() -> str:
     """用前端资源内容生成构建号，供缓存版本与更新提示使用。"""
     digest = hashlib.sha256()
-    for name in ("index.html", "app.js", "styles.css", "theme-init.js", "sw.js"):
+    for name in (
+        "index.html", "app.js", "lab-prefill-core.js", "styles.css",
+        "theme-init.js", "sw.js",
+    ):
         path = WEB_DIR / name
         try:
             digest.update(path.read_bytes())
