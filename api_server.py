@@ -5688,6 +5688,7 @@ def _health_insight(
 
 def _build_health_insights(
     report: Dict[str, Any],
+    safety: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     """把近 N 天健康汇总转成按优先级排序的可执行提示。"""
     from memory.session_store import METRIC_TYPES
@@ -5704,6 +5705,23 @@ def _build_health_insights(
             "、".join(critical.get("items") or [])[:200],
             "请立即复测；如仍异常，联系医生或前往急诊。",
             "metric",
+        ))
+
+    if (
+        safety
+        and safety.get("level") == "warning"
+        and safety.get("alerts")
+    ):
+        alerts = safety.get("alerts") or []
+        insights.append(_health_insight(
+            "medication_safety",
+            "warning",
+            f"在用药物存在 {len(alerts)} 条安全提示",
+            "；".join(
+                str(item.get("title") or "") for item in alerts[:3]
+            )[:200],
+            "请让医生或药师确认后再调整用药。",
+            "medication",
         ))
 
     for row in (report.get("metrics") or {}).get("by_metric") or []:
@@ -6031,8 +6049,45 @@ def _build_health_insights(
 @app.get("/api/health/insights")
 async def health_insights(profile: Optional[str] = None, days: int = 30):
     """基于近 N 天健康数据的规则化提示。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    safety = None
+    if profile is not None:
+        safety = await _medication_safety_for_profile(store, profile)
+    else:
+        # 家庭范围按成员分别检查用药安全，避免首页卡片误报「一切正常」
+        used_names = await asyncio.to_thread(store.list_used_profile_names)
+        saved_profiles = await asyncio.to_thread(store.list_profiles)
+        candidates = {
+            str(item.get("name") or "")
+            for item in saved_profiles
+            if item.get("name")
+        }
+        candidates.update(str(name) for name in used_names if name)
+        candidates.add("")
+        family_alerts: List[Dict[str, Any]] = []
+        for name in sorted(candidates):
+            member_safety = await _medication_safety_for_profile(
+                store, name
+            )
+            if member_safety.get("level") != "warning":
+                continue
+            for alert in member_safety.get("alerts") or []:
+                family_alerts.append({
+                    **alert,
+                    "title": (
+                        f"{name or '未指定档案'}："
+                        f"{alert.get('title') or ''}"
+                    )[:160],
+                })
+        if family_alerts:
+            safety = {
+                "level": "warning",
+                "alerts": family_alerts[:5],
+            }
     report = await weekly_report(profile=profile, days=days)
-    insights = _build_health_insights(report)
+    insights = _build_health_insights(report, safety=safety)
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
     for item in insights:
         counts[item["level"]] = counts.get(item["level"], 0) + 1

@@ -280,6 +280,107 @@ def test_insights_capped_at_eight(client_and_store):
     assert data["insights"][0]["level"] == "danger"
 
 
+def test_insights_include_medication_safety(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "华法林",
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "阿司匹林",
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+
+    safety = next(
+        item for item in data["insights"]
+        if item["key"] == "medication_safety"
+    )
+    assert safety["level"] == "warning"
+    assert "安全提示" in safety["title"]
+    assert safety["detail"]
+    assert safety["section"] == "medication"
+
+    family = client.get("/api/health/insights").json()
+    family_safety = next(
+        item for item in family["insights"]
+        if item["key"] == "medication_safety"
+    )
+    assert "妈妈" in family_safety["detail"]
+
+    dad = client.get(
+        "/api/health/insights", params={"profile": "爸爸"}
+    ).json()
+    assert "medication_safety" not in [
+        item["key"] for item in dad["insights"]
+    ]
+
+
+def test_insights_medication_safety_ignores_stopped_drugs(
+    client_and_store,
+):
+    client, _store = client_and_store
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "华法林",
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "阿司匹林", "active": False,
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+
+    assert "medication_safety" not in [
+        item["key"] for item in data["insights"]
+    ]
+
+
+def test_insights_medication_safety_covers_allergy(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/allergies", json={
+        "profile": "妈妈", "substance": "青霉素", "kind": "drug",
+        "noted_at": _date(0),
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "阿莫西林",
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+
+    safety = next(
+        item for item in data["insights"]
+        if item["key"] == "medication_safety"
+    )
+    assert "青霉素" in safety["detail"]
+    assert "阿莫西林" in safety["detail"]
+
+
+def test_insights_medication_safety_lists_first_three(
+    client_and_store,
+):
+    client, _store = client_and_store
+    for name in ("华法林", "阿司匹林", "阿奇霉素", "胺碘酮", "左氧氟沙星"):
+        client.post("/api/medications", json={
+            "profile": "妈妈", "name": name,
+        })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+
+    safety = next(
+        item for item in data["insights"]
+        if item["key"] == "medication_safety"
+    )
+    assert "4 条安全提示" in safety["title"]
+    assert safety["detail"].count("；") >= 1
+    assert "华法林与氟喹诺酮类" not in safety["detail"]
+
+
 def test_insights_days_clamped_and_profile_scoped(client_and_store):
     client, _store = client_and_store
     _seed_critical(client)
