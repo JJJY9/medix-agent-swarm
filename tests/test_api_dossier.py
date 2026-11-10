@@ -147,3 +147,84 @@ def test_health_dossier_requires_profile(client_and_store):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "请先选择患者档案"
+
+
+def test_dossier_includes_health_insights(client_and_store):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 190, "value2": 130,
+        "measured_at": f"{today}T08:00",
+    })
+    client.post("/api/reminders", json={
+        "profile": "妈妈", "title": "取药", "due_at": today,
+    })
+
+    export = client.get(
+        "/api/health/dossier.md", params={"profile": "妈妈"}
+    )
+
+    assert export.status_code == 200
+    assert "## 健康提示" in export.text
+    assert "[危急]" in export.text
+    assert "近 30 天出现 1 次危急值" in export.text
+    assert "1 次危急值：血压 190/130 mmHg" in export.text
+    assert "[需关注]" in export.text
+    assert "未来 7 天有 1 条提醒到期" in export.text
+
+    client.post("/api/profiles", json={"name": "爸爸", "context": {}})
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 70,
+        "measured_at": f"{today}T08:00",
+    })
+    clear = client.get(
+        "/api/health/dossier.md", params={"profile": "爸爸"}
+    )
+    assert "## 健康提示" in clear.text
+    assert "- 近 30 天暂未发现需要特别关注的问题。" in clear.text
+    assert "[ok]" not in clear.text
+
+
+def test_dossier_health_tips_include_medication_safety(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/profiles", json={
+        "name": "妈妈", "context": {"allergies": "青霉素"},
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "阿莫西林",
+    })
+
+    export = client.get(
+        "/api/health/dossier.md", params={"profile": "妈妈"}
+    )
+
+    assert "[需关注] 在用药物存在 1 条安全提示" in export.text
+    assert "青霉素" in export.text
+    assert "阿莫西林" in export.text
+
+
+def test_dossier_health_tips_cover_requested_window(client_and_store):
+    client, _store = client_and_store
+    old = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 190, "value2": 130,
+        "measured_at": f"{old}T08:00",
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "维生素 D",
+    })
+
+    wide = client.get(
+        "/api/health/dossier.md",
+        params={"profile": "妈妈", "days": 365},
+    )
+    narrow = client.get(
+        "/api/health/dossier.md",
+        params={"profile": "妈妈", "days": 30},
+    )
+
+    assert "近 365 天出现 1 次危急值" in wide.text
+    assert "190/130" in wide.text
+    assert "- 近 30 天暂未发现需要特别关注的问题。" in narrow.text
