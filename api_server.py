@@ -423,6 +423,16 @@ class MeldRequest(StrictRequestModel):
     dialysis: bool = False
 
 
+class ApriRequest(StrictRequestModel):
+    ast: float = Field(..., gt=0, le=10000, description="AST（U/L）")
+    platelets: float = Field(..., gt=0, le=2000, description="血小板（×10⁹/L）")
+    ast_uln: float = Field(40, gt=0, le=1000, description="AST 正常上限（U/L）")
+
+
+class EagRequest(StrictRequestModel):
+    hba1c: float = Field(..., ge=3, le=20, description="HbA1c（%）")
+
+
 class StopBangRequest(StrictRequestModel):
     snoring: bool = False
     tired: bool = False
@@ -9967,6 +9977,32 @@ async def tool_meld(request: MeldRequest):
             request.dialysis,
         ),
     }
+
+
+@app.post("/api/tools/apri")
+async def tool_apri(request: ApriRequest):
+    """APRI 肝纤维化指数。"""
+    from core.clinical_tools import calculate_apri
+
+    try:
+        result = calculate_apri(
+            request.ast, request.platelets, request.ast_uln
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/tools/eag")
+async def tool_eag(request: EagRequest):
+    """由 HbA1c 估算平均血糖（eAG）。"""
+    from core.clinical_tools import calculate_eag
+
+    try:
+        result = calculate_eag(request.hba1c)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **result}
 
 
 @app.post("/api/tools/stop-bang")

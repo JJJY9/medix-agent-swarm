@@ -17,6 +17,7 @@
     inr: ['国际标准化', 'inr'],
     albumin: ['白蛋白', 'albumin', 'alb'],
     urea: ['尿素氮', '尿素', 'urea', 'bun'],
+    hba1c: ['糖化血红蛋白', 'hba1c', 'a1c', 'glycatedhemoglobin'],
   };
 
   const LAB_PREFILL_EXCLUDES = {
@@ -30,6 +31,12 @@
       'prealbumin', 'microalbumin', 'glycated', 'globulin',
     ],
     urea: ['尿酸', 'uric'],
+    platelets: [
+      '平均血小板体积', '血小板平均体积', '血小板压积',
+      '血小板分布宽度', '未成熟血小板',
+      'mpv', 'pdw', 'pct', 'plateletcrit', 'plateletdistribution',
+    ],
+    ast: ['ast/alt', 'astalt', '谷草/谷丙', '谷草谷丙', '转氨酶比'],
   };
 
   function normalizeLabName(value) {
