@@ -5006,14 +5006,17 @@ async def latest_metrics(profile: Optional[str] = None, days: int = 0):
     return {"metrics": items}
 
 
-@app.get("/api/reports/weekly")
-async def weekly_report(profile: Optional[str] = None, days: int = 7):
+async def _weekly_report_impl(
+    profile: Optional[str] = None,
+    days: int = 7,
+    max_days: int = 90,
+):
     """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
     from datetime import timedelta
 
     from memory import get_session_store
 
-    days = max(1, min(int(days or 7), 90))
+    days = max(1, min(int(days or 7), int(max_days or 90)))
     store = get_session_store()
     now = datetime.now()
     end = now.strftime("%Y-%m-%d")
@@ -6086,7 +6089,7 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
                 "level": "warning",
                 "alerts": family_alerts[:5],
             }
-    report = await weekly_report(profile=profile, days=days)
+    report = await _weekly_report_impl(profile=profile, days=days)
     insights = _build_health_insights(report, safety=safety)
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
     for item in insights:
@@ -6099,6 +6102,12 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
         "counts": counts,
         "insights": insights,
     }
+
+
+@app.get("/api/reports/weekly")
+async def weekly_report(profile: Optional[str] = None, days: int = 7):
+    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
+    return await _weekly_report_impl(profile=profile, days=days)
 
 
 @app.get("/api/timeline")
@@ -8591,6 +8600,33 @@ async def export_health_dossier(
         f"- 连续记录：已连续 {streak['current']} 天"
         f"（近 30 天记录 {streak['days_last_30']} 天）"
     )
+    lines.append("")
+
+    report = await _weekly_report_impl(
+        profile=profile_key, days=days, max_days=365
+    )
+    safety = await _medication_safety_for_profile(store, profile_key)
+    insights = [
+        item for item in _build_health_insights(report, safety=safety)
+        if item["level"] != "ok"
+    ]
+    lines.append("## 健康提示")
+    if insights:
+        level_labels = {
+            "danger": "危急",
+            "warning": "需关注",
+            "info": "提示",
+        }
+        for item in insights:
+            lines.append(
+                f"- [{level_labels.get(item['level'], item['level'])}] "
+                f"{item['title']}"
+                + (f"：{item['detail']}" if item["detail"] else "")
+            )
+    else:
+        lines.append(
+            f"- 近 {report.get('days')} 天暂未发现需要特别关注的问题。"
+        )
     lines.append("")
 
     lines.append("## 过敏史")
