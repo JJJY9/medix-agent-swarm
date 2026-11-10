@@ -1391,6 +1391,7 @@
         <optgroup label="常用">
           <option value="bmi">BMI 体重指数</option>
           <option value="egfr">eGFR 肾小球滤过率（CKD-EPI 2021）</option>
+          <option value="eag">eAG 平均血糖（由 HbA1c 估算）</option>
         </optgroup>
         <optgroup label="心血管与血栓">
           <option value="chads">CHA₂DS₂-VASc 房颤卒中风险</option>
@@ -1418,6 +1419,7 @@
         <optgroup label="肝病">
           <option value="child-pugh">Child-Pugh 肝硬化分级</option>
           <option value="fib4">FIB-4 肝纤维化指数</option>
+          <option value="apri">APRI 肝纤维化指数</option>
           <option value="meld">MELD 终末期肝病评分</option>
         </optgroup>
         <optgroup label="用药">
@@ -1726,6 +1728,30 @@
       <label class="calc-check"><input type="checkbox" id="calc-meld-dialysis"> 近一周规律透析（肌酐按 4.0 计）</label>
       <button type="button" class="btn-quiet" id="calc-meld-lab">从化验带入</button>
       <button type="submit" class="btn-quiet">计算 MELD</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-apri" data-tool="apri" hidden>
+      <p class="calc-hint">APRI =（AST ÷ 正常上限）÷ 血小板（×10⁹/L）× 100，用于慢性肝病纤维化风险分层。</p>
+      <label class="calc-field">AST（U/L）
+        <input id="calc-apri-ast" type="number" min="1" max="10000" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">血小板（×10⁹/L）
+        <input id="calc-apri-platelets" type="number" min="1" max="2000" step="1" inputmode="numeric" required>
+      </label>
+      <label class="calc-field">AST 正常上限（U/L，可选）
+        <input id="calc-apri-uln" type="number" min="1" max="1000" step="1" inputmode="numeric" value="40">
+      </label>
+      <button type="button" class="btn-quiet" id="calc-apri-lab">从化验带入</button>
+      <button type="submit" class="btn-quiet">计算 APRI</button>
+    </form>
+
+    <form class="calc-form" id="calc-form-eag" data-tool="eag" hidden>
+      <p class="calc-hint">按 ADAG 公式由 HbA1c 估算平均血糖：eAG（mg/dL）= 28.7 × HbA1c − 46.7。</p>
+      <label class="calc-field">HbA1c（%）
+        <input id="calc-eag-hba1c" type="number" min="3" max="20" step="0.1" inputmode="decimal" required>
+      </label>
+      <button type="button" class="btn-quiet" id="calc-eag-lab">从化验带入</button>
+      <button type="submit" class="btn-quiet">计算 eAG</button>
     </form>
 
     <form class="calc-form" id="calc-form-ess" data-tool="ess" hidden>

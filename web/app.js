@@ -149,6 +149,12 @@ const els = {
   calcEgfrLab: document.getElementById('calc-egfr-lab'),
   calcFib4Lab: document.getElementById('calc-fib4-lab'),
   calcMeldLab: document.getElementById('calc-meld-lab'),
+  calcApriAst: document.getElementById('calc-apri-ast'),
+  calcApriPlatelets: document.getElementById('calc-apri-platelets'),
+  calcApriUln: document.getElementById('calc-apri-uln'),
+  calcApriLab: document.getElementById('calc-apri-lab'),
+  calcEagHba1c: document.getElementById('calc-eag-hba1c'),
+  calcEagLab: document.getElementById('calc-eag-lab'),
   calcFormChads: document.getElementById('calc-form-chads'),
   calcChadsAge: document.getElementById('calc-chads-age'),
   calcChadsSex: document.getElementById('calc-chads-sex'),
@@ -230,6 +236,8 @@ const els = {
   calcMeldInr: document.getElementById('calc-meld-inr'),
   calcMeldCreatinine: document.getElementById('calc-meld-creatinine'),
   calcMeldDialysis: document.getElementById('calc-meld-dialysis'),
+  calcFormApri: document.getElementById('calc-form-apri'),
+  calcFormEag: document.getElementById('calc-form-eag'),
   calcFormStopBang: document.getElementById('calc-form-stopbang'),
   calcStopBangSnoring: document.getElementById('calc-stopbang-snoring'),
   calcStopBangTired: document.getElementById('calc-stopbang-tired'),
@@ -14923,6 +14931,82 @@ async function prefillMeldFromLab() {
   }
 }
 
+async function prefillApriFromLab() {
+  try {
+    const items = await loadLatestLabItems();
+    const ast = findLabItem(items, 'ast');
+    const platelets = findLabItem(items, 'platelets');
+    const missing = [];
+    if (labNumber(ast) === null) missing.push('AST');
+    if (labNumber(platelets) === null) missing.push('血小板');
+    if (missing.length) {
+      setCalcStatus(
+        `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
+        true
+      );
+      return;
+    }
+    els.calcApriAst.value = String(Math.round(labNumber(ast)));
+    els.calcApriPlatelets.value = String(
+      Math.round(labNumber(platelets))
+    );
+    const refHigh = Number(ast && ast.ref_high);
+    let ulnText = '';
+    if (Number.isFinite(refHigh) && refHigh > 0) {
+      const uln = Math.round(refHigh * 10) / 10;
+      els.calcApriUln.value = String(uln);
+      ulnText = `，AST 正常上限按化验单带入 ${uln} U/L`;
+    } else {
+      ulnText = '；未找到 AST 参考上限，正常上限仍为 40 U/L，'
+        + '请按化验单调整';
+    }
+    setCalcStatus(
+      `已带入 AST ${Math.round(labNumber(ast))} U/L、`
+      + `血小板 ${Math.round(labNumber(platelets))} ×10⁹/L`
+      + ulnText + '（最近一次化验）。'
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
+async function prefillEagFromLab() {
+  try {
+    const items = await loadLatestLabItems();
+    const hba1c = findLabItem(items, 'hba1c');
+    let value = labNumber(hba1c);
+    if (value === null) {
+      setCalcStatus(
+        '未找到最近的糖化血红蛋白化验结果，请先在化验结果中登记。',
+        true
+      );
+      return;
+    }
+    const unit = String((hba1c && hba1c.unit) || '').toLowerCase();
+    let converted = false;
+    if (unit.includes('mmol/mol')) {
+      value = 0.09148 * value + 2.152;
+      converted = true;
+    }
+    if (value < 3 || value > 20) {
+      setCalcStatus(
+        '糖化血红蛋白数值或单位无法识别，请手动填写。',
+        true
+      );
+      return;
+    }
+    value = Math.round(value * 10) / 10;
+    els.calcEagHba1c.value = String(value);
+    setCalcStatus(
+      `已带入糖化血红蛋白 ${value}%`
+      + (converted ? '（已由 mmol/mol 换算）' : '')
+      + '（最近一次化验）。'
+    );
+  } catch (err) {
+    setCalcStatus(`带入化验失败：${err.message || err}`, true);
+  }
+}
+
 async function loadLatestBpMetric() {
   const profile = els.profileSelect ? els.profileSelect.value || '' : '';
   const res = await fetch(
@@ -15055,6 +15139,8 @@ function setCalcTool(tool) {
     els.calcFormInteractions,
     els.calcFormQsofa,
     els.calcFormFib4,
+    els.calcFormApri,
+    els.calcFormEag,
     els.calcFormMeld,
     els.calcFormStopBang,
     els.calcFormPadua,
@@ -15933,6 +16019,44 @@ function submitMeld(event) {
       note: data.note,
       level: ['高风险', '极高风险'].includes(data.risk) ? 'warning' : '',
     })
+  );
+}
+
+function submitApri(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/apri',
+    {
+      ast: Number(els.calcApriAst.value),
+      platelets: Number(els.calcApriPlatelets.value),
+      ast_uln: Number(els.calcApriUln.value) || 40,
+    },
+    (data) => ({
+      title: 'APRI 结果',
+      main: `APRI ${data.apri}`,
+      detail: `${data.risk}：${data.detail}`,
+      note: data.note,
+      level: data.risk === '提示纤维化' ? 'warning' : '',
+    })
+  );
+}
+
+function submitEag(event) {
+  event.preventDefault();
+  runCalc(
+    '/api/tools/eag',
+    { hba1c: Number(els.calcEagHba1c.value) },
+    (data) => {
+      const aboveTarget = Number(data.hba1c) >= 7;
+      return {
+        title: 'eAG 结果',
+        main: `平均血糖约 ${data.eag_mmol_l} mmol/L`,
+        detail: `HbA1c ${data.hba1c}% ≈ ${data.eag_mg_dl} mg/dL`
+          + (aboveTarget ? '（高于常见控制目标 7%）' : ''),
+        note: data.note,
+        level: aboveTarget ? 'warning' : '',
+      };
+    }
   );
 }
 
@@ -17242,6 +17366,8 @@ els.calcFormEgfr.addEventListener('submit', submitEgfr);
 els.calcEgfrLab.addEventListener('click', prefillEgfrFromLab);
 els.calcFib4Lab.addEventListener('click', prefillFib4FromLab);
 els.calcMeldLab.addEventListener('click', prefillMeldFromLab);
+els.calcApriLab.addEventListener('click', prefillApriFromLab);
+els.calcEagLab.addEventListener('click', prefillEagFromLab);
 els.calcFormChads.addEventListener('submit', submitChads);
 els.calcFormCurb65.addEventListener('submit', submitCurb65);
 els.calcCurbLab.addEventListener('click', prefillCurb65FromLab);
@@ -17261,6 +17387,8 @@ els.calcFormInteractions.addEventListener('submit', submitInteractions);
 els.calcFormQsofa.addEventListener('submit', submitQsofa);
 els.calcFormFib4.addEventListener('submit', submitFib4);
 els.calcFormMeld.addEventListener('submit', submitMeld);
+els.calcFormApri.addEventListener('submit', submitApri);
+els.calcFormEag.addEventListener('submit', submitEag);
 els.calcFormStopBang.addEventListener('submit', submitStopBang);
 els.calcFormPadua.addEventListener('submit', submitPadua);
 els.calcFormAbcd2.addEventListener('submit', submitAbcd2);

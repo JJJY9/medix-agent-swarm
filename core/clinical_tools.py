@@ -761,6 +761,53 @@ def calculate_meld(
         "note": "MELD 用于终末期肝病短期预后评估；不能替代肝移植评估，胆红素与肌酐需按 mg/dL 输入。",
     }
 
+
+def calculate_apri(
+    ast: float,
+    platelets: float,
+    ast_uln: float = 40.0,
+) -> Dict[str, object]:
+    """APRI（AST/血小板比值指数），血小板单位为 ×10⁹/L。"""
+    ast_value = float(ast)
+    platelet_value = float(platelets)
+    uln_value = float(ast_uln)
+    if ast_value <= 0 or platelet_value <= 0 or uln_value <= 0:
+        raise ValueError("AST、血小板与正常上限必须大于 0。")
+    score = round(
+        (ast_value / uln_value) / platelet_value * 100, 2
+    )
+    if score < 0.5:
+        risk = "低风险"
+        detail = "显著肝纤维化可能性较低"
+    elif score <= 1.5:
+        risk = "不确定"
+        detail = "结果处于灰区，需结合 FIB-4、弹性成像等评估"
+    else:
+        risk = "提示纤维化"
+        detail = "显著肝纤维化可能性较高，建议进一步评估"
+    return {
+        "apri": score,
+        "risk": risk,
+        "detail": detail,
+        "note": "APRI 用于慢性肝病纤维化风险分层；AST 正常上限因实验室而异，急性肝损伤会显著影响结果。",
+    }
+
+
+def calculate_eag(hba1c: float) -> Dict[str, object]:
+    """由 HbA1c 估算平均血糖（eAG）。"""
+    value = float(hba1c)
+    if value < 3 or value > 20:
+        raise ValueError("HbA1c 应在 3%–20% 之间。")
+    mg_dl = 28.7 * value - 46.7
+    mmol_l = mg_dl / 18.0
+    return {
+        "hba1c": round(value, 1),
+        "eag_mg_dl": round(mg_dl),
+        "eag_mmol_l": round(mmol_l, 1),
+        "note": "eAG 是按群体公式由 HbA1c 推算的平均血糖，个体差异较大；常见 HbA1c 控制目标为 <7%（约 8.6 mmol/L），不能替代自我血糖监测。",
+    }
+
+
 def calculate_stop_bang(
     snoring: bool = False,
     tired: bool = False,

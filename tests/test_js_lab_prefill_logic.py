@@ -17,12 +17,18 @@ const assert = require('assert');
 const core = require('./web/lab-prefill-core.js');
 
 const items = [
+  { item: '血小板平均体积', value: 10.5, unit: 'fL' },
+  { item: '血小板压积', value: 0.21, unit: '%' },
+  { item: 'AST/ALT', value: 1.2, unit: '' },
+  { item: '谷草转氨酶', value: 35, unit: 'U/L' },
+  { item: '血小板计数', value: 156, unit: '×10⁹/L' },
   { item: '前白蛋白(PA)', value: 250, unit: 'mg/L' },
   { item: '白蛋白', value: 32, unit: 'g/L' },
   { item: '直接胆红素', value: 12, unit: 'μmol/L' },
   { item: '总胆红素', value: 45, unit: 'μmol/L' },
   { item: '尿素', value: 8.2, unit: 'mmol/L' },
   { item: '尿酸', value: 420, unit: 'μmol/L' },
+  { item: '糖化血红蛋白', value: 7.1, unit: '%' },
   { item: 'INR', value: 2.1, unit: '' },
 ];
 
@@ -32,6 +38,13 @@ assert.strictEqual(core.labNumber({ value: '' }), null);
 assert.strictEqual(core.findLabItem(items, 'albumin').item, '白蛋白');
 assert.strictEqual(core.findLabItem(items, 'bilirubin').item, '总胆红素');
 assert.strictEqual(core.findLabItem(items, 'urea').item, '尿素');
+assert.strictEqual(core.findLabItem(items, 'ast').item, '谷草转氨酶');
+assert.strictEqual(
+  core.findLabItem(items, 'platelets').item, '血小板计数'
+);
+assert.strictEqual(
+  core.findLabItem(items, 'hba1c').item, '糖化血红蛋白'
+);
 assert.strictEqual(core.labAlbuminGL({ value: 3.2, unit: 'g/dL' }).value, 32);
 assert.strictEqual(
   core.labAlbuminGL({ value: 320, unit: 'mg/dL' }).value, 3.2
