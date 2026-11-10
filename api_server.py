@@ -5133,6 +5133,7 @@ async def _weekly_report_impl(
             "max1": None,
             "max2": None,
             "latest": None,
+            "earliest": None,
             "target": None,
             "within": 0,
         })
@@ -5153,6 +5154,14 @@ async def _weekly_report_impl(
             )
         if entry["latest"] is None:
             entry["latest"] = item
+        measured_at = str(item.get("measured_at") or "")
+        if entry["earliest"] is None or (
+            measured_at
+            and measured_at < str(
+                entry["earliest"].get("measured_at") or ""
+            )
+        ):
+            entry["earliest"] = item
         target = target_map.get(
             (item.get("profile") or "", item["metric"])
         )
@@ -5200,6 +5209,7 @@ async def _weekly_report_impl(
             "max_value1": entry["max1"],
             "max_value2": entry["max2"],
             "latest": entry["latest"],
+            "earliest": entry["earliest"],
             "target": entry["target"],
             "within_target": (
                 entry["within"] if entry["target"] is not None else None
@@ -5692,6 +5702,7 @@ def _health_insight(
 def _build_health_insights(
     report: Dict[str, Any],
     safety: Optional[Dict[str, Any]] = None,
+    allow_trends: bool = True,
 ) -> List[Dict[str, str]]:
     """把近 N 天健康汇总转成按优先级排序的可执行提示。"""
     from memory.session_store import METRIC_TYPES
@@ -5824,6 +5835,70 @@ def _build_health_insights(
                     "metric",
                     metric="glucose",
                 ))
+        if allow_trends and metric == "weight" and count >= 2:
+            earliest = row.get("earliest") or {}
+            latest = row.get("latest") or {}
+            try:
+                first_value = float(earliest.get("value1"))
+                last_value = float(latest.get("value1"))
+            except (TypeError, ValueError):
+                first_value = last_value = None
+            if first_value and last_value and first_value > 0:
+                change = last_value - first_value
+                pct = round(abs(change) / first_value * 100, 2)
+                direction = "下降" if change < 0 else "增加"
+                if pct >= 5:
+                    insights.append(_health_insight(
+                        "metric_weight_change",
+                        "warning",
+                        f"体重近 {days} 天{direction} {pct:.1f}%"
+                        f"（{first_value:g}→{last_value:g} kg）",
+                        "非刻意的明显体重变化建议关注饮食、活动与"
+                        "基础疾病。",
+                        "如持续变化或伴随其他症状，请咨询医生。",
+                        "metric",
+                        metric="weight",
+                    ))
+                elif pct >= 2:
+                    insights.append(_health_insight(
+                        "metric_weight_change",
+                        "info",
+                        f"体重近 {days} 天{direction} {pct:.1f}%",
+                        f"{first_value:g}→{last_value:g} kg。",
+                        "",
+                        "metric",
+                        metric="weight",
+                    ))
+
+    bp_contexts = {
+        str(item.get("context") or ""): item
+        for item in (report.get("metric_contexts") or {}).get("bp", [])
+    }
+    morning = bp_contexts.get("morning")
+    evening = bp_contexts.get("evening")
+    if (
+        allow_trends
+        and morning
+        and evening
+        and int(morning.get("count") or 0) >= 2
+        and int(evening.get("count") or 0) >= 2
+    ):
+        morning_sys = float(morning.get("avg_value1") or 0)
+        evening_sys = float(evening.get("avg_value1") or 0)
+        delta = morning_sys - evening_sys
+        if delta >= 10:
+            insights.append(_health_insight(
+                "metric_bp_morning_evening",
+                "info" if delta < 20 else "warning",
+                f"晨间收缩压平均比睡前高 {delta:.0f} mmHg",
+                f"晨间 {morning_sys:g}/"
+                f"{float(morning.get('avg_value2') or 0):g}，"
+                f"睡前 {evening_sys:g}/"
+                f"{float(evening.get('avg_value2') or 0):g}。",
+                "晨峰明显时可与医生讨论测量与用药时间。",
+                "metric",
+                metric="bp",
+            ))
 
     symptoms = report.get("symptoms") or {}
     max_severity = int(symptoms.get("max_severity") or 0)
@@ -6090,7 +6165,12 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
                 "alerts": family_alerts[:5],
             }
     report = await _weekly_report_impl(profile=profile, days=days)
-    insights = _build_health_insights(report, safety=safety)
+    insights = _build_health_insights(
+        report,
+        safety=safety,
+        # 家庭范围下记录来自不同成员，跨成员的趋势没有意义
+        allow_trends=profile is not None,
+    )
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
     for item in insights:
         counts[item["level"]] = counts.get(item["level"], 0) + 1

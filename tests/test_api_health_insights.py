@@ -381,6 +381,265 @@ def test_insights_medication_safety_lists_first_three(
     assert "华法林与氟喹诺酮类" not in safety["detail"]
 
 
+def test_insights_weight_trend(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 80,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 75,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 80,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 78,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+
+    mom = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+    weight = next(
+        item for item in mom["insights"]
+        if item["key"] == "metric_weight_change"
+    )
+    assert weight["level"] == "warning"
+    assert "体重近" in weight["title"] and "下降" in weight["title"]
+
+    dad = client.get(
+        "/api/health/insights", params={"profile": "爸爸"}
+    ).json()
+    small = next(
+        item for item in dad["insights"]
+        if item["key"] == "metric_weight_change"
+    )
+    assert small["level"] == "info"
+
+    client.post("/api/metrics", json={
+        "profile": "孩子", "metric": "weight", "value1": 80,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "孩子", "metric": "weight", "value1": 81.6,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    boundary = client.get(
+        "/api/health/insights", params={"profile": "孩子"}
+    ).json()
+    boundary_trend = next(
+        item for item in boundary["insights"]
+        if item["key"] == "metric_weight_change"
+    )
+    assert boundary_trend["level"] == "info"
+    assert "增加" in boundary_trend["title"]
+
+    client.post("/api/metrics", json={
+        "profile": "爷爷", "metric": "weight", "value1": 80,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爷爷", "metric": "weight", "value1": 79,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    stable = client.get(
+        "/api/health/insights", params={"profile": "爷爷"}
+    ).json()
+    assert "metric_weight_change" not in [
+        item["key"] for item in stable["insights"]
+    ]
+
+
+def test_insights_weight_trend_runs_with_target(client_and_store):
+    client, _store = client_and_store
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "weight", "value1": 70,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 65,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 75,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.put("/api/metric-targets", json={
+        "profile": "爸爸", "metric": "weight", "value1": 70,
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 65,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 60,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+
+    mom = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+    mom_keys = [item["key"] for item in mom["insights"]]
+    assert "metric_weight" in mom_keys
+    assert "metric_weight_change" in mom_keys
+    mom_trend = next(
+        item for item in mom["insights"]
+        if item["key"] == "metric_weight_change"
+    )
+    assert mom_trend["level"] == "warning"
+
+    dad = client.get(
+        "/api/health/insights", params={"profile": "爸爸"}
+    ).json()
+    dad_keys = [item["key"] for item in dad["insights"]]
+    assert "metric_weight_change" in dad_keys
+    assert "metric_weight" not in dad_keys
+
+
+def test_insights_trends_are_profile_scoped(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "weight", "value1": 80,
+        "measured_at": f"{_date(-10)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "weight", "value1": 60,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    for offset in (-2, -1):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "bp",
+            "value1": 150, "value2": 95,
+            "measured_at": f"{_date(offset)}T07:00",
+            "context": "morning",
+        })
+        client.post("/api/metrics", json={
+            "profile": "爸爸", "metric": "bp",
+            "value1": 115, "value2": 75,
+            "measured_at": f"{_date(offset)}T21:00",
+            "context": "evening",
+        })
+
+    family = client.get("/api/health/insights").json()
+
+    keys = [item["key"] for item in family["insights"]]
+    assert "metric_weight_change" not in keys
+    assert "metric_bp_morning_evening" not in keys
+
+
+def test_insights_bp_morning_evening_difference(client_and_store):
+    client, _store = client_and_store
+    for offset in (-2, -1):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "bp",
+            "value1": 150, "value2": 95,
+            "measured_at": f"{_date(offset)}T07:00",
+            "context": "morning",
+        })
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "bp",
+            "value1": 135, "value2": 85,
+            "measured_at": f"{_date(offset)}T21:00",
+            "context": "evening",
+        })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+
+    bp = next(
+        item for item in data["insights"]
+        if item["key"] == "metric_bp_morning_evening"
+    )
+    assert bp["level"] == "info"
+    assert "高 15 mmHg" in bp["title"]
+
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "bp",
+        "value1": 150, "value2": 95,
+        "measured_at": f"{_date(0)}T07:00", "context": "morning",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "bp",
+        "value1": 120, "value2": 80,
+        "measured_at": f"{_date(0)}T21:00", "context": "evening",
+    })
+    single = client.get(
+        "/api/health/insights", params={"profile": "爸爸"}
+    ).json()
+    assert "metric_bp_morning_evening" not in [
+        item["key"] for item in single["insights"]
+    ]
+
+
+def test_insights_bp_morning_evening_boundaries(client_and_store):
+    client, _store = client_and_store
+    for offset in (-2, -1):
+        client.post("/api/metrics", json={
+            "profile": "爷爷", "metric": "bp",
+            "value1": 150, "value2": 95,
+            "measured_at": f"{_date(offset)}T07:00",
+            "context": "morning",
+        })
+        client.post("/api/metrics", json={
+            "profile": "爷爷", "metric": "bp",
+            "value1": 130, "value2": 80,
+            "measured_at": f"{_date(offset)}T21:00",
+            "context": "evening",
+        })
+    for offset in (-2, -1):
+        client.post("/api/metrics", json={
+            "profile": "孩子", "metric": "bp",
+            "value1": 145, "value2": 90,
+            "measured_at": f"{_date(offset)}T07:00",
+            "context": "morning",
+        })
+        client.post("/api/metrics", json={
+            "profile": "孩子", "metric": "bp",
+            "value1": 140, "value2": 85,
+            "measured_at": f"{_date(offset)}T21:00",
+            "context": "evening",
+        })
+    for offset in (-2, -1):
+        client.post("/api/metrics", json={
+            "profile": "奶奶", "metric": "bp",
+            "value1": 150, "value2": 95,
+            "measured_at": f"{_date(offset)}T07:00",
+            "context": "morning",
+        })
+    client.post("/api/metrics", json={
+        "profile": "奶奶", "metric": "bp",
+        "value1": 120, "value2": 80,
+        "measured_at": f"{_date(0)}T21:00", "context": "evening",
+    })
+
+    grandpa = client.get(
+        "/api/health/insights", params={"profile": "爷爷"}
+    ).json()
+    bp = next(
+        item for item in grandpa["insights"]
+        if item["key"] == "metric_bp_morning_evening"
+    )
+    assert bp["level"] == "warning"
+    assert "高 20 mmHg" in bp["title"]
+
+    child = client.get(
+        "/api/health/insights", params={"profile": "孩子"}
+    ).json()
+    assert "metric_bp_morning_evening" not in [
+        item["key"] for item in child["insights"]
+    ]
+
+    grandma = client.get(
+        "/api/health/insights", params={"profile": "奶奶"}
+    ).json()
+    assert "metric_bp_morning_evening" not in [
+        item["key"] for item in grandma["insights"]
+    ]
+
+
 def test_insights_days_clamped_and_profile_scoped(client_and_store):
     client, _store = client_and_store
     _seed_critical(client)
