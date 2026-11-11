@@ -52,6 +52,26 @@ def test_inspect_backup_counts_and_checksum(client_and_store):
     assert data["exported_at"]
 
 
+def test_inspect_warns_attachments_not_in_backup(client_and_store):
+    client, store, backup_dir = client_and_store
+    backup = _make_backup(store, backup_dir)
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "a.pdf",
+        "application/pdf", 2048, "",
+    )
+
+    response = client.get(f"/api/backups/{backup.name}/inspect")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["attachment_summary"] == {"count": 1, "size": 2048}
+    assert any(
+        "本备份不包含附件文件" in item and "1 份附件" in item
+        for item in data["warnings"]
+    )
+    assert data["restore_ready"] is True
+
+
 def test_inspect_detects_tampered_checksum(client_and_store):
     client, store, backup_dir = client_and_store
     backup = _make_backup(store, backup_dir)
