@@ -13853,6 +13853,7 @@ let attachmentRequestSeq = 0;
 let attachmentRefRequestSeq = 0;
 let attachmentIntegrityRequestSeq = 0;
 let attachmentOrphanCount = 0;
+let attachmentCleanableCount = 0;
 let attachmentCleaning = false;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
@@ -13878,7 +13879,7 @@ function setAttachmentIntegrityStatus(text, isError = false) {
   );
 }
 
-async function checkAttachmentIntegrity() {
+async function checkAttachmentIntegrity(prefix = '') {
   if (!els.attachmentIntegrityStatus) return;
   const requestSeq = ++attachmentIntegrityRequestSeq;
   setAttachmentIntegrityStatus('正在检查附件文件…');
@@ -13889,7 +13890,10 @@ async function checkAttachmentIntegrity() {
     if (!res.ok) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
-    attachmentOrphanCount = Number(data.orphan_count) || 0;
+    const orphanTotal = Number(data.orphan_count) || 0;
+    const recent = Number(data.recent_orphan_count) || 0;
+    attachmentOrphanCount = orphanTotal;
+    attachmentCleanableCount = Math.max(0, orphanTotal - recent);
     const parts = [
       `登记 ${data.db_count || 0} 份，目录 ${data.file_count || 0} 个文件`,
     ];
@@ -13902,32 +13906,46 @@ async function checkAttachmentIntegrity() {
         .join('、');
       parts.push(`缺失 ${missing} 份${names ? `（${names}）` : ''}`);
     }
-    if (attachmentOrphanCount) {
-      const recent = Number(data.recent_orphan_count) || 0;
+    if (orphanTotal) {
       parts.push(
-        `孤儿文件 ${attachmentOrphanCount} 个`
+        `孤儿文件 ${orphanTotal} 个`
         + (recent ? `（${recent} 个刚写入，暂不清理）` : '')
       );
     }
-    if (!missing && !attachmentOrphanCount) parts.push('未发现异常');
-    setAttachmentIntegrityStatus(parts.join('；'), missing > 0);
+    if (!missing && !orphanTotal) parts.push('未发现异常');
+    const summary = parts.join('；');
+    setAttachmentIntegrityStatus(
+      prefix ? `${prefix}；${summary}` : summary,
+      missing > 0,
+    );
     if (els.attachmentCleanup) {
-      els.attachmentCleanup.hidden = attachmentOrphanCount === 0;
+      els.attachmentCleanup.hidden = attachmentCleanableCount === 0;
     }
   } catch (err) {
     if (requestSeq !== attachmentIntegrityRequestSeq) return;
     attachmentOrphanCount = 0;
+    attachmentCleanableCount = 0;
     if (els.attachmentCleanup) els.attachmentCleanup.hidden = true;
+    const message = `检查失败：${err.message || err}`;
     setAttachmentIntegrityStatus(
-      `检查失败：${err.message || err}`, true
+      prefix ? `${prefix}；${message}` : message, true
     );
   }
 }
 
+function refreshAttachmentIntegrityIfVisible() {
+  if (
+    els.attachmentIntegrityStatus
+    && !els.attachmentIntegrityStatus.hidden
+  ) {
+    checkAttachmentIntegrity();
+  }
+}
+
 async function cleanupAttachmentOrphans() {
-  if (!attachmentOrphanCount || attachmentCleaning) return;
+  if (!attachmentCleanableCount || attachmentCleaning) return;
   if (!window.confirm(
-    `清理 ${attachmentOrphanCount} 个没有登记到数据库的附件文件？`
+    `清理 ${attachmentCleanableCount} 个没有登记到数据库的附件文件？`
     + '该操作不可恢复；刚写入的文件会自动保留。'
   )) {
     return;
@@ -13935,6 +13953,7 @@ async function cleanupAttachmentOrphans() {
   attachmentCleaning = true;
   if (els.attachmentCleanup) els.attachmentCleanup.disabled = true;
   setAttachmentIntegrityStatus('正在清理孤儿文件…');
+  let conflict = false;
   try {
     const res = await fetch('/api/attachments/cleanup', {
       method: 'POST',
@@ -13946,17 +13965,25 @@ async function cleanupAttachmentOrphans() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      conflict = res.status === 409;
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     const parts = [`已清理 ${data.removed || 0} 个孤儿文件`];
     if (data.failed) parts.push(`${data.failed} 个删除失败`);
     if (data.skipped) parts.push(`${data.skipped} 个新文件已保留`);
-    setAttachmentIntegrityStatus(parts.join('，'));
-    await checkAttachmentIntegrity();
+    const summary = parts.join('，');
+    setAttachmentIntegrityStatus(summary);
+    await checkAttachmentIntegrity(summary);
   } catch (err) {
-    setAttachmentIntegrityStatus(
-      `清理失败：${err.message || err}`, true
-    );
+    if (conflict) {
+      await checkAttachmentIntegrity(
+        '孤儿文件数量已变化，请重新确认'
+      );
+    } else {
+      setAttachmentIntegrityStatus(
+        `清理失败：${err.message || err}`, true
+      );
+    }
   } finally {
     attachmentCleaning = false;
     if (els.attachmentCleanup) els.attachmentCleanup.disabled = false;
@@ -14260,6 +14287,7 @@ async function uploadAttachment() {
     els.attachmentFile.value = '';
     els.attachmentNote.value = '';
     await loadAttachments();
+    refreshAttachmentIntegrityIfVisible();
   } catch (err) {
     setAttachmentStatus(`上传失败：${err.message || err}`, true);
   } finally {
@@ -14282,6 +14310,7 @@ async function deleteAttachment(item) {
     }
     setAttachmentStatus('已删除附件');
     await loadAttachments();
+    refreshAttachmentIntegrityIfVisible();
   } catch (err) {
     setAttachmentStatus(`删除附件失败：${err.message || err}`, true);
   }
