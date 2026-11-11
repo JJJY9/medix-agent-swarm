@@ -2341,9 +2341,15 @@ async def inspect_local_backup(name: str):
     checksum = payload.get("checksum")
     checksum_present = isinstance(checksum, str) and bool(checksum.strip())
     checksum_ok = None
+    checksum_error = ""
     if checksum_present:
-        expected = await asyncio.to_thread(_backup_checksum, payload)
-        checksum_ok = checksum.strip() == expected
+        try:
+            expected = await asyncio.to_thread(_backup_checksum, payload)
+        except (UnicodeError, ValueError, TypeError):
+            checksum_ok = False
+            checksum_error = "备份包含无法编码的字符，恢复会失败。"
+        else:
+            checksum_ok = checksum.strip() == expected
 
     count_keys = (
         "profiles", "health_metrics", "metric_targets", "reminders",
@@ -2356,30 +2362,72 @@ async def inspect_local_backup(name: str):
     for key in count_keys:
         value = payload.get(key)
         counts[key] = len(value) if isinstance(value, list) else 0
-    sessions = payload.get("sessions")
-    sessions = sessions if isinstance(sessions, list) else []
+    sessions_value = payload.get("sessions")
+    sessions_type_error = (
+        sessions_value is not None and not isinstance(sessions_value, list)
+    )
+    sessions = sessions_value if isinstance(sessions_value, list) else []
+    valid_sessions = 0
+    invalid_sessions = 0
     message_count = 0
     for session in sessions:
         if not isinstance(session, dict):
+            invalid_sessions += 1
+            continue
+        if not str(session.get("id") or "").strip():
+            invalid_sessions += 1
             continue
         messages = session.get("messages")
-        if isinstance(messages, list):
-            message_count += len(messages)
-    counts["sessions"] = len(sessions)
+        if not isinstance(messages, list):
+            invalid_sessions += 1
+            continue
+        valid_messages = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content")
+            if role not in ("user", "assistant"):
+                continue
+            if not isinstance(content, str) or not content.strip():
+                continue
+            valid_messages += 1
+        if not valid_messages:
+            invalid_sessions += 1
+            continue
+        valid_sessions += 1
+        message_count += valid_messages
+    counts["sessions"] = valid_sessions
     counts["messages"] = message_count
     total_records = sum(
         value for key, value in counts.items() if key != "messages"
     )
 
     warnings = []
-    if checksum_ok is False:
+    if checksum_error:
+        warnings.append(checksum_error)
+    elif checksum_ok is False:
         warnings.append("校验失败，备份可能已损坏或被修改。")
     elif not checksum_present:
         warnings.append("备份没有校验信息，请确认来源可靠。")
+    if sessions_type_error:
+        warnings.append("会话列表格式不正确，恢复会失败。")
+    if invalid_sessions:
+        warnings.append(
+            f"{invalid_sessions} 个会话缺少编号或有效消息，恢复时会跳过。"
+        )
     if not isinstance(payload.get("version"), int):
         warnings.append("备份缺少版本号。")
     if total_records == 0:
         warnings.append("备份中没有可恢复记录。")
+    has_backup_arrays = isinstance(sessions_value, list) or any(
+        isinstance(payload.get(key), list) for key in count_keys
+    )
+    restore_ready = (
+        checksum_ok is not False
+        and not sessions_type_error
+        and has_backup_arrays
+    )
 
     return {
         "name": path.name,
@@ -2392,7 +2440,9 @@ async def inspect_local_backup(name: str):
         "checksum_present": checksum_present,
         "checksum_ok": checksum_ok,
         "counts": counts,
+        "invalid_sessions": invalid_sessions,
         "total_records": total_records,
+        "restore_ready": restore_ready,
         "warnings": warnings,
     }
 
