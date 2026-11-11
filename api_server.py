@@ -9935,6 +9935,20 @@ async def list_attachments(
                 lab.get("panel") or "",
             ) if part)
         item["ref_label"] = label[:100]
+    attachment_dir = ATTACHMENT_DIR.resolve()
+    for item in items:
+        stored_name = str(item.get("stored_name") or "")
+        target = None
+        if stored_name:
+            try:
+                target = (attachment_dir / stored_name).resolve()
+            except (OSError, ValueError):
+                target = None
+        item["file_missing"] = not bool(
+            target
+            and target.parent == attachment_dir
+            and target.is_file()
+        )
     return {"attachments": items}
 
 

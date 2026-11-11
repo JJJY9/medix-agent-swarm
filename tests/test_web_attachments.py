@@ -87,3 +87,6 @@ def test_attachment_styles_exist():
     assert ".attachment-upload" in STYLES
     assert "#attachment-status.error" in STYLES
     assert ".attachment-more" in STYLES
+    assert ".attachment-missing" in STYLES
+    assert "item.file_missing" in SCRIPT
+    assert "文件缺失，请运行完整性检查" in SCRIPT

@@ -115,9 +115,20 @@ def test_upload_list_and_download(client_and_store, tmp_path):
     ).json()["attachments"]
     assert listed[0]["original_name"] == "出院小结.pdf"
     assert listed[0]["note"] == "出院小结"
+    assert listed[0]["file_missing"] is False
     assert client.get(
         "/api/attachments", params={"profile": "妈妈", "kind": "lab"}
     ).json()["attachments"] == []
+
+    _store.add_attachment(
+        "妈妈", "visit", 0, "丢失.pdf", "missing.pdf",
+        "application/pdf", 10, "",
+    )
+    missing_row = client.get(
+        "/api/attachments", params={"profile": "妈妈"}
+    ).json()["attachments"][0]
+    assert missing_row["original_name"] == "丢失.pdf"
+    assert missing_row["file_missing"] is True
 
     download = client.get(f"/api/attachments/{item['id']}/file")
     assert download.status_code == 200
