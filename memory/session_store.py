@@ -7347,6 +7347,7 @@ class SessionStore:
         linked: Optional[bool] = None,
         start: str = "",
         end: str = "",
+        order: str = "",
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回附件登记信息（文件内容不在数据库中）。"""
         limit = max(1, min(int(limit or 100), 1000))
@@ -7404,13 +7405,22 @@ class SessionStore:
             )
             params.extend([like] * 11)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        order_sql = {
+            "created_asc": "created_at ASC, id ASC",
+            "size_desc": "size DESC, id DESC",
+            "size_asc": "size ASC, id DESC",
+            "name_asc": "original_name COLLATE NOCASE ASC, id DESC",
+        }.get(
+            str(order or "").strip().lower(),
+            "created_at DESC, id DESC",
+        )
         with self._lock:
             rows = self._conn.execute(
                 f"""
                 SELECT id, profile, kind, ref_id, original_name,
                        stored_name, mime, size, note, created_at
                   FROM attachments{where}
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY {order_sql}
                  LIMIT ? OFFSET ?
                 """,
                 params + [limit, offset],

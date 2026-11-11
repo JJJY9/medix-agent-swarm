@@ -49,6 +49,16 @@ def test_attachment_date_range_filter_wiring():
     assert ".attachment-date" in STYLES
 
 
+def test_attachment_sort_wiring():
+    assert 'id="attachment-filter-sort"' in HTML
+    assert ">最大文件<" in HTML
+    assert ">最小文件<" in HTML
+    assert ">最早上传<" in HTML
+    assert "attachmentFilterSort" in SCRIPT
+    assert "params.set('sort', filterSort);" in SCRIPT
+    assert "els.attachmentFilterSort.addEventListener(" in SCRIPT
+
+
 def test_attachment_filter_empty_state_and_styles():
     assert "没有符合条件的资料。" in SCRIPT
     assert "const hasFilter = Boolean(" in SCRIPT

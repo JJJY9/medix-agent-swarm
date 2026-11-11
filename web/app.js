@@ -328,6 +328,7 @@ const els = {
   attachmentCleanup: document.getElementById('attachment-cleanup'),
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentFilterKind: document.getElementById('attachment-filter-kind'),
+  attachmentFilterSort: document.getElementById('attachment-filter-sort'),
   attachmentFilterLinked: document.getElementById(
     'attachment-filter-linked'
   ),
@@ -14368,6 +14369,8 @@ async function loadAttachments(append = false) {
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const filterKind = els.attachmentFilterKind
     ? els.attachmentFilterKind.value : '';
+  const filterSort = els.attachmentFilterSort
+    ? els.attachmentFilterSort.value : '';
   const filterLinked = els.attachmentFilterLinked
     ? els.attachmentFilterLinked.value : '';
   const filterQuery = els.attachmentFilterQ
@@ -14392,6 +14395,7 @@ async function loadAttachments(append = false) {
       profile,
     });
     if (filterKind) params.set('kind', filterKind);
+    if (filterSort) params.set('sort', filterSort);
     if (filterLinked) params.set('linked', filterLinked);
     if (filterQuery) params.set('q', filterQuery);
     if (filterStart) params.set('start', filterStart);
@@ -19973,6 +19977,11 @@ if (els.attachmentUpload) {
   }
   if (els.attachmentFilterKind) {
     els.attachmentFilterKind.addEventListener(
+      'change', () => loadAttachments()
+    );
+  }
+  if (els.attachmentFilterSort) {
+    els.attachmentFilterSort.addEventListener(
       'change', () => loadAttachments()
     );
   }
