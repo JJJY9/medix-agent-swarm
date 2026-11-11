@@ -3133,6 +3133,13 @@ html[data-theme="dark"] .calc-status.error {
   color: var(--triage-1);
 }
 
+#attachment-export:disabled,
+#attachment-cleanup:disabled,
+#attachment-integrity-check:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .attachment-more {
   margin: 4px 0 8px;
 }

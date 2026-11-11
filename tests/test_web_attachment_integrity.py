@@ -28,14 +28,17 @@ def test_integrity_fetches_and_renders_counts():
 
 def test_cleanup_posts_confirmation_and_reports():
     assert "cleanupAttachmentOrphans" in SCRIPT
-    assert "if (!attachmentCleanableCount || attachmentCleaning) return;" in SCRIPT
+    assert "attachmentExporting" in SCRIPT
+    assert "async function checkAttachmentIntegrity(prefix = '', force = false)" in SCRIPT
+    assert "if (!force && (attachmentExporting || attachmentCleaning)) return;" in SCRIPT
     assert "els.attachmentCleanup.disabled = true;" in SCRIPT
     assert "els.attachmentCleanup.disabled = false;" in SCRIPT
     assert "fetch('/api/attachments/cleanup'" in SCRIPT
     assert "body: JSON.stringify({" in SCRIPT
     assert "expected_orphans: attachmentOrphanCount," in SCRIPT
     assert "attachmentCleanableCount" in SCRIPT
-    assert "await checkAttachmentIntegrity(summary);" in SCRIPT
+    assert "await checkAttachmentIntegrity(summary, true);" in SCRIPT
+    assert "|| attachmentCleaning\n    || attachmentExporting" in SCRIPT
     assert "孤儿文件数量已变化，请重新确认" in SCRIPT
     assert SCRIPT.count("refreshAttachmentIntegrityIfVisible();") >= 2
     assert "已清理 ${data.removed || 0} 个孤儿文件" in SCRIPT
@@ -50,15 +53,20 @@ def test_integrity_listeners_and_styles():
     assert ".attachment-integrity" in STYLES
     assert "#attachment-integrity-status.error" in STYLES
     assert ".attachment-integrity .metric-meta" in STYLES
+    assert "#attachment-export:disabled" in STYLES
 
 
 def test_attachment_export_zip_wiring():
     assert 'id="attachment-export"' in HTML
     assert "导出全部附件包" in HTML
     assert "exportAttachmentArchive" in SCRIPT
-    assert "fetch('/api/attachments/export.zip', {\n      cache: 'no-store',\n    })" in SCRIPT
-    assert "if (attachmentExporting) return;" in SCRIPT
+    assert "fetch('/api/attachments/export.zip', {" in SCRIPT
+    assert "signal: controller.signal," in SCRIPT
+    assert "if (attachmentExporting || attachmentCleaning) return;" in SCRIPT
     assert "medix-attachments-${stamp}.zip" in SCRIPT
-    assert "已导出全部档案附件包" in SCRIPT
+    assert "已导出全部档案附件包（共 ${exported} 份" in SCRIPT
+    assert "X-Medix-Attachment-Missing" in SCRIPT
+    assert "controller.abort()" in SCRIPT
+    assert "导出超时，请稍后重试" in SCRIPT
     assert "els.attachmentExport.addEventListener(" in SCRIPT
     assert "'click', exportAttachmentArchive" in SCRIPT

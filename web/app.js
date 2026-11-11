@@ -13882,8 +13882,9 @@ function setAttachmentIntegrityStatus(text, isError = false) {
   );
 }
 
-async function checkAttachmentIntegrity(prefix = '') {
+async function checkAttachmentIntegrity(prefix = '', force = false) {
   if (!els.attachmentIntegrityStatus) return;
+  if (!force && (attachmentExporting || attachmentCleaning)) return;
   const requestSeq = ++attachmentIntegrityRequestSeq;
   setAttachmentIntegrityStatus('正在检查附件文件…');
   try {
@@ -13946,7 +13947,13 @@ function refreshAttachmentIntegrityIfVisible() {
 }
 
 async function cleanupAttachmentOrphans() {
-  if (!attachmentCleanableCount || attachmentCleaning) return;
+  if (
+    !attachmentCleanableCount
+    || attachmentCleaning
+    || attachmentExporting
+  ) {
+    return;
+  }
   if (!window.confirm(
     `清理 ${attachmentCleanableCount} 个没有登记到数据库的附件文件？`
     + '该操作不可恢复；刚写入的文件会自动保留。'
@@ -13976,11 +13983,11 @@ async function cleanupAttachmentOrphans() {
     if (data.skipped) parts.push(`${data.skipped} 个新文件已保留`);
     const summary = parts.join('，');
     setAttachmentIntegrityStatus(summary);
-    await checkAttachmentIntegrity(summary);
+    await checkAttachmentIntegrity(summary, true);
   } catch (err) {
     if (conflict) {
       await checkAttachmentIntegrity(
-        '孤儿文件数量已变化，请重新确认'
+        '孤儿文件数量已变化，请重新确认', true
       );
     } else {
       setAttachmentIntegrityStatus(
@@ -13994,18 +14001,28 @@ async function cleanupAttachmentOrphans() {
 }
 
 async function exportAttachmentArchive() {
-  if (attachmentExporting) return;
+  if (attachmentExporting || attachmentCleaning) return;
   attachmentExporting = true;
+  attachmentIntegrityRequestSeq += 1;
   if (els.attachmentExport) els.attachmentExport.disabled = true;
   setAttachmentIntegrityStatus('正在打包附件…');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120000);
   try {
     const res = await fetch('/api/attachments/export.zip', {
       cache: 'no-store',
+      signal: controller.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
+    const exported = Number(
+      res.headers.get('X-Medix-Attachment-Count')
+    ) || 0;
+    const missing = Number(
+      res.headers.get('X-Medix-Attachment-Missing')
+    ) || 0;
     const blob = await res.blob();
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
@@ -14014,13 +14031,22 @@ async function exportAttachmentArchive() {
       'application/zip'
     );
     setAttachmentIntegrityStatus(
-      '已导出全部档案附件包（含清单与可读取的文件）。'
+      `已导出全部档案附件包（共 ${exported} 份`
+      + (missing
+        ? `，${missing} 份文件缺失，仅写入清单`
+        : '')
+      + '）。',
+      missing > 0
     );
   } catch (err) {
+    const message = err.name === 'AbortError'
+      ? '导出超时，请稍后重试'
+      : (err.message || err);
     setAttachmentIntegrityStatus(
-      `导出附件包失败：${err.message || err}`, true
+      `导出附件包失败：${message}`, true
     );
   } finally {
+    clearTimeout(timer);
     attachmentExporting = false;
     if (els.attachmentExport) els.attachmentExport.disabled = false;
   }

@@ -9965,6 +9965,7 @@ async def export_attachments_zip():
             "items": [],
         }
         total_bytes = 0
+        missing_count = 0
         buffer = io.BytesIO()
         with zipfile.ZipFile(
             buffer, "w", compression=zipfile.ZIP_DEFLATED
@@ -10003,20 +10004,25 @@ async def export_attachments_zip():
                             f"files/{stored_name}", file_bytes
                         )
                 row["file_present"] = present
+                if not present:
+                    missing_count += 1
                 manifest["items"].append(row)
             archive.writestr(
                 "manifest.json",
                 json.dumps(manifest, ensure_ascii=False, indent=2),
             )
-        return buffer.getvalue()
+        return buffer.getvalue(), missing_count
 
     try:
-        content = await asyncio.to_thread(_build)
+        content, missing_count = await asyncio.to_thread(_build)
     except ValueError as e:
         raise HTTPException(status_code=413, detail=str(e))
     await record_audit(
         "attachment.export",
-        detail=f"count={len(items)} bytes={len(content)}",
+        detail=(
+            f"count={len(items)} missing={missing_count} "
+            f"bytes={len(content)}"
+        ),
     )
     filename = (
         "medix-attachments-"
@@ -10031,6 +10037,8 @@ async def export_attachments_zip():
                 f'attachment; filename="{filename}"'
             ),
             "Cache-Control": "no-store",
+            "X-Medix-Attachment-Count": str(len(items)),
+            "X-Medix-Attachment-Missing": str(missing_count),
         },
     )
 
