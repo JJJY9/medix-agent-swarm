@@ -30,7 +30,7 @@ def test_cleanup_posts_confirmation_and_reports():
     assert "cleanupAttachmentOrphans" in SCRIPT
     assert "attachmentExporting" in SCRIPT
     assert "async function checkAttachmentIntegrity(prefix = '', force = false)" in SCRIPT
-    assert "if (!force && (attachmentExporting || attachmentCleaning)) return;" in SCRIPT
+    assert "!force\n    && (attachmentExporting || attachmentCleaning || attachmentUploading)" in SCRIPT
     assert "els.attachmentCleanup.disabled = true;" in SCRIPT
     assert "els.attachmentCleanup.disabled = false;" in SCRIPT
     assert "fetch('/api/attachments/cleanup'" in SCRIPT
@@ -62,7 +62,7 @@ def test_attachment_export_zip_wiring():
     assert "exportAttachmentArchive" in SCRIPT
     assert "fetch('/api/attachments/export.zip', {" in SCRIPT
     assert "signal: controller.signal," in SCRIPT
-    assert "if (attachmentExporting || attachmentCleaning) return;" in SCRIPT
+    assert "attachmentExporting\n    || attachmentCleaning\n    || attachmentUploading" in SCRIPT
     assert "medix-attachments-${stamp}.zip" in SCRIPT
     assert "已导出全部档案附件包（共 ${exported} 份" in SCRIPT
     assert "X-Medix-Attachment-Missing" in SCRIPT

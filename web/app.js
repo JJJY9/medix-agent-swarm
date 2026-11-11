@@ -13885,7 +13885,12 @@ function setAttachmentIntegrityStatus(text, isError = false) {
 
 async function checkAttachmentIntegrity(prefix = '', force = false) {
   if (!els.attachmentIntegrityStatus) return;
-  if (!force && (attachmentExporting || attachmentCleaning)) return;
+  if (
+    !force
+    && (attachmentExporting || attachmentCleaning || attachmentUploading)
+  ) {
+    return;
+  }
   const requestSeq = ++attachmentIntegrityRequestSeq;
   setAttachmentIntegrityStatus('正在检查附件文件…');
   try {
@@ -13952,6 +13957,7 @@ async function cleanupAttachmentOrphans() {
     !attachmentCleanableCount
     || attachmentCleaning
     || attachmentExporting
+    || attachmentUploading
   ) {
     return;
   }
@@ -14002,7 +14008,13 @@ async function cleanupAttachmentOrphans() {
 }
 
 async function exportAttachmentArchive() {
-  if (attachmentExporting || attachmentCleaning) return;
+  if (
+    attachmentExporting
+    || attachmentCleaning
+    || attachmentUploading
+  ) {
+    return;
+  }
   attachmentExporting = true;
   attachmentIntegrityRequestSeq += 1;
   if (els.attachmentExport) els.attachmentExport.disabled = true;
@@ -14337,6 +14349,9 @@ async function uploadAttachment() {
   }
   attachmentUploading = true;
   els.attachmentUpload.disabled = true;
+  if (els.metricProfile) els.metricProfile.disabled = true;
+  if (els.attachmentKind) els.attachmentKind.disabled = true;
+  if (els.attachmentRef) els.attachmentRef.disabled = true;
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const kind = els.attachmentKind.value || 'other';
   const refId = els.attachmentRef && els.attachmentRefWrap
@@ -14399,6 +14414,9 @@ async function uploadAttachment() {
   } finally {
     attachmentUploading = false;
     els.attachmentUpload.disabled = false;
+    if (els.metricProfile) els.metricProfile.disabled = false;
+    if (els.attachmentKind) els.attachmentKind.disabled = false;
+    if (els.attachmentRef) els.attachmentRef.disabled = false;
   }
 }
 
