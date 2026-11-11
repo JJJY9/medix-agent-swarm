@@ -19,6 +19,8 @@ def assert_security_headers(response):
     csp = response.headers["content-security-policy"]
     assert "default-src 'self'" in csp
     assert "script-src 'self'" in csp
+    assert "img-src 'self' data: blob:" in csp
+    assert "frame-src 'self' blob:" in csp
     assert "frame-ancestors 'none'" in csp
 
 
