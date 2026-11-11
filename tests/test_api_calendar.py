@@ -63,6 +63,15 @@ def test_health_calendar_aggregates_month(client_and_store):
         "profile": "孩子", "metric": "weight",
         "value1": 25, "measured_at": "2026-10-02T08:00",
     })
+    store.add_attachment(
+        "妈妈", "other", 0, "月历资料.pdf", "calendar.pdf",
+        "application/pdf", 100, "",
+    )
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE attachments SET created_at = ? WHERE stored_name = ?",
+            ("2026-10-04T10:00:00", "calendar.pdf"),
+        )
 
     data = client.get(
         "/api/health/calendar",
@@ -79,8 +88,10 @@ def test_health_calendar_aggregates_month(client_and_store):
     assert data["days"]["2026-10-03"]["consultations"] == 1
     assert data["days"]["2026-10-05"]["symptoms"] == 1
     assert data["days"]["2026-10-06"]["reminders_done"] == 1
+    assert data["days"]["2026-10-04"]["attachments"] == 1
     assert data["totals"]["metrics"] == 2
     assert data["totals"]["consultations"] == 1
+    assert data["totals"]["attachments"] == 1
 
     child = client.get(
         "/api/health/calendar",
@@ -261,7 +272,7 @@ def test_health_calendar_csv_export(client_and_store):
     assert rows[0] == [
         "日期", "指标", "症状", "用药打卡", "会诊",
         "待办提醒", "已完成提醒", "异常",
-        "疫苗", "预约", "化验", "复查", "就诊",
+        "疫苗", "预约", "化验", "复查", "就诊", "就医资料",
     ]
     assert len(rows) == 32
     last = next(row for row in rows[1:] if row[0] == "2026-10-31")
@@ -282,5 +293,5 @@ def test_health_calendar_empty_month(client_and_store):
         "metrics": 0, "symptoms": 0, "doses": 0,
         "consultations": 0, "reminders_due": 0, "reminders_done": 0,
         "vaccinations": 0, "appointments": 0, "labs": 0,
-        "care_due": 0, "visits": 0, "alerts": 0,
+        "care_due": 0, "visits": 0, "attachments": 0, "alerts": 0,
     }
