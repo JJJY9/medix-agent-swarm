@@ -14032,6 +14032,10 @@ async function loadAttachmentRefOptions() {
   }
   const requestSeq = ++attachmentRefRequestSeq;
   els.attachmentRef.disabled = true;
+  const loading = document.createElement('option');
+  loading.value = '0';
+  loading.textContent = '正在加载关联记录…';
+  els.attachmentRef.replaceChildren(loading);
   const params = new URLSearchParams({ limit: '50', days: '365' });
   params.set('profile', profile);
   const url = kind === 'visit'

@@ -22,6 +22,7 @@ def test_attachment_ref_options_loaded_by_kind_and_profile():
     assert "选择患者档案后可关联记录" in SCRIPT
     assert "暂无可关联记录" in SCRIPT
     assert "关联记录加载失败，可不关联" in SCRIPT
+    assert "正在加载关联记录…" in SCRIPT
     assert "attachmentRefLabel(kind, item).slice(0, 100)" in SCRIPT
 
 
