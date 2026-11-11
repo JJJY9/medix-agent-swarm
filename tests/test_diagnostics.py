@@ -49,6 +49,11 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     store.add_reminder("复查", "2026-11-10", profile="妈妈")
     store.close()
 
+    attachment_dir = data_dir / "attachments"
+    attachment_dir.mkdir()
+    (attachment_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
+    (attachment_dir / "b.pdf").write_bytes(b"%PDF-1.4 bb")
+
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "secret-token")
     monkeypatch.setenv("MEDIX_RATE_LIMIT", "5")
     monkeypatch.setenv("MEDIX_PRICE_INPUT", "2")
@@ -74,6 +79,11 @@ def test_runtime_reports_database_and_flags(tmp_path, monkeypatch):
     assert runtime["pricing_configured"] is True
     assert runtime["monthly_token_budget"] == 100000
     assert runtime["auto_archive_days"] == 14
+    assert runtime["attachment_dir_exists"] is True
+    assert runtime["attachment_count"] == 2
+    assert runtime["attachment_size"] == (
+        len(b"%PDF-1.4 a") + len(b"%PDF-1.4 bb")
+    )
     assert "secret-token" not in str(runtime)
 
 
@@ -99,6 +109,9 @@ def test_runtime_marks_unreadable_tables(tmp_path, monkeypatch):
     assert runtime["metrics"] is None
     assert "health_metrics" in runtime["data_errors"]
     assert "medication_logs" in runtime["data_errors"]
+    assert runtime["attachment_dir_exists"] is False
+    assert runtime["attachment_count"] == 0
+    assert runtime["attachment_size"] == 0
 
 
 def test_missing_required_is_consistent():
