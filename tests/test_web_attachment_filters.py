@@ -33,9 +33,27 @@ def test_attachment_filters_are_sent_to_api():
     assert "els.attachmentFilterKind.addEventListener(" in SCRIPT
 
 
+def test_attachment_date_range_filter_wiring():
+    assert 'id="attachment-filter-start"' in HTML
+    assert 'id="attachment-filter-end"' in HTML
+    assert "附件起始日期" in HTML
+    assert "附件结束日期" in HTML
+    assert "attachmentFilterStart" in SCRIPT
+    assert "attachmentFilterEnd" in SCRIPT
+    assert "params.set('start', filterStart);" in SCRIPT
+    assert "params.set('end', filterEnd);" in SCRIPT
+    assert "onAttachmentDateChange" in SCRIPT
+    assert "开始日期不能晚于结束日期。" in SCRIPT
+    assert "els.attachmentFilterStart.addEventListener(" in SCRIPT
+    assert "els.attachmentFilterEnd.addEventListener(" in SCRIPT
+    assert ".attachment-date" in STYLES
+
+
 def test_attachment_filter_empty_state_and_styles():
     assert "没有符合条件的资料。" in SCRIPT
-    assert "emptyText: (filterKind || filterLinked || filterQuery)" in SCRIPT
+    assert "const hasFilter = Boolean(" in SCRIPT
+    assert "filtered: hasFilter," in SCRIPT
+    assert "emptyText: hasFilter" in SCRIPT
     assert "options.filtered ? '（已筛选）' : ''" in SCRIPT
     assert "attachmentRequestSeq += 1;" in SCRIPT
     assert ".attachment-filters" in STYLES
