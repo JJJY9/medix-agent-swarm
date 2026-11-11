@@ -59,7 +59,7 @@ def test_visit_prep_copy_export_and_reset():
     assert "function resetVisitPrep()" in SCRIPT
     assert "function setMetricProfileValue(value)" in SCRIPT
     assert "setMetricProfileValue(activeProfile);" in SCRIPT
-    assert "setMetricProfileValue(nextProfile);" in SCRIPT
+    assert "if (current !== nextProfile) {" in SCRIPT
     assert "准备单生成失败，请稍后重试。" in SCRIPT
     assert "els.visitPrepGenerate.addEventListener('click', loadVisitPrep);" in SCRIPT
     assert "els.visitPrepDays.addEventListener('change', resetVisitPrep);" in SCRIPT
