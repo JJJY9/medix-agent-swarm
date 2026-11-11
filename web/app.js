@@ -4553,9 +4553,14 @@ async function restoreBackup() {
     const inspectNotice = inspectInfo.checksum_present === false
       ? '该备份没有校验信息，请确认来源可靠；已有记录会跳过。'
       : '校验通过，已有记录会跳过，不会删除现有数据。';
+    const warnings = Array.isArray(inspectInfo.warnings)
+      ? inspectInfo.warnings : [];
+    const warningText = warnings.length
+      ? `\n注意：${warnings.join('；')}`
+      : '';
     if (!window.confirm(
       `恢复本地备份「${target.name}」（${when}${size ? `，${size}` : ''}）？\n`
-      + `预检：${inspectSummary}\n${inspectNotice}`
+      + `预检：${inspectSummary}\n${inspectNotice}${warningText}`
     )) {
       return;
     }
