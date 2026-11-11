@@ -3146,6 +3146,10 @@ html[data-theme="dark"] .calc-status.error {
   min-width: 0;
 }
 
+.attachment-missing {
+  color: var(--triage-1);
+}
+
 #attachment-integrity-status.error {
   color: var(--triage-1);
 }

@@ -14181,6 +14181,12 @@ function renderAttachments(items, options = {}) {
       item.note || '',
     ].filter(Boolean).join(' · ');
     main.append(title, meta);
+    if (item.file_missing) {
+      const missing = document.createElement('span');
+      missing.className = 'metric-note attachment-missing';
+      missing.textContent = '文件缺失，请运行完整性检查';
+      main.appendChild(missing);
+    }
     li.appendChild(main);
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
