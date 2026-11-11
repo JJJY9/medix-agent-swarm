@@ -14593,9 +14593,15 @@ async function saveMedication() {
       ? data.safety.alerts
       : [];
     if (safetyAlerts.length) {
+      const first = safetyAlerts[0];
+      const extra = safetyAlerts.length > 1
+        ? `（另有 ${safetyAlerts.length - 1} 条提示）`
+        : '';
       setMedicationStatus(
         '⚠ 用药安全提示：'
-        + safetyAlerts.map((row) => row.title || row.detail || '').join('；'),
+        + (first.title || '')
+        + (first.detail ? `：${first.detail}` : '')
+        + extra,
         false
       );
     } else {
