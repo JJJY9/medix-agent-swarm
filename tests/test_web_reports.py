@@ -768,6 +768,10 @@ def test_app_js_ships_health_timeline(client):
     assert "timelineSearch" in app_js
     assert "timelineOnlyAlert" in app_js
     assert "timeline-alert" in app_js
+    assert '<option value="attachment">资料</option>' in html
+    assert "attachment: '资料'" in app_js
+    assert "点击定位就医资料" in app_js
+    assert "type: 'attachment'" in app_js
     assert ".timeline-badge" in css
 
 
