@@ -50,3 +50,6 @@ def test_quality_renders_issues_and_links():
     assert "open.textContent = '查看'" in SCRIPT
     assert "openInsightSection(item)" in SCRIPT
     assert "暂无数据质量问题" in SCRIPT
+    assert "section === 'attachment'" in SCRIPT
+    assert "checkAttachmentIntegrity();" in SCRIPT
+    assert "attachments-section" in SCRIPT

@@ -6703,6 +6703,7 @@ async def health_data_quality(profile: Optional[str] = None):
     store = get_session_store()
     (
         labs, medications, vaccinations, care_items, reminders,
+        attachments, attachment_files,
     ) = await asyncio.gather(
         asyncio.to_thread(
             store.list_lab_results, profile, None, None, 0, 100000, 0
@@ -6715,6 +6716,11 @@ async def health_data_quality(profile: Optional[str] = None):
             store.list_care_items, profile, True, False, 100000
         ),
         asyncio.to_thread(store.list_reminders, False, profile),
+        asyncio.to_thread(
+            store.list_attachments,
+            profile, None, None, 1000, 0,
+        ),
+        asyncio.to_thread(_attachment_dir_files),
     )
 
     issues: List[Dict[str, Any]] = []
@@ -6873,6 +6879,26 @@ async def health_data_quality(profile: Optional[str] = None):
             ),
             "及时补货或更新用药清单。",
             "medication", len(stock_issues),
+        )
+
+    file_names = {
+        os.path.normcase(name) for name in attachment_files
+    }
+    missing_attachments = [
+        item for item in attachments
+        if os.path.normcase(str(item.get("stored_name") or ""))
+        not in file_names
+    ]
+    if missing_attachments:
+        add(
+            "attachment_missing", "warning",
+            f"{len(missing_attachments)} 份附件文件缺失",
+            "、".join(
+                str(item.get("original_name") or "附件")
+                for item in missing_attachments[:5]
+            ),
+            "在就医资料中运行完整性检查，必要时删除缺失登记。",
+            "attachment", len(missing_attachments),
         )
 
     issues.sort(

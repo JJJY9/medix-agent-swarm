@@ -161,6 +161,24 @@ def test_data_quality_reports_common_issues(client_and_store):
     assert keys == sorted(keys)
 
 
+def test_quality_flags_missing_attachment_files(
+    client_and_store, tmp_path, monkeypatch
+):
+    client, store = client_and_store
+    monkeypatch.setattr(
+        api_server, "ATTACHMENT_DIR", tmp_path / "attachments"
+    )
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "missing.pdf",
+        "application/pdf", 10, "",
+    )
+    data = _quality(client, "妈妈")
+    issues = _by_key(data)
+    assert issues["attachment_missing"]["count"] == 1
+    assert issues["attachment_missing"]["section"] == "attachment"
+    assert "出院小结.pdf" in issues["attachment_missing"]["detail"]
+
+
 def test_data_quality_ignores_inactive_and_boundary_records(client_and_store):
     client, _store = client_and_store
     client.post("/api/medications", json={
