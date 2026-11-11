@@ -24,10 +24,10 @@ def client_and_store(tmp_path, monkeypatch):
         store.close()
 
 
-def _add(store, stored_name, original_name="资料.pdf"):
+def _add(store, stored_name, original_name="资料.pdf", size=13):
     return store.add_attachment(
         "妈妈", "visit", 0, original_name, stored_name,
-        "application/pdf", 100, "",
+        "application/pdf", size, "",
     )
 
 
@@ -66,6 +66,25 @@ def test_integrity_reports_missing_and_orphans(client_and_store):
     assert next(
         item for item in data["orphans"] if item["name"] == "recent.pdf"
     )["recent"] is True
+
+
+def test_integrity_reports_size_mismatch(client_and_store):
+    client, store, directory = client_and_store
+    _add(store, "good.pdf", "正常.pdf")
+    _write(directory, "good.pdf")
+    _add(store, "changed.pdf", "被截断.pdf", size=999)
+    _write(directory, "changed.pdf")
+
+    response = client.get("/api/attachments/integrity")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["missing_count"] == 0
+    assert data["size_mismatch_count"] == 1
+    assert data["size_mismatch"][0]["stored_name"] == "changed.pdf"
+    assert data["size_mismatch"][0]["original_name"] == "被截断.pdf"
+    assert data["size_mismatch"][0]["db_size"] == 999
+    assert data["size_mismatch"][0]["file_size"] == 13
 
 
 def test_cleanup_requires_confirm_and_only_removes_old_orphans(

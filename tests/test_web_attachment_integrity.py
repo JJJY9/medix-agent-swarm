@@ -21,6 +21,9 @@ def test_integrity_fetches_and_renders_counts():
     assert "attachmentIntegrityRequestSeq" in SCRIPT
     assert "requestSeq !== attachmentIntegrityRequestSeq" in SCRIPT
     assert "缺失 ${missing} 份" in SCRIPT
+    assert "size_mismatch_count" in SCRIPT
+    assert "大小不一致 ${mismatch} 份" in SCRIPT
+    assert "missing > 0 || mismatch > 0" in SCRIPT
     assert "孤儿文件 ${orphanTotal} 个" in SCRIPT
     assert "刚写入，暂不清理" in SCRIPT
     assert "els.attachmentCleanup.hidden = attachmentCleanableCount === 0;" in SCRIPT
@@ -48,7 +51,7 @@ def test_cleanup_posts_confirmation_and_reports():
 
 def test_integrity_listeners_and_styles():
     assert "els.attachmentIntegrityCheck.addEventListener(" in SCRIPT
-    assert "'click', checkAttachmentIntegrity" in SCRIPT
+    assert "'click', () => checkAttachmentIntegrity()" in SCRIPT
     assert "'click', cleanupAttachmentOrphans" in SCRIPT
     assert ".attachment-integrity" in STYLES
     assert "#attachment-integrity-status.error" in STYLES

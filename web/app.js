@@ -14077,17 +14077,28 @@ async function checkAttachmentIntegrity(prefix = '', force = false) {
         .join('、');
       parts.push(`缺失 ${missing} 份${names ? `（${names}）` : ''}`);
     }
+    const mismatch = Number(data.size_mismatch_count) || 0;
+    if (mismatch) {
+      const names = (data.size_mismatch || [])
+        .slice(0, 3)
+        .map((item) => item.original_name || item.stored_name)
+        .filter(Boolean)
+        .join('、');
+      parts.push(
+        `大小不一致 ${mismatch} 份${names ? `（${names}）` : ''}`
+      );
+    }
     if (orphanTotal) {
       parts.push(
         `孤儿文件 ${orphanTotal} 个`
         + (recent ? `（${recent} 个刚写入，暂不清理）` : '')
       );
     }
-    if (!missing && !orphanTotal) parts.push('未发现异常');
+    if (!missing && !orphanTotal && !mismatch) parts.push('未发现异常');
     const summary = parts.join('；');
     setAttachmentIntegrityStatus(
       prefix ? `${prefix}；${summary}` : summary,
-      missing > 0,
+      missing > 0 || mismatch > 0,
     );
     if (els.attachmentCleanup) {
       els.attachmentCleanup.hidden = attachmentCleanableCount === 0;
@@ -19970,7 +19981,7 @@ if (els.attachmentUpload) {
   els.attachmentUpload.addEventListener('click', uploadAttachment);
   if (els.attachmentIntegrityCheck) {
     els.attachmentIntegrityCheck.addEventListener(
-      'click', checkAttachmentIntegrity
+      'click', () => checkAttachmentIntegrity()
     );
     els.attachmentCleanup.addEventListener(
       'click', cleanupAttachmentOrphans
