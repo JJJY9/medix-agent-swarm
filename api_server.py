@@ -9921,6 +9921,7 @@ async def health_visit_prep(profile: str = "", days: int = 30):
 
     from memory import get_session_store
     from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
         critical_metric_alerts,
         metric_context_label,
@@ -9973,6 +9974,16 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         asyncio.to_thread(store.list_metric_targets, profile_key),
     )
 
+    # “目前用药”只统计仍在用的药物；停用药物在窗口内的旧打卡
+    # 不应让准备单出现没有对应药物条目的依从数字
+    active_medication_ids = {
+        item.get("id") for item in medications if item.get("id") is not None
+    }
+    logs = [
+        item for item in logs
+        if item.get("medication_id") in active_medication_ids
+    ]
+
     def format_metric(item: Dict[str, Any]) -> str:
         try:
             first = float(item.get("value1"))
@@ -9993,7 +10004,10 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     critical_metrics: Dict[str, Dict[str, Any]] = {}
     for item in raw_metrics:
         metric = str(item.get("metric") or "")
-        if not metric:
+        if (
+            not metric
+            or str(item.get("measured_at") or "")[:10] > end
+        ):
             continue
         if metric not in latest_metrics:
             latest_metrics[metric] = item
@@ -10030,6 +10044,9 @@ async def health_visit_prep(profile: str = "", days: int = 30):
                 metric, item.get("context")
             ),
             "over_target": over_target,
+            "target_direction": (
+                "low" if metric in LOWER_BOUND_TARGET_METRICS else "high"
+            ),
             "critical": bool(alerts),
             "notes": [alert.get("message") for alert in alerts][:3],
         })
@@ -10040,7 +10057,8 @@ async def health_visit_prep(profile: str = "", days: int = 30):
 
     abnormal_labs = [
         item for item in raw_labs
-        if item.get("abnormal") or item.get("critical")
+        if str(item.get("tested_at") or "")[:10] <= end
+        and (item.get("abnormal") or item.get("critical"))
     ]
     abnormal_labs.sort(
         key=lambda item: str(item.get("tested_at") or ""), reverse=True
@@ -10073,6 +10091,12 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         name = str(item.get("symptom") or "").strip()
         if not name:
             continue
+        try:
+            severity = int(item.get("severity") or 0)
+        except (TypeError, ValueError, OverflowError):
+            severity = 0
+        if severity <= 0:
+            continue
         bucket = symptom_buckets.setdefault(name, {
             "symptom": name,
             "count": 0,
@@ -10080,10 +10104,6 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             "last_at": "",
         })
         bucket["count"] += 1
-        try:
-            severity = int(item.get("severity") or 0)
-        except (TypeError, ValueError, OverflowError):
-            severity = 0
         bucket["max_severity"] = max(bucket["max_severity"], severity)
         bucket["last_at"] = max(
             bucket["last_at"], str(item.get("recorded_at") or "")[:16]
@@ -10159,11 +10179,14 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     today = end
     reminder_rows = []
     overdue_reminders = 0
+    overdue_medication_reminders = 0
     for item in reminders:
         due = str(item.get("due_at") or "")
         overdue = due[:10] < today
         if overdue:
             overdue_reminders += 1
+            if item.get("medication_id"):
+                overdue_medication_reminders += 1
         if len(reminder_rows) < 5:
             reminder_rows.append({
                 "title": str(item.get("title") or "")[:120],
@@ -10202,10 +10225,17 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             "是否需要立即处理或复查？"
         )
     if other_labs:
-        names = "、".join(item["item"] for item in other_labs[:3])
-        questions.append(
-            f"化验 {names} 异常，是否需要复查或调整治疗？"
-        )
+        critical_names = {item["item"] for item in critical_labs}
+        names: List[str] = []
+        for item in other_labs:
+            name = item["item"]
+            if name and name not in names and name not in critical_names:
+                names.append(name)
+        if names:
+            questions.append(
+                f"化验 {'、'.join(names[:3])} 异常，"
+                "是否需要复查或调整治疗？"
+            )
     critical_metrics = [
         item for item in abnormal_metrics if item["critical"]
     ]
@@ -10216,15 +10246,22 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     if critical_metrics:
         first = critical_metrics[0]
         questions.append(
-            f"{first['label']} 最近 {first['value']} {first['unit']}"
-            " 达到危急值，需要立即就医还是调整用药？"
+            f"{first['label']} {first['measured_at'][:10]} 为 "
+            f"{first['value']} {first['unit']}（危急值），"
+            "需要立即就医还是调整用药？"
         )
     if over_target_metrics:
-        names = "、".join(
-            f"{item['label']} {item['value']}"
-            for item in over_target_metrics[:3]
+        parts = []
+        for item in over_target_metrics[:3]:
+            direction = (
+                "低于目标"
+                if item.get("target_direction") == "low"
+                else "超出目标"
+            )
+            parts.append(f"{item['label']} {item['value']} {direction}")
+        questions.append(
+            "、".join(parts) + "，是否需要调整方案？"
         )
-        questions.append(f"{names} 超出目标，是否需要调整方案？")
     if skip_logs:
         reason_text = (
             f"，主要原因：{skip_reasons[0]['reason']}"
@@ -10236,29 +10273,56 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         )
     if top_symptoms:
         first = top_symptoms[0]
-        questions.append(
+        symptom_prefix = (
             f"近 {days} 天反复出现{first['symptom']}"
+            if first["count"] > 1
+            else f"近 {days} 天出现{first['symptom']}"
+        )
+        questions.append(
+            f"{symptom_prefix}"
             f"（{first['count']} 次，最高 {first['max_severity']}/10），"
             "是否需要进一步检查？"
         )
     if allergy_rows:
         names = "、".join(item["substance"] for item in allergy_rows[:3])
-        questions.append(f"目前记录对 {names} 过敏，用药时需要避开吗？")
+        kinds = {item["kind"] for item in allergy_rows}
+        if kinds == {"药物"}:
+            suffix = "用药时需要避开吗？"
+        elif kinds == {"食物"}:
+            suffix = "饮食上需要避开吗？"
+        elif kinds == {"环境"}:
+            suffix = "日常生活中需要避开吗？"
+        else:
+            suffix = "需要如何避开？"
+        questions.append(f"目前记录对 {names} 过敏，{suffix}")
+    planning_parts: List[str] = []
     if overdue_reminders:
-        questions.append(
-            f"有 {overdue_reminders} 项待办提醒已逾期，是否需要补做检查？"
-        )
-    if last_visit and last_visit["next_followup_date"]:
-        questions.append(
-            f"上次就诊建议 {last_visit['next_followup_date']} 复诊，"
-            "本次需要提前准备哪些检查？"
-        )
+        if overdue_medication_reminders == overdue_reminders:
+            planning_parts.append(
+                f"{overdue_reminders} 项用药提醒已逾期"
+            )
+        elif overdue_medication_reminders:
+            planning_parts.append(
+                f"{overdue_reminders} 项提醒已逾期（含用药提醒）"
+            )
+        else:
+            planning_parts.append(
+                f"{overdue_reminders} 项待办提醒已逾期"
+            )
     if care_due:
         names = "、".join(
             f"{item['title']}（{item['next_due_at']}）"
             for item in care_due[:3]
         )
-        questions.append(f"复查计划 {names} 已临近或逾期，本次一并安排吗？")
+        planning_parts.append(f"复查计划 {names} 已临近或逾期")
+    if last_visit and last_visit["next_followup_date"]:
+        planning_parts.append(
+            f"上次就诊建议 {last_visit['next_followup_date']} 复诊"
+        )
+    if planning_parts:
+        questions.append(
+            "；".join(planning_parts) + "，本次就诊需要一并安排吗？"
+        )
     if not questions:
         questions.append(
             "近期记录较少，请向医生补充描述症状、用药与检查结果。"
@@ -10282,7 +10346,12 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         lines.append("一、需要告知医生的异常")
         for item in abnormal_metrics[:8]:
             context = f"（{item['context']}）" if item["context"] else ""
-            flag = "危急值" if item["critical"] else "超标"
+            if item["critical"]:
+                flag = "危急值"
+            elif item.get("target_direction") == "low":
+                flag = "低于目标"
+            else:
+                flag = "超标"
             lines.append(
                 f"- {item['label']} {item['value']} {item['unit']}"
                 f" · {item['measured_at'][:10]}{context} · {flag}"
