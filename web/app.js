@@ -13739,6 +13739,15 @@ function openInsightSection(insight) {
     ? insight
     : insight && insight.section;
   if (!section) return;
+  if (section === 'attachment') {
+    const target = document.getElementById('attachments-section');
+    if (target) {
+      target.open = true;
+      target.scrollIntoView({ block: 'nearest' });
+    }
+    checkAttachmentIntegrity();
+    return;
+  }
   const profile = els.metricProfile ? els.metricProfile.value : '';
   if (section === 'metric') {
     const metric = insight && insight.metric ? insight.metric : '';
