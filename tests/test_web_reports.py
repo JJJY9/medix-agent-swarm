@@ -822,6 +822,9 @@ def test_app_js_ships_home_backup_card(client):
     assert "readLastBackupAt" in app_js
     assert "markBackupExported" in app_js
     assert "homeGlanceBackup" in app_js
+    assert "点击导出完整备份（不含附件）" in app_js
+    assert "建议现在导出（不含附件）" in app_js
+    assert "睡眠 7.5 小时" in html
 
 
 def test_app_js_ships_health_dossier_export(client):
