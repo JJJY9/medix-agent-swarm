@@ -124,6 +124,7 @@ def test_visit_prep_builds_sections_and_questions(client_and_store):
     assert data["symptoms"][0]["max_severity"] == 6
 
     assert data["medication_summary"]["skipped_count"] == 1
+    assert data["medication_summary"]["taken_count"] == 1
     assert data["medication_summary"]["skip_reasons"][0] == {
         "reason": "忘记", "count": 1,
     }
@@ -132,6 +133,9 @@ def test_visit_prep_builds_sections_and_questions(client_and_store):
     assert data["allergies"][0]["severity"] == "重度"
     assert data["conditions"][0]["name"] == "高血压"
     assert data["reminders"]["overdue_count"] == 1
+    assert data["reminders"]["pending_count"] == 1
+    assert data["reminders"]["items"][0]["title"] == "复查肾功能"
+    assert data["reminders"]["items"][0]["overdue"] is True
     assert data["care_items"][0]["title"] == "眼底检查"
     assert data["care_items"][0]["overdue"] is True
 
@@ -148,7 +152,8 @@ def test_visit_prep_builds_sections_and_questions(client_and_store):
     assert "头痛" in questions
     assert "青霉素" in questions
     assert "逾期" in questions
-    assert len(data["questions"]) <= 8
+    assert "上次就诊建议" in questions
+    assert len(data["questions"]) == 8
 
     text = data["text"]
     assert text.startswith("复诊准备单（妈妈")
@@ -227,6 +232,238 @@ def test_active_medication_count_not_truncated(client_and_store):
     assert data["medication_summary"]["active_count"] == 25
     assert len(data["medications"]) == 20
     assert "目前用药（25 种）" in data["text"]
+
+
+def test_visit_prep_isolation_covers_all_collections(client_and_store):
+    client, store = client_and_store
+    _seed_mother(store)
+    now = datetime.now()
+    store.add_metric(
+        "爸爸", "weight", 60,
+        measured_at=_iso(now.replace(hour=7, minute=0)),
+    )
+    store.set_metric_target("爸爸", "weight", 55)
+    father_med = store.add_medication(
+        "爸爸", "二甲双胍", dose="0.5 g", frequency="每日两次"
+    )
+    store.add_medication_log(
+        father_med["id"], _iso(now.replace(hour=8, minute=0)),
+        skipped=True, skip_reason="cost",
+    )
+    store.add_allergy("爸爸", "磺胺类", severity="moderate", kind="drug")
+    store.add_condition("爸爸", "糖尿病", status="active")
+    store.add_reminder(
+        "复查血糖", (now + timedelta(days=3)).strftime("%Y-%m-%d"),
+        profile="爸爸",
+    )
+    store.add_care_item(
+        "爸爸", "颈动脉超声", interval_days=365,
+        last_done_at=(now - timedelta(days=400)).strftime("%Y-%m-%d"),
+        next_due_at=(now - timedelta(days=5)).strftime("%Y-%m-%d"),
+    )
+    # 已停用/已痊愈的记录不应出现
+    store.add_allergy(
+        "妈妈", "海鲜", severity="mild", kind="food", active=False
+    )
+    store.add_condition("妈妈", "旧问题", status="resolved")
+
+    mother = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    assert [row["name"] for row in mother["medications"]] == ["氨氯地平"]
+    assert mother["medication_summary"]["skipped_count"] == 1
+    assert mother["medication_summary"]["skip_reasons"][0]["reason"] == "忘记"
+    assert [row["substance"] for row in mother["allergies"]] == ["青霉素"]
+    assert [row["name"] for row in mother["conditions"]] == ["高血压"]
+    assert [row["title"] for row in mother["reminders"]["items"]] == [
+        "复查肾功能"
+    ]
+    assert [row["title"] for row in mother["care_items"]] == ["眼底检查"]
+    # 爸爸的体重目标 55 不能套用到妈妈的 62 kg 上
+    assert "weight" not in {
+        row["metric"] for row in mother["abnormal_metrics"]
+    }
+
+    father = client.get(
+        "/api/health/visit-prep", params={"profile": "爸爸"}
+    ).json()
+    assert [row["name"] for row in father["medications"]] == ["二甲双胍"]
+    assert father["medication_summary"]["skip_reasons"][0]["reason"] == "费用"
+    assert [row["substance"] for row in father["allergies"]] == ["磺胺类"]
+    assert [row["name"] for row in father["conditions"]] == ["糖尿病"]
+    assert [row["title"] for row in father["reminders"]["items"]] == [
+        "复查血糖"
+    ]
+    assert [row["title"] for row in father["care_items"]] == ["颈动脉超声"]
+    assert father["abnormal_metrics"][0]["metric"] == "weight"
+
+
+def test_visit_prep_respects_days_window(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    store.add_metric(
+        "时间窗", "bp", 150, 95,
+        measured_at=_iso(now - timedelta(days=40)),
+    )
+    store.set_metric_target("时间窗", "bp", 130, 80)
+    store.add_lab_result(
+        "时间窗", "ALT", 80, unit="U/L",
+        ref_low=7, ref_high=40,
+        tested_at=_iso(now - timedelta(days=40)),
+    )
+    store.add_symptom(
+        "时间窗", "头痛", 8,
+        recorded_at=_iso(now - timedelta(days=40)),
+    )
+    thirty = client.get(
+        "/api/health/visit-prep",
+        params={"profile": "时间窗", "days": 30},
+    ).json()
+    assert thirty["start"] == (
+        now - timedelta(days=29)
+    ).strftime("%Y-%m-%d")
+    assert thirty["end"] == now.strftime("%Y-%m-%d")
+    assert thirty["abnormal_metrics"] == []
+    assert thirty["abnormal_labs"] == []
+    assert thirty["symptoms"] == []
+
+    ninety = client.get(
+        "/api/health/visit-prep",
+        params={"profile": "时间窗", "days": 90},
+    ).json()
+    assert ninety["abnormal_metrics"][0]["value"] == "150/95"
+    assert ninety["abnormal_labs"][0]["item"] == "ALT"
+    assert ninety["symptoms"][0]["symptom"] == "头痛"
+
+
+def test_visit_prep_latest_metric_lab_and_visit_order(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    store.add_metric(
+        "排序", "bp", 150, 95,
+        measured_at=_iso(now - timedelta(days=10)),
+    )
+    store.set_metric_target("排序", "bp", 130, 80)
+    store.add_metric(
+        "排序", "bp", 120, 80,
+        measured_at=_iso(now - timedelta(days=1)),
+    )
+    store.add_lab_result(
+        "排序", "血红蛋白", 130, unit="g/L",
+        ref_low=115, ref_high=150,
+        tested_at=_iso(now - timedelta(days=1)),
+    )
+    store.add_lab_result(
+        "排序", "血钠", 130, unit="mmol/L",
+        ref_low=135, ref_high=145,
+        tested_at=_iso(now - timedelta(days=1)),
+    )
+    store.add_lab_result(
+        "排序", "ALT", 100, unit="U/L",
+        ref_low=7, ref_high=40,
+        tested_at=_iso(now - timedelta(days=10)),
+    )
+    store.add_lab_result(
+        "排序", "ALT", 50, unit="U/L",
+        ref_low=7, ref_high=40,
+        tested_at=_iso(now - timedelta(days=1)),
+    )
+    store.add_lab_result(
+        "排序", "血钾", 7.0, unit="mmol/L",
+        ref_low=3.5, ref_high=5.5,
+        tested_at=_iso(now - timedelta(days=20)),
+    )
+    store.add_lab_result(
+        "排序", "血钾", 4.0, unit="mmol/L",
+        ref_low=3.5, ref_high=5.5,
+        tested_at=_iso(now - timedelta(days=1)),
+    )
+    store.add_visit_record(
+        "排序", visit_date=(now - timedelta(days=20)).strftime("%Y-%m-%d"),
+        department="旧科室", diagnosis="旧诊断",
+    )
+    store.add_visit_record(
+        "排序", visit_date=(now - timedelta(days=5)).strftime("%Y-%m-%d"),
+        department="新科室", diagnosis="新诊断",
+    )
+
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "排序"}
+    ).json()
+    # 最新一次血压正常，不应把 10 天前的超标记录当作当前异常
+    assert "bp" not in {
+        row["metric"] for row in data["abnormal_metrics"]
+    }
+    labs = {row["item"]: row for row in data["abnormal_labs"]}
+    assert "血红蛋白" not in labs
+    assert labs["血钠"]["abnormal_low"] is True
+    assert labs["血钠"]["abnormal_high"] is False
+    alt_values = [
+        row["value"] for row in data["abnormal_labs"]
+        if row["item"] == "ALT"
+    ]
+    assert alt_values == ["50", "100"]
+    assert labs["血钾"]["critical"] is True
+    assert labs["血钾"]["value"] == "7"
+    assert data["abnormal_labs"][0]["item"] == "血钾"
+    assert "血钠 130 mmol/L" in data["text"]
+    assert "偏低" in data["text"]
+    assert "血红蛋白" not in data["text"]
+    assert data["last_visit"]["department"] == "新科室"
+    assert data["last_visit"]["diagnosis"] == "新诊断"
+
+
+def test_visit_prep_reminder_and_care_boundaries(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    store.add_reminder(
+        "今天复查", now.strftime("%Y-%m-%d"), profile="边界"
+    )
+    store.add_reminder(
+        "三天后复查",
+        (now + timedelta(days=3)).strftime("%Y-%m-%d"),
+        profile="边界",
+    )
+    store.add_care_item(
+        "边界", "三天内复查", interval_days=30,
+        last_done_at=(now - timedelta(days=27)).strftime("%Y-%m-%d"),
+        next_due_at=(now + timedelta(days=3)).strftime("%Y-%m-%d"),
+    )
+    store.add_care_item(
+        "边界", "十天后复查", interval_days=30,
+        last_done_at=(now - timedelta(days=20)).strftime("%Y-%m-%d"),
+        next_due_at=(now + timedelta(days=10)).strftime("%Y-%m-%d"),
+    )
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "边界"}
+    ).json()
+    assert data["reminders"]["pending_count"] == 2
+    assert data["reminders"]["overdue_count"] == 0
+    assert all(
+        item["overdue"] is False
+        for item in data["reminders"]["items"]
+    )
+    assert [item["title"] for item in data["care_items"]] == ["三天内复查"]
+    assert data["care_items"][0]["overdue"] is False
+    assert "十天后复查" not in data["text"]
+    assert "三天内复查" in data["text"]
+    assert "临近" in data["text"]
+
+
+def test_visit_prep_fallback_when_records_are_normal(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    store.add_metric(
+        "正常记录", "weight", 60,
+        measured_at=_iso(now),
+    )
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "正常记录"}
+    ).json()
+    assert data["abnormal_metrics"] == []
+    assert data["questions"] == [
+        "近期记录较少，请向医生补充描述症状、用药与检查结果。"
+    ]
 
 
 def test_visit_prep_clamps_days_and_handles_empty_profile(
