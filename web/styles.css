@@ -3146,6 +3146,18 @@ html[data-theme="dark"] .calc-status.error {
   min-width: 0;
 }
 
+.attachment-date {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.attachment-date input[type="date"] {
+  max-width: 140px;
+}
+
 .attachment-missing {
   color: var(--triage-1);
 }

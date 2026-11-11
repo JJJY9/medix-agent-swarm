@@ -332,6 +332,10 @@ const els = {
     'attachment-filter-linked'
   ),
   attachmentFilterQ: document.getElementById('attachment-filter-q'),
+  attachmentFilterStart: document.getElementById(
+    'attachment-filter-start'
+  ),
+  attachmentFilterEnd: document.getElementById('attachment-filter-end'),
   attachmentSelectAll: document.getElementById('attachment-select-all'),
   attachmentLinkSelected: document.getElementById(
     'attachment-link-selected'
@@ -14321,6 +14325,14 @@ async function loadAttachments(append = false) {
     ? els.attachmentFilterLinked.value : '';
   const filterQuery = els.attachmentFilterQ
     ? els.attachmentFilterQ.value.trim() : '';
+  const filterStart = els.attachmentFilterStart
+    ? els.attachmentFilterStart.value : '';
+  const filterEnd = els.attachmentFilterEnd
+    ? els.attachmentFilterEnd.value : '';
+  const hasDateFilter = Boolean(filterStart || filterEnd);
+  const hasFilter = Boolean(
+    filterKind || filterLinked || filterQuery || hasDateFilter
+  );
   const offset = append ? attachmentItemsCache.length : 0;
   if (append) {
     attachmentLoadingMore = true;
@@ -14335,6 +14347,8 @@ async function loadAttachments(append = false) {
     if (filterKind) params.set('kind', filterKind);
     if (filterLinked) params.set('linked', filterLinked);
     if (filterQuery) params.set('q', filterQuery);
+    if (filterStart) params.set('start', filterStart);
+    if (filterEnd) params.set('end', filterEnd);
     const res = await fetch(`/api/attachments?${params.toString()}`);
     const data = await res.json().catch(() => ({}));
     if (requestSeq !== attachmentRequestSeq) return;
@@ -14345,8 +14359,8 @@ async function loadAttachments(append = false) {
     renderAttachments(items, {
       append,
       hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
-      filtered: Boolean(filterKind || filterLinked || filterQuery),
-      emptyText: (filterKind || filterLinked || filterQuery)
+      filtered: hasFilter,
+      emptyText: hasFilter
         ? '没有符合条件的资料。'
         : '还没有就医资料。',
     });
@@ -14608,6 +14622,19 @@ async function unlinkSelectedAttachments() {
 function closeAttachmentLinkBar() {
   attachmentLinkRefRequestSeq += 1;
   if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
+}
+
+function onAttachmentDateChange() {
+  const start = els.attachmentFilterStart
+    ? els.attachmentFilterStart.value : '';
+  const end = els.attachmentFilterEnd
+    ? els.attachmentFilterEnd.value : '';
+  if (start && end && start > end) {
+    setAttachmentStatus('开始日期不能晚于结束日期。', true);
+    return;
+  }
+  setAttachmentStatus('');
+  loadAttachments();
 }
 
 function updateAttachmentSelection() {
@@ -19905,6 +19932,16 @@ if (els.attachmentUpload) {
   if (els.attachmentFilterLinked) {
     els.attachmentFilterLinked.addEventListener(
       'change', () => loadAttachments()
+    );
+  }
+  if (els.attachmentFilterStart) {
+    els.attachmentFilterStart.addEventListener(
+      'change', onAttachmentDateChange
+    );
+  }
+  if (els.attachmentFilterEnd) {
+    els.attachmentFilterEnd.addEventListener(
+      'change', onAttachmentDateChange
     );
   }
   if (els.attachmentFilterQ) {

@@ -7345,6 +7345,8 @@ class SessionStore:
         offset: int = 0,
         q: str = "",
         linked: Optional[bool] = None,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回附件登记信息（文件内容不在数据库中）。"""
         limit = max(1, min(int(limit or 100), 1000))
@@ -7372,6 +7374,14 @@ class SessionStore:
             params.append(reference)
         if linked is not None:
             conditions.append("ref_id > 0" if linked else "ref_id = 0")
+        start_day = str(start or "").strip()[:10]
+        if start_day:
+            conditions.append("substr(created_at, 1, 10) >= ?")
+            params.append(start_day)
+        end_day = str(end or "").strip()[:10]
+        if end_day:
+            conditions.append("substr(created_at, 1, 10) <= ?")
+            params.append(end_day)
         query = " ".join(str(q or "").split())
         if query:
             like = _like_pattern(query)

@@ -9965,8 +9965,10 @@ async def list_attachments(
     offset: int = 0,
     q: str = "",
     linked: Optional[bool] = None,
+    start: str = "",
+    end: str = "",
 ):
-    """附件列表（不含文件内容）；可按档案、类型、关联记录与关键字筛选。"""
+    """附件列表（不含文件内容）；可按档案、类型、关联、日期与关键字筛选。"""
     from memory import get_session_store
     from memory.session_store import ATTACHMENT_KINDS
 
@@ -9978,6 +9980,24 @@ async def list_attachments(
         raise HTTPException(status_code=400, detail="资料类型不正确")
     if ref_id is not None and (ref_id < 0 or ref_id > MAX_SQLITE_INT):
         raise HTTPException(status_code=400, detail="关联记录编号不正确")
+
+    def _day(value: str, label: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"{label}格式应为 YYYY-MM-DD"
+            )
+
+    start_day = _day(start, "开始日期")
+    end_day = _day(end, "结束日期")
+    if start_day and end_day and start_day > end_day:
+        raise HTTPException(
+            status_code=400, detail="开始日期不能晚于结束日期"
+        )
     store = get_session_store()
     items = await asyncio.to_thread(
         store.list_attachments,
@@ -9988,6 +10008,8 @@ async def list_attachments(
         offset,
         q,
         linked,
+        start_day,
+        end_day,
     )
     visit_ids = {
         int(item.get("ref_id") or 0)

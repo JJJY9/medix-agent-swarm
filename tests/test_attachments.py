@@ -489,6 +489,45 @@ def test_update_attachment_note(client_and_store):
         f"/api/attachments/{item['id']}", json={"note": "x" * 301}
     ).status_code == 422
 
+def test_list_attachments_date_range(client_and_store, monkeypatch):
+    client, _store = client_and_store
+    monkeypatch.setattr(
+        SessionStore, "_now",
+        staticmethod(lambda: "2026-01-01T09:00:00"),
+    )
+    first = _upload(client, file_name="一月.pdf").json()["attachment"]
+    monkeypatch.setattr(
+        SessionStore, "_now",
+        staticmethod(lambda: "2026-02-15T09:00:00"),
+    )
+    second = _upload(client, file_name="二月.pdf").json()["attachment"]
+
+    def search(**params):
+        response = client.get(
+            "/api/attachments", params={"profile": "妈妈", **params}
+        )
+        assert response.status_code == 200, response.text
+        return {row["id"] for row in response.json()["attachments"]}
+
+    assert search(start="2026-02-01") == {second["id"]}
+    assert search(end="2026-01-31") == {first["id"]}
+    assert search(
+        start="2026-01-01", end="2026-02-28"
+    ) == {first["id"], second["id"]}
+    assert search(
+        start="2026-02-15", end="2026-02-15"
+    ) == {second["id"]}
+    assert client.get(
+        "/api/attachments",
+        params={"start": "2026-02-01", "end": "2026-01-31"},
+    ).status_code == 400
+    assert client.get(
+        "/api/attachments", params={"start": "2026/01/01"}
+    ).status_code == 400
+    assert client.get(
+        "/api/attachments", params={"end": "2026-13-01"}
+    ).status_code == 400
+
 
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
