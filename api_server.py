@@ -222,6 +222,13 @@ class ConfirmRequest(StrictRequestModel):
     confirm: bool = Field(False, description="确认执行该操作")
 
 
+class AttachmentCleanupRequest(StrictRequestModel):
+    confirm: bool = Field(False, description="确认清理孤儿文件")
+    expected_orphans: int = Field(
+        ..., ge=0, description="预检时看到的孤儿文件数量"
+    )
+
+
 class BulkSessionsRequest(StrictRequestModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
@@ -9921,7 +9928,7 @@ async def attachment_integrity():
 
 
 @app.post("/api/attachments/cleanup")
-async def cleanup_attachment_orphans(request: ConfirmRequest):
+async def cleanup_attachment_orphans(request: AttachmentCleanupRequest):
     """清理附件目录中没有数据库登记的孤儿文件。"""
     from time import time
 
@@ -9938,8 +9945,20 @@ async def cleanup_attachment_orphans(request: ConfirmRequest):
         for item in items
         if item.get("stored_name")
     }
+    files = await asyncio.to_thread(_attachment_dir_files)
+    orphan_names = [
+        name for name in files if name not in db_names
+    ]
+    if request.expected_orphans != len(orphan_names):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "孤儿文件数量已变化（当前 "
+                f"{len(orphan_names)} 个），请重新检查后再清理。"
+            ),
+        )
 
-    def _remove() -> tuple:
+    def _remove(names: List[str]) -> tuple:
         base = ATTACHMENT_DIR.resolve()
         removed = 0
         failed = 0
@@ -9947,8 +9966,9 @@ async def cleanup_attachment_orphans(request: ConfirmRequest):
         if not base.exists():
             return removed, failed, skipped
         now = time()
-        for path in base.iterdir():
-            if not path.is_file() or path.name in db_names:
+        for name in names:
+            path = base / name
+            if not path.is_file():
                 continue
             try:
                 modified = path.stat().st_mtime
@@ -9967,7 +9987,9 @@ async def cleanup_attachment_orphans(request: ConfirmRequest):
                 removed += 1
         return removed, failed, skipped
 
-    removed, failed, skipped = await asyncio.to_thread(_remove)
+    removed, failed, skipped = await asyncio.to_thread(
+        _remove, orphan_names
+    )
     await record_audit(
         "attachment.cleanup",
         detail=f"removed={removed} failed={failed} skipped={skipped}",

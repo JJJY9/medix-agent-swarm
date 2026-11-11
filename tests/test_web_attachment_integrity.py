@@ -32,7 +32,8 @@ def test_cleanup_posts_confirmation_and_reports():
     assert "els.attachmentCleanup.disabled = true;" in SCRIPT
     assert "els.attachmentCleanup.disabled = false;" in SCRIPT
     assert "fetch('/api/attachments/cleanup'" in SCRIPT
-    assert "body: JSON.stringify({ confirm: true })" in SCRIPT
+    assert "body: JSON.stringify({" in SCRIPT
+    assert "expected_orphans: attachmentOrphanCount," in SCRIPT
     assert "已清理 ${data.removed || 0} 个孤儿文件" in SCRIPT
     assert "个新文件已保留" in SCRIPT
     assert "清理 ${attachmentOrphanCount} 个没有登记到数据库的附件文件？" in SCRIPT
