@@ -7732,10 +7732,39 @@ async def health_search(
             row.get("visit_date"),
         )
 
+    visit_map = {
+        int(row["id"]): row for row in visits if row.get("id")
+    }
+    lab_map = {
+        int(row["id"]): row for row in labs if row.get("id")
+    }
     for row in attachments:
+        ref_id = int(row.get("ref_id") or 0)
+        ref_label = ""
+        if row.get("kind") == "visit" and ref_id in visit_map:
+            visit = visit_map[ref_id]
+            ref_label = " · ".join(part for part in (
+                str(visit.get("visit_date") or "")[:10],
+                visit.get("department") or "",
+                visit.get("diagnosis") or "",
+            ) if part)
+        elif row.get("kind") == "lab" and ref_id in lab_map:
+            lab = lab_map[ref_id]
+            try:
+                value = f"{float(lab.get('value')):g}"
+            except (TypeError, ValueError, OverflowError):
+                value = str(lab.get("value") or "")
+            result = f"{lab.get('item') or '化验'} {value}".strip()
+            if lab.get("unit"):
+                result += f" {lab['unit']}"
+            ref_label = " · ".join(part for part in (
+                str(lab.get("tested_at") or "")[:10],
+                result,
+                lab.get("panel") or "",
+            ) if part)
         matched = key in _health_search_text(
             row.get("original_name"), row.get("note"),
-            row.get("kind_label"), row.get("profile"),
+            row.get("kind_label"), row.get("profile"), ref_label,
         )
         add(
             "attachment", row, matched,
@@ -7743,12 +7772,13 @@ async def health_search(
             " · ".join(part for part in (
                 row.get("profile") or "",
                 row.get("kind_label") or "",
+                ref_label,
                 row.get("note") or "",
             ) if part),
             row.get("created_at"),
             {
                 "kind": row.get("kind") or "other",
-                "ref_id": int(row.get("ref_id") or 0),
+                "ref_id": ref_id,
             },
         )
 
