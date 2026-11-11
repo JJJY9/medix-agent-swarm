@@ -7191,6 +7191,7 @@ async function refreshMetrics() {
   loadAllergies();
   loadCareItems();
   loadVisits();
+  loadAttachmentRefCounts();
   loadConditions();
   loadMedications();
   loadMedicationLogs();
@@ -11169,6 +11170,15 @@ function renderLabs(items) {
       flag.title = item.critical_alerts[0].message || '';
       title.append(' ', flag);
     }
+    const attachmentCount = Number(
+      attachmentRefCounts.lab[item.id]
+    ) || 0;
+    if (attachmentCount) {
+      const badge = document.createElement('span');
+      badge.className = 'care-due-badge is-soon';
+      badge.textContent = `资料 ${attachmentCount}`;
+      title.append(' ', badge);
+    }
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
@@ -12299,6 +12309,15 @@ function renderVisits(items) {
       scheduled.className = 'care-due-badge is-soon';
       scheduled.textContent = '已安排复诊';
       title.append(' ', scheduled);
+    }
+    const attachmentCount = Number(
+      attachmentRefCounts.visit[item.id]
+    ) || 0;
+    if (attachmentCount) {
+      const badge = document.createElement('span');
+      badge.className = 'care-due-badge is-soon';
+      badge.textContent = `资料 ${attachmentCount}`;
+      title.append(' ', badge);
     }
 
     const meta = document.createElement('span');
@@ -14031,6 +14050,7 @@ let attachmentDeleting = false;
 let attachmentLinking = false;
 let attachmentLinkRefRequestSeq = 0;
 let attachmentPreviewUrl = null;
+let attachmentRefCounts = { visit: {}, lab: {} };
 let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -14465,6 +14485,24 @@ async function loadAttachments(append = false) {
   }
 }
 
+async function loadAttachmentRefCounts() {
+  if (!metricsOpen) return;
+  try {
+    const res = await fetch('/api/attachments/counts');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    const counts = data.counts || {};
+    attachmentRefCounts = {
+      visit: counts.visit || {},
+      lab: counts.lab || {},
+    };
+    if (els.visitList) renderVisits(filterVisits(visitItemsCache));
+    if (els.labList) renderLabs(filterLabs(labItemsCache));
+  } catch {
+    // 数量统计失败不影响记录列表
+  }
+}
+
 function attachmentRefLabel(kind, item) {
   const date = String(
     item.visit_date || item.tested_at || ''
@@ -14551,6 +14589,7 @@ async function loadAttachmentRefOptions() {
 function refreshAttachmentReferences() {
   loadAttachmentRefOptions();
   loadAttachments();
+  loadAttachmentRefCounts();
 }
 
 function scheduleAttachmentFilterSearch() {
@@ -14666,6 +14705,7 @@ async function postAttachmentLink(ids, refId) {
     attachmentSelectedIds.clear();
     if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
     await loadAttachments();
+    loadAttachmentRefCounts();
     setAttachmentStatus(
       refId
         ? `已关联 ${data.updated || ids.length} 份附件。`
@@ -14792,6 +14832,7 @@ async function deleteSelectedAttachments() {
   attachmentSelectedIds.clear();
   attachmentDeleting = false;
   await loadAttachments();
+    loadAttachmentRefCounts();
   refreshAttachmentIntegrityIfVisible();
   setAttachmentStatus(
     `已删除 ${removed} 份附件`
@@ -14824,6 +14865,7 @@ async function editAttachmentNote(item) {
     }
     setAttachmentStatus('附件备注已保存。');
     await loadAttachments();
+    loadAttachmentRefCounts();
   } catch (err) {
     setAttachmentStatus(`备注保存失败：${err.message || err}`, true);
   }
@@ -14999,6 +15041,7 @@ async function uploadAttachment() {
       els.attachmentFile.value = '';
       els.attachmentNote.value = '';
       await loadAttachments();
+    loadAttachmentRefCounts();
       refreshAttachmentIntegrityIfVisible();
     }
     if (failures.length) {
@@ -15047,6 +15090,7 @@ async function deleteAttachment(item) {
     }
     setAttachmentStatus('已删除附件');
     await loadAttachments();
+    loadAttachmentRefCounts();
     refreshAttachmentIntegrityIfVisible();
   } catch (err) {
     setAttachmentStatus(`删除附件失败：${err.message || err}`, true);

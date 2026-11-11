@@ -604,6 +604,34 @@ def test_list_attachments_sort(client_and_store):
     ).status_code == 400
 
 
+def test_attachment_ref_counts(client_and_store):
+    client, _store = client_and_store
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "复诊",
+    }).json()["visit"]
+    lab = client.post("/api/lab-results", json={
+        "profile": "妈妈",
+        "item": "ALT",
+        "value": 30,
+        "unit": "U/L",
+        "tested_at": datetime.now().strftime("%Y-%m-%d"),
+    }).json()["lab_result"]
+    _upload(client, kind="visit", ref_id=visit["id"])
+    _upload(
+        client, kind="visit", ref_id=visit["id"],
+        file_name="复查.pdf",
+    )
+    _upload(client, kind="lab", ref_id=lab["id"])
+    _upload(client, kind="visit", ref_id=0)
+
+    data = client.get("/api/attachments/counts").json()["counts"]
+    assert data["visit"][str(visit["id"])] == 2
+    assert data["lab"][str(lab["id"])] == 1
+    assert str(0) not in data["visit"]
+
+
 def test_list_attachments_summary_counts(client_and_store):
     client, _store = client_and_store
     first_content = b"%PDF-1.4 first"

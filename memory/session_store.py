@@ -7469,6 +7469,25 @@ class SessionStore:
             ).fetchall()
         return [str(row["stored_name"]) for row in rows]
 
+    def count_attachments_by_ref(self, kind: str) -> Dict[int, int]:
+        """按关联记录统计附件数量，仅返回已关联的附件。"""
+        kind_key = str(kind or "").strip().lower()
+        if kind_key not in ATTACHMENT_KINDS:
+            return {}
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT ref_id, COUNT(*) AS total
+                  FROM attachments
+                 WHERE kind = ? AND ref_id > 0
+                 GROUP BY ref_id
+                """,
+                (kind_key,),
+            ).fetchall()
+        return {
+            int(row["ref_id"]): int(row["total"]) for row in rows
+        }
+
     def get_attachment(
         self, attachment_id: int
     ) -> Optional[Dict[str, Any]]:
