@@ -45,6 +45,8 @@ def test_export_zip_includes_files_and_manifest(client_and_store):
     assert response.headers["content-type"].startswith("application/zip")
     assert "attachment;" in response.headers["content-disposition"]
     assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-medix-attachment-count"] == "2"
+    assert response.headers["x-medix-attachment-missing"] == "1"
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = set(archive.namelist())
         assert names == {"manifest.json", "files/good.pdf"}
@@ -66,6 +68,8 @@ def test_export_zip_with_missing_directory_and_empty_store(
     client, _store, _directory = client_and_store
     response = client.get("/api/attachments/export.zip")
     assert response.status_code == 200
+    assert response.headers["x-medix-attachment-count"] == "0"
+    assert response.headers["x-medix-attachment-missing"] == "0"
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert set(archive.namelist()) == {"manifest.json"}
         manifest = json.loads(
