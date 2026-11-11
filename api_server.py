@@ -6729,11 +6729,16 @@ async def health_data_quality(profile: Optional[str] = None):
         ),
         asyncio.to_thread(store.list_reminders, False, profile),
         asyncio.to_thread(
-            store.list_attachments,
-            profile, None, None, 1000, 0,
+            store.list_all_attachments,
         ),
         asyncio.to_thread(_attachment_dir_files),
     )
+    if profile:
+        profile_key = _normalized_profile_key(profile)
+        attachments = [
+            item for item in attachments
+            if _normalized_profile_key(item.get("profile")) == profile_key
+        ]
 
     issues: List[Dict[str, Any]] = []
 
@@ -6745,6 +6750,7 @@ async def health_data_quality(profile: Optional[str] = None):
         hint: str,
         section: str,
         count: int,
+        query: str = "",
     ) -> None:
         if count <= 0:
             return
@@ -6756,6 +6762,7 @@ async def health_data_quality(profile: Optional[str] = None):
             "hint": str(hint or "")[:160],
             "section": section,
             "count": int(count),
+            "query": str(query or "")[:80],
         })
 
     missing_unit = [
@@ -6911,6 +6918,34 @@ async def health_data_quality(profile: Optional[str] = None):
             ),
             "在就医资料中运行完整性检查，必要时删除缺失登记。",
             "attachment", len(missing_attachments),
+        )
+
+    attachment_groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in attachments:
+        name = str(item.get("original_name") or "").strip().lower()
+        if not name:
+            continue
+        key = (
+            item.get("profile") or "",
+            name,
+            int(item.get("size") or 0),
+        )
+        attachment_groups.setdefault(key, []).append(item)
+    duplicate_attachments = [
+        rows for rows in attachment_groups.values() if len(rows) > 1
+    ]
+    if duplicate_attachments:
+        names = [
+            f"{rows[0].get('original_name') or '附件'} ×{len(rows)}"
+            for rows in duplicate_attachments[:5]
+        ]
+        add(
+            "attachment_duplicate", "warning",
+            f"{len(duplicate_attachments)} 组附件可能重复",
+            "、".join(names),
+            "核对文件名与大小，确认后可删除多余附件。",
+            "attachment", len(duplicate_attachments),
+            duplicate_attachments[0][0].get("original_name") or "",
         )
 
     issues.sort(
