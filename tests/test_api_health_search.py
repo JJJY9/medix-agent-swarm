@@ -369,6 +369,7 @@ def test_health_search_includes_attachment_metadata(client_and_store):
     )
     assert item["title"] == "出院小结.pdf"
     assert item["kind"] == "visit"
+    assert item["mime"] == "application/pdf"
     assert "心内科复查" in item["detail"]
     assert all("爸爸" not in row["title"] for row in data["results"])
 
