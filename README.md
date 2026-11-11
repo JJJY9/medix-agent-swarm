@@ -302,7 +302,7 @@ npm install -D playwright
 | GET | `/api/attachments/{id}/file` | 读取附件原文件（`inline`，`Cache-Control: no-store`） |
 | DELETE | `/api/attachments/{id}` | 删除附件登记并清理本机文件 |
 | PATCH | `/api/attachments/{id}` | 更新附件备注（`note`，最多 300 字，空白清空） |
-| GET | `/api/attachments/export.zip` | 导出附件包（可选 `ids`，最多 200 个，仅导出选中附件）：ZIP 内含 `manifest.json` 与可读取文件，缺失/不可读文件只记入清单；总大小上限 200 MB，限流 6 次/分钟 |
+| GET | `/api/attachments/export.zip` | 导出附件包（可选 `ids`，最多 200 个，仅导出选中附件）：ZIP 内含 `manifest.json`（含每个文件的 SHA-256）与可读取文件，缺失/不可读文件只记入清单；总大小上限 200 MB，限流 6 次/分钟 |
 | GET | `/api/attachments/integrity` | 检查附件登记与本地文件：缺失文件、大小不一致、孤儿文件与最近写入数量 |
 | POST | `/api/attachments/cleanup` | 清理没有数据库登记的孤儿文件（需 `confirm=true` 与预检的 `expected_orphans`，10 分钟内新文件保留） |
 | GET | `/api/health/dossier-family.md` | 导出全部患者档案的 Markdown（每位成员一份，包含「未指定档案」的记录，`days`） |

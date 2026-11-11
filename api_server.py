@@ -10400,6 +10400,7 @@ async def export_attachments_zip(
     ids: Optional[List[int]] = Query(None)
 ):
     """把本机附件与清单打包为 ZIP；传 ids 时只导出选中附件。"""
+    import hashlib
     import io
     import zipfile
 
@@ -10453,6 +10454,7 @@ async def export_attachments_zip(
                 }
                 stored_name = str(item.get("stored_name") or "")
                 row["file_error"] = ""
+                row["sha256"] = ""
                 target = None
                 if stored_name:
                     try:
@@ -10495,6 +10497,9 @@ async def export_attachments_zip(
                                 raise AttachmentExportTooLarge(
                                     "附件总大小超过上限，无法一次导出。"
                                 )
+                            row["sha256"] = hashlib.sha256(
+                                file_bytes
+                            ).hexdigest()
                             archive_name = target.name
                             archive.writestr(
                                 f"files/{archive_name}", file_bytes
