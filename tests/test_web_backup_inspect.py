@@ -20,6 +20,8 @@ def test_restore_blocks_failed_checksum_and_warns_missing():
     assert "已停止恢复" in SCRIPT
     assert "inspectInfo.checksum_present === false" in SCRIPT
     assert "该备份没有校验信息" in SCRIPT
+    assert "Array.isArray(inspectInfo.warnings)" in SCRIPT
+    assert "注意：${warnings.join('；')}" in SCRIPT
 
 
 def test_restore_inspect_happens_before_restore_call():
