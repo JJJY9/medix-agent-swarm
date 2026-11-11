@@ -6909,11 +6909,26 @@ async def health_data_quality(profile: Optional[str] = None):
     file_names = {
         os.path.normcase(name) for name in attachment_files
     }
+    file_sizes = {
+        os.path.normcase(name): int(info.get("size") or 0)
+        for name, info in attachment_files.items()
+    }
     missing_attachments = [
         item for item in attachments
         if os.path.normcase(str(item.get("stored_name") or ""))
         not in file_names
     ]
+    size_mismatched = []
+    for item in attachments:
+        key = os.path.normcase(str(item.get("stored_name") or ""))
+        if key not in file_sizes:
+            continue
+        try:
+            db_size = int(item.get("size") or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if db_size != file_sizes[key]:
+            size_mismatched.append(item)
     if missing_attachments:
         add(
             "attachment_missing", "warning",
@@ -6924,6 +6939,17 @@ async def health_data_quality(profile: Optional[str] = None):
             ),
             "在就医资料中运行完整性检查，必要时删除缺失登记。",
             "attachment", len(missing_attachments),
+        )
+    if size_mismatched:
+        add(
+            "attachment_size_mismatch", "warning",
+            f"{len(size_mismatched)} 份附件文件大小与登记不一致",
+            "、".join(
+                str(item.get("original_name") or "附件")
+                for item in size_mismatched[:5]
+            ),
+            "文件可能被截断或替换，建议重新上传或删除后重试。",
+            "attachment", len(size_mismatched),
         )
 
     attachment_groups: Dict[tuple, List[Dict[str, Any]]] = {}
@@ -10249,7 +10275,7 @@ async def delete_attachment(attachment_id: SafeIntPath):
 
 @app.get("/api/attachments/integrity")
 async def attachment_integrity():
-    """检查附件登记与本地文件是否一致：缺失文件、孤儿文件。"""
+    """检查附件登记与本地文件是否一致：缺失、孤儿与大小不一致。"""
     from time import time
 
     from memory import get_session_store
@@ -10276,6 +10302,28 @@ async def attachment_integrity():
         for key, item in db_names.items()
         if key not in files_norm
     ]
+    size_mismatch = []
+    for key, item in db_names.items():
+        file_name = files_norm.get(key)
+        if file_name is None:
+            continue
+        try:
+            db_size = int(item.get("size") or 0)
+            file_size = int(files[file_name]["size"])
+        except (TypeError, ValueError, KeyError, OverflowError):
+            continue
+        if db_size != file_size:
+            size_mismatch.append({
+                "id": item.get("id"),
+                "profile": item.get("profile") or "",
+                "kind": item.get("kind") or "",
+                "kind_label": item.get("kind_label") or "",
+                "original_name": item.get("original_name") or "",
+                "stored_name": str(item.get("stored_name") or ""),
+                "db_size": db_size,
+                "file_size": file_size,
+            })
+    size_mismatch.sort(key=lambda item: item["stored_name"])
     now = time()
     orphans = []
     for name, info in files.items():
@@ -10292,11 +10340,13 @@ async def attachment_integrity():
         "db_count": len(items),
         "file_count": len(files),
         "missing_count": len(missing),
+        "size_mismatch_count": len(size_mismatch),
         "orphan_count": len(orphans),
         "recent_orphan_count": sum(
             1 for item in orphans if item["recent"]
         ),
         "missing": missing[:100],
+        "size_mismatch": size_mismatch[:100],
         "orphans": orphans[:100],
     }
 

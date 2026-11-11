@@ -179,6 +179,27 @@ def test_quality_flags_missing_attachment_files(
     assert "出院小结.pdf" in issues["attachment_missing"]["detail"]
 
 
+def test_quality_flags_attachment_size_mismatch(
+    client_and_store, tmp_path, monkeypatch
+):
+    client, store = client_and_store
+    attachment_dir = tmp_path / "attachments"
+    attachment_dir.mkdir()
+    monkeypatch.setattr(api_server, "ATTACHMENT_DIR", attachment_dir)
+    (attachment_dir / "changed.pdf").write_bytes(b"%PDF-1.4 test")
+    store.add_attachment(
+        "妈妈", "visit", 0, "大小不符.pdf", "changed.pdf",
+        "application/pdf", 999, "",
+    )
+
+    issues = _by_key(_quality(client, "妈妈"))
+    mismatch = issues["attachment_size_mismatch"]
+    assert mismatch["count"] == 1
+    assert "大小不符.pdf" in mismatch["detail"]
+    assert mismatch["section"] == "attachment"
+    assert "attachment_missing" not in issues
+
+
 def test_quality_flags_duplicate_attachment_files(
     client_and_store, tmp_path, monkeypatch
 ):
