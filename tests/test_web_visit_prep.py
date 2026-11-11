@@ -90,6 +90,14 @@ def test_visit_prep_print_wiring():
     assert "URL.revokeObjectURL(url);" in SCRIPT
 
 
+def test_visit_record_prep_shortcut():
+    assert "准备复诊" in SCRIPT
+    assert "openVisitPrepForVisit" in SCRIPT
+    assert "actions.append(prep, edit, del);" in SCRIPT
+    assert "els.visitPrepDays.value = String(days);" in SCRIPT
+    assert "section.scrollIntoView({ block: 'start' });" in SCRIPT
+
+
 def test_visit_prep_styles_exist():
     assert ".visit-prep-heading" in STYLES
     assert ".visit-prep-questions" in STYLES
