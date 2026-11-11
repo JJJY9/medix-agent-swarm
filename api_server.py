@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    FastAPI, File, Form, HTTPException, Query, Request, UploadFile,
+)
 from fastapi import Path as ApiPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
@@ -10233,8 +10235,10 @@ async def attachment_integrity():
 
 
 @app.get("/api/attachments/export.zip")
-async def export_attachments_zip():
-    """把本机附件与清单打包为 ZIP，便于迁移或单独备份。"""
+async def export_attachments_zip(
+    ids: Optional[List[int]] = Query(None)
+):
+    """把本机附件与清单打包为 ZIP；传 ids 时只导出选中附件。"""
     import io
     import zipfile
 
@@ -10243,6 +10247,25 @@ async def export_attachments_zip():
     items = await asyncio.to_thread(
         get_session_store().list_all_attachments
     )
+    if ids is not None:
+        selected_ids = list(dict.fromkeys(ids))
+        if (
+            not selected_ids
+            or len(selected_ids) > 200
+            or any(
+                value <= 0 or value > MAX_SQLITE_INT
+                for value in selected_ids
+            )
+        ):
+            raise HTTPException(
+                status_code=400, detail="附件编号应为 1–200 个"
+            )
+        by_id = {int(item["id"]): item for item in items}
+        if any(value not in by_id for value in selected_ids):
+            raise HTTPException(
+                status_code=404, detail="部分附件不存在"
+            )
+        items = [by_id[value] for value in selected_ids]
 
     def _build() -> bytes:
         base = ATTACHMENT_DIR.resolve()

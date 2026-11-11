@@ -342,6 +342,9 @@ const els = {
   attachmentLinkApply: document.getElementById('attachment-link-apply'),
   attachmentLinkUnlink: document.getElementById('attachment-link-unlink'),
   attachmentLinkCancel: document.getElementById('attachment-link-cancel'),
+  attachmentExportSelected: document.getElementById(
+    'attachment-export-selected'
+  ),
   attachmentDeleteSelected: document.getElementById(
     'attachment-delete-selected'
   ),
@@ -14111,7 +14114,7 @@ async function cleanupAttachmentOrphans() {
   }
 }
 
-async function exportAttachmentArchive() {
+async function exportAttachmentArchive(ids = null) {
   if (
     attachmentExporting
     || attachmentCleaning
@@ -14119,14 +14122,25 @@ async function exportAttachmentArchive() {
   ) {
     return;
   }
+  const selectedIds = Array.isArray(ids) ? ids : [];
+  const params = new URLSearchParams();
+  for (const id of selectedIds) params.append('ids', String(id));
+  const url = selectedIds.length
+    ? `/api/attachments/export.zip?${params.toString()}`
+    : '/api/attachments/export.zip';
   attachmentExporting = true;
   attachmentIntegrityRequestSeq += 1;
   if (els.attachmentExport) els.attachmentExport.disabled = true;
-  setAttachmentIntegrityStatus('正在打包附件…');
+  updateAttachmentSelection();
+  setAttachmentIntegrityStatus(
+    selectedIds.length
+      ? `正在打包选中的 ${selectedIds.length} 份附件…`
+      : '正在打包附件…'
+  );
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    const res = await fetch('/api/attachments/export.zip', {
+    const res = await fetch(url, {
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -14144,15 +14158,19 @@ async function exportAttachmentArchive() {
     const stamp = todayLocalDate().replace(/-/g, '');
     downloadFile(
       blob,
-      `medix-attachments-${stamp}.zip`,
+      selectedIds.length
+        ? `medix-attachments-selected-${stamp}.zip`
+        : `medix-attachments-${stamp}.zip`,
       'application/zip'
     );
     setAttachmentIntegrityStatus(
-      `已导出全部档案附件包（共 ${exported} 份`
+      (selectedIds.length
+        ? `已导出选中的 ${exported} 份附件`
+        : `已导出全部档案附件包（共 ${exported} 份）`)
       + (missing
         ? `，${missing} 份文件缺失或无法读取，仅写入清单`
         : '')
-      + '）。',
+      + '。',
       missing > 0
     );
   } catch (err) {
@@ -14166,7 +14184,13 @@ async function exportAttachmentArchive() {
     clearTimeout(timer);
     attachmentExporting = false;
     if (els.attachmentExport) els.attachmentExport.disabled = false;
+    updateAttachmentSelection();
   }
+}
+
+function exportSelectedAttachments() {
+  if (!attachmentSelectedIds.size) return;
+  exportAttachmentArchive([...attachmentSelectedIds]);
 }
 
 function formatAttachmentSize(bytes) {
@@ -14601,6 +14625,14 @@ function updateAttachmentSelection() {
       `关联选中（${selectedItems.length}）`;
     els.attachmentLinkSelected.disabled =
       attachmentLinking || !canLink;
+  }
+  if (els.attachmentExportSelected) {
+    els.attachmentExportSelected.hidden =
+      attachmentSelectedIds.size === 0;
+    els.attachmentExportSelected.textContent =
+      `导出选中（${attachmentSelectedIds.size}）`;
+    els.attachmentExportSelected.disabled =
+      attachmentExporting || attachmentSelectedIds.size === 0;
   }
   if (!canLink && els.attachmentLinkBar) {
     els.attachmentLinkBar.hidden = true;
@@ -19889,6 +19921,11 @@ if (els.attachmentUpload) {
   if (els.attachmentLinkCancel) {
     els.attachmentLinkCancel.addEventListener(
       'click', closeAttachmentLinkBar
+    );
+  }
+  if (els.attachmentExportSelected) {
+    els.attachmentExportSelected.addEventListener(
+      'click', exportSelectedAttachments
     );
   }
   if (els.attachmentDeleteSelected) {

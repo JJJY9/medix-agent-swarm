@@ -83,6 +83,65 @@ def test_export_zip_with_missing_directory_and_empty_store(
     assert manifest["items"] == []
 
 
+def test_export_zip_selected_ids_only(client_and_store):
+    client, store, directory = client_and_store
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        (directory / name).write_bytes(f"%PDF-1.4 {name}".encode())
+    first = _add(store, "a.pdf", "A.pdf", 12)
+    _add(store, "b.pdf", "B.pdf", 12)
+    third = _add(store, "c.pdf", "C.pdf", 12)
+
+    response = client.get(
+        "/api/attachments/export.zip",
+        params=[("ids", first["id"]), ("ids", third["id"])],
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-medix-attachment-count"] == "2"
+    assert response.headers["x-medix-attachment-missing"] == "0"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        names = set(archive.namelist())
+        assert names == {
+            "manifest.json", "files/a.pdf", "files/c.pdf",
+        }
+        manifest = json.loads(
+            archive.read("manifest.json").decode("utf-8")
+        )
+    assert manifest["count"] == 2
+    assert [row["id"] for row in manifest["items"]] == [
+        first["id"], third["id"],
+    ]
+
+
+def test_export_zip_selected_ids_validation(client_and_store):
+    client, store, directory = client_and_store
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "a.pdf").write_bytes(b"%PDF-1.4")
+    item = _add(store, "a.pdf", "A.pdf", 8)
+
+    missing = client.get(
+        "/api/attachments/export.zip", params=[("ids", 999999)]
+    )
+    assert missing.status_code == 404
+    assert "不存在" in missing.json()["detail"]
+    invalid = client.get(
+        "/api/attachments/export.zip", params=[("ids", 0)]
+    )
+    assert invalid.status_code == 400
+    too_many = client.get(
+        "/api/attachments/export.zip?"
+        + "&".join(f"ids={value}" for value in range(1, 202))
+    )
+    assert too_many.status_code == 400
+    dedup = client.get(
+        "/api/attachments/export.zip",
+        params=[("ids", item["id"]), ("ids", item["id"])],
+    )
+    assert dedup.status_code == 200
+    assert dedup.headers["x-medix-attachment-count"] == "1"
+
+
 def test_export_zip_rejects_oversized_total(
     client_and_store, monkeypatch
 ):

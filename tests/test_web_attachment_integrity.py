@@ -58,15 +58,25 @@ def test_integrity_listeners_and_styles():
 
 def test_attachment_export_zip_wiring():
     assert 'id="attachment-export"' in HTML
+    assert 'id="attachment-export-selected"' in HTML
     assert "导出全部附件包" in HTML
+    assert "导出选中" in HTML
     assert "exportAttachmentArchive" in SCRIPT
-    assert "fetch('/api/attachments/export.zip', {" in SCRIPT
+    assert "const res = await fetch(url, {" in SCRIPT
     assert "signal: controller.signal," in SCRIPT
     assert "attachmentExporting\n    || attachmentCleaning\n    || attachmentUploading" in SCRIPT
     assert "medix-attachments-${stamp}.zip" in SCRIPT
+    assert "medix-attachments-selected-${stamp}.zip" in SCRIPT
     assert "已导出全部档案附件包（共 ${exported} 份" in SCRIPT
+    assert ": `已导出全部档案附件包（共 ${exported} 份）`)" in SCRIPT
+    assert "+ '。'," in SCRIPT
+    assert "已导出选中的 ${exported} 份附件" in SCRIPT
     assert "X-Medix-Attachment-Missing" in SCRIPT
+    assert "params.append('ids', String(id));" in SCRIPT
     assert "controller.abort()" in SCRIPT
     assert "导出超时，请稍后重试" in SCRIPT
+    assert "exportSelectedAttachments" in SCRIPT
     assert "els.attachmentExport.addEventListener(" in SCRIPT
     assert "'click', exportAttachmentArchive" in SCRIPT
+    assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
+    assert "'click', exportSelectedAttachments" in SCRIPT
