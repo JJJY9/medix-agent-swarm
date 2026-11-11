@@ -327,6 +327,8 @@ const els = {
   attachmentExport: document.getElementById('attachment-export'),
   attachmentCleanup: document.getElementById('attachment-cleanup'),
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
+  attachmentFilterKind: document.getElementById('attachment-filter-kind'),
+  attachmentFilterQ: document.getElementById('attachment-filter-q'),
   attachmentList: document.getElementById('attachment-list'),
   attachmentMore: document.getElementById('attachment-more'),
   attachmentEmpty: document.getElementById('attachment-empty'),
@@ -13862,6 +13864,7 @@ let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
 let attachmentItemsCache = [];
+let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_MAX_BATCH = 5;
@@ -14086,7 +14089,8 @@ function renderAttachments(items, options = {}) {
   els.attachmentsSummary.textContent =
     `· ${attachmentItemsCache.length}${attachmentHasMore ? '+' : ''} 份`;
   els.attachmentEmpty.hidden = attachmentItemsCache.length > 0;
-  els.attachmentEmpty.textContent = '还没有就医资料。';
+  els.attachmentEmpty.textContent =
+    options.emptyText || '还没有就医资料。';
   els.attachmentMore.hidden = !attachmentHasMore;
   for (const item of items) {
     const li = document.createElement('li');
@@ -14152,6 +14156,10 @@ async function loadAttachments(append = false) {
   }
   const requestSeq = ++attachmentRequestSeq;
   const profile = els.metricProfile ? els.metricProfile.value : '';
+  const filterKind = els.attachmentFilterKind
+    ? els.attachmentFilterKind.value : '';
+  const filterQuery = els.attachmentFilterQ
+    ? els.attachmentFilterQ.value.trim() : '';
   const offset = append ? attachmentItemsCache.length : 0;
   if (append) {
     attachmentLoadingMore = true;
@@ -14163,6 +14171,8 @@ async function loadAttachments(append = false) {
       offset: String(offset),
       profile,
     });
+    if (filterKind) params.set('kind', filterKind);
+    if (filterQuery) params.set('q', filterQuery);
     const res = await fetch(`/api/attachments?${params.toString()}`);
     const data = await res.json().catch(() => ({}));
     if (requestSeq !== attachmentRequestSeq) return;
@@ -14173,6 +14183,9 @@ async function loadAttachments(append = false) {
     renderAttachments(items, {
       append,
       hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
+      emptyText: (filterKind || filterQuery)
+        ? '没有符合条件的资料。'
+        : '还没有就医资料。',
     });
   } catch (err) {
     if (requestSeq !== attachmentRequestSeq) return;
@@ -19421,6 +19434,19 @@ if (els.attachmentUpload) {
     els.attachmentKind.addEventListener(
       'change', loadAttachmentRefOptions
     );
+  }
+  if (els.attachmentFilterKind) {
+    els.attachmentFilterKind.addEventListener(
+      'change', () => loadAttachments()
+    );
+  }
+  if (els.attachmentFilterQ) {
+    els.attachmentFilterQ.addEventListener('input', () => {
+      clearTimeout(attachmentFilterTimer);
+      attachmentFilterTimer = setTimeout(
+        () => loadAttachments(), 250
+      );
+    });
   }
   if (els.attachmentMore) {
     els.attachmentMore.addEventListener(

@@ -7343,6 +7343,7 @@ class SessionStore:
         ref_id: Optional[int] = None,
         limit: int = 100,
         offset: int = 0,
+        q: str = "",
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回附件登记信息（文件内容不在数据库中）。"""
         limit = max(1, min(int(limit or 100), 1000))
@@ -7368,6 +7369,14 @@ class SessionStore:
                 return []
             conditions.append("ref_id = ?")
             params.append(reference)
+        query = str(q or "").strip()
+        if query:
+            like = _like_pattern(query)
+            conditions.append(
+                "(original_name LIKE ? ESCAPE '\\' "
+                "OR note LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like])
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(

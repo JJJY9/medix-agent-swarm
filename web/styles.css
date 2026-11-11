@@ -3129,6 +3129,23 @@ html[data-theme="dark"] .calc-status.error {
   overflow-wrap: anywhere;
 }
 
+.attachment-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+.attachment-filters select {
+  max-width: 140px;
+}
+
+.attachment-filters input[type="search"] {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
 #attachment-integrity-status.error {
   color: var(--triage-1);
 }

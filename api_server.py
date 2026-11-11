@@ -9834,12 +9834,14 @@ async def list_attachments(
     ref_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
+    q: str = "",
 ):
-    """附件列表（不含文件内容）；可按档案、类型与关联记录筛选。"""
+    """附件列表（不含文件内容）；可按档案、类型、关联记录与关键字筛选。"""
     from memory import get_session_store
 
     limit = max(1, min(int(limit or 100), 1000))
     offset = _bounded_offset(offset)
+    q = str(q or "").strip()[:80]
     if ref_id is not None and (ref_id < 0 or ref_id > MAX_SQLITE_INT):
         raise HTTPException(status_code=400, detail="关联记录编号不正确")
     items = await asyncio.to_thread(
@@ -9849,6 +9851,7 @@ async def list_attachments(
         ref_id,
         limit,
         offset,
+        q,
     )
     return {"attachments": items}
 
