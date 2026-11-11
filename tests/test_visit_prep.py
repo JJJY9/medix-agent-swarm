@@ -153,7 +153,8 @@ def test_visit_prep_builds_sections_and_questions(client_and_store):
     assert "青霉素" in questions
     assert "逾期" in questions
     assert "上次就诊建议" in questions
-    assert len(data["questions"]) == 8
+    assert "复查计划" in questions
+    assert len(data["questions"]) == 7
 
     text = data["text"]
     assert text.startswith("复诊准备单（妈妈")
@@ -216,10 +217,13 @@ def test_older_critical_metric_not_hidden_by_normal_latest(
     }
     assert rows["spo2"]["critical"] is True
     assert rows["spo2"]["value"] == "85"
-    assert rows["spo2"]["measured_at"][:10] == (
-        now - timedelta(days=2)
-    ).strftime("%Y-%m-%d")
+    old_date = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    assert rows["spo2"]["measured_at"][:10] == old_date
     assert "血氧饱和度 85" in data["text"]
+    assert (
+        f"血氧饱和度 {old_date} 为 85"
+        in "\n".join(data["questions"])
+    )
 
 
 def test_active_medication_count_not_truncated(client_and_store):
@@ -266,6 +270,11 @@ def test_visit_prep_isolation_covers_all_collections(client_and_store):
         "妈妈", "海鲜", severity="mild", kind="food", active=False
     )
     store.add_condition("妈妈", "旧问题", status="resolved")
+    old_med = store.add_medication("妈妈", "旧降压药", active=False)
+    store.add_medication_log(
+        old_med["id"], _iso(now.replace(hour=9, minute=0)),
+        skipped=True, skip_reason="side_effect",
+    )
 
     mother = client.get(
         "/api/health/visit-prep", params={"profile": "妈妈"}
@@ -273,6 +282,8 @@ def test_visit_prep_isolation_covers_all_collections(client_and_store):
     assert [row["name"] for row in mother["medications"]] == ["氨氯地平"]
     assert mother["medication_summary"]["skipped_count"] == 1
     assert mother["medication_summary"]["skip_reasons"][0]["reason"] == "忘记"
+    assert "旧降压药" not in mother["text"]
+    assert "旧降压药" not in "\n".join(mother["questions"])
     assert [row["substance"] for row in mother["allergies"]] == ["青霉素"]
     assert [row["name"] for row in mother["conditions"]] == ["高血压"]
     assert [row["title"] for row in mother["reminders"]["items"]] == [
@@ -403,6 +414,9 @@ def test_visit_prep_latest_metric_lab_and_visit_order(client_and_store):
         if row["item"] == "ALT"
     ]
     assert alt_values == ["50", "100"]
+    assert all(
+        question.count("ALT") <= 1 for question in data["questions"]
+    )
     assert labs["血钾"]["critical"] is True
     assert labs["血钾"]["value"] == "7"
     assert data["abnormal_labs"][0]["item"] == "血钾"
@@ -464,6 +478,65 @@ def test_visit_prep_fallback_when_records_are_normal(client_and_store):
     assert data["questions"] == [
         "近期记录较少，请向医生补充描述症状、用药与检查结果。"
     ]
+
+
+def test_visit_prep_direction_and_question_wording(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    tomorrow = now + timedelta(days=1)
+    store.add_metric(
+        "方向", "spo2", 92,
+        measured_at=_iso(now.replace(hour=8, minute=0)),
+    )
+    store.set_metric_target("方向", "spo2", 95)
+    store.add_symptom(
+        "方向", "咳嗽", 3,
+        recorded_at=_iso(now.replace(hour=9, minute=0)),
+    )
+    store.add_symptom(
+        "方向", "乏力", 0,
+        recorded_at=_iso(now.replace(hour=10, minute=0)),
+    )
+    store.add_allergy(
+        "方向", "花生", severity="moderate", kind="food"
+    )
+    medication = store.add_medication(
+        "方向", "氨氯地平", dose="5 mg", frequency="每日一次"
+    )
+    store.add_reminder(
+        "用药：氨氯地平",
+        (now - timedelta(days=1)).strftime("%Y-%m-%d"),
+        profile="方向", medication_id=medication["id"],
+    )
+    store.add_lab_result(
+        "方向", "ALT", 100, unit="U/L",
+        ref_low=7, ref_high=40,
+        tested_at=tomorrow.replace(hour=8, minute=0).isoformat(
+            timespec="minutes"
+        ),
+    )
+
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "方向"}
+    ).json()
+    spo2 = next(
+        row for row in data["abnormal_metrics"]
+        if row["metric"] == "spo2"
+    )
+    assert spo2["over_target"] is True
+    assert spo2["target_direction"] == "low"
+    assert spo2["critical"] is False
+    assert "低于目标" in data["text"]
+    assert [row["symptom"] for row in data["symptoms"]] == ["咳嗽"]
+    assert data["abnormal_labs"] == []
+    questions = "\n".join(data["questions"])
+    assert "低于目标" in questions
+    assert "饮食上需要避开吗" in questions
+    assert "用药提醒已逾期" in questions
+    assert "出现咳嗽" in questions
+    assert "反复出现咳嗽" not in questions
+    assert "乏力" not in data["text"]
+    assert "ALT" not in data["text"]
 
 
 def test_visit_prep_clamps_days_and_handles_empty_profile(

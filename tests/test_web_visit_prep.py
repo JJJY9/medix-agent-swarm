@@ -45,6 +45,8 @@ def test_visit_prep_sections_and_questions():
     assert "建议询问医生" in SCRIPT
     assert "visit-prep-questions" in SCRIPT
     assert "危急值" in SCRIPT
+    assert "item.target_direction === 'low'" in SCRIPT
+    assert "低于目标" in SCRIPT
     assert "已生成：" in SCRIPT
 
 
@@ -54,7 +56,11 @@ def test_visit_prep_copy_export_and_reset():
     assert "medix-visit-prep-${stamp}.md" in SCRIPT
     assert "已导出复诊准备单 Markdown。" in SCRIPT
     assert "准备单尚未生成，请先点击生成。" in SCRIPT
-    assert "resetVisitPrep" in SCRIPT
+    assert "function resetVisitPrep()" in SCRIPT
+    assert "function setMetricProfileValue(value)" in SCRIPT
+    assert "setMetricProfileValue(activeProfile);" in SCRIPT
+    assert "setMetricProfileValue(nextProfile);" in SCRIPT
+    assert "准备单生成失败，请稍后重试。" in SCRIPT
     assert "els.visitPrepGenerate.addEventListener('click', loadVisitPrep);" in SCRIPT
     assert "els.visitPrepDays.addEventListener('change', resetVisitPrep);" in SCRIPT
     assert "resetVisitPrep();" in SCRIPT

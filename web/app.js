@@ -6462,7 +6462,8 @@ async function refreshMetricProfileOptions() {
     els.metricProfile.appendChild(option);
   }
 
-  els.metricProfile.value = names.has(current) ? current : '';
+  const nextProfile = names.has(current) ? current : '';
+  setMetricProfileValue(nextProfile);
 }
 
 function formatMetricValue(item) {
@@ -7163,7 +7164,7 @@ async function openMetrics() {
   await refreshMetricProfileOptions();
   const activeProfile = els.profileSelect.value;
   if (activeProfile && profilesCache[activeProfile]) {
-    els.metricProfile.value = activeProfile;
+    setMetricProfileValue(activeProfile);
   }
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   if (els.symptomTime && !els.symptomTime.value) {
@@ -14416,6 +14417,16 @@ function resetVisitPrep() {
   setVisitPrepStatus('');
 }
 
+function setMetricProfileValue(value) {
+  if (!els.metricProfile || els.metricProfile.value === value) {
+    return false;
+  }
+  els.metricProfile.value = value;
+  // 程序化切换档案不会触发 change，必须在这里清空准备单
+  resetVisitPrep();
+  return true;
+}
+
 function renderVisitPrep(data) {
   if (!els.visitPrepBody) return;
   const body = els.visitPrepBody;
@@ -14452,10 +14463,16 @@ function renderVisitPrep(data) {
   const abnormal = [];
   for (const item of data.abnormal_metrics || []) {
     const context = item.context ? `（${item.context}）` : '';
+    let flag = '超标';
+    if (item.critical) {
+      flag = '危急值';
+    } else if (item.target_direction === 'low') {
+      flag = '低于目标';
+    }
     abnormal.push(
       `${item.label} ${item.value} ${item.unit} · `
       + `${String(item.measured_at || '').slice(0, 10)}${context} · `
-      + (item.critical ? '危急值' : '超标')
+      + flag
     );
   }
   for (const item of data.abnormal_labs || []) {
@@ -14582,6 +14599,11 @@ async function loadVisitPrep() {
     els.visitPrepBody.hidden = true;
     els.visitPrepCopy.disabled = true;
     els.visitPrepExport.disabled = true;
+    if (els.visitPrepSummary) els.visitPrepSummary.textContent = '';
+    if (els.visitPrepEmpty) {
+      els.visitPrepEmpty.hidden = false;
+      els.visitPrepEmpty.textContent = '准备单生成失败，请稍后重试。';
+    }
     setVisitPrepStatus(`生成失败：${err.message || err}`, true);
   } finally {
     if (requestSeq === visitPrepRequestSeq) {
