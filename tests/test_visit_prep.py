@@ -480,8 +480,16 @@ def test_visit_prep_fallback_when_records_are_normal(client_and_store):
     ]
 
 
-def test_visit_prep_direction_and_question_wording(client_and_store):
+def test_visit_prep_direction_and_question_wording(
+    client_and_store, monkeypatch
+):
     client, store = client_and_store
+    # 让“明天”的化验记录在存储层被视为可接受的时间，以验证接口窗口过滤
+    from memory import session_store as store_module
+
+    monkeypatch.setattr(
+        store_module, "FUTURE_TIME_TOLERANCE", timedelta(days=2)
+    )
     now = datetime.now()
     tomorrow = now + timedelta(days=1)
     store.add_metric(

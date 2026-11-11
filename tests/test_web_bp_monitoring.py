@@ -36,10 +36,14 @@ def test_bp_monitoring_fetches_and_renders():
 def test_bp_monitoring_refresh_and_copy_wiring():
     assert "loadDataQuality();\n  loadBpMonitoring();" in SCRIPT
     assert (
-        "loadBpMonitoring();\n  loadAttachments();\n  resetVisitPrep();"
+        "loadBpMonitoring();\n  loadAttachments();\n"
+        "  loadAttachmentRefOptions();\n  resetVisitPrep();"
         "\n  quickEntryRequestSeq"
     ) in SCRIPT
-    assert "loadBpMonitoring();\n  loadAttachments();\n  loadMetricTargets()" in SCRIPT
+    assert (
+        "loadBpMonitoring();\n  loadAttachments();\n"
+        "  loadAttachmentRefOptions();\n  loadMetricTargets()"
+    ) in SCRIPT
     assert "await refreshMetrics();\n    loadBpMonitoring();" in SCRIPT
     assert "loadBpMonitoring();\n    refreshOverview();" in SCRIPT
     assert "els.bpMonitoringCopy.addEventListener" in SCRIPT

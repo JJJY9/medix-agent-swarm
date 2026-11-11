@@ -317,6 +317,8 @@ const els = {
   bpMonitoringStatus: document.getElementById('bp-monitoring-status'),
   attachmentsSummary: document.getElementById('attachments-summary'),
   attachmentKind: document.getElementById('attachment-kind'),
+  attachmentRefWrap: document.getElementById('attachment-ref-wrap'),
+  attachmentRef: document.getElementById('attachment-ref'),
   attachmentFile: document.getElementById('attachment-file'),
   attachmentNote: document.getElementById('attachment-note'),
   attachmentUpload: document.getElementById('attachment-upload'),
@@ -7246,6 +7248,7 @@ async function openMetrics() {
   loadDataQuality();
   loadBpMonitoring();
   loadAttachments();
+  loadAttachmentRefOptions();
   loadMetricTargets().then(() => refreshMetrics());
   if (!els.metricsDrawer.contains(document.activeElement)) {
     els.metricsClose.focus();
@@ -13838,6 +13841,7 @@ let bpMonitoringCache = null;
 let bpMonitoringStartAuto = true;
 
 let attachmentRequestSeq = 0;
+let attachmentRefRequestSeq = 0;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
@@ -13890,9 +13894,15 @@ function renderAttachments(items, options = {}) {
     title.append(' ', badge);
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
+    const linkedLabel = item.ref_id
+      ? (item.kind === 'visit'
+        ? '已关联就诊'
+        : item.kind === 'lab' ? '已关联化验' : '已关联')
+      : '';
     meta.textContent = [
       formatAttachmentSize(item.size),
       String(item.created_at || '').replace('T', ' ').slice(0, 16),
+      linkedLabel,
       item.note || '',
     ].filter(Boolean).join(' · ');
     main.append(title, meta);
@@ -13977,6 +13987,92 @@ async function loadAttachments(append = false) {
   }
 }
 
+function attachmentRefLabel(kind, item) {
+  const date = String(
+    item.visit_date || item.tested_at || ''
+  ).slice(0, 10);
+  if (kind === 'visit') {
+    return [
+      date,
+      item.department,
+      item.diagnosis,
+    ].filter(Boolean).join(' · ') || `就诊记录 #${item.id}`;
+  }
+  const value = item.value === null || item.value === undefined
+    ? '' : String(item.value);
+  const result = `${item.item || '化验'} ${value}`.trim()
+    + (item.unit ? ` ${item.unit}` : '');
+  return [
+    date,
+    result,
+    item.panel,
+  ].filter(Boolean).join(' · ');
+}
+
+async function loadAttachmentRefOptions() {
+  if (!els.attachmentRef || !els.attachmentRefWrap) return;
+  const kind = els.attachmentKind.value;
+  if (!['visit', 'lab'].includes(kind)) {
+    attachmentRefRequestSeq += 1;
+    els.attachmentRefWrap.hidden = true;
+    els.attachmentRef.replaceChildren();
+    els.attachmentRef.disabled = false;
+    return;
+  }
+  els.attachmentRefWrap.hidden = false;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  if (!profile) {
+    attachmentRefRequestSeq += 1;
+    const option = document.createElement('option');
+    option.value = '0';
+    option.textContent = '选择患者档案后可关联记录';
+    els.attachmentRef.replaceChildren(option);
+    els.attachmentRef.disabled = true;
+    return;
+  }
+  const requestSeq = ++attachmentRefRequestSeq;
+  els.attachmentRef.disabled = true;
+  const params = new URLSearchParams({ limit: '50', days: '365' });
+  params.set('profile', profile);
+  const url = kind === 'visit'
+    ? `/api/visits?${params.toString()}`
+    : `/api/lab-results?${params.toString()}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== attachmentRefRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const items = kind === 'visit'
+      ? (data.visits || [])
+      : (data.lab_results || []);
+    const placeholder = document.createElement('option');
+    placeholder.value = '0';
+    placeholder.textContent = items.length
+      ? '不关联'
+      : '暂无可关联记录';
+    const options = [placeholder];
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = String(item.id);
+      option.textContent = attachmentRefLabel(kind, item).slice(0, 100);
+      options.push(option);
+    }
+    els.attachmentRef.replaceChildren(...options);
+  } catch (err) {
+    if (requestSeq !== attachmentRefRequestSeq) return;
+    const option = document.createElement('option');
+    option.value = '0';
+    option.textContent = '关联记录加载失败，可不关联';
+    els.attachmentRef.replaceChildren(option);
+  } finally {
+    if (requestSeq === attachmentRefRequestSeq) {
+      els.attachmentRef.disabled = false;
+    }
+  }
+}
+
 async function openAttachmentFile(item, download = false) {
   try {
     const res = await fetch(`/api/attachments/${item.id}/file`);
@@ -14033,6 +14129,11 @@ async function uploadAttachment() {
   const form = new FormData();
   form.append('profile', profile);
   form.append('kind', els.attachmentKind.value || 'other');
+  const refId = els.attachmentRef && els.attachmentRefWrap
+    && !els.attachmentRefWrap.hidden
+    ? (els.attachmentRef.value || '0')
+    : '0';
+  form.append('ref_id', refId);
   form.append('note', els.attachmentNote.value.trim());
   form.append('file', file);
   try {
@@ -14051,6 +14152,7 @@ async function uploadAttachment() {
     els.attachmentFile.value = '';
     els.attachmentNote.value = '';
     await loadAttachments();
+    loadAttachmentRefOptions();
   } catch (err) {
     setAttachmentStatus(`上传失败：${err.message || err}`, true);
   } finally {
@@ -18910,6 +19012,7 @@ els.metricProfile.addEventListener('change', () => {
   loadDataQuality();
   loadBpMonitoring();
   loadAttachments();
+  loadAttachmentRefOptions();
   resetVisitPrep();
   quickEntryRequestSeq += 1;
   clearQuickEntryPreview();
@@ -18965,6 +19068,11 @@ if (els.bpMonitoringDays) {
 }
 if (els.attachmentUpload) {
   els.attachmentUpload.addEventListener('click', uploadAttachment);
+  if (els.attachmentKind) {
+    els.attachmentKind.addEventListener(
+      'change', loadAttachmentRefOptions
+    );
+  }
   if (els.attachmentMore) {
     els.attachmentMore.addEventListener(
       'click', () => loadAttachments(true)
