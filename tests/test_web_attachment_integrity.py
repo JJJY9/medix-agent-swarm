@@ -28,6 +28,9 @@ def test_integrity_fetches_and_renders_counts():
 
 def test_cleanup_posts_confirmation_and_reports():
     assert "cleanupAttachmentOrphans" in SCRIPT
+    assert "if (!attachmentOrphanCount || attachmentCleaning) return;" in SCRIPT
+    assert "els.attachmentCleanup.disabled = true;" in SCRIPT
+    assert "els.attachmentCleanup.disabled = false;" in SCRIPT
     assert "fetch('/api/attachments/cleanup'" in SCRIPT
     assert "body: JSON.stringify({ confirm: true })" in SCRIPT
     assert "已清理 ${data.removed || 0} 个孤儿文件" in SCRIPT
