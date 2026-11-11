@@ -546,6 +546,17 @@ class MedicationLogRequest(StrictRequestModel):
     note: str = Field("", max_length=300)
 
 
+class MedicationSkipRequest(StrictRequestModel):
+    reason: Literal[
+        "forget", "side_effect", "worry_side_effect",
+        "cost", "inconvenient", "other",
+    ] = Field(..., description="未服原因")
+    skipped_at: str = Field(
+        "", max_length=40, description="未服时间（ISO），默认当前时间"
+    )
+    note: str = Field("", max_length=300)
+
+
 class MedicationUpdateRequest(StrictRequestModel):
     """部分更新用药记录：未给出的字段保持原值。"""
 
@@ -2636,13 +2647,21 @@ async def export_medication_logs_csv(
         0,
         days,
     )
-    rows = [["药物名称", "剂量", "服用时间", "患者档案", "备注"]]
+    rows = [[
+        "药物名称", "剂量", "服用时间", "患者档案",
+        "状态", "未服原因", "备注",
+    ]]
     for item in logs:
+        skipped = bool(item.get("skipped"))
         rows.append([
             csv_safe_cell(item.get("medication_name", "")),
             csv_safe_cell(item.get("medication_dose", "")),
             csv_safe_cell(item.get("taken_at", "")),
             csv_safe_cell(item.get("profile", "")),
+            "未服" if skipped else "已服",
+            csv_safe_cell(
+                item.get("skip_reason_label", "") if skipped else ""
+            ),
             csv_safe_cell(item.get("note", "")),
         ])
 
@@ -2932,7 +2951,7 @@ async def delete_medication(medication_id: SafeIntPath):
         store.redact_audit_targets,
         [
             "medication.create", "medication.update", "medication.delete",
-            "medication.log", "medication.log_delete",
+            "medication.log", "medication.log_delete", "medication.skip",
         ],
         f"{item['id']}·",
         str(item["id"]),
@@ -2941,6 +2960,19 @@ async def delete_medication(medication_id: SafeIntPath):
         "medication.delete", str(item["id"])
     )
     return {"ok": True, "id": medication_id}
+
+
+@app.get("/api/medications/skip-reasons")
+async def list_medication_skip_reasons():
+    """未服原因选项（键与中文名）。"""
+    from memory.session_store import MEDICATION_SKIP_REASONS
+
+    return {
+        "reasons": [
+            {"key": key, "label": label}
+            for key, label in MEDICATION_SKIP_REASONS.items()
+        ]
+    }
 
 
 @app.get("/api/medications/{medication_id}/logs")
@@ -3008,6 +3040,31 @@ async def add_medication_log(
     await record_audit(
         "medication.log",
         f"{log['medication_id']}·{log['taken_at']}",
+    )
+    return {"ok": True, "log": log}
+
+
+@app.post("/api/medications/{medication_id}/skip")
+async def skip_medication(
+    medication_id: SafeIntPath,
+    request: MedicationSkipRequest,
+):
+    """记录一次未服及原因；不计入已服次数，也不扣减库存。"""
+    from memory import get_session_store
+
+    log = await asyncio.to_thread(
+        get_session_store().add_medication_log,
+        medication_id,
+        request.skipped_at,
+        request.note,
+        True,
+        request.reason,
+    )
+    if log is None:
+        raise HTTPException(status_code=404, detail="药物不存在或时间不正确")
+    await record_audit(
+        "medication.skip",
+        f"{log['medication_id']}·{log['taken_at']}·{log['skip_reason']}",
     )
     return {"ok": True, "log": log}
 
@@ -5102,6 +5159,14 @@ async def _weekly_report_impl(
         item for item in raw_logs
         if prev_start <= str(item.get("taken_at") or "")[:10] < start
     ]
+    taken_logs = [item for item in logs if not item.get("skipped")]
+    skip_logs = [item for item in logs if item.get("skipped")]
+    previous_taken_logs = [
+        item for item in previous_logs if not item.get("skipped")
+    ]
+    previous_skip_logs = [
+        item for item in previous_logs if item.get("skipped")
+    ]
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
         profile, prev_start, f"{end}T23:59:59", 100000,
@@ -5283,7 +5348,7 @@ async def _weekly_report_impl(
     active_meds = [item for item in medications if item.get("active")]
     meds_by_id = {item["id"]: item for item in medications}
     doses_by_medication: dict = {}
-    for log in logs:
+    for log in taken_logs:
         key = log["medication_id"]
         entry = doses_by_medication.setdefault(key, {
             "medication_id": key,
@@ -5310,11 +5375,51 @@ async def _weekly_report_impl(
         if expected:
             adherence_expected += expected
             adherence_med_ids.add(item["id"])
-    for log in logs:
+    for log in taken_logs:
         # 必要时/无法估算频次的药物只展示打卡，不进入依从率分子，
         # 否则会出现“按时药一次没吃但依从率 100%”的假象
         if log["medication_id"] in adherence_med_ids:
             adherence_taken += 1
+    skip_reason_counts: dict = {}
+    for log in skip_logs:
+        reason = str(log.get("skip_reason") or "other")
+        skip_reason_counts[reason] = skip_reason_counts.get(reason, 0) + 1
+    from memory.session_store import MEDICATION_SKIP_REASONS
+
+    skip_reasons = [
+        {
+            "reason": reason,
+            "label": MEDICATION_SKIP_REASONS.get(reason, reason),
+            "count": count,
+        }
+        for reason, count in sorted(
+            skip_reason_counts.items(), key=lambda pair: (-pair[1], pair[0])
+        )[:3]
+    ]
+    skip_members: List[str] = []
+    for item in sorted(
+        skip_logs,
+        key=lambda row: str(row.get("taken_at") or ""),
+        reverse=True,
+    ):
+        name = str(item.get("profile") or "")
+        if name and name not in skip_members:
+            skip_members.append(name)
+    skip_items = [
+        {
+            "medication_name": item.get("medication_name") or "已删除药物",
+            "profile": item.get("profile") or "",
+            "taken_at": item.get("taken_at") or "",
+            "skip_reason": item.get("skip_reason") or "",
+            "skip_reason_label": item.get("skip_reason_label") or "",
+            "note": item.get("note") or "",
+        }
+        for item in sorted(
+            skip_logs,
+            key=lambda row: str(row.get("taken_at") or ""),
+            reverse=True,
+        )[:5]
+    ]
     medication_rows = []
     for row in doses_by_medication.values():
         medication = meds_by_id.get(row["medication_id"])
@@ -5572,9 +5677,14 @@ async def _weekly_report_impl(
         },
         "medications": {
             "active": len(active_meds),
-            "doses": len(logs),
+            "doses": len(taken_logs),
             "by_medication": medication_rows,
-            "prev_doses": len(previous_logs),
+            "prev_doses": len(previous_taken_logs),
+            "skips": len(skip_logs),
+            "prev_skips": len(previous_skip_logs),
+            "skip_reasons": skip_reasons,
+            "skip_members": skip_members,
+            "skip_items": skip_items,
             "adherence": (
                 {
                     "expected": adherence_expected,
@@ -5996,6 +6106,37 @@ def _build_health_insights(
             f"应服 {adherence.get('expected')} 次，"
             f"已打卡 {adherence.get('taken')} 次。",
             "漏服较多时可调整用药提醒或与医生确认服药方案。",
+            "medication",
+        ))
+
+    medication_skips = int(
+        (report.get("medications") or {}).get("skips") or 0
+    )
+    if medication_skips:
+        medications_report = report.get("medications") or {}
+        skip_reasons = medications_report.get("skip_reasons") or []
+        detail_parts = [
+            f"{item.get('label') or item.get('reason')} "
+            f"{int(item.get('count') or 0)} 次"
+            for item in skip_reasons
+        ]
+        if not str(report.get("profile") or ""):
+            members = [
+                str(name)
+                for name in medications_report.get("skip_members") or []
+                if name
+            ]
+            if members:
+                shown = "、".join(members[:3])
+                if len(members) > 3:
+                    shown += f" 等 {len(members)} 人"
+                detail_parts.append(f"涉及 {shown}")
+        insights.append(_health_insight(
+            "medication_skips",
+            "warning" if medication_skips >= 3 else "info",
+            f"近 {days} 天登记未服 {medication_skips} 次",
+            "；".join(detail_parts)[:200],
+            "反复未服可与医生或药师讨论服药方案，不要自行停药。",
             "medication",
         ))
 
@@ -6660,10 +6801,13 @@ async def health_timeline(
         at = str(item.get("taken_at") or "")
         if not in_window(at):
             continue
+        skipped = bool(item.get("skipped"))
         details = [
             str(item.get("medication_dose") or "").strip(),
-            "打卡",
+            "未服" if skipped else "打卡",
         ]
+        if skipped and item.get("skip_reason_label"):
+            details.append(str(item["skip_reason_label"]))
         events.append({
             "type": "medication",
             "at": at,
@@ -7412,7 +7556,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
                 entry["alerts"] += 1
     for item in raw_logs:
         at = str(item.get("taken_at") or "")
-        if in_month(at):
+        if in_month(at) and not item.get("skipped"):
             bucket(at[:10])["doses"] += 1
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
@@ -8314,8 +8458,10 @@ async def family_overview(days: int = 7):
         entry = medications_by_profile.setdefault(profile, {
             "active": 0,
             "taken_today": 0,
+            "skipped_today": 0,
             "names": [],
             "last_taken_at": "",
+            "last_skip_at": "",
             "week_count": 0,
             "expected_week_doses": 0,
             "low_stock": 0,
@@ -8325,6 +8471,7 @@ async def family_overview(days: int = 7):
         })
         entry["active"] += 1
         entry["taken_today"] += int(item.get("today_count") or 0)
+        entry["skipped_today"] += int(item.get("skipped_today") or 0)
         if item.get("low_stock"):
             entry["low_stock"] += 1
         if item.get("expired"):
@@ -8348,6 +8495,9 @@ async def family_overview(days: int = 7):
         last_taken = str(item.get("last_taken_at") or "")
         if last_taken > entry["last_taken_at"]:
             entry["last_taken_at"] = last_taken
+        last_skip = str(item.get("last_skip_at") or "")
+        if last_skip > entry["last_skip_at"]:
+            entry["last_skip_at"] = last_skip
 
     for entry in medications_by_profile.values():
         expected = entry.pop("expected_week_doses")
@@ -8581,8 +8731,9 @@ async def family_overview(days: int = 7):
             reverse=True,
         )
         medication = medications_by_profile.get(name, {
-            "active": 0, "taken_today": 0, "names": [],
-            "last_taken_at": "", "adherence": None,
+            "active": 0, "taken_today": 0, "skipped_today": 0,
+            "names": [], "last_taken_at": "", "last_skip_at": "",
+            "adherence": None,
             "low_stock": 0, "expiring": 0, "expired": 0,
             "stock_alerts": [],
         })
@@ -8628,6 +8779,7 @@ async def family_overview(days: int = 7):
             (vaccination.get("latest") or {}).get("vaccinated_at") or "",
             consultation.get("latest_at") or "",
             medication.get("last_taken_at") or "",
+            medication.get("last_skip_at") or "",
         ]
         last_activity = max(activity_candidates)
         recorded_today = bool(
@@ -8642,6 +8794,7 @@ async def family_overview(days: int = 7):
                 (vaccination.get("latest") or {}).get("vaccinated_at") or ""
             )[:10] == today
             or medication.get("taken_today")
+            or medication.get("skipped_today")
             or str(consultation.get("latest_at") or "")[:10] == today
         )
         attention = _family_attention(
@@ -9343,6 +9496,10 @@ async def export_health_dossier(
                     f"；今日 {int(item.get('today_count') or 0)} 次，"
                     f"近 7 天 {int(item.get('week_count') or 0)} 次"
                 )
+                if int(item.get("skipped_range") or 0):
+                    detail += (
+                        f"，未服 {int(item['skipped_range'])} 次"
+                    )
                 expected = item.get("expected_week_doses")
                 if expected:
                     rate = adherence_rate(item.get("week_count"), expected)
