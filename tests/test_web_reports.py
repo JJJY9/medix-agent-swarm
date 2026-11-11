@@ -708,9 +708,13 @@ def test_app_js_ships_family_compare(client):
     assert 'id="compare-section"' in html
     assert 'id="compare-metric"' in html
     assert 'id="compare-list"' in html
+    assert 'id="compare-export"' in html
     assert "async function loadFamilyCompare" in app_js
     assert "function renderFamilyCompare" in app_js
     assert "/api/family/compare" in app_js
+    assert "/api/family/compare/export.csv" in app_js
+    assert "exportFamilyCompare" in app_js
+    assert "medix-family-compare-${stamp}.csv" in app_js
     assert "min_value1" in app_js
     assert "within_target" in app_js
     assert "target_lower_bound" in app_js
