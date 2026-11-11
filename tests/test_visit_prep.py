@@ -588,6 +588,30 @@ def test_visit_prep_lists_attachments(client_and_store):
     assert "另有 3 份未列出" in many["text"]
 
 
+def test_visit_prep_since_last_visit(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    visit_date = (now - timedelta(days=40)).strftime("%Y-%m-%d")
+    store.add_visit_record(
+        "妈妈", visit_date=visit_date, department="心内科",
+        diagnosis="高血压复诊",
+    )
+    data = client.get(
+        "/api/health/visit-prep",
+        params={"profile": "妈妈", "since_last_visit": True},
+    ).json()
+    assert data["since_last_visit"] is True
+    assert data["start"] == visit_date
+    assert data["days"] == 41
+
+    fallback = client.get(
+        "/api/health/visit-prep",
+        params={"profile": "无就诊", "since_last_visit": True},
+    ).json()
+    assert fallback["since_last_visit"] is False
+    assert fallback["days"] == 30
+
+
 def test_visit_prep_clamps_days_and_handles_empty_profile(
     client_and_store,
 ):

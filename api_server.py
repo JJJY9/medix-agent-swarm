@@ -10485,7 +10485,9 @@ async def health_emergency_card(profile: str = ""):
 
 
 @app.get("/api/health/visit-prep")
-async def health_visit_prep(profile: str = "", days: int = 30):
+async def health_visit_prep(
+    profile: str = "", days: int = 30, since_last_visit: bool = False
+):
     """复诊准备单：汇总近期异常、用药、症状并生成想问医生的问题。"""
     from collections import Counter
     from datetime import timedelta
@@ -10502,15 +10504,37 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     profile_key = _normalized_profile_key(profile)
     if not profile_key:
         raise HTTPException(status_code=400, detail="请先选择患者档案")
-    try:
-        days = max(1, min(int(days or 30), 180))
-    except (TypeError, ValueError, OverflowError):
-        days = 30
     now = datetime.now()
+    store = get_session_store()
+    window_from_last_visit = False
+    if since_last_visit:
+        recent_visits = await asyncio.to_thread(
+            store.list_visit_records, profile_key, 0, "", 1
+        )
+        if recent_visits:
+            visit_date = str(
+                recent_visits[0].get("visit_date") or ""
+            )[:10]
+            try:
+                parsed_visit = datetime.strptime(
+                    visit_date, "%Y-%m-%d"
+                ).date()
+            except ValueError:
+                parsed_visit = None
+            if parsed_visit is not None:
+                days = max(
+                    1,
+                    min((now.date() - parsed_visit).days + 1, 180),
+                )
+                window_from_last_visit = True
+    if not window_from_last_visit:
+        try:
+            days = max(1, min(int(days or 30), 180))
+        except (TypeError, ValueError, OverflowError):
+            days = 30
     start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     end = now.strftime("%Y-%m-%d")
 
-    store = get_session_store()
     (
         raw_metrics, raw_labs, symptoms, medications, logs,
         allergies, conditions, reminders, visits, care_items, targets,
@@ -11031,6 +11055,7 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         "start": start,
         "end": end,
         "days": days,
+        "since_last_visit": window_from_last_visit,
         "last_visit": last_visit,
         "abnormal_metrics": abnormal_metrics[:8],
         "abnormal_labs": lab_rows,
@@ -11058,11 +11083,16 @@ async def health_visit_prep(profile: str = "", days: int = 30):
 
 
 @app.get("/api/health/visit-prep/print")
-async def health_visit_prep_print(profile: str = "", days: int = 30):
+async def health_visit_prep_print(
+    profile: str = "", days: int = 30, since_last_visit: bool = False
+):
     """复诊准备单打印版：单页 HTML，可另存为 PDF。"""
     import html as html_module
 
-    data = await health_visit_prep(profile=profile, days=days)
+    data = await health_visit_prep(
+        profile=profile, days=days,
+        since_last_visit=since_last_visit,
+    )
     escape = html_module.escape
     profile_name = escape(str(data.get("profile") or ""))
     range_text = escape(
