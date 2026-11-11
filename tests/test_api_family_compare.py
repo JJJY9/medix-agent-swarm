@@ -1,4 +1,6 @@
 """家庭指标对比 API 的离线测试。"""
+import csv
+import io
 from datetime import datetime
 
 import pytest
@@ -126,3 +128,54 @@ def test_family_compare_empty_store(client_and_store):
 
     assert data["profiles"] == []
     assert data["metric"] == "weight"
+
+
+def test_family_compare_export_csv(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+    for value in (60, 62):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "weight",
+            "value1": value, "measured_at": now,
+        })
+    client.post("/api/metrics", json={
+        "profile": "孩子", "metric": "weight",
+        "value1": 30, "measured_at": now,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp",
+        "value1": 130, "value2": 84, "measured_at": now,
+    })
+
+    response = client.get(
+        "/api/family/compare/export.csv",
+        params={"metric": "weight", "days": 30},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment;" in response.headers["content-disposition"]
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    rows = list(csv.reader(io.StringIO(
+        response.content.decode("utf-8-sig")
+    )))
+    assert rows[0] == [
+        "档案", "指标", "单位", "天数", "平均", "最低", "最高",
+        "次数", "达标次数", "最近日期", "最近值",
+    ]
+    by_name = {row[0]: row for row in rows[1:]}
+    assert by_name["妈妈"][4] == "61"
+    assert by_name["妈妈"][5] == "60"
+    assert by_name["妈妈"][6] == "62"
+    assert by_name["妈妈"][7] == "2"
+    assert by_name["孩子"][4] == "30"
+
+    bp = client.get(
+        "/api/family/compare/export.csv",
+        params={"metric": "bp", "days": 30},
+    )
+    bp_rows = list(csv.reader(io.StringIO(
+        bp.content.decode("utf-8-sig")
+    )))
+    mom_bp = next(row for row in bp_rows[1:] if row[0] == "妈妈")
+    assert mom_bp[4] == "130/84"

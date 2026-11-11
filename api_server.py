@@ -9729,6 +9729,66 @@ async def family_compare(metric: str = "weight", days: int = 30):
     }
 
 
+@app.get("/api/family/compare/export.csv")
+async def export_family_compare_csv(metric: str = "weight", days: int = 30):
+    """导出家庭指标对比 CSV（带 BOM）。"""
+    import csv
+    import io
+
+    data = await family_compare(metric=metric, days=days)
+
+    def fmt(value: Any) -> str:
+        if value is None:
+            return ""
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return str(value)
+        return str(int(number)) if number.is_integer() else f"{number:g}"
+
+    rows = [[
+        "档案", "指标", "单位", "天数", "平均", "最低", "最高",
+        "次数", "达标次数", "最近日期", "最近值",
+    ]]
+    for item in data["profiles"]:
+        avg = fmt(item.get("avg_value1"))
+        if item.get("avg_value2") is not None:
+            avg += f"/{fmt(item.get('avg_value2'))}"
+        latest = item.get("latest") or {}
+        latest_value = fmt(latest.get("value1"))
+        if latest.get("value2") is not None:
+            latest_value += f"/{fmt(latest.get('value2'))}"
+        rows.append([
+            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(data["label"]),
+            csv_safe_cell(data["unit"]),
+            str(data["days"]),
+            csv_safe_cell(avg),
+            csv_safe_cell(fmt(item.get("min_value1"))),
+            csv_safe_cell(fmt(item.get("max_value1"))),
+            str(int(item.get("count") or 0)),
+            csv_safe_cell(fmt(item.get("within_target"))),
+            csv_safe_cell(latest.get("measured_at", "")),
+            csv_safe_cell(latest_value),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = (
+        "medix-family-compare-"
+        + datetime.now().strftime("%Y%m%d")
+        + ".csv"
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 def _attachment_dir_files() -> Dict[str, Dict[str, Any]]:
     """扫描附件目录中的文件，返回文件名到大小/修改时间的映射。"""
     base = ATTACHMENT_DIR.resolve()

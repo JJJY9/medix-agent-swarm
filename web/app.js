@@ -673,6 +673,8 @@ const els = {
   compareMetric: document.getElementById('compare-metric'),
   compareRange: document.getElementById('compare-range'),
   compareList: document.getElementById('compare-list'),
+  compareExport: document.getElementById('compare-export'),
+  compareStatus: document.getElementById('compare-status'),
   compareEmpty: document.getElementById('compare-empty'),
   calendarSection: document.getElementById('calendar-section'),
   calendarMonthLabel: document.getElementById('calendar-month-label'),
@@ -16078,6 +16080,43 @@ async function loadFamilyCompare() {
   }
 }
 
+function setCompareStatus(text, isError = false) {
+  if (!els.compareStatus) return;
+  els.compareStatus.textContent = text || '';
+  els.compareStatus.hidden = !text;
+  els.compareStatus.classList.toggle('error', Boolean(isError));
+}
+
+async function exportFamilyCompare() {
+  const metric = els.compareMetric ? els.compareMetric.value : 'weight';
+  const days = Number(els.compareRange && els.compareRange.value) || 30;
+  const params = new URLSearchParams({
+    metric, days: String(days),
+  });
+  setCompareStatus('正在导出家庭指标对比…');
+  try {
+    const res = await fetch(
+      `/api/family/compare/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      blob,
+      `medix-family-compare-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setCompareStatus('已导出家庭指标对比 CSV。');
+  } catch (err) {
+    setCompareStatus(
+      `导出家庭指标对比失败：${err.message || err}`, true
+    );
+  }
+}
+
 function renderFamilyCompare(data) {
   if (!els.compareList) return;
   const rows = data.profiles || [];
@@ -20355,6 +20394,9 @@ if (els.compareRange) {
     storeFilter(HEALTH_FILTER_KEYS.compareRange, els.compareRange.value);
     loadFamilyCompare();
   });
+}
+if (els.compareExport) {
+  els.compareExport.addEventListener('click', exportFamilyCompare);
 }
 if (els.timelineDateChip) {
   els.timelineDateChip.addEventListener('click', () => {
