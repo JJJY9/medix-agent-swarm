@@ -94,6 +94,7 @@ def test_inspect_empty_and_oversized(client_and_store, monkeypatch):
     assert data["checksum_ok"] is None
     assert data["total_records"] == 0
     assert any("没有可恢复记录" in item for item in data["warnings"])
+    assert any("没有校验信息" in item for item in data["warnings"])
 
     monkeypatch.setattr(api_server, "MAX_BACKUP_FILE_BYTES", 1)
     too_big = client.get(f"/api/backups/{empty.name}/inspect")

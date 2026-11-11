@@ -2330,7 +2330,7 @@ async def inspect_local_backup(name: str):
         )
     try:
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-        payload = json.loads(text)
+        payload = await asyncio.to_thread(json.loads, text)
     except (OSError, ValueError, UnicodeError):
         raise HTTPException(
             status_code=400, detail="备份文件无法读取或已损坏。"
@@ -2342,7 +2342,8 @@ async def inspect_local_backup(name: str):
     checksum_present = isinstance(checksum, str) and bool(checksum.strip())
     checksum_ok = None
     if checksum_present:
-        checksum_ok = checksum.strip() == _backup_checksum(payload)
+        expected = await asyncio.to_thread(_backup_checksum, payload)
+        checksum_ok = checksum.strip() == expected
 
     count_keys = (
         "profiles", "health_metrics", "metric_targets", "reminders",
@@ -2373,6 +2374,8 @@ async def inspect_local_backup(name: str):
     warnings = []
     if checksum_ok is False:
         warnings.append("校验失败，备份可能已损坏或被修改。")
+    elif not checksum_present:
+        warnings.append("备份没有校验信息，请确认来源可靠。")
     if not isinstance(payload.get("version"), int):
         warnings.append("备份缺少版本号。")
     if total_records == 0:
