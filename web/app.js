@@ -328,6 +328,9 @@ const els = {
   attachmentCleanup: document.getElementById('attachment-cleanup'),
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentFilterKind: document.getElementById('attachment-filter-kind'),
+  attachmentFilterLinked: document.getElementById(
+    'attachment-filter-linked'
+  ),
   attachmentFilterQ: document.getElementById('attachment-filter-q'),
   attachmentSelectAll: document.getElementById('attachment-select-all'),
   attachmentDeleteSelected: document.getElementById(
@@ -14260,6 +14263,8 @@ async function loadAttachments(append = false) {
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const filterKind = els.attachmentFilterKind
     ? els.attachmentFilterKind.value : '';
+  const filterLinked = els.attachmentFilterLinked
+    ? els.attachmentFilterLinked.value : '';
   const filterQuery = els.attachmentFilterQ
     ? els.attachmentFilterQ.value.trim() : '';
   const offset = append ? attachmentItemsCache.length : 0;
@@ -14274,6 +14279,7 @@ async function loadAttachments(append = false) {
       profile,
     });
     if (filterKind) params.set('kind', filterKind);
+    if (filterLinked) params.set('linked', filterLinked);
     if (filterQuery) params.set('q', filterQuery);
     const res = await fetch(`/api/attachments?${params.toString()}`);
     const data = await res.json().catch(() => ({}));
@@ -14285,8 +14291,8 @@ async function loadAttachments(append = false) {
     renderAttachments(items, {
       append,
       hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
-      filtered: Boolean(filterKind || filterQuery),
-      emptyText: (filterKind || filterQuery)
+      filtered: Boolean(filterKind || filterLinked || filterQuery),
+      emptyText: (filterKind || filterLinked || filterQuery)
         ? '没有符合条件的资料。'
         : '还没有就医资料。',
     });
@@ -19655,6 +19661,11 @@ if (els.attachmentUpload) {
   }
   if (els.attachmentFilterKind) {
     els.attachmentFilterKind.addEventListener(
+      'change', () => loadAttachments()
+    );
+  }
+  if (els.attachmentFilterLinked) {
+    els.attachmentFilterLinked.addEventListener(
       'change', () => loadAttachments()
     );
   }

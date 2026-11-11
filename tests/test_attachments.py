@@ -336,6 +336,21 @@ def test_search_attachments_by_name_and_note(client_and_store):
     ).json()["attachments"]
     assert [row["id"] for row in spaced] == [third["id"]]
 
+    linked = _store.add_attachment(
+        "妈妈", "visit", 123, "关联资料.pdf", "linked.pdf",
+        "application/pdf", 10, "",
+    )
+    only_linked = client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "linked": "true"},
+    ).json()["attachments"]
+    assert [row["id"] for row in only_linked] == [linked["id"]]
+    unlinked = client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "linked": "false"},
+    ).json()["attachments"]
+    assert linked["id"] not in {row["id"] for row in unlinked}
+
 
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store

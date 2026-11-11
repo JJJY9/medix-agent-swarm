@@ -9,6 +9,9 @@ STYLES = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
 
 def test_attachment_filter_controls_exist():
     assert 'id="attachment-filter-kind"' in HTML
+    assert 'id="attachment-filter-linked"' in HTML
+    assert '>已关联<' in HTML
+    assert '>未关联<' in HTML
     assert 'id="attachment-filter-q"' in HTML
     assert '>全部类型<' in HTML
     assert 'placeholder="搜索文件名或备注"' in HTML
@@ -18,6 +21,9 @@ def test_attachment_filters_are_sent_to_api():
     assert "attachmentFilterKind" in SCRIPT
     assert "attachmentFilterQ" in SCRIPT
     assert "if (filterKind) params.set('kind', filterKind);" in SCRIPT
+    assert "if (filterLinked) params.set('linked', filterLinked);" in SCRIPT
+    assert "attachmentFilterLinked" in SCRIPT
+    assert "els.attachmentFilterLinked.addEventListener(" in SCRIPT
     assert "if (filterQuery) params.set('q', filterQuery);" in SCRIPT
     assert "attachmentFilterTimer" in SCRIPT
     assert "scheduleAttachmentFilterSearch" in SCRIPT
@@ -29,7 +35,7 @@ def test_attachment_filters_are_sent_to_api():
 
 def test_attachment_filter_empty_state_and_styles():
     assert "没有符合条件的资料。" in SCRIPT
-    assert "emptyText: (filterKind || filterQuery)" in SCRIPT
+    assert "emptyText: (filterKind || filterLinked || filterQuery)" in SCRIPT
     assert "options.filtered ? '（已筛选）' : ''" in SCRIPT
     assert "attachmentRequestSeq += 1;" in SCRIPT
     assert ".attachment-filters" in STYLES
