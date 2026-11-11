@@ -575,6 +575,34 @@ def test_search_attachments_by_linked_record(client_and_store):
     assert search("社区医院") == {lab_attachment["id"]}
     assert unlinked["id"] not in search("复诊")
 
+def test_list_attachments_sort(client_and_store):
+    client, _store = client_and_store
+    small = _upload(
+        client, file_name="b-small.pdf",
+        content=b"%PDF-1.4 small",
+    ).json()["attachment"]
+    big = _upload(
+        client, file_name="a-big.pdf",
+        content=b"%PDF-1.4 " + b"x" * 200,
+    ).json()["attachment"]
+
+    def order(sort=""):
+        params = {"profile": "妈妈"}
+        if sort:
+            params["sort"] = sort
+        response = client.get("/api/attachments", params=params)
+        assert response.status_code == 200, response.text
+        return [row["id"] for row in response.json()["attachments"]]
+
+    assert order() == [big["id"], small["id"]]
+    assert order("created_asc") == [small["id"], big["id"]]
+    assert order("size_desc") == [big["id"], small["id"]]
+    assert order("size_asc") == [small["id"], big["id"]]
+    assert order("name_asc") == [big["id"], small["id"]]
+    assert client.get(
+        "/api/attachments", params={"sort": "random"}
+    ).status_code == 400
+
 
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store

@@ -701,6 +701,14 @@
       </div>
       <p class="metric-reference">附件只保存在本机 data/attachments，不进入整库 JSON 备份，也不会发送给模型；请妥善保管。</p>
       <div class="attachment-filters">
+        <label class="sr-only" for="attachment-filter-sort">排序方式</label>
+        <select id="attachment-filter-sort" aria-label="附件排序方式">
+          <option value="">最新上传</option>
+          <option value="created_asc">最早上传</option>
+          <option value="size_desc">最大文件</option>
+          <option value="size_asc">最小文件</option>
+          <option value="name_asc">文件名 A–Z</option>
+        </select>
         <label class="sr-only" for="attachment-filter-kind">筛选资料类型</label>
         <select id="attachment-filter-kind" aria-label="筛选资料类型">
           <option value="">全部类型</option>

@@ -9967,6 +9967,7 @@ async def list_attachments(
     linked: Optional[bool] = None,
     start: str = "",
     end: str = "",
+    sort: str = "",
 ):
     """附件列表（不含文件内容）；可按档案、类型、关联、日期与关键字筛选。"""
     from memory import get_session_store
@@ -9998,6 +9999,11 @@ async def list_attachments(
         raise HTTPException(
             status_code=400, detail="开始日期不能晚于结束日期"
         )
+    sort_key = str(sort or "").strip().lower()
+    if sort_key not in {
+        "", "created_asc", "size_desc", "size_asc", "name_asc",
+    }:
+        raise HTTPException(status_code=400, detail="排序方式不正确")
     store = get_session_store()
     items = await asyncio.to_thread(
         store.list_attachments,
@@ -10010,6 +10016,7 @@ async def list_attachments(
         linked,
         start_day,
         end_day,
+        sort_key,
     )
     visit_ids = {
         int(item.get("ref_id") or 0)
