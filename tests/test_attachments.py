@@ -1,4 +1,6 @@
 """就医资料附件 API 测试。"""
+import csv
+import io
 from datetime import datetime
 from pathlib import Path
 
@@ -602,6 +604,63 @@ def test_list_attachments_sort(client_and_store):
     assert client.get(
         "/api/attachments", params={"sort": "random"}
     ).status_code == 400
+
+
+def test_export_attachments_csv(client_and_store):
+    client, _store = client_and_store
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "复诊",
+    }).json()["visit"]
+    linked = _upload(
+        client, kind="visit", ref_id=visit["id"],
+        file_name="出院小结.pdf", note="关联资料",
+    ).json()["attachment"]
+    other = _upload(
+        client, kind="other", file_name="其他.pdf"
+    ).json()["attachment"]
+
+    response = client.get(
+        "/api/attachments/export.csv", params={"profile": "妈妈"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    rows = list(csv.reader(io.StringIO(
+        response.content.decode("utf-8-sig")
+    )))
+    assert rows[0] == [
+        "上传日期", "文件名", "类型", "大小(字节)", "备注",
+        "关联状态", "关联编号", "关联摘要", "文件状态",
+    ]
+    by_name = {row[1]: row for row in rows[1:]}
+    assert by_name["出院小结.pdf"][5] == "已关联"
+    assert by_name["出院小结.pdf"][6] == str(visit["id"])
+    assert "复诊" in by_name["出院小结.pdf"][7]
+    assert by_name["出院小结.pdf"][8] == "正常"
+    assert by_name["其他.pdf"][5] == "未关联"
+    assert by_name["其他.pdf"][7] == ""
+
+    filtered = client.get(
+        "/api/attachments/export.csv",
+        params={"profile": "妈妈", "kind": "other"},
+    )
+    filtered_rows = list(csv.reader(io.StringIO(
+        filtered.content.decode("utf-8-sig")
+    )))
+    assert [row[1] for row in filtered_rows[1:]] == ["其他.pdf"]
+    assert linked["id"] != other["id"]
+
+    by_ref = client.get(
+        "/api/attachments/export.csv",
+        params={"profile": "妈妈", "ref_id": visit["id"]},
+    )
+    ref_rows = list(csv.reader(io.StringIO(
+        by_ref.content.decode("utf-8-sig")
+    )))
+    assert [row[1] for row in ref_rows[1:]] == ["出院小结.pdf"]
 
 
 def test_attachment_ref_counts(client_and_store):
