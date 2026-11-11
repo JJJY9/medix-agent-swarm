@@ -493,6 +493,13 @@ class MetricRequest(StrictRequestModel):
     note: str = Field("", max_length=300)
 
 
+class QuickParseRequest(StrictRequestModel):
+    text: str = Field(
+        ..., min_length=1, max_length=120,
+        description="一句话健康记录，如：血压 150/95 早上",
+    )
+
+
 class MetricUpdateRequest(StrictRequestModel):
     """部分更新健康指标：只修改请求里显式给出的字段。"""
 
@@ -7532,6 +7539,25 @@ async def health_streak(profile: Optional[str] = None):
     info = _streak_info(days)
     info["profile"] = profile or ""
     return info
+
+
+@app.post("/api/metrics/quick-parse")
+async def quick_parse_metric(request: QuickParseRequest):
+    """解析一句话健康记录，只返回预览，不写入数据库。"""
+    from core.quick_entry import QuickEntryError, parse_quick_metric
+
+    try:
+        preview = parse_quick_metric(request.text)
+    except QuickEntryError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "code": exc.code,
+                "detail": exc.message,
+            },
+        )
+    return {"ok": True, "preview": preview}
 
 
 @app.post("/api/metrics")

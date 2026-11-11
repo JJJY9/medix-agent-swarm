@@ -24,8 +24,9 @@ def test_quality_loaded_with_current_profile():
     # 只在抽屉打开时扫描，指标类型/时间范围切换不再触发全量检查
     assert "if (!metricsOpen) return;" in SCRIPT
     assert "loadHealthInsights();\n  loadDataQuality();" not in SCRIPT
-    assert "resetMetricForm();\n  loadDataQuality();" in SCRIPT
-    assert "refreshMetrics();\n  loadDataQuality();\n});" in SCRIPT
+    assert "resetMetricForm();" in SCRIPT
+    assert "resetQuickEntryUndo();\n  loadDataQuality();" in SCRIPT
+    assert "refreshMetrics();\n  loadDataQuality();" in SCRIPT
     assert (
         "loadFamilyOverview(),\n    loadHealthInsights(),\n"
         "    loadDataQuality(),"

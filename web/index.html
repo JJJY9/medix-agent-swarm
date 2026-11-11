@@ -598,6 +598,20 @@
   </div>
   <div class="metrics-body">
     <div class="health-search-results" id="health-search-results" hidden></div>
+    <div class="quick-entry" id="quick-entry">
+      <label class="calc-field">快速记录
+        <input id="quick-entry-input" type="text" maxlength="120"
+          placeholder="如：血压 150/95 早上 / 血糖 7.8 空腹 / 体重 62.5" autocomplete="off">
+      </label>
+      <div class="quick-entry-actions">
+        <button type="button" class="btn-quiet" id="quick-entry-parse">解析</button>
+        <button type="button" class="btn-quiet" id="quick-entry-save" hidden>确认保存</button>
+        <button type="button" class="btn-quiet" id="quick-entry-cancel" hidden>取消</button>
+        <button type="button" class="btn-quiet" id="quick-entry-undo" hidden aria-label="撤销刚才通过快速记录保存的指标">撤销上次记录</button>
+      </div>
+      <p class="quick-entry-preview" id="quick-entry-preview" role="status" hidden></p>
+      <p class="quick-entry-status" id="quick-entry-status" role="status" hidden></p>
+    </div>
     <details class="weekly-summary insight-section" id="insight-section" open>
       <summary>健康提示 <span class="metric-meta" id="insight-summary"></span></summary>
       <ul class="metrics-list" id="insight-list"></ul>
