@@ -14033,7 +14033,7 @@ async function exportAttachmentArchive() {
     setAttachmentIntegrityStatus(
       `已导出全部档案附件包（共 ${exported} 份`
       + (missing
-        ? `，${missing} 份文件缺失，仅写入清单`
+        ? `，${missing} 份文件缺失或无法读取，仅写入清单`
         : '')
       + '）。',
       missing > 0

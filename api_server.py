@@ -1214,6 +1214,10 @@ MAX_ATTACHMENT_PIXELS = 40_000_000
 MAX_ATTACHMENT_EDGE = 20_000
 # 导出附件包时的总字节上限，避免一次请求占用过多内存
 MAX_ATTACHMENT_EXPORT_BYTES = 200 * 1024 * 1024
+
+
+class AttachmentExportTooLarge(Exception):
+    """附件包超出导出上限。"""
 ATTACHMENT_MIME_BY_EXT = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -1318,6 +1322,8 @@ diagnose_limiter = SlidingWindowLimiter(5)
 knowledge_limiter = SlidingWindowLimiter(20)
 # 附件单文件可达 10 MB，限制上传频率避免磁盘与内存被快速填满
 attachment_limiter = SlidingWindowLimiter(30)
+# 导出附件包可能读取大量文件，限制并发/频率
+attachment_export_limiter = SlidingWindowLimiter(6)
 
 SECURITY_CSP = (
     "default-src 'self'; "
@@ -1580,6 +1586,20 @@ async def require_access_token(request: Request, call_next):
                 status_code=429,
                 content={
                     "detail": "知识库操作过于频繁，请稍后再试。",
+                    "code": "rate_limited",
+                    "retry_after": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            ))
+
+    if path == "/api/attachments/export.zip":
+        client_key = _rate_limit_key(request)
+        allowed, retry_after = attachment_export_limiter.check(client_key)
+        if not allowed:
+            return add_security_headers(JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "附件导出过于频繁，请稍后再试。",
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
@@ -9980,10 +10000,15 @@ async def export_attachments_zip():
                     )
                 }
                 stored_name = str(item.get("stored_name") or "")
-                target = (
-                    (base / stored_name).resolve()
-                    if stored_name else None
-                )
+                row["file_error"] = ""
+                target = None
+                if stored_name:
+                    try:
+                        target = (base / stored_name).resolve()
+                    except (OSError, ValueError):
+                        row["file_error"] = "路径不合法"
+                if target and target.parent != base:
+                    row["file_error"] = "路径不在附件目录"
                 present = bool(
                     target
                     and target.parent == base
@@ -9991,18 +10016,39 @@ async def export_attachments_zip():
                 )
                 if present:
                     try:
-                        file_bytes = target.read_bytes()
+                        file_size = target.stat().st_size
+                    except FileNotFoundError:
+                        present = False
                     except OSError:
                         present = False
+                        row["file_error"] = "无法读取文件信息"
                     else:
-                        total_bytes += len(file_bytes)
-                        if total_bytes > MAX_ATTACHMENT_EXPORT_BYTES:
-                            raise ValueError(
+                        if (
+                            total_bytes + file_size
+                            > MAX_ATTACHMENT_EXPORT_BYTES
+                        ):
+                            raise AttachmentExportTooLarge(
                                 "附件总大小超过上限，无法一次导出。"
                             )
-                        archive.writestr(
-                            f"files/{stored_name}", file_bytes
-                        )
+                        try:
+                            file_bytes = target.read_bytes()
+                        except FileNotFoundError:
+                            present = False
+                        except OSError:
+                            present = False
+                            row["file_error"] = "无法读取文件"
+                        else:
+                            total_bytes += len(file_bytes)
+                            if total_bytes > MAX_ATTACHMENT_EXPORT_BYTES:
+                                raise AttachmentExportTooLarge(
+                                    "附件总大小超过上限，无法一次导出。"
+                                )
+                            archive_name = target.name
+                            archive.writestr(
+                                f"files/{archive_name}", file_bytes
+                            )
+                            row["archive_name"] = archive_name
+                            row["archived_size"] = len(file_bytes)
                 row["file_present"] = present
                 if not present:
                     missing_count += 1
@@ -10015,7 +10061,7 @@ async def export_attachments_zip():
 
     try:
         content, missing_count = await asyncio.to_thread(_build)
-    except ValueError as e:
+    except AttachmentExportTooLarge as e:
         raise HTTPException(status_code=413, detail=str(e))
     await record_audit(
         "attachment.export",
