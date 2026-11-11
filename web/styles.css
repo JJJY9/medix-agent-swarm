@@ -3190,6 +3190,27 @@ html[data-theme="dark"] .calc-status.error {
   display: none;
 }
 
+.attachment-ref-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.attachment-ref-filter[hidden] {
+  display: none;
+}
+
+.attachment-count-badge {
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+
 .attachment-preview {
   position: fixed;
   inset: 0;
