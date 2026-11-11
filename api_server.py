@@ -512,7 +512,7 @@ class MetricRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ]
     value1: float
     value2: Optional[float] = None
@@ -800,7 +800,7 @@ class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ]
     value1: float = Field(..., description="目标上限（血压为收缩压）")
     value2: Optional[float] = Field(None, description="血压目标舒张压")

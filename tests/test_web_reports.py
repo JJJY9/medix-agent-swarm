@@ -286,8 +286,12 @@ def test_app_js_ships_extended_metric_types(client):
     assert 'value="heart_rate"' in html
     assert 'value="spo2"' in html
     assert 'value="waist"' in html
+    assert 'value="sleep"' in html
     assert "血氧饱和度" in app_js
     assert "腰围参考" in app_js
+    assert "睡眠时长" in app_js
+    assert "睡眠时长（小时）" in html
+    assert "成人通常建议每晚 7–9 小时" in app_js
 
 
 def test_app_js_ships_reminder_calendar(client):
