@@ -9913,6 +9913,473 @@ async def health_emergency_card(profile: str = ""):
     )
 
 
+@app.get("/api/health/visit-prep")
+async def health_visit_prep(profile: str = "", days: int = 30):
+    """复诊准备单：汇总近期异常、用药、症状并生成想问医生的问题。"""
+    from collections import Counter
+    from datetime import timedelta
+
+    from memory import get_session_store
+    from memory.session_store import (
+        METRIC_TYPES,
+        critical_metric_alerts,
+        metric_context_label,
+        metric_over_target,
+    )
+
+    profile_key = _normalized_profile_key(profile)
+    if not profile_key:
+        raise HTTPException(status_code=400, detail="请先选择患者档案")
+    try:
+        days = max(1, min(int(days or 30), 180))
+    except (TypeError, ValueError, OverflowError):
+        days = 30
+    now = datetime.now()
+    start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    end = now.strftime("%Y-%m-%d")
+
+    store = get_session_store()
+    (
+        raw_metrics, raw_labs, symptoms, medications, logs,
+        allergies, conditions, reminders, visits, care_items, targets,
+    ) = await asyncio.gather(
+        asyncio.to_thread(
+            store.list_metrics, profile_key, None, 100000, days
+        ),
+        asyncio.to_thread(
+            store.list_lab_results, profile_key, None, None, days,
+            100000, 0,
+        ),
+        asyncio.to_thread(
+            store.list_symptoms, profile_key, 100000, days
+        ),
+        asyncio.to_thread(
+            store.list_medications, profile_key, True, 1000, 0, days
+        ),
+        asyncio.to_thread(
+            store.list_medication_logs, None, profile_key, 100000, 0, days
+        ),
+        asyncio.to_thread(
+            store.list_allergies, profile_key, True, None, "", 1000
+        ),
+        asyncio.to_thread(
+            store.list_conditions, profile_key, True, None, 1000
+        ),
+        asyncio.to_thread(store.list_reminders, False, profile_key),
+        asyncio.to_thread(store.list_visit_records, profile_key, 0, "", 5),
+        asyncio.to_thread(
+            store.list_care_items, profile_key, True, False, 1000
+        ),
+        asyncio.to_thread(store.list_metric_targets, profile_key),
+    )
+
+    def format_metric(item: Dict[str, Any]) -> str:
+        try:
+            first = float(item.get("value1"))
+        except (TypeError, ValueError, OverflowError):
+            return ""
+        second = item.get("value2")
+        if item.get("metric") == "bp" and second not in (None, ""):
+            try:
+                return f"{first:g}/{float(second):g}"
+            except (TypeError, ValueError, OverflowError):
+                return f"{first:g}"
+        return f"{first:g}"
+
+    target_map = {
+        item["metric"]: item for item in targets if item.get("metric")
+    }
+    latest_metrics: Dict[str, Dict[str, Any]] = {}
+    for item in raw_metrics:
+        metric = str(item.get("metric") or "")
+        if metric and metric not in latest_metrics:
+            latest_metrics[metric] = item
+    abnormal_metrics = []
+    for metric, item in latest_metrics.items():
+        target = target_map.get(metric)
+        over_target = False
+        if target is not None:
+            try:
+                over_target = metric_over_target(
+                    metric, item.get("value1"), item.get("value2"), target
+                )
+            except (TypeError, ValueError, OverflowError):
+                over_target = False
+        alerts = critical_metric_alerts(
+            metric, item.get("value1"), item.get("value2")
+        )
+        if not over_target and not alerts:
+            continue
+        label, unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+        abnormal_metrics.append({
+            "metric": metric,
+            "label": label,
+            "value": format_metric(item),
+            "unit": unit,
+            "measured_at": str(item.get("measured_at") or "")[:16],
+            "context": metric_context_label(
+                metric, item.get("context")
+            ),
+            "over_target": over_target,
+            "critical": bool(alerts),
+            "notes": [alert.get("message") for alert in alerts][:3],
+        })
+    abnormal_metrics.sort(
+        key=lambda item: str(item.get("measured_at") or ""), reverse=True
+    )
+    abnormal_metrics.sort(key=lambda item: 0 if item["critical"] else 1)
+
+    abnormal_labs = [
+        item for item in raw_labs
+        if item.get("abnormal") or item.get("critical")
+    ]
+    abnormal_labs.sort(
+        key=lambda item: str(item.get("tested_at") or ""), reverse=True
+    )
+    abnormal_labs.sort(key=lambda item: 0 if item.get("critical") else 1)
+    lab_rows = []
+    for item in abnormal_labs[:10]:
+        try:
+            value_text = f"{float(item.get('value')):g}"
+        except (TypeError, ValueError, OverflowError):
+            value_text = str(item.get("value") or "")
+        lab_rows.append({
+            "item": str(item.get("item") or ""),
+            "panel": str(item.get("panel") or ""),
+            "value": value_text,
+            "unit": str(item.get("unit") or ""),
+            "ref_text": str(item.get("ref_text") or ""),
+            "tested_at": str(item.get("tested_at") or "")[:16],
+            "abnormal_high": bool(item.get("abnormal_high")),
+            "abnormal_low": bool(item.get("abnormal_low")),
+            "critical": bool(item.get("critical")),
+            "notes": [
+                alert.get("message")
+                for alert in (item.get("critical_alerts") or [])
+            ][:3],
+        })
+
+    symptom_buckets: Dict[str, Dict[str, Any]] = {}
+    for item in symptoms:
+        name = str(item.get("symptom") or "").strip()
+        if not name:
+            continue
+        bucket = symptom_buckets.setdefault(name, {
+            "symptom": name,
+            "count": 0,
+            "max_severity": 0,
+            "last_at": "",
+        })
+        bucket["count"] += 1
+        try:
+            severity = int(item.get("severity") or 0)
+        except (TypeError, ValueError, OverflowError):
+            severity = 0
+        bucket["max_severity"] = max(bucket["max_severity"], severity)
+        bucket["last_at"] = max(
+            bucket["last_at"], str(item.get("recorded_at") or "")[:16]
+        )
+    top_symptoms = sorted(
+        symptom_buckets.values(),
+        key=lambda item: (
+            -int(item["max_severity"]), -int(item["count"]), item["symptom"]
+        ),
+    )[:5]
+
+    skip_logs = [item for item in logs if item.get("skipped")]
+    reason_counter = Counter(
+        str(item.get("skip_reason_label") or "未说明") for item in skip_logs
+    )
+    skip_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in reason_counter.most_common(3)
+    ]
+    taken_count = len(logs) - len(skip_logs)
+
+    latest_visit = visits[0] if visits else None
+    last_visit = None
+    if latest_visit:
+        last_visit = {
+            "visit_date": str(latest_visit.get("visit_date") or "")[:10],
+            "department": str(latest_visit.get("department") or ""),
+            "doctor": str(latest_visit.get("doctor") or ""),
+            "diagnosis": str(latest_visit.get("diagnosis") or ""),
+            "advice": str(latest_visit.get("advice") or "")[:300],
+            "next_followup_date": str(
+                latest_visit.get("next_followup_date") or ""
+            )[:10],
+        }
+
+    severity_labels = {"mild": "轻度", "moderate": "中度", "severe": "重度"}
+    kind_labels = {
+        "drug": "药物", "food": "食物",
+        "environment": "环境", "other": "其他",
+    }
+    status_labels = {
+        "active": "活动", "controlled": "已控制", "resolved": "已痊愈",
+    }
+    allergy_rows = [
+        {
+            "substance": str(item.get("substance") or ""),
+            "kind": kind_labels.get(
+                str(item.get("kind") or ""), str(item.get("kind") or "")
+            ),
+            "severity": severity_labels.get(
+                str(item.get("severity") or ""),
+                str(item.get("severity") or ""),
+            ),
+            "reaction": str(item.get("reaction") or "")[:120],
+        }
+        for item in allergies[:8]
+    ]
+    condition_rows = [
+        {
+            "name": str(item.get("name") or ""),
+            "status": status_labels.get(
+                str(item.get("status") or ""),
+                str(item.get("status") or ""),
+            ),
+            "severity": severity_labels.get(
+                str(item.get("severity") or ""),
+                str(item.get("severity") or ""),
+            ),
+        }
+        for item in conditions[:10]
+    ]
+
+    today = end
+    reminder_rows = []
+    overdue_reminders = 0
+    for item in reminders:
+        due = str(item.get("due_at") or "")
+        overdue = due[:10] < today
+        if overdue:
+            overdue_reminders += 1
+        if len(reminder_rows) < 5:
+            reminder_rows.append({
+                "title": str(item.get("title") or "")[:120],
+                "due_at": due[:16],
+                "overdue": overdue,
+            })
+
+    care_due = [
+        {
+            "title": str(item.get("title") or ""),
+            "next_due_at": str(item.get("next_due_at") or "")[:10],
+            "days_until": item.get("days_until"),
+            "overdue": bool(item.get("overdue")),
+        }
+        for item in care_items
+        if item.get("overdue") or item.get("due_today") or item.get("due_soon")
+    ][:5]
+
+    active_medications = [
+        {
+            "name": str(item.get("name") or ""),
+            "dose": str(item.get("dose") or ""),
+            "frequency": str(item.get("frequency") or ""),
+        }
+        for item in medications[:20]
+    ]
+
+    questions: List[str] = []
+    critical_labs = [item for item in lab_rows if item["critical"]]
+    other_labs = [item for item in lab_rows if not item["critical"]]
+    if critical_labs:
+        first = critical_labs[0]
+        questions.append(
+            f"化验「{first['item']}」达到危急值（{first['value']}"
+            f"{first['unit']}，{first['tested_at'][:10]}），"
+            "是否需要立即处理或复查？"
+        )
+    if other_labs:
+        names = "、".join(item["item"] for item in other_labs[:3])
+        questions.append(
+            f"化验 {names} 异常，是否需要复查或调整治疗？"
+        )
+    critical_metrics = [
+        item for item in abnormal_metrics if item["critical"]
+    ]
+    over_target_metrics = [
+        item for item in abnormal_metrics
+        if item["over_target"] and not item["critical"]
+    ]
+    if critical_metrics:
+        first = critical_metrics[0]
+        questions.append(
+            f"{first['label']} 最近 {first['value']} {first['unit']}"
+            " 达到危急值，需要立即就医还是调整用药？"
+        )
+    if over_target_metrics:
+        names = "、".join(
+            f"{item['label']} {item['value']}"
+            for item in over_target_metrics[:3]
+        )
+        questions.append(f"{names} 超出目标，是否需要调整方案？")
+    if skip_logs:
+        reason_text = (
+            f"，主要原因：{skip_reasons[0]['reason']}"
+            if skip_reasons else ""
+        )
+        questions.append(
+            f"近 {days} 天有 {len(skip_logs)} 次未服药{reason_text}，"
+            "是否需要调整服药方式？"
+        )
+    if top_symptoms:
+        first = top_symptoms[0]
+        questions.append(
+            f"近 {days} 天反复出现{first['symptom']}"
+            f"（{first['count']} 次，最高 {first['max_severity']}/10），"
+            "是否需要进一步检查？"
+        )
+    if allergy_rows:
+        names = "、".join(item["substance"] for item in allergy_rows[:3])
+        questions.append(f"目前记录对 {names} 过敏，用药时需要避开吗？")
+    if overdue_reminders:
+        questions.append(
+            f"有 {overdue_reminders} 项待办提醒已逾期，是否需要补做检查？"
+        )
+    if last_visit and last_visit["next_followup_date"]:
+        questions.append(
+            f"上次就诊建议 {last_visit['next_followup_date']} 复诊，"
+            "本次需要提前准备哪些检查？"
+        )
+    if care_due:
+        names = "、".join(
+            f"{item['title']}（{item['next_due_at']}）"
+            for item in care_due[:3]
+        )
+        questions.append(f"复查计划 {names} 已临近或逾期，本次一并安排吗？")
+    if not questions:
+        questions.append(
+            "近期记录较少，请向医生补充描述症状、用药与检查结果。"
+        )
+    questions = questions[:8]
+
+    lines = [f"复诊准备单（{profile_key} · {start} 至 {end}）", ""]
+    if last_visit:
+        visit_text = " ".join(part for part in (
+            last_visit["visit_date"],
+            last_visit["department"],
+            last_visit["doctor"],
+        ) if part)
+        lines.append(f"上次就诊：{visit_text or '已记录'}")
+        if last_visit["diagnosis"]:
+            lines.append(f"诊断：{last_visit['diagnosis']}")
+        if last_visit["advice"]:
+            lines.append(f"医嘱：{last_visit['advice']}")
+    if abnormal_metrics or lab_rows:
+        lines.append("")
+        lines.append("一、需要告知医生的异常")
+        for item in abnormal_metrics[:8]:
+            context = f"（{item['context']}）" if item["context"] else ""
+            flag = "危急值" if item["critical"] else "超标"
+            lines.append(
+                f"- {item['label']} {item['value']} {item['unit']}"
+                f" · {item['measured_at'][:10]}{context} · {flag}"
+            )
+        for item in lab_rows:
+            flag = "危急值" if item["critical"] else (
+                "偏高" if item["abnormal_high"] else "偏低"
+            )
+            ref = f"，参考 {item['ref_text']}" if item["ref_text"] else ""
+            lines.append(
+                f"- 化验 {item['item']} {item['value']} {item['unit']}"
+                f" · {item['tested_at'][:10]}{ref} · {flag}"
+            )
+    if top_symptoms:
+        lines.append("")
+        lines.append(f"二、近 {days} 天症状")
+        for item in top_symptoms:
+            lines.append(
+                f"- {item['symptom']}：{item['count']} 次，"
+                f"最高 {item['max_severity']}/10，最近 {item['last_at'][:10]}"
+            )
+    if active_medications or logs:
+        lines.append("")
+        lines.append(f"三、目前用药（{len(active_medications)} 种）")
+        for item in active_medications:
+            detail = " ".join(part for part in (
+                item["dose"], item["frequency"]
+            ) if part)
+            lines.append(
+                f"- {item['name']}{f'（{detail}）' if detail else ''}"
+            )
+        lines.append(
+            f"- 近 {days} 天打卡：已服 {taken_count} 次，"
+            f"未服 {len(skip_logs)} 次"
+        )
+        if skip_reasons:
+            lines.append(
+                "- 未服原因："
+                + "、".join(
+                    f"{item['reason']} {item['count']} 次"
+                    for item in skip_reasons
+                )
+            )
+    if allergy_rows or condition_rows:
+        lines.append("")
+        lines.append("四、过敏与慢病")
+        for item in allergy_rows:
+            reaction = f"，反应：{item['reaction']}" if item["reaction"] else ""
+            lines.append(
+                f"- 过敏：{item['substance']}（{item['kind']}，"
+                f"{item['severity']}{reaction}）"
+            )
+        for item in condition_rows:
+            lines.append(
+                f"- 慢病：{item['name']}（{item['status']}）"
+            )
+    if reminder_rows or care_due:
+        lines.append("")
+        lines.append("五、待办与复查")
+        for item in reminder_rows:
+            flag = "已逾期" if item["overdue"] else "待完成"
+            lines.append(f"- 提醒：{item['title']}（{item['due_at'][:10]}，{flag}）")
+        for item in care_due:
+            flag = "已逾期" if item["overdue"] else "临近"
+            lines.append(
+                f"- 复查：{item['title']}（{item['next_due_at']}，{flag}）"
+            )
+    lines.append("")
+    lines.append("建议询问医生：")
+    for index, question in enumerate(questions, 1):
+        lines.append(f"{index}. {question}")
+    lines.append("")
+    lines.append(
+        "本准备单由 MediX 根据本机健康记录生成，"
+        "仅供与医生沟通参考，不构成医疗建议。"
+    )
+
+    return {
+        "profile": profile_key,
+        "start": start,
+        "end": end,
+        "days": days,
+        "last_visit": last_visit,
+        "abnormal_metrics": abnormal_metrics[:8],
+        "abnormal_labs": lab_rows,
+        "symptoms": top_symptoms,
+        "medications": active_medications,
+        "medication_summary": {
+            "active_count": len(active_medications),
+            "taken_count": taken_count,
+            "skipped_count": len(skip_logs),
+            "skip_reasons": skip_reasons,
+        },
+        "allergies": allergy_rows,
+        "conditions": condition_rows,
+        "reminders": {
+            "pending_count": len(reminders),
+            "overdue_count": overdue_reminders,
+            "items": reminder_rows,
+        },
+        "care_items": care_due,
+        "questions": questions,
+        "text": "\n".join(lines),
+    }
+
+
 @app.get("/api/health/dossier.md")
 async def export_health_dossier(
     profile: str = "", days: int = 30, allow_unassigned: bool = False
