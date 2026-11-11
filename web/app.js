@@ -315,6 +315,15 @@ const els = {
   bpMonitoringBody: document.getElementById('bp-monitoring-body'),
   bpMonitoringEmpty: document.getElementById('bp-monitoring-empty'),
   bpMonitoringStatus: document.getElementById('bp-monitoring-status'),
+  attachmentsSummary: document.getElementById('attachments-summary'),
+  attachmentKind: document.getElementById('attachment-kind'),
+  attachmentFile: document.getElementById('attachment-file'),
+  attachmentNote: document.getElementById('attachment-note'),
+  attachmentUpload: document.getElementById('attachment-upload'),
+  attachmentStatus: document.getElementById('attachment-status'),
+  attachmentList: document.getElementById('attachment-list'),
+  attachmentMore: document.getElementById('attachment-more'),
+  attachmentEmpty: document.getElementById('attachment-empty'),
   quickEntryInput: document.getElementById('quick-entry-input'),
   quickEntryParse: document.getElementById('quick-entry-parse'),
   quickEntrySave: document.getElementById('quick-entry-save'),
@@ -7160,6 +7169,7 @@ async function openMetrics() {
   resetQuickEntryUndo();
   loadDataQuality();
   loadBpMonitoring();
+  loadAttachments();
   loadMetricTargets().then(() => refreshMetrics());
   if (!els.metricsDrawer.contains(document.activeElement)) {
     els.metricsClose.focus();
@@ -13751,6 +13761,247 @@ let bpMonitoringRequestSeq = 0;
 let bpMonitoringCache = null;
 let bpMonitoringStartAuto = true;
 
+let attachmentRequestSeq = 0;
+let attachmentUploading = false;
+let attachmentLoadingMore = false;
+let attachmentHasMore = false;
+let attachmentItemsCache = [];
+const ATTACHMENT_PAGE_SIZE = 100;
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'pdf'];
+
+function setAttachmentStatus(text, isError = false) {
+  if (!els.attachmentStatus) return;
+  els.attachmentStatus.textContent = text || '';
+  els.attachmentStatus.hidden = !text;
+  els.attachmentStatus.classList.toggle('error', Boolean(isError));
+}
+
+function formatAttachmentSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function renderAttachments(items, options = {}) {
+  if (!els.attachmentList) return;
+  const append = Boolean(options.append);
+  if (!append) {
+    attachmentItemsCache = [];
+    els.attachmentList.replaceChildren();
+  }
+  attachmentItemsCache = attachmentItemsCache.concat(items);
+  attachmentHasMore = Boolean(options.hasMore);
+  els.attachmentsSummary.textContent =
+    `· ${attachmentItemsCache.length}${attachmentHasMore ? '+' : ''} 份`;
+  els.attachmentEmpty.hidden = attachmentItemsCache.length > 0;
+  els.attachmentEmpty.textContent = '还没有就医资料。';
+  els.attachmentMore.hidden = !attachmentHasMore;
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.original_name || '附件';
+    const badge = document.createElement('span');
+    badge.className = 'metric-meta';
+    badge.textContent = item.kind_label || '其他';
+    title.append(' ', badge);
+    const meta = document.createElement('span');
+    meta.className = 'metric-meta';
+    meta.textContent = [
+      formatAttachmentSize(item.size),
+      String(item.created_at || '').replace('T', ' ').slice(0, 16),
+      item.note || '',
+    ].filter(Boolean).join(' · ');
+    main.append(title, meta);
+    li.appendChild(main);
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+    const view = document.createElement('button');
+    view.type = 'button';
+    view.className = 'metric-edit';
+    view.textContent = '查看';
+    view.setAttribute('aria-label', `查看附件：${item.original_name}`);
+    view.addEventListener('click', () => openAttachmentFile(item));
+    const download = document.createElement('button');
+    download.type = 'button';
+    download.className = 'metric-edit';
+    download.textContent = '下载';
+    download.setAttribute('aria-label', `下载附件：${item.original_name}`);
+    download.addEventListener(
+      'click', () => openAttachmentFile(item, true)
+    );
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'metric-delete';
+    del.textContent = '删除';
+    del.setAttribute('aria-label', `删除附件：${item.original_name}`);
+    del.addEventListener('click', () => deleteAttachment(item));
+    actions.append(view, download, del);
+    li.appendChild(actions);
+    els.attachmentList.appendChild(li);
+  }
+}
+
+async function loadAttachments(append = false) {
+  if (!els.attachmentList || !metricsOpen) return;
+  if (append && (!attachmentHasMore || attachmentLoadingMore)) return;
+  if (!append) {
+    attachmentLoadingMore = false;
+    attachmentHasMore = false;
+  }
+  const requestSeq = ++attachmentRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const offset = append ? attachmentItemsCache.length : 0;
+  if (append) {
+    attachmentLoadingMore = true;
+    els.attachmentMore.disabled = true;
+  }
+  try {
+    const params = new URLSearchParams({
+      limit: String(ATTACHMENT_PAGE_SIZE),
+      offset: String(offset),
+      profile,
+    });
+    const res = await fetch(`/api/attachments?${params.toString()}`);
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== attachmentRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const items = data.attachments || [];
+    renderAttachments(items, {
+      append,
+      hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
+    });
+  } catch (err) {
+    if (requestSeq !== attachmentRequestSeq) return;
+    if (append) {
+      setAttachmentStatus(`加载更多失败：${err.message || err}`, true);
+    } else {
+      attachmentItemsCache = [];
+      els.attachmentList.replaceChildren();
+      els.attachmentsSummary.textContent = '';
+      els.attachmentMore.hidden = true;
+      els.attachmentEmpty.textContent =
+        `加载失败：${err.message || err}`;
+      els.attachmentEmpty.hidden = false;
+    }
+  } finally {
+    if (requestSeq === attachmentRequestSeq) {
+      attachmentLoadingMore = false;
+      if (els.attachmentMore) els.attachmentMore.disabled = false;
+    }
+  }
+}
+
+async function openAttachmentFile(item, download = false) {
+  try {
+    const res = await fetch(`/api/attachments/${item.id}/file`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (download) {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = item.original_name || '附件';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } else {
+      const opened = window.open(url, '_blank');
+      if (!opened) {
+        URL.revokeObjectURL(url);
+        setAttachmentStatus(
+          '浏览器拦截了新窗口，请允许弹窗后重试', true
+        );
+        return;
+      }
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    setAttachmentStatus(`打开附件失败：${err.message || err}`, true);
+  }
+}
+
+async function uploadAttachment() {
+  if (attachmentUploading) return;
+  const file = els.attachmentFile.files
+    && els.attachmentFile.files[0];
+  if (!file) {
+    setAttachmentStatus('请选择要上传的文件', true);
+    return;
+  }
+  const extension = String(file.name || '').split('.').pop().toLowerCase();
+  if (!ATTACHMENT_EXTENSIONS.includes(extension)) {
+    setAttachmentStatus('仅支持 JPG/PNG/WebP/PDF 附件', true);
+    return;
+  }
+  if (file.size > ATTACHMENT_MAX_BYTES) {
+    setAttachmentStatus('附件超过 10 MB，请压缩后再上传', true);
+    return;
+  }
+  attachmentUploading = true;
+  els.attachmentUpload.disabled = true;
+  setAttachmentStatus('正在上传…');
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const form = new FormData();
+  form.append('profile', profile);
+  form.append('kind', els.attachmentKind.value || 'other');
+  form.append('note', els.attachmentNote.value.trim());
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/attachments', {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string'
+        ? data.detail
+        : `服务返回 ${res.status}`;
+      throw new Error(detail);
+    }
+    setAttachmentStatus('已上传附件');
+    els.attachmentFile.value = '';
+    els.attachmentNote.value = '';
+    await loadAttachments();
+  } catch (err) {
+    setAttachmentStatus(`上传失败：${err.message || err}`, true);
+  } finally {
+    attachmentUploading = false;
+    els.attachmentUpload.disabled = false;
+  }
+}
+
+async function deleteAttachment(item) {
+  if (!window.confirm(`删除附件「${item.original_name || '附件'}」？`)) {
+    return;
+  }
+  try {
+    const res = await fetch(`/api/attachments/${item.id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setAttachmentStatus('已删除附件');
+    await loadAttachments();
+  } catch (err) {
+    setAttachmentStatus(`删除附件失败：${err.message || err}`, true);
+  }
+}
+
 function bpMonitoringDefaultStart(days) {
   const date = new Date();
   date.setDate(date.getDate() - (Number(days || 7) - 1));
@@ -18321,6 +18572,7 @@ els.metricProfile.addEventListener('change', () => {
   refreshMetrics();
   loadDataQuality();
   loadBpMonitoring();
+  loadAttachments();
   quickEntryRequestSeq += 1;
   clearQuickEntryPreview();
   setQuickEntryStatus('');
@@ -18372,6 +18624,14 @@ if (els.bpMonitoringDays) {
   els.bpMonitoringCopy.addEventListener(
     'click', copyBpMonitoring
   );
+}
+if (els.attachmentUpload) {
+  els.attachmentUpload.addEventListener('click', uploadAttachment);
+  if (els.attachmentMore) {
+    els.attachmentMore.addEventListener(
+      'click', () => loadAttachments(true)
+    );
+  }
 }
 restoreSelectValue(
   els.weeklySummaryRange, HEALTH_FILTER_KEYS.weeklyRange

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Tuple
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi import Path as ApiPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
@@ -1199,6 +1199,19 @@ def _streak_info(days: List[str]) -> Dict[str, Any]:
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
+#: 就医资料附件：本机目录与允许的扩展名
+ATTACHMENT_DIR = project_root / "data" / "attachments"
+MAX_ATTACHMENT_UPLOAD_BYTES = 10 * 1024 * 1024
+# 图片在浏览器中解码后才占内存；限制像素规模，避免小文件解压炸弹
+MAX_ATTACHMENT_PIXELS = 40_000_000
+MAX_ATTACHMENT_EDGE = 20_000
+ATTACHMENT_MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+}
 
 
 def _request_content_length(request: Request) -> int:
@@ -1294,6 +1307,8 @@ chat_limiter = SlidingWindowLimiter(get_rate_limit())
 diagnose_limiter = SlidingWindowLimiter(5)
 # 重建/上传会触发全量索引，限制频率避免放大资源消耗
 knowledge_limiter = SlidingWindowLimiter(20)
+# 附件单文件可达 10 MB，限制上传频率避免磁盘与内存被快速填满
+attachment_limiter = SlidingWindowLimiter(30)
 
 SECURITY_CSP = (
     "default-src 'self'; "
@@ -1329,6 +1344,8 @@ def _body_limit_for_path(path: str) -> int:
         return MAX_UPLOAD_BATCH_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/upload"):
         return MAX_UPLOAD_BYTES + 1024 * 1024
+    if path == "/api/attachments":
+        return MAX_ATTACHMENT_UPLOAD_BYTES + 1024 * 1024
     if path.startswith("/api/knowledge/documents/"):
         # 在线编辑按 update_document 的 5MB 上限，额外预留 JSON 转义开销
         return MAX_UPLOAD_BYTES + 1024 * 1024
@@ -1554,6 +1571,20 @@ async def require_access_token(request: Request, call_next):
                 status_code=429,
                 content={
                     "detail": "知识库操作过于频繁，请稍后再试。",
+                    "code": "rate_limited",
+                    "retry_after": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            ))
+
+    if path == "/api/attachments" and request.method == "POST":
+        client_key = _rate_limit_key(request)
+        allowed, retry_after = attachment_limiter.check(client_key)
+        if not allowed:
+            return add_security_headers(JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "附件上传过于频繁，请稍后再试。",
                     "code": "rate_limited",
                     "retry_after": round(retry_after, 1),
                 },
@@ -3682,6 +3713,7 @@ async def delete_lab_result(lab_id: SafeIntPath):
     ok = await asyncio.to_thread(store.delete_lab_result, lab_id)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
+    await asyncio.to_thread(store.detach_attachments, "lab", lab_id)
     await record_audit("lab.delete", str(lab_id))
     return {"ok": True, "id": lab_id}
 
@@ -4527,6 +4559,7 @@ async def delete_visit(visit_id: SafeIntPath):
     ok = await asyncio.to_thread(store.delete_visit_record, visit_id)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
+    await asyncio.to_thread(store.detach_attachments, "visit", visit_id)
     await record_audit("visit.delete", str(visit_id))
     return {"ok": True, "id": visit_id}
 
@@ -9336,6 +9369,334 @@ async def family_compare(metric: str = "weight", days: int = 30):
         "days": days,
         "profiles": rows,
     }
+
+
+def _safe_attachment_name(name: Any) -> str:
+    text = str(name or "").replace("\\", "/").split("/")[-1]
+    text = "".join(char for char in text if char.isprintable())
+    text = " ".join(text.split())
+    if not text:
+        return "附件"
+    if len(text) <= 120:
+        return text
+    suffix = Path(text).suffix
+    if suffix and len(suffix) < 120:
+        return text[: 120 - len(suffix)].rstrip() + suffix
+    return text[:120]
+
+
+def _attachment_content_matches(mime: str, content: bytes) -> bool:
+    """校验文件头，避免把其他内容伪装成图片或 PDF。"""
+    if mime == "application/pdf":
+        return content.startswith(b"%PDF-")
+    if mime == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if mime == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/webp":
+        return (
+            len(content) >= 12
+            and content[:4] == b"RIFF"
+            and content[8:12] == b"WEBP"
+        )
+    return False
+
+
+def _png_dimensions(content: bytes) -> Optional[tuple]:
+    if len(content) < 24 or content[12:16] != b"IHDR":
+        return None
+    return (
+        int.from_bytes(content[16:20], "big"),
+        int.from_bytes(content[20:24], "big"),
+    )
+
+
+def _jpeg_dimensions(content: bytes) -> Optional[tuple]:
+    size = len(content)
+    pos = 2
+    sof_markers = {
+        0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+        0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+    }
+    while pos + 3 < size:
+        if content[pos] != 0xFF:
+            pos += 1
+            continue
+        marker = content[pos + 1]
+        pos += 2
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            continue
+        if marker in (0xD9, 0xDA):
+            return None
+        if pos + 2 > size:
+            return None
+        length = int.from_bytes(content[pos:pos + 2], "big")
+        if length < 2 or pos + length > size:
+            return None
+        if marker in sof_markers:
+            if length < 7:
+                return None
+            return (
+                int.from_bytes(content[pos + 5:pos + 7], "big"),
+                int.from_bytes(content[pos + 3:pos + 5], "big"),
+            )
+        pos += length
+    return None
+
+
+def _webp_dimensions(content: bytes) -> Optional[tuple]:
+    if len(content) < 30:
+        return None
+    chunk = content[12:16]
+    if chunk == b"VP8X":
+        return (
+            1 + int.from_bytes(content[24:27], "little"),
+            1 + int.from_bytes(content[27:30], "little"),
+        )
+    if chunk == b"VP8 ":
+        if content[23:26] != b"\x9d\x01\x2a":
+            return None
+        return (
+            int.from_bytes(content[26:28], "little") & 0x3FFF,
+            int.from_bytes(content[28:30], "little") & 0x3FFF,
+        )
+    if chunk == b"VP8L":
+        if content[20] != 0x2F:
+            return None
+        bits = int.from_bytes(content[21:25], "little")
+        return (
+            1 + (bits & 0x3FFF),
+            1 + ((bits >> 14) & 0x3FFF),
+        )
+    return None
+
+
+def _attachment_dimensions_allowed(mime: str, content: bytes) -> bool:
+    """拒绝解码后规模过大的图片；无法解析尺寸时放行。"""
+    if mime == "image/png":
+        dimensions = _png_dimensions(content)
+    elif mime == "image/jpeg":
+        dimensions = _jpeg_dimensions(content)
+    elif mime == "image/webp":
+        dimensions = _webp_dimensions(content)
+    else:
+        return True
+    if dimensions is None:
+        return True
+    width, height = dimensions
+    if width <= 0 or height <= 0:
+        return False
+    return (
+        width <= MAX_ATTACHMENT_EDGE
+        and height <= MAX_ATTACHMENT_EDGE
+        and width * height <= MAX_ATTACHMENT_PIXELS
+    )
+
+
+@app.post("/api/attachments")
+async def upload_attachment(
+    request: Request,
+    file: UploadFile = File(...),
+    profile: str = Form(""),
+    kind: str = Form("other"),
+    ref_id: int = Form(0),
+    note: str = Form(""),
+):
+    """上传本地就医资料（JPG/PNG/WebP/PDF，单文件不超过 10 MB）。"""
+    from memory import get_session_store
+    from memory.session_store import ATTACHMENT_KINDS
+
+    if (
+        _request_content_length(request)
+        > MAX_ATTACHMENT_UPLOAD_BYTES + 1024 * 1024
+    ):
+        raise HTTPException(status_code=413, detail="附件超过 10 MB")
+    if ref_id < 0 or ref_id > MAX_SQLITE_INT:
+        raise HTTPException(status_code=400, detail="关联记录编号不正确")
+    raw_name = str(file.filename or "").replace("\\", "/").split("/")[-1]
+    # 扩展名从原始文件名读取，避免超长名称被截断后再取后缀
+    suffix = Path(raw_name).suffix.lower()
+    original_name = _safe_attachment_name(raw_name)
+    mime = ATTACHMENT_MIME_BY_EXT.get(suffix)
+    if mime is None:
+        raise HTTPException(
+            status_code=400, detail="仅支持 JPG/PNG/WebP/PDF 附件"
+        )
+    declared = str(file.content_type or "").split(";")[0].strip().lower()
+    if declared in {"image/jpg", "image/pjpeg"}:
+        declared = "image/jpeg"
+    elif declared == "application/x-pdf":
+        declared = "application/pdf"
+    if (
+        declared
+        and declared != "application/octet-stream"
+        and declared != mime
+    ):
+        raise HTTPException(
+            status_code=400, detail="附件类型与扩展名不一致"
+        )
+    content = await file.read(MAX_ATTACHMENT_UPLOAD_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="附件内容为空")
+    if len(content) > MAX_ATTACHMENT_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="附件超过 10 MB")
+    if not _attachment_content_matches(mime, content):
+        raise HTTPException(
+            status_code=400, detail="附件内容与文件类型不一致"
+        )
+    if not _attachment_dimensions_allowed(mime, content):
+        raise HTTPException(
+            status_code=400, detail="图片尺寸过大，请压缩后再上传"
+        )
+
+    store = get_session_store()
+    kind_key = str(kind or "other").strip().lower()
+    if kind_key not in ATTACHMENT_KINDS:
+        kind_key = "other"
+    if ref_id:
+        if kind_key not in {"visit", "lab"}:
+            raise HTTPException(
+                status_code=400, detail="该资料类型不支持关联记录"
+            )
+        getter = (
+            store.get_visit_record if kind_key == "visit"
+            else store.get_lab_result
+        )
+        record = await asyncio.to_thread(getter, ref_id)
+        if record is None:
+            raise HTTPException(
+                status_code=400, detail="关联的就诊/化验记录不存在"
+            )
+        if (
+            _normalized_profile_key(record.get("profile"))
+            != _normalized_profile_key(profile)
+        ):
+            raise HTTPException(
+                status_code=400, detail="关联记录不属于该患者档案"
+            )
+
+    attachment_dir = ATTACHMENT_DIR.resolve()
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{suffix}"
+    target = (attachment_dir / stored_name).resolve()
+    if target.parent != attachment_dir:
+        raise HTTPException(status_code=400, detail="附件名称不正确")
+    try:
+        target.write_bytes(content)
+    except OSError:
+        logger.warning("附件写入失败")
+        raise HTTPException(status_code=500, detail="附件保存失败")
+
+    try:
+        item = await asyncio.to_thread(
+            store.add_attachment,
+            profile,
+            kind_key,
+            ref_id,
+            original_name,
+            stored_name,
+            mime,
+            len(content),
+            note,
+        )
+    except Exception:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        logger.exception("附件登记失败")
+        raise HTTPException(status_code=500, detail="附件保存失败")
+    if item is None:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="附件信息不正确")
+    await record_audit("attachment.create", str(item["id"]))
+    return {"ok": True, "attachment": item}
+
+
+@app.get("/api/attachments")
+async def list_attachments(
+    profile: Optional[str] = None,
+    kind: Optional[str] = None,
+    ref_id: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """附件列表（不含文件内容）；可按档案、类型与关联记录筛选。"""
+    from memory import get_session_store
+
+    limit = max(1, min(int(limit or 100), 1000))
+    offset = _bounded_offset(offset)
+    if ref_id is not None and (ref_id < 0 or ref_id > MAX_SQLITE_INT):
+        raise HTTPException(status_code=400, detail="关联记录编号不正确")
+    items = await asyncio.to_thread(
+        get_session_store().list_attachments,
+        profile,
+        kind,
+        ref_id,
+        limit,
+        offset,
+    )
+    return {"attachments": items}
+
+
+@app.get("/api/attachments/{attachment_id}/file")
+async def download_attachment(attachment_id: SafeIntPath):
+    """读取附件原文件；文件只保存在本机数据目录。"""
+    from memory import get_session_store
+
+    item = await asyncio.to_thread(
+        get_session_store().get_attachment, attachment_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    attachment_dir = ATTACHMENT_DIR.resolve()
+    target = (attachment_dir / str(item.get("stored_name") or "")).resolve()
+    if target.parent != attachment_dir or not target.is_file():
+        raise HTTPException(status_code=404, detail="附件文件不存在")
+    return FileResponse(
+        target,
+        media_type=item.get("mime") or "application/octet-stream",
+        filename=str(item.get("original_name") or "附件"),
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.delete("/api/attachments/{attachment_id}")
+async def delete_attachment(attachment_id: SafeIntPath):
+    """删除附件登记并清理本机文件。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(
+        store.get_attachment, attachment_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    attachment_dir = ATTACHMENT_DIR.resolve()
+    target = (
+        attachment_dir / str(item.get("stored_name") or "")
+    ).resolve()
+    if target.parent == attachment_dir:
+        try:
+            # 先删文件再删登记：文件被占用时保留登记，避免留下无法清理的孤儿文件
+            target.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("附件文件删除失败")
+            raise HTTPException(
+                status_code=409,
+                detail="附件文件正被占用，请稍后重试",
+            )
+    removed = await asyncio.to_thread(
+        store.delete_attachment, attachment_id
+    )
+    if removed is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    await record_audit("attachment.delete", str(attachment_id))
+    return {"ok": True, "id": attachment_id}
 
 
 @app.get("/api/health/emergency-card")
