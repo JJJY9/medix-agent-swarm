@@ -372,6 +372,9 @@ const els = {
   attachmentPreviewClose: document.getElementById(
     'attachment-preview-close'
   ),
+  attachmentPreviewDownload: document.getElementById(
+    'attachment-preview-download'
+  ),
   quickEntryInput: document.getElementById('quick-entry-input'),
   quickEntryParse: document.getElementById('quick-entry-parse'),
   quickEntrySave: document.getElementById('quick-entry-save'),
@@ -14101,6 +14104,7 @@ let attachmentDeleting = false;
 let attachmentLinking = false;
 let attachmentLinkRefRequestSeq = 0;
 let attachmentPreviewUrl = null;
+let attachmentPreviewItem = null;
 let attachmentRefCounts = { visit: {}, lab: {} };
 let attachmentRefFilter = null;
 let attachmentFilterTimer = null;
@@ -14980,6 +14984,7 @@ function closeAttachmentPreview() {
     URL.revokeObjectURL(attachmentPreviewUrl);
     attachmentPreviewUrl = null;
   }
+  attachmentPreviewItem = null;
   if (els.attachmentPreviewBody) {
     els.attachmentPreviewBody.replaceChildren();
   }
@@ -14993,6 +14998,7 @@ function openAttachmentPreview(item, url) {
   if (!els.attachmentPreview || !els.attachmentPreviewBody) return false;
   closeAttachmentPreview();
   attachmentPreviewUrl = url;
+  attachmentPreviewItem = item;
   if (els.attachmentPreviewTitle) {
     els.attachmentPreviewTitle.textContent = item.original_name || '附件';
   }
@@ -15012,6 +15018,16 @@ function openAttachmentPreview(item, url) {
   els.attachmentPreview.hidden = false;
   if (els.attachmentPreviewClose) els.attachmentPreviewClose.focus();
   return true;
+}
+
+function downloadPreviewAttachment() {
+  if (!attachmentPreviewUrl || !attachmentPreviewItem) return;
+  const anchor = document.createElement('a');
+  anchor.href = attachmentPreviewUrl;
+  anchor.download = attachmentPreviewItem.original_name || '附件';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 async function openAttachmentFile(item, download = false) {
@@ -20422,6 +20438,11 @@ if (els.attachmentUpload) {
     if (els.attachmentPreviewClose) {
       els.attachmentPreviewClose.addEventListener(
         'click', closeAttachmentPreview
+      );
+    }
+    if (els.attachmentPreviewDownload) {
+      els.attachmentPreviewDownload.addEventListener(
+        'click', downloadPreviewAttachment
       );
     }
     document.addEventListener('keydown', (event) => {
