@@ -307,6 +307,47 @@ def test_health_search_sorted_by_time_desc(client_and_store):
     ]
 
 
+def test_health_search_attachment_by_linked_record(client_and_store):
+    client, store = client_and_store
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈", "visit_date": _date(0),
+        "diagnosis": "复诊", "department": "心内科",
+        "doctor": "王医生",
+    }).json()["visit"]
+    lab = client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "糖化血红蛋白", "value": 7.2,
+        "unit": "%", "panel": "内分泌",
+        "tested_at": _date(0),
+    }).json()["lab_result"]
+    store.add_attachment(
+        "妈妈", "visit", visit["id"], "扫描件.pdf", "scan.pdf",
+        "application/pdf", 100, "",
+    )
+    store.add_attachment(
+        "妈妈", "lab", lab["id"], "化验资料.pdf", "lab-scan.pdf",
+        "application/pdf", 100, "",
+    )
+
+    by_department = client.get(
+        "/api/health/search", params={"q": "心内科", "profile": "妈妈"}
+    ).json()
+    attachments = [
+        row for row in by_department["results"]
+        if row["type"] == "attachment"
+    ]
+    assert [row["title"] for row in attachments] == ["扫描件.pdf"]
+    assert "心内科" in attachments[0]["detail"]
+
+    by_lab = client.get(
+        "/api/health/search", params={"q": "糖化", "profile": "妈妈"}
+    ).json()
+    lab_attachments = [
+        row for row in by_lab["results"] if row["type"] == "attachment"
+    ]
+    assert [row["title"] for row in lab_attachments] == ["化验资料.pdf"]
+    assert "糖化血红蛋白" in lab_attachments[0]["detail"]
+
+
 def test_health_search_includes_attachment_metadata(client_and_store):
     client, store = client_and_store
     store.add_attachment(
