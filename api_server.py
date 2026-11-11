@@ -30,7 +30,13 @@ from fastapi import Path as ApiPath
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -9125,6 +9131,220 @@ async def family_compare(metric: str = "weight", days: int = 30):
     }
 
 
+@app.get("/api/health/emergency-card")
+async def health_emergency_card(profile: str = ""):
+    """急救信息卡：单页可打印 HTML，汇总血型、过敏、用药、慢病与联系人。"""
+    import html as html_module
+
+    from memory import get_session_store
+
+    profile_key = _normalized_profile_key(profile)
+    if not profile_key:
+        raise HTTPException(status_code=400, detail="请先选择患者档案")
+    store = get_session_store()
+    profiles = await asyncio.to_thread(store.list_profiles)
+    context: Dict[str, Any] = {}
+    profile_found = False
+    for item in profiles:
+        if item.get("name") == profile_key:
+            context = item.get("context") or {}
+            profile_found = True
+            break
+    allergies, conditions, medications = await asyncio.gather(
+        asyncio.to_thread(
+            store.list_allergies, profile_key, True, None, "", 1000
+        ),
+        asyncio.to_thread(
+            store.list_conditions, profile_key, True, None, 1000
+        ),
+        asyncio.to_thread(
+            store.list_medications, profile_key, True, 1000
+        ),
+    )
+
+    escape = html_module.escape
+    blood_type = str(context.get("blood_type") or "不详")[:10]
+    meta_parts = [f"档案：{profile_key}"]
+    age = str(context.get("age") or "").strip()[:10]
+    sex = str(context.get("sex") or "").strip()[:10]
+    if age:
+        meta_parts.append(f"{age} 岁")
+    if sex:
+        meta_parts.append(sex)
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    profile_warning = ""
+    if not profile_found:
+        profile_warning = (
+            '<div class="warning">未找到该档案的保存信息（可能已删除），'
+            "血型与紧急联系人可能缺失，请核对后再使用。</div>"
+        )
+
+    severity_labels = {
+        "mild": "轻度", "moderate": "中度", "severe": "重度",
+    }
+    allergy_lines = []
+    for item in allergies:
+        substance = str(item.get("substance") or "").strip()
+        if not substance:
+            continue
+        severity = severity_labels.get(
+            str(item.get("severity") or ""), ""
+        )
+        reaction = str(item.get("reaction") or "").strip()
+        parts = [substance]
+        if severity:
+            parts.append(f"（{severity}）")
+        if reaction:
+            parts.append(f"：{reaction}")
+        allergy_lines.append("".join(parts))
+
+    anticoagulant_keywords = (
+        "华法林", "阿司匹林", "氯吡格雷", "替格瑞洛", "利伐沙班",
+        "阿哌沙班", "艾多沙班", "达比加群", "肝素", "依诺肝素",
+        "warfarin", "aspirin", "clopidogrel", "rivaroxaban", "apixaban",
+    )
+    medication_lines = []
+    medication_text = str(context.get("medications") or "").strip()
+    if medication_text:
+        suffix = ""
+        if any(
+            keyword.lower() in medication_text.lower()
+            for keyword in anticoagulant_keywords
+        ):
+            suffix = "（含抗凝/抗血小板记录，注意出血风险）"
+        medication_lines.append(f"自述：{medication_text}{suffix}")
+    for item in medications:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        dose = str(item.get("dose") or "").strip()
+        frequency = str(item.get("frequency") or "").strip()
+        line = " ".join(part for part in (name, dose, frequency) if part)
+        if any(
+            keyword.lower() in name.lower()
+            for keyword in anticoagulant_keywords
+        ):
+            line += "（抗凝/抗血小板，注意出血风险）"
+        medication_lines.append(line)
+
+    allergy_text = str(context.get("allergies") or "").strip()
+    if allergy_text:
+        allergy_lines.append(f"自述：{allergy_text}")
+
+    condition_lines = []
+    history_text = str(context.get("history") or "").strip()
+    if history_text:
+        condition_lines.append(f"自述：{history_text}")
+    condition_lines.extend(
+        str(item.get("name") or "").strip()
+        for item in conditions
+        if str(item.get("name") or "").strip()
+    )
+
+    contacts_raw = context.get("emergency_contacts") or []
+    if isinstance(contacts_raw, str):
+        contacts_source = contacts_raw.split("；")
+    elif isinstance(contacts_raw, list):
+        contacts_source = contacts_raw
+    else:
+        contacts_source = []
+    contacts = [
+        str(item).strip()[:60]
+        for item in contacts_source
+        if str(item).strip()
+    ][:2]
+
+    def section(title: str, lines: List[str], empty: str) -> str:
+        if lines:
+            body = "".join(
+                f"<li>{escape(line)}</li>" for line in lines
+            )
+        else:
+            body = f'<li class="empty">{escape(empty)}</li>'
+        return (
+            f"<section><h2>{escape(title)}</h2>"
+            f"<ul>{body}</ul></section>"
+        )
+
+    html_content = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>急救信息卡 · {escape(profile_key)}</title>
+<style>
+  :root {{ --ink:#10202a; --muted:#5b6776; --rule:#d8dee6; --red:#b42318; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:#f3f5f8; color:var(--ink);
+         font-family:"Microsoft YaHei", system-ui, sans-serif; }}
+  .card {{ max-width:720px; margin:24px auto; background:#fff;
+          padding:28px 32px; border-radius:12px;
+          border:1px solid var(--rule); }}
+  header {{ display:flex; justify-content:space-between;
+           align-items:flex-start; gap:16px; padding-bottom:12px;
+           border-bottom:3px solid var(--red); }}
+  h1 {{ margin:0; font-size:26px; }}
+  .meta {{ margin:6px 0 0; color:var(--muted); font-size:13px; }}
+  .blood {{ font-size:26px; font-weight:700; color:var(--red);
+           text-align:center; line-height:1.2; white-space:nowrap; }}
+  .blood small {{ display:block; font-size:12px; font-weight:400;
+                 color:var(--muted); }}
+  .emergency {{ margin:14px 0; padding:10px 14px; background:#fdf0ef;
+               border:1px solid #f0cfc9; color:var(--red);
+               font-weight:600; border-radius:8px; }}
+  .warning {{ margin:0 0 14px; padding:10px 14px; background:#fff7e6;
+             border:1px solid #f0d9a8; color:#8a5a00;
+             border-radius:8px; font-size:13px; }}
+  section {{ margin-top:16px; }}
+  h2 {{ font-size:14px; margin:0 0 6px; color:var(--muted);
+       letter-spacing:.08em; }}
+  ul {{ margin:0; padding-left:18px; line-height:1.7; }}
+  .empty {{ color:var(--muted); }}
+  footer {{ margin-top:20px; border-top:1px solid var(--rule);
+           padding-top:10px; font-size:12px; color:var(--muted);
+           line-height:1.6; }}
+  .print-hint {{ margin:0 auto 32px; text-align:center;
+                font-size:12px; color:var(--muted); }}
+  @media print {{
+    body {{ background:#fff; }}
+    .card {{ margin:0; border:none; max-width:none; }}
+    .print-hint {{ display:none; }}
+  }}
+</style>
+</head>
+<body>
+<main class="card">
+  <header>
+    <div>
+      <h1>急救信息卡</h1>
+      <p class="meta">{escape(" · ".join(meta_parts))} ·
+        更新 {escape(generated)}</p>
+    </div>
+    <div class="blood"><small>血型</small>{escape(blood_type)}</div>
+  </header>
+  <div class="emergency">
+    紧急情况请立即拨打 120。本卡仅整理本机健康记录，不构成诊断或用药建议。
+  </div>
+  {profile_warning}
+  {section("紧急联系人", contacts, "未登记紧急联系人")}
+  {section("过敏史", allergy_lines, "未登记活动过敏史")}
+  {section("在用药物", medication_lines, "未登记在用药物")}
+  {section("慢病与既往问题", condition_lines, "未登记活动慢病")}
+  <footer>
+    数据来源：MediX 本机档案「{escape(profile_key)}」，生成于
+    {escape(generated)}。请定期核对血型、过敏、用药与联系人信息；
+    就医时以医院记录和医生判断为准。
+  </footer>
+</main>
+<p class="print-hint">可使用浏览器菜单打印或另存为 PDF。</p>
+</body>
+</html>"""
+    return HTMLResponse(
+        content=html_content,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/health/dossier.md")
 async def export_health_dossier(
     profile: str = "", days: int = 30, allow_unassigned: bool = False
@@ -11481,6 +11701,8 @@ async def chat(request: ChatRequest):
         session_id, request.patient_profile
     )
     memory_context = dict(request.context or {})
+    # 紧急联系人属于本机急救卡信息，不发送给模型或写入会诊上下文
+    memory_context.pop("emergency_contacts", None)
     memory_context["memory_scope"] = _memory_scope(
         memory_profile, session_id
     )
@@ -11538,6 +11760,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         session_id, request.patient_profile
     )
     memory_context = dict(request.context or {})
+    # 紧急联系人属于本机急救卡信息，不发送给模型或写入会诊上下文
+    memory_context.pop("emergency_contacts", None)
     memory_context["memory_scope"] = _memory_scope(
         memory_profile, session_id
     )

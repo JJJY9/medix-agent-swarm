@@ -3084,6 +3084,10 @@ html[data-theme="dark"] .calc-status.error {
   max-width: 180px;
 }
 
+.drawer-head-actions .metric-meta.error {
+  color: var(--triage-1);
+}
+
 .metrics-form .btn-quiet { justify-self: start; }
 
 .metric-reference {

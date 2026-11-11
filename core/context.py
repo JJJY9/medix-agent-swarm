@@ -7,6 +7,7 @@ from typing import Any, Dict
 CONTEXT_LABELS = {
     "age": "年龄",
     "sex": "性别",
+    "blood_type": "血型",
     "duration": "症状持续时间",
     "history": "既往病史",
     "medications": "正在使用的药物",
