@@ -54,11 +54,11 @@ def test_integrity_listeners_and_styles():
 
 def test_attachment_export_zip_wiring():
     assert 'id="attachment-export"' in HTML
-    assert "导出附件包" in HTML
+    assert "导出全部附件包" in HTML
     assert "exportAttachmentArchive" in SCRIPT
     assert "fetch('/api/attachments/export.zip')" in SCRIPT
     assert "if (attachmentExporting) return;" in SCRIPT
     assert "medix-attachments-${stamp}.zip" in SCRIPT
-    assert "已导出附件包" in SCRIPT
+    assert "已导出全部档案附件包" in SCRIPT
     assert "els.attachmentExport.addEventListener(" in SCRIPT
     assert "'click', exportAttachmentArchive" in SCRIPT
