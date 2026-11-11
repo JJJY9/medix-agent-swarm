@@ -333,6 +333,15 @@ const els = {
   ),
   attachmentFilterQ: document.getElementById('attachment-filter-q'),
   attachmentSelectAll: document.getElementById('attachment-select-all'),
+  attachmentLinkSelected: document.getElementById(
+    'attachment-link-selected'
+  ),
+  attachmentLinkBar: document.getElementById('attachment-link-bar'),
+  attachmentLinkKind: document.getElementById('attachment-link-kind'),
+  attachmentLinkRef: document.getElementById('attachment-link-ref'),
+  attachmentLinkApply: document.getElementById('attachment-link-apply'),
+  attachmentLinkUnlink: document.getElementById('attachment-link-unlink'),
+  attachmentLinkCancel: document.getElementById('attachment-link-cancel'),
   attachmentDeleteSelected: document.getElementById(
     'attachment-delete-selected'
   ),
@@ -13943,6 +13952,8 @@ let attachmentHasMore = false;
 let attachmentItemsCache = [];
 let attachmentSelectedIds = new Set();
 let attachmentDeleting = false;
+let attachmentLinking = false;
+let attachmentLinkRefRequestSeq = 0;
 let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -14422,24 +14433,172 @@ function scheduleAttachmentFilterSearch() {
   );
 }
 
+function selectedAttachmentItems() {
+  return attachmentItemsCache.filter(
+    (item) => attachmentSelectedIds.has(item.id)
+  );
+}
+
+async function loadAttachmentLinkRefOptions() {
+  if (!els.attachmentLinkRef || !els.attachmentLinkKind) return;
+  const kind = els.attachmentLinkKind.value;
+  if (!['visit', 'lab'].includes(kind)) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const requestSeq = ++attachmentLinkRefRequestSeq;
+  els.attachmentLinkRef.disabled = true;
+  const loading = document.createElement('option');
+  loading.value = '0';
+  loading.textContent = '正在加载关联记录…';
+  els.attachmentLinkRef.replaceChildren(loading);
+  const params = new URLSearchParams({ limit: '1000' });
+  params.set('profile', profile);
+  const url = kind === 'visit'
+    ? `/api/visits?${params.toString()}`
+    : `/api/lab-results?${params.toString()}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== attachmentLinkRefRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const items = kind === 'visit'
+      ? (data.visits || [])
+      : (data.lab_results || []);
+    const placeholder = document.createElement('option');
+    placeholder.value = '0';
+    placeholder.textContent = items.length
+      ? `请选择${kind === 'visit' ? '就诊' : '化验'}记录`
+      : '暂无可关联记录';
+    const options = [placeholder];
+    for (const item of items) {
+      const option = document.createElement('option');
+      option.value = String(item.id);
+      option.textContent = attachmentRefLabel(kind, item).slice(0, 60);
+      options.push(option);
+    }
+    els.attachmentLinkRef.replaceChildren(...options);
+  } catch (err) {
+    if (requestSeq !== attachmentLinkRefRequestSeq) return;
+    const option = document.createElement('option');
+    option.value = '0';
+    option.textContent = '关联记录加载失败';
+    els.attachmentLinkRef.replaceChildren(option);
+  } finally {
+    if (requestSeq === attachmentLinkRefRequestSeq) {
+      els.attachmentLinkRef.disabled = false;
+    }
+  }
+}
+
+async function openAttachmentLinkBar() {
+  if (attachmentLinking || !els.attachmentLinkBar) return;
+  const items = selectedAttachmentItems();
+  const kind = items.length ? items[0].kind : '';
+  if (
+    !items.length
+    || !['visit', 'lab'].includes(kind)
+    || items.some((item) => item.kind !== kind)
+  ) {
+    setAttachmentStatus(
+      '只有同类型的就诊资料或化验单可以批量关联。', true
+    );
+    return;
+  }
+  els.attachmentLinkBar.hidden = false;
+  els.attachmentLinkKind.value = kind;
+  await loadAttachmentLinkRefOptions();
+  if (els.attachmentLinkRef) els.attachmentLinkRef.focus();
+}
+
+async function postAttachmentLink(ids, refId) {
+  if (attachmentLinking || !ids.length) return false;
+  attachmentLinking = true;
+  updateAttachmentSelection();
+  setAttachmentStatus(refId ? '正在关联附件…' : '正在取消关联…');
+  try {
+    const res = await fetch('/api/attachments/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, ref_id: refId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    attachmentSelectedIds.clear();
+    if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
+    await loadAttachments();
+    setAttachmentStatus(
+      refId
+        ? `已关联 ${data.updated || ids.length} 份附件。`
+        : `已取消 ${data.updated || ids.length} 份附件的关联。`
+    );
+    return true;
+  } catch (err) {
+    setAttachmentStatus(`关联失败：${err.message || err}`, true);
+    return false;
+  } finally {
+    attachmentLinking = false;
+    updateAttachmentSelection();
+  }
+}
+
+async function applyAttachmentLink() {
+  if (attachmentLinking || !attachmentSelectedIds.size) return;
+  const refId = els.attachmentLinkRef
+    ? Number(els.attachmentLinkRef.value || 0) : 0;
+  if (!refId) {
+    setAttachmentStatus('请选择要关联的就诊或化验记录。', true);
+    return;
+  }
+  await postAttachmentLink([...attachmentSelectedIds], refId);
+}
+
+async function unlinkSelectedAttachments() {
+  if (attachmentLinking || !attachmentSelectedIds.size) return;
+  const ids = [...attachmentSelectedIds];
+  if (!window.confirm(`取消选中的 ${ids.length} 份附件的关联？`)) return;
+  await postAttachmentLink(ids, 0);
+}
+
+function closeAttachmentLinkBar() {
+  attachmentLinkRefRequestSeq += 1;
+  if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
+}
+
 function updateAttachmentSelection() {
   const total = attachmentItemsCache.length;
-  const selectedVisible = attachmentItemsCache.filter(
-    (item) => attachmentSelectedIds.has(item.id)
-  ).length;
+  const selectedItems = selectedAttachmentItems();
+  const selectedVisible = selectedItems.length;
+  const linkKind = selectedItems.length ? selectedItems[0].kind : '';
+  const canLink = selectedItems.length > 0
+    && ['visit', 'lab'].includes(linkKind)
+    && selectedItems.every((item) => item.kind === linkKind);
   if (els.attachmentDeleteSelected) {
     els.attachmentDeleteSelected.hidden =
       attachmentSelectedIds.size === 0;
     els.attachmentDeleteSelected.textContent =
       `删除选中（${attachmentSelectedIds.size}）`;
     els.attachmentDeleteSelected.disabled =
-      attachmentDeleting || attachmentSelectedIds.size === 0;
+      attachmentDeleting || attachmentLinking
+      || attachmentSelectedIds.size === 0;
+  }
+  if (els.attachmentLinkSelected) {
+    els.attachmentLinkSelected.hidden = !canLink;
+    els.attachmentLinkSelected.textContent =
+      `关联选中（${selectedItems.length}）`;
+    els.attachmentLinkSelected.disabled =
+      attachmentLinking || !canLink;
+  }
+  if (!canLink && els.attachmentLinkBar) {
+    els.attachmentLinkBar.hidden = true;
   }
   if (els.attachmentSelectAll) {
     els.attachmentSelectAll.checked =
       total > 0 && selectedVisible === total;
     els.attachmentSelectAll.disabled =
-      attachmentDeleting || total === 0;
+      attachmentDeleting || attachmentLinking || total === 0;
   }
 }
 
@@ -19700,6 +19859,26 @@ if (els.attachmentUpload) {
       }
       updateAttachmentSelection();
     });
+  }
+  if (els.attachmentLinkSelected) {
+    els.attachmentLinkSelected.addEventListener(
+      'click', openAttachmentLinkBar
+    );
+  }
+  if (els.attachmentLinkApply) {
+    els.attachmentLinkApply.addEventListener(
+      'click', applyAttachmentLink
+    );
+  }
+  if (els.attachmentLinkUnlink) {
+    els.attachmentLinkUnlink.addEventListener(
+      'click', unlinkSelectedAttachments
+    );
+  }
+  if (els.attachmentLinkCancel) {
+    els.attachmentLinkCancel.addEventListener(
+      'click', closeAttachmentLinkBar
+    );
   }
   if (els.attachmentDeleteSelected) {
     els.attachmentDeleteSelected.addEventListener(

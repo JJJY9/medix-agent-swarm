@@ -721,7 +721,25 @@
           <input type="checkbox" id="attachment-select-all"> 全选当前
         </label>
         <button type="button" class="btn-quiet"
+          id="attachment-link-selected" hidden>关联选中</button>
+        <button type="button" class="btn-quiet"
           id="attachment-delete-selected" hidden>删除选中</button>
+      </div>
+      <div class="attachment-link-bar" id="attachment-link-bar" hidden>
+        <span class="metric-meta">批量关联</span>
+        <select id="attachment-link-kind" aria-label="关联记录类型" disabled>
+          <option value="visit">就诊记录</option>
+          <option value="lab">化验记录</option>
+        </select>
+        <select id="attachment-link-ref" aria-label="选择关联记录">
+          <option value="0">请选择记录</option>
+        </select>
+        <button type="button" class="btn-quiet"
+          id="attachment-link-apply">确认关联</button>
+        <button type="button" class="btn-quiet"
+          id="attachment-link-unlink">取消关联</button>
+        <button type="button" class="btn-quiet"
+          id="attachment-link-cancel">关闭</button>
       </div>
       <ul class="metrics-list" id="attachment-list"></ul>
       <button type="button" class="btn-quiet attachment-more"

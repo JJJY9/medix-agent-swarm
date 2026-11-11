@@ -7458,6 +7458,48 @@ class SessionStore:
         )
         return data
 
+    def set_attachment_refs(
+        self,
+        attachment_ids: Any,
+        ref_id: Any = 0,
+        kind: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> int:
+        """批量更新附件关联记录；可限定类型与档案，避免跨档案关联。"""
+        try:
+            reference = max(0, int(ref_id or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        if reference > MAX_SQLITE_INT:
+            return 0
+        try:
+            ids = sorted({int(value) for value in attachment_ids})
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        if (
+            not ids
+            or any(value <= 0 or value > MAX_SQLITE_INT for value in ids)
+        ):
+            return 0
+        conditions = [f"id IN ({', '.join('?' for _ in ids)})"]
+        params: List[Any] = [reference, *ids]
+        kind_key = str(kind or "").strip().lower()
+        if kind_key:
+            if kind_key not in ATTACHMENT_KINDS:
+                return 0
+            conditions.append("kind = ?")
+            params.append(kind_key)
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE attachments SET ref_id = ? "
+                f"WHERE {' AND '.join(conditions)}",
+                params,
+            )
+        return int(cursor.rowcount or 0)
+
     def delete_attachment(
         self, attachment_id: int
     ) -> Optional[Dict[str, Any]]:

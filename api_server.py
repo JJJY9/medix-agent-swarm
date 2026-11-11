@@ -229,6 +229,18 @@ class AttachmentCleanupRequest(StrictRequestModel):
     )
 
 
+class AttachmentLinkRequest(StrictRequestModel):
+    ids: List[int] = Field(
+        ..., min_length=1, max_length=200, description="附件 ID 列表"
+    )
+    ref_id: int = Field(
+        0,
+        ge=0,
+        le=MAX_SQLITE_INT,
+        description="关联的就诊/化验记录 ID，0 表示取消关联",
+    )
+
+
 class BulkSessionsRequest(StrictRequestModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
@@ -10004,6 +10016,74 @@ async def list_attachments(
             and target.is_file()
         )
     return {"attachments": items}
+
+
+@app.post("/api/attachments/link")
+async def link_attachments(payload: AttachmentLinkRequest):
+    """批量关联附件到同档案的就诊/化验记录，ref_id=0 表示取消关联。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    ids = list(dict.fromkeys(payload.ids))
+    if not ids or any(value <= 0 or value > MAX_SQLITE_INT for value in ids):
+        raise HTTPException(status_code=400, detail="附件编号不正确")
+    items = await asyncio.gather(*(
+        asyncio.to_thread(store.get_attachment, value) for value in ids
+    ))
+    if any(item is None for item in items):
+        raise HTTPException(
+            status_code=404, detail="部分附件不存在，请刷新后重试"
+        )
+    profile_keys = {
+        _normalized_profile_key(item.get("profile")) for item in items
+    }
+    kind_key = ""
+    if payload.ref_id:
+        kinds = {str(item.get("kind") or "") for item in items}
+        if len(kinds) != 1 or next(iter(kinds)) not in {"visit", "lab"}:
+            raise HTTPException(
+                status_code=400,
+                detail="只能将同类型的就诊资料或化验单关联到记录",
+            )
+        kind_key = next(iter(kinds))
+        getter = (
+            store.get_visit_record if kind_key == "visit"
+            else store.get_lab_result
+        )
+        record = await asyncio.to_thread(getter, payload.ref_id)
+        if record is None:
+            raise HTTPException(
+                status_code=400, detail="关联的就诊/化验记录不存在"
+            )
+        if (
+            len(profile_keys) != 1
+            or next(iter(profile_keys))
+            != _normalized_profile_key(record.get("profile"))
+        ):
+            raise HTTPException(
+                status_code=400, detail="关联记录不属于该患者档案"
+            )
+        updated = await asyncio.to_thread(
+            store.set_attachment_refs,
+            ids,
+            payload.ref_id,
+            kind_key,
+            next(iter(profile_keys)),
+        )
+    else:
+        updated = await asyncio.to_thread(
+            store.set_attachment_refs, ids, 0
+        )
+    if updated != len(ids):
+        raise HTTPException(
+            status_code=409, detail="部分附件已变化，请刷新后重试"
+        )
+    await record_audit(
+        "attachment.link" if payload.ref_id else "attachment.unlink",
+        str(payload.ref_id),
+        ",".join(str(value) for value in ids),
+    )
+    return {"ok": True, "updated": updated, "ref_id": payload.ref_id}
 
 
 @app.get("/api/attachments/{attachment_id}/file")

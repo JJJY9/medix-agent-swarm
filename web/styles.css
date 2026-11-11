@@ -3162,6 +3162,26 @@ html[data-theme="dark"] .calc-status.error {
   margin-right: 4px;
 }
 
+.attachment-link-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+  padding: 8px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.attachment-link-bar[hidden] {
+  display: none;
+}
+
+.attachment-link-bar select {
+  max-width: 240px;
+}
+
 #attachment-integrity-status.error {
   color: var(--triage-1);
 }

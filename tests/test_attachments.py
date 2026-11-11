@@ -352,6 +352,118 @@ def test_search_attachments_by_name_and_note(client_and_store):
     assert linked["id"] not in {row["id"] for row in unlinked}
 
 
+def test_bulk_link_attachments_to_visit_and_unlink(client_and_store):
+    client, _store = client_and_store
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "复诊",
+    }).json()["visit"]
+    first = _upload(client, kind="visit").json()["attachment"]
+    second = _upload(
+        client, kind="visit", file_name="复查.pdf"
+    ).json()["attachment"]
+
+    linked = client.post("/api/attachments/link", json={
+        "ids": [first["id"], second["id"]],
+        "ref_id": visit["id"],
+    })
+    assert linked.status_code == 200, linked.text
+    assert linked.json()["updated"] == 2
+    listed = client.get(
+        "/api/attachments", params={"profile": "妈妈"}
+    ).json()["attachments"]
+    rows = {row["id"]: row for row in listed}
+    assert rows[first["id"]]["ref_id"] == visit["id"]
+    assert rows[second["id"]]["ref_id"] == visit["id"]
+    assert "复诊" in rows[first["id"]]["ref_label"]
+
+    unlinked = client.post("/api/attachments/link", json={
+        "ids": [first["id"], second["id"]],
+        "ref_id": 0,
+    })
+    assert unlinked.status_code == 200, unlinked.text
+    assert unlinked.json()["updated"] == 2
+    listed = client.get(
+        "/api/attachments", params={"profile": "妈妈"}
+    ).json()["attachments"]
+    assert {row["ref_id"] for row in listed} == {0}
+
+
+def test_bulk_link_rejects_cross_profile_and_mixed_kinds(
+    client_and_store,
+):
+    client, _store = client_and_store
+    father_visit = client.post("/api/visits", json={
+        "profile": "爸爸",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "复诊",
+    }).json()["visit"]
+    first = _upload(client, kind="visit").json()["attachment"]
+    second = _upload(
+        client, kind="visit", file_name="复查.pdf"
+    ).json()["attachment"]
+
+    cross = client.post("/api/attachments/link", json={
+        "ids": [first["id"], second["id"]],
+        "ref_id": father_visit["id"],
+    })
+    assert cross.status_code == 400
+    assert "档案" in cross.json()["detail"]
+    listed = client.get(
+        "/api/attachments", params={"profile": "妈妈"}
+    ).json()["attachments"]
+    assert {row["ref_id"] for row in listed} == {0}
+
+    mother_visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "取药",
+    }).json()["visit"]
+    lab = _upload(
+        client, kind="lab", file_name="化验单.pdf"
+    ).json()["attachment"]
+    mixed = client.post("/api/attachments/link", json={
+        "ids": [first["id"], lab["id"]],
+        "ref_id": mother_visit["id"],
+    })
+    assert mixed.status_code == 400
+    assert "同类型" in mixed.json()["detail"]
+
+    other = _upload(client, kind="other").json()["attachment"]
+    unsupported = client.post("/api/attachments/link", json={
+        "ids": [other["id"]],
+        "ref_id": mother_visit["id"],
+    })
+    assert unsupported.status_code == 400
+    assert "同类型" in unsupported.json()["detail"]
+
+
+def test_bulk_link_validates_ids_and_reference(client_and_store):
+    client, _store = client_and_store
+    attachment = _upload(client, kind="visit").json()["attachment"]
+
+    assert client.post("/api/attachments/link", json={
+        "ids": [], "ref_id": 0,
+    }).status_code == 422
+    assert client.post("/api/attachments/link", json={
+        "ids": list(range(1, 202)), "ref_id": 0,
+    }).status_code == 422
+    assert client.post("/api/attachments/link", json={
+        "ids": [attachment["id"]], "ref_id": -1,
+    }).status_code == 422
+    missing = client.post("/api/attachments/link", json={
+        "ids": [attachment["id"], 999999], "ref_id": 0,
+    })
+    assert missing.status_code == 404
+    assert "不存在" in missing.json()["detail"]
+    no_target = client.post("/api/attachments/link", json={
+        "ids": [attachment["id"]], "ref_id": 999999,
+    })
+    assert no_target.status_code == 400
+    assert "不存在" in no_target.json()["detail"]
+
+
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
     item = _upload(client).json()["attachment"]
