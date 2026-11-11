@@ -22,11 +22,17 @@ def test_visit_prep_panel_exists():
 
 def test_visit_prep_fetches_and_renders():
     assert "/api/health/visit-prep?profile=" in SCRIPT
+    assert "+ `&days=${days}`" in SCRIPT
     assert "loadVisitPrep" in SCRIPT
     assert "renderVisitPrep" in SCRIPT
-    assert "visitPrepRequestSeq" in SCRIPT
     assert "requestSeq !== visitPrepRequestSeq" in SCRIPT
+    assert SCRIPT.count("requestSeq !== visitPrepRequestSeq") >= 2
+    assert "visitPrepRequestSeq += 1;" in SCRIPT
     assert "visitPrepCache" in SCRIPT
+    assert "cache.profile !== profile || cache.days !== days" in SCRIPT
+    assert SCRIPT.count(
+        "cache.profile !== profile || cache.days !== days"
+    ) >= 2
     assert "选择患者档案后生成准备单。" in SCRIPT
 
 
@@ -57,6 +63,8 @@ def test_visit_prep_copy_export_and_reset():
 def test_visit_prep_gating_and_disabled_state():
     assert "if (visitPrepLoading) return;" in SCRIPT
     assert "els.visitPrepCopy.disabled = false;" in SCRIPT
+    assert "els.visitPrepExport.disabled = false;" in SCRIPT
+    assert "els.visitPrepCopy.disabled = true;" in SCRIPT
     assert "els.visitPrepExport.disabled = true;" in SCRIPT
     assert "if (!profile) {" in SCRIPT
 
