@@ -13853,6 +13853,7 @@ let attachmentRequestSeq = 0;
 let attachmentRefRequestSeq = 0;
 let attachmentIntegrityRequestSeq = 0;
 let attachmentOrphanCount = 0;
+let attachmentCleaning = false;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
@@ -13924,13 +13925,15 @@ async function checkAttachmentIntegrity() {
 }
 
 async function cleanupAttachmentOrphans() {
-  if (!attachmentOrphanCount) return;
+  if (!attachmentOrphanCount || attachmentCleaning) return;
   if (!window.confirm(
     `清理 ${attachmentOrphanCount} 个没有登记到数据库的附件文件？`
     + '该操作不可恢复；刚写入的文件会自动保留。'
   )) {
     return;
   }
+  attachmentCleaning = true;
+  if (els.attachmentCleanup) els.attachmentCleanup.disabled = true;
   setAttachmentIntegrityStatus('正在清理孤儿文件…');
   try {
     const res = await fetch('/api/attachments/cleanup', {
@@ -13951,6 +13954,9 @@ async function cleanupAttachmentOrphans() {
     setAttachmentIntegrityStatus(
       `清理失败：${err.message || err}`, true
     );
+  } finally {
+    attachmentCleaning = false;
+    if (els.attachmentCleanup) els.attachmentCleanup.disabled = false;
   }
 }
 
