@@ -8124,6 +8124,15 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     visits = await asyncio.to_thread(
         store.list_visit_records, profile, 0, "", 100000
     )
+    raw_attachments = await asyncio.to_thread(
+        store.list_all_attachments
+    )
+    if profile is not None:
+        profile_key = _normalized_profile_key(profile)
+        raw_attachments = [
+            item for item in raw_attachments
+            if _normalized_profile_key(item.get("profile")) == profile_key
+        ]
 
     days: Dict[str, Dict[str, int]] = {}
 
@@ -8132,7 +8141,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             "metrics": 0, "symptoms": 0, "doses": 0,
             "consultations": 0, "reminders_due": 0, "reminders_done": 0,
             "vaccinations": 0, "appointments": 0, "labs": 0,
-            "care_due": 0, "visits": 0, "alerts": 0,
+            "care_due": 0, "visits": 0, "attachments": 0, "alerts": 0,
         })
 
     def in_month(value: Any) -> bool:
@@ -8217,6 +8226,10 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         at = str(item.get("visit_date") or "")
         if in_month(at):
             bucket(at[:10])["visits"] += 1
+    for item in raw_attachments:
+        at = str(item.get("created_at") or "")
+        if in_month(at):
+            bucket(at[:10])["attachments"] += 1
 
     totals = {
         key: sum(entry[key] for entry in days.values())
@@ -8224,7 +8237,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             "metrics", "symptoms", "doses",
             "consultations", "reminders_due", "reminders_done",
             "vaccinations", "appointments", "labs", "care_due",
-            "visits", "alerts",
+            "visits", "attachments", "alerts",
         )
     }
     return {
@@ -8253,7 +8266,7 @@ async def export_health_calendar_csv(
     rows = [[
         "日期", "指标", "症状", "用药打卡", "会诊",
         "待办提醒", "已完成提醒", "异常",
-        "疫苗", "预约", "化验", "复查", "就诊",
+        "疫苗", "预约", "化验", "复查", "就诊", "就医资料",
     ]]
     for day in range(1, last_day + 1):
         key = f"{month_key}-{day:02d}"
@@ -8272,6 +8285,7 @@ async def export_health_calendar_csv(
             str(int(entry.get("labs") or 0)),
             str(int(entry.get("care_due") or 0)),
             str(int(entry.get("visits") or 0)),
+            str(int(entry.get("attachments") or 0)),
         ])
 
     buffer = io.StringIO()

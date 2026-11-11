@@ -16456,6 +16456,7 @@ function renderCalendar(data) {
     ['labs', '化', '化验'],
     ['care_due', '查', '复查'],
     ['visits', '记', '就诊记录'],
+    ['attachments', '资', '就医资料'],
     ['alerts', '警', '异常'],
   ];
   for (let day = 1; day <= totalDays; day += 1) {
@@ -16535,6 +16536,9 @@ function renderCalendar(data) {
     }
     if (Number(totals.visits)) {
       parts.push(`就诊 ${totals.visits} 次`);
+    }
+    if (Number(totals.attachments)) {
+      parts.push(`就医资料 ${totals.attachments} 份`);
     }
     if (Number(totals.alerts)) {
       parts.push(`异常 ${totals.alerts} 条`);

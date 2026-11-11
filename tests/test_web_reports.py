@@ -745,6 +745,8 @@ def test_app_js_ships_health_calendar(client):
     assert "function renderCalendar" in app_js
     assert "function selectCalendarDay" in app_js
     assert "/api/health/calendar" in app_js
+    assert "['attachments', '资', '就医资料']" in app_js
+    assert "就医资料 ${totals.attachments} 份" in app_js
     assert ".calendar-cell" in css
 
 
