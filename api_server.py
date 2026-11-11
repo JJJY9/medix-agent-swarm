@@ -7354,6 +7354,7 @@ async def health_timeline(
             "alert": False,
             "kind": item.get("kind") or "other",
             "ref_id": int(item.get("ref_id") or 0),
+            "mime": item.get("mime") or "",
         })
 
     for item in raw_sessions:

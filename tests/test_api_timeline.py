@@ -186,6 +186,7 @@ def test_timeline_includes_attachments(client_and_store):
     assert "就诊资料" in event["value"]
     assert "心内科复查" in event["value"]
     assert event["kind"] == "visit"
+    assert event["mime"] == "application/pdf"
 
 
 def test_timeline_csv_export(client_and_store):
