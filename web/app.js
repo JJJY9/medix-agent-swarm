@@ -308,6 +308,13 @@ const els = {
   qualitySummary: document.getElementById('quality-summary'),
   qualityList: document.getElementById('quality-list'),
   qualityEmpty: document.getElementById('quality-empty'),
+  bpMonitoringSummary: document.getElementById('bp-monitoring-summary'),
+  bpMonitoringStart: document.getElementById('bp-monitoring-start'),
+  bpMonitoringDays: document.getElementById('bp-monitoring-days'),
+  bpMonitoringCopy: document.getElementById('bp-monitoring-copy'),
+  bpMonitoringBody: document.getElementById('bp-monitoring-body'),
+  bpMonitoringEmpty: document.getElementById('bp-monitoring-empty'),
+  bpMonitoringStatus: document.getElementById('bp-monitoring-status'),
   quickEntryInput: document.getElementById('quick-entry-input'),
   quickEntryParse: document.getElementById('quick-entry-parse'),
   quickEntrySave: document.getElementById('quick-entry-save'),
@@ -7152,6 +7159,7 @@ async function openMetrics() {
   setQuickEntryStatus('');
   resetQuickEntryUndo();
   loadDataQuality();
+  loadBpMonitoring();
   loadMetricTargets().then(() => refreshMetrics());
   if (!els.metricsDrawer.contains(document.activeElement)) {
     els.metricsClose.focus();
@@ -13707,6 +13715,7 @@ async function saveQuickEntry() {
       setQuickEntryStatus('已保存快速记录。');
     }
     await refreshMetrics();
+    loadBpMonitoring();
     refreshOverview();
   } catch (err) {
     setQuickEntryStatus(`保存失败：${err.message || err}`, true);
@@ -13729,12 +13738,195 @@ async function undoQuickEntry() {
     resetQuickEntryUndo();
     setQuickEntryStatus('已撤销刚才的记录。');
     await refreshMetrics();
+    loadBpMonitoring();
     refreshOverview();
   } catch (err) {
     setQuickEntryStatus(`撤销失败：${err.message || err}`, true);
   } finally {
     quickEntryUndoing = false;
   }
+}
+
+let bpMonitoringRequestSeq = 0;
+let bpMonitoringCache = null;
+let bpMonitoringStartAuto = true;
+
+function bpMonitoringDefaultStart(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - (Number(days || 7) - 1));
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function setBpMonitoringStatus(text, isError = false) {
+  if (!els.bpMonitoringStatus) return;
+  els.bpMonitoringStatus.textContent = text || '';
+  els.bpMonitoringStatus.hidden = !text;
+  els.bpMonitoringStatus.classList.toggle('error', Boolean(isError));
+}
+
+function formatBpMonitoringAvg(stats) {
+  if (!stats || stats.avg_systolic == null) return '暂无';
+  return `${stats.avg_systolic}/${stats.avg_diastolic} mmHg（${stats.count} 次）`;
+}
+
+function bpMonitoringText(data) {
+  const range = data.is_future_plan
+    ? `${data.start} 至 ${data.planned_end}（统计至 ${data.end}）`
+    : `${data.start} 至 ${data.end}`;
+  const lines = [
+    `家庭血压监测（${range}`
+      + `${data.profile ? ` · ${data.profile}` : ' · 未指定档案'}）`,
+    `完成：${data.completed_slots}/${data.expected_slots} 时段`
+      + `（${data.completion_rate}%），完整 ${data.days_completed} 天`,
+    `平均：${formatBpMonitoringAvg(data.average)}`,
+    `晨起：${formatBpMonitoringAvg(data.morning)}`,
+    `睡前：${formatBpMonitoringAvg(data.evening)}`,
+  ];
+  if (data.morning_evening_systolic_diff != null) {
+    const diff = Number(data.morning_evening_systolic_diff);
+    lines.push(
+      `晨晚收缩压差：${diff > 0 ? '+' : ''}${diff} mmHg`
+    );
+  }
+  if (data.is_future_plan) {
+    lines.push('计划仍在进行，未来日期的时段暂不计入完成度');
+  }
+  if (data.unlabeled) {
+    lines.push(
+      `未标注时段记录：${data.unlabeled} 条（未计入完成度）`
+    );
+  }
+  const missing = data.missing || [];
+  if (missing.length) {
+    lines.push(`未测时段：${missing
+      .slice(0, 20)
+      .map((item) => `${item.date} ${item.labels.join('/')}`)
+      .join('、')}${missing.length > 20 ? ` 等 ${missing.length} 个` : ''}`);
+  }
+  lines.push('仅统计家庭测量记录完成度，不判断血压是否达标。');
+  return lines.join('\n');
+}
+
+function renderBpMonitoring(data) {
+  if (!els.bpMonitoringBody) return;
+  els.bpMonitoringBody.replaceChildren();
+  els.bpMonitoringSummary.textContent =
+    `· ${data.completion_rate}%（${data.completed_slots}/${data.expected_slots} 时段）`;
+  const hasRecords = Number(data.readings) > 0;
+  els.bpMonitoringEmpty.hidden = hasRecords;
+  if (!hasRecords) {
+    els.bpMonitoringEmpty.textContent = '所选区间还没有血压记录。';
+  }
+  const lines = [];
+  if (hasRecords) {
+    lines.push(`平均 ${formatBpMonitoringAvg(data.average)}`);
+    if (data.morning && data.morning.avg_systolic != null) {
+      lines.push(`晨起 ${formatBpMonitoringAvg(data.morning)}`);
+    }
+    if (data.evening && data.evening.avg_systolic != null) {
+      lines.push(`睡前 ${formatBpMonitoringAvg(data.evening)}`);
+    }
+    if (data.morning_evening_systolic_diff != null) {
+      const diff = Number(data.morning_evening_systolic_diff);
+      lines.push(
+        `晨晚收缩压差 ${diff > 0 ? '+' : ''}${diff} mmHg`
+      );
+    }
+    if (data.unlabeled) {
+      lines.push(
+        `另有 ${data.unlabeled} 条未标注晨起/睡前的记录未计入完成度`
+      );
+    }
+    if (data.is_future_plan) {
+      lines.push('计划仍在进行，未来日期的时段暂不计入完成度');
+    }
+  }
+  for (const text of lines) {
+    const line = document.createElement('p');
+    line.className = 'metric-reference';
+    line.textContent = text;
+    els.bpMonitoringBody.appendChild(line);
+  }
+  const missing = data.missing || [];
+  if (hasRecords) {
+    const note = document.createElement('p');
+    note.className = 'metric-note';
+    if (missing.length) {
+      note.textContent = `未测时段：${missing
+        .slice(0, 20)
+        .map((item) => `${item.date.slice(5)} ${item.labels.join('/')}`)
+        .join('、')}${
+        missing.length > 20 ? ` 等 ${missing.length} 个时段` : ''
+      }`;
+    } else {
+      note.textContent = '所有应测时段均已记录。';
+    }
+    els.bpMonitoringBody.appendChild(note);
+  }
+}
+
+async function loadBpMonitoring() {
+  if (!els.bpMonitoringBody || !metricsOpen) return;
+  const days = Number(els.bpMonitoringDays.value) || 7;
+  if (bpMonitoringStartAuto || !els.bpMonitoringStart.value) {
+    els.bpMonitoringStart.value = bpMonitoringDefaultStart(days);
+  }
+  const requestSeq = ++bpMonitoringRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const start = els.bpMonitoringStart.value;
+  const params = new URLSearchParams({ days: String(days) });
+  params.set('profile', profile);
+  if (start) params.set('start', start);
+  try {
+    const res = await fetch(
+      `/api/health/bp-monitoring?${params.toString()}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== bpMonitoringRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    renderBpMonitoring(data);
+    bpMonitoringCache = { data, profile, start, days };
+  } catch (err) {
+    if (requestSeq !== bpMonitoringRequestSeq) return;
+    bpMonitoringCache = null;
+    els.bpMonitoringBody.replaceChildren();
+    els.bpMonitoringSummary.textContent = '· 加载失败';
+    els.bpMonitoringEmpty.textContent =
+      `加载失败：${err.message || err}`;
+    els.bpMonitoringEmpty.hidden = false;
+  }
+}
+
+async function copyBpMonitoring() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const start = els.bpMonitoringStart.value;
+  const days = Number(els.bpMonitoringDays.value) || 7;
+  const matches = bpMonitoringCache
+    && bpMonitoringCache.profile === profile
+    && bpMonitoringCache.start === start
+    && bpMonitoringCache.days === days;
+  if (!matches) await loadBpMonitoring();
+  const cache = bpMonitoringCache;
+  if (
+    !cache
+    || cache.profile !== profile
+    || cache.start !== start
+    || cache.days !== days
+  ) {
+    setBpMonitoringStatus('摘要尚未加载', true);
+    return;
+  }
+  const ok = await copyText(bpMonitoringText(cache.data));
+  setBpMonitoringStatus(
+    ok ? '已复制摘要' : '复制失败，请手动选择文本',
+    !ok
+  );
 }
 
 let dataQualityRequestSeq = 0;
@@ -15164,6 +15356,7 @@ async function addMetricRecord() {
     }
     resetMetricForm();
     await refreshMetrics();
+    loadBpMonitoring();
   } catch (err) {
     setMetricsStatus(`${editing ? '更新' : '保存'}失败：${err.message || err}`, true);
   } finally {
@@ -15187,6 +15380,7 @@ async function deleteMetricRecord(item) {
     if (editingMetricId === item.id) resetMetricForm();
     setMetricsStatus('已删除记录。');
     await refreshMetrics();
+    loadBpMonitoring();
   } catch (err) {
     setMetricsStatus(`删除失败：${err.message || err}`, true);
   }
@@ -15215,6 +15409,7 @@ async function importMetricsCsv(file) {
     setMetricsStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await refreshMetrics();
+    loadBpMonitoring();
   } catch (err) {
     setMetricsStatus(`导入失败：${err.message || err}`, true);
   } finally {
@@ -18125,6 +18320,7 @@ els.metricType.addEventListener('change', () => {
 els.metricProfile.addEventListener('change', () => {
   refreshMetrics();
   loadDataQuality();
+  loadBpMonitoring();
   quickEntryRequestSeq += 1;
   clearQuickEntryPreview();
   setQuickEntryStatus('');
@@ -18160,6 +18356,22 @@ if (els.quickEntryParse) {
     setQuickEntryStatus('');
   });
   els.quickEntryUndo.addEventListener('click', undoQuickEntry);
+}
+if (els.bpMonitoringDays) {
+  els.bpMonitoringDays.addEventListener('change', () => {
+    bpMonitoringStartAuto = true;
+    els.bpMonitoringStart.value = bpMonitoringDefaultStart(
+      els.bpMonitoringDays.value
+    );
+    loadBpMonitoring();
+  });
+  els.bpMonitoringStart.addEventListener('change', () => {
+    bpMonitoringStartAuto = false;
+    loadBpMonitoring();
+  });
+  els.bpMonitoringCopy.addEventListener(
+    'click', copyBpMonitoring
+  );
 }
 restoreSelectValue(
   els.weeklySummaryRange, HEALTH_FILTER_KEYS.weeklyRange
