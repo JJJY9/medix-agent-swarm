@@ -11197,6 +11197,15 @@ function renderLabs(items) {
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
 
+    const upload = document.createElement('button');
+    upload.type = 'button';
+    upload.className = 'metric-edit';
+    upload.textContent = '资料';
+    upload.setAttribute('aria-label', `上传化验单：${item.item || ''}`);
+    upload.addEventListener(
+      'click', () => openAttachmentUploadForRecord('lab', item)
+    );
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -11211,7 +11220,7 @@ function renderLabs(items) {
     del.setAttribute('aria-label', `删除化验结果：${item.item}`);
     del.addEventListener('click', () => deleteLab(item));
 
-    actions.append(edit, del);
+    actions.append(upload, edit, del);
     li.append(main, actions);
     els.labList.appendChild(li);
   }
@@ -12209,6 +12218,32 @@ async function openVisitPrepForVisit(item) {
   await loadVisitPrep();
 }
 
+async function openAttachmentUploadForRecord(kind, item) {
+  if (!item || !els.attachmentKind) return;
+  const profile = item.profile || '';
+  if (els.metricProfile) els.metricProfile.value = profile;
+  await openMetrics();
+  if (els.metricProfile && els.metricProfile.value !== profile) {
+    els.metricProfile.value = profile;
+    els.metricProfile.dispatchEvent(
+      new Event('change', { bubbles: true })
+    );
+  }
+  if (!['visit', 'lab'].includes(kind)) return;
+  els.attachmentKind.value = kind;
+  els.attachmentKind.dispatchEvent(new Event('change', { bubbles: true }));
+  const section = document.getElementById('attachments-section');
+  if (section) {
+    section.open = true;
+    section.scrollIntoView({ block: 'start' });
+  }
+  await loadAttachmentRefOptions();
+  if (els.attachmentRef) {
+    els.attachmentRef.value = String(item.id);
+  }
+  if (els.attachmentFile) els.attachmentFile.focus();
+}
+
 function renderVisits(items) {
   if (!els.visitList) return;
   els.visitList.replaceChildren();
@@ -12315,6 +12350,18 @@ function renderVisits(items) {
     );
     prep.addEventListener('click', () => openVisitPrepForVisit(item));
 
+    const upload = document.createElement('button');
+    upload.type = 'button';
+    upload.className = 'metric-edit';
+    upload.textContent = '资料';
+    upload.setAttribute(
+      'aria-label',
+      `上传就诊资料：${item.diagnosis || ''}`
+    );
+    upload.addEventListener(
+      'click', () => openAttachmentUploadForRecord('visit', item)
+    );
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -12329,7 +12376,7 @@ function renderVisits(items) {
     del.setAttribute('aria-label', `删除就诊记录：${item.diagnosis || ''}`);
     del.addEventListener('click', () => deleteVisit(item));
 
-    actions.append(prep, edit, del);
+    actions.append(prep, upload, edit, del);
     li.append(main, actions);
     els.visitList.appendChild(li);
   }
