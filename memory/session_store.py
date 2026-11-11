@@ -7469,6 +7469,38 @@ class SessionStore:
             ).fetchall()
         return [str(row["stored_name"]) for row in rows]
 
+    def attachment_kind_stats(
+        self, profile: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """按资料类型统计附件份数与总大小。"""
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT kind, COUNT(*) AS total,
+                       COALESCE(SUM(size), 0) AS total_size
+                  FROM attachments{where}
+                 GROUP BY kind
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "kind": str(row["kind"]),
+                "kind_label": ATTACHMENT_KINDS.get(
+                    row["kind"], ATTACHMENT_KINDS["other"]
+                ),
+                "count": int(row["total"]),
+                "size": int(row["total_size"] or 0),
+            }
+            for row in rows
+        ]
+
     def count_attachments_by_ref(self, kind: str) -> Dict[int, int]:
         """按关联记录统计附件数量，仅返回已关联的附件。"""
         kind_key = str(kind or "").strip().lower()

@@ -3222,6 +3222,10 @@ html[data-theme="dark"] .calc-status.error {
   display: none;
 }
 
+.attachment-kind-stats {
+  margin: 0 0 8px;
+}
+
 .attachment-count-badge {
   border: 0;
   cursor: pointer;

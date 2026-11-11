@@ -10218,16 +10218,22 @@ async def list_attachments(
 
 
 @app.get("/api/attachments/counts")
-async def attachment_ref_counts():
-    """按就诊/化验记录统计已关联附件数量。"""
+async def attachment_ref_counts(profile: Optional[str] = None):
+    """按就诊/化验记录统计已关联附件数量，并返回类型分布。"""
     from memory import get_session_store
 
     store = get_session_store()
-    visit_counts, lab_counts = await asyncio.gather(
+    visit_counts, lab_counts, kinds = await asyncio.gather(
         asyncio.to_thread(store.count_attachments_by_ref, "visit"),
         asyncio.to_thread(store.count_attachments_by_ref, "lab"),
+        asyncio.to_thread(store.attachment_kind_stats, profile),
     )
-    return {"counts": {"visit": visit_counts, "lab": lab_counts}}
+    return {
+        "counts": {"visit": visit_counts, "lab": lab_counts},
+        "kinds": kinds,
+        "total_count": sum(item["count"] for item in kinds),
+        "total_size": sum(item["size"] for item in kinds),
+    }
 
 
 @app.post("/api/attachments/link")
