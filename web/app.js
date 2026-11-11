@@ -8684,12 +8684,12 @@ function renderHomeGlance(
   if (els.homeGlanceBackup) {
     const lastBackup = readLastBackupAt();
     let backupValue = '还没有导出备份';
-    let backupSub = '点击导出完整备份';
+    let backupSub = '点击导出完整备份（不含附件）';
     if (lastBackup) {
       const days = backupDaysAgo(lastBackup);
       backupValue = `上次备份 ${formatTime(lastBackup)}`;
       if (days !== null && days >= 30) {
-        backupSub = `已 ${days} 天未备份，建议现在导出`;
+        backupSub = `已 ${days} 天未备份，建议现在导出（不含附件）`;
       }
     }
     els.homeGlanceBackup.replaceChildren(
