@@ -664,6 +664,32 @@
       <div id="bp-monitoring-body"></div>
       <p class="metrics-empty" id="bp-monitoring-empty" hidden role="status">所选区间还没有血压记录。</p>
     </details>
+    <details class="weekly-summary" id="attachments-section">
+      <summary>就医资料 <span class="metric-meta" id="attachments-summary"></span></summary>
+      <div class="attachment-upload">
+        <label class="calc-field">资料类型
+          <select id="attachment-kind">
+            <option value="visit">就诊资料</option>
+            <option value="lab">化验单</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label class="calc-field">文件（JPG/PNG/WebP/PDF，≤10 MB）
+          <input type="file" id="attachment-file"
+            accept=".jpg,.jpeg,.png,.webp,.pdf,image/jpeg,image/png,image/webp,application/pdf">
+        </label>
+        <label class="calc-field">备注（可选）
+          <input type="text" id="attachment-note" maxlength="300">
+        </label>
+        <button type="button" class="btn-quiet" id="attachment-upload">上传</button>
+        <span class="metric-meta" id="attachment-status" role="status" hidden></span>
+      </div>
+      <p class="metric-reference">附件只保存在本机 data/attachments，不进入整库 JSON 备份，也不会发送给模型；请妥善保管。</p>
+      <ul class="metrics-list" id="attachment-list"></ul>
+      <button type="button" class="btn-quiet attachment-more"
+        id="attachment-more" hidden>加载更多</button>
+      <p class="metrics-empty" id="attachment-empty" hidden role="status">还没有就医资料。</p>
+    </details>
     <div class="metrics-form">
       <label class="calc-field">患者档案
         <select id="metric-profile">

@@ -490,6 +490,17 @@ MAX_MEDICATION_TEXT_LENGTH = 60
 MAX_MEDICATION_STOCK = 1000000.0
 MAX_MEDICATION_UNIT_LENGTH = 10
 MAX_MEDICATION_STOP_REASON_LENGTH = 200
+#: 就医资料附件：允许的类型、单文件上限与展示名称长度
+ATTACHMENT_KINDS = {
+    "visit": "就诊资料",
+    "lab": "化验单",
+    "other": "其他",
+}
+ALLOWED_ATTACHMENT_MIMES = {
+    "image/jpeg", "image/png", "image/webp", "application/pdf",
+}
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+MAX_ATTACHMENT_NAME_LENGTH = 120
 #: 未服原因（键 → 中文名）
 MEDICATION_SKIP_REASONS = {
     "forget": "忘记",
@@ -1716,6 +1727,20 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_medication_history_med
                     ON medication_history(medication_id, changed_at DESC);
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile       TEXT NOT NULL DEFAULT '',
+                    kind          TEXT NOT NULL DEFAULT 'other',
+                    ref_id        INTEGER NOT NULL DEFAULT 0,
+                    original_name TEXT NOT NULL DEFAULT '',
+                    stored_name   TEXT NOT NULL UNIQUE,
+                    mime          TEXT NOT NULL DEFAULT '',
+                    size          INTEGER NOT NULL DEFAULT 0,
+                    note          TEXT NOT NULL DEFAULT '',
+                    created_at    TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_attachments_profile
+                    ON attachments(profile, created_at DESC);
                 CREATE TABLE IF NOT EXISTS vaccinations (
                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile       TEXT NOT NULL DEFAULT '',
@@ -2140,6 +2165,7 @@ class SessionStore:
                 ("care_items", "profile"),
                 ("visit_records", "profile"),
                 ("conditions", "profile"),
+                ("attachments", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -4765,6 +4791,7 @@ class SessionStore:
                     ("care_items", "profile"),
                     ("visit_records", "profile"),
                     ("conditions", "profile"),
+                    ("attachments", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -4817,6 +4844,7 @@ class SessionStore:
                 "visit_records",
                 "conditions",
                 "sessions",
+                "attachments",
             ):
                 self._conn.execute(
                     f"UPDATE {table} SET profile = ? WHERE profile = ?",
@@ -7230,6 +7258,195 @@ class SessionStore:
                     ),
                 )
             return cursor.rowcount > 0
+
+    def add_attachment(
+        self,
+        profile: str,
+        kind: str,
+        ref_id: Any,
+        original_name: str,
+        stored_name: str,
+        mime: str,
+        size: Any,
+        note: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """登记一条本地附件；文件本身由调用方保存到附件目录。"""
+        kind_key = str(kind or "other").strip().lower()
+        if kind_key not in ATTACHMENT_KINDS:
+            kind_key = "other"
+        try:
+            reference = max(0, int(ref_id or 0))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if reference > MAX_SQLITE_INT:
+            return None
+        stored = str(stored_name or "").strip()[:80]
+        if (
+            not stored
+            or "/" in stored or "\\" in stored or ".." in stored
+        ):
+            return None
+        name = " ".join(str(original_name or "").split())[
+            :MAX_ATTACHMENT_NAME_LENGTH
+        ] or "附件"
+        mime_key = str(mime or "").strip().lower()
+        if mime_key not in ALLOWED_ATTACHMENT_MIMES:
+            return None
+        try:
+            size_value = int(size)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if size_value <= 0 or size_value > MAX_ATTACHMENT_BYTES:
+            return None
+        note = " ".join(str(note or "").split())[:300]
+        normalized_profile = _normalize_profile_name(profile)
+        now = self._now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO attachments(
+                    profile, kind, ref_id, original_name, stored_name,
+                    mime, size, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_profile,
+                    kind_key,
+                    reference,
+                    name,
+                    stored,
+                    mime_key,
+                    size_value,
+                    note,
+                    now,
+                ),
+            )
+            attachment_id = int(cursor.lastrowid)
+        return {
+            "id": attachment_id,
+            "profile": normalized_profile,
+            "kind": kind_key,
+            "kind_label": ATTACHMENT_KINDS[kind_key],
+            "ref_id": reference,
+            "original_name": name,
+            "stored_name": stored,
+            "mime": mime_key,
+            "size": size_value,
+            "note": note,
+            "created_at": now,
+        }
+
+    def list_attachments(
+        self,
+        profile: Optional[str] = None,
+        kind: Optional[str] = None,
+        ref_id: Optional[int] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """按时间倒序返回附件登记信息（文件内容不在数据库中）。"""
+        limit = max(1, min(int(limit or 100), 1000))
+        try:
+            offset = _bounded_offset(offset)
+        except (TypeError, ValueError, OverflowError):
+            offset = 0
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        kind_key = str(kind or "").strip().lower()
+        if kind_key in ATTACHMENT_KINDS:
+            conditions.append("kind = ?")
+            params.append(kind_key)
+        if ref_id is not None:
+            try:
+                reference = int(ref_id)
+            except (TypeError, ValueError, OverflowError):
+                return []
+            if reference < 0 or reference > MAX_SQLITE_INT:
+                return []
+            conditions.append("ref_id = ?")
+            params.append(reference)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, profile, kind, ref_id, original_name,
+                       stored_name, mime, size, note, created_at
+                  FROM attachments{where}
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "kind_label": ATTACHMENT_KINDS.get(
+                    row["kind"], ATTACHMENT_KINDS["other"]
+                ),
+            }
+            for row in rows
+        ]
+
+    def get_attachment(
+        self, attachment_id: int
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            attachment_id = int(attachment_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, profile, kind, ref_id, original_name,
+                       stored_name, mime, size, note, created_at
+                  FROM attachments WHERE id = ?
+                """,
+                (attachment_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        data = dict(row)
+        data["kind_label"] = ATTACHMENT_KINDS.get(
+            data["kind"], ATTACHMENT_KINDS["other"]
+        )
+        return data
+
+    def delete_attachment(
+        self, attachment_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """删除附件登记并返回被删记录；文件由调用方清理。"""
+        attachment = self.get_attachment(attachment_id)
+        if attachment is None:
+            return None
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM attachments WHERE id = ?", (int(attachment_id),)
+            )
+        return attachment
+
+    def detach_attachments(self, kind: str, ref_id: int) -> int:
+        """解除附件与已删除业务记录（就诊/化验）的关联。"""
+        kind_key = str(kind or "").strip().lower()
+        if kind_key not in ATTACHMENT_KINDS:
+            return 0
+        try:
+            reference = int(ref_id)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        if reference <= 0 or reference > MAX_SQLITE_INT:
+            return 0
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE attachments SET ref_id = 0
+                 WHERE kind = ? AND ref_id = ?
+                """,
+                (kind_key, reference),
+            )
+            return cursor.rowcount
 
     def get_metric(self, metric_id: int) -> Optional[Dict[str, Any]]:
         """按编号读取一条健康指标记录。"""

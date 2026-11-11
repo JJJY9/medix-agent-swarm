@@ -1,0 +1,74 @@
+"""就医资料附件前端接线测试。"""
+from pathlib import Path
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+SCRIPT = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+HTML = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+STYLES = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
+
+
+def test_attachment_panel_exists():
+    assert 'id="attachments-section"' in HTML
+    assert 'id="attachments-summary"' in HTML
+    assert 'id="attachment-kind"' in HTML
+    assert 'id="attachment-file"' in HTML
+    assert 'id="attachment-note"' in HTML
+    assert 'id="attachment-upload"' in HTML
+    assert 'id="attachment-status"' in HTML
+    assert 'id="attachment-list"' in HTML
+    assert 'id="attachment-more"' in HTML
+    assert 'id="attachment-empty"' in HTML
+    assert "JPG/PNG/WebP/PDF" in HTML
+
+
+def test_attachment_upload_and_list_wiring():
+    assert "new URLSearchParams({" in SCRIPT
+    assert "limit: String(ATTACHMENT_PAGE_SIZE)" in SCRIPT
+    assert "offset: String(offset)" in SCRIPT
+    assert "loadAttachments" in SCRIPT
+    assert "renderAttachments" in SCRIPT
+    assert "attachmentRequestSeq" in SCRIPT
+    assert "requestSeq !== attachmentRequestSeq" in SCRIPT
+    assert "new FormData()" in SCRIPT
+    assert "form.append('profile', profile);" in SCRIPT
+    assert "form.append('kind', els.attachmentKind.value || 'other');" in SCRIPT
+    assert "form.append('file', file);" in SCRIPT
+    assert "fetch('/api/attachments'" in SCRIPT
+
+
+def test_attachment_upload_guards_and_feedback():
+    assert "if (attachmentUploading) return;" in SCRIPT
+    assert "attachmentUploading = true;" in SCRIPT
+    assert "file.size > ATTACHMENT_MAX_BYTES" in SCRIPT
+    assert "ATTACHMENT_EXTENSIONS.includes(extension)" in SCRIPT
+    assert "setAttachmentStatus('正在上传…');" in SCRIPT
+    assert "els.attachmentUpload.addEventListener('click', uploadAttachment);" in SCRIPT
+
+
+def test_attachment_pagination_wiring():
+    assert "attachmentHasMore" in SCRIPT
+    assert "attachmentLoadingMore" in SCRIPT
+    assert "els.attachmentMore.hidden = !attachmentHasMore;" in SCRIPT
+    assert "els.attachmentMore.addEventListener(" in SCRIPT
+    assert "() => loadAttachments(true)" in SCRIPT
+    assert "items.length >= ATTACHMENT_PAGE_SIZE" in SCRIPT
+
+
+def test_attachment_view_download_delete_wiring():
+    assert "/api/attachments/${item.id}/file" in SCRIPT
+    assert "URL.createObjectURL(blob)" in SCRIPT
+    assert "const opened = window.open(url, '_blank');" in SCRIPT
+    assert "if (!opened) {" in SCRIPT
+    assert "URL.revokeObjectURL(url);" in SCRIPT
+    assert "浏览器拦截了新窗口" in SCRIPT
+    assert "anchor.download = item.original_name" in SCRIPT
+    assert "fetch(`/api/attachments/${item.id}`, {" in SCRIPT
+    assert "删除附件「${item.original_name" in SCRIPT
+    assert "附件只保存在本机 data/attachments" in HTML
+    assert "不进入整库 JSON 备份" in HTML
+
+
+def test_attachment_styles_exist():
+    assert ".attachment-upload" in STYLES
+    assert "#attachment-status.error" in STYLES
+    assert ".attachment-more" in STYLES

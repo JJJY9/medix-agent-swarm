@@ -3100,6 +3100,22 @@ html[data-theme="dark"] .calc-status.error {
   color: var(--triage-1);
 }
 
+.attachment-upload {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 8px 0;
+}
+
+#attachment-status.error {
+  color: var(--triage-1);
+}
+
+.attachment-more {
+  margin: 4px 0 8px;
+}
+
 .metrics-form .btn-quiet { justify-self: start; }
 
 .metric-reference {
