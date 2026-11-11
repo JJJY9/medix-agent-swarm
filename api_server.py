@@ -9990,17 +9990,17 @@ async def export_attachments_zip():
                 )
                 if present:
                     try:
-                        file_size = target.stat().st_size
+                        file_bytes = target.read_bytes()
                     except OSError:
                         present = False
                     else:
-                        total_bytes += file_size
+                        total_bytes += len(file_bytes)
                         if total_bytes > MAX_ATTACHMENT_EXPORT_BYTES:
                             raise ValueError(
                                 "附件总大小超过上限，无法一次导出。"
                             )
-                        archive.write(
-                            target, arcname=f"files/{stored_name}"
+                        archive.writestr(
+                            f"files/{stored_name}", file_bytes
                         )
                 row["file_present"] = present
                 manifest["items"].append(row)
@@ -10014,6 +10014,10 @@ async def export_attachments_zip():
         content = await asyncio.to_thread(_build)
     except ValueError as e:
         raise HTTPException(status_code=413, detail=str(e))
+    await record_audit(
+        "attachment.export",
+        detail=f"count={len(items)} bytes={len(content)}",
+    )
     filename = (
         "medix-attachments-"
         + datetime.now().strftime("%Y%m%d")

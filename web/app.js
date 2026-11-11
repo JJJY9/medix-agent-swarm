@@ -14012,7 +14012,7 @@ async function exportAttachmentArchive() {
       'application/zip'
     );
     setAttachmentIntegrityStatus(
-      '已导出附件包（含清单与可读取的文件）。'
+      '已导出全部档案附件包（含清单与可读取的文件）。'
     );
   } catch (err) {
     setAttachmentIntegrityStatus(
