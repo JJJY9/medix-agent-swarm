@@ -19,6 +19,10 @@ def client_and_store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         api_server, "ATTACHMENT_DIR", tmp_path / "attachments"
     )
+    # 上传用例较多；默认限流单独在 test_upload_rate_limit 中验证
+    monkeypatch.setattr(
+        api_server, "attachment_limiter", SlidingWindowLimiter(1000)
+    )
     try:
         yield TestClient(api_server.app), store
     finally:
