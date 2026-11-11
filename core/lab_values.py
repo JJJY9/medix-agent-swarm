@@ -313,6 +313,40 @@ def _build_alert(
     }
 
 
+def normalize_unit_key(unit: Any) -> str:
+    """公开的单位归一化入口（供用药-化验联动等其他规则复用）。"""
+    return _unit_key(unit)
+
+
+def normalize_lab_measurement(
+    item: Any, value: Any, unit: Any
+) -> Optional[Dict[str, Any]]:
+    """把化验值换算为规范单位；无法识别时返回 None。"""
+    text = " ".join(
+        unicodedata.normalize("NFKC", str(item or "")).lower().split()
+    )
+    compact = _compact(text)
+    if not compact:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    for spec in ANALYTES:
+        if not _matches(spec, text, compact):
+            continue
+        normalized = _normalized_value(number, unit, spec)
+        if normalized is None:
+            return None
+        return {
+            "analyte": spec["key"],
+            "label": spec["label"],
+            "value": round(normalized, 4),
+            "unit": spec["unit_label"],
+        }
+    return None
+
+
 def lab_critical_alerts(
     item: Any,
     value: Any,

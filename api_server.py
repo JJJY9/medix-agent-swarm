@@ -2792,21 +2792,41 @@ async def _medication_safety_for_profile(
             allergy_parts.append(substance)
     profiles = await asyncio.to_thread(store.list_profiles)
     profile_key = _normalized_profile_key(profile)
+    context_age = ""
+    context_sex = ""
     for saved in profiles:
         if saved.get("name") == profile_key:
+            saved_context = saved.get("context") or {}
             context_allergies = str(
-                (saved.get("context") or {}).get("allergies") or ""
+                saved_context.get("allergies") or ""
             ).strip()
             if context_allergies:
                 allergy_parts.append(context_allergies)
+            context_age = str(saved_context.get("age") or "")
+            context_sex = str(saved_context.get("sex") or "")
             break
-    return check_medication_safety(
+    safety = check_medication_safety(
         "",
         {
             "medications": "、".join(names),
             "allergies": "；".join(allergy_parts),
         },
     )
+    lab_rows = []
+    if names:
+        lab_rows = await asyncio.to_thread(
+            store.list_lab_results, profile, None, None, 180, 100000, 0
+        )
+    from core.medication_lab_safety import check_medication_lab_safety
+
+    lab_alerts = check_medication_lab_safety(
+        names, lab_rows, {"age": context_age, "sex": context_sex}
+    ).get("alerts") or []
+    if lab_alerts:
+        # 化验提示在前（数值与日期更具体），既有过敏/相互作用提示全部保留
+        merged = lab_alerts + list(safety.get("alerts") or [])
+        safety = {"level": "warning", "alerts": merged[:10]}
+    return safety
 
 
 @app.post("/api/medications")
@@ -7995,6 +8015,7 @@ def _family_attention(
     care: Dict[str, Any],
     symptoms: Dict[str, Any],
     medications: Dict[str, Any],
+    medication_lab: Dict[str, Any],
     vaccinations: Dict[str, Any],
     appointments: Dict[str, Any],
     metrics: List[Dict[str, Any]],
@@ -8011,6 +8032,16 @@ def _family_attention(
             "level": "danger",
             "label": f"化验危急值 {labs['critical']} 项",
             "detail": "、".join(labs.get("critical_items") or [])[:120],
+        }
+    if medication_lab.get("count"):
+        return {
+            "level": "warning",
+            "label": f"用药与化验需核对 {medication_lab['count']} 条",
+            "detail": "、".join(
+                str(item.get("title") or "")
+                for item in (medication_lab.get("alerts") or [])
+                if item.get("title")
+            )[:120],
         }
     if consultation_risk in {"high", "emergency"}:
         return {
@@ -8165,6 +8196,9 @@ async def family_overview(days: int = 7):
     lab_results = await asyncio.to_thread(
         store.list_lab_results, None, None, None, days, 100000, 0
     )
+    lab_history = await asyncio.to_thread(
+        store.list_lab_results, None, None, None, 180, 100000, 0
+    )
     care_items = await asyncio.to_thread(
         store.list_care_items, None, False, False, 100000
     )
@@ -8242,10 +8276,15 @@ async def family_overview(days: int = 7):
         })
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
+    medication_names_by_profile: Dict[str, List[str]] = {}
     for item in medications:
         profile = item.get("profile") or ""
         if not profile or not item.get("active"):
             continue
+        if item.get("name"):
+            medication_names_by_profile.setdefault(
+                profile, []
+            ).append(str(item["name"]))
         entry = medications_by_profile.setdefault(profile, {
             "active": 0,
             "taken_today": 0,
@@ -8385,6 +8424,26 @@ async def family_overview(days: int = 7):
                     f"{item.get('item') or '化验'} {value}".strip()
                 )
 
+    labs_history_by_profile: Dict[str, List[Dict[str, Any]]] = {}
+    for item in lab_history:
+        profile = item.get("profile") or ""
+        if profile:
+            labs_history_by_profile.setdefault(profile, []).append(item)
+    from core.medication_lab_safety import check_medication_lab_safety
+
+    medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
+    for profile, med_names in medication_names_by_profile.items():
+        lab_safety_alerts = check_medication_lab_safety(
+            med_names,
+            labs_history_by_profile.get(profile, []),
+            contexts.get(profile) or {},
+        ).get("alerts") or []
+        if lab_safety_alerts:
+            medication_lab_by_profile[profile] = {
+                "count": len(lab_safety_alerts),
+                "alerts": lab_safety_alerts[:3],
+            }
+
     conditions_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in condition_items:
         profile = item.get("profile") or ""
@@ -8518,6 +8577,9 @@ async def family_overview(days: int = 7):
             "count": 0, "abnormal": 0, "critical": 0,
             "items": [], "critical_items": [],
         })
+        medication_lab = medication_lab_by_profile.get(name, {
+            "count": 0, "alerts": [],
+        })
         critical = critical_by_profile.get(name, {
             "count": 0, "items": [],
         })
@@ -8567,6 +8629,7 @@ async def family_overview(days: int = 7):
             care=care,
             symptoms=symptom,
             medications=medication,
+            medication_lab=medication_lab,
             vaccinations=vaccination,
             appointments=appointment,
             metrics=metrics,
@@ -8576,6 +8639,7 @@ async def family_overview(days: int = 7):
             "context": contexts.get(name) or {},
             "metrics": metrics,
             "medications": medication,
+            "medication_lab_safety": medication_lab,
             "reminders": reminder,
             "symptoms": symptom,
             "vaccinations": vaccination,
@@ -8726,6 +8790,11 @@ async def export_family_overview_csv(days: int = 7):
             names = [name for name in (labs_info.get("items") or []) if name]
             if names:
                 lab_text += "（" + "；".join(names) + "）"
+        medication_lab_info = item.get("medication_lab_safety") or {}
+        if medication_lab_info.get("count"):
+            lab_text += (
+                f"；用药与化验需核对 {int(medication_lab_info['count'])} 条"
+            )
         critical_info = item.get("critical_alerts") or {}
         critical_text = ""
         if critical_info.get("count"):

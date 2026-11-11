@@ -56,6 +56,8 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("螺内酯", ("螺内酯", "spironolactone")),
         ("氨苯蝶啶", ("氨苯蝶啶", "triamterene")),
         ("阿米洛利", ("阿米洛利", "amiloride")),
+        ("依普利酮", ("依普利酮", "eplerenone")),
+        ("非奈利酮", ("非奈利酮", "finerenone")),
     ),
     "nitrates": (
         ("硝酸甘油", ("硝酸甘油", "nitroglycerin")),
@@ -113,6 +115,9 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("辛伐他汀", ("辛伐他汀", "simvastatin")),
         ("洛伐他汀", ("洛伐他汀", "lovastatin")),
         ("瑞舒伐他汀", ("瑞舒伐他汀", "rosuvastatin")),
+        ("普伐他汀", ("普伐他汀", "pravastatin")),
+        ("氟伐他汀", ("氟伐他汀", "fluvastatin")),
+        ("匹伐他汀", ("匹伐他汀", "pitavastatin")),
     ),
     #: 主要经 CYP3A4 代谢的他汀；瑞舒伐他汀不在此列
     "cyp3a4_statins": (
@@ -414,6 +419,11 @@ DRUG_GROUPS["sulfonamides"] = (
     ("复方磺胺甲噁唑", ("复方磺胺甲噁唑", "复方新诺明", "磺胺甲噁唑", "sulfamethoxazole")),
     ("磺胺类", ("磺胺", "sulfonamide", "sulfonamides")),
 )
+DRUG_GROUPS["loop_diuretics"] = (
+    ("呋塞米", ("呋塞米", "速尿", "furosemide")),
+    ("托拉塞米", ("托拉塞米", "torasemide")),
+    ("布美他尼", ("布美他尼", "bumetanide")),
+)
 
 #: 同时使用两种不同 NSAID 属于重复用药。
 DUPLICATE_GROUPS: Tuple[Tuple[str, str, str, str], ...] = (
@@ -538,6 +548,11 @@ def _find_drugs(text: str, group: str) -> List[str]:
             if canonical not in found:
                 found.append(canonical)
     return found
+
+
+def find_drugs(text: Any, group: str) -> List[str]:
+    """按药物组匹配文本中的药名，供化验联动等其他规则复用。"""
+    return _find_drugs(_flatten(text).lower(), group)
 
 
 #: 只从「对X过敏」「X过敏史」这类明确句式提取过敏原
