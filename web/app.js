@@ -5737,6 +5737,13 @@ function renderDiagnostics(report) {
     ),
     diagRow('数据库大小', formatBytes(runtime.db_size || 0)),
     diagRow(
+      '就医资料',
+      runtime.attachment_dir_exists
+        ? `${runtime.attachment_count ?? 0} 份 / `
+          + formatBytes(runtime.attachment_size || 0)
+        : '目录未生成'
+    ),
+    diagRow(
       '健康数据',
       `${statValue(runtime.metrics)} 条指标 / `
       + `${statValue(runtime.symptoms)} 条症状 / `

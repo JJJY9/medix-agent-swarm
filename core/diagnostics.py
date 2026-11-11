@@ -163,6 +163,28 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "auto_archive_days": get_auto_archive_days(),
     }
 
+    attachment_dir = root / "data" / "attachments"
+    attachment_count = 0
+    attachment_size = 0
+    if attachment_dir.is_dir():
+        try:
+            entries = list(attachment_dir.iterdir())
+        except OSError:
+            entries = []
+        for path in entries:
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            attachment_count += 1
+            attachment_size += size
+    info["attachment_dir"] = str(attachment_dir)
+    info["attachment_dir_exists"] = attachment_dir.is_dir()
+    info["attachment_count"] = attachment_count
+    info["attachment_size"] = attachment_size
+
     if info["db_exists"]:
         try:
             conn = sqlite3.connect(str(db_path), timeout=2)
