@@ -7369,7 +7369,7 @@ class SessionStore:
                 return []
             conditions.append("ref_id = ?")
             params.append(reference)
-        query = str(q or "").strip()
+        query = " ".join(str(q or "").split())
         if query:
             like = _like_pattern(query)
             conditions.append(

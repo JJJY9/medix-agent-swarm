@@ -14106,7 +14106,8 @@ function renderAttachments(items, options = {}) {
   attachmentItemsCache = attachmentItemsCache.concat(items);
   attachmentHasMore = Boolean(options.hasMore);
   els.attachmentsSummary.textContent =
-    `· ${attachmentItemsCache.length}${attachmentHasMore ? '+' : ''} 份`;
+    `· ${attachmentItemsCache.length}${attachmentHasMore ? '+' : ''} 份`
+    + (options.filtered ? '（已筛选）' : '');
   els.attachmentEmpty.hidden = attachmentItemsCache.length > 0;
   els.attachmentEmpty.textContent =
     options.emptyText || '还没有就医资料。';
@@ -14202,6 +14203,7 @@ async function loadAttachments(append = false) {
     renderAttachments(items, {
       append,
       hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
+      filtered: Boolean(filterKind || filterQuery),
       emptyText: (filterKind || filterQuery)
         ? '没有符合条件的资料。'
         : '还没有就医资料。',
@@ -14313,6 +14315,21 @@ async function loadAttachmentRefOptions() {
 function refreshAttachmentReferences() {
   loadAttachmentRefOptions();
   loadAttachments();
+}
+
+function scheduleAttachmentFilterSearch() {
+  // 输入变化立即作废进行中的请求，避免旧结果覆盖新关键字
+  attachmentRequestSeq += 1;
+  attachmentLoadingMore = false;
+  attachmentHasMore = false;
+  if (els.attachmentMore) {
+    els.attachmentMore.hidden = true;
+    els.attachmentMore.disabled = false;
+  }
+  clearTimeout(attachmentFilterTimer);
+  attachmentFilterTimer = setTimeout(
+    () => loadAttachments(), 250
+  );
 }
 
 async function openAttachmentFile(item, download = false) {
@@ -19460,12 +19477,13 @@ if (els.attachmentUpload) {
     );
   }
   if (els.attachmentFilterQ) {
-    els.attachmentFilterQ.addEventListener('input', () => {
-      clearTimeout(attachmentFilterTimer);
-      attachmentFilterTimer = setTimeout(
-        () => loadAttachments(), 250
-      );
+    els.attachmentFilterQ.addEventListener('input', (event) => {
+      if (event.isComposing) return;
+      scheduleAttachmentFilterSearch();
     });
+    els.attachmentFilterQ.addEventListener(
+      'compositionend', scheduleAttachmentFilterSearch
+    );
   }
   if (els.attachmentMore) {
     els.attachmentMore.addEventListener(

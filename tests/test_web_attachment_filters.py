@@ -20,6 +20,9 @@ def test_attachment_filters_are_sent_to_api():
     assert "if (filterKind) params.set('kind', filterKind);" in SCRIPT
     assert "if (filterQuery) params.set('q', filterQuery);" in SCRIPT
     assert "attachmentFilterTimer" in SCRIPT
+    assert "scheduleAttachmentFilterSearch" in SCRIPT
+    assert "event.isComposing" in SCRIPT
+    assert "'compositionend', scheduleAttachmentFilterSearch" in SCRIPT
     assert "els.attachmentFilterQ.addEventListener('input'" in SCRIPT
     assert "els.attachmentFilterKind.addEventListener(" in SCRIPT
 
@@ -27,5 +30,7 @@ def test_attachment_filters_are_sent_to_api():
 def test_attachment_filter_empty_state_and_styles():
     assert "没有符合条件的资料。" in SCRIPT
     assert "emptyText: (filterKind || filterQuery)" in SCRIPT
+    assert "options.filtered ? '（已筛选）' : ''" in SCRIPT
+    assert "attachmentRequestSeq += 1;" in SCRIPT
     assert ".attachment-filters" in STYLES
     assert ".attachment-filters input[type=\"search\"]" in STYLES
