@@ -345,6 +345,7 @@ const els = {
   attachmentRefFilterClear: document.getElementById(
     'attachment-ref-filter-clear'
   ),
+  attachmentKindStats: document.getElementById('attachment-kind-stats'),
   attachmentSelectAll: document.getElementById('attachment-select-all'),
   attachmentLinkSelected: document.getElementById(
     'attachment-link-selected'
@@ -14549,8 +14550,12 @@ async function loadAttachments(append = false) {
 
 async function loadAttachmentRefCounts() {
   if (!metricsOpen) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
   try {
-    const res = await fetch('/api/attachments/counts');
+    const params = new URLSearchParams({ profile });
+    const res = await fetch(
+      `/api/attachments/counts?${params.toString()}`
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return;
     const counts = data.counts || {};
@@ -14558,6 +14563,16 @@ async function loadAttachmentRefCounts() {
       visit: counts.visit || {},
       lab: counts.lab || {},
     };
+    if (els.attachmentKindStats) {
+      const parts = (data.kinds || [])
+        .filter((item) => Number(item.count) > 0)
+        .map((item) => (
+          `${item.kind_label} ${Number(item.count)} 份 · `
+          + formatAttachmentSize(item.size)
+        ));
+      els.attachmentKindStats.textContent = parts.join('；');
+      els.attachmentKindStats.hidden = parts.length === 0;
+    }
     if (els.visitList) renderVisits(filterVisits(visitItemsCache));
     if (els.labList) renderLabs(filterLabs(labItemsCache));
   } catch {

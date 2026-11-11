@@ -626,10 +626,19 @@ def test_attachment_ref_counts(client_and_store):
     _upload(client, kind="lab", ref_id=lab["id"])
     _upload(client, kind="visit", ref_id=0)
 
-    data = client.get("/api/attachments/counts").json()["counts"]
+    payload = client.get(
+        "/api/attachments/counts", params={"profile": "妈妈"}
+    ).json()
+    data = payload["counts"]
     assert data["visit"][str(visit["id"])] == 2
     assert data["lab"][str(lab["id"])] == 1
     assert str(0) not in data["visit"]
+    kinds = {item["kind"]: item for item in payload["kinds"]}
+    assert kinds["visit"]["count"] == 3
+    assert kinds["lab"]["count"] == 1
+    assert payload["total_count"] == 4
+    assert payload["total_size"] >= 4
+    assert all(item["size"] > 0 for item in payload["kinds"])
 
 
 def test_list_attachments_summary_counts(client_and_store):

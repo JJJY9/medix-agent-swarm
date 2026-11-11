@@ -8,8 +8,11 @@ SCRIPT = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 def test_attachment_ref_counts_loaded():
     assert "attachmentRefCounts" in SCRIPT
     assert "loadAttachmentRefCounts" in SCRIPT
-    assert "fetch('/api/attachments/counts')" in SCRIPT
+    assert "`/api/attachments/counts?${params.toString()}`" in SCRIPT
     assert "attachmentRefCounts = {" in SCRIPT
+    assert "attachmentKindStats" in SCRIPT
+    assert "formatAttachmentSize(item.size)" in SCRIPT
+    assert "els.attachmentKindStats.hidden = parts.length === 0;" in SCRIPT
     assert "if (els.visitList) renderVisits(filterVisits(visitItemsCache));" in SCRIPT
     assert "if (els.labList) renderLabs(filterLabs(labItemsCache));" in SCRIPT
 
