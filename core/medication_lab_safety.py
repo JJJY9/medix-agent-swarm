@@ -211,24 +211,32 @@ def check_medication_lab_safety(
 ) -> Dict[str, Any]:
     """返回药物与最近化验交叉风险提示；无命中时 alerts 为空。"""
     context = context if isinstance(context, dict) else {}
-    names = "、".join(
+    medication_names = [
         str(name) for name in (medications or []) if str(name or "").strip()
-    )
-    if not names or not labs:
+    ]
+    if not medication_names or not labs:
         return {"alerts": []}
     measurements = _collect_measurements(labs)
     if not measurements:
         return {"alerts": []}
 
-    raas = find_drugs(names, "raas_blockers")
-    sparing = find_drugs(names, "potassium_sparing")
-    metformin = find_drugs(names, "metformin")
-    statins = find_drugs(names, "statins")
-    warfarin = find_drugs(names, "warfarin")
-    digoxin = find_drugs(names, "digoxin")
+    def find_any(group: str) -> List[str]:
+        found: List[str] = []
+        for medication in medication_names:
+            for drug in find_drugs(medication, group):
+                if drug not in found:
+                    found.append(drug)
+        return found
+
+    raas = find_any("raas_blockers")
+    sparing = find_any("potassium_sparing")
+    metformin = find_any("metformin")
+    statins = find_any("statins")
+    warfarin = find_any("warfarin")
+    digoxin = find_any("digoxin")
     diuretics = (
-        find_drugs(names, "loop_diuretics")
-        + find_drugs(names, "thiazides")
+        find_any("loop_diuretics")
+        + find_any("thiazides")
     )
 
     alerts: List[Dict[str, str]] = []
