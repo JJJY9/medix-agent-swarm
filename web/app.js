@@ -2175,7 +2175,7 @@ function buildReportHtml(item, messages) {
 /** 生成就诊摘要：患者档案 + 近期指标 + 随访提醒 + 近期会诊，打印友好。 */
 function buildVisitSummaryHtml({
   profile, context, metrics, reminders, sessions, targets, summaries,
-  symptoms, medications, weekly, failures = [],
+  symptoms, medications, weekly, attachments = [], failures = [],
 }) {
   const generatedAt = new Date().toLocaleString();
   const targetList = Array.isArray(targets) ? targets : [];
@@ -2305,6 +2305,15 @@ function buildVisitSummaryHtml({
     `<li>${escapeHtml(formatTime(item.updated_at || item.created_at))}`
     + ` · ${escapeHtml(item.title || '未命名会诊')}</li>`
   )).join('\n');
+
+  const attachmentItems = (attachments || []).map((item) => {
+    const date = String(item.created_at || '').slice(0, 10);
+    const linked = item.ref_id ? '已关联' : '未关联';
+    return `<li>${escapeHtml(date)} `
+      + `${escapeHtml(item.original_name || '附件')}`
+      + `（${escapeHtml(item.kind_label || '其他')}，${linked}）`
+      + `${item.note ? ` · ${escapeHtml(item.note)}` : ''}</li>`;
+  }).join('\n');
 
   const weeklyItems = weekly
     ? weeklySummaryLines(weekly)
@@ -2437,6 +2446,13 @@ function buildVisitSummaryHtml({
   </section>
 
   <section>
+    <h2>就医资料</h2>
+    ${attachmentItems
+      ? `<ul>${attachmentItems}</ul>`
+      : '<p class="muted">还没有就医资料。</p>'}
+  </section>
+
+  <section>
     <h2>近期会诊</h2>
     ${sessionItems
       ? `<ul>${sessionItems}</ul>`
@@ -2494,10 +2510,13 @@ async function exportVisitSummary() {
     const medicationParams = new URLSearchParams({
       active_only: 'true', limit: '100', profile,
     });
+    const attachmentParams = new URLSearchParams({
+      limit: '100', profile,
+    });
     const weeklyParams = new URLSearchParams({ profile });
     const [
       metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
-      medicationsRes, weeklyRes,
+      medicationsRes, weeklyRes, attachmentsRes,
     ] = await Promise.all([
       fetch(`/api/metrics?${metricParams.toString()}`),
       fetch(`/api/reminders?${reminderParams.toString()}`),
@@ -2506,6 +2525,7 @@ async function exportVisitSummary() {
       fetch(`/api/symptoms?${symptomParams.toString()}`),
       fetch(`/api/medications?${medicationParams.toString()}`),
       fetch(`/api/reports/weekly?${weeklyParams.toString()}`),
+      fetch(`/api/attachments?${attachmentParams.toString()}`),
     ]);
     const failures = [];
     const track = (res, label) => {
@@ -2536,6 +2556,9 @@ async function exportVisitSummary() {
     const medications = track(medicationsRes, '用药清单')
       ? (await medicationsRes.json()).medications || []
       : [];
+    const attachments = track(attachmentsRes, '就医资料')
+      ? (await attachmentsRes.json()).attachments || []
+      : [];
     const weekly = weeklyRes && weeklyRes.ok
       ? await weeklyRes.json().catch(() => null)
       : null;
@@ -2548,7 +2571,7 @@ async function exportVisitSummary() {
     downloadFile(
       buildVisitSummaryHtml({
         profile, context, metrics, reminders, sessions, targets,
-        summaries, symptoms, medications, weekly, failures,
+        summaries, symptoms, medications, weekly, attachments, failures,
       }),
       `medix-visit-summary-${stamp}.html`,
       'text/html;charset=utf-8'
