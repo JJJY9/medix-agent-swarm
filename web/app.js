@@ -324,6 +324,7 @@ const els = {
   attachmentUpload: document.getElementById('attachment-upload'),
   attachmentStatus: document.getElementById('attachment-status'),
   attachmentIntegrityCheck: document.getElementById('attachment-integrity-check'),
+  attachmentExport: document.getElementById('attachment-export'),
   attachmentCleanup: document.getElementById('attachment-cleanup'),
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentList: document.getElementById('attachment-list'),
@@ -13856,6 +13857,7 @@ let attachmentIntegrityRequestSeq = 0;
 let attachmentOrphanCount = 0;
 let attachmentCleanableCount = 0;
 let attachmentCleaning = false;
+let attachmentExporting = false;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
@@ -13988,6 +13990,37 @@ async function cleanupAttachmentOrphans() {
   } finally {
     attachmentCleaning = false;
     if (els.attachmentCleanup) els.attachmentCleanup.disabled = false;
+  }
+}
+
+async function exportAttachmentArchive() {
+  if (attachmentExporting) return;
+  attachmentExporting = true;
+  if (els.attachmentExport) els.attachmentExport.disabled = true;
+  setAttachmentIntegrityStatus('正在打包附件…');
+  try {
+    const res = await fetch('/api/attachments/export.zip');
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      blob,
+      `medix-attachments-${stamp}.zip`,
+      'application/zip'
+    );
+    setAttachmentIntegrityStatus(
+      '已导出附件包（含清单与可读取的文件）。'
+    );
+  } catch (err) {
+    setAttachmentIntegrityStatus(
+      `导出附件包失败：${err.message || err}`, true
+    );
+  } finally {
+    attachmentExporting = false;
+    if (els.attachmentExport) els.attachmentExport.disabled = false;
   }
 }
 
@@ -19262,6 +19295,9 @@ if (els.attachmentUpload) {
     );
     els.attachmentCleanup.addEventListener(
       'click', cleanupAttachmentOrphans
+    );
+    els.attachmentExport.addEventListener(
+      'click', exportAttachmentArchive
     );
   }
   if (els.attachmentKind) {

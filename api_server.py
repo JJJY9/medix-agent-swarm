@@ -1212,6 +1212,8 @@ MAX_ATTACHMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 # 图片在浏览器中解码后才占内存；限制像素规模，避免小文件解压炸弹
 MAX_ATTACHMENT_PIXELS = 40_000_000
 MAX_ATTACHMENT_EDGE = 20_000
+# 导出附件包时的总字节上限，避免一次请求占用过多内存
+MAX_ATTACHMENT_EXPORT_BYTES = 200 * 1024 * 1024
 ATTACHMENT_MIME_BY_EXT = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -9940,6 +9942,93 @@ async def attachment_integrity():
         "missing": missing[:100],
         "orphans": orphans[:100],
     }
+
+
+@app.get("/api/attachments/export.zip")
+async def export_attachments_zip():
+    """把本机附件与清单打包为 ZIP，便于迁移或单独备份。"""
+    import io
+    import zipfile
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_all_attachments
+    )
+
+    def _build() -> bytes:
+        base = ATTACHMENT_DIR.resolve()
+        manifest = {
+            "version": 1,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "count": len(items),
+            "items": [],
+        }
+        total_bytes = 0
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(
+            buffer, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for item in items:
+                row = {
+                    key: item.get(key)
+                    for key in (
+                        "id", "profile", "kind", "kind_label", "ref_id",
+                        "original_name", "stored_name", "mime", "size",
+                        "note", "created_at",
+                    )
+                }
+                stored_name = str(item.get("stored_name") or "")
+                target = (
+                    (base / stored_name).resolve()
+                    if stored_name else None
+                )
+                present = bool(
+                    target
+                    and target.parent == base
+                    and target.is_file()
+                )
+                if present:
+                    try:
+                        file_size = target.stat().st_size
+                    except OSError:
+                        present = False
+                    else:
+                        total_bytes += file_size
+                        if total_bytes > MAX_ATTACHMENT_EXPORT_BYTES:
+                            raise ValueError(
+                                "附件总大小超过上限，无法一次导出。"
+                            )
+                        archive.write(
+                            target, arcname=f"files/{stored_name}"
+                        )
+                row["file_present"] = present
+                manifest["items"].append(row)
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+        return buffer.getvalue()
+
+    try:
+        content = await asyncio.to_thread(_build)
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+    filename = (
+        "medix-attachments-"
+        + datetime.now().strftime("%Y%m%d")
+        + ".zip"
+    )
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"'
+            ),
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.post("/api/attachments/cleanup")
