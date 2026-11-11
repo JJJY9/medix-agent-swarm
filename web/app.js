@@ -305,6 +305,13 @@ const els = {
   qualitySummary: document.getElementById('quality-summary'),
   qualityList: document.getElementById('quality-list'),
   qualityEmpty: document.getElementById('quality-empty'),
+  quickEntryInput: document.getElementById('quick-entry-input'),
+  quickEntryParse: document.getElementById('quick-entry-parse'),
+  quickEntrySave: document.getElementById('quick-entry-save'),
+  quickEntryCancel: document.getElementById('quick-entry-cancel'),
+  quickEntryUndo: document.getElementById('quick-entry-undo'),
+  quickEntryPreview: document.getElementById('quick-entry-preview'),
+  quickEntryStatus: document.getElementById('quick-entry-status'),
   healthDossierExport: document.getElementById('health-dossier-export'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
@@ -7134,6 +7141,10 @@ async function openMetrics() {
   }
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
+  quickEntryRequestSeq += 1;
+  clearQuickEntryPreview();
+  setQuickEntryStatus('');
+  resetQuickEntryUndo();
   loadDataQuality();
   loadMetricTargets().then(() => refreshMetrics());
   if (!els.metricsDrawer.contains(document.activeElement)) {
@@ -13493,6 +13504,166 @@ function openInsightSection(insight) {
   locateHealthRecord({ type: section, profile }, '');
 }
 
+let quickEntryPreview = null;
+let quickEntryRequestSeq = 0;
+let quickEntrySaving = false;
+let quickEntryUndoing = false;
+let quickEntryLastSavedId = 0;
+
+function resetQuickEntryUndo() {
+  quickEntryLastSavedId = 0;
+  if (els.quickEntryUndo) els.quickEntryUndo.hidden = true;
+}
+
+function setQuickEntryStatus(text, isError = false) {
+  if (!els.quickEntryStatus) return;
+  els.quickEntryStatus.textContent = text || '';
+  els.quickEntryStatus.hidden = !text;
+  els.quickEntryStatus.classList.toggle('error', Boolean(isError));
+}
+
+function clearQuickEntryPreview() {
+  quickEntryPreview = null;
+  if (els.quickEntryPreview) {
+    els.quickEntryPreview.replaceChildren();
+    els.quickEntryPreview.hidden = true;
+  }
+  if (els.quickEntrySave) els.quickEntrySave.hidden = true;
+  if (els.quickEntryCancel) els.quickEntryCancel.hidden = true;
+}
+
+function formatQuickEntryNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? number.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+    : String(value == null ? '' : value);
+}
+
+function renderQuickEntryPreview(preview) {
+  quickEntryPreview = preview;
+  if (!els.quickEntryPreview) return;
+  const first = formatQuickEntryNumber(preview.value1);
+  const value = preview.value2 === null || preview.value2 === undefined
+    ? first
+    : `${first}/${formatQuickEntryNumber(preview.value2)}`;
+  const parts = [
+    `${preview.label || '指标'} ${value} ${preview.unit || ''}`.trim(),
+  ];
+  if (preview.context_label) parts.push(preview.context_label);
+  else if (preview.supports_context) parts.push('未指定情境');
+  els.quickEntryPreview.textContent = parts.join(' · ');
+  els.quickEntryPreview.hidden = false;
+  if (els.quickEntrySave) els.quickEntrySave.hidden = false;
+  if (els.quickEntryCancel) els.quickEntryCancel.hidden = false;
+}
+
+async function parseQuickEntry() {
+  if (!els.quickEntryInput) return;
+  const text = els.quickEntryInput.value.trim();
+  if (!text) {
+    clearQuickEntryPreview();
+    setQuickEntryStatus('请输入要记录的内容，例如：血压 150/95 早上。', true);
+    return;
+  }
+  const requestSeq = ++quickEntryRequestSeq;
+  clearQuickEntryPreview();
+  setQuickEntryStatus('正在解析…');
+  try {
+    const res = await fetch('/api/metrics/quick-parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== quickEntryRequestSeq) return;
+    if (!res.ok) {
+      clearQuickEntryPreview();
+      setQuickEntryStatus(
+        data.detail || '无法解析这句话，请换一种写法。', true
+      );
+      return;
+    }
+    renderQuickEntryPreview(data.preview || {});
+    setQuickEntryStatus('已解析，请确认后保存。');
+  } catch (err) {
+    if (requestSeq !== quickEntryRequestSeq) return;
+    clearQuickEntryPreview();
+    setQuickEntryStatus(`解析失败：${err.message || err}`, true);
+  }
+}
+
+async function saveQuickEntry() {
+  if (!quickEntryPreview || quickEntrySaving) return;
+  const preview = quickEntryPreview;
+  quickEntrySaving = true;
+  if (els.quickEntrySave) els.quickEntrySave.disabled = true;
+  try {
+    const payload = {
+      profile: els.metricProfile ? els.metricProfile.value : '',
+      metric: preview.metric,
+      value1: preview.value1,
+      value2: preview.value2 === null || preview.value2 === undefined
+        ? null
+        : preview.value2,
+      measured_at: metricNowLocal(),
+      context: preview.context || '',
+      note: String(preview.text || '').slice(0, 300),
+    };
+    const res = await fetch('/api/metrics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    quickEntryLastSavedId = data.metric && data.metric.id
+      ? data.metric.id
+      : 0;
+    if (els.quickEntryUndo) {
+      els.quickEntryUndo.hidden = !quickEntryLastSavedId;
+    }
+    const alerts = data.critical_alerts || [];
+    clearQuickEntryPreview();
+    if (els.quickEntryInput) els.quickEntryInput.value = '';
+    if (alerts.length) {
+      setQuickEntryStatus(
+        `已保存。${alerts[0].message || '该数值达到危急值，请立即就医。'}`,
+        true
+      );
+    } else {
+      setQuickEntryStatus('已保存快速记录。');
+    }
+    await refreshMetrics();
+    refreshOverview();
+  } catch (err) {
+    setQuickEntryStatus(`保存失败：${err.message || err}`, true);
+  } finally {
+    quickEntrySaving = false;
+    if (els.quickEntrySave) els.quickEntrySave.disabled = false;
+  }
+}
+
+async function undoQuickEntry() {
+  if (!quickEntryLastSavedId || quickEntryUndoing) return;
+  quickEntryUndoing = true;
+  try {
+    const res = await fetch(`/api/metrics/${quickEntryLastSavedId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`服务返回 ${res.status}`);
+    }
+    resetQuickEntryUndo();
+    setQuickEntryStatus('已撤销刚才的记录。');
+    await refreshMetrics();
+    refreshOverview();
+  } catch (err) {
+    setQuickEntryStatus(`撤销失败：${err.message || err}`, true);
+  } finally {
+    quickEntryUndoing = false;
+  }
+}
+
 let dataQualityRequestSeq = 0;
 
 async function loadDataQuality() {
@@ -17673,6 +17844,10 @@ els.metricType.addEventListener('change', () => {
 els.metricProfile.addEventListener('change', () => {
   refreshMetrics();
   loadDataQuality();
+  quickEntryRequestSeq += 1;
+  clearQuickEntryPreview();
+  setQuickEntryStatus('');
+  resetQuickEntryUndo();
 });
 els.metricProfile.addEventListener('change', () => {
   if (healthSearchQuery && els.healthSearchInput) {
@@ -17683,6 +17858,28 @@ els.metricRange.addEventListener('change', () => {
   storeFilter(HEALTH_FILTER_KEYS.metricRange, els.metricRange.value);
   refreshMetrics();
 });
+if (els.quickEntryParse) {
+  els.quickEntryParse.addEventListener('click', parseQuickEntry);
+  els.quickEntryInput.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      parseQuickEntry();
+    }
+  });
+  els.quickEntryInput.addEventListener('input', () => {
+    quickEntryRequestSeq += 1;
+    clearQuickEntryPreview();
+    setQuickEntryStatus('');
+  });
+  els.quickEntrySave.addEventListener('click', saveQuickEntry);
+  els.quickEntryCancel.addEventListener('click', () => {
+    quickEntryRequestSeq += 1;
+    clearQuickEntryPreview();
+    setQuickEntryStatus('');
+  });
+  els.quickEntryUndo.addEventListener('click', undoQuickEntry);
+}
 restoreSelectValue(
   els.weeklySummaryRange, HEALTH_FILTER_KEYS.weeklyRange
 );
