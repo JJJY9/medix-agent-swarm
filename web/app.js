@@ -12154,6 +12154,38 @@ function filterVisits(items) {
   ));
 }
 
+async function openVisitPrepForVisit(item) {
+  if (!item) return;
+  const profile = item.profile || '';
+  if (els.metricProfile) els.metricProfile.value = profile;
+  await openMetrics();
+  if (els.metricProfile && els.metricProfile.value !== profile) {
+    els.metricProfile.value = profile;
+    els.metricProfile.dispatchEvent(
+      new Event('change', { bubbles: true })
+    );
+  }
+  let days = 30;
+  const date = String(item.visit_date || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const visitTime = new Date(`${date}T00:00:00`).getTime();
+    if (!Number.isNaN(visitTime)) {
+      const elapsed = Math.max(
+        1, Math.floor((Date.now() - visitTime) / 86400000) + 1
+      );
+      days = elapsed <= 30 ? 30 : elapsed <= 90 ? 90 : 180;
+    }
+  }
+  if (els.visitPrepDays) els.visitPrepDays.value = String(days);
+  resetVisitPrep();
+  const section = document.getElementById('visit-prep-section');
+  if (section) {
+    section.open = true;
+    section.scrollIntoView({ block: 'start' });
+  }
+  await loadVisitPrep();
+}
+
 function renderVisits(items) {
   if (!els.visitList) return;
   els.visitList.replaceChildren();
@@ -12250,6 +12282,16 @@ function renderVisits(items) {
       actions.appendChild(followup);
     }
 
+    const prep = document.createElement('button');
+    prep.type = 'button';
+    prep.className = 'metric-edit';
+    prep.textContent = '准备复诊';
+    prep.setAttribute(
+      'aria-label',
+      `为就诊记录生成复诊准备单：${item.diagnosis || ''}`
+    );
+    prep.addEventListener('click', () => openVisitPrepForVisit(item));
+
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'metric-edit';
@@ -12264,7 +12306,7 @@ function renderVisits(items) {
     del.setAttribute('aria-label', `删除就诊记录：${item.diagnosis || ''}`);
     del.addEventListener('click', () => deleteVisit(item));
 
-    actions.append(edit, del);
+    actions.append(prep, edit, del);
     li.append(main, actions);
     els.visitList.appendChild(li);
   }
