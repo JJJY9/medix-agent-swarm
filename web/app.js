@@ -13864,6 +13864,7 @@ let attachmentHasMore = false;
 let attachmentItemsCache = [];
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_MAX_BATCH = 5;
 const ATTACHMENT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'pdf'];
 
 function setAttachmentStatus(text, isError = false) {
@@ -14304,52 +14305,95 @@ async function openAttachmentFile(item, download = false) {
 
 async function uploadAttachment() {
   if (attachmentUploading) return;
-  const file = els.attachmentFile.files
-    && els.attachmentFile.files[0];
-  if (!file) {
+  const files = Array.from(
+    (els.attachmentFile && els.attachmentFile.files) || []
+  );
+  if (!files.length) {
     setAttachmentStatus('请选择要上传的文件', true);
     return;
   }
-  const extension = String(file.name || '').split('.').pop().toLowerCase();
-  if (!ATTACHMENT_EXTENSIONS.includes(extension)) {
-    setAttachmentStatus('仅支持 JPG/PNG/WebP/PDF 附件', true);
+  if (files.length > ATTACHMENT_MAX_BATCH) {
+    setAttachmentStatus(
+      `一次最多上传 ${ATTACHMENT_MAX_BATCH} 个文件`, true
+    );
     return;
   }
-  if (file.size > ATTACHMENT_MAX_BYTES) {
-    setAttachmentStatus('附件超过 10 MB，请压缩后再上传', true);
-    return;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const extension = String(file.name || '')
+      .split('.').pop().toLowerCase();
+    if (!ATTACHMENT_EXTENSIONS.includes(extension)) {
+      setAttachmentStatus(
+        `第 ${index + 1} 个文件仅支持 JPG/PNG/WebP/PDF 附件`, true
+      );
+      return;
+    }
+    if (file.size > ATTACHMENT_MAX_BYTES) {
+      setAttachmentStatus(
+        `第 ${index + 1} 个文件超过 10 MB，请压缩后再上传`, true
+      );
+      return;
+    }
   }
   attachmentUploading = true;
   els.attachmentUpload.disabled = true;
-  setAttachmentStatus('正在上传…');
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  const form = new FormData();
-  form.append('profile', profile);
-  form.append('kind', els.attachmentKind.value || 'other');
+  const kind = els.attachmentKind.value || 'other';
   const refId = els.attachmentRef && els.attachmentRefWrap
     && !els.attachmentRefWrap.hidden
     ? (els.attachmentRef.value || '0')
     : '0';
-  form.append('ref_id', refId);
-  form.append('note', els.attachmentNote.value.trim());
-  form.append('file', file);
+  const note = els.attachmentNote.value.trim();
+  let uploaded = 0;
+  let failure = null;
   try {
-    const res = await fetch('/api/attachments', {
-      method: 'POST',
-      body: form,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const detail = typeof data.detail === 'string'
-        ? data.detail
-        : `服务返回 ${res.status}`;
-      throw new Error(detail);
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      setAttachmentStatus(
+        `正在上传 ${index + 1}/${files.length}…`
+      );
+      const form = new FormData();
+      form.append('profile', profile);
+      form.append('kind', kind);
+      form.append('ref_id', refId);
+      form.append('note', note);
+      form.append('file', file);
+      try {
+        const res = await fetch('/api/attachments', {
+          method: 'POST',
+          body: form,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = typeof data.detail === 'string'
+            ? data.detail
+            : `服务返回 ${res.status}`;
+          throw new Error(detail);
+        }
+        uploaded += 1;
+      } catch (err) {
+        failure = {
+          name: file.name || `第 ${index + 1} 个文件`,
+          message: err.message || String(err),
+        };
+        break;
+      }
     }
-    setAttachmentStatus('已上传附件');
-    els.attachmentFile.value = '';
-    els.attachmentNote.value = '';
-    await loadAttachments();
-    refreshAttachmentIntegrityIfVisible();
+    if (uploaded) {
+      els.attachmentFile.value = '';
+      els.attachmentNote.value = '';
+      await loadAttachments();
+      refreshAttachmentIntegrityIfVisible();
+    }
+    if (failure) {
+      setAttachmentStatus(
+        `已上传 ${uploaded} 个，${failure.name} 上传失败：`
+        + failure.message,
+        true
+      );
+    } else {
+      setAttachmentStatus(`已上传 ${uploaded} 个附件`);
+    }
   } catch (err) {
     setAttachmentStatus(`上传失败：${err.message || err}`, true);
   } finally {
