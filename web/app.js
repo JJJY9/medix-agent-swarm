@@ -13999,7 +13999,9 @@ async function exportAttachmentArchive() {
   if (els.attachmentExport) els.attachmentExport.disabled = true;
   setAttachmentIntegrityStatus('正在打包附件…');
   try {
-    const res = await fetch('/api/attachments/export.zip');
+    const res = await fetch('/api/attachments/export.zip', {
+      cache: 'no-store',
+    });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);

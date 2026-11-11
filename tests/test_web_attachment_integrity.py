@@ -56,7 +56,7 @@ def test_attachment_export_zip_wiring():
     assert 'id="attachment-export"' in HTML
     assert "导出全部附件包" in HTML
     assert "exportAttachmentArchive" in SCRIPT
-    assert "fetch('/api/attachments/export.zip')" in SCRIPT
+    assert "fetch('/api/attachments/export.zip', {\n      cache: 'no-store',\n    })" in SCRIPT
     assert "if (attachmentExporting) return;" in SCRIPT
     assert "medix-attachments-${stamp}.zip" in SCRIPT
     assert "已导出全部档案附件包" in SCRIPT
