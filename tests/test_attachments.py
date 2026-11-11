@@ -291,6 +291,28 @@ def test_upload_rate_limit(client_and_store, monkeypatch):
     assert limited.json()["code"] == "rate_limited"
 
 
+def test_search_attachments_by_name_and_note(client_and_store):
+    client, _store = client_and_store
+    first = _upload(
+        client, file_name="出院小结.pdf", note="心内科"
+    ).json()["attachment"]
+    second = _upload(
+        client, file_name="化验单.pdf", note="出院复查 100%"
+    ).json()["attachment"]
+
+    def search(query):
+        return client.get(
+            "/api/attachments", params={"profile": "妈妈", "q": query}
+        ).json()["attachments"]
+
+    assert {row["id"] for row in search("出院")} == {
+        first["id"], second["id"],
+    }
+    assert [row["id"] for row in search("心内科")] == [first["id"]]
+    assert [row["id"] for row in search("100%")] == [second["id"]]
+    assert search("不存在") == []
+
+
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
     item = _upload(client).json()["attachment"]

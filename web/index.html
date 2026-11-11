@@ -700,6 +700,18 @@
           role="status" hidden></span>
       </div>
       <p class="metric-reference">附件只保存在本机 data/attachments，不进入整库 JSON 备份，也不会发送给模型；请妥善保管。</p>
+      <div class="attachment-filters">
+        <label class="sr-only" for="attachment-filter-kind">筛选资料类型</label>
+        <select id="attachment-filter-kind" aria-label="筛选资料类型">
+          <option value="">全部类型</option>
+          <option value="visit">就诊资料</option>
+          <option value="lab">化验单</option>
+          <option value="other">其他</option>
+        </select>
+        <label class="sr-only" for="attachment-filter-q">搜索附件</label>
+        <input type="search" id="attachment-filter-q" maxlength="80"
+          placeholder="搜索文件名或备注" aria-label="搜索附件文件名或备注">
+      </div>
       <ul class="metrics-list" id="attachment-list"></ul>
       <button type="button" class="btn-quiet attachment-more"
         id="attachment-more" hidden>加载更多</button>
