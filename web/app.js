@@ -6531,6 +6531,7 @@ async function refreshMetricProfileOptions() {
   // 选项重建后 select.value 会短暂变为空，需与重建前的值比较
   if (current !== nextProfile) {
     resetVisitPrep();
+    loadAttachmentRefOptions();
   }
   els.metricProfile.value = nextProfile;
 }
