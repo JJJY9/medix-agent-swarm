@@ -11236,6 +11236,7 @@ async function importLabsCsv(file) {
     setLabStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await loadLabs();
+    refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
     setLabStatus(`导入失败：${err.message || err}`, true);
@@ -11369,6 +11370,7 @@ async function saveLab() {
       setLabStatus(editingId ? '已保存修改。' : '已保存化验结果。');
     }
     await loadLabs();
+    refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
     setLabStatus(`保存失败：${err.message || err}`, true);
@@ -11388,6 +11390,7 @@ async function deleteLab(item) {
     if (editingLabId === item.id) resetLabForm();
     setLabStatus('已删除化验结果。');
     await loadLabs();
+    refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
     setLabStatus(`删除失败：${err.message || err}`, true);
@@ -12370,6 +12373,7 @@ async function saveVisit() {
     resetVisitForm();
     setVisitStatus(editingId ? '已保存修改。' : '已保存就诊记录。');
     await loadVisits();
+    refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
     setVisitStatus(`保存失败：${err.message || err}`, true);
@@ -12427,6 +12431,7 @@ async function deleteVisit(item) {
     if (editingVisitId === item.id) resetVisitForm();
     setVisitStatus('已删除就诊记录。');
     await loadVisits();
+    refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
     setVisitStatus(`删除失败：${err.message || err}`, true);
@@ -14012,6 +14017,7 @@ function attachmentRefLabel(kind, item) {
 
 async function loadAttachmentRefOptions() {
   if (!els.attachmentRef || !els.attachmentRefWrap) return;
+  if (!metricsOpen) return;
   const kind = els.attachmentKind.value;
   if (!['visit', 'lab'].includes(kind)) {
     attachmentRefRequestSeq += 1;
@@ -14022,22 +14028,14 @@ async function loadAttachmentRefOptions() {
   }
   els.attachmentRefWrap.hidden = false;
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  if (!profile) {
-    attachmentRefRequestSeq += 1;
-    const option = document.createElement('option');
-    option.value = '0';
-    option.textContent = '选择患者档案后可关联记录';
-    els.attachmentRef.replaceChildren(option);
-    els.attachmentRef.disabled = true;
-    return;
-  }
   const requestSeq = ++attachmentRefRequestSeq;
   els.attachmentRef.disabled = true;
   const loading = document.createElement('option');
   loading.value = '0';
   loading.textContent = '正在加载关联记录…';
   els.attachmentRef.replaceChildren(loading);
-  const params = new URLSearchParams({ limit: '50', days: '365' });
+  const params = new URLSearchParams({ limit: '1000' });
+  // 空档案名表示“未指定”记录，后端按字符串相等校验，仍可关联
   params.set('profile', profile);
   const url = kind === 'visit'
     ? `/api/visits?${params.toString()}`
@@ -14061,7 +14059,7 @@ async function loadAttachmentRefOptions() {
     for (const item of items) {
       const option = document.createElement('option');
       option.value = String(item.id);
-      option.textContent = attachmentRefLabel(kind, item).slice(0, 100);
+      option.textContent = attachmentRefLabel(kind, item).slice(0, 60);
       options.push(option);
     }
     els.attachmentRef.replaceChildren(...options);
@@ -14076,6 +14074,11 @@ async function loadAttachmentRefOptions() {
       els.attachmentRef.disabled = false;
     }
   }
+}
+
+function refreshAttachmentReferences() {
+  loadAttachmentRefOptions();
+  loadAttachments();
 }
 
 async function openAttachmentFile(item, download = false) {
@@ -14157,7 +14160,6 @@ async function uploadAttachment() {
     els.attachmentFile.value = '';
     els.attachmentNote.value = '';
     await loadAttachments();
-    loadAttachmentRefOptions();
   } catch (err) {
     setAttachmentStatus(`上传失败：${err.message || err}`, true);
   } finally {

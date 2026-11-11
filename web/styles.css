@@ -3112,6 +3112,10 @@ html[data-theme="dark"] .calc-status.error {
   color: var(--triage-1);
 }
 
+#attachment-ref {
+  max-width: 220px;
+}
+
 .attachment-more {
   margin: 4px 0 8px;
 }
