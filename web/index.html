@@ -1244,6 +1244,25 @@
       <div class="weekly-summary-body" id="weekly-summary-body"></div>
     </details>
 
+    <details class="weekly-summary visit-prep" id="visit-prep-section">
+      <summary>复诊准备单 <span class="metric-meta" id="visit-prep-summary"></span></summary>
+      <div class="weekly-summary-toolbar">
+        <label class="sr-only" for="visit-prep-days">准备单范围</label>
+        <select id="visit-prep-days" aria-label="准备单时间范围">
+          <option value="30" selected>近 30 天</option>
+          <option value="90">近 90 天</option>
+          <option value="180">近 180 天</option>
+        </select>
+        <button type="button" class="btn-quiet" id="visit-prep-generate">生成准备单</button>
+        <button type="button" class="btn-quiet" id="visit-prep-copy" disabled>复制</button>
+        <button type="button" class="btn-quiet" id="visit-prep-export" disabled>导出 Markdown</button>
+        <span class="metric-meta" id="visit-prep-status" role="status" hidden></span>
+      </div>
+      <p class="metric-reference">根据本机记录生成，供与医生沟通参考，不构成医疗建议。</p>
+      <div class="visit-prep-body" id="visit-prep-body" hidden></div>
+      <p class="metrics-empty" id="visit-prep-empty">选择患者档案后生成准备单。</p>
+    </details>
+
     <details class="weekly-summary health-compare" id="compare-section">
       <summary>家庭指标对比</summary>
       <div class="weekly-summary-toolbar">

@@ -613,6 +613,14 @@ const els = {
   weeklySummaryCopy: document.getElementById('weekly-summary-copy'),
   weeklySummaryExport: document.getElementById('weekly-summary-export'),
   weeklySummaryBody: document.getElementById('weekly-summary-body'),
+  visitPrepDays: document.getElementById('visit-prep-days'),
+  visitPrepGenerate: document.getElementById('visit-prep-generate'),
+  visitPrepCopy: document.getElementById('visit-prep-copy'),
+  visitPrepExport: document.getElementById('visit-prep-export'),
+  visitPrepStatus: document.getElementById('visit-prep-status'),
+  visitPrepBody: document.getElementById('visit-prep-body'),
+  visitPrepEmpty: document.getElementById('visit-prep-empty'),
+  visitPrepSummary: document.getElementById('visit-prep-summary'),
   compareSection: document.getElementById('compare-section'),
   compareMetric: document.getElementById('compare-metric'),
   compareRange: document.getElementById('compare-range'),
@@ -14378,6 +14386,246 @@ async function exportWeeklySummary() {
   setMetricsStatus('已导出健康小结 Markdown。');
 }
 
+let visitPrepRequestSeq = 0;
+let visitPrepCache = null;
+let visitPrepLoading = false;
+
+function setVisitPrepStatus(text, isError = false) {
+  if (!els.visitPrepStatus) return;
+  els.visitPrepStatus.textContent = text || '';
+  els.visitPrepStatus.hidden = !text;
+  els.visitPrepStatus.classList.toggle('error', Boolean(isError));
+}
+
+function resetVisitPrep() {
+  visitPrepRequestSeq += 1;
+  visitPrepCache = null;
+  visitPrepLoading = false;
+  if (els.visitPrepBody) {
+    els.visitPrepBody.replaceChildren();
+    els.visitPrepBody.hidden = true;
+  }
+  if (els.visitPrepEmpty) {
+    els.visitPrepEmpty.hidden = false;
+    els.visitPrepEmpty.textContent = '选择患者档案后生成准备单。';
+  }
+  if (els.visitPrepSummary) els.visitPrepSummary.textContent = '';
+  if (els.visitPrepCopy) els.visitPrepCopy.disabled = true;
+  if (els.visitPrepExport) els.visitPrepExport.disabled = true;
+  if (els.visitPrepGenerate) els.visitPrepGenerate.disabled = false;
+  setVisitPrepStatus('');
+}
+
+function renderVisitPrep(data) {
+  if (!els.visitPrepBody) return;
+  const body = els.visitPrepBody;
+  body.replaceChildren();
+  const addSection = (title, entries) => {
+    if (!entries.length) return;
+    const heading = document.createElement('p');
+    heading.className = 'visit-prep-heading';
+    heading.textContent = title;
+    const list = document.createElement('ul');
+    list.className = 'weekly-summary-list';
+    for (const entry of entries) {
+      const li = document.createElement('li');
+      li.textContent = entry;
+      list.appendChild(li);
+    }
+    body.append(heading, list);
+  };
+
+  if (data.last_visit) {
+    const visit = data.last_visit;
+    const entries = [];
+    const where = [visit.visit_date, visit.department, visit.doctor]
+      .filter(Boolean).join(' · ');
+    if (where) entries.push(where);
+    if (visit.diagnosis) entries.push(`诊断：${visit.diagnosis}`);
+    if (visit.advice) entries.push(`医嘱：${visit.advice}`);
+    if (visit.next_followup_date) {
+      entries.push(`下次复诊：${visit.next_followup_date}`);
+    }
+    addSection('上次就诊', entries);
+  }
+
+  const abnormal = [];
+  for (const item of data.abnormal_metrics || []) {
+    const context = item.context ? `（${item.context}）` : '';
+    abnormal.push(
+      `${item.label} ${item.value} ${item.unit} · `
+      + `${String(item.measured_at || '').slice(0, 10)}${context} · `
+      + (item.critical ? '危急值' : '超标')
+    );
+  }
+  for (const item of data.abnormal_labs || []) {
+    const ref = item.ref_text ? `（参考 ${item.ref_text}）` : '';
+    const flag = item.critical
+      ? '危急值' : (item.abnormal_high ? '偏高' : '偏低');
+    abnormal.push(
+      `化验 ${item.item} ${item.value} ${item.unit}${ref} · `
+      + `${String(item.tested_at || '').slice(0, 10)} · ${flag}`
+    );
+  }
+  addSection('需要告知医生的异常', abnormal);
+
+  addSection(
+    `近 ${data.days} 天症状`,
+    (data.symptoms || []).map((item) => (
+      `${item.symptom}：${item.count} 次，最高 ${item.max_severity}/10，`
+      + `最近 ${String(item.last_at || '').slice(0, 10)}`
+    ))
+  );
+
+  const medicationLines = (data.medications || []).map((item) => {
+    const detail = [item.dose, item.frequency].filter(Boolean).join(' ');
+    return `${item.name}${detail ? `（${detail}）` : ''}`;
+  });
+  const medicationSummary = data.medication_summary || {};
+  if (data.medications && data.medications.length) {
+    medicationLines.push(
+      `近 ${data.days} 天已服 ${medicationSummary.taken_count || 0} 次，`
+      + `未服 ${medicationSummary.skipped_count || 0} 次`
+    );
+    if ((medicationSummary.skip_reasons || []).length) {
+      medicationLines.push(
+        '未服原因：'
+        + medicationSummary.skip_reasons
+          .map((item) => `${item.reason} ${item.count} 次`)
+          .join('、')
+      );
+    }
+  }
+  addSection(
+    `目前用药（${medicationSummary.active_count || 0} 种）`,
+    medicationLines
+  );
+
+  const allergyLines = (data.allergies || []).map((item) => (
+    `过敏：${item.substance}（${item.kind}，${item.severity}`
+    + `${item.reaction ? `，反应：${item.reaction}` : ''}）`
+  ));
+  for (const item of data.conditions || []) {
+    allergyLines.push(`慢病：${item.name}（${item.status}）`);
+  }
+  addSection('过敏与慢病', allergyLines);
+
+  const todoLines = [];
+  const reminders = data.reminders || {};
+  for (const item of reminders.items || []) {
+    todoLines.push(
+      `提醒：${item.title}（${String(item.due_at || '').slice(0, 10)}，`
+      + `${item.overdue ? '已逾期' : '待完成'}）`
+    );
+  }
+  for (const item of data.care_items || []) {
+    todoLines.push(
+      `复查：${item.title}（${item.next_due_at}，`
+      + `${item.overdue ? '已逾期' : '临近'}）`
+    );
+  }
+  addSection('待办与复查', todoLines);
+
+  const questions = data.questions || [];
+  if (questions.length) {
+    const heading = document.createElement('p');
+    heading.className = 'visit-prep-heading';
+    heading.textContent = '建议询问医生';
+    const list = document.createElement('ol');
+    list.className = 'visit-prep-questions';
+    for (const question of questions) {
+      const li = document.createElement('li');
+      li.textContent = question;
+      list.appendChild(li);
+    }
+    body.append(heading, list);
+  }
+
+  body.hidden = false;
+  if (els.visitPrepEmpty) els.visitPrepEmpty.hidden = true;
+  if (els.visitPrepSummary) {
+    els.visitPrepSummary.textContent = `· ${data.start} 至 ${data.end}`;
+  }
+}
+
+async function loadVisitPrep() {
+  if (visitPrepLoading) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  if (!profile) {
+    setVisitPrepStatus('请先选择患者档案', true);
+    return;
+  }
+  const days = Number(els.visitPrepDays.value) || 30;
+  const requestSeq = ++visitPrepRequestSeq;
+  visitPrepLoading = true;
+  els.visitPrepGenerate.disabled = true;
+  setVisitPrepStatus('正在生成…');
+  try {
+    const res = await fetch(
+      `/api/health/visit-prep?profile=${encodeURIComponent(profile)}`
+      + `&days=${days}`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== visitPrepRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    visitPrepCache = { data, profile, days };
+    renderVisitPrep(data);
+    setVisitPrepStatus(`已生成：${data.start} 至 ${data.end}`);
+    els.visitPrepCopy.disabled = false;
+    els.visitPrepExport.disabled = false;
+  } catch (err) {
+    if (requestSeq !== visitPrepRequestSeq) return;
+    visitPrepCache = null;
+    els.visitPrepBody.replaceChildren();
+    els.visitPrepBody.hidden = true;
+    els.visitPrepCopy.disabled = true;
+    els.visitPrepExport.disabled = true;
+    setVisitPrepStatus(`生成失败：${err.message || err}`, true);
+  } finally {
+    if (requestSeq === visitPrepRequestSeq) {
+      visitPrepLoading = false;
+      els.visitPrepGenerate.disabled = false;
+    }
+  }
+}
+
+async function copyVisitPrep() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const days = Number(els.visitPrepDays.value) || 30;
+  const cache = visitPrepCache;
+  if (!cache || cache.profile !== profile || cache.days !== days) {
+    setVisitPrepStatus('准备单尚未生成，请先点击生成。', true);
+    return;
+  }
+  const ok = await copyText(cache.data.text || '');
+  if (!ok) {
+    setVisitPrepStatus('复制失败，请手动选择文本。', true);
+    return;
+  }
+  setVisitPrepStatus('已复制复诊准备单。');
+}
+
+function exportVisitPrep() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const days = Number(els.visitPrepDays.value) || 30;
+  const cache = visitPrepCache;
+  if (!cache || cache.profile !== profile || cache.days !== days) {
+    setVisitPrepStatus('准备单尚未生成，请先点击生成。', true);
+    return;
+  }
+  const stamp = todayLocalDate().replace(/-/g, '');
+  downloadFile(
+    new Blob([cache.data.text || ''], {
+      type: 'text/markdown;charset=utf-8',
+    }),
+    `medix-visit-prep-${stamp}.md`,
+    'text/markdown;charset=utf-8'
+  );
+  setVisitPrepStatus('已导出复诊准备单 Markdown。');
+}
+
 const TIMELINE_TYPE_LABELS = {
   metric: '指标',
   symptom: '症状',
@@ -18573,6 +18821,7 @@ els.metricProfile.addEventListener('change', () => {
   loadDataQuality();
   loadBpMonitoring();
   loadAttachments();
+  resetVisitPrep();
   quickEntryRequestSeq += 1;
   clearQuickEntryPreview();
   setQuickEntryStatus('');
@@ -18656,6 +18905,12 @@ els.weeklySummaryRange.addEventListener('change', () => {
 els.weeklySummaryCopy.addEventListener('click', copyWeeklySummary);
 if (els.weeklySummaryExport) {
   els.weeklySummaryExport.addEventListener('click', exportWeeklySummary);
+}
+if (els.visitPrepGenerate) {
+  els.visitPrepGenerate.addEventListener('click', loadVisitPrep);
+  els.visitPrepCopy.addEventListener('click', copyVisitPrep);
+  els.visitPrepExport.addEventListener('click', exportVisitPrep);
+  els.visitPrepDays.addEventListener('change', resetVisitPrep);
 }
 els.timelineRange.addEventListener('change', () => {
   timelineDate = '';
