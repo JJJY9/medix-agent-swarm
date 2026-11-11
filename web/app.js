@@ -4514,9 +4514,48 @@ async function restoreBackup() {
     const when = target.modified_at
       ? formatTime(target.modified_at)
       : target.name;
+
+    let inspectInfo;
+    try {
+      const inspectRes = await fetch(
+        `/api/backups/${encodeURIComponent(target.name)}/inspect`,
+        { cache: 'no-store' }
+      );
+      const info = await inspectRes.json().catch(() => ({}));
+      if (!inspectRes.ok) {
+        throw new Error(
+          info.detail || `服务返回 ${inspectRes.status}`
+        );
+      }
+      inspectInfo = info;
+    } catch (err) {
+      btn.textContent = '预检失败';
+      window.alert(`备份预检失败：${err.message || err}`);
+      return;
+    }
+    if (inspectInfo.checksum_ok === false) {
+      btn.textContent = '校验失败';
+      window.alert(
+        '备份校验失败，文件可能已损坏或被修改，已停止恢复。'
+        + '请选择其他备份或重新创建。'
+      );
+      return;
+    }
+    const counts = inspectInfo.counts || {};
+    const inspectSummary = [
+      `会话 ${counts.sessions || 0}（消息 ${counts.messages || 0}）`,
+      `档案 ${counts.profiles || 0}`,
+      `指标 ${counts.health_metrics || 0}`,
+      `化验 ${counts.lab_results || 0}`,
+      `用药 ${counts.medications || 0}`,
+      `提醒 ${counts.reminders || 0}`,
+    ].join('，');
+    const inspectNotice = inspectInfo.checksum_present === false
+      ? '该备份没有校验信息，请确认来源可靠；已有记录会跳过。'
+      : '校验通过，已有记录会跳过，不会删除现有数据。';
     if (!window.confirm(
       `恢复本地备份「${target.name}」（${when}${size ? `，${size}` : ''}）？\n`
-      + '已有记录会跳过，不会删除现有数据。'
+      + `预检：${inspectSummary}\n${inspectNotice}`
     )) {
       return;
     }
