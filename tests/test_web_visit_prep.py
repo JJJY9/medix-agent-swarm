@@ -11,6 +11,11 @@ def test_visit_prep_panel_exists():
     assert 'id="visit-prep-section"' in HTML
     assert 'id="visit-prep-summary"' in HTML
     assert 'id="visit-prep-days"' in HTML
+    assert '<option value="last">上次就诊以来</option>' in HTML
+    assert "visitPrepWindow()" in SCRIPT
+    assert "since_last_visit=true" in SCRIPT
+    assert "cache.window !== window.key" in SCRIPT
+    assert "上次就诊以来" in SCRIPT
     assert 'id="visit-prep-generate"' in HTML
     assert 'id="visit-prep-copy"' in HTML
     assert 'id="visit-prep-export"' in HTML
