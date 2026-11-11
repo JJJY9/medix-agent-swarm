@@ -7418,7 +7418,9 @@ class SessionStore:
             rows = self._conn.execute(
                 f"""
                 SELECT id, profile, kind, ref_id, original_name,
-                       stored_name, mime, size, note, created_at
+                       stored_name, mime, size, note, created_at,
+                       COUNT(*) OVER() AS _total_count,
+                       COALESCE(SUM(size) OVER(), 0) AS _total_size
                   FROM attachments{where}
                  ORDER BY {order_sql}
                  LIMIT ? OFFSET ?

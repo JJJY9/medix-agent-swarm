@@ -14015,6 +14015,8 @@ let attachmentExporting = false;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
+let attachmentTotalCount = 0;
+let attachmentTotalSize = 0;
 let attachmentItemsCache = [];
 let attachmentSelectedIds = new Set();
 let attachmentDeleting = false;
@@ -14265,7 +14267,10 @@ function renderAttachments(items, options = {}) {
   attachmentItemsCache = attachmentItemsCache.concat(items);
   attachmentHasMore = Boolean(options.hasMore);
   els.attachmentsSummary.textContent =
-    `· ${attachmentItemsCache.length}${attachmentHasMore ? '+' : ''} 份`
+    `· ${attachmentTotalCount} 份`
+    + (attachmentTotalSize > 0
+      ? ` · ${formatAttachmentSize(attachmentTotalSize)}`
+      : '')
     + (options.filtered ? '（已筛选）' : '');
   els.attachmentEmpty.hidden = attachmentItemsCache.length > 0;
   els.attachmentEmpty.textContent =
@@ -14407,6 +14412,8 @@ async function loadAttachments(append = false) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     const items = data.attachments || [];
+    attachmentTotalCount = Number(data.total_count) || 0;
+    attachmentTotalSize = Number(data.total_size) || 0;
     renderAttachments(items, {
       append,
       hasMore: items.length >= ATTACHMENT_PAGE_SIZE,
@@ -14421,6 +14428,8 @@ async function loadAttachments(append = false) {
       setAttachmentStatus(`加载更多失败：${err.message || err}`, true);
     } else {
       attachmentItemsCache = [];
+      attachmentTotalCount = 0;
+      attachmentTotalSize = 0;
       els.attachmentList.replaceChildren();
       els.attachmentsSummary.textContent = '';
       els.attachmentMore.hidden = true;
