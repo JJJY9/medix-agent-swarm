@@ -622,6 +622,7 @@ const els = {
   visitPrepGenerate: document.getElementById('visit-prep-generate'),
   visitPrepCopy: document.getElementById('visit-prep-copy'),
   visitPrepExport: document.getElementById('visit-prep-export'),
+  visitPrepPrint: document.getElementById('visit-prep-print'),
   visitPrepStatus: document.getElementById('visit-prep-status'),
   visitPrepBody: document.getElementById('visit-prep-body'),
   visitPrepEmpty: document.getElementById('visit-prep-empty'),
@@ -14964,6 +14965,46 @@ function exportVisitPrep() {
   setVisitPrepStatus('已导出复诊准备单 Markdown。');
 }
 
+async function printVisitPrep() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  if (!profile) {
+    setVisitPrepStatus('请先选择患者档案', true);
+    return;
+  }
+  const days = Number(els.visitPrepDays.value) || 30;
+  const button = els.visitPrepPrint;
+  if (button) button.disabled = true;
+  setVisitPrepStatus('正在准备打印版…');
+  try {
+    const res = await fetch(
+      `/api/health/visit-prep/print?profile=${encodeURIComponent(profile)}`
+      + `&days=${days}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const opened = window.open(url, '_blank');
+    if (!opened) {
+      URL.revokeObjectURL(url);
+      setVisitPrepStatus(
+        '浏览器拦截了新窗口，请允许弹窗后重试', true
+      );
+      return;
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setVisitPrepStatus(
+      '已打开打印版，可使用浏览器菜单打印或另存为 PDF。'
+    );
+  } catch (err) {
+    setVisitPrepStatus(`打开打印版失败：${err.message || err}`, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 const TIMELINE_TYPE_LABELS = {
   metric: '指标',
   symptom: '症状',
@@ -19262,6 +19303,7 @@ if (els.visitPrepGenerate) {
   els.visitPrepGenerate.addEventListener('click', loadVisitPrep);
   els.visitPrepCopy.addEventListener('click', copyVisitPrep);
   els.visitPrepExport.addEventListener('click', exportVisitPrep);
+  els.visitPrepPrint.addEventListener('click', printVisitPrep);
   els.visitPrepDays.addEventListener('change', resetVisitPrep);
 }
 els.timelineRange.addEventListener('change', () => {
