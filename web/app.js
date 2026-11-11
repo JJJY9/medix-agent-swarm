@@ -13939,7 +13939,10 @@ async function cleanupAttachmentOrphans() {
     const res = await fetch('/api/attachments/cleanup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true }),
+      body: JSON.stringify({
+        confirm: true,
+        expected_orphans: attachmentOrphanCount,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

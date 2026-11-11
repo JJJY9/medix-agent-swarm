@@ -79,11 +79,11 @@ def test_cleanup_requires_confirm_and_only_removes_old_orphans(
     recent = _write(directory, "recent.pdf")
 
     assert client.post(
-        "/api/attachments/cleanup", json={"confirm": False}
+        "/api/attachments/cleanup", json={"confirm": False, "expected_orphans": 2}
     ).status_code == 400
 
     response = client.post(
-        "/api/attachments/cleanup", json={"confirm": True}
+        "/api/attachments/cleanup", json={"confirm": True, "expected_orphans": 2}
     )
     assert response.status_code == 200
     data = response.json()
@@ -98,10 +98,23 @@ def test_cleanup_requires_confirm_and_only_removes_old_orphans(
     )} == {"good.pdf", "missing.pdf"}
 
     second = client.post(
-        "/api/attachments/cleanup", json={"confirm": True}
+        "/api/attachments/cleanup",
+        json={"confirm": True, "expected_orphans": 1},
     ).json()
     assert second["removed"] == 0
     assert second["skipped"] == 1
+
+
+def test_cleanup_rejects_stale_orphan_count(client_and_store):
+    client, _store, directory = client_and_store
+    orphan = _write(directory, "orphan.pdf", old=True)
+    response = client.post(
+        "/api/attachments/cleanup",
+        json={"confirm": True, "expected_orphans": 0},
+    )
+    assert response.status_code == 409
+    assert "重新检查" in response.json()["detail"]
+    assert orphan.exists()
 
 
 def test_cleanup_reports_locked_orphan(client_and_store, monkeypatch):
@@ -116,7 +129,7 @@ def test_cleanup_reports_locked_orphan(client_and_store, monkeypatch):
 
     monkeypatch.setattr(Path, "unlink", locked)
     data = client.post(
-        "/api/attachments/cleanup", json={"confirm": True}
+        "/api/attachments/cleanup", json={"confirm": True, "expected_orphans": 1}
     ).json()
     assert data["removed"] == 0
     assert data["failed"] == 1
