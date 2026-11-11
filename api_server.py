@@ -2304,6 +2304,96 @@ async def create_local_backup(request: ConfirmRequest):
     return {"ok": True, "backup": path.name, "size": size}
 
 
+@app.get("/api/backups/{name}/inspect")
+async def inspect_local_backup(name: str):
+    """恢复前预检：校验备份完整性并汇总各类记录数量。"""
+    from core.backup import resolve_backup
+    from memory.session_store import _backup_checksum
+
+    try:
+        path = await asyncio.to_thread(resolve_backup, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404, detail="备份不存在或已被清理。"
+        )
+    try:
+        stat = await asyncio.to_thread(path.stat)
+    except OSError:
+        raise HTTPException(
+            status_code=404, detail="备份不存在或已被清理。"
+        )
+    if stat.st_size > MAX_BACKUP_FILE_BYTES:
+        raise HTTPException(
+            status_code=413, detail="备份文件过大，无法预检。"
+        )
+    try:
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        payload = json.loads(text)
+    except (OSError, ValueError, UnicodeError):
+        raise HTTPException(
+            status_code=400, detail="备份文件无法读取或已损坏。"
+        )
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="备份文件格式不正确。")
+
+    checksum = payload.get("checksum")
+    checksum_present = isinstance(checksum, str) and bool(checksum.strip())
+    checksum_ok = None
+    if checksum_present:
+        checksum_ok = checksum.strip() == _backup_checksum(payload)
+
+    count_keys = (
+        "profiles", "health_metrics", "metric_targets", "reminders",
+        "symptoms", "medications", "medication_logs",
+        "medication_history", "vaccinations", "appointments",
+        "lab_results", "allergies", "care_items", "visit_records",
+        "conditions", "audit_log",
+    )
+    counts = {}
+    for key in count_keys:
+        value = payload.get(key)
+        counts[key] = len(value) if isinstance(value, list) else 0
+    sessions = payload.get("sessions")
+    sessions = sessions if isinstance(sessions, list) else []
+    message_count = 0
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        messages = session.get("messages")
+        if isinstance(messages, list):
+            message_count += len(messages)
+    counts["sessions"] = len(sessions)
+    counts["messages"] = message_count
+    total_records = sum(
+        value for key, value in counts.items() if key != "messages"
+    )
+
+    warnings = []
+    if checksum_ok is False:
+        warnings.append("校验失败，备份可能已损坏或被修改。")
+    if not isinstance(payload.get("version"), int):
+        warnings.append("备份缺少版本号。")
+    if total_records == 0:
+        warnings.append("备份中没有可恢复记录。")
+
+    return {
+        "name": path.name,
+        "size": stat.st_size,
+        "modified_at": datetime.fromtimestamp(
+            stat.st_mtime
+        ).isoformat(timespec="seconds"),
+        "version": payload.get("version"),
+        "exported_at": payload.get("exported_at"),
+        "checksum_present": checksum_present,
+        "checksum_ok": checksum_ok,
+        "counts": counts,
+        "total_records": total_records,
+        "warnings": warnings,
+    }
+
+
 @app.post("/api/backups/{name}/restore")
 async def restore_local_backup(name: str, request: ConfirmRequest):
     """恢复指定本地备份；与导入一样只合并、跳过已有记录。"""

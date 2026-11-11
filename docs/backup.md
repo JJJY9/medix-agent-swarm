@@ -39,7 +39,16 @@ curl -X POST http://127.0.0.1:8000/api/backups \
 
 ## 恢复
 
-Web 端：在历史抽屉点击“恢复备份”。默认恢复最新一份；存在多份时会列出最近 10 份，按序号选择。恢复只做合并：已存在的会话、档案和记录会跳过，不会删除现有数据。
+Web 端：在历史抽屉点击“恢复备份”。默认恢复最新一份；存在多份时会列出最近 10 份，按序号选择。恢复前会先调用预检接口校验文件并展示会话、消息、档案、指标、化验与用药数量；校验失败会停止恢复。恢复只做合并：已存在的会话、档案和记录会跳过，不会删除现有数据。
+
+预检 API：
+
+```bash
+curl http://127.0.0.1:8000/api/backups/<name>/inspect \
+  -H "Authorization: Bearer $MEDIX_ACCESS_TOKEN"
+```
+
+返回 `checksum_ok`（无校验和时为 `null`）、`counts`、`total_records` 与 `warnings`；校验失败或备份为空会在 `warnings` 中说明。
 
 API：
 
