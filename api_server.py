@@ -10127,6 +10127,19 @@ async def list_attachments(
     }
 
 
+@app.get("/api/attachments/counts")
+async def attachment_ref_counts():
+    """按就诊/化验记录统计已关联附件数量。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    visit_counts, lab_counts = await asyncio.gather(
+        asyncio.to_thread(store.count_attachments_by_ref, "visit"),
+        asyncio.to_thread(store.count_attachments_by_ref, "lab"),
+    )
+    return {"counts": {"visit": visit_counts, "lab": lab_counts}}
+
+
 @app.post("/api/attachments/link")
 async def link_attachments(payload: AttachmentLinkRequest):
     """批量关联附件到同档案的就诊/化验记录，ref_id=0 表示取消关联。"""
