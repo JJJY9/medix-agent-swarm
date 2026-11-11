@@ -71,6 +71,10 @@ def test_app_js_ships_visit_summary(client):
     assert "function exportVisitSummary" in app_js
     assert "medix-visit-summary-" in app_js
     assert "visit-summary" in app_js
+    assert "attachmentParams" in app_js
+    assert "/api/attachments?${attachmentParams.toString()}" in app_js
+    assert "attachmentItems" in app_js
+    assert "<h2>就医资料</h2>" in app_js
 
 
 def test_styles_keep_hidden_overrides(client):
