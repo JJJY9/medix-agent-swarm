@@ -168,11 +168,13 @@ def test_lab_results_export_import_roundtrip(client_and_store):
     ))
     assert rows[0] == [
         "检测时间", "患者档案", "分组", "项目", "数值", "单位",
-        "参考下限", "参考上限", "结果提示", "化验机构", "备注", "ID",
+        "参考下限", "参考上限", "结果提示", "危急值", "化验机构",
+        "备注", "ID",
     ]
     assert rows[1][3] == "'=ALT"
     assert rows[1][4] == "55"
     assert rows[1][8] == "偏高"
+    assert rows[1][9] == ""
 
     item = client.get("/api/lab-results").json()["lab_results"][0]
     client.delete(f"/api/lab-results/{item['id']}")

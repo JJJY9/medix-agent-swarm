@@ -3593,7 +3593,8 @@ async def export_lab_results_csv(
     )
     rows = [[
         "检测时间", "患者档案", "分组", "项目", "数值", "单位",
-        "参考下限", "参考上限", "结果提示", "化验机构", "备注", "ID",
+        "参考下限", "参考上限", "结果提示", "危急值", "化验机构",
+        "备注", "ID",
     ]]
     for row in items:
         if row.get("abnormal_low"):
@@ -3614,6 +3615,7 @@ async def export_lab_results_csv(
             "" if row.get("ref_high") is None
             else f"{float(row['ref_high']):g}",
             flag,
+            "是" if row.get("critical") else "",
             csv_safe_cell(row.get("lab_name", "")),
             csv_safe_cell(row.get("note", "")),
             int(row.get("id") or 0),
@@ -5329,6 +5331,9 @@ async def _weekly_report_impl(
         if prev_start <= str(item.get("tested_at") or "")[:10] < start
     ]
     abnormal_labs = [item for item in lab_results if item.get("abnormal")]
+    critical_labs = [
+        item for item in lab_results if item.get("critical")
+    ]
     previous_abnormal = [
         item for item in previous_labs if item.get("abnormal")
     ]
@@ -5347,6 +5352,22 @@ async def _weekly_report_impl(
             reverse=True,
         )[:8]
     ]
+    critical_lab_items = []
+    for item in sorted(
+        critical_labs,
+        key=lambda row: str(row.get("tested_at") or ""),
+        reverse=True,
+    )[:5]:
+        alert = (item.get("critical_alerts") or [{}])[0]
+        critical_lab_items.append({
+            "item": item.get("item", ""),
+            "value": item.get("value"),
+            "unit": item.get("unit", ""),
+            "tested_at": item.get("tested_at", ""),
+            "profile": item.get("profile", ""),
+            "stale": bool(alert.get("stale")),
+            "message": alert.get("message") or "",
+        })
 
     vaccinations = await asyncio.to_thread(
         store.list_vaccinations, profile, 100000
@@ -5551,6 +5572,8 @@ async def _weekly_report_impl(
         "labs": {
             "count": len(lab_results),
             "abnormal": len(abnormal_labs),
+            "critical": len(critical_labs),
+            "critical_items": critical_lab_items,
             "prev_count": len(previous_labs),
             "prev_abnormal": len(previous_abnormal),
             "items": lab_rows,
@@ -5950,6 +5973,30 @@ def _build_health_insights(
         ))
 
     labs = report.get("labs") or {}
+    if labs.get("critical"):
+        critical_labs = labs.get("critical_items") or []
+        scope_profile = str(report.get("profile") or "")
+        detail_parts = []
+        for item in critical_labs[:5]:
+            prefix = ""
+            if not scope_profile and item.get("profile"):
+                prefix = f"{item.get('profile')}："
+            text = (
+                f"{prefix}{item.get('item', '')} "
+                f"{_health_search_number(item.get('value'))}"
+                f"{item.get('unit') or ''}"
+            )
+            if item.get("stale"):
+                text += "（结果较旧）"
+            detail_parts.append(text)
+        insights.append(_health_insight(
+            "lab_critical",
+            "danger",
+            f"近 {days} 天 {labs['critical']} 项化验达到危急值",
+            "、".join(detail_parts)[:200],
+            "请立即复测并联系医生或前往急诊；以检验报告标注与本机构标准为准。",
+            "lab",
+        ))
     if labs.get("abnormal"):
         items = labs.get("items") or []
         detail = "、".join(
@@ -6671,7 +6718,11 @@ async def health_timeline(
             "title": item.get("item") or "化验结果",
             "value": value,
             "note": item.get("note", ""),
-            "alert": bool(item.get("abnormal")),
+            "critical": bool(item.get("critical")),
+            "critical_message": (
+                ((item.get("critical_alerts") or [{}])[0]).get("message") or ""
+            ),
+            "alert": bool(item.get("abnormal") or item.get("critical")),
         })
 
     for item in raw_care_items:
@@ -7017,6 +7068,8 @@ async def health_search(
             "偏高" if row.get("abnormal_high")
             else "偏低" if row.get("abnormal_low") else ""
         )
+        if row.get("critical"):
+            abnormal = f"{abnormal} 危急值".strip()
         value = _health_search_number(row.get("value"))
         matched = key in _health_search_text(
             row.get("item"), row.get("panel"), row.get("lab_name"),
@@ -7365,7 +7418,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             continue
         entry = bucket(at[:10])
         entry["labs"] += 1
-        if item.get("abnormal"):
+        if item.get("abnormal") or item.get("critical"):
             entry["alerts"] += 1
     for item in care_items:
         if not item.get("active"):
@@ -7953,6 +8006,12 @@ def _family_attention(
             "label": f"危急值 {critical['count']} 项",
             "detail": "、".join(critical.get("items") or [])[:120],
         }
+    if labs.get("critical"):
+        return {
+            "level": "danger",
+            "label": f"化验危急值 {labs['critical']} 项",
+            "detail": "、".join(labs.get("critical_items") or [])[:120],
+        }
     if consultation_risk in {"high", "emergency"}:
         return {
             "level": "warning",
@@ -8301,9 +8360,20 @@ async def family_overview(days: int = 7):
         if not profile:
             continue
         entry = labs_by_profile.setdefault(profile, {
-            "count": 0, "abnormal": 0, "items": [],
+            "count": 0, "abnormal": 0, "critical": 0,
+            "items": [], "critical_items": [],
         })
         entry["count"] += 1
+        if item.get("critical"):
+            entry["critical"] += 1
+            if len(entry["critical_items"]) < 3:
+                value = f"{float(item.get('value') or 0):g}"
+                unit = str(item.get("unit") or "")
+                if unit:
+                    value += f" {unit}"
+                entry["critical_items"].append(
+                    f"{item.get('item') or '化验'} {value}".strip()
+                )
         if item.get("abnormal"):
             entry["abnormal"] += 1
             if len(entry["items"]) < 3:
@@ -8445,7 +8515,8 @@ async def family_overview(days: int = 7):
             "upcoming": 0, "next": None,
         })
         labs = labs_by_profile.get(name, {
-            "count": 0, "abnormal": 0, "items": [],
+            "count": 0, "abnormal": 0, "critical": 0,
+            "items": [], "critical_items": [],
         })
         critical = critical_by_profile.get(name, {
             "count": 0, "items": [],
@@ -8648,6 +8719,8 @@ async def export_family_overview_csv(days: int = 7):
         lab_text = ""
         if labs_info.get("count"):
             lab_text = f"近 {days} 天 {int(labs_info['count'])} 条"
+            if labs_info.get("critical"):
+                lab_text += f"，危急值 {int(labs_info['critical'])} 项"
             if labs_info.get("abnormal"):
                 lab_text += f"，异常 {int(labs_info['abnormal'])} 项"
             names = [name for name in (labs_info.get("items") or []) if name]
@@ -9125,6 +9198,11 @@ async def export_health_dossier(
                 suffix = "（偏低）"
             elif item.get("abnormal_high"):
                 suffix = "（偏高）"
+            if item.get("critical"):
+                alert = (item.get("critical_alerts") or [{}])[0]
+                suffix += "（危急值）"
+                if alert.get("stale"):
+                    suffix += "（结果较旧）"
             ref_text = str(item.get("ref_text") or "")
             details = [
                 str(item.get("tested_at") or "").replace("T", " ")[:16],

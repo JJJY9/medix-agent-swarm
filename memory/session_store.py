@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 from core.serialization import sanitize_json
+from core.lab_values import lab_critical_alerts
 from core.backup import (
     MAX_BACKUP_MESSAGE_CHARS,
     MAX_BACKUP_SESSION_MESSAGES,
@@ -945,7 +946,7 @@ def _normalize_lab_result(
 
 
 def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
-    """补充参考范围文本与偏高/偏低标记。"""
+    """补充参考范围文本、偏高/偏低与危急值标记。"""
     value = float(row.get("value") or 0)
     low = row.get("ref_low")
     high = row.get("ref_high")
@@ -961,6 +962,9 @@ def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         ref_text = f"≤{high_value:g}"
     else:
         ref_text = ""
+    critical_alerts = lab_critical_alerts(
+        row.get("item"), value, row.get("unit"), row.get("tested_at")
+    )
     return {
         "ref_low": low_value,
         "ref_high": high_value,
@@ -968,6 +972,8 @@ def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         "abnormal_low": abnormal_low,
         "abnormal_high": abnormal_high,
         "abnormal": abnormal_low or abnormal_high,
+        "critical": bool(critical_alerts),
+        "critical_alerts": critical_alerts,
     }
 
 

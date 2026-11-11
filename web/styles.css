@@ -4349,6 +4349,23 @@ html[data-theme="dark"] .allergy-severity-badge.is-severe {
   background: #b4472f;
 }
 
+.lab-critical-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: #8f1f1f;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+html[data-theme="dark"] .lab-critical-badge {
+  background: #c23a3a;
+}
+
 .lab-normal-badge {
   display: inline-block;
   margin-left: 4px;

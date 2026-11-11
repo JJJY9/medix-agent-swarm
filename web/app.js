@@ -8694,6 +8694,15 @@ function renderFamilyOverview(data) {
       ));
     }
     const labs = profile.labs || {};
+    if (labs.critical) {
+      const items = (labs.critical_items || []).filter(Boolean);
+      const chip = familyChip(
+        `化验危急值 ${labs.critical} 项`
+        + (items.length ? ` · ${items.join('；')}` : '')
+      );
+      chip.className += ' family-chip-alert';
+      chips.appendChild(chip);
+    }
     if (labs.abnormal) {
       const items = (labs.items || []).filter(Boolean);
       chips.appendChild(familyChip(
@@ -8808,6 +8817,7 @@ function familyOverviewText(data) {
       parts.push(`下次就诊 ${String(nextVisit.scheduled_at || '').slice(0, 10)}`);
     }
     const labs = profile.labs || {};
+    if (labs.critical) parts.push(`化验危急值 ${labs.critical} 项`);
     if (labs.abnormal) parts.push(`化验异常 ${labs.abnormal} 项`);
     const care = profile.care_plan || {};
     if (care.overdue) {
@@ -10861,6 +10871,7 @@ function filterLabs(items) {
       item.abnormal
         ? (item.abnormal_high ? '偏高' : '偏低')
         : '',
+      (item.critical_alerts || []).length ? '危急值' : '',
     ]
       .map((value) => String(value || ''))
       .join(' ')
@@ -10926,11 +10937,15 @@ function renderLabs(items) {
     ? `没有匹配「${query}」的化验结果。`
     : '还没有化验结果。';
   const abnormal = items.filter((item) => item.abnormal).length;
+  const critical = items.filter(
+    (item) => (item.critical_alerts || []).length
+  ).length;
   if (items.length) {
     els.labSummary.hidden = false;
     els.labSummary.textContent =
       `${query ? '筛选' : '全部'} ${items.length} 条`
-      + (abnormal ? ` · 异常 ${abnormal} 项` : '');
+      + (abnormal ? ` · 异常 ${abnormal} 项` : '')
+      + (critical ? ` · 危急值 ${critical} 项` : '');
   } else {
     els.labSummary.hidden = true;
   }
@@ -10961,6 +10976,13 @@ function renderLabs(items) {
       const flag = document.createElement('span');
       flag.className = 'lab-abnormal-badge';
       flag.textContent = item.abnormal_low ? '偏低' : '偏高';
+      title.append(' ', flag);
+    }
+    if ((item.critical_alerts || []).length) {
+      const flag = document.createElement('span');
+      flag.className = 'lab-critical-badge';
+      flag.textContent = '危急值';
+      flag.title = item.critical_alerts[0].message || '';
       title.append(' ', flag);
     }
 
@@ -11210,7 +11232,16 @@ async function saveLab() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     resetLabForm();
-    setLabStatus(editingId ? '已保存修改。' : '已保存化验结果。');
+    const saved = data.lab_result || {};
+    const criticalAlerts = saved.critical_alerts || [];
+    if (criticalAlerts.length) {
+      setLabStatus(
+        `已保存。${criticalAlerts[0].message || '该结果达到危急值，请立即就医。'}`,
+        true
+      );
+    } else {
+      setLabStatus(editingId ? '已保存修改。' : '已保存化验结果。');
+    }
     await loadLabs();
     refreshOverview();
   } catch (err) {
@@ -13180,6 +13211,7 @@ function weeklySummaryLines(data) {
   let labText = `${rangeDaysLabel(days)}没有化验记录`;
   if (labs.count) {
     labText = `${labs.count} 条`;
+    if (labs.critical) labText += `，危急值 ${labs.critical} 项`;
     if (labs.abnormal) labText += `，异常 ${labs.abnormal} 项`;
     if (labs.items && labs.items.length) {
       labText += `（${labs.items.map((item) => (
