@@ -3150,6 +3150,18 @@ html[data-theme="dark"] .calc-status.error {
   color: var(--triage-1);
 }
 
+.attachment-select-all {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.attachment-select {
+  margin-right: 4px;
+}
+
 #attachment-integrity-status.error {
   color: var(--triage-1);
 }

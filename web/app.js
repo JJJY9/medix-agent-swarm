@@ -329,6 +329,10 @@ const els = {
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentFilterKind: document.getElementById('attachment-filter-kind'),
   attachmentFilterQ: document.getElementById('attachment-filter-q'),
+  attachmentSelectAll: document.getElementById('attachment-select-all'),
+  attachmentDeleteSelected: document.getElementById(
+    'attachment-delete-selected'
+  ),
   attachmentList: document.getElementById('attachment-list'),
   attachmentMore: document.getElementById('attachment-more'),
   attachmentEmpty: document.getElementById('attachment-empty'),
@@ -13934,6 +13938,8 @@ let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
 let attachmentItemsCache = [];
+let attachmentSelectedIds = new Set();
+let attachmentDeleting = false;
 let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -14152,6 +14158,7 @@ function renderAttachments(items, options = {}) {
   const append = Boolean(options.append);
   if (!append) {
     attachmentItemsCache = [];
+    attachmentSelectedIds.clear();
     els.attachmentList.replaceChildren();
   }
   attachmentItemsCache = attachmentItemsCache.concat(items);
@@ -14166,6 +14173,22 @@ function renderAttachments(items, options = {}) {
   for (const item of items) {
     const li = document.createElement('li');
     li.className = 'metric-item';
+    const select = document.createElement('input');
+    select.type = 'checkbox';
+    select.className = 'attachment-select';
+    select.checked = attachmentSelectedIds.has(item.id);
+    select.setAttribute(
+      'aria-label', `选择附件：${item.original_name || '附件'}`
+    );
+    select.addEventListener('change', () => {
+      if (select.checked) {
+        attachmentSelectedIds.add(item.id);
+      } else {
+        attachmentSelectedIds.delete(item.id);
+      }
+      updateAttachmentSelection();
+    });
+    li.appendChild(select);
     const main = document.createElement('div');
     main.className = 'metric-main';
     const title = document.createElement('strong');
@@ -14223,6 +14246,7 @@ function renderAttachments(items, options = {}) {
     li.appendChild(actions);
     els.attachmentList.appendChild(li);
   }
+  updateAttachmentSelection();
 }
 
 async function loadAttachments(append = false) {
@@ -14380,6 +14404,8 @@ function scheduleAttachmentFilterSearch() {
   attachmentRequestSeq += 1;
   attachmentLoadingMore = false;
   attachmentHasMore = false;
+  attachmentSelectedIds.clear();
+  updateAttachmentSelection();
   if (els.attachmentMore) {
     els.attachmentMore.hidden = true;
     els.attachmentMore.disabled = false;
@@ -14387,6 +14413,68 @@ function scheduleAttachmentFilterSearch() {
   clearTimeout(attachmentFilterTimer);
   attachmentFilterTimer = setTimeout(
     () => loadAttachments(), 250
+  );
+}
+
+function updateAttachmentSelection() {
+  const total = attachmentItemsCache.length;
+  const selectedVisible = attachmentItemsCache.filter(
+    (item) => attachmentSelectedIds.has(item.id)
+  ).length;
+  if (els.attachmentDeleteSelected) {
+    els.attachmentDeleteSelected.hidden =
+      attachmentSelectedIds.size === 0;
+    els.attachmentDeleteSelected.textContent =
+      `删除选中（${attachmentSelectedIds.size}）`;
+    els.attachmentDeleteSelected.disabled =
+      attachmentDeleting || attachmentSelectedIds.size === 0;
+  }
+  if (els.attachmentSelectAll) {
+    els.attachmentSelectAll.checked =
+      total > 0 && selectedVisible === total;
+    els.attachmentSelectAll.disabled =
+      attachmentDeleting || total === 0;
+  }
+}
+
+async function deleteSelectedAttachments() {
+  if (attachmentDeleting || !attachmentSelectedIds.size) return;
+  const ids = [...attachmentSelectedIds];
+  if (!window.confirm(
+    `删除选中的 ${ids.length} 份附件？删除后无法恢复。`
+  )) {
+    return;
+  }
+  attachmentDeleting = true;
+  updateAttachmentSelection();
+  let removed = 0;
+  let failed = 0;
+  for (let index = 0; index < ids.length; index += 1) {
+    setAttachmentStatus(
+      `正在删除 ${index + 1}/${ids.length}…`
+    );
+    try {
+      const res = await fetch(`/api/attachments/${ids[index]}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        removed += 1;
+      } else {
+        failed += 1;
+      }
+    } catch {
+      failed += 1;
+    }
+  }
+  attachmentSelectedIds.clear();
+  attachmentDeleting = false;
+  await loadAttachments();
+  refreshAttachmentIntegrityIfVisible();
+  setAttachmentStatus(
+    `已删除 ${removed} 份附件`
+    + (failed ? `，${failed} 份失败` : '')
+    + '。',
+    failed > 0
   );
 }
 
@@ -19582,6 +19670,29 @@ if (els.attachmentUpload) {
   if (els.attachmentMore) {
     els.attachmentMore.addEventListener(
       'click', () => loadAttachments(true)
+    );
+  }
+  if (els.attachmentSelectAll) {
+    els.attachmentSelectAll.addEventListener('change', () => {
+      const checked = els.attachmentSelectAll.checked;
+      for (const item of attachmentItemsCache) {
+        if (checked) {
+          attachmentSelectedIds.add(item.id);
+        } else {
+          attachmentSelectedIds.delete(item.id);
+        }
+      }
+      for (const input of els.attachmentList.querySelectorAll(
+        '.attachment-select'
+      )) {
+        input.checked = checked;
+      }
+      updateAttachmentSelection();
+    });
+  }
+  if (els.attachmentDeleteSelected) {
+    els.attachmentDeleteSelected.addEventListener(
+      'click', deleteSelectedAttachments
     );
   }
 }

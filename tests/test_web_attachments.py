@@ -90,3 +90,18 @@ def test_attachment_styles_exist():
     assert ".attachment-missing" in STYLES
     assert "item.file_missing" in SCRIPT
     assert "文件缺失，请运行完整性检查" in SCRIPT
+
+
+def test_attachment_bulk_delete_wiring():
+    assert 'id="attachment-select-all"' in HTML
+    assert 'id="attachment-delete-selected"' in HTML
+    assert "全选当前" in HTML
+    assert "attachmentSelectedIds" in SCRIPT
+    assert "updateAttachmentSelection" in SCRIPT
+    assert "deleteSelectedAttachments" in SCRIPT
+    assert "attachment-select" in SCRIPT
+    assert "删除选中的 ${ids.length} 份附件" in SCRIPT
+    assert "els.attachmentDeleteSelected.addEventListener(" in SCRIPT
+    assert "els.attachmentSelectAll.addEventListener(" in SCRIPT
+    assert ".attachment-select-all" in STYLES
+    assert ".attachment-select {" in STYLES
