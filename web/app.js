@@ -326,6 +326,7 @@ const els = {
   attachmentStatus: document.getElementById('attachment-status'),
   attachmentIntegrityCheck: document.getElementById('attachment-integrity-check'),
   attachmentExport: document.getElementById('attachment-export'),
+  attachmentExportCsv: document.getElementById('attachment-export-csv'),
   attachmentCleanup: document.getElementById('attachment-cleanup'),
   attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentFilterKind: document.getElementById('attachment-filter-kind'),
@@ -14346,6 +14347,57 @@ async function exportAttachmentArchive(ids = null) {
   }
 }
 
+async function exportAttachmentCsv() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const params = new URLSearchParams();
+  if (profile) params.set('profile', profile);
+  if (attachmentRefFilter) {
+    params.set('kind', attachmentRefFilter.kind);
+    params.set('ref_id', String(attachmentRefFilter.refId));
+  } else {
+    const kind = els.attachmentFilterKind
+      ? els.attachmentFilterKind.value : '';
+    if (kind) params.set('kind', kind);
+  }
+  const linked = els.attachmentFilterLinked
+    ? els.attachmentFilterLinked.value : '';
+  if (linked) params.set('linked', linked);
+  const query = els.attachmentFilterQ
+    ? els.attachmentFilterQ.value.trim() : '';
+  if (query) params.set('q', query);
+  const start = els.attachmentFilterStart
+    ? els.attachmentFilterStart.value : '';
+  const end = els.attachmentFilterEnd
+    ? els.attachmentFilterEnd.value : '';
+  if (start) params.set('start', start);
+  if (end) params.set('end', end);
+  const sort = els.attachmentFilterSort
+    ? els.attachmentFilterSort.value : '';
+  if (sort) params.set('sort', sort);
+  setAttachmentIntegrityStatus('正在导出附件清单…');
+  try {
+    const res = await fetch(
+      `/api/attachments/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const blob = await res.blob();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      blob,
+      `medix-attachments-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setAttachmentIntegrityStatus('已导出附件清单 CSV。');
+  } catch (err) {
+    setAttachmentIntegrityStatus(
+      `导出附件清单失败：${err.message || err}`, true
+    );
+  }
+}
+
 function exportSelectedAttachments() {
   if (!attachmentSelectedIds.size) return;
   exportAttachmentArchive([...attachmentSelectedIds]);
@@ -20333,6 +20385,11 @@ if (els.attachmentUpload) {
     els.attachmentExport.addEventListener(
       'click', exportAttachmentArchive
     );
+    if (els.attachmentExportCsv) {
+      els.attachmentExportCsv.addEventListener(
+        'click', exportAttachmentCsv
+      );
+    }
   }
   if (els.attachmentKind) {
     els.attachmentKind.addEventListener(

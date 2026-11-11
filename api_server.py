@@ -10262,6 +10262,73 @@ async def attachment_ref_counts(profile: Optional[str] = None):
     }
 
 
+@app.get("/api/attachments/export.csv")
+async def export_attachments_csv(
+    profile: str = "",
+    kind: str = "",
+    ref_id: Optional[int] = None,
+    start: str = "",
+    end: str = "",
+    q: str = "",
+    linked: Optional[bool] = None,
+    sort: str = "",
+):
+    """导出附件清单 CSV（带 BOM，不含文件内容）。"""
+    import csv
+    import io
+
+    rows = [[
+        "上传日期", "文件名", "类型", "大小(字节)", "备注",
+        "关联状态", "关联编号", "关联摘要", "文件状态",
+    ]]
+    offset = 0
+    while offset < 100000:
+        data = await list_attachments(
+            profile=profile or None,
+            kind=kind,
+            ref_id=ref_id,
+            limit=1000,
+            offset=offset,
+            q=q,
+            linked=linked,
+            start=start,
+            end=end,
+            sort=sort,
+        )
+        batch = data.get("attachments") or []
+        for item in batch:
+            rows.append([
+                csv_safe_cell(str(item.get("created_at") or "")[:10]),
+                csv_safe_cell(item.get("original_name") or "附件"),
+                csv_safe_cell(item.get("kind_label") or "其他"),
+                str(int(item.get("size") or 0)),
+                csv_safe_cell(item.get("note") or ""),
+                "已关联" if item.get("ref_id") else "未关联",
+                str(int(item.get("ref_id") or 0)),
+                csv_safe_cell(item.get("ref_label") or ""),
+                "缺失" if item.get("file_missing") else "正常",
+            ])
+        if len(batch) < 1000:
+            break
+        offset += 1000
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    content = "﻿" + buffer.getvalue()
+    filename = (
+        "medix-attachments-"
+        + datetime.now().strftime("%Y%m%d")
+        + ".csv"
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.post("/api/attachments/link")
 async def link_attachments(payload: AttachmentLinkRequest):
     """批量关联附件到同档案的就诊/化验记录，ref_id=0 表示取消关联。"""

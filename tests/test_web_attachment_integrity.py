@@ -83,3 +83,14 @@ def test_attachment_export_zip_wiring():
     assert "'click', exportAttachmentArchive" in SCRIPT
     assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
     assert "'click', exportSelectedAttachments" in SCRIPT
+
+
+def test_attachment_csv_export_wiring():
+    assert 'id="attachment-export-csv"' in HTML
+    assert "导出列表 CSV" in HTML
+    assert "exportAttachmentCsv" in SCRIPT
+    assert "`/api/attachments/export.csv?${params.toString()}`" in SCRIPT
+    assert "medix-attachments-${stamp}.csv" in SCRIPT
+    assert "params.set('ref_id', String(attachmentRefFilter.refId));" in SCRIPT
+    assert "已导出附件清单 CSV。" in SCRIPT
+    assert "els.attachmentExportCsv.addEventListener(" in SCRIPT
