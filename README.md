@@ -296,7 +296,7 @@ npm install -D playwright
 | GET | `/api/health/dossier.md` | 导出单个患者的健康档案 Markdown（健康提示、档案信息、过敏史、慢病清单、复查计划、近期就诊、连续记录、指标目标、最近指标、最近化验、症状、用药与依从率、疫苗接种、就诊预约、提醒、近期会诊风险，`profile`/`days`） |
 | GET | `/api/health/emergency-card` | 急救信息卡：按档案生成一页式可打印 HTML，含血型、年龄性别、活动过敏、在用药物（抗凝/抗血小板标注）、慢病与紧急联系人（`profile`） |
 | POST | `/api/attachments` | 上传就医资料附件（JPG/PNG/WebP/PDF，单文件 ≤10 MB，`profile`/`kind`/`ref_id`/`note`，仅保存在本机 `data/attachments`） |
-| GET | `/api/attachments` | 附件列表（可按 `profile`/`kind`/`ref_id` 与关键字 `q` 筛选并分页，不返回文件内容） |
+| GET | `/api/attachments` | 附件列表（可按 `profile`/`kind`/`ref_id` 与关键字 `q` 筛选并分页，不返回文件内容；关联记录附 `ref_label` 摘要） |
 | GET | `/api/attachments/{id}/file` | 读取附件原文件（`inline`，`Cache-Control: no-store`） |
 | DELETE | `/api/attachments/{id}` | 删除附件登记并清理本机文件 |
 | GET | `/api/attachments/export.zip` | 导出全部附件包：ZIP 内含 `manifest.json` 与可读取文件，缺失/不可读文件只记入清单；总大小上限 200 MB，限流 6 次/分钟 |
