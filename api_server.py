@@ -11677,6 +11677,9 @@ async def export_health_dossier(
     visit_records = await asyncio.to_thread(
         store.list_visit_records, profile_key, 0, "", 1000
     )
+    attachments = await asyncio.to_thread(
+        store.list_attachments, profile_key, None, None, 1000, 0
+    )
     if profile_key:
         reminders = await asyncio.to_thread(
             store.list_reminders, False, profile_key
@@ -12072,6 +12075,21 @@ async def export_health_dossier(
             )
     else:
         lines.append("- 暂无待办提醒")
+    lines.append("")
+
+    lines.append("## 就医资料")
+    if attachments:
+        for item in attachments[:100]:
+            linked = "已关联" if item.get("ref_id") else "未关联"
+            note = str(item.get("note") or "").strip()
+            note_text = f"，{note}" if note else ""
+            lines.append(
+                f"- {str(item.get('created_at') or '')[:10]} "
+                f"{item.get('original_name') or '附件'}"
+                f"（{item.get('kind_label') or '其他'}，{linked}{note_text}）"
+            )
+    else:
+        lines.append("- 暂无就医资料")
     lines.append("")
 
     lines.append(f"## 近 {days} 天会诊")

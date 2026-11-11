@@ -20,6 +20,29 @@ def client_and_store(tmp_path, monkeypatch):
         store.close()
 
 
+def test_health_dossier_includes_attachment_metadata(client_and_store):
+    client, store = client_and_store
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "a.pdf",
+        "application/pdf", 100, "出院资料",
+    )
+    store.add_attachment(
+        "妈妈", "lab", 0, "化验单.pdf", "b.pdf",
+        "application/pdf", 100, "",
+    )
+
+    response = client.get(
+        "/api/health/dossier.md", params={"profile": "妈妈"}
+    )
+    text = response.text
+
+    assert response.status_code == 200
+    assert "## 就医资料" in text
+    assert "出院小结.pdf（就诊资料，未关联" in text
+    assert "化验单.pdf（化验单，未关联）" in text
+    assert "出院资料" in text
+
+
 def test_health_dossier_markdown(client_and_store):
     client, store = client_and_store
     now = datetime.now()
