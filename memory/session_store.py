@@ -327,7 +327,7 @@ def classify_bp_grade(systolic: Any, diastolic: Any) -> Optional[str]:
     return "normal"
 
 #: 目标为下限的指标（数值越高越好，低于目标视为未达标）。
-LOWER_BOUND_TARGET_METRICS = {"spo2"}
+LOWER_BOUND_TARGET_METRICS = {"spo2", "sleep"}
 
 
 def metric_over_target(
