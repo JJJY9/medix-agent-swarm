@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 import memory
+from core.ratelimit import SlidingWindowLimiter
 from memory.session_store import SessionStore
 
 
@@ -18,6 +19,9 @@ def client_and_store(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "get_session_store", lambda: store)
     attachment_dir = tmp_path / "attachments"
     monkeypatch.setattr(api_server, "ATTACHMENT_DIR", attachment_dir)
+    monkeypatch.setattr(
+        api_server, "attachment_export_limiter", SlidingWindowLimiter(1000)
+    )
     try:
         yield TestClient(api_server.app), store, attachment_dir
     finally:
@@ -92,3 +96,14 @@ def test_export_zip_rejects_oversized_total(
     response = client.get("/api/attachments/export.zip")
     assert response.status_code == 413
     assert "上限" in response.json()["detail"]
+
+
+def test_export_zip_rate_limit(client_and_store, monkeypatch):
+    client, _store, _directory = client_and_store
+    monkeypatch.setattr(
+        api_server, "attachment_export_limiter", SlidingWindowLimiter(1)
+    )
+    assert client.get("/api/attachments/export.zip").status_code == 200
+    limited = client.get("/api/attachments/export.zip")
+    assert limited.status_code == 429
+    assert limited.json()["code"] == "rate_limited"
