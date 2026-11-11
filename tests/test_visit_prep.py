@@ -190,6 +190,45 @@ def test_visit_prep_is_scoped_to_profile(client_and_store):
     assert [row["symptom"] for row in father["symptoms"]] == ["胸闷"]
 
 
+def test_older_critical_metric_not_hidden_by_normal_latest(
+    client_and_store,
+):
+    client, store = client_and_store
+    now = datetime.now()
+    store.add_metric(
+        "妈妈", "spo2", 85,
+        measured_at=_iso(now - timedelta(days=2)),
+    )
+    store.add_metric(
+        "妈妈", "spo2", 98,
+        measured_at=_iso(now.replace(hour=8, minute=0)),
+    )
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    rows = {
+        row["metric"]: row for row in data["abnormal_metrics"]
+    }
+    assert rows["spo2"]["critical"] is True
+    assert rows["spo2"]["value"] == "85"
+    assert rows["spo2"]["measured_at"][:10] == (
+        now - timedelta(days=2)
+    ).strftime("%Y-%m-%d")
+    assert "血氧饱和度 85" in data["text"]
+
+
+def test_active_medication_count_not_truncated(client_and_store):
+    client, store = client_and_store
+    for index in range(25):
+        store.add_medication("妈妈", f"药物{index}")
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    assert data["medication_summary"]["active_count"] == 25
+    assert len(data["medications"]) == 20
+    assert "目前用药（25 种）" in data["text"]
+
+
 def test_visit_prep_clamps_days_and_handles_empty_profile(
     client_and_store,
 ):

@@ -9990,12 +9990,21 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         item["metric"]: item for item in targets if item.get("metric")
     }
     latest_metrics: Dict[str, Dict[str, Any]] = {}
+    critical_metrics: Dict[str, Dict[str, Any]] = {}
     for item in raw_metrics:
         metric = str(item.get("metric") or "")
-        if metric and metric not in latest_metrics:
+        if not metric:
+            continue
+        if metric not in latest_metrics:
             latest_metrics[metric] = item
+        if metric not in critical_metrics and critical_metric_alerts(
+            metric, item.get("value1"), item.get("value2")
+        ):
+            critical_metrics[metric] = item
     abnormal_metrics = []
-    for metric, item in latest_metrics.items():
+    for metric, latest in latest_metrics.items():
+        # 最新一次恢复正常也不能漏掉窗口内更早的危急值
+        item = critical_metrics.get(metric, latest)
         target = target_map.get(metric)
         over_target = False
         if target is not None:
@@ -10297,7 +10306,7 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             )
     if active_medications or logs:
         lines.append("")
-        lines.append(f"三、目前用药（{len(active_medications)} 种）")
+        lines.append(f"三、目前用药（{len(medications)} 种）")
         for item in active_medications:
             detail = " ".join(part for part in (
                 item["dose"], item["frequency"]
@@ -10362,7 +10371,7 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         "symptoms": top_symptoms,
         "medications": active_medications,
         "medication_summary": {
-            "active_count": len(active_medications),
+            "active_count": len(medications),
             "taken_count": taken_count,
             "skipped_count": len(skip_logs),
             "skip_reasons": skip_reasons,
