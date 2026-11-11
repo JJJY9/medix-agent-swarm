@@ -10811,6 +10811,80 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     }
 
 
+@app.get("/api/health/visit-prep/print")
+async def health_visit_prep_print(profile: str = "", days: int = 30):
+    """复诊准备单打印版：单页 HTML，可另存为 PDF。"""
+    import html as html_module
+
+    data = await health_visit_prep(profile=profile, days=days)
+    escape = html_module.escape
+    profile_name = escape(str(data.get("profile") or ""))
+    range_text = escape(
+        f"{data.get('start') or ''} 至 {data.get('end') or ''}"
+    )
+    generated = escape(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    title = escape(f"复诊准备单 · {data.get('profile') or ''}")
+    body_text = escape(str(data.get("text") or ""))
+    html_content = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  :root {{ --ink:#1f2933; --muted:#5b6770; --rule:#d7dde2;
+          --accent:#1f6feb; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; background:#f5f7f9; color:var(--ink);
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "PingFang SC", "Microsoft YaHei", sans-serif; }}
+  .sheet {{ max-width:820px; margin:24px auto; background:#fff;
+            padding:32px 36px; border:1px solid var(--rule);
+            border-radius:12px; }}
+  header {{ display:flex; justify-content:space-between;
+            align-items:flex-start; gap:16px; padding-bottom:12px;
+            border-bottom:2px solid var(--accent); }}
+  h1 {{ margin:0; font-size:22px; }}
+  .meta {{ margin:6px 0 0; color:var(--muted); font-size:13px; }}
+  pre {{ white-space:pre-wrap; overflow-wrap:anywhere;
+         font-family:inherit; font-size:14px; line-height:1.75;
+         margin:18px 0 0; }}
+  footer {{ margin-top:20px; border-top:1px solid var(--rule);
+            padding-top:10px; font-size:12px; color:var(--muted);
+            line-height:1.6; }}
+  .print-hint {{ margin:0 auto 32px; text-align:center;
+                 font-size:12px; color:var(--muted); }}
+  @media print {{
+    body {{ background:#fff; }}
+    .sheet {{ margin:0; border:none; max-width:none; padding:0; }}
+    .print-hint {{ display:none; }}
+  }}
+  @page {{ margin:16mm; }}
+</style>
+</head>
+<body>
+<main class="sheet">
+  <header>
+    <div>
+      <h1>复诊准备单</h1>
+      <p class="meta">档案：{profile_name} · {range_text}</p>
+    </div>
+  </header>
+  <pre>{body_text}</pre>
+  <footer>
+    本准备单由 MediX 根据本机健康记录生成于 {generated}，
+    仅供与医生沟通参考，不构成医疗建议。
+  </footer>
+</main>
+<p class="print-hint">可使用浏览器菜单打印或另存为 PDF。</p>
+</body>
+</html>"""
+    return HTMLResponse(
+        content=html_content,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/health/dossier.md")
 async def export_health_dossier(
     profile: str = "", days: int = 30, allow_unassigned: bool = False

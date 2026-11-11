@@ -14,6 +14,8 @@ def test_visit_prep_panel_exists():
     assert 'id="visit-prep-generate"' in HTML
     assert 'id="visit-prep-copy"' in HTML
     assert 'id="visit-prep-export"' in HTML
+    assert 'id="visit-prep-print"' in HTML
+    assert '>打印<' in HTML
     assert 'id="visit-prep-status"' in HTML
     assert 'id="visit-prep-body"' in HTML
     assert 'id="visit-prep-empty"' in HTML
@@ -76,6 +78,16 @@ def test_visit_prep_gating_and_disabled_state():
     assert "els.visitPrepCopy.disabled = true;" in SCRIPT
     assert "els.visitPrepExport.disabled = true;" in SCRIPT
     assert "if (!profile) {" in SCRIPT
+
+
+def test_visit_prep_print_wiring():
+    assert "printVisitPrep" in SCRIPT
+    assert "/api/health/visit-prep/print?profile=" in SCRIPT
+    assert "打开打印版失败" in SCRIPT
+    assert "请允许弹窗后重试" in SCRIPT
+    assert "可使用浏览器菜单打印或另存为 PDF" in SCRIPT
+    assert "els.visitPrepPrint.addEventListener('click', printVisitPrep);" in SCRIPT
+    assert "URL.revokeObjectURL(url);" in SCRIPT
 
 
 def test_visit_prep_styles_exist():
