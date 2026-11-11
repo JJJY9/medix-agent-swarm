@@ -19,6 +19,8 @@ def test_attachment_panel_exists():
     assert 'id="attachment-more"' in HTML
     assert 'id="attachment-empty"' in HTML
     assert "JPG/PNG/WebP/PDF" in HTML
+    assert "可多选" in HTML
+    assert "multiple" in HTML
 
 
 def test_attachment_upload_and_list_wiring():
@@ -31,7 +33,7 @@ def test_attachment_upload_and_list_wiring():
     assert "requestSeq !== attachmentRequestSeq" in SCRIPT
     assert "new FormData()" in SCRIPT
     assert "form.append('profile', profile);" in SCRIPT
-    assert "form.append('kind', els.attachmentKind.value || 'other');" in SCRIPT
+    assert "form.append('kind', kind);" in SCRIPT
     assert "form.append('file', file);" in SCRIPT
     assert "fetch('/api/attachments'" in SCRIPT
 
@@ -41,8 +43,12 @@ def test_attachment_upload_guards_and_feedback():
     assert "attachmentUploading = true;" in SCRIPT
     assert "file.size > ATTACHMENT_MAX_BYTES" in SCRIPT
     assert "ATTACHMENT_EXTENSIONS.includes(extension)" in SCRIPT
-    assert "setAttachmentStatus('正在上传…');" in SCRIPT
+    assert "正在上传 ${index + 1}/${files.length}…" in SCRIPT
     assert "els.attachmentUpload.addEventListener('click', uploadAttachment);" in SCRIPT
+    assert "ATTACHMENT_MAX_BATCH" in SCRIPT
+    assert "Array.from(" in SCRIPT
+    assert "一次最多上传" in SCRIPT
+    assert "第 ${index + 1} 个文件超过 10 MB" in SCRIPT
 
 
 def test_attachment_pagination_wiring():
