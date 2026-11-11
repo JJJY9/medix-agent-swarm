@@ -7387,9 +7387,22 @@ class SessionStore:
             like = _like_pattern(query)
             conditions.append(
                 "(original_name LIKE ? ESCAPE '\\' "
-                "OR note LIKE ? ESCAPE '\\')"
+                "OR note LIKE ? ESCAPE '\\' "
+                "OR (kind = 'visit' AND ref_id IN ("
+                "SELECT id FROM visit_records "
+                "WHERE diagnosis LIKE ? ESCAPE '\\' "
+                "OR department LIKE ? ESCAPE '\\' "
+                "OR doctor LIKE ? ESCAPE '\\' "
+                "OR facility LIKE ? ESCAPE '\\' "
+                "OR note LIKE ? ESCAPE '\\')) "
+                "OR (kind = 'lab' AND ref_id IN ("
+                "SELECT id FROM lab_results "
+                "WHERE item LIKE ? ESCAPE '\\' "
+                "OR panel LIKE ? ESCAPE '\\' "
+                "OR lab_name LIKE ? ESCAPE '\\' "
+                "OR note LIKE ? ESCAPE '\\')))"
             )
-            params.extend([like, like])
+            params.extend([like] * 11)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(

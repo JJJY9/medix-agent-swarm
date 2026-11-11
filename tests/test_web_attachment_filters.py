@@ -14,7 +14,7 @@ def test_attachment_filter_controls_exist():
     assert '>未关联<' in HTML
     assert 'id="attachment-filter-q"' in HTML
     assert '>全部类型<' in HTML
-    assert 'placeholder="搜索文件名或备注"' in HTML
+    assert 'placeholder="搜索文件名、备注或关联记录"' in HTML
 
 
 def test_attachment_filters_are_sent_to_api():

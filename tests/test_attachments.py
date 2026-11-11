@@ -529,6 +529,53 @@ def test_list_attachments_date_range(client_and_store, monkeypatch):
     ).status_code == 400
 
 
+def test_search_attachments_by_linked_record(client_and_store):
+    client, _store = client_and_store
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈",
+        "visit_date": datetime.now().strftime("%Y-%m-%d"),
+        "diagnosis": "复诊",
+        "department": "心内科",
+        "doctor": "王医生",
+        "facility": "中心医院",
+    }).json()["visit"]
+    linked = _upload(
+        client, kind="visit", ref_id=visit["id"],
+        file_name="复诊资料.pdf",
+    ).json()["attachment"]
+    unlinked = _upload(
+        client, kind="visit", file_name="其他资料.pdf"
+    ).json()["attachment"]
+    lab = client.post("/api/lab-results", json={
+        "profile": "妈妈",
+        "item": "糖化血红蛋白",
+        "value": 7.0,
+        "unit": "%",
+        "tested_at": datetime.now().strftime("%Y-%m-%d"),
+        "panel": "内分泌",
+        "lab_name": "社区医院",
+    }).json()["lab_result"]
+    lab_attachment = _upload(
+        client, kind="lab", ref_id=lab["id"], file_name="化验单.pdf"
+    ).json()["attachment"]
+
+    def search(query):
+        response = client.get(
+            "/api/attachments", params={"profile": "妈妈", "q": query}
+        )
+        assert response.status_code == 200
+        return {row["id"] for row in response.json()["attachments"]}
+
+    assert search("心内科") == {linked["id"]}
+    assert search("复诊") == {linked["id"]}
+    assert search("王医生") == {linked["id"]}
+    assert search("中心医院") == {linked["id"]}
+    assert search("糖化") == {lab_attachment["id"]}
+    assert search("内分泌") == {lab_attachment["id"]}
+    assert search("社区医院") == {lab_attachment["id"]}
+    assert unlinked["id"] not in search("复诊")
+
+
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
     item = _upload(client).json()["attachment"]
