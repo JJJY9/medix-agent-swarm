@@ -20,7 +20,8 @@ def test_attachment_filter_controls_exist():
 def test_attachment_filters_are_sent_to_api():
     assert "attachmentFilterKind" in SCRIPT
     assert "attachmentFilterQ" in SCRIPT
-    assert "if (filterKind) params.set('kind', filterKind);" in SCRIPT
+    assert "} else if (filterKind) {" in SCRIPT
+    assert "params.set('kind', filterKind);" in SCRIPT
     assert "if (filterLinked) params.set('linked', filterLinked);" in SCRIPT
     assert "attachmentFilterLinked" in SCRIPT
     assert "els.attachmentFilterLinked.addEventListener(" in SCRIPT
