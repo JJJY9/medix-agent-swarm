@@ -356,6 +356,14 @@ const els = {
   attachmentList: document.getElementById('attachment-list'),
   attachmentMore: document.getElementById('attachment-more'),
   attachmentEmpty: document.getElementById('attachment-empty'),
+  attachmentPreview: document.getElementById('attachment-preview'),
+  attachmentPreviewTitle: document.getElementById(
+    'attachment-preview-title'
+  ),
+  attachmentPreviewBody: document.getElementById('attachment-preview-body'),
+  attachmentPreviewClose: document.getElementById(
+    'attachment-preview-close'
+  ),
   quickEntryInput: document.getElementById('quick-entry-input'),
   quickEntryParse: document.getElementById('quick-entry-parse'),
   quickEntrySave: document.getElementById('quick-entry-save'),
@@ -14022,6 +14030,7 @@ let attachmentSelectedIds = new Set();
 let attachmentDeleting = false;
 let attachmentLinking = false;
 let attachmentLinkRefRequestSeq = 0;
+let attachmentPreviewUrl = null;
 let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -14820,6 +14829,45 @@ async function editAttachmentNote(item) {
   }
 }
 
+function closeAttachmentPreview() {
+  if (attachmentPreviewUrl) {
+    URL.revokeObjectURL(attachmentPreviewUrl);
+    attachmentPreviewUrl = null;
+  }
+  if (els.attachmentPreviewBody) {
+    els.attachmentPreviewBody.replaceChildren();
+  }
+  if (els.attachmentPreviewTitle) {
+    els.attachmentPreviewTitle.textContent = '';
+  }
+  if (els.attachmentPreview) els.attachmentPreview.hidden = true;
+}
+
+function openAttachmentPreview(item, url) {
+  if (!els.attachmentPreview || !els.attachmentPreviewBody) return false;
+  closeAttachmentPreview();
+  attachmentPreviewUrl = url;
+  if (els.attachmentPreviewTitle) {
+    els.attachmentPreviewTitle.textContent = item.original_name || '附件';
+  }
+  const body = els.attachmentPreviewBody;
+  const mime = String(item.mime || '');
+  if (mime.startsWith('image/')) {
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = item.original_name || '附件';
+    body.appendChild(image);
+  } else {
+    const frame = document.createElement('iframe');
+    frame.src = url;
+    frame.title = item.original_name || '附件预览';
+    body.appendChild(frame);
+  }
+  els.attachmentPreview.hidden = false;
+  if (els.attachmentPreviewClose) els.attachmentPreviewClose.focus();
+  return true;
+}
+
 async function openAttachmentFile(item, download = false) {
   try {
     const res = await fetch(`/api/attachments/${item.id}/file`);
@@ -14836,7 +14884,8 @@ async function openAttachmentFile(item, download = false) {
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
-    } else {
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } else if (!openAttachmentPreview(item, url)) {
       const opened = window.open(url, '_blank');
       if (!opened) {
         URL.revokeObjectURL(url);
@@ -14845,8 +14894,8 @@ async function openAttachmentFile(item, download = false) {
         );
         return;
       }
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     }
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (err) {
     setAttachmentStatus(`打开附件失败：${err.message || err}`, true);
   }
@@ -20071,6 +20120,27 @@ if (els.attachmentUpload) {
     els.attachmentLinkCancel.addEventListener(
       'click', closeAttachmentLinkBar
     );
+  }
+  if (els.attachmentPreview) {
+    els.attachmentPreview.addEventListener('click', (event) => {
+      if (event.target === els.attachmentPreview) {
+        closeAttachmentPreview();
+      }
+    });
+    if (els.attachmentPreviewClose) {
+      els.attachmentPreviewClose.addEventListener(
+        'click', closeAttachmentPreview
+      );
+    }
+    document.addEventListener('keydown', (event) => {
+      if (
+        event.key === 'Escape'
+        && els.attachmentPreview
+        && !els.attachmentPreview.hidden
+      ) {
+        closeAttachmentPreview();
+      }
+    });
   }
   if (els.attachmentExportSelected) {
     els.attachmentExportSelected.addEventListener(

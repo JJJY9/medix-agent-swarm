@@ -116,6 +116,22 @@ def test_attachment_export_selected_wiring():
     assert "exportAttachmentArchive([...attachmentSelectedIds]);" in SCRIPT
     assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
 
+def test_attachment_preview_modal_wiring():
+    assert 'id="attachment-preview"' in HTML
+    assert 'id="attachment-preview-body"' in HTML
+    assert 'id="attachment-preview-close"' in HTML
+    assert "openAttachmentPreview" in SCRIPT
+    assert "closeAttachmentPreview" in SCRIPT
+    assert "attachmentPreviewUrl" in SCRIPT
+    assert "mime.startsWith('image/')" in SCRIPT
+    assert "document.createElement('iframe')" in SCRIPT
+    assert "els.attachmentPreview.hidden = false;" in SCRIPT
+    assert "event.target === els.attachmentPreview" in SCRIPT
+    assert "URL.revokeObjectURL(attachmentPreviewUrl)" in SCRIPT
+    assert ".attachment-preview" in STYLES
+    assert ".attachment-preview[hidden]" in STYLES
+
+
 def test_attachment_size_summary_wiring():
     assert "attachmentTotalCount" in SCRIPT
     assert "attachmentTotalSize" in SCRIPT
