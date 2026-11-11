@@ -14719,6 +14719,17 @@ function renderVisitPrep(data) {
   }
   addSection('待办与复查', todoLines);
 
+  const attachmentLines = (data.attachments || []).map((item) => (
+    `${item.name}（${item.kind}${item.linked ? '，已关联' : ''}）`
+  ));
+  const attachmentCount = Number(data.attachment_count) || 0;
+  if (attachmentCount > attachmentLines.length) {
+    attachmentLines.push(
+      `另有 ${attachmentCount - attachmentLines.length} 份未列出`
+    );
+  }
+  addSection(`携带资料（${attachmentCount} 份）`, attachmentLines);
+
   const questions = data.questions || [];
   if (questions.length) {
     const heading = document.createElement('p');

@@ -547,6 +547,47 @@ def test_visit_prep_direction_and_question_wording(
     assert "ALT" not in data["text"]
 
 
+def test_visit_prep_lists_attachments(client_and_store):
+    client, store = client_and_store
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "visit.pdf",
+        "application/pdf", 100, "",
+    )
+    store.add_attachment(
+        "妈妈", "lab", 123, "化验单.pdf", "lab.pdf",
+        "application/pdf", 100, "",
+    )
+    store.add_attachment(
+        "爸爸", "visit", 0, "爸爸资料.pdf", "father.pdf",
+        "application/pdf", 100, "",
+    )
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    assert data["attachment_count"] == 2
+    assert [row["name"] for row in data["attachments"]] == [
+        "化验单.pdf", "出院小结.pdf",
+    ]
+    assert data["attachments"][0]["linked"] is True
+    assert data["attachments"][1]["linked"] is False
+    assert "携带资料（2 份）" in data["text"]
+    assert "化验单.pdf（化验单，已关联）" in data["text"]
+    assert "出院小结.pdf（就诊资料）" in data["text"]
+    assert "爸爸资料.pdf" not in data["text"]
+
+    for index in range(11):
+        store.add_attachment(
+            "妈妈", "other", 0, f"资料{index}.pdf", f"other{index}.pdf",
+            "application/pdf", 100, "",
+        )
+    many = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    assert many["attachment_count"] == 13
+    assert len(many["attachments"]) == 10
+    assert "另有 3 份未列出" in many["text"]
+
+
 def test_visit_prep_clamps_days_and_handles_empty_profile(
     client_and_store,
 ):

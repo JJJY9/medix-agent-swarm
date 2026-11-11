@@ -42,6 +42,9 @@ def test_visit_prep_sections_and_questions():
     assert "目前用药（" in SCRIPT
     assert "过敏与慢病" in SCRIPT
     assert "待办与复查" in SCRIPT
+    assert "携带资料（" in SCRIPT
+    assert "attachment_count" in SCRIPT
+    assert "另有 ${attachmentCount - attachmentLines.length} 份未列出" in SCRIPT
     assert "建议询问医生" in SCRIPT
     assert "visit-prep-questions" in SCRIPT
     assert "危急值" in SCRIPT
