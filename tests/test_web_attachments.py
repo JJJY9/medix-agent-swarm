@@ -116,6 +116,15 @@ def test_attachment_export_selected_wiring():
     assert "exportAttachmentArchive([...attachmentSelectedIds]);" in SCRIPT
     assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
 
+def test_attachment_size_summary_wiring():
+    assert "attachmentTotalCount" in SCRIPT
+    assert "attachmentTotalSize" in SCRIPT
+    assert "Number(data.total_count)" in SCRIPT
+    assert "Number(data.total_size)" in SCRIPT
+    assert "`· ${attachmentTotalCount} 份`" in SCRIPT
+    assert "formatAttachmentSize(attachmentTotalSize)" in SCRIPT
+
+
 def test_attachment_note_edit_wiring():
     assert "editAttachmentNote" in SCRIPT
     assert "noteEdit.textContent = '备注'" in SCRIPT

@@ -10085,7 +10085,19 @@ async def list_attachments(
             and target.parent == attachment_dir
             and target.is_file()
         )
-    return {"attachments": items}
+    total_count = 0
+    total_size = 0
+    if items:
+        total_count = int(items[0].pop("_total_count", len(items)))
+        total_size = int(items[0].pop("_total_size", 0))
+    for item in items:
+        item.pop("_total_count", None)
+        item.pop("_total_size", None)
+    return {
+        "attachments": items,
+        "total_count": total_count,
+        "total_size": total_size,
+    }
 
 
 @app.post("/api/attachments/link")

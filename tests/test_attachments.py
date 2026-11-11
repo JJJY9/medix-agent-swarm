@@ -604,6 +604,36 @@ def test_list_attachments_sort(client_and_store):
     ).status_code == 400
 
 
+def test_list_attachments_summary_counts(client_and_store):
+    client, _store = client_and_store
+    first_content = b"%PDF-1.4 first"
+    second_content = b"%PDF-1.4 second-content"
+    _upload(
+        client, kind="visit", file_name="一.pdf", content=first_content
+    )
+    _upload(
+        client, kind="other", file_name="二.pdf", content=second_content
+    )
+
+    response = client.get(
+        "/api/attachments", params={"profile": "妈妈", "limit": 1}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["attachments"]) == 1
+    assert data["total_count"] == 2
+    assert data["total_size"] == len(first_content) + len(second_content)
+    assert "_total_count" not in data["attachments"][0]
+    assert "_total_size" not in data["attachments"][0]
+
+    filtered = client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "kind": "other", "limit": 1},
+    ).json()
+    assert filtered["total_count"] == 1
+    assert filtered["total_size"] == len(second_content)
+
+
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
     item = _upload(client).json()["attachment"]
