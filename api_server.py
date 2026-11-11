@@ -7359,7 +7359,7 @@ async def health_search(
     profile: Optional[str] = None,
     limit: int = 50,
 ):
-    """跨健康记录搜索：指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病与提醒。"""
+    """跨健康记录搜索：指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病、提醒与就医资料。"""
     from memory import get_session_store
     from memory.session_store import METRIC_TYPES, metric_context_label
 
@@ -7400,14 +7400,10 @@ async def health_search(
             store.list_conditions, profile, False, None, 100000
         ),
         asyncio.to_thread(store.list_reminders, True, profile),
-        asyncio.to_thread(store.list_all_attachments),
+        asyncio.to_thread(
+            store.list_attachments, profile, None, None, 1000, 0
+        ),
     )
-    if profile is not None:
-        profile_key = _normalized_profile_key(profile)
-        attachments = [
-            row for row in attachments
-            if (row.get("profile") or "") == profile_key
-        ]
 
     buckets: Dict[str, List[Dict[str, Any]]] = {
         type_key: [] for type_key in HEALTH_SEARCH_TYPE_ORDER

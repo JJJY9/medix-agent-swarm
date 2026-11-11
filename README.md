@@ -342,7 +342,7 @@ npm install -D playwright
 | GET | `/api/health/bp-monitoring` | 家庭血压监测：统计晨起/睡前时段完成度、整体与晨晚均值、晨晚收缩压差并列出未测时段（`profile`/`days`/`start`，仅统计记录、不判断达标） |
 | GET | `/api/health/visit-prep` | 复诊准备单：按档案与天数汇总上次就诊、异常指标与化验、症状、用药与未服原因、过敏与慢病、待办复查，并生成问题清单与 Markdown 文本（`profile`/`days`，1–180） |
 | GET | `/api/health/visit-prep/print` | 复诊准备单打印版：单页 HTML，可用浏览器打印或另存为 PDF（`profile`/`days`） |
-| GET | `/api/health/search` | 全局健康搜索：按关键字跨指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病与提醒搜索（`q`/`profile`/`limit`，每类最多返回 20 条） |
+| GET | `/api/health/search` | 全局健康搜索：按关键字跨指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病、提醒与就医资料搜索（`q`/`profile`/`limit`，每类最多返回 20 条） |
 | GET | `/api/health/calendar` | 健康月历：按天汇总指标、症状、用药打卡、会诊、提醒完成情况、疫苗、预约、化验、复查、就诊记录与异常数（超标指标/重度症状/高危会诊/异常化验，`profile`/`month`，格式 YYYY-MM） |
 | GET | `/api/health/calendar/export.csv` | 导出健康月历 CSV（带 BOM，按天列出指标、症状、用药、会诊、提醒、疫苗、预约、化验、复查、就诊与异常，`profile`/`month`） |
 | GET | `/api/health/streak` | 健康记录连续天数：当前连续、最长连续、今日是否记录与近 30 天记录天数（`profile`） |

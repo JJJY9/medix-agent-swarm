@@ -330,3 +330,8 @@ def test_health_search_includes_attachment_metadata(client_and_store):
     assert item["kind"] == "visit"
     assert "心内科复查" in item["detail"]
     assert all("爸爸" not in row["title"] for row in data["results"])
+
+    by_kind = client.get(
+        "/api/health/search", params={"q": "就诊资料", "profile": "妈妈"}
+    ).json()
+    assert by_kind["counts"]["attachment"] == 1

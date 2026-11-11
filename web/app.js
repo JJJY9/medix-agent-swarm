@@ -7567,7 +7567,7 @@ async function locateHealthRecord(item, query = '') {
   if (item.type === 'attachment') {
     if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
     if (els.attachmentFilterQ) {
-      els.attachmentFilterQ.value = query || '';
+      els.attachmentFilterQ.value = item.title || query || '';
       els.attachmentFilterQ.dispatchEvent(
         new Event('input', { bubbles: true })
       );
