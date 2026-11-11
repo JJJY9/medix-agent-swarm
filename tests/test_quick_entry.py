@@ -113,6 +113,9 @@ def test_parse_other_metrics_and_unit_inference():
     assert parse_quick_metric("血氧 97%")["metric"] == "spo2"
     assert parse_quick_metric("血氧饱和度 97%")["metric"] == "spo2"
     assert parse_quick_metric("腰围 85cm")["metric"] == "waist"
+    assert parse_quick_metric("睡眠 7.5 小时")["metric"] == "sleep"
+    assert parse_quick_metric("睡了 8 小时")["value1"] == 8
+    assert parse_quick_metric("睡眠 7.5")["value1"] == 7.5
     assert parse_quick_metric("体重 62.5 kg")["metric"] == "weight"
     assert parse_quick_metric("62.5kg")["metric"] == "weight"
     assert parse_quick_metric("血压 150/95 mmHg")["metric"] == "bp"
