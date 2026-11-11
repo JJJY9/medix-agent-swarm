@@ -7289,6 +7289,7 @@ const HEALTH_SEARCH_LABELS = {
   allergy: '过敏',
   condition: '慢病',
   reminder: '提醒',
+  attachment: '资料',
 };
 
 let healthSearchTimer = null;
@@ -7563,6 +7564,24 @@ async function locateHealthRecord(item, query = '') {
   hideHealthSearchResults();
   if (els.healthSearchInput) els.healthSearchInput.value = '';
   if (els.healthSearchClear) els.healthSearchClear.hidden = true;
+  if (item.type === 'attachment') {
+    if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
+    if (els.attachmentFilterQ) {
+      els.attachmentFilterQ.value = query || '';
+      els.attachmentFilterQ.dispatchEvent(
+        new Event('input', { bubbles: true })
+      );
+    }
+    const section = document.getElementById('attachments-section');
+    if (section) {
+      section.open = true;
+      section.scrollIntoView({ block: 'nearest' });
+    }
+    setAttachmentStatus(
+      `已定位附件：${item.title || '附件'}`
+    );
+    return;
+  }
   if (item.type === 'metric') {
     if (els.metricType && item.metric) {
       els.metricType.value = item.metric;

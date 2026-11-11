@@ -22,6 +22,7 @@ def test_search_requests_scoped_endpoint():
     assert "renderHealthSearchResults" in SCRIPT
     assert "renderHealthSearchItem" in SCRIPT
     assert "HEALTH_SEARCH_LABELS" in SCRIPT
+    assert "attachment: '资料'" in SCRIPT
     assert "event.isComposing" in SCRIPT
 
 
@@ -42,6 +43,9 @@ def test_result_click_locates_record():
     ):
         assert section_id in SCRIPT
     assert "openReminders()" in SCRIPT
+    assert "item.type === 'attachment'" in SCRIPT
+    assert "attachments-section" in SCRIPT
+    assert "已定位附件" in SCRIPT
     assert "els.remindersShowDone.checked = Boolean(item.done)" in SCRIPT
     assert "scrollIntoView({ block: 'start' })" in SCRIPT
 

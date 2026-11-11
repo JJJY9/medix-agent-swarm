@@ -305,3 +305,28 @@ def test_health_search_sorted_by_time_desc(client_and_store):
     assert [item["at"][:10] for item in data["results"]] == [
         _date(0), _date(-2),
     ]
+
+
+def test_health_search_includes_attachment_metadata(client_and_store):
+    client, store = client_and_store
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "a.pdf",
+        "application/pdf", 100, "心内科复查",
+    )
+    store.add_attachment(
+        "爸爸", "visit", 0, "爸爸出院资料.pdf", "b.pdf",
+        "application/pdf", 100, "",
+    )
+
+    data = client.get(
+        "/api/health/search", params={"q": "出院", "profile": "妈妈"}
+    ).json()
+
+    assert data["counts"]["attachment"] == 1
+    item = next(
+        row for row in data["results"] if row["type"] == "attachment"
+    )
+    assert item["title"] == "出院小结.pdf"
+    assert item["kind"] == "visit"
+    assert "心内科复查" in item["detail"]
+    assert all("爸爸" not in row["title"] for row in data["results"])

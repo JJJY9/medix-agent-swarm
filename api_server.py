@@ -7334,6 +7334,7 @@ HEALTH_SEARCH_TYPE_LABELS = {
     "allergy": "过敏",
     "condition": "慢病",
     "reminder": "提醒",
+    "attachment": "资料",
 }
 HEALTH_SEARCH_TYPE_ORDER = tuple(HEALTH_SEARCH_TYPE_LABELS)
 HEALTH_SEARCH_MAX_QUERY_CHARS = 80
@@ -7372,7 +7373,7 @@ async def health_search(
     (
         metrics, symptoms, medications, labs, vaccinations,
         appointments, care_items, visits, allergies, conditions,
-        reminders,
+        reminders, attachments,
     ) = await asyncio.gather(
         asyncio.to_thread(
             store.list_metrics, profile, None, 100000, 0, 0, ""
@@ -7399,7 +7400,14 @@ async def health_search(
             store.list_conditions, profile, False, None, 100000
         ),
         asyncio.to_thread(store.list_reminders, True, profile),
+        asyncio.to_thread(store.list_all_attachments),
     )
+    if profile is not None:
+        profile_key = _normalized_profile_key(profile)
+        attachments = [
+            row for row in attachments
+            if (row.get("profile") or "") == profile_key
+        ]
 
     buckets: Dict[str, List[Dict[str, Any]]] = {
         type_key: [] for type_key in HEALTH_SEARCH_TYPE_ORDER
@@ -7594,6 +7602,26 @@ async def health_search(
                 row.get("note") or "",
             ) if part),
             row.get("visit_date"),
+        )
+
+    for row in attachments:
+        matched = key in _health_search_text(
+            row.get("original_name"), row.get("note"),
+            row.get("kind_label"), row.get("profile"),
+        )
+        add(
+            "attachment", row, matched,
+            row.get("original_name") or "附件",
+            " · ".join(part for part in (
+                row.get("profile") or "",
+                row.get("kind_label") or "",
+                row.get("note") or "",
+            ) if part),
+            row.get("created_at"),
+            {
+                "kind": row.get("kind") or "other",
+                "ref_id": int(row.get("ref_id") or 0),
+            },
         )
 
     severity_labels = {"mild": "轻度", "moderate": "中度", "severe": "重度"}
