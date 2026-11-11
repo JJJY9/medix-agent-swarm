@@ -8242,6 +8242,9 @@ function renderTodayMeds(medications) {
       Number(item.today_count) > 0
         ? `今日 ${Number(item.today_count)} 次`
         : '今日未打卡',
+      Number(item.skipped_today) > 0
+        ? `今日未服 ${Number(item.skipped_today)} 次`
+        : '',
       stockAlert,
       expiryAlert,
     ].filter(Boolean).join(' · ');
@@ -8657,6 +8660,10 @@ function renderFamilyOverview(data) {
       if (medications.adherence && medications.adherence.expected) {
         chip.textContent += ` · 依从率 ${medications.adherence.rate}%`;
       }
+      if (Number(medications.skipped_today) > 0) {
+        chip.textContent +=
+          ` · 今日未服 ${Number(medications.skipped_today)} 次`;
+      }
       const details = [];
       if (medications.names && medications.names.length) {
         details.push(medications.names.join('、'));
@@ -8809,6 +8816,10 @@ function familyOverviewText(data) {
       let medText = `用药 今日 ${medications.taken_today || 0} 次`;
       if (medications.adherence && medications.adherence.expected) {
         medText += `，依从率 ${medications.adherence.rate}%`;
+      }
+      if (Number(medications.skipped_today) > 0) {
+        medText +=
+          `，今日未服 ${Number(medications.skipped_today)} 次`;
       }
       parts.push(medText);
     }
@@ -12655,6 +12666,17 @@ let medicationLogRequestSeq = 0;
 let medicationItemsCache = [];
 let medicationLogItemsCache = [];
 let medicationLogBusy = new Set();
+let medicationSkipBusy = new Set();
+let medicationSkipDraft = null;
+let medicationSkipFocusId = 0;
+const MEDICATION_SKIP_REASON_OPTIONS = [
+  { key: 'forget', label: '忘记' },
+  { key: 'side_effect', label: '副作用' },
+  { key: 'worry_side_effect', label: '担心副作用' },
+  { key: 'cost', label: '费用' },
+  { key: 'inconvenient', label: '不方便' },
+  { key: 'other', label: '其他' },
+];
 let medicationReminderBusy = false;
 let medicationHistoryCache = new Map();
 let medicationHistoryOpen = new Set();
@@ -12819,6 +12841,14 @@ function renderMedications(items) {
     if (item.last_taken_at) {
       metaParts.push(`最近 ${formatTime(item.last_taken_at)}`);
     }
+    if (Number(item.skipped_range) > 0) {
+      const reason = item.last_skip_reason_label
+        ? `（最近：${item.last_skip_reason_label}）`
+        : '';
+      metaParts.push(
+        `近 ${rangeDays} 天未服 ${Number(item.skipped_range)} 次${reason}`
+      );
+    }
     if (item.started_at) {
       metaParts.push(`开始 ${item.started_at}`);
     }
@@ -12877,6 +12907,16 @@ function renderMedications(items) {
     log.textContent = '打卡';
     log.setAttribute('aria-label', `记录一次用药：${item.name}`);
     log.addEventListener('click', () => logMedication(item));
+
+    const skip = document.createElement('button');
+    skip.type = 'button';
+    skip.className = 'metric-edit';
+    skip.textContent = '未服';
+    skip.setAttribute('aria-label', `记录一次未服：${item.name}`);
+    skip.setAttribute('aria-expanded', 'false');
+    skip.addEventListener(
+      'click', () => openMedicationSkipForm(item, li, skip)
+    );
 
     const history = document.createElement('button');
     history.type = 'button';
@@ -12939,7 +12979,7 @@ function renderMedications(items) {
     del.setAttribute('aria-label', `删除药物：${item.name}`);
     del.addEventListener('click', () => deleteMedication(item));
 
-    actions.append(toggle, log, history, remind);
+    actions.append(toggle, log, skip, history, remind);
     if (restock) actions.appendChild(restock);
     if (stockReminder) actions.appendChild(stockReminder);
     if (expiryReminder) actions.appendChild(expiryReminder);
@@ -12955,6 +12995,16 @@ function renderMedications(items) {
     actions.append(edit, del);
     li.append(main, actions);
     els.medicationList.appendChild(li);
+    skip.setAttribute(
+      'aria-controls', `medication-skip-form-${item.id}`
+    );
+    if (medicationSkipDraft && medicationSkipDraft.id === item.id) {
+      attachMedicationSkipForm(item, li, skip, medicationSkipDraft);
+    }
+    if (medicationSkipFocusId === item.id) {
+      medicationSkipFocusId = 0;
+      skip.focus();
+    }
   }
 }
 
@@ -13032,13 +13082,18 @@ function renderMedicationLogs(items) {
 
     const title = document.createElement('strong');
     title.className = 'metric-value';
-    title.textContent = item.medication_name || '已删除药物';
+    title.textContent = item.skipped
+      ? `${item.medication_name || '已删除药物'}（未服）`
+      : (item.medication_name || '已删除药物');
 
     const meta = document.createElement('span');
     meta.className = 'metric-meta';
     meta.textContent = [
       formatTime(item.taken_at),
       item.medication_dose,
+      item.skipped
+        ? `未服原因：${item.skip_reason_label || '其他'}`
+        : '',
       item.profile || '未指定档案',
     ].filter(Boolean).join(' · ');
 
@@ -13058,7 +13113,8 @@ function renderMedicationLogs(items) {
     del.textContent = '删除';
     del.setAttribute(
       'aria-label',
-      `删除打卡记录：${item.medication_name || ''} ${formatTime(item.taken_at)}`
+      `${item.skipped ? '删除未服记录' : '删除打卡记录'}：`
+      + `${item.medication_name || ''} ${formatTime(item.taken_at)}`
     );
     del.addEventListener('click', () => deleteMedicationLogItem(item));
     actions.appendChild(del);
@@ -13092,25 +13148,28 @@ async function loadMedicationLogs() {
 
 async function deleteMedicationLogItem(item) {
   const label = `${item.medication_name || '药物'} ${formatTime(item.taken_at)}`;
-  if (!window.confirm(`删除打卡记录「${label}」？`)) return;
+  const kind = item.skipped ? '未服记录' : '打卡记录';
+  if (!window.confirm(`删除${kind}「${label}」？`)) return;
   try {
     const res = await fetch(`/api/medication-logs/${item.id}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
-    const reopenNote = await reopenLinkedMedicationReminder(
-      item.medication_name || '', item.profile || '', item.taken_at,
-      item.medication_id
-    );
+    const reopenNote = item.skipped
+      ? ''
+      : await reopenLinkedMedicationReminder(
+        item.medication_name || '', item.profile || '', item.taken_at,
+        item.medication_id
+      );
     const message =
-      '已删除打卡记录。' + (reopenNote ? ` ${reopenNote}` : '');
+      `已删除${kind}。` + (reopenNote ? ` ${reopenNote}` : '');
     setMedicationStatus(message);
     setTodayMedsStatus(message);
     await Promise.all([loadMedications(), loadMedicationLogs()]);
     await refreshOverview();
     refreshReminderBadge();
   } catch (err) {
-    setMedicationStatus(`删除打卡记录失败：${err.message || err}`, true);
+    setMedicationStatus(`删除${kind}失败：${err.message || err}`, true);
   }
 }
 
@@ -13177,16 +13236,24 @@ function weeklySummaryLines(data) {
 
   const meds = data.medications;
   const doses = Number(meds.doses) || 0;
+  const skippedDoses = Number(meds.skips) || 0;
   let medicationText = '没有在用药物';
   if (meds.active) {
     medicationText = `在用 ${meds.active} 种，${rangeDaysLabel(days)}打卡 ${doses} 次`;
     if (meds.adherence && meds.adherence.expected) {
       medicationText += `，依从率 ${meds.adherence.rate}%`;
     }
-  } else if (doses > 0) {
+  } else if (doses > 0 || skippedDoses > 0) {
     medicationText = `没有在用药物，${rangeDaysLabel(days)}打卡 ${doses} 次`;
   }
-  if (meds.active || doses > 0) {
+  if (skippedDoses > 0) {
+    const reasons = (meds.skip_reasons || [])
+      .map((item) => `${item.label} ${item.count} 次`)
+      .join('、');
+    medicationText += `，未服 ${skippedDoses} 次`
+      + (reasons ? `（${reasons}）` : '');
+  }
+  if (meds.active || doses > 0 || skippedDoses > 0) {
     const details = [];
     if (meds.by_medication && meds.by_medication.length) {
       details.push(
@@ -14530,6 +14597,123 @@ async function reopenLinkedMedicationReminder(
   }
 }
 
+function attachMedicationSkipForm(item, li, button, draft) {
+  const main = li.querySelector('.metric-main');
+  if (!main) return null;
+  const form = document.createElement('div');
+  form.className = 'medication-skip-form';
+  form.id = `medication-skip-form-${item.id}`;
+  const label = document.createElement('span');
+  label.className = 'metric-note';
+  label.textContent = '未服原因：';
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', `未服原因：${item.name}`);
+  for (const option of MEDICATION_SKIP_REASON_OPTIONS) {
+    const node = document.createElement('option');
+    node.value = option.key;
+    node.textContent = option.label;
+    select.appendChild(node);
+  }
+  select.value = (draft && draft.reason) || 'forget';
+  const note = document.createElement('input');
+  note.type = 'text';
+  note.maxLength = 300;
+  note.placeholder = '备注（可选）';
+  note.setAttribute('aria-label', `未服备注：${item.name}`);
+  note.value = (draft && draft.note) || '';
+  const updateDraft = () => {
+    if (medicationSkipDraft && medicationSkipDraft.id === item.id) {
+      medicationSkipDraft.reason = select.value;
+      medicationSkipDraft.note = note.value;
+    }
+  };
+  select.addEventListener('change', updateDraft);
+  note.addEventListener('input', updateDraft);
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'btn-quiet';
+  save.textContent = '保存未服';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn-quiet';
+  cancel.textContent = '取消';
+  cancel.addEventListener('click', () => {
+    medicationSkipDraft = null;
+    form.remove();
+    if (button) {
+      button.setAttribute('aria-expanded', 'false');
+      button.focus();
+    }
+  });
+  save.addEventListener(
+    'click',
+    () => saveMedicationSkip(
+      item, select.value, note.value, save, form, button
+    )
+  );
+  form.append(label, select, note, save, cancel);
+  main.appendChild(form);
+  if (button) button.setAttribute('aria-expanded', 'true');
+  return form;
+}
+
+function openMedicationSkipForm(item, li, button) {
+  const main = li.querySelector('.metric-main');
+  const existing = main && main.querySelector('.medication-skip-form');
+  if (existing) {
+    medicationSkipDraft = null;
+    existing.remove();
+    if (button) {
+      button.setAttribute('aria-expanded', 'false');
+      button.focus();
+    }
+    return;
+  }
+  medicationSkipDraft = { id: item.id, reason: 'forget', note: '' };
+  const form = attachMedicationSkipForm(
+    item, li, button, medicationSkipDraft
+  );
+  const select = form && form.querySelector('select');
+  if (select) select.focus();
+}
+
+async function saveMedicationSkip(
+  item, reason, note, button, form, skipButton
+) {
+  if (medicationSkipBusy.has(item.id)) return;
+  medicationSkipBusy.add(item.id);
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch(`/api/medications/${item.id}/skip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, note }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const reasonLabel =
+      (data.log && data.log.skip_reason_label) || '其他';
+    const message = `已记录未服：${item.name}（${reasonLabel}）。`;
+    medicationSkipDraft = null;
+    medicationSkipFocusId = item.id;
+    if (form) form.remove();
+    if (skipButton) skipButton.setAttribute('aria-expanded', 'false');
+    setMedicationStatus(message);
+    setTodayMedsStatus(message);
+    await loadMedications();
+    loadMedicationLogs();
+    await refreshOverview();
+    refreshReminderBadge();
+  } catch (err) {
+    setMedicationStatus(`记录未服失败：${err.message || err}`, true);
+  } finally {
+    medicationSkipBusy.delete(item.id);
+    if (button) button.disabled = false;
+  }
+}
+
 async function logMedication(item) {
   if (medicationLogBusy.has(item.id)) return;
   medicationLogBusy.add(item.id);
@@ -14640,10 +14824,11 @@ async function undoMedicationLog(item) {
   medicationLogBusy.add(item.id);
   try {
     const listRes = await fetch(
-      `/api/medications/${item.id}/logs?limit=1`
+      `/api/medications/${item.id}/logs?limit=20`
     );
     if (!listRes.ok) throw new Error(`服务返回 ${listRes.status}`);
-    const logs = (await listRes.json()).logs || [];
+    const logs = ((await listRes.json()).logs || [])
+      .filter((log) => !log.skipped);
     if (!logs.length) {
       setMedicationStatus('没有可撤销的用药记录。');
       return;

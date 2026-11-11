@@ -472,6 +472,15 @@ MAX_MEDICATION_TEXT_LENGTH = 60
 MAX_MEDICATION_STOCK = 1000000.0
 MAX_MEDICATION_UNIT_LENGTH = 10
 MAX_MEDICATION_STOP_REASON_LENGTH = 200
+#: 未服原因（键 → 中文名）
+MEDICATION_SKIP_REASONS = {
+    "forget": "忘记",
+    "side_effect": "副作用",
+    "worry_side_effect": "担心副作用",
+    "cost": "费用",
+    "inconvenient": "不方便",
+    "other": "其他",
+}
 
 
 def _normalize_medication_quantity(
@@ -1671,6 +1680,8 @@ class SessionStore:
                     taken_at      TEXT NOT NULL,
                     note          TEXT NOT NULL DEFAULT '',
                     stock_delta   REAL NOT NULL DEFAULT 0,
+                    skipped       INTEGER NOT NULL DEFAULT 0,
+                    skip_reason   TEXT NOT NULL DEFAULT '',
                     created_at    TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_medication_logs_med_time
@@ -1981,6 +1992,14 @@ class SessionStore:
             if "stock_delta" not in log_columns:
                 self._conn.execute(
                     "ALTER TABLE medication_logs ADD COLUMN stock_delta REAL NOT NULL DEFAULT 0"
+                )
+            if "skipped" not in log_columns:
+                self._conn.execute(
+                    "ALTER TABLE medication_logs ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0"
+                )
+            if "skip_reason" not in log_columns:
+                self._conn.execute(
+                    "ALTER TABLE medication_logs ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''"
                 )
 
             # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
@@ -3715,20 +3734,35 @@ class SessionStore:
                             "name": row["name"],
                         }
                     note = " ".join(str(raw.get("note") or "").split())[:300]
+                    skipped_flag = 1 if str(
+                        raw.get("skipped")
+                    ).lower() in {"1", "true", "on", "yes"} else 0
+                    reason_key = ""
+                    if skipped_flag:
+                        reason_key = str(
+                            raw.get("skip_reason") or ""
+                        ).strip().lower()
+                        if reason_key not in MEDICATION_SKIP_REASONS:
+                            reason_key = "other"
                     created_at = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if not created_at:
                         created_at = now
-                    log_key = (target["id"], taken_at, note)
+                    log_key = (
+                        target["id"], taken_at, note, skipped_flag,
+                    )
                     if log_key not in existing_log_counts:
                         count_row = self._conn.execute(
                             """
                             SELECT COUNT(*) AS total FROM medication_logs
                              WHERE medication_id = ? AND taken_at = ?
-                               AND note = ?
+                               AND note = ? AND skipped = ?
                             """,
-                            (target["id"], taken_at, note),
+                            (
+                                target["id"], taken_at, note,
+                                skipped_flag,
+                            ),
                         ).fetchone()
                         existing_log_counts[log_key] = int(
                             count_row["total"] if count_row else 0
@@ -3747,8 +3781,8 @@ class SessionStore:
                         """
                         INSERT INTO medication_logs(
                             medication_id, profile, taken_at, note,
-                            stock_delta, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            stock_delta, skipped, skip_reason, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             target["id"],
@@ -3756,6 +3790,8 @@ class SessionStore:
                             taken_at,
                             note,
                             stock_delta,
+                            skipped_flag,
+                            reason_key,
                             created_at,
                         ),
                     )
@@ -6612,30 +6648,63 @@ class SessionStore:
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
                             WHERE l.medication_id = medications.id
+                              AND l.skipped = 0
                               AND substr(l.taken_at, 1, 10) <= ?
                        ) AS last_taken_at,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
+                              AND l.skipped = 0
                               AND substr(l.taken_at, 1, 10) = ?
                        ) AS today_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
+                              AND l.skipped = 0
                               AND substr(l.taken_at, 1, 10) >= ?
                               AND substr(l.taken_at, 1, 10) <= ?
                        ) AS week_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
+                              AND l.skipped = 0
                               AND substr(l.taken_at, 1, 10) >= ?
                               AND substr(l.taken_at, 1, 10) <= ?
-                       ) AS range_count
+                       ) AS range_count,
+                       (
+                           SELECT COUNT(*) FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND l.skipped = 1
+                              AND substr(l.taken_at, 1, 10) = ?
+                       ) AS skipped_today,
+                       (
+                           SELECT COUNT(*) FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND l.skipped = 1
+                              AND substr(l.taken_at, 1, 10) >= ?
+                              AND substr(l.taken_at, 1, 10) <= ?
+                       ) AS skipped_range,
+                       (
+                           SELECT MAX(taken_at) FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND l.skipped = 1
+                              AND substr(l.taken_at, 1, 10) <= ?
+                       ) AS last_skip_at,
+                       (
+                           SELECT l.skip_reason FROM medication_logs l
+                            WHERE l.medication_id = medications.id
+                              AND l.skipped = 1
+                              AND substr(l.taken_at, 1, 10) <= ?
+                            ORDER BY l.taken_at DESC, l.id DESC LIMIT 1
+                       ) AS last_skip_reason
                   FROM medications{where}
                  ORDER BY active DESC, name ASC, id ASC
                  LIMIT ? OFFSET ?
                 """,
-                [today, today, week_cutoff, today, range_cutoff, today]
+                [
+                    today, today, week_cutoff, today, range_cutoff, today,
+                    today, range_cutoff, today, today, today,
+                ]
                 + params
                 + [limit, offset],
             ).fetchall()
@@ -6648,6 +6717,13 @@ class SessionStore:
                 "week_count": int(row["week_count"] or 0),
                 "range_count": int(row["range_count"] or 0),
                 "range_days": days,
+                "skipped_today": int(row["skipped_today"] or 0),
+                "skipped_range": int(row["skipped_range"] or 0),
+                "last_skip_at": row["last_skip_at"] or "",
+                "last_skip_reason": row["last_skip_reason"] or "",
+                "last_skip_reason_label": MEDICATION_SKIP_REASONS.get(
+                    row["last_skip_reason"] or "", ""
+                ),
                 "last_taken_at": row["last_taken_at"] or "",
                 "expected_week_doses": _expected_week_doses(
                     row["frequency"], row["created_at"], now
@@ -6942,12 +7018,20 @@ class SessionStore:
         medication_id: int,
         taken_at: str = "",
         note: str = "",
+        skipped: Any = False,
+        skip_reason: str = "",
     ) -> Optional[Dict[str, Any]]:
-        """记录一次用药；药物不存在或时间无效时返回 None。"""
+        """记录一次用药或未服；药物不存在、时间或原因无效时返回 None。"""
         try:
             medication_id = int(medication_id)
         except (TypeError, ValueError, OverflowError):
             return None
+        skipped_flag = 1 if str(skipped).lower() in {"1", "true", "on", "yes"} else 0
+        reason_key = ""
+        if skipped_flag:
+            reason_key = str(skip_reason or "").strip().lower()
+            if reason_key not in MEDICATION_SKIP_REASONS:
+                return None
         taken_at = str(taken_at or "").strip()[:40]
         if not taken_at:
             taken_at = datetime.now().isoformat(timespec="minutes")
@@ -6969,7 +7053,7 @@ class SessionStore:
             stock = medication["stock"]
             stock_delta = 0.0
             stock_after: Optional[float] = None
-            if stock is not None:
+            if not skipped_flag and stock is not None:
                 stock_before = max(0.0, float(stock))
                 stock_delta = -min(1.0, stock_before)
                 stock_after = round(stock_before + stock_delta, 2)
@@ -6985,8 +7069,8 @@ class SessionStore:
                 """
                 INSERT INTO medication_logs(
                     medication_id, profile, taken_at, note, stock_delta,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    skipped, skip_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     medication["id"],
@@ -6994,6 +7078,8 @@ class SessionStore:
                     taken_at,
                     note,
                     stock_delta,
+                    skipped_flag,
+                    reason_key,
                     now,
                 ),
             )
@@ -7006,6 +7092,9 @@ class SessionStore:
             "note": note,
             "stock_delta": stock_delta,
             "stock_after": stock_after,
+            "skipped": bool(skipped_flag),
+            "skip_reason": reason_key,
+            "skip_reason_label": MEDICATION_SKIP_REASONS.get(reason_key, ""),
             "created_at": now,
         }
 
@@ -7047,7 +7136,7 @@ class SessionStore:
             rows = self._conn.execute(
                 f"""
                 SELECT l.id, l.medication_id, l.profile, l.taken_at, l.note,
-                       l.stock_delta, l.created_at,
+                       l.stock_delta, l.skipped, l.skip_reason, l.created_at,
                        m.name AS medication_name,
                        m.dose AS medication_dose
                   FROM medication_logs l
@@ -7057,7 +7146,13 @@ class SessionStore:
                 """,
                 params + [limit, offset],
             ).fetchall()
-        return [dict(row) for row in rows]
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            row["skipped"] = bool(row.get("skipped"))
+            row["skip_reason_label"] = MEDICATION_SKIP_REASONS.get(
+                row.get("skip_reason") or "", ""
+            )
+        return rows
 
     def get_medication_log(self, log_id: int) -> Optional[Dict[str, Any]]:
         try:
@@ -7068,7 +7163,7 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT l.id, l.medication_id, l.profile, l.taken_at, l.note,
-                       l.stock_delta, l.created_at,
+                       l.stock_delta, l.skipped, l.skip_reason, l.created_at,
                        m.name AS medication_name
                   FROM medication_logs l
                   LEFT JOIN medications m ON m.id = l.medication_id
@@ -7076,7 +7171,14 @@ class SessionStore:
                 """,
                 (log_id,),
             ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        result = dict(row)
+        result["skipped"] = bool(result.get("skipped"))
+        result["skip_reason_label"] = MEDICATION_SKIP_REASONS.get(
+            result.get("skip_reason") or "", ""
+        )
+        return result
 
     def delete_medication_log(self, log_id: int) -> bool:
         try:
