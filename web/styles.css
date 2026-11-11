@@ -3124,6 +3124,11 @@ html[data-theme="dark"] .calc-status.error {
   margin: 0 0 8px;
 }
 
+.attachment-integrity .metric-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 #attachment-integrity-status.error {
   color: var(--triage-1);
 }
