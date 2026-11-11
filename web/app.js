@@ -15287,6 +15287,7 @@ const TIMELINE_TYPE_LABELS = {
   care: '复查',
   visit: '就诊记录',
   consultation: '会诊',
+  attachment: '资料',
 };
 
 function renderTimeline(data) {
@@ -15408,6 +15409,26 @@ function renderTimeline(data) {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           openConsultation();
+        }
+      });
+    }
+    if (event.type === 'attachment' && event.id) {
+      li.classList.add('timeline-item-link');
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      li.title = '点击定位就医资料';
+      const openAttachment = () => {
+        locateHealthRecord({
+          type: 'attachment',
+          profile: event.profile || '',
+          title: event.title || '',
+        }, event.title || '');
+      };
+      li.addEventListener('click', openAttachment);
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openAttachment();
         }
       });
     }

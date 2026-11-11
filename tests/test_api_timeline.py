@@ -165,6 +165,29 @@ def test_timeline_filters_single_day(client_and_store):
     assert invalid.status_code == 400
 
 
+def test_timeline_includes_attachments(client_and_store):
+    client, store = client_and_store
+    store.add_attachment(
+        "妈妈", "visit", 0, "出院小结.pdf", "a.pdf",
+        "application/pdf", 100, "心内科复查",
+    )
+    store.add_attachment(
+        "爸爸", "visit", 0, "爸爸资料.pdf", "b.pdf",
+        "application/pdf", 100, "",
+    )
+    data = client.get(
+        "/api/timeline",
+        params={"profile": "妈妈", "type": "attachment"},
+    ).json()
+    assert data["total"] == 1
+    event = data["events"][0]
+    assert event["type"] == "attachment"
+    assert event["title"] == "出院小结.pdf"
+    assert "就诊资料" in event["value"]
+    assert "心内科复查" in event["value"]
+    assert event["kind"] == "visit"
+
+
 def test_timeline_csv_export(client_and_store):
     client, _store = client_and_store
     now = datetime.now().isoformat(timespec="minutes")

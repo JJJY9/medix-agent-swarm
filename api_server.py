@@ -6974,6 +6974,9 @@ async def health_timeline(
     raw_visit_records = await asyncio.to_thread(
         store.list_visit_records, profile, 0, "", 100000
     )
+    raw_attachments = await asyncio.to_thread(
+        store.list_attachments, profile, None, None, 1000, 0
+    )
     session_end = (
         f"{day}T23:59:59" if day
         else datetime.now().replace(
@@ -7226,6 +7229,27 @@ async def health_timeline(
             "alert": False,
         })
 
+    for item in raw_attachments:
+        at = str(item.get("created_at") or "")
+        if not in_window(at):
+            continue
+        value = " · ".join(part for part in (
+            item.get("kind_label") or "",
+            item.get("note") or "",
+        ) if part)
+        events.append({
+            "type": "attachment",
+            "at": at,
+            "id": item.get("id"),
+            "profile": item.get("profile", ""),
+            "title": item.get("original_name") or "附件",
+            "value": value,
+            "note": "",
+            "alert": False,
+            "kind": item.get("kind") or "other",
+            "ref_id": int(item.get("ref_id") or 0),
+        })
+
     for item in raw_sessions:
         at = str(item.get("created_at") or "")
         if not in_window(at):
@@ -7258,6 +7282,7 @@ async def health_timeline(
     if type in {
         "metric", "symptom", "medication", "vaccination",
         "appointment", "lab", "care", "visit", "consultation",
+        "attachment",
     }:
         events = [event for event in events if event.get("type") == type]
     if only_alert:
@@ -7319,6 +7344,7 @@ async def export_timeline_csv(
         "care": "复查",
         "visit": "就诊记录",
         "consultation": "会诊",
+        "attachment": "资料",
     }
     events = data["events"]
     rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "超标"]]
