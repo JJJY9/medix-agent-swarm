@@ -7500,6 +7500,26 @@ class SessionStore:
             )
         return int(cursor.rowcount or 0)
 
+    def update_attachment_note(
+        self, attachment_id: int, note: str
+    ) -> Optional[Dict[str, Any]]:
+        """更新附件备注并返回最新记录；备注空白会清空。"""
+        try:
+            attachment_id = int(attachment_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if attachment_id <= 0 or attachment_id > MAX_SQLITE_INT:
+            return None
+        note = " ".join(str(note or "").split())[:300]
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE attachments SET note = ? WHERE id = ?",
+                (note, attachment_id),
+            )
+        if int(cursor.rowcount or 0) <= 0:
+            return None
+        return self.get_attachment(attachment_id)
+
     def delete_attachment(
         self, attachment_id: int
     ) -> Optional[Dict[str, Any]]:

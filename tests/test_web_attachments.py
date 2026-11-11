@@ -115,3 +115,12 @@ def test_attachment_export_selected_wiring():
     assert "exportSelectedAttachments" in SCRIPT
     assert "exportAttachmentArchive([...attachmentSelectedIds]);" in SCRIPT
     assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
+
+def test_attachment_note_edit_wiring():
+    assert "editAttachmentNote" in SCRIPT
+    assert "noteEdit.textContent = '备注'" in SCRIPT
+    assert "`编辑附件备注：${item.original_name}`" in SCRIPT
+    assert "method: 'PATCH'" in SCRIPT
+    assert "body: JSON.stringify({ note })" in SCRIPT
+    assert "附件备注已保存。" in SCRIPT
+    assert "附件备注不能超过 300 字。" in SCRIPT

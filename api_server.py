@@ -243,6 +243,10 @@ class AttachmentLinkRequest(StrictRequestModel):
     )
 
 
+class AttachmentNoteRequest(StrictRequestModel):
+    note: str = Field("", max_length=300, description="附件备注")
+
+
 class BulkSessionsRequest(StrictRequestModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
@@ -10121,6 +10125,28 @@ async def link_attachments(payload: AttachmentLinkRequest):
         ",".join(str(value) for value in ids),
     )
     return {"ok": True, "updated": updated, "ref_id": payload.ref_id}
+
+
+@app.patch("/api/attachments/{attachment_id}")
+async def update_attachment_note(
+    attachment_id: SafeIntPath, payload: AttachmentNoteRequest
+):
+    """更新附件备注；备注为空表示清空。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    item = await asyncio.to_thread(
+        store.get_attachment, attachment_id
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    updated = await asyncio.to_thread(
+        store.update_attachment_note, attachment_id, payload.note
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    await record_audit("attachment.note", str(attachment_id))
+    return {"ok": True, "attachment": updated}
 
 
 @app.get("/api/attachments/{attachment_id}/file")

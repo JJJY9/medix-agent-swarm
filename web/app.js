@@ -14271,6 +14271,14 @@ function renderAttachments(items, options = {}) {
     li.appendChild(main);
     const actions = document.createElement('div');
     actions.className = 'metric-item-actions';
+    const noteEdit = document.createElement('button');
+    noteEdit.type = 'button';
+    noteEdit.className = 'metric-edit';
+    noteEdit.textContent = '备注';
+    noteEdit.setAttribute(
+      'aria-label', `编辑附件备注：${item.original_name}`
+    );
+    noteEdit.addEventListener('click', () => editAttachmentNote(item));
     const view = document.createElement('button');
     view.type = 'button';
     view.className = 'metric-edit';
@@ -14291,7 +14299,7 @@ function renderAttachments(items, options = {}) {
     del.textContent = '删除';
     del.setAttribute('aria-label', `删除附件：${item.original_name}`);
     del.addEventListener('click', () => deleteAttachment(item));
-    actions.append(view, download, del);
+    actions.append(noteEdit, view, download, del);
     li.appendChild(actions);
     els.attachmentList.appendChild(li);
   }
@@ -14684,6 +14692,34 @@ async function deleteSelectedAttachments() {
     + '。',
     failed > 0
   );
+}
+
+async function editAttachmentNote(item) {
+  const current = item.note || '';
+  const next = window.prompt('附件备注（最多 300 字）', current);
+  if (next === null) return;
+  const note = next.trim();
+  if (note.length > 300) {
+    setAttachmentStatus('附件备注不能超过 300 字。', true);
+    return;
+  }
+  if (note === current.trim()) return;
+  setAttachmentStatus('正在保存备注…');
+  try {
+    const res = await fetch(`/api/attachments/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    setAttachmentStatus('附件备注已保存。');
+    await loadAttachments();
+  } catch (err) {
+    setAttachmentStatus(`备注保存失败：${err.message || err}`, true);
+  }
 }
 
 async function openAttachmentFile(item, download = false) {
