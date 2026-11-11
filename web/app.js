@@ -6358,13 +6358,14 @@ function findMetricTarget(profile, metric) {
 }
 
 function targetIsLowerBound(metric) {
-  return metric === 'spo2';
+  return metric === 'spo2' || metric === 'sleep';
 }
 
 const METRIC_TARGET_DEFAULTS = {
   bp: { value1: 135, value2: 85 },
   spo2: { value1: 95 },
   heart_rate: { value1: 100 },
+  sleep: { value1: 7 },
 };
 
 function formatMetricTarget(target) {

@@ -525,6 +525,30 @@ def test_metrics_summary_spo2_lower_bound_target(client):
     assert body["within_target"] == 1
 
 
+def test_metrics_summary_sleep_lower_bound_target(client):
+    for value in (6.5, 7.5):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "sleep",
+                "value1": value,
+                "measured_at": "2026-01-02T08:00",
+            },
+        )
+    client.put(
+        "/api/metric-targets",
+        json={"profile": "妈妈", "metric": "sleep", "value1": 7},
+    )
+
+    body = client.get(
+        "/api/metrics/summary", params={"metric": "sleep", "profile": "妈妈"}
+    ).json()
+
+    assert body["target"] == {"value1": 7.0, "value2": None}
+    assert body["within_target"] == 1
+
+
 def test_screener_metrics_roundtrip(client):
     for metric, value in (
         ("cat", 32), ("ess", 16), ("auditc", 8), ("mmrc", 3),

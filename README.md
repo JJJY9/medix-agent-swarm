@@ -423,7 +423,7 @@ npm install -D playwright
 | GET | `/api/metrics/export.csv` | 导出健康记录 CSV（带 BOM，可按 `profile`/`metric`/`days`/`q` 筛选） |
 | POST | `/api/metrics/import` | 从导出的 CSV 格式导入健康记录，重复记录自动跳过 |
 | GET | `/api/metric-targets` | 自定义健康指标目标（可按 `profile` 筛选） |
-| PUT | `/api/metric-targets` | 设置或覆盖目标上限（血氧为下限；血压需同时提供舒张压） |
+| PUT | `/api/metric-targets` | 设置或覆盖目标上限（血氧/睡眠为下限；血压需同时提供舒张压） |
 | DELETE | `/api/metric-targets/{metric}` | 删除某档案某指标的目标（`profile` 查询参数） |
 | GET | `/api/reminders` | 随访提醒列表（默认未完成，`include_done=true` 含已完成，`profile` 按档案筛选） |
 | GET | `/api/reminders/stats` | 近 N 天到期提醒的完成情况（到期、已完成、待办、逾期与完成率，`profile`/`days`） |

@@ -537,7 +537,7 @@ class MetricUpdateRequest(StrictRequestModel):
     profile: Optional[str] = Field(None, max_length=40)
     metric: Optional[Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ]] = None
     value1: Optional[float] = None
     value2: Optional[float] = None
@@ -2732,7 +2732,7 @@ async def list_metrics(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
@@ -2762,7 +2762,7 @@ async def metric_summary(
 
     if metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     days = max(0, min(int(days or 0), 3650))
@@ -8428,7 +8428,7 @@ async def export_metrics_csv(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
@@ -8555,10 +8555,12 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
         "血氧": "spo2",
         "血氧饱和度": "spo2",
         "腰围": "waist",
+        "睡眠时长": "sleep",
+        "睡眠": "sleep",
     }
     allowed = {
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
     }
 
     records = []
