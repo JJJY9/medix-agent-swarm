@@ -9876,8 +9876,9 @@ async def list_attachments(
         raise HTTPException(status_code=400, detail="资料类型不正确")
     if ref_id is not None and (ref_id < 0 or ref_id > MAX_SQLITE_INT):
         raise HTTPException(status_code=400, detail="关联记录编号不正确")
+    store = get_session_store()
     items = await asyncio.to_thread(
-        get_session_store().list_attachments,
+        store.list_attachments,
         profile,
         kind_key or None,
         ref_id,
@@ -9885,6 +9886,59 @@ async def list_attachments(
         offset,
         q,
     )
+    visit_ids = {
+        int(item.get("ref_id") or 0)
+        for item in items
+        if item.get("kind") == "visit" and item.get("ref_id")
+    }
+    lab_ids = {
+        int(item.get("ref_id") or 0)
+        for item in items
+        if item.get("kind") == "lab" and item.get("ref_id")
+    }
+    visit_map: Dict[int, Dict[str, Any]] = {}
+    lab_map: Dict[int, Dict[str, Any]] = {}
+    if visit_ids:
+        visits = await asyncio.to_thread(
+            store.list_visit_records, None, 0, "", 100000
+        )
+        visit_map = {
+            int(row["id"]): row for row in visits
+            if int(row.get("id") or 0) in visit_ids
+        }
+    if lab_ids:
+        labs = await asyncio.to_thread(
+            store.list_lab_results, None, None, None, 0, 100000, 0
+        )
+        lab_map = {
+            int(row["id"]): row for row in labs
+            if int(row.get("id") or 0) in lab_ids
+        }
+    for item in items:
+        reference = int(item.get("ref_id") or 0)
+        label = ""
+        if item.get("kind") == "visit" and reference in visit_map:
+            visit = visit_map[reference]
+            label = " · ".join(part for part in (
+                str(visit.get("visit_date") or "")[:10],
+                visit.get("department") or "",
+                visit.get("diagnosis") or "",
+            ) if part)
+        elif item.get("kind") == "lab" and reference in lab_map:
+            lab = lab_map[reference]
+            try:
+                value = f"{float(lab.get('value')):g}"
+            except (TypeError, ValueError, OverflowError):
+                value = str(lab.get("value") or "")
+            result = f"{lab.get('item') or '化验'} {value}".strip()
+            if lab.get("unit"):
+                result += f" {lab['unit']}"
+            label = " · ".join(part for part in (
+                str(lab.get("tested_at") or "")[:10],
+                result,
+                lab.get("panel") or "",
+            ) if part)
+        item["ref_label"] = label[:100]
     return {"attachments": items}
 
 

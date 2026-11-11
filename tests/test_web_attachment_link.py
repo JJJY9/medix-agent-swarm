@@ -67,8 +67,10 @@ def test_attachment_list_marks_linked_records():
         "      ? (item.kind === 'visit'\n"
         "        ? '已关联就诊'\n"
         "        : item.kind === 'lab' ? '已关联化验' : '已关联')\n"
+        "        + (item.ref_label ? ` · ${item.ref_label}` : '')\n"
         "      : '';"
     ) in SCRIPT
+    assert "item.ref_label" in SCRIPT
     assert "linkedLabel" in SCRIPT
     assert "loadAttachmentRefOptions();\n  loadMetricTargets()" in SCRIPT
     assert "resetVisitPrep();\n    loadAttachmentRefOptions();" in SCRIPT

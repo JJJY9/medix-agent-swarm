@@ -407,6 +407,14 @@ def test_linked_attachment_detaches_when_visit_deleted(
         client, kind="visit", ref_id=other["id"]
     ).json()["attachment"]
     assert item["ref_id"] == visit["id"]
+    labels = {
+        row["id"]: row["ref_label"]
+        for row in client.get(
+            "/api/attachments", params={"profile": "妈妈"}
+        ).json()["attachments"]
+    }
+    assert "复诊" in labels[item["id"]]
+    assert "取药" in labels[kept["id"]]
 
     assert client.delete(f"/api/visits/{visit['id']}").status_code == 200
     listed = client.get(
@@ -434,6 +442,14 @@ def test_linked_attachment_detaches_when_lab_deleted(client_and_store):
     kept = _upload(
         client, kind="lab", ref_id=second["id"]
     ).json()["attachment"]
+    labels = {
+        row["id"]: row["ref_label"]
+        for row in client.get(
+            "/api/attachments", params={"profile": "妈妈"}
+        ).json()["attachments"]
+    }
+    assert "ALT 30 U/L" in labels[item["id"]]
+    assert "AST 20 U/L" in labels[kept["id"]]
 
     assert client.delete(
         f"/api/lab-results/{first['id']}"

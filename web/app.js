@@ -14130,6 +14130,7 @@ function renderAttachments(items, options = {}) {
       ? (item.kind === 'visit'
         ? '已关联就诊'
         : item.kind === 'lab' ? '已关联化验' : '已关联')
+        + (item.ref_label ? ` · ${item.ref_label}` : '')
       : '';
     meta.textContent = [
       formatAttachmentSize(item.size),
