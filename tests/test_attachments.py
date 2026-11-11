@@ -311,6 +311,19 @@ def test_search_attachments_by_name_and_note(client_and_store):
     assert [row["id"] for row in search("心内科")] == [first["id"]]
     assert [row["id"] for row in search("100%")] == [second["id"]]
     assert search("不存在") == []
+    assert client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "kind": "visits"},
+    ).status_code == 400
+
+    third = _upload(
+        client, file_name="空格.pdf", note="有  两个空格"
+    ).json()["attachment"]
+    spaced = client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "q": "有  两个"},
+    ).json()["attachments"]
+    assert [row["id"] for row in spaced] == [third["id"]]
 
 
 def test_delete_removes_file(client_and_store, tmp_path):
