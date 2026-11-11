@@ -13761,6 +13761,17 @@ function openInsightSection(insight) {
       target.open = true;
       target.scrollIntoView({ block: 'nearest' });
     }
+    const query = insight && insight.query
+      ? String(insight.query) : '';
+    if (query && els.attachmentFilterQ) {
+      if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
+      if (els.attachmentFilterLinked) {
+        els.attachmentFilterLinked.value = '';
+      }
+      els.attachmentFilterQ.value = query;
+      loadAttachments();
+      return;
+    }
     checkAttachmentIntegrity();
     return;
   }

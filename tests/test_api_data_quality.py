@@ -179,6 +179,40 @@ def test_quality_flags_missing_attachment_files(
     assert "出院小结.pdf" in issues["attachment_missing"]["detail"]
 
 
+def test_quality_flags_duplicate_attachment_files(
+    client_and_store, tmp_path, monkeypatch
+):
+    client, store = client_and_store
+    attachment_dir = tmp_path / "attachments"
+    attachment_dir.mkdir()
+    monkeypatch.setattr(api_server, "ATTACHMENT_DIR", attachment_dir)
+    rows = (
+        ("妈妈", "a.pdf", "出院小结.pdf", b"%PDF-1.4"),
+        ("妈妈", "b.pdf", "出院小结.PDF", b"%PDF-1.4"),
+        ("妈妈", "c.pdf", "出院小结.pdf", b"%PDF-1.5!"),
+        ("爸爸", "d.pdf", "出院小结.pdf", b"%PDF-1.4"),
+        ("爸爸", "e.pdf", "出院小结.pdf", b"%PDF-1.4"),
+    )
+    for profile, stored, name, content in rows:
+        (attachment_dir / stored).write_bytes(content)
+        store.add_attachment(
+            profile, "visit", 0, name, stored,
+            "application/pdf", len(content), "",
+        )
+
+    issues = _by_key(_quality(client, "妈妈"))
+    duplicate = issues["attachment_duplicate"]
+    assert duplicate["count"] == 1
+    assert "×2" in duplicate["detail"]
+    assert "出院小结" in duplicate["detail"]
+    assert duplicate["section"] == "attachment"
+    assert duplicate["query"].lower() == "出院小结.pdf"
+    assert "attachment_missing" not in issues
+
+    family = _by_key(_quality(client))
+    assert family["attachment_duplicate"]["count"] == 2
+
+
 def test_data_quality_ignores_inactive_and_boundary_records(client_and_store):
     client, _store = client_and_store
     client.post("/api/medications", json={

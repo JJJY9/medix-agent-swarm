@@ -42,6 +42,14 @@ def test_quality_renders_summary_empty_and_failure_states():
     assert "els.qualityEmpty.hidden = issues.length > 0;" in SCRIPT
 
 
+def test_quality_duplicate_attachment_opens_search():
+    assert "const query = insight && insight.query" in SCRIPT
+    assert "els.attachmentFilterQ.value = query;" in SCRIPT
+    assert "els.attachmentFilterKind.value = '';" in SCRIPT
+    assert "els.attachmentFilterLinked.value = '';" in SCRIPT
+    assert "loadAttachments();\n      return;" in SCRIPT
+
+
 def test_quality_renders_issues_and_links():
     assert "insight-level-badge is-${item.level" in SCRIPT
     assert "INSIGHT_LEVEL_LABELS[item.level] || '提示'" in SCRIPT
