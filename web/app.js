@@ -7522,6 +7522,27 @@ function renderHealthSearchItem(item, query) {
     main.appendChild(detail);
   }
   li.appendChild(main);
+  if (item.type === 'attachment' && item.id) {
+    const actions = document.createElement('div');
+    actions.className = 'metric-item-actions';
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'metric-edit';
+    preview.textContent = '预览';
+    preview.setAttribute(
+      'aria-label', `预览附件：${item.title || ''}`
+    );
+    preview.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openAttachmentFile({
+        id: item.id,
+        original_name: item.title || '附件',
+        mime: item.mime || '',
+      });
+    });
+    actions.appendChild(preview);
+    li.appendChild(actions);
+  }
   const open = () => locateHealthRecord(item, query);
   li.addEventListener('click', open);
   li.addEventListener('keydown', (event) => {

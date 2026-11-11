@@ -26,6 +26,15 @@ def test_search_requests_scoped_endpoint():
     assert "event.isComposing" in SCRIPT
 
 
+def test_attachment_result_has_preview_action():
+    assert "item.type === 'attachment' && item.id" in SCRIPT
+    assert "preview.textContent = '预览';" in SCRIPT
+    assert "`预览附件：${item.title || ''}`" in SCRIPT
+    assert "openAttachmentFile({" in SCRIPT
+    assert "mime: item.mime || ''" in SCRIPT
+    assert "event.stopPropagation();" in SCRIPT
+
+
 def test_result_click_locates_record():
     assert "HEALTH_SECTION_TARGETS = {" in SCRIPT
     assert "async function locateHealthRecord" in SCRIPT

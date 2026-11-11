@@ -7805,6 +7805,7 @@ async def health_search(
             {
                 "kind": row.get("kind") or "other",
                 "ref_id": ref_id,
+                "mime": row.get("mime") or "",
             },
         )
 
