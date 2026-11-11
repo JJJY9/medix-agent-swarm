@@ -6200,6 +6200,228 @@ async def weekly_report(profile: Optional[str] = None, days: int = 7):
     return await _weekly_report_impl(profile=profile, days=days)
 
 
+DATA_QUALITY_LEVEL_ORDER = {"warning": 0, "info": 1}
+
+#: 化验名中按字母边界匹配的无单位项目，兼容 PT-INR、INR（PT）、尿 pH、HOMA-IR 等写法
+_LAB_UNITLESS_PATTERN = re.compile(
+    r"(?<![a-z])(?:inr|ph|homa[\s\-]?ir)(?![a-z])"
+)
+#: 以浓度比表示、实际带单位的「比值」项目（如尿白蛋白/肌酐比值，单位 mg/g）
+_LAB_RATIO_WITH_UNIT = re.compile(
+    r"(白蛋白.*肌酐|肌酐.*白蛋白|蛋白.*肌酐|"
+    r"albumin.*creatinine|creatinine.*albumin|uacr)"
+)
+
+
+def _lab_item_unitless(name: Any) -> bool:
+    text = " ".join(str(name or "").lower().split())
+    if not text:
+        return False
+    if _LAB_UNITLESS_PATTERN.search(text):
+        return True
+    if _LAB_RATIO_WITH_UNIT.search(text):
+        return False
+    return any(
+        token in text
+        for token in (
+            "国际标准化", "比值", "ratio", "指数", "评分", "滴度",
+        )
+    )
+
+
+@app.get("/api/health/data-quality")
+async def health_data_quality(profile: Optional[str] = None):
+    """健康数据完整性检查：重复记录、缺失单位、过期用药与逾期提醒。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    (
+        labs, medications, vaccinations, care_items, reminders,
+    ) = await asyncio.gather(
+        asyncio.to_thread(
+            store.list_lab_results, profile, None, None, 0, 100000, 0
+        ),
+        asyncio.to_thread(
+            store.list_medications, profile, True, 100000, 0, 7
+        ),
+        asyncio.to_thread(store.list_vaccinations, profile, 100000),
+        asyncio.to_thread(
+            store.list_care_items, profile, True, False, 100000
+        ),
+        asyncio.to_thread(store.list_reminders, False, profile),
+    )
+
+    issues: List[Dict[str, Any]] = []
+
+    def add(
+        key: str,
+        level: str,
+        title: str,
+        detail: str,
+        hint: str,
+        section: str,
+        count: int,
+    ) -> None:
+        if count <= 0:
+            return
+        issues.append({
+            "key": key,
+            "level": level,
+            "title": title,
+            "detail": str(detail or "")[:200],
+            "hint": str(hint or "")[:160],
+            "section": section,
+            "count": int(count),
+        })
+
+    missing_unit = [
+        item for item in labs
+        if not str(item.get("unit") or "").strip()
+        and not _lab_item_unitless(item.get("item"))
+    ]
+    if missing_unit:
+        names: List[str] = []
+        for item in missing_unit:
+            name = str(item.get("item") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        add(
+            "lab_missing_unit", "warning",
+            f"{len(missing_unit)} 条化验缺少单位",
+            "、".join(names[:5]),
+            "补全单位后才能正确换算与对比趋势。",
+            "lab", len(missing_unit),
+        )
+
+    medication_groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in medications:
+        # 停用记录属于历史疗程，与再次启用的同药记录不算重复登记
+        if not item.get("active"):
+            continue
+        key = (
+            item.get("profile") or "",
+            str(item.get("name") or "").strip().lower(),
+            str(item.get("dose") or "").strip().lower(),
+            str(item.get("frequency") or "").strip().lower(),
+        )
+        if not key[1]:
+            continue
+        medication_groups.setdefault(key, []).append(item)
+    duplicate_meds = [
+        rows for rows in medication_groups.values() if len(rows) > 1
+    ]
+    if duplicate_meds:
+        names = [
+            f"{rows[0].get('name') or '药物'} ×{len(rows)}"
+            for rows in duplicate_meds[:5]
+        ]
+        add(
+            "medication_duplicate", "warning",
+            f"{len(duplicate_meds)} 组重复用药",
+            "、".join(names),
+            "确认是否为重复登记，保留一条即可。",
+            "medication", len(duplicate_meds),
+        )
+
+    vaccination_groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in vaccinations:
+        key = (
+            item.get("profile") or "",
+            str(item.get("vaccine_name") or "").strip().lower(),
+            int(item.get("dose_number") or 1),
+            str(item.get("vaccinated_at") or "")[:10],
+        )
+        if not key[1]:
+            continue
+        vaccination_groups.setdefault(key, []).append(item)
+    duplicate_vaccines = [
+        rows for rows in vaccination_groups.values() if len(rows) > 1
+    ]
+    if duplicate_vaccines:
+        names = [
+            f"{rows[0].get('vaccine_name')} "
+            f"第{rows[0].get('dose_number') or 1}剂"
+            for rows in duplicate_vaccines[:5]
+        ]
+        add(
+            "vaccination_duplicate", "warning",
+            f"{len(duplicate_vaccines)} 组重复疫苗记录",
+            "、".join(names),
+            "核对接种记录后删除重复条目。",
+            "vaccination", len(duplicate_vaccines),
+        )
+
+    care_groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in care_items:
+        if not item.get("active"):
+            continue
+        key = (
+            item.get("profile") or "",
+            str(item.get("title") or "").strip().lower(),
+        )
+        if not key[1]:
+            continue
+        care_groups.setdefault(key, []).append(item)
+    duplicate_care = [
+        rows for rows in care_groups.values() if len(rows) > 1
+    ]
+    if duplicate_care:
+        add(
+            "care_duplicate", "warning",
+            f"{len(duplicate_care)} 组重复复查计划",
+            "、".join(
+                f"{rows[0].get('title') or '复查'} ×{len(rows)}"
+                for rows in duplicate_care[:5]
+            ),
+            "确认是否重复登记，保留或停用其中一条。",
+            "care", len(duplicate_care),
+        )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    # 今天到期不算逾期：提醒抽屉里「已逾期」与「今天到期」是分开的两组
+    overdue_reminders = [
+        item for item in reminders
+        if str(item.get("due_at") or "")[:10] < today
+    ]
+    if overdue_reminders:
+        add(
+            "reminder_overdue", "info",
+            f"{len(overdue_reminders)} 条提醒已逾期",
+            "",
+            "处理后标记完成或调整日期，避免长期堆积。",
+            "reminder", len(overdue_reminders),
+        )
+
+    stock_issues = [
+        item for item in medications
+        if item.get("active")
+        and (item.get("expired") or item.get("out_of_stock"))
+    ]
+    if stock_issues:
+        add(
+            "medication_stock", "warning",
+            f"{len(stock_issues)} 种在用药物已过期或缺货",
+            "、".join(
+                str(item.get("name") or "")
+                for item in stock_issues[:5]
+            ),
+            "及时补货或更新用药清单。",
+            "medication", len(stock_issues),
+        )
+
+    issues.sort(
+        key=lambda item: (
+            DATA_QUALITY_LEVEL_ORDER.get(item["level"], 9),
+            -item["count"],
+        )
+    )
+    return {
+        "profile": profile or "",
+        "total": len(issues),
+        "issues": issues,
+    }
+
+
 @app.get("/api/timeline")
 async def health_timeline(
     profile: Optional[str] = None,

@@ -302,6 +302,9 @@ const els = {
   insightSummary: document.getElementById('insight-summary'),
   insightList: document.getElementById('insight-list'),
   insightEmpty: document.getElementById('insight-empty'),
+  qualitySummary: document.getElementById('quality-summary'),
+  qualityList: document.getElementById('quality-list'),
+  qualityEmpty: document.getElementById('quality-empty'),
   healthDossierExport: document.getElementById('health-dossier-export'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
@@ -7131,6 +7134,7 @@ async function openMetrics() {
   }
   setMetricType(els.metricType.value || 'bp');
   resetMetricForm();
+  loadDataQuality();
   loadMetricTargets().then(() => refreshMetrics());
   if (!els.metricsDrawer.contains(document.activeElement)) {
     els.metricsClose.focus();
@@ -8890,6 +8894,7 @@ function refreshOverview() {
     loadTimeline(),
     loadFamilyOverview(),
     loadHealthInsights(),
+    loadDataQuality(),
   ]);
 }
 
@@ -13456,6 +13461,82 @@ function openInsightSection(insight) {
   locateHealthRecord({ type: section, profile }, '');
 }
 
+let dataQualityRequestSeq = 0;
+
+async function loadDataQuality() {
+  if (!els.qualityList) return;
+  // 面板在健康记录抽屉内；抽屉未打开时等打开时再刷新，避免无关刷新触发全量扫描
+  if (!metricsOpen) return;
+  const requestSeq = ++dataQualityRequestSeq;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  try {
+    const res = await fetch(
+      `/api/health/data-quality?profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    const data = await res.json();
+    if (requestSeq !== dataQualityRequestSeq) return;
+    renderDataQuality(data);
+  } catch {
+    if (requestSeq !== dataQualityRequestSeq) return;
+    els.qualityList.replaceChildren();
+    els.qualitySummary.textContent = '· 加载失败';
+    els.qualityEmpty.textContent = '数据质量检查失败，请稍后重试。';
+    els.qualityEmpty.hidden = false;
+  }
+}
+
+function renderDataQuality(data) {
+  if (!els.qualityList) return;
+  const issues = data.issues || [];
+  els.qualityList.replaceChildren();
+  els.qualitySummary.textContent = issues.length
+    ? `· ${issues.length} 项`
+    : '· 良好';
+  els.qualityEmpty.hidden = issues.length > 0;
+  els.qualityEmpty.textContent = '暂无数据质量问题。';
+  for (const item of issues) {
+    const li = document.createElement('li');
+    li.className = 'metric-item';
+    const main = document.createElement('div');
+    main.className = 'metric-main';
+    const title = document.createElement('strong');
+    title.className = 'metric-value';
+    title.textContent = item.title || '';
+    const badge = document.createElement('span');
+    badge.className = `insight-level-badge is-${item.level || 'info'}`;
+    badge.textContent = INSIGHT_LEVEL_LABELS[item.level] || '提示';
+    title.append(' ', badge);
+    main.appendChild(title);
+    if (item.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'metric-meta';
+      detail.textContent = item.detail;
+      main.appendChild(detail);
+    }
+    if (item.hint) {
+      const hint = document.createElement('span');
+      hint.className = 'metric-note';
+      hint.textContent = item.hint;
+      main.appendChild(hint);
+    }
+    li.appendChild(main);
+    if (item.section) {
+      const actions = document.createElement('div');
+      actions.className = 'metric-item-actions';
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'metric-edit';
+      open.textContent = '查看';
+      open.setAttribute('aria-label', `查看相关记录：${item.title}`);
+      open.addEventListener('click', () => openInsightSection(item));
+      actions.appendChild(open);
+      li.appendChild(actions);
+    }
+    els.qualityList.appendChild(li);
+  }
+}
+
 function renderWeeklySummary(data) {
   if (!els.weeklySummaryBody) return;
   els.weeklySummaryBody.replaceChildren();
@@ -17551,7 +17632,10 @@ els.metricType.addEventListener('change', () => {
   setMetricType(els.metricType.value);
   refreshMetrics();
 });
-els.metricProfile.addEventListener('change', refreshMetrics);
+els.metricProfile.addEventListener('change', () => {
+  refreshMetrics();
+  loadDataQuality();
+});
 els.metricProfile.addEventListener('change', () => {
   if (healthSearchQuery && els.healthSearchInput) {
     runHealthSearch(els.healthSearchInput.value);

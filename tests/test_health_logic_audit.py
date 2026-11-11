@@ -94,12 +94,14 @@ def test_repeat_until_time_is_respected(store):
 
 
 def test_repeat_until_date_allows_same_day(store):
+    today = datetime.now().date()
+    yesterday = (today - timedelta(days=1)).isoformat()
     reminder = store.add_reminder(
-        "服药", "2026-11-09T09:00",
-        repeat_days=1, repeat_until="2026-11-10",
+        "服药", f"{yesterday}T09:00",
+        repeat_days=1, repeat_until=today.isoformat(),
     )
 
     result = store.complete_reminder_with_repeat(reminder["id"])
 
     assert result["next"] is not None
-    assert result["next"]["due_at"].startswith("2026-11-10")
+    assert result["next"]["due_at"].startswith(today.isoformat())

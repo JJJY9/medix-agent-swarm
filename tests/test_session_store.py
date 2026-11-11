@@ -1460,11 +1460,13 @@ def test_reminder_rejects_invalid_dates(store):
 
 
 def test_snooze_preserves_time_of_day(store):
-    reminder = store.add_reminder("复查", "2026-11-10T09:30:00")
+    today = datetime.now().date()
+    reminder = store.add_reminder("复查", f"{today.isoformat()}T09:30:00")
 
     snoozed = store.snooze_reminder(reminder["id"], 7)
 
-    assert snoozed["due_at"] == "2026-11-17T09:30:00"
+    expected = (today + timedelta(days=7)).isoformat() + "T09:30:00"
+    assert snoozed["due_at"] == expected
 
 
 def test_repeat_completion_inherits_medication_link(store):
@@ -1556,7 +1558,8 @@ def test_reminders_repeat_completion(store):
     assert result["completed"] is True
     next_item = result["next"]
     assert next_item is not None
-    assert next_item["due_at"] > date.today().isoformat()
+    # 周期顺延到第一个不早于今天的日期，恰好是今天的保留今天
+    assert next_item["due_at"] >= date.today().isoformat()
     assert next_item["repeat_days"] == 7
     assert next_item["repeats_from"] == reminder["id"]
     assert store.complete_reminder(reminder["id"]) is True

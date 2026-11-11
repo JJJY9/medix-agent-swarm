@@ -1,4 +1,6 @@
 """健康指标 API 的离线测试。"""
+from datetime import datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -185,6 +187,7 @@ def test_metrics_csv_import(client):
 
 
 def test_metrics_csv_export(client):
+    old_day = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     client.post(
         "/api/metrics",
         json={
@@ -192,7 +195,7 @@ def test_metrics_csv_export(client):
             "metric": "bp",
             "value1": 138,
             "value2": 86,
-            "measured_at": "2026-01-02T08:00",
+            "measured_at": f"{old_day}T08:00",
             "note": "晨起",
         },
     )
@@ -215,12 +218,13 @@ def test_metrics_csv_export(client):
     assert "62.5" not in text
     assert invalid.status_code == 400
 
+    recent_day = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
     client.post(
         "/api/metrics",
         json={
             "profile": "妈妈", "metric": "bp",
             "value1": 120, "value2": 80,
-            "measured_at": "2026-11-04T20:00", "note": "睡前",
+            "measured_at": f"{recent_day}T20:00", "note": "睡前",
         },
     )
     tagged = client.get(

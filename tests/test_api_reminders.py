@@ -502,7 +502,8 @@ def test_reminders_repeat_completion(client_and_store):
 
     assert completed.status_code == 200
     assert next_item is not None
-    assert next_item["due_at"] > date.today().isoformat()
+    # 周期顺延到第一个不早于今天的日期，恰好是今天的保留今天
+    assert next_item["due_at"] >= date.today().isoformat()
     assert next_item["repeat_days"] == 7
     assert [item["title"] for item in listed] == ["服药"]
 
