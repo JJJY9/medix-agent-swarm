@@ -45,7 +45,9 @@ def test_inspect_backup_counts_and_checksum(client_and_store):
     assert data["counts"]["sessions"] == 1
     assert data["counts"]["messages"] == 2
     assert data["counts"]["health_metrics"] == 1
-    assert data["total_records"] >= 2
+    assert data["total_records"] == 2
+    assert data["invalid_sessions"] == 0
+    assert data["restore_ready"] is True
     assert data["warnings"] == []
     assert data["exported_at"]
 
@@ -64,7 +66,62 @@ def test_inspect_detects_tampered_checksum(client_and_store):
     assert response.status_code == 200
     data = response.json()
     assert data["checksum_ok"] is False
+    assert data["restore_ready"] is False
     assert "校验失败" in data["warnings"][0]
+
+
+def test_inspect_flags_unrestorable_sessions(client_and_store):
+    client, _store, backup_dir = client_and_store
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    wrong_type = backup_dir / "medix-backup-20260103-000000.json"
+    wrong_type.write_text(json.dumps({
+        "version": 1,
+        "sessions": "oops",
+        "profiles": [{"name": "a", "context": {}}],
+    }), encoding="utf-8")
+    data = client.get(
+        f"/api/backups/{wrong_type.name}/inspect"
+    ).json()
+    assert data["restore_ready"] is False
+    assert data["counts"]["sessions"] == 0
+    assert any("会话列表格式不正确" in item for item in data["warnings"])
+
+    invalid_session = backup_dir / "medix-backup-20260104-000000.json"
+    invalid_session.write_text(json.dumps({
+        "version": 1,
+        "sessions": [{
+            "id": "s1",
+            "messages": [{"role": "system", "content": "x"}],
+        }],
+    }), encoding="utf-8")
+    data = client.get(
+        f"/api/backups/{invalid_session.name}/inspect"
+    ).json()
+    assert data["counts"]["sessions"] == 0
+    assert data["counts"]["messages"] == 0
+    assert data["invalid_sessions"] == 1
+    assert data["total_records"] == 0
+    assert any("缺少编号或有效消息" in item for item in data["warnings"])
+    assert any("没有可恢复记录" in item for item in data["warnings"])
+
+
+def test_inspect_handles_unencodable_surrogates(client_and_store):
+    client, _store, backup_dir = client_and_store
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / "medix-backup-20260105-000000.json"
+    backup.write_text(
+        '{"version": 1, "checksum": "sha256:dead", '
+        '"profiles": [{"name": "\\ud800"}]}',
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/api/backups/{backup.name}/inspect")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["checksum_ok"] is False
+    assert data["restore_ready"] is False
+    assert any("无法编码" in item for item in data["warnings"])
 
 
 def test_inspect_missing_invalid_and_malformed(client_and_store):
@@ -74,6 +131,13 @@ def test_inspect_missing_invalid_and_malformed(client_and_store):
 
     invalid = client.get("/api/backups/..%2Fsecret.json/inspect")
     assert invalid.status_code in (400, 404)
+
+    bad_name = backup_dir / "bad name.json"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    bad_name.write_text("{}", encoding="utf-8")
+    assert client.get(
+        "/api/backups/bad%20name.json/inspect"
+    ).status_code == 400
 
     backup_dir.mkdir(parents=True, exist_ok=True)
     broken = backup_dir / "medix-backup-20260101-000000.json"
@@ -93,6 +157,7 @@ def test_inspect_empty_and_oversized(client_and_store, monkeypatch):
     assert data["checksum_present"] is False
     assert data["checksum_ok"] is None
     assert data["total_records"] == 0
+    assert data["restore_ready"] is False
     assert any("没有可恢复记录" in item for item in data["warnings"])
     assert any("没有校验信息" in item for item in data["warnings"])
 

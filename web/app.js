@@ -4541,8 +4541,27 @@ async function restoreBackup() {
       );
       return;
     }
+    if (
+      inspectInfo.checksum_ok !== true
+      && inspectInfo.checksum_present !== false
+    ) {
+      btn.textContent = '预检异常';
+      window.alert(
+        '备份预检响应格式不正确，已停止恢复。请稍后重试。'
+      );
+      return;
+    }
+    if (inspectInfo.restore_ready === false) {
+      const reasons = Array.isArray(inspectInfo.warnings)
+        ? inspectInfo.warnings.join('；')
+        : '备份内容不完整。';
+      btn.textContent = '不可恢复';
+      window.alert(`备份预检未通过，已停止恢复：${reasons}`);
+      return;
+    }
     const counts = inspectInfo.counts || {};
     const inspectSummary = [
+      `共 ${Number(inspectInfo.total_records) || 0} 条记录`,
       `会话 ${counts.sessions || 0}（消息 ${counts.messages || 0}）`,
       `档案 ${counts.profiles || 0}`,
       `指标 ${counts.health_metrics || 0}`,
