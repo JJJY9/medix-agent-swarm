@@ -16255,6 +16255,25 @@ function renderTimeline(data) {
           openAttachment();
         }
       });
+      const actions = document.createElement('div');
+      actions.className = 'metric-item-actions';
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.className = 'metric-edit';
+      preview.textContent = '预览';
+      preview.setAttribute(
+        'aria-label', `预览附件：${event.title || ''}`
+      );
+      preview.addEventListener('click', (clickEvent) => {
+        clickEvent.stopPropagation();
+        openAttachmentFile({
+          id: event.id,
+          original_name: event.title || '附件',
+          mime: event.mime || '',
+        });
+      });
+      actions.appendChild(preview);
+      li.appendChild(actions);
     }
     els.timelineList.appendChild(li);
   }

@@ -781,6 +781,8 @@ def test_app_js_ships_health_timeline(client):
     assert '<option value="attachment">资料</option>' in html
     assert "attachment: '资料'" in app_js
     assert "点击定位就医资料" in app_js
+    assert "`预览附件：${event.title || ''}`" in app_js
+    assert "mime: event.mime || ''" in app_js
     assert "type: 'attachment'" in app_js
     assert ".timeline-badge" in css
 
