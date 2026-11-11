@@ -11163,15 +11163,44 @@ async def health_visit_prep(
     ][:5]
 
     attachment_count = len(attachments)
-    attachment_rows = [
-        {
+    visit_ref_map = {
+        int(row["id"]): row for row in visits if row.get("id")
+    }
+    lab_ref_map = {
+        int(row["id"]): row for row in raw_labs if row.get("id")
+    }
+    attachment_rows = []
+    for item in attachments[:10]:
+        ref_id = int(item.get("ref_id") or 0)
+        ref_label = ""
+        if item.get("kind") == "visit" and ref_id in visit_ref_map:
+            visit_ref = visit_ref_map[ref_id]
+            ref_label = " · ".join(part for part in (
+                str(visit_ref.get("visit_date") or "")[:10],
+                visit_ref.get("department") or "",
+                visit_ref.get("diagnosis") or "",
+            ) if part)
+        elif item.get("kind") == "lab" and ref_id in lab_ref_map:
+            lab_ref = lab_ref_map[ref_id]
+            try:
+                value = f"{float(lab_ref.get('value')):g}"
+            except (TypeError, ValueError, OverflowError):
+                value = str(lab_ref.get("value") or "")
+            result = f"{lab_ref.get('item') or '化验'} {value}".strip()
+            if lab_ref.get("unit"):
+                result += f" {lab_ref['unit']}"
+            ref_label = " · ".join(part for part in (
+                str(lab_ref.get("tested_at") or "")[:10],
+                result,
+                lab_ref.get("panel") or "",
+            ) if part)
+        attachment_rows.append({
             "name": str(item.get("original_name") or "附件")[:120],
             "kind": str(item.get("kind_label") or ""),
             "created_at": str(item.get("created_at") or "")[:10],
             "linked": bool(item.get("ref_id")),
-        }
-        for item in attachments[:10]
-    ]
+            "ref_label": ref_label[:100],
+        })
 
     active_medications = [
         {
@@ -11392,8 +11421,11 @@ async def health_visit_prep(
         lines.append(f"六、携带资料（{attachment_count} 份）")
         for item in attachment_rows:
             linked = "，已关联" if item["linked"] else ""
+            ref_text = (
+                f" · {item['ref_label']}" if item.get("ref_label") else ""
+            )
             lines.append(
-                f"- {item['name']}（{item['kind']}{linked}）"
+                f"- {item['name']}（{item['kind']}{linked}{ref_text}）"
             )
         omitted = attachment_count - len(attachment_rows)
         if omitted > 0:
