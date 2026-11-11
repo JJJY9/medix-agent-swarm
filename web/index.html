@@ -711,6 +711,11 @@
         <label class="sr-only" for="attachment-filter-q">搜索附件</label>
         <input type="search" id="attachment-filter-q" maxlength="80"
           placeholder="搜索文件名或备注" aria-label="搜索附件文件名或备注">
+        <label class="attachment-select-all">
+          <input type="checkbox" id="attachment-select-all"> 全选当前
+        </label>
+        <button type="button" class="btn-quiet"
+          id="attachment-delete-selected" hidden>删除选中</button>
       </div>
       <ul class="metrics-list" id="attachment-list"></ul>
       <button type="button" class="btn-quiet attachment-more"
