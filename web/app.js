@@ -320,6 +320,7 @@ const els = {
   attachmentRefWrap: document.getElementById('attachment-ref-wrap'),
   attachmentRef: document.getElementById('attachment-ref'),
   attachmentFile: document.getElementById('attachment-file'),
+  attachmentDropzone: document.getElementById('attachment-dropzone'),
   attachmentNote: document.getElementById('attachment-note'),
   attachmentUpload: document.getElementById('attachment-upload'),
   attachmentStatus: document.getElementById('attachment-status'),
@@ -15046,6 +15047,31 @@ async function openAttachmentFile(item, download = false) {
   }
 }
 
+function setAttachmentDropActive(active) {
+  if (!els.attachmentDropzone) return;
+  els.attachmentDropzone.classList.toggle('is-dragover', Boolean(active));
+}
+
+function handleAttachmentDrop(event) {
+  event.preventDefault();
+  setAttachmentDropActive(false);
+  const files = Array.from(
+    (event.dataTransfer && event.dataTransfer.files) || []
+  );
+  if (!files.length || !els.attachmentFile) return;
+  try {
+    const transfer = new DataTransfer();
+    for (const file of files) transfer.items.add(file);
+    els.attachmentFile.files = transfer.files;
+  } catch {
+    setAttachmentStatus(
+      '当前浏览器不支持拖拽上传，请使用文件选择', true
+    );
+    return;
+  }
+  uploadAttachment();
+}
+
 async function uploadAttachment() {
   if (attachmentUploading) return;
   const files = Array.from(
@@ -20227,6 +20253,32 @@ if (els.attachmentUpload) {
     els.attachmentKind.addEventListener(
       'change', loadAttachmentRefOptions
     );
+  }
+  if (els.attachmentDropzone) {
+    for (const type of ['dragenter', 'dragover']) {
+      els.attachmentDropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        setAttachmentDropActive(true);
+      });
+    }
+    for (const type of ['dragleave', 'dragend']) {
+      els.attachmentDropzone.addEventListener(
+        type, () => setAttachmentDropActive(false)
+      );
+    }
+    els.attachmentDropzone.addEventListener(
+      'drop', handleAttachmentDrop
+    );
+    els.attachmentDropzone.addEventListener('click', () => {
+      if (els.attachmentFile) els.attachmentFile.click();
+    });
+    els.attachmentDropzone.addEventListener('keydown', (event) => {
+      if (event.isComposing) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (els.attachmentFile) els.attachmentFile.click();
+      }
+    });
   }
   if (els.attachmentFilterKind) {
     els.attachmentFilterKind.addEventListener(
