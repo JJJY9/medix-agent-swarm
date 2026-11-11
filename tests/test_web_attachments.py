@@ -120,8 +120,13 @@ def test_attachment_preview_modal_wiring():
     assert 'id="attachment-preview"' in HTML
     assert 'id="attachment-preview-body"' in HTML
     assert 'id="attachment-preview-close"' in HTML
+    assert 'id="attachment-preview-download"' in HTML
     assert "openAttachmentPreview" in SCRIPT
     assert "closeAttachmentPreview" in SCRIPT
+    assert "downloadPreviewAttachment" in SCRIPT
+    assert "attachmentPreviewItem" in SCRIPT
+    assert "anchor.download = attachmentPreviewItem.original_name" in SCRIPT
+    assert "els.attachmentPreviewDownload.addEventListener(" in SCRIPT
     assert "attachmentPreviewUrl" in SCRIPT
     assert "mime.startsWith('image/')" in SCRIPT
     assert "document.createElement('iframe')" in SCRIPT
@@ -130,6 +135,7 @@ def test_attachment_preview_modal_wiring():
     assert "URL.revokeObjectURL(attachmentPreviewUrl)" in SCRIPT
     assert ".attachment-preview" in STYLES
     assert ".attachment-preview[hidden]" in STYLES
+    assert ".attachment-preview-actions" in STYLES
 
 
 def test_attachment_size_summary_wiring():

@@ -3262,6 +3262,12 @@ html[data-theme="dark"] .calc-status.error {
   border-bottom: 1px solid var(--rule);
 }
 
+.attachment-preview-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .attachment-preview-body {
   flex: 1;
   min-height: 0;
