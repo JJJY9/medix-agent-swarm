@@ -10086,6 +10086,7 @@ async def health_visit_prep(profile: str = "", days: int = 30):
     (
         raw_metrics, raw_labs, symptoms, medications, logs,
         allergies, conditions, reminders, visits, care_items, targets,
+        attachments,
     ) = await asyncio.gather(
         asyncio.to_thread(
             store.list_metrics, profile_key, None, 100000, days
@@ -10115,6 +10116,9 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             store.list_care_items, profile_key, True, False, 1000
         ),
         asyncio.to_thread(store.list_metric_targets, profile_key),
+        asyncio.to_thread(
+            store.list_attachments, profile_key, None, None, 100, 0
+        ),
     )
 
     # “目前用药”只统计仍在用的药物；停用药物在窗口内的旧打卡
@@ -10348,6 +10352,17 @@ async def health_visit_prep(profile: str = "", days: int = 30):
         if item.get("overdue") or item.get("due_today") or item.get("due_soon")
     ][:5]
 
+    attachment_count = len(attachments)
+    attachment_rows = [
+        {
+            "name": str(item.get("original_name") or "附件")[:120],
+            "kind": str(item.get("kind_label") or ""),
+            "created_at": str(item.get("created_at") or "")[:10],
+            "linked": bool(item.get("ref_id")),
+        }
+        for item in attachments[:10]
+    ]
+
     active_medications = [
         {
             "name": str(item.get("name") or ""),
@@ -10562,6 +10577,17 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             lines.append(
                 f"- 复查：{item['title']}（{item['next_due_at']}，{flag}）"
             )
+    if attachment_rows:
+        lines.append("")
+        lines.append(f"六、携带资料（{attachment_count} 份）")
+        for item in attachment_rows:
+            linked = "，已关联" if item["linked"] else ""
+            lines.append(
+                f"- {item['name']}（{item['kind']}{linked}）"
+            )
+        omitted = attachment_count - len(attachment_rows)
+        if omitted > 0:
+            lines.append(f"- 另有 {omitted} 份未列出")
     lines.append("")
     lines.append("建议询问医生：")
     for index, question in enumerate(questions, 1):
@@ -10596,6 +10622,8 @@ async def health_visit_prep(profile: str = "", days: int = 30):
             "items": reminder_rows,
         },
         "care_items": care_due,
+        "attachments": attachment_rows,
+        "attachment_count": attachment_count,
         "questions": questions,
         "text": "\n".join(lines),
     }
