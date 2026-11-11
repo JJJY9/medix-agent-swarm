@@ -2854,10 +2854,33 @@ async def _medication_safety_for_profile(
     lab_alerts = check_medication_lab_safety(
         names, lab_rows, {"age": context_age, "sex": context_sex}
     ).get("alerts") or []
-    if lab_alerts:
-        # 化验提示在前（数值与日期更具体），既有过敏/相互作用提示全部保留
-        merged = lab_alerts + list(safety.get("alerts") or [])
-        safety = {"level": "warning", "alerts": merged[:10]}
+    condition_rows: List[Dict[str, Any]] = []
+    if names:
+        condition_rows = await asyncio.to_thread(
+            store.list_conditions, profile, True, None, 1000
+        )
+    from core.condition_drug_safety import check_condition_drug_safety
+
+    condition_alerts = check_condition_drug_safety(
+        names, condition_rows
+    ).get("alerts") or []
+    if lab_alerts or condition_alerts:
+        # 化验与慢病提示在前，既有过敏/相互作用提示全部保留
+        merged = (
+            [
+                {**alert, "source": "lab"}
+                for alert in lab_alerts
+            ]
+            + [
+                {**alert, "source": "condition"}
+                for alert in condition_alerts
+            ]
+            + [
+                {**alert, "source": "base"}
+                for alert in (safety.get("alerts") or [])
+            ]
+        )
+        safety = {"level": "warning", "alerts": merged[:15]}
     return safety
 
 
@@ -5903,13 +5926,30 @@ def _build_health_insights(
         and safety.get("alerts")
     ):
         alerts = safety.get("alerts") or []
+        source_labels = (
+            ("lab", "化验"),
+            ("condition", "慢病用药"),
+            ("base", "过敏/相互作用"),
+        )
+        source_counts: Dict[str, int] = {}
+        for item in alerts:
+            source_key = str(item.get("source") or "base")
+            source_counts[source_key] = (
+                source_counts.get(source_key, 0) + 1
+            )
+        summary = "、".join(
+            f"{label} {source_counts[key]} 条"
+            for key, label in source_labels
+            if source_counts.get(key)
+        )
+        titles = "；".join(
+            str(item.get("title") or "") for item in alerts[:3]
+        )
         insights.append(_health_insight(
             "medication_safety",
             "warning",
             f"在用药物存在 {len(alerts)} 条安全提示",
-            "；".join(
-                str(item.get("title") or "") for item in alerts[:3]
-            )[:200],
+            (summary + (f"；{titles}" if titles else ""))[:200],
             "请让医生或药师确认后再调整用药。",
             "medication",
         ))
@@ -8212,7 +8252,7 @@ def _family_attention(
     if medication_lab.get("count"):
         return {
             "level": "warning",
-            "label": f"用药与化验需核对 {medication_lab['count']} 条",
+            "label": f"用药安全需核对 {medication_lab['count']} 条",
             "detail": "、".join(
                 str(item.get("title") or "")
                 for item in (medication_lab.get("alerts") or [])
@@ -8611,7 +8651,14 @@ async def family_overview(days: int = 7):
         profile = item.get("profile") or ""
         if profile:
             labs_history_by_profile.setdefault(profile, []).append(item)
+    condition_names_by_profile: Dict[str, List[str]] = {}
+    for item in condition_items:
+        profile = item.get("profile") or ""
+        name = str(item.get("name") or "").strip()
+        if profile and name:
+            condition_names_by_profile.setdefault(profile, []).append(name)
     from core.medication_lab_safety import check_medication_lab_safety
+    from core.condition_drug_safety import check_condition_drug_safety
 
     medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
     for profile, med_names in medication_names_by_profile.items():
@@ -8620,10 +8667,17 @@ async def family_overview(days: int = 7):
             labs_history_by_profile.get(profile, []),
             contexts.get(profile) or {},
         ).get("alerts") or []
-        if lab_safety_alerts:
+        condition_safety_alerts = check_condition_drug_safety(
+            med_names,
+            condition_names_by_profile.get(profile, []),
+        ).get("alerts") or []
+        combined = lab_safety_alerts + condition_safety_alerts
+        if combined:
             medication_lab_by_profile[profile] = {
-                "count": len(lab_safety_alerts),
-                "alerts": lab_safety_alerts[:3],
+                "count": len(combined),
+                "alerts": combined[:3],
+                "lab_count": len(lab_safety_alerts),
+                "condition_count": len(condition_safety_alerts),
             }
 
     conditions_by_profile: Dict[str, Dict[str, Any]] = {}
@@ -8978,7 +9032,7 @@ async def export_family_overview_csv(days: int = 7):
         medication_lab_info = item.get("medication_lab_safety") or {}
         if medication_lab_info.get("count"):
             lab_text += (
-                f"；用药与化验需核对 {int(medication_lab_info['count'])} 条"
+                f"；用药安全需核对 {int(medication_lab_info['count'])} 条"
             )
         critical_info = item.get("critical_alerts") or {}
         critical_text = ""

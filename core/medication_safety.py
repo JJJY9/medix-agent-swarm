@@ -424,6 +424,42 @@ DRUG_GROUPS["loop_diuretics"] = (
     ("托拉塞米", ("托拉塞米", "torasemide")),
     ("布美他尼", ("布美他尼", "bumetanide")),
 )
+#: 慢病相关药物组（供慢病-用药规则复用；不参与药物相互作用判断）
+DRUG_GROUPS["beta_blockers_nonselective"] = (
+    ("普萘洛尔", ("普萘洛尔", "心得安", "propranolol")),
+    ("卡维地洛", ("卡维地洛", "carvedilol")),
+    ("拉贝洛尔", ("拉贝洛尔", "labetalol")),
+    ("噻吗洛尔", ("噻吗洛尔", "timolol")),
+    ("纳多洛尔", ("纳多洛尔", "nadolol")),
+    ("索他洛尔", ("索他洛尔", "sotalol")),
+)
+DRUG_GROUPS["anticholinergics"] = (
+    ("阿托品", ("阿托品", "atropine")),
+    ("山莨菪碱", ("山莨菪碱", "654-2", "anisodamine")),
+    ("东莨菪碱", ("东莨菪碱", "scopolamine")),
+    ("奥昔布宁", ("奥昔布宁", "oxybutynin")),
+    ("托特罗定", ("托特罗定", "tolterodine")),
+    ("索利那新", ("索利那新", "solifenacin")),
+    ("苯海索", ("苯海索", "trihexyphenidyl")),
+    ("苯海拉明", ("苯海拉明", "diphenhydramine")),
+    ("氯苯那敏", ("氯苯那敏", "扑尔敏", "chlorphenamine", "chlorpheniramine")),
+    ("异丙嗪", ("异丙嗪", "promethazine")),
+    ("颠茄", ("颠茄", "belladonna")),
+    ("阿米替林", ("阿米替林", "amitriptyline")),
+    ("多塞平", ("多塞平", "doxepin")),
+)
+DRUG_GROUPS["anticoagulants_antiplatelets"] = (
+    ("华法林", ("华法林", "warfarin")),
+    ("阿司匹林", ("阿司匹林", "aspirin")),
+    ("氯吡格雷", ("氯吡格雷", "clopidogrel")),
+    ("替格瑞洛", ("替格瑞洛", "ticagrelor")),
+    ("利伐沙班", ("利伐沙班", "rivaroxaban")),
+    ("阿哌沙班", ("阿哌沙班", "apixaban")),
+    ("艾多沙班", ("艾多沙班", "edoxaban")),
+    ("达比加群", ("达比加群", "dabigatran")),
+    ("肝素", ("肝素", "heparin")),
+    ("依诺肝素", ("依诺肝素", "enoxaparin")),
+)
 
 #: 同时使用两种不同 NSAID 属于重复用药。
 DUPLICATE_GROUPS: Tuple[Tuple[str, str, str, str], ...] = (

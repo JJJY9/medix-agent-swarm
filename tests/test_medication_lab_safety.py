@@ -139,6 +139,14 @@ def test_latest_measurement_wins():
     assert _titles(["缬沙坦"], labs) == []
 
 
+def test_lab_safety_matches_each_medication_separately():
+    labs = [_lab("血钾", 5.6, "mmol/L")]
+    # 「无极膏」的「无」不应把后面的培哚普利当成未用药
+    assert _titles(["无极膏", "培哚普利"], labs) == [
+        "培哚普利与血钾偏高"
+    ]
+
+
 def test_empty_inputs_return_no_alerts():
     assert check_medication_lab_safety([], [])["alerts"] == []
     assert check_medication_lab_safety(["缬沙坦"], [])["alerts"] == []
@@ -406,4 +414,4 @@ def test_family_overview_attention_includes_medication_lab(client_and_store):
     ).json()["profiles"]
     mom = next(item for item in overview if item["name"] == "妈妈")
     assert mom["medication_lab_safety"]["count"] >= 1
-    assert "用药与化验" in mom["attention"]["label"]
+    assert "用药安全" in mom["attention"]["label"]
