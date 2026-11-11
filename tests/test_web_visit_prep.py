@@ -98,7 +98,7 @@ def test_visit_prep_print_wiring():
 def test_visit_record_prep_shortcut():
     assert "准备复诊" in SCRIPT
     assert "openVisitPrepForVisit" in SCRIPT
-    assert "actions.append(prep, edit, del);" in SCRIPT
+    assert "actions.append(prep, upload, edit, del);" in SCRIPT
     assert "els.visitPrepDays.value = String(days);" in SCRIPT
     assert "section.scrollIntoView({ block: 'start' });" in SCRIPT
 
