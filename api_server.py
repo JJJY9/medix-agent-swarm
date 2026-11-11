@@ -9911,6 +9911,7 @@ async def list_attachments(
     limit: int = 100,
     offset: int = 0,
     q: str = "",
+    linked: Optional[bool] = None,
 ):
     """附件列表（不含文件内容）；可按档案、类型、关联记录与关键字筛选。"""
     from memory import get_session_store
@@ -9933,6 +9934,7 @@ async def list_attachments(
         limit,
         offset,
         q,
+        linked,
     )
     visit_ids = {
         int(item.get("ref_id") or 0)

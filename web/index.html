@@ -708,6 +708,12 @@
           <option value="lab">化验单</option>
           <option value="other">其他</option>
         </select>
+        <label class="sr-only" for="attachment-filter-linked">筛选关联状态</label>
+        <select id="attachment-filter-linked" aria-label="筛选关联状态">
+          <option value="">全部关联</option>
+          <option value="true">已关联</option>
+          <option value="false">未关联</option>
+        </select>
         <label class="sr-only" for="attachment-filter-q">搜索附件</label>
         <input type="search" id="attachment-filter-q" maxlength="80"
           placeholder="搜索文件名或备注" aria-label="搜索附件文件名或备注">
