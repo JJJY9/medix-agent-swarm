@@ -49,6 +49,8 @@ def test_attachment_upload_guards_and_feedback():
     assert "Array.from(" in SCRIPT
     assert "一次最多上传" in SCRIPT
     assert "第 ${index + 1} 个文件超过 10 MB" in SCRIPT
+    assert "els.metricProfile.disabled = true;" in SCRIPT
+    assert "els.metricProfile.disabled = false;" in SCRIPT
 
 
 def test_attachment_pagination_wiring():
