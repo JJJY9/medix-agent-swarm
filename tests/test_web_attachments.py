@@ -105,3 +105,13 @@ def test_attachment_bulk_delete_wiring():
     assert "els.attachmentSelectAll.addEventListener(" in SCRIPT
     assert ".attachment-select-all" in STYLES
     assert ".attachment-select {" in STYLES
+
+
+def test_attachment_export_selected_wiring():
+    assert 'id="attachment-export-selected"' in HTML
+    assert "导出选中" in HTML
+    assert "导出选中（${attachmentSelectedIds.size}）" in SCRIPT
+    assert "attachmentExporting || attachmentSelectedIds.size === 0" in SCRIPT
+    assert "exportSelectedAttachments" in SCRIPT
+    assert "exportAttachmentArchive([...attachmentSelectedIds]);" in SCRIPT
+    assert "els.attachmentExportSelected.addEventListener(" in SCRIPT
