@@ -38,4 +38,5 @@ def test_attachment_list_marks_linked_records():
     assert "已关联化验" in SCRIPT
     assert "linkedLabel" in SCRIPT
     assert "loadAttachmentRefOptions();\n  loadMetricTargets()" in SCRIPT
+    assert "resetVisitPrep();\n    loadAttachmentRefOptions();" in SCRIPT
     assert "loadAttachmentRefOptions();\n  resetVisitPrep();" in SCRIPT
