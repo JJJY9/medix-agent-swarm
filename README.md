@@ -300,7 +300,7 @@ npm install -D playwright
 | GET | `/api/attachments/{id}/file` | 读取附件原文件（`inline`，`Cache-Control: no-store`） |
 | DELETE | `/api/attachments/{id}` | 删除附件登记并清理本机文件 |
 | GET | `/api/attachments/integrity` | 检查附件登记与本地文件：缺失文件、孤儿文件与最近写入数量 |
-| POST | `/api/attachments/cleanup` | 清理没有数据库登记的孤儿文件（需 `confirm=true`，10 分钟内新文件保留） |
+| POST | `/api/attachments/cleanup` | 清理没有数据库登记的孤儿文件（需 `confirm=true` 与预检的 `expected_orphans`，10 分钟内新文件保留） |
 | GET | `/api/health/dossier-family.md` | 导出全部患者档案的 Markdown（每位成员一份，包含「未指定档案」的记录，`days`） |
 | POST | `/api/profiles` | 新增或覆盖患者档案（`name`、`context`） |
 | PATCH | `/api/profiles/{name}` | 重命名患者档案并同步健康指标 |

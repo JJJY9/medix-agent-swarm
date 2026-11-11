@@ -7390,6 +7390,38 @@ class SessionStore:
             for row in rows
         ]
 
+    def list_all_attachments(self) -> List[Dict[str, Any]]:
+        """返回全部附件登记（不做分页上限截断），供完整性检查使用。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, profile, kind, ref_id, original_name,
+                       stored_name, mime, size, note, created_at
+                  FROM attachments
+                 ORDER BY created_at DESC, id DESC
+                """
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "kind_label": ATTACHMENT_KINDS.get(
+                    row["kind"], ATTACHMENT_KINDS["other"]
+                ),
+            }
+            for row in rows
+        ]
+
+    def list_attachment_stored_names(self) -> List[str]:
+        """返回全部附件的存储文件名，用于清理前复核。"""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT stored_name FROM attachments
+                 WHERE stored_name != ''
+                """
+            ).fetchall()
+        return [str(row["stored_name"]) for row in rows]
+
     def get_attachment(
         self, attachment_id: int
     ) -> Optional[Dict[str, Any]]:

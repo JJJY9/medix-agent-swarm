@@ -9525,21 +9525,36 @@ def _attachment_dir_files() -> Dict[str, Dict[str, Any]]:
     """扫描附件目录中的文件，返回文件名到大小/修改时间的映射。"""
     base = ATTACHMENT_DIR.resolve()
     files: Dict[str, Dict[str, Any]] = {}
-    if not base.exists():
+    if not base.is_dir():
         return files
-    for path in base.iterdir():
+    try:
+        entries = list(base.iterdir())
+    except OSError:
+        return files
+    for path in entries:
         if not path.is_file():
             continue
         try:
             stat = path.stat()
         except OSError:
+            files[path.name] = {
+                "name": path.name,
+                "size": 0,
+                "modified_at": "",
+                "mtime": 0.0,
+                "stat_error": True,
+            }
             continue
+        try:
+            modified_at = datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(timespec="seconds")
+        except (OSError, OverflowError, ValueError):
+            modified_at = ""
         files[path.name] = {
             "name": path.name,
             "size": stat.st_size,
-            "modified_at": datetime.fromtimestamp(
-                stat.st_mtime
-            ).isoformat(timespec="seconds"),
+            "modified_at": modified_at,
             "mtime": stat.st_mtime,
         }
     return files
@@ -9881,15 +9896,15 @@ async def attachment_integrity():
     from memory import get_session_store
 
     items = await asyncio.to_thread(
-        get_session_store().list_attachments,
-        None, None, None, 100000, 0,
+        get_session_store().list_all_attachments
     )
     files = await asyncio.to_thread(_attachment_dir_files)
     db_names = {
-        str(item.get("stored_name")): item
+        os.path.normcase(str(item.get("stored_name"))): item
         for item in items
         if item.get("stored_name")
     }
+    files_norm = {os.path.normcase(name): name for name in files}
     missing = [
         {
             "id": item.get("id"),
@@ -9897,15 +9912,15 @@ async def attachment_integrity():
             "kind": item.get("kind") or "",
             "kind_label": item.get("kind_label") or "",
             "original_name": item.get("original_name") or "",
-            "stored_name": name,
+            "stored_name": str(item.get("stored_name") or ""),
         }
-        for name, item in db_names.items()
-        if name not in files
+        for key, item in db_names.items()
+        if key not in files_norm
     ]
     now = time()
     orphans = []
     for name, info in files.items():
-        if name in db_names:
+        if os.path.normcase(name) in db_names:
             continue
         orphans.append({
             "name": name,
@@ -9936,18 +9951,17 @@ async def cleanup_attachment_orphans(request: AttachmentCleanupRequest):
 
     if not request.confirm:
         raise HTTPException(status_code=400, detail="请确认清理孤儿文件。")
-    items = await asyncio.to_thread(
-        get_session_store().list_attachments,
-        None, None, None, 100000, 0,
-    )
+    store = get_session_store()
+    items = await asyncio.to_thread(store.list_all_attachments)
     db_names = {
-        str(item.get("stored_name"))
+        os.path.normcase(str(item.get("stored_name")))
         for item in items
         if item.get("stored_name")
     }
     files = await asyncio.to_thread(_attachment_dir_files)
     orphan_names = [
-        name for name in files if name not in db_names
+        name for name in files
+        if os.path.normcase(name) not in db_names
     ]
     if request.expected_orphans != len(orphan_names):
         raise HTTPException(
@@ -9963,12 +9977,13 @@ async def cleanup_attachment_orphans(request: AttachmentCleanupRequest):
         removed = 0
         failed = 0
         skipped = 0
-        if not base.exists():
+        if not base.is_dir():
             return removed, failed, skipped
         now = time()
         for name in names:
             path = base / name
             if not path.is_file():
+                skipped += 1
                 continue
             try:
                 modified = path.stat().st_mtime
@@ -9978,6 +9993,13 @@ async def cleanup_attachment_orphans(request: AttachmentCleanupRequest):
             # 刚写入但尚未登记的文件可能处于上传过程中，保留 10 分钟
             if now - modified < 600:
                 skipped += 1
+                continue
+            # 删除前再确认一次，避免检查后完成的登记被误删
+            fresh_names = {
+                os.path.normcase(stored)
+                for stored in store.list_attachment_stored_names()
+            }
+            if os.path.normcase(name) in fresh_names:
                 continue
             try:
                 path.unlink()

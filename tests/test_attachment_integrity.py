@@ -136,6 +136,53 @@ def test_cleanup_reports_locked_orphan(client_and_store, monkeypatch):
     assert (directory / "locked.pdf").exists()
 
 
+def test_integrity_handles_more_than_list_page_limit(
+    client_and_store,
+):
+    client, store, directory = client_and_store
+    directory.mkdir(parents=True, exist_ok=True)
+    for index in range(1001):
+        _add(store, f"f{index}.pdf")
+        (directory / f"f{index}.pdf").write_bytes(b"x")
+    data = client.get("/api/attachments/integrity").json()
+    assert data["db_count"] == 1001
+    assert data["file_count"] == 1001
+    assert data["missing_count"] == 0
+    assert data["orphan_count"] == 0
+
+
+def test_integrity_with_directory_path_as_file(client_and_store):
+    client, _store, directory = client_and_store
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    directory.write_text("not a directory", encoding="utf-8")
+    data = client.get("/api/attachments/integrity").json()
+    assert data["file_count"] == 0
+    assert data["missing_count"] == 0
+    assert data["orphan_count"] == 0
+
+
+def test_integrity_handles_out_of_range_mtime(client_and_store):
+    client, _store, directory = client_and_store
+    orphan = _write(directory, "future.pdf", old=True)
+    try:
+        os.utime(orphan, (300000000000, 300000000000))
+    except OSError:
+        pytest.skip("filesystem does not accept out-of-range mtime")
+    data = client.get("/api/attachments/integrity").json()
+    assert data["orphan_count"] == 1
+    assert data["orphans"][0]["modified_at"] == ""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows case-insensitive paths")
+def test_integrity_matches_windows_case_rename(client_and_store):
+    client, store, directory = client_and_store
+    _add(store, "abc.pdf")
+    _write(directory, "ABC.PDF", old=True)
+    data = client.get("/api/attachments/integrity").json()
+    assert data["missing_count"] == 0
+    assert data["orphan_count"] == 0
+
+
 def test_integrity_without_directory(client_and_store):
     client, store, _directory = client_and_store
     _add(store, "missing.pdf")
