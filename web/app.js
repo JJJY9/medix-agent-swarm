@@ -339,6 +339,9 @@ const els = {
     'attachment-filter-start'
   ),
   attachmentFilterEnd: document.getElementById('attachment-filter-end'),
+  attachmentFilterReset: document.getElementById(
+    'attachment-filter-reset'
+  ),
   attachmentRefFilter: document.getElementById('attachment-ref-filter'),
   attachmentRefFilterLabel: document.getElementById(
     'attachment-ref-filter-label'
@@ -14926,6 +14929,17 @@ function closeAttachmentLinkBar() {
   if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
 }
 
+function resetAttachmentFilters() {
+  if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
+  if (els.attachmentFilterLinked) els.attachmentFilterLinked.value = '';
+  if (els.attachmentFilterQ) els.attachmentFilterQ.value = '';
+  if (els.attachmentFilterStart) els.attachmentFilterStart.value = '';
+  if (els.attachmentFilterEnd) els.attachmentFilterEnd.value = '';
+  setAttachmentRefFilter(null);
+  setAttachmentStatus('');
+  loadAttachments();
+}
+
 function onAttachmentDateChange() {
   const start = els.attachmentFilterStart
     ? els.attachmentFilterStart.value : '';
@@ -20458,6 +20472,11 @@ if (els.attachmentUpload) {
   if (els.attachmentFilterEnd) {
     els.attachmentFilterEnd.addEventListener(
       'change', onAttachmentDateChange
+    );
+  }
+  if (els.attachmentFilterReset) {
+    els.attachmentFilterReset.addEventListener(
+      'click', resetAttachmentFilters
     );
   }
   if (els.attachmentFilterQ) {

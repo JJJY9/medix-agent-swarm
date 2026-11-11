@@ -50,6 +50,16 @@ def test_attachment_date_range_filter_wiring():
     assert ".attachment-date" in STYLES
 
 
+def test_attachment_filter_reset_wiring():
+    assert 'id="attachment-filter-reset"' in HTML
+    assert "清除筛选" in HTML
+    assert "resetAttachmentFilters" in SCRIPT
+    assert "setAttachmentRefFilter(null);" in SCRIPT
+    assert "els.attachmentFilterQ.value = '';" in SCRIPT
+    assert "els.attachmentFilterLinked.value = '';" in SCRIPT
+    assert "els.attachmentFilterReset.addEventListener(" in SCRIPT
+
+
 def test_attachment_sort_wiring():
     assert 'id="attachment-filter-sort"' in HTML
     assert ">最大文件<" in HTML
