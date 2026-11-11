@@ -588,6 +588,37 @@ def test_visit_prep_lists_attachments(client_and_store):
     assert "另有 3 份未列出" in many["text"]
 
 
+def test_visit_prep_attachment_ref_labels(client_and_store):
+    client, store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    visit = client.post("/api/visits", json={
+        "profile": "妈妈", "visit_date": today,
+        "diagnosis": "复诊", "department": "心内科",
+    }).json()["visit"]
+    lab = client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "ALT", "value": 30,
+        "unit": "U/L", "tested_at": today,
+    }).json()["lab_result"]
+    store.add_attachment(
+        "妈妈", "visit", visit["id"], "出院小结.pdf", "visit.pdf",
+        "application/pdf", 100, "",
+    )
+    store.add_attachment(
+        "妈妈", "lab", lab["id"], "化验单.pdf", "lab.pdf",
+        "application/pdf", 100, "",
+    )
+
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+    rows = {row["name"]: row for row in data["attachments"]}
+    assert "心内科" in rows["出院小结.pdf"]["ref_label"]
+    assert "复诊" in rows["出院小结.pdf"]["ref_label"]
+    assert "ALT 30 U/L" in rows["化验单.pdf"]["ref_label"]
+    assert "心内科" in data["text"]
+    assert "ALT 30 U/L" in data["text"]
+
+
 def test_visit_prep_since_last_visit(client_and_store):
     client, store = client_and_store
     now = datetime.now()
