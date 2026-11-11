@@ -14219,7 +14219,7 @@ function attachmentRefLabel(kind, item) {
 
 async function loadAttachmentRefOptions() {
   if (!els.attachmentRef || !els.attachmentRefWrap) return;
-  if (!metricsOpen) return;
+  if (!metricsOpen || attachmentUploading) return;
   const kind = els.attachmentKind.value;
   if (!['visit', 'lab'].includes(kind)) {
     attachmentRefRequestSeq += 1;
@@ -14272,7 +14272,7 @@ async function loadAttachmentRefOptions() {
     option.textContent = '关联记录加载失败，可不关联';
     els.attachmentRef.replaceChildren(option);
   } finally {
-    if (requestSeq === attachmentRefRequestSeq) {
+    if (requestSeq === attachmentRefRequestSeq && !attachmentUploading) {
       els.attachmentRef.disabled = false;
     }
   }
@@ -14347,20 +14347,32 @@ async function uploadAttachment() {
       return;
     }
   }
+  const kind = els.attachmentKind.value || 'other';
+  if (
+    kind !== 'other'
+    && els.attachmentRef
+    && els.attachmentRefWrap
+    && !els.attachmentRefWrap.hidden
+    && els.attachmentRef.disabled
+  ) {
+    setAttachmentStatus('关联记录正在加载，请稍后再上传', true);
+    return;
+  }
   attachmentUploading = true;
   els.attachmentUpload.disabled = true;
+  els.attachmentFile.disabled = true;
+  els.attachmentNote.disabled = true;
   if (els.metricProfile) els.metricProfile.disabled = true;
   if (els.attachmentKind) els.attachmentKind.disabled = true;
   if (els.attachmentRef) els.attachmentRef.disabled = true;
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  const kind = els.attachmentKind.value || 'other';
   const refId = els.attachmentRef && els.attachmentRefWrap
     && !els.attachmentRefWrap.hidden
     ? (els.attachmentRef.value || '0')
     : '0';
   const note = els.attachmentNote.value.trim();
   let uploaded = 0;
-  let failure = null;
+  const failures = [];
   try {
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
@@ -14380,18 +14392,21 @@ async function uploadAttachment() {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const detail = typeof data.detail === 'string'
+          let detail = typeof data.detail === 'string'
             ? data.detail
             : `服务返回 ${res.status}`;
+          const retryAfter = Number(data.retry_after);
+          if (res.status === 429 && retryAfter > 0) {
+            detail += `（约 ${Math.ceil(retryAfter)} 秒后重试）`;
+          }
           throw new Error(detail);
         }
         uploaded += 1;
       } catch (err) {
-        failure = {
-          name: file.name || `第 ${index + 1} 个文件`,
-          message: err.message || String(err),
-        };
-        break;
+        failures.push(
+          `${file.name || `第 ${index + 1} 个文件`}：`
+          + `${err.message || err}`
+        );
       }
     }
     if (uploaded) {
@@ -14400,10 +14415,20 @@ async function uploadAttachment() {
       await loadAttachments();
       refreshAttachmentIntegrityIfVisible();
     }
-    if (failure) {
+    if (failures.length) {
+      const names = failures.slice(0, 3).join('；')
+        + (failures.length > 3
+          ? `；另有 ${failures.length - 3} 个`
+          : '');
+      const currentProfile = els.metricProfile
+        ? els.metricProfile.value : '';
+      const targetText = currentProfile !== profile
+        ? `；已上传至档案「${profile || '未指定'}」`
+        : '';
       setAttachmentStatus(
-        `已上传 ${uploaded} 个，${failure.name} 上传失败：`
-        + failure.message,
+        `已上传 ${uploaded} 个，${failures.length} 个失败：${names}。`
+        + (uploaded ? '请重新选择失败文件重试' : '请重试')
+        + targetText,
         true
       );
     } else {
@@ -14414,6 +14439,8 @@ async function uploadAttachment() {
   } finally {
     attachmentUploading = false;
     els.attachmentUpload.disabled = false;
+    els.attachmentFile.disabled = false;
+    els.attachmentNote.disabled = false;
     if (els.metricProfile) els.metricProfile.disabled = false;
     if (els.attachmentKind) els.attachmentKind.disabled = false;
     if (els.attachmentRef) els.attachmentRef.disabled = false;

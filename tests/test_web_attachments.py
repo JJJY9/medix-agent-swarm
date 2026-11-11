@@ -20,7 +20,8 @@ def test_attachment_panel_exists():
     assert 'id="attachment-empty"' in HTML
     assert "JPG/PNG/WebP/PDF" in HTML
     assert "可多选" in HTML
-    assert "multiple" in HTML
+    assert 'id="attachment-file" multiple' in HTML
+    assert "最多 5 个" in HTML
 
 
 def test_attachment_upload_and_list_wiring():
@@ -51,6 +52,12 @@ def test_attachment_upload_guards_and_feedback():
     assert "第 ${index + 1} 个文件超过 10 MB" in SCRIPT
     assert "els.metricProfile.disabled = true;" in SCRIPT
     assert "els.metricProfile.disabled = false;" in SCRIPT
+    assert "els.attachmentFile.disabled = true;" in SCRIPT
+    assert "els.attachmentNote.disabled = false;" in SCRIPT
+    assert "关联记录正在加载，请稍后再上传" in SCRIPT
+    assert "个失败：" in SCRIPT
+    assert "请重新选择失败文件重试" in SCRIPT
+    assert "秒后重试" in SCRIPT
 
 
 def test_attachment_pagination_wiring():
