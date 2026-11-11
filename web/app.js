@@ -15072,6 +15072,53 @@ function handleAttachmentDrop(event) {
   uploadAttachment();
 }
 
+function handleAttachmentPaste(event) {
+  if (!metricsOpen || attachmentUploading) return;
+  const target = event.target;
+  if (
+    target && target.closest
+    && target.closest('input, textarea, select, [contenteditable="true"]')
+  ) {
+    return;
+  }
+  const section = document.getElementById('attachments-section');
+  if (!section || !section.open) return;
+  const items = event.clipboardData && event.clipboardData.items;
+  if (!items || !els.attachmentFile) return;
+  const extensions = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/webp': 'webp',
+  };
+  const stamp = Date.now();
+  const files = [];
+  for (const item of items) {
+    if (item.kind !== 'file') continue;
+    const extension = extensions[item.type];
+    if (!extension) continue;
+    const file = item.getAsFile();
+    if (!file) continue;
+    files.push(new File(
+      [file],
+      `粘贴图片-${stamp}-${files.length + 1}.${extension}`,
+      { type: item.type }
+    ));
+  }
+  if (!files.length) return;
+  event.preventDefault();
+  try {
+    const transfer = new DataTransfer();
+    for (const file of files) transfer.items.add(file);
+    els.attachmentFile.files = transfer.files;
+  } catch {
+    setAttachmentStatus(
+      '当前浏览器不支持粘贴上传，请使用文件选择', true
+    );
+    return;
+  }
+  uploadAttachment();
+}
+
 async function uploadAttachment() {
   if (attachmentUploading) return;
   const files = Array.from(
@@ -20280,6 +20327,7 @@ if (els.attachmentUpload) {
       }
     });
   }
+  document.addEventListener('paste', handleAttachmentPaste);
   if (els.attachmentFilterKind) {
     els.attachmentFilterKind.addEventListener(
       'change', () => {
