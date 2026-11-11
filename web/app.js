@@ -323,6 +323,9 @@ const els = {
   attachmentNote: document.getElementById('attachment-note'),
   attachmentUpload: document.getElementById('attachment-upload'),
   attachmentStatus: document.getElementById('attachment-status'),
+  attachmentIntegrityCheck: document.getElementById('attachment-integrity-check'),
+  attachmentCleanup: document.getElementById('attachment-cleanup'),
+  attachmentIntegrityStatus: document.getElementById('attachment-integrity-status'),
   attachmentList: document.getElementById('attachment-list'),
   attachmentMore: document.getElementById('attachment-more'),
   attachmentEmpty: document.getElementById('attachment-empty'),
@@ -13848,6 +13851,8 @@ let bpMonitoringStartAuto = true;
 
 let attachmentRequestSeq = 0;
 let attachmentRefRequestSeq = 0;
+let attachmentIntegrityRequestSeq = 0;
+let attachmentOrphanCount = 0;
 let attachmentUploading = false;
 let attachmentLoadingMore = false;
 let attachmentHasMore = false;
@@ -13861,6 +13866,92 @@ function setAttachmentStatus(text, isError = false) {
   els.attachmentStatus.textContent = text || '';
   els.attachmentStatus.hidden = !text;
   els.attachmentStatus.classList.toggle('error', Boolean(isError));
+}
+
+function setAttachmentIntegrityStatus(text, isError = false) {
+  if (!els.attachmentIntegrityStatus) return;
+  els.attachmentIntegrityStatus.textContent = text || '';
+  els.attachmentIntegrityStatus.hidden = !text;
+  els.attachmentIntegrityStatus.classList.toggle(
+    'error', Boolean(isError)
+  );
+}
+
+async function checkAttachmentIntegrity() {
+  if (!els.attachmentIntegrityStatus) return;
+  const requestSeq = ++attachmentIntegrityRequestSeq;
+  setAttachmentIntegrityStatus('正在检查附件文件…');
+  try {
+    const res = await fetch('/api/attachments/integrity');
+    const data = await res.json().catch(() => ({}));
+    if (requestSeq !== attachmentIntegrityRequestSeq) return;
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    attachmentOrphanCount = Number(data.orphan_count) || 0;
+    const parts = [
+      `登记 ${data.db_count || 0} 份，目录 ${data.file_count || 0} 个文件`,
+    ];
+    const missing = Number(data.missing_count) || 0;
+    if (missing) {
+      const names = (data.missing || [])
+        .slice(0, 3)
+        .map((item) => item.original_name || item.stored_name)
+        .filter(Boolean)
+        .join('、');
+      parts.push(`缺失 ${missing} 份${names ? `（${names}）` : ''}`);
+    }
+    if (attachmentOrphanCount) {
+      const recent = Number(data.recent_orphan_count) || 0;
+      parts.push(
+        `孤儿文件 ${attachmentOrphanCount} 个`
+        + (recent ? `（${recent} 个刚写入，暂不清理）` : '')
+      );
+    }
+    if (!missing && !attachmentOrphanCount) parts.push('未发现异常');
+    setAttachmentIntegrityStatus(parts.join('；'), missing > 0);
+    if (els.attachmentCleanup) {
+      els.attachmentCleanup.hidden = attachmentOrphanCount === 0;
+    }
+  } catch (err) {
+    if (requestSeq !== attachmentIntegrityRequestSeq) return;
+    attachmentOrphanCount = 0;
+    if (els.attachmentCleanup) els.attachmentCleanup.hidden = true;
+    setAttachmentIntegrityStatus(
+      `检查失败：${err.message || err}`, true
+    );
+  }
+}
+
+async function cleanupAttachmentOrphans() {
+  if (!attachmentOrphanCount) return;
+  if (!window.confirm(
+    `清理 ${attachmentOrphanCount} 个没有登记到数据库的附件文件？`
+    + '该操作不可恢复；刚写入的文件会自动保留。'
+  )) {
+    return;
+  }
+  setAttachmentIntegrityStatus('正在清理孤儿文件…');
+  try {
+    const res = await fetch('/api/attachments/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const parts = [`已清理 ${data.removed || 0} 个孤儿文件`];
+    if (data.failed) parts.push(`${data.failed} 个删除失败`);
+    if (data.skipped) parts.push(`${data.skipped} 个新文件已保留`);
+    setAttachmentIntegrityStatus(parts.join('，'));
+    await checkAttachmentIntegrity();
+  } catch (err) {
+    setAttachmentIntegrityStatus(
+      `清理失败：${err.message || err}`, true
+    );
+  }
 }
 
 function formatAttachmentSize(bytes) {
@@ -19086,6 +19177,14 @@ if (els.bpMonitoringDays) {
 }
 if (els.attachmentUpload) {
   els.attachmentUpload.addEventListener('click', uploadAttachment);
+  if (els.attachmentIntegrityCheck) {
+    els.attachmentIntegrityCheck.addEventListener(
+      'click', checkAttachmentIntegrity
+    );
+    els.attachmentCleanup.addEventListener(
+      'click', cleanupAttachmentOrphans
+    );
+  }
   if (els.attachmentKind) {
     els.attachmentKind.addEventListener(
       'change', loadAttachmentRefOptions

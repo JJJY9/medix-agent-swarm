@@ -3116,6 +3116,18 @@ html[data-theme="dark"] .calc-status.error {
   max-width: 220px;
 }
 
+.attachment-integrity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+}
+
+#attachment-integrity-status.error {
+  color: var(--triage-1);
+}
+
 .attachment-more {
   margin: 4px 0 8px;
 }

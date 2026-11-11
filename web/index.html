@@ -689,6 +689,14 @@
         <button type="button" class="btn-quiet" id="attachment-upload">上传</button>
         <span class="metric-meta" id="attachment-status" role="status" hidden></span>
       </div>
+      <div class="attachment-integrity">
+        <button type="button" class="btn-quiet"
+          id="attachment-integrity-check">检查文件完整性</button>
+        <button type="button" class="btn-quiet"
+          id="attachment-cleanup" hidden>清理孤儿文件</button>
+        <span class="metric-meta" id="attachment-integrity-status"
+          role="status" hidden></span>
+      </div>
       <p class="metric-reference">附件只保存在本机 data/attachments，不进入整库 JSON 备份，也不会发送给模型；请妥善保管。</p>
       <ul class="metrics-list" id="attachment-list"></ul>
       <button type="button" class="btn-quiet attachment-more"

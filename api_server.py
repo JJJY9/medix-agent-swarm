@@ -9514,6 +9514,30 @@ async def family_compare(metric: str = "weight", days: int = 30):
     }
 
 
+def _attachment_dir_files() -> Dict[str, Dict[str, Any]]:
+    """扫描附件目录中的文件，返回文件名到大小/修改时间的映射。"""
+    base = ATTACHMENT_DIR.resolve()
+    files: Dict[str, Dict[str, Any]] = {}
+    if not base.exists():
+        return files
+    for path in base.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files[path.name] = {
+            "name": path.name,
+            "size": stat.st_size,
+            "modified_at": datetime.fromtimestamp(
+                stat.st_mtime
+            ).isoformat(timespec="seconds"),
+            "mtime": stat.st_mtime,
+        }
+    return files
+
+
 def _safe_attachment_name(name: Any) -> str:
     text = str(name or "").replace("\\", "/").split("/")[-1]
     text = "".join(char for char in text if char.isprintable())
@@ -9840,6 +9864,120 @@ async def delete_attachment(attachment_id: SafeIntPath):
         raise HTTPException(status_code=404, detail="附件不存在")
     await record_audit("attachment.delete", str(attachment_id))
     return {"ok": True, "id": attachment_id}
+
+
+@app.get("/api/attachments/integrity")
+async def attachment_integrity():
+    """检查附件登记与本地文件是否一致：缺失文件、孤儿文件。"""
+    from time import time
+
+    from memory import get_session_store
+
+    items = await asyncio.to_thread(
+        get_session_store().list_attachments,
+        None, None, None, 100000, 0,
+    )
+    files = await asyncio.to_thread(_attachment_dir_files)
+    db_names = {
+        str(item.get("stored_name")): item
+        for item in items
+        if item.get("stored_name")
+    }
+    missing = [
+        {
+            "id": item.get("id"),
+            "profile": item.get("profile") or "",
+            "kind": item.get("kind") or "",
+            "kind_label": item.get("kind_label") or "",
+            "original_name": item.get("original_name") or "",
+            "stored_name": name,
+        }
+        for name, item in db_names.items()
+        if name not in files
+    ]
+    now = time()
+    orphans = []
+    for name, info in files.items():
+        if name in db_names:
+            continue
+        orphans.append({
+            "name": name,
+            "size": info["size"],
+            "modified_at": info["modified_at"],
+            "recent": now - float(info["mtime"]) < 600,
+        })
+    orphans.sort(key=lambda item: item["name"])
+    return {
+        "db_count": len(items),
+        "file_count": len(files),
+        "missing_count": len(missing),
+        "orphan_count": len(orphans),
+        "recent_orphan_count": sum(
+            1 for item in orphans if item["recent"]
+        ),
+        "missing": missing[:100],
+        "orphans": orphans[:100],
+    }
+
+
+@app.post("/api/attachments/cleanup")
+async def cleanup_attachment_orphans(request: ConfirmRequest):
+    """清理附件目录中没有数据库登记的孤儿文件。"""
+    from time import time
+
+    from memory import get_session_store
+
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="请确认清理孤儿文件。")
+    items = await asyncio.to_thread(
+        get_session_store().list_attachments,
+        None, None, None, 100000, 0,
+    )
+    db_names = {
+        str(item.get("stored_name"))
+        for item in items
+        if item.get("stored_name")
+    }
+
+    def _remove() -> tuple:
+        base = ATTACHMENT_DIR.resolve()
+        removed = 0
+        failed = 0
+        skipped = 0
+        if not base.exists():
+            return removed, failed, skipped
+        now = time()
+        for path in base.iterdir():
+            if not path.is_file() or path.name in db_names:
+                continue
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                failed += 1
+                continue
+            # 刚写入但尚未登记的文件可能处于上传过程中，保留 10 分钟
+            if now - modified < 600:
+                skipped += 1
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                failed += 1
+            else:
+                removed += 1
+        return removed, failed, skipped
+
+    removed, failed, skipped = await asyncio.to_thread(_remove)
+    await record_audit(
+        "attachment.cleanup",
+        detail=f"removed={removed} failed={failed} skipped={skipped}",
+    )
+    return {
+        "ok": True,
+        "removed": removed,
+        "failed": failed,
+        "skipped": skipped,
+    }
 
 
 @app.get("/api/health/emergency-card")
