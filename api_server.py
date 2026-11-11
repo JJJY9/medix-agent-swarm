@@ -2451,6 +2451,17 @@ async def inspect_local_backup(name: str):
         value for key, value in counts.items() if key != "messages"
     )
 
+    from memory import get_session_store
+    attachment_kinds = await asyncio.to_thread(
+        get_session_store().attachment_kind_stats
+    )
+    attachment_count = sum(
+        int(item.get("count") or 0) for item in attachment_kinds
+    )
+    attachment_size = sum(
+        int(item.get("size") or 0) for item in attachment_kinds
+    )
+
     warnings = []
     if checksum_error:
         warnings.append(checksum_error)
@@ -2466,6 +2477,17 @@ async def inspect_local_backup(name: str):
         )
     if not isinstance(payload.get("version"), int):
         warnings.append("备份缺少版本号。")
+    if attachment_count:
+        if attachment_size >= 1024 * 1024:
+            size_text = f"{attachment_size / (1024 * 1024):.1f} MB"
+        elif attachment_size >= 1024:
+            size_text = f"{round(attachment_size / 1024)} KB"
+        else:
+            size_text = f"{attachment_size} 字节"
+        warnings.append(
+            f"本备份不包含附件文件；本机现有 {attachment_count} 份附件"
+            f"（{size_text}）不会随备份恢复，请另行导出附件包。"
+        )
     if total_records == 0:
         warnings.append("备份中没有可恢复记录。")
     has_backup_arrays = isinstance(sessions_value, list) or any(
@@ -2488,6 +2510,10 @@ async def inspect_local_backup(name: str):
         "checksum_present": checksum_present,
         "checksum_ok": checksum_ok,
         "counts": counts,
+        "attachment_summary": {
+            "count": attachment_count,
+            "size": attachment_size,
+        },
         "invalid_sessions": invalid_sessions,
         "total_records": total_records,
         "restore_ready": restore_ready,

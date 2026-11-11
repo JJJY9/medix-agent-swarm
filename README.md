@@ -285,7 +285,7 @@ npm install -D playwright
 | GET | `/api/templates/{kind}` | 下载 CSV 导入模板（`metrics`/`symptoms`/`medications`/`reminders`/`lab-results`/`allergies`，带 BOM 与示例行） |
 | GET | `/api/backups` | 列出本地自动备份（最多 50 份，含大小与修改时间） |
 | POST | `/api/backups` | 立即创建一份本地备份（受 `MEDIX_BACKUP_KEEP` 保留策略约束） |
-| GET | `/api/backups/{name}/inspect` | 恢复前预检：校验 SHA-256，汇总会话/消息/档案/指标/化验/用药等数量并返回警告 |
+| GET | `/api/backups/{name}/inspect` | 恢复前预检：校验 SHA-256，汇总会话/消息/档案/指标/化验/用药等数量并返回警告（含「备份不包含附件」提示与附件总量） |
 | POST | `/api/backups/{name}/restore` | 恢复指定本地备份（校验文件名与 SHA-256，重复记录跳过，写入审计） |
 | DELETE | `/api/backups/{name}` | 删除指定本地备份（需 `confirm=true`，校验文件名，写入审计） |
 | GET | `/api/sessions/{id}/messages` | 读取会话消息（优先读 SQLite；`limit=0` 返回全部） |
