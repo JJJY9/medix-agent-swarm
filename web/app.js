@@ -337,6 +337,13 @@ const els = {
     'attachment-filter-start'
   ),
   attachmentFilterEnd: document.getElementById('attachment-filter-end'),
+  attachmentRefFilter: document.getElementById('attachment-ref-filter'),
+  attachmentRefFilterLabel: document.getElementById(
+    'attachment-ref-filter-label'
+  ),
+  attachmentRefFilterClear: document.getElementById(
+    'attachment-ref-filter-clear'
+  ),
   attachmentSelectAll: document.getElementById('attachment-select-all'),
   attachmentLinkSelected: document.getElementById(
     'attachment-link-selected'
@@ -7598,6 +7605,7 @@ async function locateHealthRecord(item, query = '') {
   if (els.healthSearchInput) els.healthSearchInput.value = '';
   if (els.healthSearchClear) els.healthSearchClear.hidden = true;
   if (item.type === 'attachment') {
+    setAttachmentRefFilter(null);
     if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
     if (els.attachmentFilterQ) {
       els.attachmentFilterQ.value = item.title || query || '';
@@ -11174,9 +11182,17 @@ function renderLabs(items) {
       attachmentRefCounts.lab[item.id]
     ) || 0;
     if (attachmentCount) {
-      const badge = document.createElement('span');
-      badge.className = 'care-due-badge is-soon';
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'care-due-badge is-soon attachment-count-badge';
       badge.textContent = `资料 ${attachmentCount}`;
+      badge.setAttribute(
+        'aria-label',
+        `查看化验结果关联的 ${attachmentCount} 份资料`
+      );
+      badge.addEventListener(
+        'click', () => openAttachmentListForRecord('lab', item)
+      );
       title.append(' ', badge);
     }
 
@@ -12314,9 +12330,17 @@ function renderVisits(items) {
       attachmentRefCounts.visit[item.id]
     ) || 0;
     if (attachmentCount) {
-      const badge = document.createElement('span');
-      badge.className = 'care-due-badge is-soon';
+      const badge = document.createElement('button');
+      badge.type = 'button';
+      badge.className = 'care-due-badge is-soon attachment-count-badge';
       badge.textContent = `资料 ${attachmentCount}`;
+      badge.setAttribute(
+        'aria-label',
+        `查看就诊记录关联的 ${attachmentCount} 份资料`
+      );
+      badge.addEventListener(
+        'click', () => openAttachmentListForRecord('visit', item)
+      );
       title.append(' ', badge);
     }
 
@@ -13846,6 +13870,7 @@ function openInsightSection(insight) {
     const query = insight && insight.query
       ? String(insight.query) : '';
     if (query && els.attachmentFilterQ) {
+      setAttachmentRefFilter(null);
       if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
       if (els.attachmentFilterLinked) {
         els.attachmentFilterLinked.value = '';
@@ -14051,6 +14076,7 @@ let attachmentLinking = false;
 let attachmentLinkRefRequestSeq = 0;
 let attachmentPreviewUrl = null;
 let attachmentRefCounts = { visit: {}, lab: {} };
+let attachmentRefFilter = null;
 let attachmentFilterTimer = null;
 const ATTACHMENT_PAGE_SIZE = 100;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
@@ -14427,6 +14453,7 @@ async function loadAttachments(append = false) {
   const hasDateFilter = Boolean(filterStart || filterEnd);
   const hasFilter = Boolean(
     filterKind || filterLinked || filterQuery || hasDateFilter
+    || attachmentRefFilter
   );
   const offset = append ? attachmentItemsCache.length : 0;
   if (append) {
@@ -14439,7 +14466,12 @@ async function loadAttachments(append = false) {
       offset: String(offset),
       profile,
     });
-    if (filterKind) params.set('kind', filterKind);
+    if (attachmentRefFilter) {
+      params.set('kind', attachmentRefFilter.kind);
+      params.set('ref_id', String(attachmentRefFilter.refId));
+    } else if (filterKind) {
+      params.set('kind', filterKind);
+    }
     if (filterSort) params.set('sort', filterSort);
     if (filterLinked) params.set('linked', filterLinked);
     if (filterQuery) params.set('q', filterQuery);
@@ -14501,6 +14533,52 @@ async function loadAttachmentRefCounts() {
   } catch {
     // 数量统计失败不影响记录列表
   }
+}
+
+function setAttachmentRefFilter(filter) {
+  attachmentRefFilter = filter;
+  if (els.attachmentRefFilter) {
+    els.attachmentRefFilter.hidden = !filter;
+  }
+  if (els.attachmentRefFilterLabel) {
+    els.attachmentRefFilterLabel.textContent = filter
+      ? `仅看：${filter.label}` : '';
+  }
+}
+
+function clearAttachmentRefFilter() {
+  setAttachmentRefFilter(null);
+  loadAttachments();
+}
+
+async function openAttachmentListForRecord(kind, item) {
+  if (!item || !['visit', 'lab'].includes(kind)) return;
+  const profile = item.profile || '';
+  if (els.metricProfile) els.metricProfile.value = profile;
+  await openMetrics();
+  if (els.metricProfile && els.metricProfile.value !== profile) {
+    els.metricProfile.value = profile;
+    els.metricProfile.dispatchEvent(
+      new Event('change', { bubbles: true })
+    );
+  }
+  setAttachmentRefFilter({
+    kind,
+    refId: item.id,
+    label: attachmentRefLabel(kind, item).slice(0, 80)
+      || (kind === 'visit' ? '就诊记录' : '化验记录'),
+  });
+  if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
+  if (els.attachmentFilterLinked) els.attachmentFilterLinked.value = '';
+  if (els.attachmentFilterQ) els.attachmentFilterQ.value = '';
+  if (els.attachmentFilterStart) els.attachmentFilterStart.value = '';
+  if (els.attachmentFilterEnd) els.attachmentFilterEnd.value = '';
+  const section = document.getElementById('attachments-section');
+  if (section) {
+    section.open = true;
+    section.scrollIntoView({ block: 'start' });
+  }
+  await loadAttachments();
 }
 
 function attachmentRefLabel(kind, item) {
@@ -20090,7 +20168,15 @@ if (els.attachmentUpload) {
   }
   if (els.attachmentFilterKind) {
     els.attachmentFilterKind.addEventListener(
-      'change', () => loadAttachments()
+      'change', () => {
+        if (attachmentRefFilter) setAttachmentRefFilter(null);
+        loadAttachments();
+      }
+    );
+  }
+  if (els.attachmentRefFilterClear) {
+    els.attachmentRefFilterClear.addEventListener(
+      'click', clearAttachmentRefFilter
     );
   }
   if (els.attachmentFilterSort) {
