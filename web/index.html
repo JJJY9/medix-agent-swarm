@@ -644,6 +644,26 @@
       <ul class="metrics-list" id="quality-list"></ul>
       <p class="metrics-empty" id="quality-empty" hidden role="status">暂无数据质量问题。</p>
     </details>
+    <details class="weekly-summary" id="bp-monitoring-section">
+      <summary>家庭血压监测 <span class="metric-meta" id="bp-monitoring-summary"></span></summary>
+      <div class="bp-monitoring-controls">
+        <label class="calc-field">开始日期
+          <input type="date" id="bp-monitoring-start">
+        </label>
+        <label class="calc-field">天数
+          <select id="bp-monitoring-days">
+            <option value="7" selected>7 天</option>
+            <option value="14">14 天</option>
+            <option value="30">30 天</option>
+          </select>
+        </label>
+        <button type="button" class="btn-quiet" id="bp-monitoring-copy">复制摘要</button>
+        <span class="metric-meta" id="bp-monitoring-status" role="status" hidden></span>
+      </div>
+      <p class="metric-reference">仅统计晨起/睡前的家庭测量记录完成度，不判断血压是否达标，也不替代医生评估。</p>
+      <div id="bp-monitoring-body"></div>
+      <p class="metrics-empty" id="bp-monitoring-empty" hidden role="status">所选区间还没有血压记录。</p>
+    </details>
     <div class="metrics-form">
       <label class="calc-field">患者档案
         <select id="metric-profile">

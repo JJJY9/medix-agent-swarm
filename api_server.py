@@ -7485,6 +7485,159 @@ async def health_search(
     }
 
 
+@app.get("/api/health/bp-monitoring")
+async def health_bp_monitoring(
+    profile: Optional[str] = None,
+    days: int = 7,
+    start: Optional[str] = None,
+):
+    """家庭血压监测：统计晨起/睡前时段完成度与均值，不判断是否达标。"""
+    from memory import get_session_store
+
+    days = max(1, min(int(days or 7), 30))
+    today = datetime.now().date()
+    start_text = str(start or "").strip()
+    if start_text:
+        try:
+            start_date = datetime.strptime(start_text, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="开始日期格式应为 YYYY-MM-DD"
+            )
+    else:
+        start_date = today - timedelta(days=days - 1)
+    if start_date > today:
+        raise HTTPException(status_code=400, detail="开始日期不能晚于今天")
+    if (today - start_date).days > 90:
+        raise HTTPException(
+            status_code=400, detail="开始日期距今天不能超过 90 天"
+        )
+    planned_end = start_date + timedelta(days=days - 1)
+    end_date = min(planned_end, today)
+    start_key = start_date.isoformat()
+    end_key = end_date.isoformat()
+    window_days = (today - start_date).days + 1
+    store = get_session_store()
+    raw = await asyncio.to_thread(
+        store.list_metrics, profile, "bp", 100000, window_days, 0, ""
+    )
+    records = [
+        item for item in raw
+        if start_key <= str(item.get("measured_at") or "")[:10] <= end_key
+    ]
+
+    slots: Dict[str, set] = {}
+    per_day_counts: Dict[str, int] = {}
+    morning: List[Tuple[float, float]] = []
+    evening: List[Tuple[float, float]] = []
+    all_values: List[Tuple[float, float]] = []
+    unlabeled = 0
+    for item in records:
+        day = str(item.get("measured_at") or "")[:10]
+        try:
+            systolic = float(item.get("value1"))
+            raw_diastolic = item.get("value2")
+            diastolic = (
+                float(raw_diastolic)
+                if raw_diastolic is not None else 0.0
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+        per_day_counts[day] = per_day_counts.get(day, 0) + 1
+        all_values.append((systolic, diastolic))
+        context = str(item.get("context") or "").strip().lower()
+        if context == "morning":
+            morning.append((systolic, diastolic))
+            slots.setdefault(day, set()).add("morning")
+        elif context == "evening":
+            evening.append((systolic, diastolic))
+            slots.setdefault(day, set()).add("evening")
+        else:
+            unlabeled += 1
+
+    labels = {"morning": "晨起", "evening": "睡前"}
+    daily: List[Dict[str, Any]] = []
+    missing: List[Dict[str, Any]] = []
+    completed_slots = 0
+    expected_slots = 0
+    current = start_date
+    while current <= end_date:
+        key = current.isoformat()
+        done = slots.get(key, set())
+        expected_slots += 2
+        completed_slots += len(done)
+        missing_contexts = [
+            context for context in ("morning", "evening")
+            if context not in done
+        ]
+        daily.append({
+            "date": key,
+            "morning": "morning" in done,
+            "evening": "evening" in done,
+            "readings": per_day_counts.get(key, 0),
+        })
+        if missing_contexts:
+            missing.append({
+                "date": key,
+                "missing": missing_contexts,
+                "labels": [labels[context] for context in missing_contexts],
+            })
+        current += timedelta(days=1)
+
+    def _average(rows: List[Tuple[float, float]]) -> Dict[str, Any]:
+        if not rows:
+            return {
+                "count": 0,
+                "avg_systolic": None,
+                "avg_diastolic": None,
+            }
+        return {
+            "count": len(rows),
+            "avg_systolic": round(
+                sum(row[0] for row in rows) / len(rows), 1
+            ),
+            "avg_diastolic": round(
+                sum(row[1] for row in rows) / len(rows), 1
+            ),
+        }
+
+    overall = _average(all_values)
+    morning_stats = _average(morning)
+    evening_stats = _average(evening)
+    diff = None
+    if morning and evening:
+        raw_morning = sum(row[0] for row in morning) / len(morning)
+        raw_evening = sum(row[0] for row in evening) / len(evening)
+        diff = round(raw_morning - raw_evening + 1e-9, 1)
+    return {
+        "profile": profile or "",
+        "start": start_key,
+        "end": end_key,
+        "days": days,
+        "planned_end": planned_end.isoformat(),
+        "is_future_plan": planned_end > today,
+        "expected_slots": expected_slots,
+        "completed_slots": completed_slots,
+        "completion_rate": (
+            round(
+                completed_slots / expected_slots * 100 + 1e-9
+            )
+            if expected_slots else 0
+        ),
+        "days_completed": sum(
+            1 for row in daily if row["morning"] and row["evening"]
+        ),
+        "readings": len(records),
+        "unlabeled": unlabeled,
+        "average": overall,
+        "morning": morning_stats,
+        "evening": evening_stats,
+        "morning_evening_systolic_diff": diff,
+        "daily": daily,
+        "missing": missing,
+    }
+
+
 @app.get("/api/health/calendar")
 async def health_calendar(profile: Optional[str] = None, month: str = ""):
     """健康月历：按天汇总指标、症状、用药打卡、会诊与提醒。"""

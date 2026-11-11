@@ -3088,6 +3088,18 @@ html[data-theme="dark"] .calc-status.error {
   color: var(--triage-1);
 }
 
+.bp-monitoring-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 8px 0;
+}
+
+#bp-monitoring-status.error {
+  color: var(--triage-1);
+}
+
 .metrics-form .btn-quiet { justify-self: start; }
 
 .metric-reference {
