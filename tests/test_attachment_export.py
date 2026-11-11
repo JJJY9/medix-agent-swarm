@@ -1,4 +1,5 @@
 """附件导出 ZIP 测试。"""
+import hashlib
 import io
 import json
 import zipfile
@@ -62,7 +63,11 @@ def test_export_zip_includes_files_and_manifest(client_and_store):
     assert manifest["count"] == 2
     rows = {row["stored_name"]: row for row in manifest["items"]}
     assert rows["good.pdf"]["file_present"] is True
+    assert rows["good.pdf"]["sha256"] == hashlib.sha256(
+        b"%PDF-1.4 good"
+    ).hexdigest()
     assert rows["missing.pdf"]["file_present"] is False
+    assert rows["missing.pdf"]["sha256"] == ""
     assert rows["good.pdf"]["original_name"] == "出院小结.pdf"
 
 
