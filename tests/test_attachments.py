@@ -464,6 +464,32 @@ def test_bulk_link_validates_ids_and_reference(client_and_store):
     assert "不存在" in no_target.json()["detail"]
 
 
+def test_update_attachment_note(client_and_store):
+    client, _store = client_and_store
+    item = _upload(client, note="旧备注").json()["attachment"]
+    updated = client.patch(
+        f"/api/attachments/{item['id']}", json={"note": "  新 备注  "}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["attachment"]["note"] == "新 备注"
+    listed = client.get(
+        "/api/attachments", params={"profile": "妈妈"}
+    ).json()["attachments"]
+    assert listed[0]["note"] == "新 备注"
+
+    cleared = client.patch(
+        f"/api/attachments/{item['id']}", json={"note": ""}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["attachment"]["note"] == ""
+    assert client.patch(
+        "/api/attachments/999999", json={"note": "x"}
+    ).status_code == 404
+    assert client.patch(
+        f"/api/attachments/{item['id']}", json={"note": "x" * 301}
+    ).status_code == 422
+
+
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store
     item = _upload(client).json()["attachment"]
