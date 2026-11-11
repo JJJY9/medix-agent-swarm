@@ -109,6 +109,8 @@ MAX_PROFILE_FIELD_LENGTH = 2000
 PROFILE_CONTEXT_KEYS = (
     "age",
     "sex",
+    "blood_type",
+    "emergency_contacts",
     "duration",
     "history",
     "medications",
@@ -153,13 +155,29 @@ def _normalize_profile_context(context: Any) -> Optional[Dict[str, str]]:
         if value in (None, "", [], {}):
             continue
         if isinstance(value, (list, tuple)):
-            text = "；".join(str(item).strip() for item in value if str(item).strip())
+            items = []
+            for item in value:
+                if isinstance(item, bool) or item is None:
+                    continue
+                if isinstance(item, (str, int, float)):
+                    text = str(item).strip()
+                    if text:
+                        items.append(text[:MAX_PROFILE_FIELD_LENGTH])
+            text = "；".join(items)
         elif isinstance(value, dict):
-            text = "；".join(
-                f"{item_key}={str(item_value).strip()}"
-                for item_key, item_value in value.items()
-                if str(item_value).strip()
-            )
+            pairs = []
+            for item_key, item_value in value.items():
+                if isinstance(item_value, (dict, list, tuple, bool)):
+                    continue
+                if item_value is None:
+                    continue
+                if isinstance(item_value, (str, int, float)):
+                    text = str(item_value).strip()
+                    if text:
+                        pairs.append(
+                            f"{item_key}={text[:MAX_PROFILE_FIELD_LENGTH]}"
+                        )
+            text = "；".join(pairs)
         else:
             text = str(value).strip()
         if text:

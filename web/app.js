@@ -18,6 +18,9 @@ const els = {
   contextClear: document.getElementById('context-clear'),
   ctxAge: document.getElementById('ctx-age'),
   ctxSex: document.getElementById('ctx-sex'),
+  ctxBloodType: document.getElementById('ctx-blood-type'),
+  ctxEmergency1: document.getElementById('ctx-emergency-1'),
+  ctxEmergency2: document.getElementById('ctx-emergency-2'),
   ctxDuration: document.getElementById('ctx-duration'),
   ctxHistory: document.getElementById('ctx-history'),
   ctxMedications: document.getElementById('ctx-medications'),
@@ -313,6 +316,8 @@ const els = {
   quickEntryPreview: document.getElementById('quick-entry-preview'),
   quickEntryStatus: document.getElementById('quick-entry-status'),
   healthDossierExport: document.getElementById('health-dossier-export'),
+  emergencyCard: document.getElementById('emergency-card'),
+  emergencyCardStatus: document.getElementById('emergency-card-status'),
   remindersOpen: document.getElementById('reminders-open'),
   remindersCount: document.getElementById('reminders-count'),
   visitSummary: document.getElementById('visit-summary'),
@@ -1497,6 +1502,7 @@ function formatPatientContext(context) {
   const labels = {
     age: '年龄',
     sex: '性别',
+    blood_type: '血型',
     duration: '病程',
     history: '既往史',
     medications: '用药',
@@ -17124,6 +17130,16 @@ function readPatientContext() {
   const age = els.ctxAge.value.trim();
   if (age) context.age = age;
   if (els.ctxSex.value) context.sex = els.ctxSex.value;
+  if (els.ctxBloodType && els.ctxBloodType.value) {
+    context.blood_type = els.ctxBloodType.value;
+  }
+  const emergencyContacts = [
+    els.ctxEmergency1 ? els.ctxEmergency1.value.trim() : '',
+    els.ctxEmergency2 ? els.ctxEmergency2.value.trim() : '',
+  ].filter(Boolean);
+  if (emergencyContacts.length) {
+    context.emergency_contacts = emergencyContacts.join('；');
+  }
 
   const duration = els.ctxDuration.value.trim();
   if (duration) context.duration = duration;
@@ -17139,6 +17155,8 @@ function readPatientContext() {
 
 async function buildConsultContext() {
   const context = readPatientContext();
+  // 紧急联系人只用于本机急救卡，不随会诊发送给模型
+  delete context.emergency_contacts;
   const profile = els.profileSelect.value || '';
   try {
     const [
@@ -17211,6 +17229,15 @@ function updateContextSummary() {
   const parts = [];
   if (context.age) parts.push(`${context.age} 岁`);
   if (context.sex) parts.push(context.sex);
+  if (context.blood_type) parts.push(`血型 ${context.blood_type}`);
+  const contactCount = (
+    typeof context.emergency_contacts === 'string'
+      ? context.emergency_contacts.split(/[；;]/).filter(Boolean)
+      : (Array.isArray(context.emergency_contacts)
+        ? context.emergency_contacts.filter(Boolean)
+        : [])
+  ).length;
+  if (contactCount) parts.push(`紧急联系人 ${contactCount} 位`);
   if (context.duration) parts.push(context.duration);
   if (context.history) parts.push('有既往病史');
   if (context.medications) parts.push('有用药');
@@ -17235,6 +17262,29 @@ function applyPatientContext(context) {
   const data = context && typeof context === 'object' ? context : {};
   els.ctxAge.value = data.age || '';
   els.ctxSex.value = data.sex || '';
+  if (els.ctxBloodType) {
+    const bloodType = String(data.blood_type || '');
+    if (
+      bloodType
+      && ![...els.ctxBloodType.options]
+        .some((option) => option.value === bloodType)
+    ) {
+      const option = document.createElement('option');
+      option.value = bloodType;
+      option.textContent = bloodType;
+      els.ctxBloodType.appendChild(option);
+    }
+    els.ctxBloodType.value = bloodType;
+  }
+  const contacts = (
+    typeof data.emergency_contacts === 'string'
+      ? data.emergency_contacts.split(/[；;]/)
+      : (Array.isArray(data.emergency_contacts)
+        ? data.emergency_contacts
+        : [])
+  ).filter(Boolean);
+  if (els.ctxEmergency1) els.ctxEmergency1.value = contacts[0] || '';
+  if (els.ctxEmergency2) els.ctxEmergency2.value = contacts[1] || '';
   els.ctxDuration.value = data.duration || '';
   els.ctxHistory.value = data.history || '';
   els.ctxMedications.value = data.medications || '';
@@ -17914,8 +17964,54 @@ els.healthSearchClear.addEventListener('click', () => {
   hideHealthSearchResults();
   els.healthSearchInput.focus();
 });
+function setEmergencyCardStatus(text, isError = false) {
+  if (!els.emergencyCardStatus) return;
+  els.emergencyCardStatus.textContent = text || '';
+  els.emergencyCardStatus.hidden = !text;
+  els.emergencyCardStatus.classList.toggle('error', Boolean(isError));
+}
+
+async function openEmergencyCard() {
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  if (!profile) {
+    setEmergencyCardStatus('请先选择患者档案', true);
+    return;
+  }
+  setEmergencyCardStatus('正在生成…');
+  try {
+    const res = await fetch(
+      `/api/health/emergency-card?profile=${encodeURIComponent(profile)}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const html = await res.text();
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const opened = window.open(url, '_blank');
+    if (!opened) {
+      URL.revokeObjectURL(url);
+      setEmergencyCardStatus('浏览器拦截了新窗口，请允许弹窗后重试', true);
+      return;
+    }
+    try {
+      opened.opener = null;
+    } catch {
+      // 新窗口不可写时忽略
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setEmergencyCardStatus('已生成急救卡');
+  } catch (err) {
+    setEmergencyCardStatus(`生成失败：${err.message || err}`, true);
+  }
+}
+
 if (els.healthDossierExport) {
   els.healthDossierExport.addEventListener('click', exportHealthDossier);
+}
+if (els.emergencyCard) {
+  els.emergencyCard.addEventListener('click', openEmergencyCard);
 }
 els.metricsBackdrop.addEventListener('click', () => closeMetrics(true));
 els.remindersOpen.addEventListener('click', openReminders);

@@ -186,6 +186,20 @@
               <option value="其他">其他</option>
             </select>
           </label>
+          <label>血型
+            <select id="ctx-blood-type">
+              <option value="">未填写</option>
+              <option value="A+">A+</option>
+              <option value="A-">A-</option>
+              <option value="B+">B+</option>
+              <option value="B-">B-</option>
+              <option value="AB+">AB+</option>
+              <option value="AB-">AB-</option>
+              <option value="O+">O+</option>
+              <option value="O-">O-</option>
+              <option value="不详">不详</option>
+            </select>
+          </label>
           <label class="context-wide">症状持续时间
             <input id="ctx-duration" type="text" maxlength="40" placeholder="如 3 天，或 2 小时">
           </label>
@@ -197,6 +211,12 @@
           </label>
           <label class="context-wide">过敏史
             <input id="ctx-allergies" type="text" maxlength="120" placeholder="如 青霉素过敏">
+          </label>
+          <label class="context-wide">紧急联系人 1
+            <input id="ctx-emergency-1" type="text" maxlength="60" placeholder="如 张三 女儿 13800000000">
+          </label>
+          <label class="context-wide">紧急联系人 2
+            <input id="ctx-emergency-2" type="text" maxlength="60" placeholder="选填">
           </label>
         </div>
         <label class="single-mode">
@@ -579,6 +599,8 @@
   <div class="drawer-head">
     <h2 id="metrics-title">健康记录</h2>
     <span class="drawer-head-actions">
+      <span class="metric-meta" id="emergency-card-status" role="status" hidden></span>
+      <button type="button" class="btn-quiet" id="emergency-card">急救卡</button>
       <button type="button" class="btn-quiet" id="health-dossier-export">导出档案</button>
       <button type="button" class="drawer-close" id="metrics-close" aria-label="关闭健康记录">×</button>
     </span>
