@@ -10,20 +10,23 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   const LAB_PREFILL_ALIASES = {
     creatinine: ['肌酐', 'creatinine', 'scr'],
-    ast: ['谷草转氨酶', 'ast', 'got'],
-    alt: ['谷丙转氨酶', 'alt', 'gpt'],
+    ast: ['谷草转氨酶', 'ast', 'got', 'sgot'],
+    alt: ['谷丙转氨酶', 'alt', 'gpt', 'sgpt'],
     platelets: ['血小板', 'plt', 'platelet'],
     bilirubin: ['总胆红素', '胆红素', 'tbil', 'bilirubin'],
     inr: ['国际标准化', 'inr'],
     albumin: ['白蛋白', 'albumin', 'alb'],
     urea: ['尿素氮', '尿素', 'urea', 'bun'],
-    hba1c: ['糖化血红蛋白', 'hba1c', 'a1c', 'glycatedhemoglobin'],
+    hba1c: [
+      '糖化血红蛋白', 'hba1c', 'a1c', 'glycatedhemoglobin',
+      'hgba1c', 'ghba1c',
+    ],
   };
 
   const LAB_PREFILL_EXCLUDES = {
     creatinine: [
       '尿', 'urine', '清除', 'clearance', '内生', '24小时',
-      '比值', 'ratio', '胱抑素', 'cystatin',
+      '比值', 'ratio', '胱抑素', 'cystatin', 'crp',
     ],
     bilirubin: [
       '直接胆红素', '间接胆红素', '结合胆红素', '尿胆红素',
@@ -38,9 +41,9 @@
     platelets: [
       '平均血小板体积', '血小板平均体积', '血小板压积',
       '血小板分布宽度', '未成熟血小板', '大型血小板', '大血小板',
-      '血小板比积', '网织血小板',
+      '血小板比积', '网织血小板', '比值', '淋巴细胞', '中性粒',
       'mpv', 'pdw', 'pct', 'plateletcrit', 'plateletdistribution',
-      'plcr',
+      'plcr', 'ratio', 'neutrophil', 'nlr',
     ],
     ast: [
       'ast/alt', 'alt/ast', 'astalt', 'altast',
@@ -79,6 +82,25 @@
       .replace(/[\s\-_()（）]/g, '');
   }
 
+  const ASCII_ALIAS_PATTERNS = new Map();
+
+  function labAliasMatches(itemName, alias) {
+    const raw = String(itemName || '').toLowerCase();
+    if (/^[a-z0-9]+$/.test(alias)) {
+      // ASCII 别名必须按单词边界匹配，避免 scr 命中 hs-CRP、plt 命中 ...
+      let pattern = ASCII_ALIAS_PATTERNS.get(alias);
+      if (!pattern) {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        pattern = new RegExp(
+          `(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`
+        );
+        ASCII_ALIAS_PATTERNS.set(alias, pattern);
+      }
+      return pattern.test(raw);
+    }
+    return normalizeLabName(raw).includes(alias);
+  }
+
   function findLabItem(items, key) {
     const aliases = (LAB_PREFILL_ALIASES[key] || []).map(
       normalizeLabName
@@ -90,7 +112,7 @@
     const panelExcludes = LAB_PREFILL_PANEL_EXCLUDES.map(
       normalizeLabName
     );
-    return (items || []).find((item) => {
+    const matches = (items || []).filter((item) => {
       const name = normalizeLabName(item.item);
       if (!name) return false;
       if (excludes.some((bad) => bad && name.includes(bad))) {
@@ -105,8 +127,15 @@
           return false;
         }
       }
-      return aliases.some((alias) => alias && name.includes(alias));
-    }) || null;
+      return aliases.some(
+        (alias) => alias && labAliasMatches(item.item, alias)
+      );
+    });
+    // 同一项目可能存在于多个分组，取检测时间最新的一条
+    matches.sort((a, b) => (
+      String(b.tested_at || '').localeCompare(String(a.tested_at || ''))
+    ));
+    return matches[0] || null;
   }
 
   function labNumber(item) {
@@ -176,7 +205,9 @@
     const name = normalizeLabName(item && item.item);
     const isNitrogen = name.includes('尿素氮')
       || name.includes('bun')
-      || name.includes('bloodureanitrogen');
+      || name.includes('bloodureanitrogen')
+      || name.includes('ureanitrogen')
+      || name.includes('nitrogen');
     if (UNIT_MG_DL.test(unit)) {
       return {
         value: value / (isNitrogen ? 2.8 : 6.0),

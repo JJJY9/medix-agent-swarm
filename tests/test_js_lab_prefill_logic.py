@@ -28,6 +28,8 @@ const items = [
   { item: '直接胆红素', value: 12, unit: 'μmol/L' },
   { item: '总胆红素', value: 45, unit: 'μmol/L' },
   { item: '24小时尿肌酐', value: 9800, unit: 'μmol/24h' },
+  { item: 'hs-CRP', value: 2.1, unit: 'mg/L' },
+  { item: 'PLR', value: 120, unit: '' },
   { item: '肌酐', value: 88.4, unit: 'μmol/L' },
   { item: '尿素', value: 8.2, unit: 'mmol/L' },
   { item: '尿酸', value: 420, unit: 'μmol/L' },
@@ -46,6 +48,45 @@ assert.strictEqual(core.findLabItem(items, 'alt'), null);
 assert.strictEqual(
   core.findLabItem(items, 'creatinine').item, '肌酐'
 );
+// ASCII 别名按单词边界匹配：hs-CRP 不能当成 Scr，PLR 不能当成血小板
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'hs-CRP', value: 2, unit: 'mg/L' }], 'creatinine'
+  ),
+  null
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'Scr', value: 1.0, unit: 'mg/dL' }], 'creatinine'
+  ).item,
+  'Scr'
+);
+assert.strictEqual(
+  core.findLabItem([{ item: 'PLR', value: 120 }], 'platelets'), null
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'Urea Nitrogen', value: 30, unit: 'mg/dL' }], 'urea'
+  ).item,
+  'Urea Nitrogen'
+);
+assert.strictEqual(
+  core.findLabItem([{ item: 'SGOT', value: 42, unit: 'U/L' }], 'ast').item,
+  'SGOT'
+);
+assert.strictEqual(
+  core.findLabItem([{ item: 'SGPT', value: 50, unit: 'U/L' }], 'alt').item,
+  'SGPT'
+);
+assert.strictEqual(
+  core.findLabItem([{ item: 'HgbA1c', value: 7.2, unit: '%' }], 'hba1c').item,
+  'HgbA1c'
+);
+// 胃泌素（Gastrin）不能当成 AST
+assert.strictEqual(
+  core.findLabItem([{ item: 'Gastrin', value: 50, unit: 'pg/mL' }], 'ast'),
+  null
+);
 const mixedPanels = [
   { item: '肌酐', panel: '24小时尿', value: 9800, unit: 'μmol/24h' },
   { item: '肌酐', panel: '肾功能', value: 88.4, unit: 'μmol/L' },
@@ -55,6 +96,19 @@ assert.strictEqual(
 );
 assert.strictEqual(
   core.findLabItem([mixedPanels[0]], 'creatinine'), null
+);
+// 同一项目存在多个分组时取检测时间最新的一条
+const multiPanelLabs = [
+  { item: '肌酐', panel: '肾功能', value: 88.4, unit: 'μmol/L',
+    tested_at: '2026-01-01' },
+  { item: '肌酐', panel: '生化', value: 95.0, unit: 'μmol/L',
+    tested_at: '2026-03-01' },
+];
+assert.strictEqual(
+  core.findLabItem(multiPanelLabs, 'creatinine').panel, '生化'
+);
+assert.strictEqual(
+  core.findLabItem([...multiPanelLabs].reverse(), 'creatinine').panel, '生化'
 );
 assert.strictEqual(
   core.findLabItem(items, 'platelets').item, '血小板计数'

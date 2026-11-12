@@ -17,6 +17,8 @@ def test_open_calc_overwrites_patient_age_and_sex():
     assert "els.calcFib4Age.value = ageText;" in body
     assert "els.calcEgfrSex.value = sexText;" in body
     assert "els.calcChadsSex.value = sexText;" in body
+    # AUDIT-C 女性阈值不同，必须随当前患者带入性别
+    assert "els.calcAuditCSex.value = sexText;" in body
 
 
 def test_curb_prefill_resets_manual_fields():

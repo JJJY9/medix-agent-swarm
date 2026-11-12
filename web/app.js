@@ -18651,6 +18651,8 @@ function openCalc() {
     : context.sex === '男' ? 'male' : '';
   els.calcEgfrSex.value = sexText;
   els.calcChadsSex.value = sexText;
+  // AUDIT-C 的女性阈值不同（≥3 即阳性），必须带入档案性别
+  if (els.calcAuditCSex) els.calcAuditCSex.value = sexText;
 
   let storedTool = '';
   try {

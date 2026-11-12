@@ -6098,7 +6098,10 @@ async def _weekly_report_impl(
     adherence_med_ids = set()
     for item in active_meds:
         expected = expected_doses_for_period(
-            item.get("frequency", ""), item.get("created_at", ""), now, days
+            item.get("frequency", ""),
+            item.get("started_at") or item.get("created_at", ""),
+            now,
+            days,
         )
         if expected:
             adherence_expected += expected
@@ -6155,13 +6158,17 @@ async def _weekly_report_impl(
         if medication is not None and medication.get("active"):
             expected = expected_doses_for_period(
                 medication.get("frequency", ""),
-                medication.get("created_at", ""),
+                medication.get("started_at")
+                or medication.get("created_at", ""),
                 now,
                 days,
             )
         row["expected"] = expected
         row["rate"] = (
             adherence_rate(row["doses"], expected) if expected else None
+        )
+        row["profile"] = (
+            medication.get("profile") or "" if medication else ""
         )
         medication_rows.append(row)
     medication_rows.sort(key=lambda row: (-row["doses"], row["name"]))
@@ -6787,7 +6794,7 @@ def _build_health_insights(
                         "metric",
                         metric="bp",
                     ))
-        if metric == "glucose":
+        if metric == "glucose" and not family_scope:
             contexts = {
                 str(item.get("context") or "unspecified"): item
                 for item in (report.get("metric_contexts") or {})
@@ -6928,7 +6935,38 @@ def _build_health_insights(
         ))
 
     adherence = (report.get("medications") or {}).get("adherence") or {}
-    if adherence.get("expected", 0) >= 3 and adherence.get("rate", 100) < 60:
+    if family_scope:
+        # 家庭范围不能用合并后的依从率：个别成员漏服会被其他成员稀释
+        worst = None
+        for row in (report.get("medications") or {}).get(
+            "by_medication"
+        ) or []:
+            expected = row.get("expected")
+            rate = row.get("rate")
+            if expected and expected >= 3 and rate is not None:
+                if worst is None or rate < worst[0]:
+                    worst = (rate, row)
+        if worst is not None and worst[0] < 60:
+            rate = int(worst[0])
+            row = worst[1]
+            label = "·".join(
+                part for part in (
+                    row.get("profile") or "", row.get("name") or ""
+                ) if part
+            ) or "药物"
+            insights.append(_health_insight(
+                "adherence",
+                "warning" if rate < 40 else "info",
+                f"{label} 近 {days} 天打卡 {rate}%",
+                f"应服 {row.get('expected')} 次，"
+                f"已打卡 {row.get('doses')} 次。",
+                "漏服较多时可调整用药提醒或与医生确认服药方案。",
+                "medication",
+            ))
+    elif (
+        adherence.get("expected", 0) >= 3
+        and adherence.get("rate", 100) < 60
+    ):
         rate = int(adherence.get("rate") or 0)
         insights.append(_health_insight(
             "adherence",
@@ -9688,7 +9726,9 @@ def _family_attention(
         return {
             "level": "info",
             "label": f"疫苗逾期 {vaccinations['overdue']} 剂",
-            "detail": vaccinations.get("next_due") or "",
+            "detail": "、".join(
+                vaccinations.get("overdue_items") or []
+            )[:120],
         }
     if reminders.get("due_today"):
         return {
@@ -9795,6 +9835,9 @@ async def family_overview(days: int = 7):
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
     )
+    recorded_day_sets = {
+        name: set(days) for name, days in recorded_days.items()
+    }
     risk_by_profile: Dict[str, str] = {}
     for item in latest_answers:
         profile_name = item.get("profile") or ""
@@ -9965,6 +10008,7 @@ async def family_overview(days: int = 7):
             continue
         entry = vaccinations_by_profile.setdefault(profile, {
             "count": 0, "latest": None, "next_due": "", "overdue": 0,
+            "overdue_items": [],
         })
         entry["count"] += 1
         if entry["latest"] is None:
@@ -9979,6 +10023,11 @@ async def family_overview(days: int = 7):
         if due:
             if due < today:
                 entry["overdue"] += 1
+                if len(entry["overdue_items"]) < 3:
+                    entry["overdue_items"].append(
+                        f"{item.get('vaccine_name') or '疫苗'}"
+                        f" 应于 {due}"
+                    )
             elif not entry["next_due"] or due < entry["next_due"]:
                 entry["next_due"] = due
 
@@ -10173,6 +10222,7 @@ async def family_overview(days: int = 7):
         })
         vaccination = vaccinations_by_profile.get(name, {
             "count": 0, "latest": None, "next_due": "", "overdue": 0,
+            "overdue_items": [],
         })
         appointment = appointments_by_profile.get(name, {
             "upcoming": 0, "next": None,
@@ -10209,20 +10259,13 @@ async def family_overview(days: int = 7):
             medication.get("last_skip_at") or "",
         ]
         last_activity = max(activity_candidates)
-        recorded_today = bool(
-            any(
-                str(metric.get("measured_at") or "")[:10] == today
-                for metric in metrics
-            )
-            or str(
-                (symptom.get("latest") or {}).get("recorded_at") or ""
-            )[:10] == today
+        # 停药后当天的打卡日志仍属于健康记录，统一按 store 的
+        # recorded_days 判断；接种记录不在该查询里，单独补充。
+        recorded_today = (
+            today in recorded_day_sets.get(name, set())
             or str(
                 (vaccination.get("latest") or {}).get("vaccinated_at") or ""
             )[:10] == today
-            or medication.get("taken_today")
-            or medication.get("skipped_today")
-            or str(consultation.get("latest_at") or "")[:10] == today
         )
         attention = _family_attention(
             critical=critical,

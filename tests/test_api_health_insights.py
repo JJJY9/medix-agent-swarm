@@ -842,3 +842,63 @@ def test_family_insights_batches_safety_queries(
     assert counts.get("list_allergies") == 1
     assert counts.get("list_profiles") == 1
     assert counts.get("list_medications", 0) <= 2
+
+
+def test_family_adherence_insight_uses_worst_member(client_and_store):
+    """家庭依从率不能把成员合并平均，漏服成员会被高依从成员稀释。"""
+    client, store = client_and_store
+    now = datetime.now()
+    created = (now - timedelta(days=6)).isoformat(timespec="seconds")
+    mom = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "二甲双胍", "frequency": "每日两次",
+    }).json()["medication"]
+    client.post("/api/medications", json={
+        "profile": "爸爸", "name": "氨氯地平", "frequency": "每日两次",
+    })
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE id = ?",
+            (created, mom["id"]),
+        )
+        store._conn.execute(
+            "UPDATE medications SET created_at = ? WHERE profile = '爸爸'",
+            (created,),
+        )
+    for day in range(6, -1, -1):
+        base = (now - timedelta(days=day)).strftime("%Y-%m-%d")
+        for hour in (8, 20):
+            client.post(
+                f"/api/medications/{mom['id']}/logs",
+                json={"taken_at": f"{base}T{hour:02d}:00"},
+            )
+
+    data = client.get("/api/health/insights", params={"days": 7}).json()
+    adherence = next(
+        (
+            item for item in data["insights"]
+            if item["key"] == "adherence"
+        ),
+        None,
+    )
+
+    assert adherence is not None
+    assert "爸爸" in adherence["title"]
+    assert "0%" in adherence["title"]
+    assert adherence["level"] == "warning"
+
+
+def test_family_insights_skip_glucose_context_merge(client_and_store):
+    """家庭范围不能把不同成员的血糖情境混在一起做空腹均值提示。"""
+    client, _store = client_and_store
+    for name in ("妈妈", "爸爸"):
+        client.post("/api/metrics", json={
+            "profile": name, "metric": "glucose", "value1": 8.0,
+            "context": "fasting",
+            "measured_at": f"{_date(0)}T08:00",
+        })
+
+    data = client.get("/api/health/insights", params={"days": 30}).json()
+    keys = [item["key"] for item in data["insights"]]
+
+    assert "metric_glucose_fasting" not in keys
+    assert "metric_glucose_postprandial" not in keys

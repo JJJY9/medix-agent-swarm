@@ -8180,10 +8180,15 @@ class SessionStore:
                 ),
                 "last_taken_at": row["last_taken_at"] or "",
                 "expected_week_doses": _expected_week_doses(
-                    row["frequency"], row["created_at"], now
+                    row["frequency"],
+                    row["started_at"] or row["created_at"],
+                    now,
                 ),
                 "expected_range_doses": expected_doses_for_period(
-                    row["frequency"], row["created_at"], now, days
+                    row["frequency"],
+                    row["started_at"] or row["created_at"],
+                    now,
+                    days,
                 ),
             }
             for row in rows

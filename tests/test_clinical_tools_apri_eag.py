@@ -44,12 +44,13 @@ def test_apri_calculation_boundaries():
     assert exact_grey["risk"] == "不确定"
 
     rounded_low = calculate_apri(100, 505)
-    assert rounded_low["apri"] == 0.5
-    assert rounded_low["risk"] == "不确定"
+    assert rounded_low["apri"] == 0.495
+    assert rounded_low["risk"] == "低风险"
 
-    rounded_grey = calculate_apri(181, 301)
-    assert rounded_grey["apri"] == 1.5
-    assert rounded_grey["risk"] == "不确定"
+    # 1.503 若按两位小数取整会被误判为灰区，分层应使用未取整值
+    rounded_high = calculate_apri(181, 301)
+    assert rounded_high["apri"] == 1.503
+    assert rounded_high["risk"] == "提示纤维化"
 
     with pytest.raises(ValueError):
         calculate_apri(0, 100)
