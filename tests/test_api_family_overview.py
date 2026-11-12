@@ -370,3 +370,28 @@ def test_family_overview_marks_low_metrics_direction(client_and_store):
     mom_row = next(row for row in rows[1:] if row[0] == "妈妈")
     assert "（低于目标）" in mom_row[3]
     assert "（超标）" not in mom_row[3]
+
+
+def test_family_overview_completed_vaccine_series_not_overdue(
+    client_and_store,
+):
+    client, _store = client_and_store
+    now = datetime.now()
+    older = (now - timedelta(days=120)).strftime("%Y-%m-%d")
+    latest = (now - timedelta(days=10)).strftime("%Y-%m-%d")
+    past_due = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 1,
+        "vaccinated_at": older, "next_due": past_due,
+    })
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 2,
+        "vaccinated_at": latest,
+    })
+
+    data = client.get("/api/family/overview").json()
+    mom = next(row for row in data["profiles"] if row["name"] == "妈妈")
+
+    assert mom["vaccinations"]["count"] == 2
+    assert mom["vaccinations"]["overdue"] == 0

@@ -532,3 +532,32 @@ def test_timeline_metric_event_marks_low_direction(client_and_store):
     event = data["events"][0]
     assert event["alert"] is True
     assert event["target_direction"] == "low"
+
+
+def test_timeline_vaccination_alert_only_for_latest_dose(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    older = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+    latest = (now - timedelta(days=20)).strftime("%Y-%m-%d")
+    past_due = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 1,
+        "vaccinated_at": older, "next_due": past_due,
+    })
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 2,
+        "vaccinated_at": latest,
+    })
+
+    data = client.get(
+        "/api/timeline",
+        params={"profile": "妈妈", "type": "vaccination", "days": 120},
+    ).json()
+    events = [
+        event for event in data["events"]
+        if event["type"] == "vaccination"
+    ]
+
+    assert len(events) == 2
+    assert all(event["alert"] is False for event in events)

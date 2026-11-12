@@ -724,3 +724,22 @@ def test_insights_followup_overdue_beyond_visit_window(client_and_store):
     keys = [item["key"] for item in data["insights"]]
 
     assert "followup_overdue" in keys
+
+
+def test_insights_completed_vaccine_series_not_overdue(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 1,
+        "vaccinated_at": _date(-90), "next_due": _date(-30),
+    })
+    client.post("/api/vaccinations", json={
+        "profile": "妈妈", "vaccine_name": "乙肝疫苗", "dose_number": 2,
+        "vaccinated_at": _date(-20),
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈", "days": 30}
+    ).json()
+    keys = [item["key"] for item in data["insights"]]
+
+    assert "vaccine_overdue" not in keys
