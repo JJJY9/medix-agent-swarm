@@ -1774,6 +1774,8 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, id);
+                CREATE INDEX IF NOT EXISTS idx_messages_session_role
+                    ON messages(session_id, role);
                 CREATE INDEX IF NOT EXISTS idx_messages_role_created
                     ON messages(role, created_at);
                 CREATE INDEX IF NOT EXISTS idx_sessions_updated
@@ -2794,7 +2796,7 @@ class SessionStore:
                 rows = self._conn.execute(
                     f"""
                     SELECT session_id, metadata
-                      FROM messages
+                      FROM messages INDEXED BY idx_messages_session_role
                      WHERE role = 'assistant'
                        AND session_id IN ({placeholders})
                     """,
