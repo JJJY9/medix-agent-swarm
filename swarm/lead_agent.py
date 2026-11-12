@@ -376,7 +376,10 @@ class LeadAgent:
             if usage_out is not None and usage:
                 usage_out.update(usage)
 
-            logger.debug(f"LeadAgent assessment: {(content or '')[:200]}...")
+            # 只记录长度：模型输出通常复述患者主诉，原文不应进入 DEBUG 日志
+            logger.debug(
+                f"LeadAgent assessment: {len(content or '')} chars"
+            )
 
             payload = extract_json_payload(content)
             if not isinstance(payload, dict):
