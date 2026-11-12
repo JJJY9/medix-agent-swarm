@@ -33,8 +33,9 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db
 #: SQLite 参数绑定只接受有符号 64 位整数，超出会抛 OverflowError
 MAX_SQLITE_INT = 2**63 - 1
 
-#: 搜索词上限：超长 LIKE 模式会触发 SQLite “pattern too complex” 错误
-MAX_SEARCH_QUERY_LENGTH = 80
+#: 搜索词上限：SQLite LIKE 模式默认上限约 5 万字符，取 2000 留足余量；
+#: 正常查询不会被截断，避免 SQL 过滤与 Python 侧摘要匹配语义不一致
+MAX_SEARCH_QUERY_LENGTH = 2000
 
 
 #: 用于区分「未提供字段」与显式空值
@@ -2427,24 +2428,55 @@ class SessionStore:
                 names.update(row["name"] for row in rows)
         return sorted(names)
 
-    def has_unassigned_records(self) -> bool:
-        """是否存在未指定档案（profile 为空）且会在健康档案中展示的记录。"""
-        tables = (
-            "reminders", "health_metrics", "symptoms", "medications",
-            "vaccinations", "appointments", "lab_results", "allergies",
-            "care_items", "visit_records", "conditions", "attachments",
+    def has_unassigned_records(self, days: int = 30) -> bool:
+        """是否存在未指定档案（profile 为空）且会在健康档案中展示的记录。
+
+        判定口径与 export_health_dossier 保持一致：已完成提醒不展示，
+        症状/化验/会诊受 days 窗口限制。
+        """
+        try:
+            days = max(1, min(int(days or 30), 365))
+        except (TypeError, ValueError, OverflowError):
+            days = 30
+        cutoff = (
+            datetime.now() - timedelta(days=days - 1)
+        ).strftime("%Y-%m-%d")
+        checks = (
+            ("reminders", "profile = '' AND done = 0", ()),
+            ("health_metrics", "profile = ''", ()),
+            ("medications", "profile = ''", ()),
+            ("vaccinations", "profile = ''", ()),
+            ("appointments", "profile = ''", ()),
+            ("allergies", "profile = ''", ()),
+            ("care_items", "profile = ''", ()),
+            ("visit_records", "profile = ''", ()),
+            ("conditions", "profile = ''", ()),
+            ("attachments", "profile = ''", ()),
+            (
+                "symptoms",
+                "profile = '' AND substr(recorded_at, 1, 10) >= ?",
+                (cutoff,),
+            ),
+            (
+                "lab_results",
+                "profile = '' AND substr(tested_at, 1, 10) >= ?",
+                (cutoff,),
+            ),
         )
         with self._lock:
-            for table in tables:
+            for table, where, params in checks:
                 row = self._conn.execute(
-                    f"SELECT 1 FROM {table} WHERE profile = '' LIMIT 1"
+                    f"SELECT 1 FROM {table} WHERE {where} LIMIT 1",
+                    params,
                 ).fetchone()
                 if row is not None:
                     return True
             row = self._conn.execute(
                 "SELECT 1 FROM sessions s WHERE s.profile = ''"
+                " AND substr(s.created_at, 1, 10) >= ?"
                 " AND EXISTS (SELECT 1 FROM messages m"
-                " WHERE m.session_id = s.id) LIMIT 1"
+                " WHERE m.session_id = s.id) LIMIT 1",
+                (cutoff,),
             ).fetchone()
         return row is not None
 
@@ -2536,6 +2568,8 @@ class SessionStore:
         """
         limit = max(1, min(int(limit or 50), 100000))
         offset = _bounded_offset(offset)
+        # 与 SQL LIKE 使用同一个搜索词，避免摘要匹配仍用超长原文
+        query = str(query or "").strip()[:MAX_SEARCH_QUERY_LENGTH]
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
                    s.archived, s.tags, s.profile,

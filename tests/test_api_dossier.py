@@ -206,6 +206,42 @@ def test_family_dossier_includes_unassigned_attachment(client_and_store):
     assert "化验单.pdf" in response.text
 
 
+def test_family_dossier_ignores_completed_unassigned_reminder(
+    client_and_store,
+):
+    """已完成的未指定档案提醒不会出现在档案里，不能触发空章节。"""
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    reminder = client.post("/api/reminders", json={
+        "title": "取药", "due_at": today,
+    }).json()["reminder"]
+    client.post(f"/api/reminders/{reminder['id']}/complete")
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "暂无患者档案"
+
+
+def test_family_dossier_window_excludes_old_unassigned_lab(
+    client_and_store,
+):
+    """档案按 days 窗口导出，窗口外的未指定化验不应触发空章节。"""
+    client, _store = client_and_store
+    old = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+    client.post("/api/lab-results", json={
+        "item": "ALT", "value": 60, "unit": "U/L",
+        "tested_at": f"{old}T09:00",
+    })
+
+    response = client.get(
+        "/api/health/dossier-family.md", params={"days": 7}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "暂无患者档案"
+
+
 def test_family_dossier_combines_named_and_unassigned_lab(
     client_and_store,
 ):

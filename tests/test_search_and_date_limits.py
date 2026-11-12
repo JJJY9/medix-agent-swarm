@@ -37,6 +37,20 @@ def test_timeline_accepts_far_future_date(client_and_store):
     assert response.json()["events"] == []
 
 
+def test_long_session_query_matches_exactly(client_and_store):
+    """80 字以上的正常搜索词不能被截断成前缀而误命中其它会话。"""
+    client, store = client_and_store
+    prefix = "血压" * 40
+    store.save_exchange("sess-a", "问题", prefix + "甲")
+    store.save_exchange("sess-b", "问题", prefix + "乙")
+
+    data = client.get(
+        "/api/sessions", params={"q": prefix + "甲"}
+    ).json()
+
+    assert [item["id"] for item in data["sessions"]] == ["sess-a"]
+
+
 def test_overlong_search_query_does_not_crash_lists(client_and_store):
     """超长搜索词会超出 SQLite LIKE 模式复杂度，但接口不应 500。"""
     client, _store = client_and_store

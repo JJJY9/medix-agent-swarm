@@ -177,6 +177,31 @@ def test_health_search_multiword_matches_across_fields(client_and_store):
     assert rows[1][0] == "症状"
 
 
+def test_health_search_multiword_metric_label_keeps_note_matches(
+    client_and_store,
+):
+    """多词命中指标标签时，不能只返回该指标而丢掉其它指标的备注命中。"""
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "phq9", "value1": 12,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 6,
+        "note": "PHQ-9 评分 15 分，睡眠差",
+        "measured_at": f"{_date(0)}T09:00",
+    })
+
+    data = client.get(
+        "/api/health/search", params={"q": "PHQ-9 评分"}
+    ).json()
+    metrics = [
+        item for item in data["results"] if item["type"] == "metric"
+    ]
+
+    assert {item["metric"] for item in metrics} == {"phq9", "sleep"}
+
+
 def test_health_search_profile_scoping(client_and_store):
     client, _store = client_and_store
     client.post("/api/symptoms", json={

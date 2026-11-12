@@ -82,6 +82,25 @@ assert.strictEqual(
   core.findLabItem([{ item: 'HgbA1c', value: 7.2, unit: '%' }], 'hba1c').item,
   'HgbA1c'
 );
+// 别名被分隔符拆开的真实写法仍应命中
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'T-BIL', value: 45, unit: 'μmol/L' }], 'bilirubin'
+  ).item,
+  'T-BIL'
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'S-Cr', value: 1.0, unit: 'mg/dL' }], 'creatinine'
+  ).item,
+  'S-Cr'
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'Glycated Hemoglobin', value: 7.0, unit: '%' }], 'hba1c'
+  ).item,
+  'Glycated Hemoglobin'
+);
 // 胃泌素（Gastrin）不能当成 AST
 assert.strictEqual(
   core.findLabItem([{ item: 'Gastrin', value: 50, unit: 'pg/mL' }], 'ast'),

@@ -87,7 +87,9 @@
   function labAliasMatches(itemName, alias) {
     const raw = String(itemName || '').toLowerCase();
     if (/^[a-z0-9]+$/.test(alias)) {
-      // ASCII 别名必须按单词边界匹配，避免 scr 命中 hs-CRP、plt 命中 ...
+      // ASCII 别名按单词边界匹配，避免 scr 命中 hs-CRP、ast 命中 Gastrin；
+      // 同时对去掉分隔符的名称再匹配一次，兼容 T-BIL、S-Cr、
+      // Glycated Hemoglobin 等把别名拆开的真实写法
       let pattern = ASCII_ALIAS_PATTERNS.get(alias);
       if (!pattern) {
         const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -96,7 +98,8 @@
         );
         ASCII_ALIAS_PATTERNS.set(alias, pattern);
       }
-      return pattern.test(raw);
+      return pattern.test(raw)
+        || pattern.test(normalizeLabName(raw));
     }
     return normalizeLabName(raw).includes(alias);
   }

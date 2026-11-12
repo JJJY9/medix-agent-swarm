@@ -8246,7 +8246,12 @@ async def health_search(
         type_key: _health_search_prefilter(type_key, key)
         for type_key in HEALTH_SEARCH_TYPE_ORDER
     }
-    metric_codes, metric_contexts = _health_search_metric_filters(key)
+    metric_codes: List[str] = []
+    metric_contexts: List[str] = []
+    if sql_queries["metric"]:
+        # 只有 LIKE 预过滤生效时才附加指标代码；多词查询关闭下推后，
+        # 单靠 metric IN (...) 会丢掉备注命中其它指标的记录
+        metric_codes, metric_contexts = _health_search_metric_filters(key)
 
     (
         metrics, symptoms, medications, labs, vaccinations,
@@ -13149,7 +13154,9 @@ async def export_family_dossier(days: int = 30):
 
     store = get_session_store()
     names = await asyncio.to_thread(store.list_used_profile_names)
-    unassigned = await asyncio.to_thread(store.has_unassigned_records)
+    unassigned = await asyncio.to_thread(
+        store.has_unassigned_records, days
+    )
     if not names and not unassigned:
         raise HTTPException(status_code=400, detail="暂无患者档案")
     parts = []
