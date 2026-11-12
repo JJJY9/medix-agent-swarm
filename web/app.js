@@ -19350,7 +19350,8 @@ async function send(question) {
             els.thread.setAttribute('aria-live', 'off');
           }
           streamBuffer += event.delta || '';
-          streamBody.textContent = streamBuffer;
+          // 逐段追加文本节点，避免每个 token 都重写整段文本导致长答复掉帧
+          streamBody.insertAdjacentText('beforeend', event.delta || '');
           scrollThreadToBottom(!userPausedFollow);
         } else if (event.type === 'result') {
           finalPayload = event;
@@ -21688,12 +21689,19 @@ els.thread.addEventListener('scroll', () => {
   if (isNearBottom()) {
     els.jumpLatest.hidden = true;
     userPausedFollow = false;
+  } else {
+    // 键盘/滚动条离开底部时暂停自动跟随，避免流式输出把视图拉回去
+    userPausedFollow = true;
+    els.jumpLatest.hidden = false;
   }
 });
 window.addEventListener('scroll', () => {
   if (isStacked() && isWindowNearBottom()) {
     els.jumpLatest.hidden = true;
     userPausedFollow = false;
+  } else if (isStacked()) {
+    userPausedFollow = true;
+    els.jumpLatest.hidden = false;
   }
 }, { passive: true });
 els.thread.addEventListener('wheel', () => {
