@@ -6288,17 +6288,30 @@ def _build_health_insights(
                 for item in (report.get("metric_contexts") or {})
                 .get("glucose", [])
             }
-            fasting = contexts.get("fasting") or contexts.get(
-                "unspecified"
+            fasting_groups = [
+                contexts[key]
+                for key in ("fasting", "unspecified")
+                if contexts.get(key)
+            ]
+            fasting_count = sum(
+                int(group.get("count") or 0) for group in fasting_groups
+            )
+            fasting_avg = (
+                sum(
+                    float(group.get("avg_value1") or 0)
+                    * int(group.get("count") or 0)
+                    for group in fasting_groups
+                ) / fasting_count
+                if fasting_count else 0.0
             )
             postprandial = contexts.get("postprandial")
-            if fasting and float(fasting.get("avg_value1") or 0) >= 7:
+            if fasting_count and fasting_avg >= 7:
                 insights.append(_health_insight(
                     "metric_glucose_fasting",
                     "info",
                     f"空腹/未分情境血糖平均 "
-                    f"{float(fasting['avg_value1']):g} mmol/L 偏高",
-                    f"共 {fasting.get('count')} 次；"
+                    f"{fasting_avg:g} mmol/L 偏高",
+                    f"共 {fasting_count} 次；"
                     "建议按空腹与餐后分别记录。",
                     "如多次偏高，请咨询医生。",
                     "metric",

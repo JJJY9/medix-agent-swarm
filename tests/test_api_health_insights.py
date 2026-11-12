@@ -682,3 +682,30 @@ def test_insights_days_clamped_and_profile_scoped(client_and_store):
     assert huge["days"] == 90
     assert "critical" in [item["key"] for item in small["insights"]]
     assert [item["key"] for item in other["insights"]] == ["no_data"]
+
+
+def test_insights_glucose_merges_fasting_and_unspecified(
+    client_and_store,
+):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "glucose", "value1": 6.9,
+        "measured_at": f"{_date(0)}T07:00", "context": "fasting",
+    })
+    for hour in (12, 15, 18, 20, 22):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "glucose", "value1": 9.5,
+            "measured_at": f"{_date(0)}T{hour:02d}:00",
+        })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+    fasting = next(
+        item for item in data["insights"]
+        if item["key"] == "metric_glucose_fasting"
+    )
+
+    # 空腹 1 次 + 未分情境 5 次，按次数加权后平均应约为 9.07
+    assert "共 6 次" in fasting["detail"]
+    assert "9.06" in fasting["title"] or "9.07" in fasting["title"]
