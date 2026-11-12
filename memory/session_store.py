@@ -6003,6 +6003,25 @@ class SessionStore:
         return {**normalized, "id": vaccination_id, "created_at": now,
                 "updated_at": now}
 
+    def update_vaccination_partial(
+        self, vaccination_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_vaccination(vaccination_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_vaccination(
+                vaccination_id,
+                merged.get("profile") or "",
+                merged.get("vaccine_name") or "",
+                merged.get("dose_number"),
+                merged.get("vaccinated_at") or "",
+                merged.get("next_due") or "",
+                merged.get("note") or "",
+            )
+
     def update_vaccination(
         self,
         vaccination_id: int,
@@ -6163,6 +6182,27 @@ class SessionStore:
                 data, datetime.now().strftime("%Y-%m-%d")
             ),
         }
+
+    def update_appointment_partial(
+        self, appointment_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_appointment(appointment_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_appointment(
+                appointment_id,
+                merged.get("profile") or "",
+                merged.get("title") or "",
+                merged.get("department") or "",
+                merged.get("doctor") or "",
+                merged.get("location") or "",
+                merged.get("scheduled_at") or "",
+                merged.get("status") or "upcoming",
+                merged.get("note") or "",
+            )
 
     def update_appointment(
         self,
@@ -6387,6 +6427,29 @@ class SessionStore:
         data = {"id": lab_id, **normalized, "created_at": now,
                 "updated_at": now}
         return {**data, **_lab_result_view_fields(data)}
+
+    def update_lab_result_partial(
+        self, lab_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_lab_result(lab_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_lab_result(
+                lab_id,
+                merged.get("profile") or "",
+                merged.get("item") or "",
+                merged.get("value"),
+                merged.get("unit") or "",
+                merged.get("ref_low"),
+                merged.get("ref_high"),
+                merged.get("tested_at") or "",
+                merged.get("panel") or "",
+                merged.get("lab_name") or "",
+                merged.get("note") or "",
+            )
 
     def update_lab_result(
         self,
@@ -6768,6 +6831,26 @@ class SessionStore:
             ),
         }
 
+    def update_care_item_partial(
+        self, care_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_care_item(care_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_care_item(
+                care_id,
+                merged.get("profile") or "",
+                merged.get("title") or "",
+                merged.get("interval_days") or 30,
+                merged.get("last_done_at") or "",
+                merged.get("next_due_at") or "",
+                merged.get("note") or "",
+                bool(merged.get("active", True)),
+            )
+
     def update_care_item(
         self,
         care_id: int,
@@ -7055,6 +7138,30 @@ class SessionStore:
                 data, datetime.now().strftime("%Y-%m-%d")
             ),
         }
+
+    def update_visit_record_partial(
+        self, visit_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_visit_record(visit_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_visit_record(
+                visit_id,
+                merged.get("profile") or "",
+                merged.get("appointment_id") or 0,
+                merged.get("visit_date") or "",
+                merged.get("department") or "",
+                merged.get("doctor") or "",
+                merged.get("facility") or "",
+                merged.get("diagnosis") or "",
+                merged.get("advice") or "",
+                merged.get("prescription") or "",
+                merged.get("next_followup_date") or "",
+                merged.get("note") or "",
+            )
 
     def update_visit_record(
         self,
@@ -7521,6 +7628,24 @@ class SessionStore:
                 (symptom_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def update_symptom_partial(
+        self, symptom_id: int, **fields: Any
+    ) -> Optional[Dict[str, Any]]:
+        """事务内读取当前值后合并部分字段，避免锁外快照覆盖并发修改。"""
+        with self._lock:
+            current = self.get_symptom(symptom_id)
+            if current is None:
+                return None
+            merged = {**current, **fields}
+            return self.update_symptom(
+                symptom_id,
+                merged.get("profile") or "",
+                merged.get("symptom") or "",
+                merged.get("severity"),
+                merged.get("recorded_at") or "",
+                merged.get("note") or "",
+            )
 
     def update_symptom(
         self,

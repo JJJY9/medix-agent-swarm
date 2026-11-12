@@ -3859,22 +3859,12 @@ async def update_vaccination(
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(
-        store.get_vaccination, vaccination_id
-    )
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **_patch_payload(request)}
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
     try:
         item = await asyncio.to_thread(
-            store.update_vaccination,
+            store.update_vaccination_partial,
             vaccination_id,
-            merged.get("profile") or "",
-            merged.get("vaccine_name") or "",
-            merged.get("dose_number"),
-            merged.get("vaccinated_at") or "",
-            merged.get("next_due") or "",
-            merged.get("note") or "",
+            **_patch_payload(request),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4033,24 +4023,12 @@ async def update_appointment(
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(
-        store.get_appointment, appointment_id
-    )
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **_patch_payload(request)}
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
     try:
         item = await asyncio.to_thread(
-            store.update_appointment,
+            store.update_appointment_partial,
             appointment_id,
-            merged.get("profile") or "",
-            merged.get("title") or "",
-            merged.get("department") or "",
-            merged.get("doctor") or "",
-            merged.get("location") or "",
-            merged.get("scheduled_at") or "",
-            merged.get("status") or "upcoming",
-            merged.get("note") or "",
+            **_patch_payload(request),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4246,28 +4224,12 @@ async def update_lab_result(
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(store.get_lab_result, lab_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    # 参考范围允许显式置空（清除参考区间），其余字段的 null 视为未提供
-    merged = {
-        **existing,
-        **_patch_payload(request, nullable=("ref_low", "ref_high")),
-    }
+    # 读-改-写放在存储层事务内；参考范围允许显式置空（清除参考区间）
     try:
         item = await asyncio.to_thread(
-            store.update_lab_result,
+            store.update_lab_result_partial,
             lab_id,
-            merged.get("profile") or "",
-            merged.get("item") or "",
-            merged.get("value"),
-            merged.get("unit") or "",
-            merged.get("ref_low"),
-            merged.get("ref_high"),
-            merged.get("tested_at") or "",
-            merged.get("panel") or "",
-            merged.get("lab_name") or "",
-            merged.get("note") or "",
+            **_patch_payload(request, nullable=("ref_low", "ref_high")),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4810,21 +4772,12 @@ async def update_care_item(
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(store.get_care_item, care_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **_patch_payload(request)}
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
     try:
         item = await asyncio.to_thread(
-            store.update_care_item,
+            store.update_care_item_partial,
             care_id,
-            merged.get("profile") or "",
-            merged.get("title") or "",
-            merged.get("interval_days") or 30,
-            merged.get("last_done_at") or "",
-            merged.get("next_due_at") or "",
-            merged.get("note") or "",
-            bool(merged.get("active", True)),
+            **_patch_payload(request),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5005,25 +4958,12 @@ async def update_visit(
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(store.get_visit_record, visit_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **_patch_payload(request)}
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
     try:
         item = await asyncio.to_thread(
-            store.update_visit_record,
+            store.update_visit_record_partial,
             visit_id,
-            merged.get("profile") or "",
-            merged.get("appointment_id") or 0,
-            merged.get("visit_date") or "",
-            merged.get("department") or "",
-            merged.get("doctor") or "",
-            merged.get("facility") or "",
-            merged.get("diagnosis") or "",
-            merged.get("advice") or "",
-            merged.get("prescription") or "",
-            merged.get("next_followup_date") or "",
-            merged.get("note") or "",
+            **_patch_payload(request),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5704,26 +5644,21 @@ async def update_symptom(symptom_id: SafeIntPath, request: SymptomUpdateRequest)
     from memory import get_session_store
 
     store = get_session_store()
-    existing = await asyncio.to_thread(store.get_symptom, symptom_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
     if (
         "recorded_at" in request.model_fields_set
         and not str(request.recorded_at or "").strip()
     ):
         raise HTTPException(status_code=400, detail="记录时间不能为空")
 
-    merged = {**existing, **_patch_payload(request)}
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
     item = await asyncio.to_thread(
-        store.update_symptom,
+        store.update_symptom_partial,
         symptom_id,
-        merged.get("profile") or "",
-        merged.get("symptom") or "",
-        merged.get("severity"),
-        merged.get("recorded_at") or "",
-        merged.get("note") or "",
+        **_patch_payload(request),
     )
     if item is None:
+        if await asyncio.to_thread(store.get_symptom, symptom_id) is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
         raise HTTPException(status_code=400, detail="症状内容或时间不正确")
     await record_audit(
         "symptom.update", str(item["id"])
