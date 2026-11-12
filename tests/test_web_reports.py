@@ -294,6 +294,8 @@ def test_app_js_ships_extended_metric_types(client):
     assert "成人通常建议每晚 7–9 小时" in app_js
     assert "metric === 'sleep'" in app_js
     assert "sleep: { value1: 7 }" in app_js
+    assert "'waist', 'sleep', 'phq9'" in app_js
+    assert "'spo2', 'waist', 'sleep'" in app_js
 
 
 def test_app_js_ships_reminder_calendar(client):
