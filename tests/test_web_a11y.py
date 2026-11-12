@@ -35,3 +35,10 @@ def test_kb_editor_escape_exits_edit_and_keeps_focus():
     close_pos = SCRIPT.index("if (kbOpen) closeKb(true);", escape_pos)
     edit_pos = SCRIPT.index("if (kbOpen && previewEditing) {", escape_pos)
     assert edit_pos < close_pos
+
+
+def test_nested_row_actions_and_ime_escape_are_guarded():
+    assert SCRIPT.count("event.target !== event.currentTarget") >= 1
+    assert SCRIPT.count("e.target !== e.currentTarget") >= 2
+    assert "e.isComposing || e.keyCode === 229" in SCRIPT
+    assert "e.key === 'Escape' && !e.isComposing" in SCRIPT
