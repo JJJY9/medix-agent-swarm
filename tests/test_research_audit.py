@@ -127,6 +127,7 @@ def test_parse_response_clamps_confidence():
 
 
 def test_deep_research_milvus_search_runs_off_event_loop():
+    pytest.importorskip("sentence_transformers")
     from research.deep_research_workflow import DeepResearchWorkflow
 
     class FakeKB:
