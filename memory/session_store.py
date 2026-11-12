@@ -4075,19 +4075,45 @@ class SessionStore:
                         invalid += 1
                         continue
                     raw_id = _safe_db_id(raw.get("id"))
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM vaccinations
-                         WHERE profile = ? AND vaccine_name = ?
-                           AND dose_number = ? AND vaccinated_at = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["vaccine_name"],
-                            normalized["dose_number"],
-                            normalized["vaccinated_at"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM vaccinations
+                             WHERE profile = ? AND vaccine_name = ?
+                               AND dose_number = ? AND vaccinated_at = ?
+                               AND next_due = ? AND note = ?
+                               AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["vaccine_name"],
+                                normalized["dose_number"],
+                                normalized["vaccinated_at"],
+                                normalized["next_due"],
+                                normalized["note"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM vaccinations
+                             WHERE profile = ? AND vaccine_name = ?
+                               AND dose_number = ? AND vaccinated_at = ?
+                               AND next_due = ? AND note = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["vaccine_name"],
+                                normalized["dose_number"],
+                                normalized["vaccinated_at"],
+                                normalized["next_due"],
+                                normalized["note"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         vaccination_id = int(duplicate["id"])
                     else:
@@ -4106,7 +4132,7 @@ class SessionStore:
                                 normalized["vaccinated_at"],
                                 normalized["next_due"],
                                 normalized["note"],
-                                str(raw.get("created_at") or now)[:40],
+                                created_key or now,
                                 str(raw.get("updated_at") or now)[:40],
                             ),
                         )
@@ -4138,18 +4164,51 @@ class SessionStore:
                         invalid += 1
                         continue
                     raw_id = _safe_db_id(raw.get("id"))
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM appointments
-                         WHERE profile = ? AND title = ?
-                           AND scheduled_at = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["title"],
-                            normalized["scheduled_at"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM appointments
+                             WHERE profile = ? AND title = ?
+                               AND scheduled_at = ? AND department = ?
+                               AND doctor = ? AND location = ?
+                               AND status = ? AND note = ?
+                               AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["title"],
+                                normalized["scheduled_at"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["location"],
+                                normalized["status"],
+                                normalized["note"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM appointments
+                             WHERE profile = ? AND title = ?
+                               AND scheduled_at = ? AND department = ?
+                               AND doctor = ? AND location = ?
+                               AND status = ? AND note = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["title"],
+                                normalized["scheduled_at"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["location"],
+                                normalized["status"],
+                                normalized["note"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         appointment_id = int(duplicate["id"])
                     else:
@@ -4168,7 +4227,7 @@ class SessionStore:
                                 normalized["location"],
                                 normalized["scheduled_at"],
                                 normalized["status"], normalized["note"],
-                                str(raw.get("created_at") or now)[:40],
+                                created_key or now,
                                 str(raw.get("updated_at") or now)[:40],
                             ),
                         )
@@ -4359,16 +4418,48 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM care_items
-                         WHERE profile = ? AND title = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["title"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM care_items
+                             WHERE profile = ? AND title = ?
+                               AND interval_days = ? AND last_done_at = ?
+                               AND next_due_at = ? AND note = ?
+                               AND active = ? AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["title"],
+                                normalized["interval_days"],
+                                normalized["last_done_at"],
+                                normalized["next_due_at"],
+                                normalized["note"],
+                                normalized["active"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM care_items
+                             WHERE profile = ? AND title = ?
+                               AND interval_days = ? AND last_done_at = ?
+                               AND next_due_at = ? AND note = ?
+                               AND active = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["title"],
+                                normalized["interval_days"],
+                                normalized["last_done_at"],
+                                normalized["next_due_at"],
+                                normalized["note"],
+                                normalized["active"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4384,7 +4475,7 @@ class SessionStore:
                             normalized["last_done_at"],
                             normalized["next_due_at"], normalized["note"],
                             normalized["active"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
@@ -4434,18 +4525,54 @@ class SessionStore:
                     raw_followup_reminder = _safe_db_id(
                         raw.get("followup_reminder_id")
                     )
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM visit_records
-                         WHERE profile = ? AND visit_date = ?
-                           AND diagnosis = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["visit_date"],
-                            normalized["diagnosis"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM visit_records
+                             WHERE profile = ? AND visit_date = ?
+                               AND diagnosis = ? AND department = ?
+                               AND doctor = ? AND facility = ?
+                               AND advice = ? AND prescription = ?
+                               AND note = ? AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["visit_date"],
+                                normalized["diagnosis"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["facility"],
+                                normalized["advice"],
+                                normalized["prescription"],
+                                normalized["note"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM visit_records
+                             WHERE profile = ? AND visit_date = ?
+                               AND diagnosis = ? AND department = ?
+                               AND doctor = ? AND facility = ?
+                               AND advice = ? AND prescription = ?
+                               AND note = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["visit_date"],
+                                normalized["diagnosis"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["facility"],
+                                normalized["advice"],
+                                normalized["prescription"],
+                                normalized["note"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     cursor = self._conn.execute(
@@ -4470,7 +4597,7 @@ class SessionStore:
                             mapped_followup_appointment_id,
                             0,
                             normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
