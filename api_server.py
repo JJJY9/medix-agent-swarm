@@ -1284,6 +1284,23 @@ def _normalized_profile_key(value: Any) -> str:
     return _normalize_profile_name(value)
 
 
+def _patch_payload(
+    model: Any, nullable: Tuple[str, ...] = ()
+) -> Dict[str, Any]:
+    """PATCH 请求体：显式 null 视为未提供，除非字段本身允许清空。
+
+    客户端把可选字段统一序列化为 null 很常见（如 {"active": null}），
+    直接合并会静默停用过敏/用药，或把日期重置为今天。确需清空的字段
+    用空字符串表达；库存等允许置空的数值字段列在 nullable 中。
+    """
+    allowed = set(nullable)
+    return {
+        key: value
+        for key, value in model.model_dump(exclude_unset=True).items()
+        if value is not None or key in allowed
+    }
+
+
 def _streak_info(days: List[str]) -> Dict[str, Any]:
     """按有记录的日期列表计算连续记录信息。"""
     from datetime import date
@@ -3527,8 +3544,11 @@ async def update_medication(
         raise HTTPException(status_code=404, detail="记录不存在")
 
     # 只把请求实际给出的字段交给存储层，未给出的字段在事务内沿用当前值，
-    # 避免锁外快照覆盖其它设备刚提交的修改
-    fields = request.model_dump(exclude_unset=True)
+    # 避免锁外快照覆盖其它设备刚提交的修改；库存相关字段允许显式置空
+    fields = _patch_payload(
+        request,
+        nullable=("stock", "stock_unit", "low_stock_threshold", "expiry_date"),
+    )
     item = await asyncio.to_thread(
         store.update_medication, medication_id, **fields
     )
@@ -3844,7 +3864,7 @@ async def update_vaccination(
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    merged = {**existing, **_patch_payload(request)}
     try:
         item = await asyncio.to_thread(
             store.update_vaccination,
@@ -4018,7 +4038,7 @@ async def update_appointment(
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    merged = {**existing, **_patch_payload(request)}
     try:
         item = await asyncio.to_thread(
             store.update_appointment,
@@ -4229,7 +4249,11 @@ async def update_lab_result(
     existing = await asyncio.to_thread(store.get_lab_result, lab_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    # 参考范围允许显式置空（清除参考区间），其余字段的 null 视为未提供
+    merged = {
+        **existing,
+        **_patch_payload(request, nullable=("ref_low", "ref_high")),
+    }
     try:
         item = await asyncio.to_thread(
             store.update_lab_result,
@@ -4491,7 +4515,7 @@ async def update_allergy(
     existing = await asyncio.to_thread(store.get_allergy, allergy_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    fields = request.model_dump(exclude_unset=True)
+    fields = _patch_payload(request)
     try:
         item = await asyncio.to_thread(
             store.update_allergy, allergy_id, **fields
@@ -4789,7 +4813,7 @@ async def update_care_item(
     existing = await asyncio.to_thread(store.get_care_item, care_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    merged = {**existing, **_patch_payload(request)}
     try:
         item = await asyncio.to_thread(
             store.update_care_item,
@@ -4984,7 +5008,7 @@ async def update_visit(
     existing = await asyncio.to_thread(store.get_visit_record, visit_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    merged = {**existing, **_patch_payload(request)}
     try:
         item = await asyncio.to_thread(
             store.update_visit_record,
@@ -5329,7 +5353,7 @@ async def update_condition(
     existing = await asyncio.to_thread(store.get_condition, condition_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    fields = request.model_dump(exclude_unset=True)
+    fields = _patch_payload(request)
     try:
         item = await asyncio.to_thread(
             store.update_condition, condition_id, **fields
@@ -5689,7 +5713,7 @@ async def update_symptom(symptom_id: SafeIntPath, request: SymptomUpdateRequest)
     ):
         raise HTTPException(status_code=400, detail="记录时间不能为空")
 
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    merged = {**existing, **_patch_payload(request)}
     item = await asyncio.to_thread(
         store.update_symptom,
         symptom_id,
@@ -9064,7 +9088,7 @@ async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
         raise HTTPException(status_code=400, detail="测量时间不能为空")
 
     # 只更新请求实际给出的字段，未给出的字段在事务内沿用当前值
-    fields = request.model_dump(exclude_unset=True)
+    fields = _patch_payload(request)
     item = await asyncio.to_thread(
         store.update_metric, metric_id, **fields
     )

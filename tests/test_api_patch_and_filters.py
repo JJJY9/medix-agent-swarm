@@ -164,3 +164,75 @@ def test_risk_filter_scans_past_first_page(client, monkeypatch):
     assert listed.status_code == 200
     ids = [item["id"] for item in listed.json()["sessions"]]
     assert "high-risk" in ids
+
+
+def test_patch_explicit_null_is_ignored_for_boolean_flags(client):
+    allergy = client.post("/api/allergies", json={
+        "profile": "妈妈", "substance": "青霉素",
+        "severity": "severe", "kind": "drug",
+    }).json()["allergy"]
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平",
+    }).json()["medication"]
+
+    allergy_patched = client.patch(
+        f"/api/allergies/{allergy['id']}", json={"active": None}
+    ).json()["allergy"]
+    medication_patched = client.patch(
+        f"/api/medications/{medication['id']}", json={"active": None}
+    ).json()["medication"]
+
+    # 显式 null 不应把过敏史/在用药物静默停用
+    assert allergy_patched["active"] is True
+    assert medication_patched["active"] is True
+
+
+def test_patch_explicit_null_keeps_care_item_fields(client):
+    care = client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "眼底检查",
+        "interval_days": 90, "next_due_at": "2026-12-01",
+    }).json()["care_item"]
+
+    patched = client.patch(
+        f"/api/care-items/{care['id']}",
+        json={"interval_days": None, "active": None, "next_due_at": None},
+    ).json()["care_item"]
+
+    assert patched["interval_days"] == 90
+    assert patched["active"] is True
+    assert patched["next_due_at"] == "2026-12-01"
+
+
+def test_patch_explicit_null_keeps_appointment_status(client):
+    appointment = client.post("/api/appointments", json={
+        "profile": "妈妈", "title": "复诊",
+        "scheduled_at": "2026-12-01T09:00",
+    }).json()["appointment"]
+    client.patch(
+        f"/api/appointments/{appointment['id']}",
+        json={"status": "completed"},
+    )
+
+    patched = client.patch(
+        f"/api/appointments/{appointment['id']}",
+        json={"status": None, "note": "已取报告"},
+    ).json()["appointment"]
+
+    assert patched["status"] == "completed"
+    assert patched["note"] == "已取报告"
+
+
+def test_patch_lab_reference_range_can_be_cleared(client):
+    lab = client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "血糖", "value": 5.6,
+        "unit": "mmol/L", "ref_low": 3.9, "ref_high": 6.1,
+        "tested_at": "2026-11-01T08:00",
+    }).json()["lab_result"]
+
+    patched = client.patch(
+        f"/api/lab-results/{lab['id']}", json={"ref_low": None}
+    ).json()["lab_result"]
+
+    # 参考范围允许显式清空，另一侧保持不变
+    assert patched["ref_high"] == 6.1
+    assert patched["ref_low"] is None
