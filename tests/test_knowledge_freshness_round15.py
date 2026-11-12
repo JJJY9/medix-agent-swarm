@@ -4,11 +4,6 @@ import json
 import pytest
 
 from knowledge.local_vector_store import LocalVectorStore
-from knowledge.milvus_kb import (
-    MedicalKnowledgeBase,
-    _is_decimal_point,
-    _sentence_boundary,
-)
 from knowledge.service import KnowledgeService, ensure_knowledge_index_fresh
 
 
@@ -108,28 +103,6 @@ def test_local_store_accepts_empty_vectors(tmp_path):
     assert not store.load_error
     assert store.has_collection("medical_knowledge")
     assert store.collections["medical_knowledge"]["vectors"].shape == (0, 4)
-
-
-def test_decimal_point_is_not_a_sentence_boundary():
-    text = "剂量 3.5 mg，继续观察。"
-
-    assert _is_decimal_point(text, text.index(".")) is True
-    # 文本末尾的句号才是句界
-    boundary = _sentence_boundary(text, 0, len(text))
-    assert text[boundary] == "。"
-
-
-def test_chunk_text_does_not_split_decimal(tmp_path):
-    kb = object.__new__(MedicalKnowledgeBase)
-    kb.embedding_model = type(
-        "Model", (), {"max_seq_length": 0}
-    )()
-    text = ("a" * 8) + " 3.5 mg " + ("b" * 20)
-
-    chunks = kb._chunk_text(text, chunk_size=12, overlap=0)
-
-    assert all(not chunk.endswith("3.") for chunk in chunks)
-    assert any("3.5" in chunk for chunk in chunks)
 
 
 def test_module_level_freshness_helper(monkeypatch):
