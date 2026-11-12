@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import hashlib
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -10726,7 +10727,7 @@ async def export_attachments_zip(
             )
         items = [by_id[value] for value in selected_ids]
 
-    def _build() -> bytes:
+    def _build() -> Tuple[Any, int, int]:
         base = ATTACHMENT_DIR.resolve()
         manifest = {
             "version": 1,
@@ -10736,7 +10737,9 @@ async def export_attachments_zip(
         }
         total_bytes = 0
         missing_count = 0
-        buffer = io.BytesIO()
+        buffer = tempfile.SpooledTemporaryFile(
+            max_size=8 * 1024 * 1024, mode="w+b"
+        )
         with zipfile.ZipFile(
             buffer, "w", compression=zipfile.ZIP_DEFLATED
         ) as archive:
@@ -10782,27 +10785,36 @@ async def export_attachments_zip(
                                 "附件总大小超过上限，无法一次导出。"
                             )
                         try:
-                            file_bytes = target.read_bytes()
+                            with target.open("rb") as source, archive.open(
+                                f"files/{target.name}", "w"
+                            ) as destination:
+                                hasher = hashlib.sha256()
+                                archived_size = 0
+                                while True:
+                                    chunk = source.read(1024 * 1024)
+                                    if not chunk:
+                                        break
+                                    archived_size += len(chunk)
+                                    total_bytes += len(chunk)
+                                    if (
+                                        total_bytes
+                                        > MAX_ATTACHMENT_EXPORT_BYTES
+                                    ):
+                                        raise AttachmentExportTooLarge(
+                                            "附件总大小超过上限，无法一次导出。"
+                                        )
+                                    hasher.update(chunk)
+                                    destination.write(chunk)
                         except FileNotFoundError:
                             present = False
                         except OSError:
                             present = False
                             row["file_error"] = "无法读取文件"
                         else:
-                            total_bytes += len(file_bytes)
-                            if total_bytes > MAX_ATTACHMENT_EXPORT_BYTES:
-                                raise AttachmentExportTooLarge(
-                                    "附件总大小超过上限，无法一次导出。"
-                                )
-                            row["sha256"] = hashlib.sha256(
-                                file_bytes
-                            ).hexdigest()
+                            row["sha256"] = hasher.hexdigest()
                             archive_name = target.name
-                            archive.writestr(
-                                f"files/{archive_name}", file_bytes
-                            )
                             row["archive_name"] = archive_name
-                            row["archived_size"] = len(file_bytes)
+                            row["archived_size"] = archived_size
                 row["file_present"] = present
                 if not present:
                     missing_count += 1
@@ -10811,17 +10823,19 @@ async def export_attachments_zip(
                 "manifest.json",
                 json.dumps(manifest, ensure_ascii=False, indent=2),
             )
-        return buffer.getvalue(), missing_count
+        total_size = buffer.tell()
+        buffer.seek(0)
+        return buffer, total_size, missing_count
 
     try:
-        content, missing_count = await asyncio.to_thread(_build)
+        buffer, total_size, missing_count = await asyncio.to_thread(_build)
     except AttachmentExportTooLarge as e:
         raise HTTPException(status_code=413, detail=str(e))
     await record_audit(
         "attachment.export",
         detail=(
             f"count={len(items)} missing={missing_count} "
-            f"bytes={len(content)}"
+            f"bytes={total_size}"
         ),
     )
     filename = (
@@ -10829,8 +10843,19 @@ async def export_attachments_zip(
         + datetime.now().strftime("%Y%m%d")
         + ".zip"
     )
-    return Response(
-        content=content,
+
+    def _stream():
+        try:
+            while True:
+                chunk = buffer.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            buffer.close()
+
+    return StreamingResponse(
+        _stream(),
         media_type="application/zip",
         headers={
             "Content-Disposition": (
