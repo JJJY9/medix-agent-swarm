@@ -87,3 +87,30 @@ def test_cross_minute_retry_is_idempotent(tmp_path):
     assert duplicate["duplicate"] is True
     assert len(logs) == 1
     assert refreshed["stock"] == 10
+
+
+def test_same_minute_skip_is_idempotent(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        medication = store.add_medication(
+            "妈妈", "氨氯地平", stock=10, stock_unit="片",
+        )
+        first = store.add_medication_log(
+            medication["id"], skipped=True, skip_reason="forget",
+        )
+        second = store.add_medication_log(
+            medication["id"], skipped=True, skip_reason="forget",
+        )
+        other = store.add_medication_log(
+            medication["id"], skipped=True, skip_reason="side_effect",
+        )
+        logs = store.list_medication_logs(medication["id"])
+        refreshed = store.get_medication(medication["id"])
+    finally:
+        store.close()
+
+    assert second["duplicate"] is True
+    assert second["id"] == first["id"]
+    assert not other.get("duplicate")
+    assert len(logs) == 2
+    assert refreshed["stock"] == 10

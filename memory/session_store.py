@@ -8002,7 +8002,7 @@ class SessionStore:
             if medication is None:
                 return None
             stock = medication["stock"]
-            if not skipped_flag and not explicit_time:
+            if not explicit_time:
                 # 默认时间戳的重复打卡（双击/响应丢失重试）短窗口内只记一次；
                 # 重试可能跨到下一分钟，因此按分钟窗口而不是精确相等匹配；
                 # 显式传入时间的记录用于补录或统计，仍允许多条
@@ -8013,32 +8013,65 @@ class SessionStore:
                 minute_cutoff = (
                     retry_now - timedelta(seconds=120)
                 ).isoformat(timespec="minutes")
-                duplicate = self._conn.execute(
-                    """
-                    SELECT id, note, stock_delta, created_at
-                      FROM medication_logs
-                     WHERE medication_id = ? AND skipped = 0
-                       AND taken_at >= ? AND note = ?
-                       AND created_at >= ?
-                     ORDER BY id LIMIT 1
-                    """,
-                    (medication_id, minute_cutoff, note, retry_cutoff),
-                ).fetchone()
-                if duplicate is not None:
-                    return {
-                        "id": int(duplicate["id"]),
-                        "medication_id": medication["id"],
-                        "profile": medication["profile"],
-                        "taken_at": taken_at,
-                        "note": duplicate["note"],
-                        "stock_delta": float(duplicate["stock_delta"] or 0),
-                        "stock_after": stock,
-                        "skipped": False,
-                        "skip_reason": "",
-                        "skip_reason_label": "",
-                        "created_at": duplicate["created_at"],
-                        "duplicate": True,
-                    }
+                if skipped_flag:
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id, note, skip_reason, created_at
+                          FROM medication_logs
+                         WHERE medication_id = ? AND skipped = 1
+                           AND skip_reason = ?
+                           AND taken_at >= ? AND created_at >= ?
+                         ORDER BY id DESC LIMIT 1
+                        """,
+                        (
+                            medication_id, reason_key,
+                            minute_cutoff, retry_cutoff,
+                        ),
+                    ).fetchone()
+                    if duplicate is not None:
+                        return {
+                            "id": int(duplicate["id"]),
+                            "medication_id": medication["id"],
+                            "profile": medication["profile"],
+                            "taken_at": taken_at,
+                            "note": duplicate["note"],
+                            "stock_delta": 0.0,
+                            "stock_after": stock,
+                            "skipped": True,
+                            "skip_reason": duplicate["skip_reason"] or "",
+                            "skip_reason_label": MEDICATION_SKIP_REASONS.get(
+                                duplicate["skip_reason"] or "", ""
+                            ),
+                            "created_at": duplicate["created_at"],
+                            "duplicate": True,
+                        }
+                else:
+                    duplicate = self._conn.execute(
+                        """
+                        SELECT id, note, stock_delta, created_at
+                          FROM medication_logs
+                         WHERE medication_id = ? AND skipped = 0
+                           AND taken_at >= ? AND note = ?
+                           AND created_at >= ?
+                         ORDER BY id LIMIT 1
+                        """,
+                        (medication_id, minute_cutoff, note, retry_cutoff),
+                    ).fetchone()
+                    if duplicate is not None:
+                        return {
+                            "id": int(duplicate["id"]),
+                            "medication_id": medication["id"],
+                            "profile": medication["profile"],
+                            "taken_at": taken_at,
+                            "note": duplicate["note"],
+                            "stock_delta": float(duplicate["stock_delta"] or 0),
+                            "stock_after": stock,
+                            "skipped": False,
+                            "skip_reason": "",
+                            "skip_reason_label": "",
+                            "created_at": duplicate["created_at"],
+                            "duplicate": True,
+                        }
             stock_delta = 0.0
             stock_after: Optional[float] = None
             if not skipped_flag and stock is not None:
