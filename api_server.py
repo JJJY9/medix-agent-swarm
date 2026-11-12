@@ -6113,7 +6113,8 @@ async def _weekly_report_impl(
         and str(item.get("next_followup_date") or "")[:10] < today
         and not item.get("followup_scheduled")
     ]
-    latest_visit = raw_visits[0] if raw_visits else None
+    # “最近就诊”不能受 2×days 窗口限制：稍旧的记录也应作为最近一次展示
+    latest_visit = followup_visits[0] if followup_visits else None
 
     active_conditions = await asyncio.to_thread(
         store.list_conditions, profile, True, None, 100000
