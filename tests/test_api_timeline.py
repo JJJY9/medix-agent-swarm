@@ -472,3 +472,42 @@ def test_timeline_export_supports_more_than_2000_events(client_and_store):
 
     assert export.status_code == 200
     assert len(rows) == total + 1
+
+
+def test_timeline_date_finds_attachment_beyond_newest_page(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    old_day = (now - timedelta(days=5)).strftime("%Y-%m-%d")
+    old_at = f"{old_day}T09:00:00"
+    recent_at = now.isoformat(timespec="seconds")
+
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO attachments("
+            "profile,kind,ref_id,original_name,stored_name,mime,size,note,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "妈妈", "other", 0, "旧报告.pdf", "old-report.pdf",
+                "application/pdf", 100, "", old_at,
+            ),
+        )
+        store._conn.executemany(
+            "INSERT INTO attachments("
+            "profile,kind,ref_id,original_name,stored_name,mime,size,note,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "妈妈", "other", 0, f"新附件{index}.pdf",
+                    f"new-{index}.pdf", "application/pdf", 100, "",
+                    recent_at,
+                )
+                for index in range(1001)
+            ],
+        )
+
+    data = client.get(
+        "/api/timeline",
+        params={"profile": "妈妈", "date": old_day, "type": "attachment"},
+    ).json()
+
+    assert [event["title"] for event in data["events"]] == ["旧报告.pdf"]

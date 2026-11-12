@@ -729,6 +729,14 @@ def test_list_attachments_summary_counts(client_and_store):
     assert filtered["total_count"] == 1
     assert filtered["total_size"] == len(second_content)
 
+    beyond = client.get(
+        "/api/attachments",
+        params={"profile": "妈妈", "limit": 1, "offset": 100},
+    ).json()
+    assert beyond["attachments"] == []
+    assert beyond["total_count"] == 2
+    assert beyond["total_size"] == len(first_content) + len(second_content)
+
 
 def test_delete_removes_file(client_and_store, tmp_path):
     client, _store = client_and_store

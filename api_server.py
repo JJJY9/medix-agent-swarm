@@ -7041,6 +7041,27 @@ async def health_data_quality(profile: Optional[str] = None):
     }
 
 
+async def _list_attachments_paged(
+    store,
+    profile: Optional[str] = None,
+    start: str = "",
+    end: str = "",
+) -> List[Dict[str, Any]]:
+    """分页读取附件登记，避免单页上限导致较旧附件被静默丢弃。"""
+    items: List[Dict[str, Any]] = []
+    offset = 0
+    while offset < 100000:
+        page = await asyncio.to_thread(
+            store.list_attachments,
+            profile, None, None, 1000, offset, "", None, start, end,
+        )
+        items.extend(page)
+        if len(page) < 1000:
+            break
+        offset += 1000
+    return items
+
+
 @app.get("/api/timeline")
 async def health_timeline(
     profile: Optional[str] = None,
@@ -7101,8 +7122,9 @@ async def health_timeline(
     raw_visit_records = await asyncio.to_thread(
         store.list_visit_records, profile, 0, "", 100000
     )
-    raw_attachments = await asyncio.to_thread(
-        store.list_attachments, profile, None, None, 1000, 0
+    window_end = day or datetime.now().strftime("%Y-%m-%d")
+    raw_attachments = await _list_attachments_paged(
+        store, profile, start, window_end
     )
     session_end = (
         f"{day}T23:59:59" if day
@@ -7580,9 +7602,7 @@ async def health_search(
             store.list_conditions, profile, False, None, 100000
         ),
         asyncio.to_thread(store.list_reminders, True, profile),
-        asyncio.to_thread(
-            store.list_attachments, profile, None, None, 1000, 0
-        ),
+        _list_attachments_paged(store, profile),
     )
 
     buckets: Dict[str, List[Dict[str, Any]]] = {
@@ -10278,6 +10298,24 @@ async def list_attachments(
     if items:
         total_count = int(items[0].pop("_total_count", len(items)))
         total_size = int(items[0].pop("_total_size", 0))
+    elif offset:
+        # 翻页越过末页时列表为空，但总数仍应按筛选条件返回
+        probe = await asyncio.to_thread(
+            store.list_attachments,
+            profile,
+            kind_key or None,
+            ref_id,
+            1,
+            0,
+            q,
+            linked,
+            start_day,
+            end_day,
+            sort_key,
+        )
+        if probe:
+            total_count = int(probe[0].get("_total_count") or 0)
+            total_size = int(probe[0].get("_total_size") or 0)
     for item in items:
         item.pop("_total_count", None)
         item.pop("_total_size", None)
