@@ -4,6 +4,7 @@ from pathlib import Path
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 SCRIPT = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 HTML = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+STYLES = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
 
 
 def test_chat_live_region_is_scoped():
@@ -14,3 +15,10 @@ def test_chat_live_region_is_scoped():
     assert "announceChat('会诊中断')" in SCRIPT
     # 不再把整页问诊日志恢复为 polite
     assert "els.thread.setAttribute('aria-live', 'polite')" not in SCRIPT
+
+
+def test_drawer_head_wraps_for_long_profile_names():
+    assert "flex-wrap: wrap" in STYLES
+    assert "max-width: 45%" in STYLES
+    assert "text-overflow: ellipsis" in STYLES
+    assert ".drawer-head-actions" in STYLES
