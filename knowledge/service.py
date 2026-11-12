@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 from pathlib import Path
@@ -50,6 +51,75 @@ class KnowledgeService:
             from .milvus_kb import MedicalKnowledgeBase
             self._kb = MedicalKnowledgeBase()
         return self._kb
+
+    def _manifest_path(self) -> Path:
+        return self.upload_dir.parent / "index_manifest.json"
+
+    def _document_fingerprint(self) -> str:
+        """文档目录（文件名/大小/mtime）的指纹，用于检测索引是否过期。"""
+        digest = hashlib.sha256()
+        for directory, tag in (
+            (self.docs_dir, "docs"),
+            (self.upload_dir, "uploads"),
+        ):
+            try:
+                entries = sorted(directory.iterdir(), key=lambda p: p.name)
+            except OSError:
+                entries = []
+            for path in entries:
+                if (
+                    not path.is_file()
+                    or path.suffix.lower() not in SUPPORTED_SUFFIXES
+                ):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                digest.update(
+                    f"{tag}:{path.name}:{stat.st_size}:"
+                    f"{stat.st_mtime_ns}\n".encode("utf-8")
+                )
+        return digest.hexdigest()
+
+    def _read_manifest(self) -> str:
+        try:
+            payload = json.loads(
+                self._manifest_path().read_text(encoding="utf-8")
+            )
+            return str(payload.get("fingerprint") or "")
+        except (OSError, ValueError, TypeError):
+            return ""
+
+    def _write_manifest(self, fingerprint: str) -> None:
+        try:
+            self._manifest_path().write_text(
+                json.dumps(
+                    {"fingerprint": fingerprint},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(f"写入知识库索引清单失败: {e}")
+
+    def index_is_stale(self) -> bool:
+        """当前文档与上次成功重建时的指纹是否不一致。"""
+        with self._lock:
+            return self._read_manifest() != self._document_fingerprint()
+
+    def _ensure_index_fresh_locked(self) -> None:
+        fingerprint = self._document_fingerprint()
+        if self._read_manifest() == fingerprint:
+            return
+        logger.info("Knowledge index is stale, rebuilding before search")
+        try:
+            self._rebuild_locked(True)
+        except Exception as e:
+            # 宁可报错也不返回与磁盘文档不一致的旧索引
+            raise ValueError(
+                f"知识库索引与文档不一致，自动重建失败：{e}"
+            ) from e
 
     def list_documents(self) -> Dict[str, Any]:
         with self._lock:
@@ -226,6 +296,7 @@ class KnowledgeService:
 
         top_k = max(1, min(int(top_k or 5), 20))
         with self._lock:
+            self._ensure_index_fresh_locked()
             try:
                 results = self.kb.search(
                     query, top_k=top_k, filter_type=filter_type or None
@@ -246,6 +317,7 @@ class KnowledgeService:
             return self._rebuild_locked(replace_existing)
 
     def _rebuild_locked(self, replace_existing: bool = True) -> Dict[str, Any]:
+        fingerprint = self._document_fingerprint()
         builtin_documents = load_documents_from_directory(self.docs_dir)
         uploaded_documents = load_documents_from_directory(
             self.upload_dir, id_prefix="upload_", is_upload=True
@@ -302,6 +374,7 @@ class KnowledgeService:
                 chunk_count = self.kb.count_documents()
             except Exception:
                 chunk_count = chunks
+            self._write_manifest(fingerprint)
 
         logger.info(
             f"Knowledge rebuilt: {len(documents)} documents, {chunks} chunks"
