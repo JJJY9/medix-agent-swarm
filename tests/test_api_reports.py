@@ -514,3 +514,33 @@ def test_weekly_report_can_skip_previous_window(
     # 只加载本期 7 天，不再为环比多读一倍数据
     assert recorded["days"] == 7
     assert report["metrics"]["count"] == 0
+
+
+def test_weekly_report_endpoint_passes_include_previous(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    recent = now.isoformat(timespec="minutes")
+    older = (now - timedelta(days=10)).isoformat(timespec="minutes")
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕", "severity": 5,
+        "recorded_at": older,
+    })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "乏力", "severity": 3,
+        "recorded_at": recent,
+    })
+
+    full = client.get(
+        "/api/reports/weekly", params={"profile": "妈妈", "days": 7}
+    ).json()
+    current = client.get(
+        "/api/reports/weekly",
+        params={
+            "profile": "妈妈", "days": 7, "include_previous": "false",
+        },
+    ).json()
+
+    assert full["symptoms"]["count"] == 1
+    assert full["symptoms"]["prev_count"] == 1
+    assert current["symptoms"]["count"] == 1
+    assert current["symptoms"]["prev_count"] == 0

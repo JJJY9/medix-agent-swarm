@@ -7041,9 +7041,19 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
 
 
 @app.get("/api/reports/weekly")
-async def weekly_report(profile: Optional[str] = None, days: int = 7):
-    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
-    return await _weekly_report_impl(profile=profile, days=days)
+async def weekly_report(
+    profile: Optional[str] = None,
+    days: int = 7,
+    include_previous: bool = True,
+):
+    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。
+
+    include_previous=false 供首页概览等不展示环比的调用方使用，避免额外
+    加载上一周期数据。
+    """
+    return await _weekly_report_impl(
+        profile=profile, days=days, include_previous=include_previous
+    )
 
 
 DATA_QUALITY_LEVEL_ORDER = {"warning": 0, "info": 1}

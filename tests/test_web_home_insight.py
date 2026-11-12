@@ -64,3 +64,11 @@ def test_metric_changes_refresh_family_overview():
 
 def test_home_glance_insight_style():
     assert ".home-glance-card.is-alert .home-glance-value" in CSS
+
+
+def test_home_glance_weekly_summary_skips_previous_window():
+    # 首页小结不展示环比，请求时跳过上一周期数据
+    assert (
+        "fetch('/api/reports/weekly?include_previous=false')"
+        in SCRIPT
+    )
