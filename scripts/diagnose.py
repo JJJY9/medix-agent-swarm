@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -22,11 +23,58 @@ from typing import Any, Dict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.console import ensure_utf8_stdio
+#: 不导入 core 也能检查的必需依赖（core/__init__ 会连锁导入整个 agent 栈）
+_REQUIRED_MODULES = (
+    ("openai", "openai"),
+    ("loguru", "loguru"),
+    ("yaml", "pyyaml"),
+    ("dotenv", "python-dotenv"),
+    ("numpy", "numpy"),
+    ("fastapi", "fastapi"),
+    # uvicorn 只在启动服务时需要，自检与离线测试环境不必安装
+    # sentence-transformers 只影响知识库，交给报告标记缺失即可，
+    # 不让它阻断自检本身（CI 的轻量依赖集不含它）
+)
 
-ensure_utf8_stdio()
 
-from core.diagnostics import check_api, check_llm, collect_report
+def _missing_dependencies() -> list:
+    missing = []
+    for module_name, package_name in _REQUIRED_MODULES:
+        try:
+            available = (
+                importlib.util.find_spec(module_name) is not None
+            )
+        except (ImportError, ModuleNotFoundError, ValueError):
+            available = False
+        if not available:
+            missing.append(package_name)
+    return missing
+
+
+_missing = _missing_dependencies()
+if _missing:
+    print("❌ 缺少依赖：" + "、".join(_missing))
+    print("请先安装依赖：python -m pip install -r requirements.txt")
+    raise SystemExit(2)
+
+try:
+    from core.console import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
+except Exception:
+    # 标准输出仍是 GBK 时，至少保证本脚本的报错不会因 emoji 再抛异常
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+try:
+    from core.diagnostics import check_api, check_llm, collect_report
+except Exception as exc:  # 缺依赖时不再直接抛 traceback
+    print("❌ 自检模块加载失败：" + str(exc))
+    print("请先安装依赖：python -m pip install -r requirements.txt")
+    raise SystemExit(2)
 
 
 def print_report(report: Dict[str, Any]) -> None:
@@ -86,6 +134,38 @@ def print_report(report: Dict[str, Any]) -> None:
         print(f"  ❌ {knowledge['error']}")
     print()
 
+    runtime = report.get("runtime") or {}
+    if runtime:
+        print("运行时：")
+        db_state = (
+            "存在" if runtime.get("db_exists") else "尚未创建（首次启动后生成）"
+        )
+        print(f"  会话数据库 : {runtime.get('session_db') or '—'}（{db_state}）")
+        if runtime.get("db_exists"):
+            attachment_mb = float(runtime.get("attachment_size") or 0) / (
+                1024 * 1024
+            )
+            print(
+                "  数据量     : "
+                f"{runtime.get('sessions', 0)} 个会话，"
+                f"{runtime.get('messages', 0)} 条消息；"
+                f"{runtime.get('attachment_count', 0)} 个附件"
+                f"（{attachment_mb:.1f} MB）"
+            )
+        print(
+            "  访问保护   : "
+            + ("已启用" if runtime.get("auth_enabled") else "未启用")
+        )
+        print(f"  会诊限流   : {runtime.get('rate_limit', 0)} 次/分钟")
+        if runtime.get("db_error"):
+            print(f"  ❌ 数据库读取失败：{runtime['db_error']}")
+        if runtime.get("data_errors"):
+            print(
+                "  ❌ 数据表读取失败："
+                + "、".join(str(item) for item in runtime["data_errors"])
+            )
+        print()
+
     if "llm" in report:
         llm = report["llm"]
         print(f"LLM 连通性：{mark(llm['ok'])} " + (llm.get("reply") or llm.get("error", "")))
@@ -103,6 +183,8 @@ def print_report(report: Dict[str, Any]) -> None:
         and not report["missing_required"]
         and report["llm_config"].get("api_key_set")
     )
+    runtime = report.get("runtime") or {}
+    ok = ok and not runtime.get("db_error") and not runtime.get("data_errors")
     if "llm" in report:
         ok = ok and report["llm"]["ok"]
     if "api" in report:
@@ -142,6 +224,8 @@ def main() -> int:
         and report.get("api", {}).get("ok", True)
         and report.get("knowledge", {}).get("query_ok", True)
     )
+    runtime = report.get("runtime") or {}
+    ok = ok and not runtime.get("db_error") and not runtime.get("data_errors")
     return 0 if ok else 1
 
 
