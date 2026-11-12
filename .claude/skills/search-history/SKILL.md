@@ -36,7 +36,7 @@ description: Search current session conversation history (short-term memory). Us
 }
 ```
 
-`total_messages` 是本次返回的消息条数（user + assistant），不是对话轮数。
+`total_messages` 是本次返回的消息条数（含压缩后的历史摘要），不是对话轮数。
 
 ## Note
 

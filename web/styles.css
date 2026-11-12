@@ -5486,6 +5486,8 @@ html[data-theme="dark"] .history-list::-webkit-scrollbar-thumb:hover {
     bottom: 12px;
     transform: none;
     margin: -36px auto 8px;
+    /* 输入区 sticky 层级更高，按钮不能盖住输入框导致误触 */
+    z-index: 1;
   }
 
   .jump-latest[hidden] { display: none; }

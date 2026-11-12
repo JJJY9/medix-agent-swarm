@@ -1798,7 +1798,8 @@ function downloadFile(content, filename, mimeType = 'text/markdown;charset=utf-8
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Firefox 在 click 后异步读取 blob：立即 revoke 会让导出静默失败
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 /** 下载健康数据导入模板，列名与服务端导入器保持一致。 */
@@ -6511,6 +6512,10 @@ function setMetricsStatus(text, isError = false) {
   els.metricsStatus.textContent = text;
   els.metricsStatus.hidden = !text;
   els.metricsStatus.classList.toggle('error', isError);
+  if (text && isError && els.metricsStatus.scrollIntoView) {
+    // 表单在抽屉顶部、状态区在中部，保存失败时必须把提示滚入视野
+    els.metricsStatus.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 /* ---------- 健康指标自定义目标 ---------- */
@@ -9635,15 +9640,18 @@ async function clearDoneReminders() {
   }
   if (!window.confirm(`删除 ${done.length} 条已完成的提醒？`)) return;
   let deleted = 0;
-  for (const item of done) {
-    try {
-      const res = await fetch(`/api/reminders/${item.id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) deleted += 1;
-    } catch {
-      // 单条删除失败时继续处理其余记录
+  try {
+    const res = await fetch('/api/reminders/bulk_delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: done.map((item) => item.id) }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      deleted = Number(data.deleted) || 0;
     }
+  } catch {
+    // 批量删除失败时下方仍会重新加载列表
   }
   setRemindersStatus(`已清理 ${deleted} 条已完成提醒。`);
   await loadReminders();
@@ -15587,22 +15595,22 @@ async function deleteSelectedAttachments() {
   updateAttachmentSelection();
   let removed = 0;
   let failed = 0;
-  for (let index = 0; index < ids.length; index += 1) {
-    setAttachmentStatus(
-      `正在删除 ${index + 1}/${ids.length}…`
-    );
-    try {
-      const res = await fetch(`/api/attachments/${ids[index]}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        removed += 1;
-      } else {
-        failed += 1;
-      }
-    } catch {
-      failed += 1;
+  setAttachmentStatus(`正在删除 ${ids.length} 份附件…`);
+  try {
+    const res = await fetch('/api/attachments/bulk_delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      removed = Number(data.deleted) || 0;
+      failed = ids.length - removed;
+    } else {
+      failed = ids.length;
     }
+  } catch {
+    failed = ids.length;
   }
   attachmentSelectedIds.clear();
   attachmentDeleting = false;
@@ -19755,9 +19763,9 @@ async function send(question) {
   els.railScan.hidden = false;
   setVitals('active', '会诊进行中');
 
-  // 窄屏是整页滚动，提交后把视线带回问诊区
+  // 窄屏是整页滚动：提交后跟随到最新一轮，而不是把页面拉回会话顶端
   if (isStacked()) {
-    els.thread.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    requestAnimationFrame(() => scrollThreadToBottom(true));
   }
 
   let firstAgentSeen = false;
@@ -20140,8 +20148,15 @@ function networkErrorMessage(err) {
   return message || '未知错误';
 }
 
+let bannerMessageHtml = '';
+
 function showBanner(html) {
-  els.banner.innerHTML = html;
+  // 20 秒一次的状态轮询会重复同一提示：内容未变时不要重写
+  // aria-live 区域，否则读屏会反复播报同一错误
+  if (bannerMessageHtml !== html) {
+    els.banner.innerHTML = html;
+    bannerMessageHtml = html;
+  }
   els.banner.hidden = false;
   if (swUpdateReady && !document.getElementById('sw-refresh')) {
     // 状态轮询的配置/知识库警告不能盖掉新版本刷新按钮
@@ -20169,6 +20184,7 @@ function hideBanner() {
         // 之前短暂出现的配置/知识库警告已经恢复，只保留更新提示
         els.banner.innerHTML = '';
         els.banner.appendChild(updateBlock);
+        bannerMessageHtml = '';
       }
       els.banner.hidden = false;
     } else {
@@ -20178,6 +20194,7 @@ function hideBanner() {
   }
   els.banner.hidden = true;
   els.banner.textContent = '';
+  bannerMessageHtml = '';
 }
 
 /* ---------- 结构化补充信息 ---------- */
@@ -22260,7 +22277,7 @@ document.addEventListener('keydown', (e) => {
   const preview = els.attachmentPreview;
   if (preview && !preview.hidden) {
     const focusables = Array.from(preview.querySelectorAll(
-      'button:not([disabled]), [href], iframe, '
+      'button:not([disabled]), [href], iframe:not([tabindex="-1"]), '
       + '[tabindex]:not([tabindex="-1"])'
     ));
     if (focusables.length) {

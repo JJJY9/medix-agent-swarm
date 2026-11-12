@@ -279,6 +279,10 @@ class BulkSessionsRequest(StrictRequestModel):
     ids: List[str] = Field(..., min_length=1, max_length=200)
 
 
+class BulkIdsRequest(StrictRequestModel):
+    ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
 class BulkArchiveRequest(BulkSessionsRequest):
     archived: bool
 
@@ -11356,6 +11360,45 @@ async def delete_attachment(attachment_id: SafeIntPath):
     return {"ok": True, "id": attachment_id}
 
 
+@app.post("/api/attachments/bulk_delete")
+async def bulk_delete_attachments(request: BulkIdsRequest):
+    """批量删除附件；文件逐份清理，登记一次事务删除。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    attachment_dir = _attachment_dir().resolve()
+    removable = []
+    skipped = []
+    for attachment_id in sorted(set(request.ids)):
+        item = await asyncio.to_thread(
+            store.get_attachment, attachment_id
+        )
+        if item is None:
+            skipped.append(attachment_id)
+            continue
+        target = (
+            attachment_dir / str(item.get("stored_name") or "")
+        ).resolve()
+        if target.parent == attachment_dir:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                # 文件被占用时保留登记，避免留下无法清理的孤儿文件
+                skipped.append(attachment_id)
+                continue
+        removable.append(item)
+    removed = await asyncio.to_thread(
+        store.delete_attachments_bulk,
+        [item["id"] for item in removable],
+    )
+    await record_audit("attachment.bulk_delete", str(len(removed)))
+    return {
+        "ok": True,
+        "deleted": len(removed),
+        "skipped": skipped,
+    }
+
+
 @app.get("/api/attachments/integrity")
 async def attachment_integrity():
     """检查附件登记与本地文件是否一致：缺失、孤儿与大小不一致。"""
@@ -13764,6 +13807,18 @@ async def delete_reminder(reminder_id: SafeIntPath):
     return {"ok": True, "id": reminder_id}
 
 
+@app.post("/api/reminders/bulk_delete")
+async def bulk_delete_reminders(request: BulkIdsRequest):
+    """批量删除提醒；一次事务与 checkpoint，供「清理已完成」使用。"""
+    from memory import get_session_store
+
+    deleted = await asyncio.to_thread(
+        get_session_store().delete_reminders_bulk, request.ids
+    )
+    await record_audit("reminder.bulk_delete", str(deleted))
+    return {"ok": True, "deleted": deleted}
+
+
 @app.post("/api/tools/bmi")
 async def tool_bmi(request: BmiRequest):
     """BMI 计算（中国成人分类）。"""
@@ -14856,6 +14911,13 @@ _PROFILE_CLAIMS: Dict[str, str] = {}
 _PROFILE_CLAIMS_LOCK = threading.Lock()
 
 
+def _release_profile_claim(session_id: str, profile: str) -> None:
+    """请求失败/取消且未生成会话时释放首轮认领，允许用户改选档案。"""
+    with _PROFILE_CLAIMS_LOCK:
+        if _PROFILE_CLAIMS.get(session_id) == profile:
+            _PROFILE_CLAIMS.pop(session_id, None)
+
+
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:
     """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。
 
@@ -15079,12 +15141,14 @@ async def chat(request: ChatRequest):
             result = await coordinator.process(**process_kwargs)
         except LLMError as e:
             logger.error(f"模型调用失败: {e.code} - {e.user_message}")
+            _release_profile_claim(session_id, memory_profile)
             raise HTTPException(
                 status_code=502,
                 detail={"code": e.code, "message": e.user_message},
             )
         except Exception as e:
             logger.exception("处理请求失败")
+            _release_profile_claim(session_id, memory_profile)
             raise HTTPException(
                 status_code=500,
                 detail=f"处理失败：{redact_secrets(str(e))}",
@@ -15092,9 +15156,10 @@ async def chat(request: ChatRequest):
 
     payload = _serialize_result(result, AGENT_LABELS)
     if not (payload["answer"] or "").strip():
+        _release_profile_claim(session_id, memory_profile)
         raise HTTPException(status_code=502, detail=_empty_answer_reason())
 
-    await _link_patient_profile(session_id, request.patient_profile)
+    await _link_patient_profile(session_id, memory_profile)
 
     return payload
 
@@ -15218,13 +15283,15 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         def link_profile_when_done(done_task):
             # 客户端在 result 事件前断开时，已保存的会诊仍要关联患者档案
             if done_task.cancelled():
+                _release_profile_claim(session_id, memory_profile)
                 return
             try:
                 done_task.result()
             except Exception:
+                _release_profile_claim(session_id, memory_profile)
                 return
             asyncio.create_task(
-                _link_patient_profile(session_id, request.patient_profile)
+                _link_patient_profile(session_id, memory_profile)
             )
 
         task.add_done_callback(link_profile_when_done)
@@ -15353,6 +15420,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
         payload = _serialize_result(result, AGENT_LABELS)
         if not (payload["answer"] or "").strip():
+            _release_profile_claim(session_id, memory_profile)
             yield sse({
                 "type": "error",
                 "code": "empty_answer",
@@ -15360,7 +15428,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             })
             return
 
-        await _link_patient_profile(session_id, request.patient_profile)
+        await _link_patient_profile(session_id, memory_profile)
 
         yield sse({"type": "result", **payload})
 

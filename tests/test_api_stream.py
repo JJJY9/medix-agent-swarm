@@ -415,6 +415,93 @@ def test_stream_saves_patient_profile(tmp_path, monkeypatch):
     assert saved["profile"] == "母亲"
 
 
+def test_claim_links_resolved_profile_not_request(tmp_path, monkeypatch):
+    """首轮已认领档案后，请求里的另一个档案不能改写会话绑定。"""
+    import asyncio
+
+    import memory
+    from memory.session_store import SessionStore
+
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "claim.db"))
+    store.save_exchange("claim-link-test", "我头痛", "先前的答复")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    captured = {}
+
+    class CaptureCoordinator:
+        worker_pool = []
+
+        async def process(
+            self, question, context=None, session_id=None, on_token=None
+        ):
+            captured.update(context or {})
+            return {"answer": "答复", "session_id": session_id}
+
+    api_server.state.coordinator = CaptureCoordinator()
+    asyncio.run(api_server._resolve_memory_profile(
+        "claim-link-test", "母亲"
+    ))
+    client = TestClient(api_server.app)
+
+    try:
+        response = client.post("/api/chat", json={
+            "question": "还是头痛",
+            "session_id": "claim-link-test",
+            "patient_profile": "孩子",
+        })
+        saved = store.get_session("claim-link-test")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert saved is not None
+    assert saved["profile"] == "母亲"
+    assert captured["memory_scope"].startswith("medix_profile_")
+
+
+def test_failed_request_releases_profile_claim(tmp_path, monkeypatch):
+    """首轮失败未落库时释放认领，用户改选档案不会被旧上下文覆盖。"""
+    import memory
+    from memory.session_store import SessionStore
+
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "claim-release.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    api_server.state.coordinator = FailingCoordinator()
+    client = TestClient(api_server.app)
+    captured = {}
+
+    class CaptureCoordinator:
+        worker_pool = []
+
+        async def process(
+            self, question, context=None, session_id=None, on_token=None
+        ):
+            captured.update(context or {})
+            return {"answer": "答复", "session_id": session_id}
+
+    try:
+        failed = client.post("/api/chat", json={
+            "question": "我头痛",
+            "session_id": "claim-release-test",
+            "patient_profile": "母亲",
+        })
+        api_server.state.coordinator = CaptureCoordinator()
+        retried = client.post("/api/chat", json={
+            "question": "还是头痛",
+            "session_id": "claim-release-test",
+            "patient_profile": "父亲",
+        })
+    finally:
+        store.close()
+
+    assert failed.status_code == 502
+    assert retried.status_code == 200
+    assert captured["memory_scope"] == api_server._memory_scope(
+        "父亲", "claim-release-test"
+    )
+
+
 def test_stream_does_not_create_session_for_profile(tmp_path, monkeypatch):
     import memory
     from memory.session_store import SessionStore

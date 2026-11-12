@@ -138,6 +138,12 @@ class LocalVectorStore:
                 f"{self.store_path.name}.tmp"
             )
             temp_path.write_text(payload, encoding="utf-8")
+            try:
+                from core.fs_permissions import restrict_permissions
+
+                restrict_permissions(temp_path, 0o600)
+            except Exception:
+                pass
             os.replace(temp_path, self.store_path)
             # 成功落盘后之前“文件损坏”的状态已解除（重建可恢复）
             self.load_error = ""
