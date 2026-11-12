@@ -692,6 +692,9 @@ def test_rename_profile_updates_metrics(store):
     renamed_logs = store.list_medication_logs(profile="母亲")
     assert len(renamed_logs) == 1
     assert renamed_logs[0]["profile"] == "母亲"
+    history = store.list_medication_history(medication["id"])
+    assert history
+    assert all(row["profile"] == "母亲" for row in history)
     assert "妈妈" not in store.list_used_profile_names()
     assert "母亲" in store.list_used_profile_names()
 
