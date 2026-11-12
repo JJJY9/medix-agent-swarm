@@ -3129,6 +3129,12 @@ class SessionStore:
         if cutoff:
             sql += " AND m.created_at >= ?"
             params.append(cutoff)
+            # 导入备份可能带未来时间；最近 N 天不应包含未来消息
+            tomorrow = (
+                datetime.now() + timedelta(days=1)
+            ).strftime("%Y-%m-%dT00:00")
+            sql += " AND m.created_at < ?"
+            params.append(tomorrow)
         profile = _normalize_profile_name(profile)
         if profile:
             sql += " AND s.profile = ?"
@@ -5780,10 +5786,14 @@ class SessionStore:
 
     def latest_metrics_by_profile(self) -> List[Dict[str, Any]]:
         """返回每个档案下每种指标最新的一条记录（家庭总览用）。"""
+        end_of_today = datetime.now().replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds")
         sql = """
             WITH latest AS (
                 SELECT profile, metric, MAX(measured_at) AS max_at
                   FROM health_metrics
+                 WHERE measured_at <= ?
                  GROUP BY profile, metric
             ),
             picked AS (
@@ -5801,7 +5811,7 @@ class SessionStore:
              ORDER BY h.profile, h.metric
         """
         with self._lock:
-            rows = self._conn.execute(sql).fetchall()
+            rows = self._conn.execute(sql, (end_of_today,)).fetchall()
         return [dict(row) for row in rows]
 
     def metric_summary(
@@ -6566,6 +6576,12 @@ class SessionStore:
             # substr(tested_at, 1, 10) 会退化为逐行扫描
             conditions.append("tested_at >= ?")
             params.append(cutoff)
+            # 与症状/打卡一致：最近 N 天不包含明天的化验
+            tomorrow = (
+                datetime.now() + timedelta(days=1)
+            ).strftime("%Y-%m-%dT00:00")
+            conditions.append("tested_at < ?")
+            params.append(tomorrow)
         range_conditions, range_params = _date_range_conditions(
             "tested_at", start, end
         )

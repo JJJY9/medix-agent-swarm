@@ -7593,12 +7593,15 @@ async def health_timeline(
         now_window + timedelta(days=7)
     ).strftime("%Y-%m-%d")
 
-    def in_window(at: str) -> bool:
+    def in_window(at: str, allow_future: bool = False) -> bool:
         if not at:
             return False
         if day:
             return at[:10] == day
-        return start <= at[:10] <= future_limit
+        # 只有预约与复查允许展示未来一周内的事件；
+        # 化验/就诊记录等的未来时间戳不应出现在“今天/近 N 天”
+        end = future_limit if allow_future else today_key
+        return start <= at[:10] <= end
 
     def format_value(value: Any) -> str:
         number = float(value)
@@ -7725,7 +7728,7 @@ async def health_timeline(
 
     for item in raw_appointments:
         at = str(item.get("scheduled_at") or "")
-        if not in_window(at):
+        if not in_window(at, allow_future=True):
             continue
         status_labels = {
             "upcoming": "待就诊",
@@ -7786,7 +7789,7 @@ async def health_timeline(
         if not item.get("active"):
             continue
         at = str(item.get("next_due_at") or "")
-        if not in_window(at):
+        if not in_window(at, allow_future=True):
             continue
         days_until = item.get("days_until")
         value_parts = []
@@ -9691,7 +9694,8 @@ async def family_overview(days: int = 7):
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, None, cutoff, "", 100000
+        store.list_sessions_for_timeline,
+        None, cutoff, f"{today}T23:59:59", 100000,
     )
     latest_answers = await asyncio.to_thread(
         store.latest_session_answers_by_profile
@@ -12546,7 +12550,12 @@ async def export_health_dossier(
             if not (item.get("profile") or "")
         ]
     sessions = await asyncio.to_thread(
-        store.list_sessions_for_timeline, profile_key, cutoff, "", 100000, True
+        store.list_sessions_for_timeline,
+        profile_key, cutoff,
+        now.replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds"),
+        100000, True,
     )
     streak = _streak_info(
         await asyncio.to_thread(store.recorded_days, profile_key, 3650)
