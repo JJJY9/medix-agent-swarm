@@ -5328,7 +5328,7 @@ function renderKbDocuments(documents) {
 
 function exitKbPreviewEdit(force = false) {
   if (
-    !force
+    force !== true
     && previewEditing
     && els.kbPreviewEditor.value !== previewEditOriginal
     && !window.confirm('放弃未保存的修改？')
@@ -5497,6 +5497,8 @@ async function saveKbPreviewEdit() {
       `已保存 ${data.document?.filename || filename}。` +
       `重建完成：${rebuild.documents || 0} 个文档、${rebuild.chunks || 0} 个向量块。`
     );
+    // 内容已落盘，退出编辑态时不能再把新内容当成未保存草稿
+    previewEditOriginal = els.kbPreviewEditor.value;
     exitKbPreviewEdit();
     await loadKnowledge();
     await previewKbDocument(filename);
@@ -6770,8 +6772,8 @@ function setMetricType(type) {
 }
 
 function selectMetricType(type) {
-  // 编辑中的表单属于另一条记录；先退出编辑，避免保存时把它改成新类型
-  if (editingMetricId) {
+  // 只有真正切换类型时才退出编辑；点击同类型卡片应保留已填内容
+  if (editingMetricId && els.metricType.value !== type) {
     resetMetricForm();
     setMetricsStatus('已取消编辑：指标类型已切换。');
   }
@@ -8382,34 +8384,48 @@ function searchFilteredReminders() {
 }
 
 function refreshReminderViews() {
-  const focusLabel = captureReminderFocusLabel();
+  const focusState = captureReminderFocusState();
   const items = searchFilteredReminders();
   renderReminderCalendar(items);
   renderFilteredReminders();
-  restoreReminderFocusLabel(focusLabel);
+  restoreReminderFocusState(focusState);
 }
 
-function captureReminderFocusLabel() {
-  const active = document.activeElement;
-  if (!active || !els.remindersList) return '';
-  if (!els.remindersList.contains(active)) return '';
-  return active.getAttribute('aria-label') || '';
-}
-
-function restoreReminderFocusLabel(label) {
-  if (!label || !els.remindersList) return;
-  const nodes = Array.from(
+function reminderFocusNodes() {
+  if (!els.remindersList) return [];
+  return Array.from(
     els.remindersList.querySelectorAll('button, select')
   );
-  const target = nodes.find(
-    (node) => node.getAttribute('aria-label') === label
-  );
-  if (target) {
-    target.focus();
-  } else if (nodes.length) {
-    // 当前条目已被完成/删除：聚焦下一条的第一个操作，键盘操作不中断
-    nodes[0].focus();
+}
+
+function captureReminderFocusState() {
+  const active = document.activeElement;
+  if (!active || !els.remindersList) return null;
+  if (!els.remindersList.contains(active)) return null;
+  return {
+    label: active.getAttribute('aria-label') || '',
+    index: reminderFocusNodes().indexOf(active),
+  };
+}
+
+function restoreReminderFocusState(state) {
+  if (!state || !els.remindersList) return;
+  const nodes = reminderFocusNodes();
+  if (!nodes.length) return;
+  if (state.label) {
+    const same = nodes.find(
+      (node) => node.getAttribute('aria-label') === state.label
+    );
+    if (same) {
+      same.focus();
+      return;
+    }
   }
+  // 当前条目已消失：聚焦它原来位置上的下一条，而不是跳回列表顶部
+  const index = Math.min(
+    Math.max(Number(state.index) || 0, 0), nodes.length - 1
+  );
+  nodes[index].focus();
 }
 
 function renderFilteredReminders() {
@@ -11773,7 +11789,6 @@ async function loadLabs() {
     const data = await res.json();
     if (requestSeq !== labRequestSeq) return;
     labItemsCache = data.lab_results || [];
-    labRenderLimit = 300;
     renderLabs(filterLabs(labItemsCache));
   } catch {
     if (requestSeq !== labRequestSeq) return;
@@ -20703,10 +20718,10 @@ els.kbClose.addEventListener('click', () => closeKb(true));
 els.kbBackdrop.addEventListener('click', () => closeKb(true));
 els.kbUpload.addEventListener('click', () => uploadKbDocument());
 els.kbRebuild.addEventListener('click', rebuildKb);
-els.kbPreviewClose.addEventListener('click', closeKbPreview);
+els.kbPreviewClose.addEventListener('click', () => closeKbPreview());
 els.kbPreviewEdit.addEventListener('click', startKbPreviewEdit);
 els.kbPreviewSave.addEventListener('click', saveKbPreviewEdit);
-els.kbPreviewCancel.addEventListener('click', exitKbPreviewEdit);
+els.kbPreviewCancel.addEventListener('click', () => exitKbPreviewEdit());
 els.kbSearchButton.addEventListener('click', searchKnowledgeBase);
 els.kbSearchInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.isComposing) {
@@ -21830,15 +21845,18 @@ if (els.familyOverviewCopy) {
   els.familyOverviewCopy.addEventListener('click', copyFamilyOverview);
 }
 els.metricsMore.addEventListener('click', async () => {
-  const original = els.metricsMore.textContent;
   els.metricsMore.disabled = true;
   els.metricsMore.textContent = '加载中…';
-  let loaded = false;
+  let loaded;
   try {
     loaded = await loadMetrics(true);
   } finally {
     els.metricsMore.disabled = false;
-    if (loaded) els.metricsMore.textContent = original;
+    // false 保留 loadMetrics 写入的“加载失败，点击重试”；
+    // true/undefined（请求被新筛选取代）都恢复固定文案
+    if (loaded !== false) {
+      els.metricsMore.textContent = '显示更早记录';
+    }
   }
 });
 els.metricCancel.addEventListener('click', cancelMetricEdit);
