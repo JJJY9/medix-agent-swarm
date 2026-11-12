@@ -22,3 +22,16 @@ def test_drawer_head_wraps_for_long_profile_names():
     assert "max-width: 45%" in STYLES
     assert "text-overflow: ellipsis" in STYLES
     assert ".drawer-head-actions" in STYLES
+
+
+def test_kb_editor_escape_exits_edit_and_keeps_focus():
+    assert 'aria-label="编辑文档内容"' in HTML
+    assert "let previewEditOriginal = '';" in SCRIPT
+    assert "previewEditOriginal = els.kbPreviewEditor.value;" in SCRIPT
+    assert "放弃未保存的修改" in SCRIPT
+    assert "if (kbOpen && previewEditing) {" in SCRIPT
+    # Esc 分支在关闭抽屉之前处理编辑态
+    escape_pos = SCRIPT.index("if (e.key === 'Escape') {")
+    close_pos = SCRIPT.index("if (kbOpen) closeKb(true);", escape_pos)
+    edit_pos = SCRIPT.index("if (kbOpen && previewEditing) {", escape_pos)
+    assert edit_pos < close_pos
