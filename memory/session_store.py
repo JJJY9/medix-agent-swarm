@@ -5257,43 +5257,56 @@ class SessionStore:
         conditions.append("measured_at <= ?")
         params.append(end_of_today)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        alias_where = (
+            " WHERE " + " AND ".join(f"h.{item}" for item in conditions)
+            if conditions else ""
+        )
         sql = f"""
-            WITH ranked AS (
-                SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, context, note, created_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY metric
-                           ORDER BY measured_at DESC, id DESC
-                       ) AS rn
+            WITH latest AS (
+                SELECT metric, MAX(measured_at) AS max_at
                   FROM health_metrics{where}
+                 GROUP BY metric
+            ),
+            picked AS (
+                SELECT h.metric, MAX(h.id) AS max_id
+                  FROM health_metrics h
+                  JOIN latest l
+                    ON h.metric = l.metric
+                   AND h.measured_at = l.max_at
+                 {alias_where}
+                 GROUP BY h.metric
             )
-            SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, context, note, created_at
-              FROM ranked
-             WHERE rn = 1
-             ORDER BY measured_at DESC
+            SELECT h.id, h.profile, h.metric, h.value1, h.value2, h.unit,
+                   h.measured_at, h.context, h.note, h.created_at
+              FROM health_metrics h
+              JOIN picked p ON h.id = p.max_id
+             ORDER BY h.measured_at DESC
         """
         with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+            rows = self._conn.execute(sql, [*params, *params]).fetchall()
         return [dict(row) for row in rows]
 
     def latest_metrics_by_profile(self) -> List[Dict[str, Any]]:
         """返回每个档案下每种指标最新的一条记录（家庭总览用）。"""
         sql = """
-            WITH ranked AS (
-                SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, context, note, created_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY profile, metric
-                           ORDER BY measured_at DESC, id DESC
-                       ) AS rn
+            WITH latest AS (
+                SELECT profile, metric, MAX(measured_at) AS max_at
                   FROM health_metrics
+                 GROUP BY profile, metric
+            ),
+            picked AS (
+                SELECT h.profile, h.metric, MAX(h.id) AS max_id
+                  FROM health_metrics h
+                  JOIN latest l
+                    ON h.profile = l.profile AND h.metric = l.metric
+                   AND h.measured_at = l.max_at
+                 GROUP BY h.profile, h.metric
             )
-            SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, context, note, created_at
-              FROM ranked
-             WHERE rn = 1
-             ORDER BY profile, metric
+            SELECT h.id, h.profile, h.metric, h.value1, h.value2, h.unit,
+                   h.measured_at, h.context, h.note, h.created_at
+              FROM health_metrics h
+              JOIN picked p ON h.id = p.max_id
+             ORDER BY h.profile, h.metric
         """
         with self._lock:
             rows = self._conn.execute(sql).fetchall()
