@@ -194,3 +194,12 @@ def test_session_outputs_removed_if_deleted_during_save():
 
     assert summary_save < summary_cleanup
     assert memory_save < memory_cleanup
+
+    # 非 Swarm 与 Swarm 两条保存路径都必须在写入后复核删除墓碑
+    assert source.count("add_session_summary,") == 2
+    assert source.count("delete_session_summary,") == 2
+    second_save = source.index("add_session_summary,", memory_save + 1)
+    second_cleanup = source.index(
+        "delete_session_summary,", second_save
+    )
+    assert second_save < second_cleanup
