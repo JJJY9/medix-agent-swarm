@@ -150,7 +150,7 @@ def test_reminders_api_update(client_and_store):
         json={"title": "复查肝功", "note": "空腹"},
     )
     invalid = client.patch(
-        f"/api/reminders/{created['id']}", json={"due_at": "2026/11/10"}
+        f"/api/reminders/{created['id']}", json={"due_at": "2026/2/30"}
     )
     empty = client.patch(f"/api/reminders/{created['id']}", json={})
     missing = client.patch("/api/reminders/99999", json={"title": "x"})
