@@ -6,7 +6,7 @@ import pytest
 
 from core.agent_loop import AgentLoop
 from core.context import format_context
-from core.llm_client import LLMClient, LLMError, LLMResponse
+from core.llm_client import LLMClient, LLMError, LLMResponse, ToolCall
 
 
 class FakeCompletions:
@@ -142,9 +142,10 @@ def test_finalize_failure_is_not_retried():
 
     result = asyncio.run(loop.run(agent, {"question": "测试"}))
 
+    # 后处理失败只记录警告，不回退成通用错误文案，也不重复调用模型
     assert llm.calls == 1
-    assert result["warning"] == "finalize_failed"
-    assert "finalize_failed" not in result["answer"]
+    assert result["answer"] == "最终答复"
+    assert result.get("warning") != "finalize_failed"
 
 
 async def _post_process_noop(result, final_answer):
@@ -235,7 +236,7 @@ def test_cancelled_run_does_not_leave_user_message_in_memory():
     assert memory.added == []
 
 
-def test_finalize_failure_does_not_write_memory():
+def test_finalize_failure_keeps_answer_and_memory():
     memory = FakeMemory()
     loop = AgentLoop(short_term_memory=memory)
     agent = FailingPostProcessAgent()
@@ -247,8 +248,12 @@ def test_finalize_failure_does_not_write_memory():
 
     result = asyncio.run(loop.run(agent, {"question": "测试"}, session_id="s1"))
 
-    assert result["warning"] == "finalize_failed"
-    assert memory.added == []
+    # 后处理失败不应作废整轮咨询：回答与记忆保持一致
+    assert result["answer"] == "最终答复"
+    assert memory.added == [
+        ("user", "测试"),
+        ("assistant", "最终答复"),
+    ]
     memory = FakeMemory()
     loop = AgentLoop(short_term_memory=memory)
     seen = {}
@@ -303,4 +308,69 @@ def test_agent_loop_passes_original_question_to_validator():
         {"question": "增强后的提示", "memory_question": "原始问题"},
     ))
 
+    assert validator.seen == ("validated_agent", "原始问题")
+
+
+class AlwaysToolLLM:
+    def __init__(self):
+        self.calls = 0
+
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if tools is None:
+            return LLMResponse(
+                content="强制收尾答复", tool_calls=[], finish_reason="stop"
+            )
+        return LLMResponse(
+            content=None,
+            tool_calls=[ToolCall(
+                id=f"call-{self.calls}", name="fake_skill", arguments={},
+            )],
+            finish_reason="tool_calls",
+        )
+
+    def create_tool_message(self, tool_call_id, tool_name, result):
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": "{}",
+        }
+
+
+def test_max_iterations_fallback_runs_validator():
+    loop = AgentLoop(max_iterations=1, max_tool_calls=10)
+    validator = RecordingValidator()
+    loop.validator = validator
+    loop.auto_fixer = None
+
+    async def execute_tool(tool_name, arguments):
+        return {"ok": True}
+
+    agent = SimpleNamespace(
+        agent_id="validated_agent",
+        config={},
+        llm_client=AlwaysToolLLM(),
+        get_system_prompt=lambda: "系统提示",
+        format_user_input=lambda data: data["question"],
+        get_tools_for_llm=lambda: [{
+            "type": "function",
+            "function": {
+                "name": "fake_skill",
+                "description": "fake",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        execute_tool=execute_tool,
+        post_process_result=_post_process_noop,
+    )
+
+    result = asyncio.run(loop.run(
+        agent,
+        {"question": "增强后的提示", "memory_question": "原始问题"},
+    ))
+
+    assert result["warning"] == "max_iterations_reached"
+    assert result["answer"] == "强制收尾答复"
+    # 强制收尾同样经过 validator，且使用原始用户问题
     assert validator.seen == ("validated_agent", "原始问题")
