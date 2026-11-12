@@ -79,6 +79,21 @@ agents:
       - must_cite_sources  # 必须引用来源（指南、文献）
       - must_distinguish_facts_from_opinions  # 区分事实和观点
 
+  swarm_lead:
+    capabilities:
+      - synthesis
+
+    # 汇总 Agent 不直接调用工具，只负责整合 Worker 结果
+    allowed_tools: []
+
+    forbidden_actions:
+      - give_definitive_diagnosis
+      - prescribe_medication
+
+    output_constraints:
+      - must_include_disclaimer
+      - must_recommend_doctor_visit_if_high_risk
+
 # 通用约束（所有 Agent 共享）
 common:
   output_constraints:

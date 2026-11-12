@@ -78,13 +78,17 @@ class AutoFixer:
                 ensure_disclaimer=needs_disclaimer,
             )
 
+        # 急症警告必须先加：免责声明里的“请及时就医”会被
+        # fix_high_risk_warning 误判为已经给出就医建议。
         for fix_type in others:
-            if fix_type == "add_disclaimer":
-                fixed_output = self.fix_missing_disclaimer(fixed_output)
-            elif fix_type == "add_emergency_warning":
+            if fix_type == "add_emergency_warning":
                 fixed_output = self.fix_high_risk_warning(
                     fixed_output, user_input
                 )
+
+        for fix_type in others:
+            if fix_type == "add_disclaimer":
+                fixed_output = self.fix_missing_disclaimer(fixed_output)
 
         if needs_disclaimer and not self._has_disclaimer(fixed_output):
             fixed_output = self.fix_missing_disclaimer(fixed_output)

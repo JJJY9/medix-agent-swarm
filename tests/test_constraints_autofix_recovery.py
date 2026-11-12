@@ -88,6 +88,17 @@ def test_emergency_warning_survives_truncation():
     )["valid"]
 
 
+def test_emergency_warning_added_before_disclaimer():
+    fixed = AutoFixer().fix_output(
+        "可能与心脏问题有关，先休息观察。",
+        ["add_disclaimer", "add_emergency_warning"],
+        user_input="我父亲突发胸痛，出冷汗。",
+    )
+
+    assert fixed.startswith("⚠️")
+    assert "免责声明" in fixed
+
+
 def test_existing_medication_and_interaction_notes_are_not_prescriptions():
     validator = _validator()
     for text in (
