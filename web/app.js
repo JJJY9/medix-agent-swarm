@@ -6300,6 +6300,24 @@ const METRIC_UNITS = {
   auditc: '分',
   mmrc: '级',
 };
+const METRIC_RANGES = {
+  bp: { min1: 50, max1: 300, min2: 30, max2: 200 },
+  weight: { min1: 10, max1: 400 },
+  glucose: { min1: 1, max1: 50 },
+  temperature: { min1: 30, max1: 45 },
+  heart_rate: { min1: 30, max1: 250 },
+  spo2: { min1: 50, max1: 100 },
+  waist: { min1: 30, max1: 200 },
+  sleep: { min1: 0, max1: 24 },
+  steps: { min1: 0, max1: 100000 },
+  water: { min1: 0, max1: 20000 },
+  phq9: { min1: 0, max1: 27 },
+  gad7: { min1: 0, max1: 21 },
+  cat: { min1: 0, max1: 40 },
+  ess: { min1: 0, max1: 24 },
+  auditc: { min1: 0, max1: 12 },
+  mmrc: { min1: 0, max1: 4 },
+};
 const METRIC_CONTEXT_OPTIONS = {
   bp: [['morning', '晨起'], ['evening', '睡前']],
   glucose: [
@@ -6644,6 +6662,17 @@ function setMetricType(type) {
   ].includes(value);
   els.metricValue.step = isScore ? '1' : '0.1';
   els.metricValue.min = isScore ? '0' : '';
+  const range = METRIC_RANGES[value];
+  if (range) {
+    els.metricValue.min = String(range.min1);
+    els.metricValue.max = String(range.max1);
+  }
+  if (isBp && range) {
+    els.metricSystolic.min = String(range.min1);
+    els.metricSystolic.max = String(range.max1);
+    els.metricDiastolic.min = String(range.min2);
+    els.metricDiastolic.max = String(range.max2);
+  }
   els.metricReference.textContent = METRIC_REFERENCES[value] || '';
   const contextOptions = METRIC_CONTEXT_OPTIONS[value] || [];
   const previous = els.metricContext.value;
@@ -17646,6 +17675,33 @@ async function addMetricRecord() {
     if (!rawValue || !Number.isFinite(value1)) {
       setMetricsStatus('请填写数值。', true);
       return;
+    }
+  }
+
+  const range = METRIC_RANGES[type];
+  if (range) {
+    const unit = METRIC_UNITS[type] || '';
+    if (value1 < range.min1 || value1 > range.max1) {
+      setMetricsStatus(
+        `${METRIC_NAMES[type] || '指标'}应在 `
+        + `${range.min1}–${range.max1} ${unit} 之间，请确认单位。`,
+        true
+      );
+      return;
+    }
+    if (type === 'bp') {
+      if (value2 < range.min2 || value2 > range.max2) {
+        setMetricsStatus(
+          `舒张压应在 ${range.min2}–${range.max2} mmHg 之间，`
+          + '请确认单位。',
+          true
+        );
+        return;
+      }
+      if (value1 <= value2) {
+        setMetricsStatus('收缩压应高于舒张压，请检查是否填反。', true);
+        return;
+      }
     }
   }
 
