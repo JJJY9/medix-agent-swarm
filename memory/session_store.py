@@ -8626,6 +8626,108 @@ class SessionStore:
             )
             return cursor.rowcount
 
+    def ensure_reminder(
+        self,
+        title: Any,
+        due_at: Any,
+        note: str = "",
+        session_id: str = "",
+        profile: str = "",
+        advance_days: Any = 0,
+        medication_id: Any = 0,
+        vaccination_id: Any = 0,
+        appointment_id: Any = 0,
+        match_title: bool = True,
+        match_due: bool = False,
+    ) -> Tuple[Optional[Dict[str, Any]], bool]:
+        """原子地查重并插入提醒；返回 (提醒, 是否新建)。
+
+        自动建提醒的四个入口原先都是"先查后插"两段独立加锁，双击或
+        并发请求会各插一条。这里把查重与插入放在同一个事务里。
+        """
+        title_text = " ".join(str(title or "").split())[
+            :MAX_REMINDER_TITLE_LENGTH
+        ]
+        if not title_text:
+            return None, False
+        try:
+            due_text = _normalize_reminder_due(due_at)
+            advance = _normalize_reminder_advance(advance_days)
+        except ValueError:
+            return None, False
+        note_text = " ".join(str(note or "").split())[
+            :MAX_REMINDER_NOTE_LENGTH
+        ]
+        profile_text = _normalize_profile_name(profile)
+        session_text = str(session_id or "").strip()[:64]
+        try:
+            medication_key = max(0, int(medication_id or 0))
+            vaccination_key = max(0, int(vaccination_id or 0))
+            appointment_key = max(0, int(appointment_id or 0))
+        except (TypeError, ValueError, OverflowError):
+            return None, False
+
+        conditions = ["done = 0", "profile = ?"]
+        params: List[Any] = [profile_text]
+        if match_title:
+            conditions.append("title = ?")
+            params.append(title_text)
+        if match_due:
+            conditions.append("due_at = ?")
+            params.append(due_text)
+        if medication_key:
+            conditions.append("medication_id = ?")
+            params.append(medication_key)
+        if vaccination_key:
+            conditions.append("vaccination_id = ?")
+            params.append(vaccination_key)
+        if appointment_key:
+            conditions.append("appointment_id = ?")
+            params.append(appointment_key)
+
+        now = self._now()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                f"""
+                SELECT id, title, note, due_at, session_id, profile,
+                       advance_days, repeat_days, repeat_until, repeats_from,
+                       medication_id, vaccination_id, appointment_id, done,
+                       created_at, updated_at
+                  FROM reminders
+                 WHERE {' AND '.join(conditions)}
+                 ORDER BY id LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if row is not None:
+                return {**dict(row), "done": False}, False
+            cursor = self._conn.execute(
+                """
+                INSERT INTO reminders(
+                    title, note, due_at, session_id, profile,
+                    advance_days, medication_id, vaccination_id,
+                    appointment_id, done, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    title_text, note_text, due_text, session_text,
+                    profile_text, advance, medication_key,
+                    vaccination_key, appointment_key, now, now,
+                ),
+            )
+            new_id = int(cursor.lastrowid)
+            row = self._conn.execute(
+                """
+                SELECT id, title, note, due_at, session_id, profile,
+                       advance_days, repeat_days, repeat_until, repeats_from,
+                       medication_id, vaccination_id, appointment_id, done,
+                       created_at, updated_at
+                  FROM reminders WHERE id = ?
+                """,
+                (new_id,),
+            ).fetchone()
+        return {**dict(row), "done": False}, True
+
     def add_reminder(
         self,
         title: str,

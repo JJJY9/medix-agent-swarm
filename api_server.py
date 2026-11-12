@@ -3600,32 +3600,21 @@ async def create_medication_alert_reminder(
         due_at = max(reminder_date, today).strftime("%Y-%m-%d")
         note = f"有效期至 {expiry}，请检查并更换"
 
-    reminders = await asyncio.to_thread(
-        store.list_reminders, True, item.get("profile") or ""
-    )
-    for reminder in reminders:
-        if (
-            int(reminder.get("medication_id") or 0) == int(medication_id)
-            and not reminder.get("done")
-            and reminder.get("title") == title
-        ):
-            return {"ok": True, "created": False, "reminder": reminder}
-
-    reminder = await asyncio.to_thread(
-        store.add_reminder,
+    reminder, created = await asyncio.to_thread(
+        store.ensure_reminder,
         title,
         due_at,
         note,
         "",
         item.get("profile") or "",
         0,
-        0,
-        "",
         int(medication_id),
-        0,
     )
-    await record_audit("medication.reminder", str(medication_id))
-    return {"ok": True, "created": True, "reminder": reminder}
+    if reminder is None:
+        raise HTTPException(status_code=400, detail="提醒日期不正确")
+    if created:
+        await record_audit("medication.reminder", str(medication_id))
+    return {"ok": True, "created": created, "reminder": reminder}
 
 
 @app.get("/api/medication-logs")
@@ -3807,24 +3796,12 @@ async def create_vaccination_reminder(vaccination_id: SafeIntPath):
     due_at = str(item.get("next_due") or "").strip()
     if not due_at:
         raise HTTPException(status_code=400, detail="请先填写下一剂日期")
-    existing = await asyncio.to_thread(
-        store.list_reminders, True, item.get("profile") or ""
-    )
-    for reminder in existing:
-        if (
-            int(reminder.get("vaccination_id") or 0)
-            == int(vaccination_id)
-            and not reminder.get("done")
-        ):
-            return {
-                "ok": True, "created": False, "reminder": reminder,
-            }
     title = (
         f"接种：{item.get('vaccine_name') or '疫苗'}"
         f"（第{int(item.get('dose_number') or 1)}剂）"
     )[:120]
-    reminder = await asyncio.to_thread(
-        store.add_reminder,
+    reminder, created = await asyncio.to_thread(
+        store.ensure_reminder,
         title,
         due_at,
         "疫苗接种提醒",
@@ -3832,14 +3809,17 @@ async def create_vaccination_reminder(vaccination_id: SafeIntPath):
         item.get("profile") or "",
         7,
         0,
-        "",
-        0,
         int(vaccination_id),
+        0,
+        False,
     )
-    await record_audit(
-        "vaccination.reminder", str(item["id"])
-    )
-    return {"ok": True, "created": True, "reminder": reminder}
+    if reminder is None:
+        raise HTTPException(status_code=400, detail="下一剂日期格式不正确")
+    if created:
+        await record_audit(
+            "vaccination.reminder", str(item["id"])
+        )
+    return {"ok": True, "created": created, "reminder": reminder}
 
 
 @app.get("/api/appointments")
@@ -4025,19 +4005,8 @@ async def create_appointment_reminder(appointment_id: SafeIntPath):
     ]
     note = " ".join(part for part in detail_parts if part)[:300]
 
-    reminders = await asyncio.to_thread(
-        store.list_reminders, True, item.get("profile") or ""
-    )
-    for reminder in reminders:
-        if (
-            int(reminder.get("appointment_id") or 0)
-            == int(appointment_id)
-            and not reminder.get("done")
-        ):
-            return {"ok": True, "created": False, "reminder": reminder}
-
-    reminder = await asyncio.to_thread(
-        store.add_reminder,
+    reminder, created = await asyncio.to_thread(
+        store.ensure_reminder,
         title,
         due_at,
         note,
@@ -4045,13 +4014,15 @@ async def create_appointment_reminder(appointment_id: SafeIntPath):
         item.get("profile") or "",
         0,
         0,
-        "",
-        0,
         0,
         int(appointment_id),
+        False,
     )
-    await record_audit("appointment.reminder", str(appointment_id))
-    return {"ok": True, "created": True, "reminder": reminder}
+    if reminder is None:
+        raise HTTPException(status_code=400, detail="提醒日期格式不正确")
+    if created:
+        await record_audit("appointment.reminder", str(appointment_id))
+    return {"ok": True, "created": created, "reminder": reminder}
 
 
 @app.get("/api/lab-results")
@@ -4615,22 +4586,8 @@ async def _ensure_care_item_reminder(store, item):
     reminder_due = max(due_date - timedelta(days=7), today)
     title = f"复查：{item.get('title') or '复查'}"[:120]
     note = f"下次复查 {due}"
-    reminders = await asyncio.to_thread(
-        store.list_reminders, True, item.get("profile") or ""
-    )
-    for reminder in reminders:
-        if (
-            not reminder.get("done")
-            and reminder.get("title") == title
-            and str(reminder.get("due_at") or "")[:10]
-            == reminder_due.strftime("%Y-%m-%d")
-        ):
-            await _complete_care_item_old_reminders(
-                store, reminders, title, keep_id=int(reminder["id"])
-            )
-            return reminder, False
-    reminder = await asyncio.to_thread(
-        store.add_reminder,
+    reminder, created = await asyncio.to_thread(
+        store.ensure_reminder,
         title,
         reminder_due.strftime("%Y-%m-%d"),
         note,
@@ -4638,13 +4595,20 @@ async def _ensure_care_item_reminder(store, item):
         item.get("profile") or "",
         0,
         0,
-        "",
         0,
         0,
-        0,
+        True,
+        True,
     )
-    await _complete_care_item_old_reminders(store, reminders, title)
-    return reminder, True
+    if reminder is None:
+        return None, False
+    reminders = await asyncio.to_thread(
+        store.list_reminders, True, item.get("profile") or ""
+    )
+    await _complete_care_item_old_reminders(
+        store, reminders, title, keep_id=int(reminder["id"])
+    )
+    return reminder, created
 
 
 @app.get("/api/care-items")
