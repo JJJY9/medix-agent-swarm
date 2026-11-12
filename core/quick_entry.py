@@ -31,6 +31,7 @@ _UNIT_METRICS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("temperature", ("°c", "℃", "度")),
     ("heart_rate", ("bpm", "次/分", "次/分钟")),
     ("spo2", ("%",)),
+    ("steps", ("步",)),
 )
 
 #: 每个指标接受的单位与换算系数（"f_to_c" 表示华氏度转摄氏度）
@@ -47,6 +48,7 @@ _METRIC_UNITS: Dict[str, Dict[str, Any]] = {
     "heart_rate": {"bpm": 1.0, "次/分": 1.0, "次/分钟": 1.0},
     "spo2": {"%": 1.0},
     "waist": {"cm": 1.0, "厘米": 1.0},
+    "steps": {"步": 1.0},
 }
 
 _ALL_UNIT_TOKENS = sorted(
