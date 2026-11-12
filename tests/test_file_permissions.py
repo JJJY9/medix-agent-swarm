@@ -47,3 +47,19 @@ def test_summary_directory_is_owner_only(tmp_path):
     path = manager._get_summary_path("s1")
     assert _mode(path.parent) == 0o700
     assert _mode(tmp_path / "summaries") == 0o700
+
+
+def test_knowledge_upload_directory_and_file_are_owner_only(tmp_path):
+    from knowledge.service import KnowledgeService
+
+    service = KnowledgeService(
+        docs_dir=tmp_path / "docs",
+        upload_dir=tmp_path / "uploads",
+    )
+    result = service.save_upload(
+        "note.md", "# 标题\n\n内容".encode("utf-8")
+    )
+    path = tmp_path / "uploads" / result["filename"]
+
+    assert _mode(tmp_path / "uploads") == 0o700
+    assert _mode(path) == 0o600
