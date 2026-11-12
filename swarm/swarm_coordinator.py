@@ -377,6 +377,12 @@ class SwarmCoordinator:
         # 确定性用药安全预检：过敏史、重复用药与常见相互作用
         medication_safety = check_medication_safety(question, context)
 
+        # 同一会话编号在本进程内被删除后再次发起会诊：先解除墓碑，
+        # 否则本轮问答会被 save_exchange / 短期记忆静默丢弃。
+        # 会诊由全局锁串行，删除发生在本次开始之后的情况仍会重新登记墓碑。
+        self.session_store.revive_session(session_id)
+        self.short_term_memory.clear_tombstone(session_id)
+
         # 服务重启后从 SQLite 恢复本会话的最近问答
         await self._restore_short_term_context(session_id)
 

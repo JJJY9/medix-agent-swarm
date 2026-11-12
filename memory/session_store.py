@@ -2225,6 +2225,19 @@ class SessionStore:
         with self._lock:
             return str(session_id or "").strip() in self._deleted_sessions
 
+    def revive_session(self, session_id: str) -> None:
+        """解除删除墓碑；用于同一编号被复用发起新会诊的场景。
+
+        不写入任何行：save_exchange 已经使用 INSERT OR IGNORE，
+        第一次问答会正常创建会话。删除进行中的会诊仍会重新登记墓碑，
+        因此不会把迟到结果写回。
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        with self._lock:
+            self._deleted_sessions.pop(session_id, None)
+
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
         session_id = str(session_id or "").strip()
