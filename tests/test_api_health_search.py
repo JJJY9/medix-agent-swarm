@@ -445,3 +445,35 @@ def test_health_search_export_csv(client_and_store):
 
     missing = client.get("/api/health/search/export.csv")
     assert missing.status_code == 400
+
+
+def test_health_search_export_is_not_truncated_at_per_type_limit(
+    client_and_store,
+):
+    client, _store = client_and_store
+    for index in range(25):
+        response = client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "weight",
+            "value1": 60 + index, "measured_at": f"{_date(-index)}T08:00",
+            "note": "复查体重",
+        })
+        assert response.status_code == 200
+
+    search = client.get(
+        "/api/health/search",
+        params={"q": "复查", "profile": "妈妈", "limit": 200},
+    ).json()
+    assert search["total"] == 25
+    # 页面搜索仍按每类 20 条展示，避免一次渲染过多结果
+    assert search["returned"] == 20
+
+    export = client.get(
+        "/api/health/search/export.csv",
+        params={"q": "复查", "profile": "妈妈"},
+    )
+    assert export.status_code == 200
+    rows = list(csv.reader(io.StringIO(
+        export.content.decode("utf-8-sig")
+    )))
+    assert len(rows) == 26
+    assert all("复查体重" in row[4] for row in rows[1:])

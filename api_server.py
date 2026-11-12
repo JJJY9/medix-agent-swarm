@@ -7570,10 +7570,17 @@ async def health_search(
     q: str = "",
     profile: Optional[str] = None,
     limit: int = 50,
+    per_type_limit: int = Query(
+        HEALTH_SEARCH_PER_TYPE_LIMIT, include_in_schema=False
+    ),
 ):
     """跨健康记录搜索：指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病、提醒与就医资料。"""
     from memory import get_session_store
     from memory.session_store import METRIC_TYPES, metric_context_label
+
+    per_type_limit = max(
+        1, min(int(per_type_limit or HEALTH_SEARCH_PER_TYPE_LIMIT), 200)
+    )
 
     query = " ".join(str(q or "").split())[:HEALTH_SEARCH_MAX_QUERY_CHARS]
     if not query:
@@ -7942,7 +7949,7 @@ async def health_search(
         items = sorted(
             buckets[type_key], key=lambda item: item["at"], reverse=True
         )
-        results.extend(items[:HEALTH_SEARCH_PER_TYPE_LIMIT])
+        results.extend(items[:per_type_limit])
     results.sort(key=lambda item: (item["at"], item["id"]), reverse=True)
     shown = results[:limit]
     return {
@@ -7964,7 +7971,9 @@ async def export_health_search_csv(
     import csv
     import io
 
-    data = await health_search(q=q, profile=profile, limit=200)
+    data = await health_search(
+        q=q, profile=profile, limit=200, per_type_limit=200
+    )
     rows = [["类型", "时间", "患者档案", "标题", "详情"]]
     for item in data.get("results") or []:
         rows.append([
