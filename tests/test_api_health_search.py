@@ -477,3 +477,26 @@ def test_health_search_export_is_not_truncated_at_per_type_limit(
     )))
     assert len(rows) == 26
     assert all("复查体重" in row[4] for row in rows[1:])
+
+
+def test_health_search_export_can_filter_type(client_and_store):
+    client, _store = client_and_store
+    _seed_family(client)
+
+    export = client.get(
+        "/api/health/search/export.csv",
+        params={"q": "血压", "profile": "妈妈", "type": "metric"},
+    )
+    rows = list(csv.reader(io.StringIO(
+        export.content.decode("utf-8-sig")
+    )))
+
+    assert export.status_code == 200
+    assert len(rows) > 1
+    assert all(row[0] == "指标" for row in rows[1:])
+
+    invalid = client.get(
+        "/api/health/search/export.csv",
+        params={"q": "血压", "type": "unknown"},
+    )
+    assert invalid.status_code == 400

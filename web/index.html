@@ -617,6 +617,22 @@
     >
     <button type="button" class="btn-quiet" id="health-search-clear" hidden>清除</button>
     <button type="button" class="btn-quiet" id="health-search-export" hidden>导出结果</button>
+    <label class="sr-only" for="health-search-type">按类型筛选搜索结果</label>
+    <select id="health-search-type" class="health-search-type">
+      <option value="">全部类型</option>
+      <option value="metric">指标</option>
+      <option value="symptom">症状</option>
+      <option value="medication">用药</option>
+      <option value="lab">化验</option>
+      <option value="vaccination">疫苗</option>
+      <option value="appointment">预约</option>
+      <option value="care">复查</option>
+      <option value="visit">就诊</option>
+      <option value="allergy">过敏</option>
+      <option value="condition">慢病</option>
+      <option value="reminder">提醒</option>
+      <option value="attachment">资料</option>
+    </select>
     <label class="health-search-all"><input type="checkbox" id="health-search-all-profiles"> 全部档案</label>
     <span class="health-search-status" id="health-search-status" role="status" hidden></span>
   </div>

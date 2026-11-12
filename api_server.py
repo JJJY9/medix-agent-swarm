@@ -8038,16 +8038,23 @@ async def health_search(
 async def export_health_search_csv(
     q: str = "",
     profile: Optional[str] = None,
+    type_: str = Query("", alias="type"),
 ):
     """导出全局健康搜索结果 CSV（带 BOM，最多 200 条）。"""
     import csv
     import io
 
+    type_key = str(type_ or "").strip()
+    if type_key and type_key not in HEALTH_SEARCH_TYPE_ORDER:
+        raise HTTPException(status_code=400, detail="未知的搜索类型")
     data = await health_search(
         q=q, profile=profile, limit=200, per_type_limit=200
     )
+    items = data.get("results") or []
+    if type_key:
+        items = [item for item in items if item.get("type") == type_key]
     rows = [["类型", "时间", "患者档案", "标题", "详情"]]
-    for item in data.get("results") or []:
+    for item in items:
         rows.append([
             csv_safe_cell(item.get("label") or ""),
             csv_safe_cell(str(item.get("at") or "")),
