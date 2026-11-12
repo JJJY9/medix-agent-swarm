@@ -3381,27 +3381,17 @@ async def update_medication(
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
 
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    # 只把请求实际给出的字段交给存储层，未给出的字段在事务内沿用当前值，
+    # 避免锁外快照覆盖其它设备刚提交的修改
     fields = request.model_dump(exclude_unset=True)
-    extra: Dict[str, Any] = {}
-    for key in (
-        "stock", "stock_unit", "low_stock_threshold", "expiry_date",
-        "started_at", "stopped_at", "stop_reason",
-    ):
-        if key in fields:
-            extra[key] = merged.get(key)
     item = await asyncio.to_thread(
-        store.update_medication,
-        medication_id,
-        merged.get("profile") or "",
-        merged.get("name") or "",
-        merged.get("dose") or "",
-        merged.get("frequency") or "",
-        merged.get("note") or "",
-        bool(merged.get("active", True)),
-        **extra,
+        store.update_medication, medication_id, **fields
     )
     if item is None:
+        if await asyncio.to_thread(
+            store.get_medication, medication_id
+        ) is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
         raise HTTPException(
             status_code=400,
             detail="用药内容不正确，请检查剂量、日期等字段",
