@@ -50,6 +50,30 @@ def _seed_critical(client):
     })
 
 
+def test_sleep_lower_bound_insight_wording(client_and_store):
+    client, _store = client_and_store
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 7,
+    })
+    for value in (5, 5.5):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "sleep", "value1": value,
+            "measured_at": f"{_date(0)}T08:00",
+        })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈", "days": 30}
+    ).json()
+    item = next(
+        row for row in data["insights"]
+        if row["key"] == "metric_sleep"
+    )
+    assert "低于目标" in item["title"]
+    assert "超出目标" not in item["title"]
+    assert "目标≥7" in item["detail"].replace(" ", "")
+    assert "低于目标" in item["action"]
+
+
 def test_insights_prioritize_critical_and_overdue(client_and_store):
     client, _store = client_and_store
     _seed_critical(client)

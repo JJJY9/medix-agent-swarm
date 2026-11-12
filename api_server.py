@@ -6160,7 +6160,10 @@ def _build_health_insights(
     allow_trends: bool = True,
 ) -> List[Dict[str, str]]:
     """把近 N 天健康汇总转成按优先级排序的可执行提示。"""
-    from memory.session_store import METRIC_TYPES
+    from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
+        METRIC_TYPES,
+    )
 
     days = int(report.get("days") or 7)
     insights: List[Dict[str, str]] = []
@@ -6241,9 +6244,21 @@ def _build_health_insights(
                 insights.append(_health_insight(
                     f"metric_{metric}",
                     "warning" if over >= 2 else "info",
-                    f"{label} {over} 次超出目标（共 {count} 次）",
-                    f"目标 {target_text} {unit}{latest_text}".strip(),
-                    "复测后仍超标时，与医生确认是否需要调整方案。",
+                    f"{label} {over} 次"
+                    + ("低于目标" if metric in LOWER_BOUND_TARGET_METRICS
+                       else "超出目标")
+                    + f"（共 {count} 次）",
+                    (
+                        f"目标"
+                        + ("≥" if metric in LOWER_BOUND_TARGET_METRICS
+                           else "≤")
+                        + f" {target_text} {unit}{latest_text}"
+                    ).strip(),
+                    (
+                        "复测后仍低于目标时，与医生确认是否需要调整方案。"
+                        if metric in LOWER_BOUND_TARGET_METRICS
+                        else "复测后仍超标时，与医生确认是否需要调整方案。"
+                    ),
                     "metric",
                     metric=metric,
                 ))
@@ -8452,6 +8467,8 @@ async def export_metrics_csv(
         "heart_rate": "心率",
         "spo2": "血氧饱和度",
         "waist": "腰围",
+        "sleep": "睡眠时长",
+        "steps": "步数",
         "phq9": "PHQ-9 评分",
         "gad7": "GAD-7 评分",
         "cat": "CAT 评分",

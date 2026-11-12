@@ -552,6 +552,11 @@ def test_metrics_summary_sleep_lower_bound_target(client):
 
     assert body["target"] == {"value1": 7.0, "value2": None}
     assert body["within_target"] == 1
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "sleep"}
+    )
+    assert exported.status_code == 200
+    assert "睡眠时长" in exported.content.decode("utf-8-sig")
 
 
 def test_screener_metrics_roundtrip(client):
