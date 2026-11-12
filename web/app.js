@@ -304,6 +304,7 @@ const els = {
   healthSearchAllProfiles: document.getElementById(
     'health-search-all-profiles'
   ),
+  healthSearchType: document.getElementById('health-search-type'),
   healthSearchStatus: document.getElementById('health-search-status'),
   healthSearchResults: document.getElementById('health-search-results'),
   insightSection: document.getElementById('insight-section'),
@@ -7454,6 +7455,8 @@ const HEALTH_SEARCH_LABELS = {
 let healthSearchTimer = null;
 let healthSearchSeq = 0;
 let healthSearchQuery = '';
+let healthSearchType = '';
+let healthSearchLastData = null;
 let healthSearchAbort = null;
 
 function setHealthSearchStatus(text, isError = false) {
@@ -7466,6 +7469,7 @@ function setHealthSearchStatus(text, isError = false) {
 function hideHealthSearchResults() {
   healthSearchSeq += 1;
   healthSearchQuery = '';
+  healthSearchLastData = null;
   if (healthSearchAbort) {
     healthSearchAbort.abort();
     healthSearchAbort = null;
@@ -7530,6 +7534,7 @@ async function runHealthSearch(rawQuery) {
     if (!res.ok) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
+    healthSearchLastData = data;
     renderHealthSearchResults(data);
   } catch (err) {
     if (err.name === 'AbortError') return;
@@ -7554,6 +7559,7 @@ async function exportHealthSearchCsv() {
   );
   const params = new URLSearchParams({ q: query });
   if (!allProfiles) params.set('profile', profile);
+  if (healthSearchType) params.set('type', healthSearchType);
   try {
     const res = await fetch(
       `/api/health/search/export.csv?${params.toString()}`
@@ -7580,7 +7586,13 @@ async function exportHealthSearchCsv() {
 function renderHealthSearchResults(data) {
   if (!els.healthSearchResults) return;
   const query = String(data.query || healthSearchQuery || '');
-  const results = data.results || [];
+  const allResults = data.results || [];
+  const results = healthSearchType
+    ? allResults.filter((item) => item.type === healthSearchType)
+    : allResults;
+  const typeLabel = healthSearchType
+    ? HEALTH_SEARCH_LABELS[healthSearchType] || healthSearchType
+    : '';
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const allProfiles = Boolean(
     els.healthSearchAllProfiles && els.healthSearchAllProfiles.checked
@@ -7594,21 +7606,32 @@ function renderHealthSearchResults(data) {
     els.healthSearchExport.hidden = results.length === 0;
   }
   if (!results.length) {
-    setHealthSearchStatus(`${scopeText}没有匹配「${query}」的记录。`);
+    setHealthSearchStatus(
+      healthSearchType
+        ? `${scopeText}没有匹配「${query}」的${typeLabel}记录。`
+        : `${scopeText}没有匹配「${query}」的记录。`
+    );
     return;
   }
   const counts = data.counts || {};
-  const total = Number(data.total) || results.length;
+  const total = Number(data.total) || allResults.length;
   const summaryParts = Object.entries(counts)
     .filter(([, value]) => Number(value) > 0)
     .map(([key, value]) => (
       `${HEALTH_SEARCH_LABELS[key] || key} ${Number(value)}`
     ));
-  setHealthSearchStatus(
-    `${scopeText} · 共 ${total} 条`
-    + (total > results.length ? `，显示 ${results.length} 条` : '')
-    + (summaryParts.length ? `：${summaryParts.join(' · ')}` : '')
-  );
+  if (healthSearchType) {
+    setHealthSearchStatus(
+      `${scopeText} · ${typeLabel} ${results.length} 条`
+      + (total > results.length ? `（全部 ${total} 条）` : '')
+    );
+  } else {
+    setHealthSearchStatus(
+      `${scopeText} · 共 ${total} 条`
+      + (total > results.length ? `，显示 ${results.length} 条` : '')
+      + (summaryParts.length ? `：${summaryParts.join(' · ')}` : '')
+    );
+  }
   const grouped = new Map();
   for (const item of results) {
     const key = item.type || 'other';
@@ -20481,6 +20504,16 @@ els.healthSearchResults.addEventListener('keydown', (event) => {
 if (els.healthSearchAllProfiles) {
   els.healthSearchAllProfiles.addEventListener('change', () => {
     if (healthSearchQuery) runHealthSearch(healthSearchQuery);
+  });
+}
+if (els.healthSearchType) {
+  els.healthSearchType.addEventListener('change', () => {
+    healthSearchType = els.healthSearchType.value;
+    if (healthSearchLastData) {
+      renderHealthSearchResults(healthSearchLastData);
+    } else if (healthSearchQuery) {
+      runHealthSearch(healthSearchQuery);
+    }
   });
 }
 els.healthSearchClear.addEventListener('click', () => {

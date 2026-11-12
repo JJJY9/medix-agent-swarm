@@ -145,3 +145,11 @@ def test_search_results_support_keyboard_navigation():
     )
     assert "results[next].focus();" in SCRIPT
     assert "els.healthSearchInput.focus();" in SCRIPT
+
+
+def test_search_can_filter_by_type():
+    assert 'id="health-search-type"' in HTML
+    assert "healthSearchType = els.healthSearchType.value" in SCRIPT
+    assert "healthSearchType\n    ? allResults.filter" in SCRIPT
+    assert "params.set('type', healthSearchType)" in SCRIPT
+    assert ".health-search-type {" in CSS
