@@ -5,7 +5,7 @@ Search Knowledge Skill
 from typing import Dict, Any
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import build_sources, sanitize_untrusted_text
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -110,9 +110,9 @@ def format_results(results: list) -> str:
     for i, doc in enumerate(results, 1):
         output.append(f'<untrusted_source index="{i}">')
         output.append(f"【结果 {i}】")
-        content = str(doc.get("content", "无内容"))[
-            :MAX_RESULT_CONTENT_CHARS
-        ]
+        content = sanitize_untrusted_text(
+            doc.get("content", "无内容"), MAX_RESULT_CONTENT_CHARS
+        )
         output.append(content)
 
         # 显示相关度分数（如果有）

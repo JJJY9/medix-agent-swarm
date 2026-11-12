@@ -5,7 +5,11 @@ Analyze Symptoms Skill
 from typing import Dict, Any, List
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources, wrap_untrusted_source
+from knowledge.sources import (
+    build_sources,
+    wrap_source_snippets,
+    wrap_untrusted_source,
+)
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -132,7 +136,7 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
         "patterns": patterns,
         "possible_diseases": possible_diseases,
         "kb_insights": kb_insights,
-        "sources": build_sources(source_docs),
+        "sources": wrap_source_snippets(build_sources(source_docs)),
     }
 
 
