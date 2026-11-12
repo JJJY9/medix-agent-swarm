@@ -203,3 +203,23 @@ def test_session_outputs_removed_if_deleted_during_save():
         "delete_session_summary,", second_save
     )
     assert second_save < second_cleanup
+
+
+def test_revive_session_allows_new_exchange(tmp_path):
+    store = SessionStore(str(tmp_path / "revive.db"))
+    try:
+        store.save_exchange("s1", "旧问题", "旧回答")
+        store.delete_session("s1")
+        assert store.is_session_deleted("s1") is True
+        assert store.save_exchange("s1", "迟到提问", "迟到回答") is None
+
+        store.revive_session("s1")
+        assert store.is_session_deleted("s1") is False
+        assert store.save_exchange("s1", "新问题", "新回答") is not None
+
+        messages = store.get_messages("s1")
+        assert [item["content"] for item in messages] == [
+            "新问题", "新回答",
+        ]
+    finally:
+        store.close()

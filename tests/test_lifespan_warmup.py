@@ -36,3 +36,18 @@ def test_warmup_task_is_created_and_cancelled(monkeypatch):
 
     assert called == [True]
     assert api_server.state.warmup_task is None
+
+
+def test_later_coordinator_success_clears_startup_error(monkeypatch):
+    import swarm
+
+    class FakeCoordinator:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(swarm, "SwarmCoordinator", FakeCoordinator)
+    state = api_server.AppState()
+    state.startup_error = "temporary failure"
+
+    assert state.get_coordinator() is not None
+    assert state.startup_error is None

@@ -2,6 +2,7 @@
 import asyncio
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -91,6 +92,40 @@ def test_deep_research_uses_repo_root_and_handles_errors(monkeypatch):
     assert result["status"] == "completed"
     assert result["findings"] == ["发现一"]
     assert result["confidence"] == "high"
+
+
+def test_deep_research_constructs_workflow_off_event_loop(monkeypatch):
+    research_module = _load_skill(
+        ".claude/skills/deep-research/script/research.py",
+        "skill_research_thread",
+    )
+    seen = {}
+
+    class FakeWorkflow:
+        def __init__(self):
+            seen["thread"] = threading.current_thread()
+
+        async def run(self, **kwargs):
+            return SimpleNamespace(
+                key_findings=[],
+                summary="总结",
+                evidence_level="B",
+                confidence=0.5,
+                conflicts=[],
+                recommendations=[],
+                sources=[],
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "research.deep_research_workflow",
+        SimpleNamespace(DeepResearchWorkflow=FakeWorkflow),
+    )
+
+    asyncio.run(research_module.deep_research("糖尿病"))
+
+    # 构造函数会加载知识库/模型，必须在工作线程执行
+    assert seen["thread"] is not threading.main_thread()
 
 
 def test_deep_research_import_failure_returns_structured_error(monkeypatch):

@@ -44,3 +44,10 @@ def test_kb_draft_guard_covers_all_close_paths():
     assert "if (!exitKbPreviewEdit(force)) return false;" in SCRIPT
     assert "if (!closeKb()) return" in SCRIPT
     assert "closeKbPreview(true)" in SCRIPT
+
+
+def test_nested_row_actions_and_ime_escape_are_guarded():
+    assert SCRIPT.count("event.target !== event.currentTarget") >= 1
+    assert SCRIPT.count("e.target !== e.currentTarget") >= 2
+    assert "e.isComposing || e.keyCode === 229" in SCRIPT
+    assert "e.key === 'Escape' && !e.isComposing" in SCRIPT
