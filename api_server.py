@@ -7100,33 +7100,41 @@ async def health_timeline(
             datetime.now() - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d")
         window_days = days
+    window_end = day or ""
+    attachment_end = day or datetime.now().strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, window_days
+        store.list_metrics,
+        profile, None, 100000, window_days, 0, "", start, window_end,
     )
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, window_days
+        store.list_symptoms,
+        profile, 100000, window_days, 0, start, window_end,
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, window_days
+        store.list_medication_logs,
+        None, profile, 100000, 0, window_days, start, window_end,
     )
     raw_vaccinations = await asyncio.to_thread(
-        store.list_vaccinations, profile, 100000
+        store.list_vaccinations, profile, 100000, start, window_end
     )
     raw_appointments = await asyncio.to_thread(
-        store.list_appointments, profile, None, False, 100000, 0
+        store.list_appointments,
+        profile, None, False, 100000, 0, start, window_end,
     )
     raw_lab_results = await asyncio.to_thread(
-        store.list_lab_results, profile, None, None, 0, 100000, 0
+        store.list_lab_results,
+        profile, None, None, 0, 100000, 0, start, window_end,
     )
     raw_care_items = await asyncio.to_thread(
-        store.list_care_items, profile, False, False, 100000
+        store.list_care_items,
+        profile, False, False, 100000, start, window_end,
     )
     raw_visit_records = await asyncio.to_thread(
-        store.list_visit_records, profile, 0, "", 100000
+        store.list_visit_records,
+        profile, 0, "", 100000, start, window_end,
     )
-    window_end = day or datetime.now().strftime("%Y-%m-%d")
     raw_attachments = await _list_attachments_paged(
-        store, profile, start, window_end
+        store, profile, start, attachment_end
     )
     session_end = (
         f"{day}T23:59:59" if day
@@ -8134,13 +8142,15 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
 
     store = get_session_store()
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, 0
+        store.list_metrics,
+        profile, None, 100000, 0, 0, "", start, end,
     )
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, 0
+        store.list_symptoms, profile, 100000, 0, 0, start, end
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, 0
+        store.list_medication_logs,
+        None, profile, 100000, 0, 0, start, end,
     )
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
@@ -8160,29 +8170,26 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             if (item.get("profile") or "") == profile_key
         ]
     vaccinations = await asyncio.to_thread(
-        store.list_vaccinations, profile, 100000
+        store.list_vaccinations, profile, 100000, start, end
     )
     appointments = await asyncio.to_thread(
-        store.list_appointments, profile, None, False, 100000, 0
+        store.list_appointments,
+        profile, None, False, 100000, 0, start, end,
     )
     lab_results = await asyncio.to_thread(
-        store.list_lab_results, profile, None, None, 0, 100000, 0
+        store.list_lab_results,
+        profile, None, None, 0, 100000, 0, start, end,
     )
     care_items = await asyncio.to_thread(
-        store.list_care_items, profile, False, False, 100000
+        store.list_care_items,
+        profile, False, False, 100000, start, end,
     )
     visits = await asyncio.to_thread(
-        store.list_visit_records, profile, 0, "", 100000
+        store.list_visit_records, profile, 0, "", 100000, start, end
     )
-    raw_attachments = await asyncio.to_thread(
-        store.list_all_attachments
+    raw_attachments = await _list_attachments_paged(
+        store, profile, start, end
     )
-    if profile is not None:
-        profile_key = _normalized_profile_key(profile)
-        raw_attachments = [
-            item for item in raw_attachments
-            if _normalized_profile_key(item.get("profile")) == profile_key
-        ]
 
     days: Dict[str, Dict[str, int]] = {}
 
