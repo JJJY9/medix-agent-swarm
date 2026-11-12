@@ -196,6 +196,7 @@ METRIC_TYPES = {
     "spo2": ("血氧饱和度", "%", (50, 100)),
     "waist": ("腰围", "cm", (30, 200)),
     "sleep": ("睡眠时长", "小时", (0, 24)),
+    "steps": ("步数", "步", (0, 100000)),
     "phq9": ("PHQ-9 评分", "分", (0, 27)),
     "gad7": ("GAD-7 评分", "分", (0, 21)),
     "cat": ("CAT 评分", "分", (0, 40)),
@@ -327,7 +328,7 @@ def classify_bp_grade(systolic: Any, diastolic: Any) -> Optional[str]:
     return "normal"
 
 #: 目标为下限的指标（数值越高越好，低于目标视为未达标）。
-LOWER_BOUND_TARGET_METRICS = {"spo2", "sleep"}
+LOWER_BOUND_TARGET_METRICS = {"spo2", "sleep", "steps"}
 
 
 def metric_over_target(

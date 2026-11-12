@@ -446,6 +446,7 @@ def test_extended_metric_types(client):
         ("spo2", 97, "%"),
         ("waist", 82, "cm"),
         ("sleep", 7.5, "小时"),
+        ("steps", 8000, "步"),
     ):
         created = client.post(
             "/api/metrics",
@@ -476,6 +477,10 @@ def test_extended_metric_types(client):
         "/api/metrics", json={"metric": "sleep", "value1": 25}
     )
     assert invalid_sleep.status_code == 400
+    invalid_steps = client.post(
+        "/api/metrics", json={"metric": "steps", "value1": 100001}
+    )
+    assert invalid_steps.status_code == 400
 
 
 def test_metrics_api_offset(client):
@@ -547,6 +552,11 @@ def test_metrics_summary_sleep_lower_bound_target(client):
 
     assert body["target"] == {"value1": 7.0, "value2": None}
     assert body["within_target"] == 1
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "sleep"}
+    )
+    assert exported.status_code == 200
+    assert "睡眠时长" in exported.content.decode("utf-8-sig")
 
 
 def test_screener_metrics_roundtrip(client):

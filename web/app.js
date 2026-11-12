@@ -6233,6 +6233,7 @@ const METRIC_UNITS = {
   spo2: '%',
   waist: 'cm',
   sleep: '小时',
+  steps: '步',
   phq9: '分',
   gad7: '分',
   cat: '分',
@@ -6258,6 +6259,7 @@ const METRIC_NAMES = {
   spo2: '血氧饱和度',
   waist: '腰围',
   sleep: '睡眠时长',
+  steps: '步数',
   phq9: 'PHQ-9 评分',
   gad7: 'GAD-7 评分',
   cat: 'CAT 评分',
@@ -6274,6 +6276,7 @@ const METRIC_REFERENCES = {
   spo2: '静息血氧参考：≥95%；持续低于 90% 请尽快就医。',
   waist: '腰围参考：男性 <90 cm、女性 <85 cm（中国成人中心性肥胖标准）。',
   sleep: '成人通常建议每晚 7–9 小时；长期睡眠不足或嗜睡建议咨询医生。',
+  steps: '常见目标为每日 6000–10000 步；请结合年龄、基础疾病与医生建议调整。',
   phq9: '评分越高提示抑郁症状越明显，需结合临床访谈判断。',
   gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
   cat: 'CAT 总分 0–40，分数越高提示慢阻肺对生活影响越大。',
@@ -6359,7 +6362,7 @@ function findMetricTarget(profile, metric) {
 }
 
 function targetIsLowerBound(metric) {
-  return metric === 'spo2' || metric === 'sleep';
+  return metric === 'spo2' || metric === 'sleep' || metric === 'steps';
 }
 
 const METRIC_TARGET_DEFAULTS = {
@@ -6367,6 +6370,7 @@ const METRIC_TARGET_DEFAULTS = {
   spo2: { value1: 95 },
   heart_rate: { value1: 100 },
   sleep: { value1: 7 },
+  steps: { value1: 6000 },
 };
 
 function formatMetricTarget(target) {
@@ -7068,7 +7072,8 @@ function renderMetricWeekly(summaries) {
   list.replaceChildren();
   const order = [
     'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
-    'waist', 'sleep', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
+    'waist', 'sleep', 'steps', 'phq9', 'gad7', 'cat', 'ess', 'auditc',
+    'mmrc',
   ];
   const items = (summaries || [])
     .filter((item) => item.count > 0)
@@ -7200,8 +7205,8 @@ async function loadMetricOverview() {
     let count = 0;
     for (const metric of [
       'bp', 'weight', 'glucose', 'temperature', 'heart_rate',
-      'spo2', 'waist', 'sleep', 'phq9', 'gad7', 'cat', 'ess',
-      'auditc', 'mmrc',
+      'spo2', 'waist', 'sleep', 'steps', 'phq9', 'gad7', 'cat',
+      'ess', 'auditc', 'mmrc',
     ]) {
       const item = latest[metric];
       if (!item) continue;
