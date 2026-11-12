@@ -6,6 +6,7 @@
 
 const els = {
   thread: document.getElementById('thread'),
+  chatLive: document.getElementById('chat-live'),
   empty: document.getElementById('empty-state'),
   starters: document.getElementById('starters'),
   starterAdd: document.getElementById('starter-add'),
@@ -1048,6 +1049,15 @@ function scrollThreadToBottom(force = false) {
   } else {
     els.jumpLatest.hidden = false;
   }
+}
+
+/** 统一的会诊完成播报，避免整页日志成为 live region */
+function announceChat(message) {
+  if (!els.chatLive || !message) return;
+  els.chatLive.textContent = '';
+  window.setTimeout(() => {
+    if (els.chatLive) els.chatLive.textContent = message;
+  }, 0);
 }
 
 /** 窄屏是整页滚动，且会诊面板排在问诊区上方 */
@@ -19346,8 +19356,6 @@ async function send(question) {
             const streamed = renderStreamingNote();
             streamTurn = streamed.turn;
             streamBody = streamed.body;
-            // 流式增量逐 token 更新，不能让读屏逐个朗读
-            els.thread.setAttribute('aria-live', 'off');
           }
           streamBuffer += event.delta || '';
           // 逐段追加文本节点，避免每个 token 都重写整段文本导致长答复掉帧
@@ -19422,8 +19430,8 @@ async function send(question) {
     }
     setVitals('idle', '系统就绪');
 
-    // 流式期间关闭了 live 播报，最终答复前恢复，让读屏朗读完整意见
-    els.thread.setAttribute('aria-live', 'polite');
+    // 最终答复通过独立 live region 播报，避免整页日志被反复朗读
+    announceChat('会诊意见已生成');
     renderAnswer(finalPayload, finalPayload.total_time || elapsed, question);
 
     if (historyOpen) {
@@ -19441,8 +19449,7 @@ async function send(question) {
     working.remove();
 
     if (err.name === 'AbortError') {
-      // 流式期间关闭了 live 播报，终态卡片需要重新开启后才会被读出
-      els.thread.setAttribute('aria-live', 'polite');
+      announceChat('已停止生成');
       renderStopped({ question, askTurn, baselineMessageId });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
@@ -19456,8 +19463,9 @@ async function send(question) {
       } catch {
         // 已结束的请求忽略
       }
-      els.thread.setAttribute('aria-live', 'polite');
+      els.thread.setAttribute('aria-live', 'off');
       // 传输错误也可能发生在服务端已保存之后：稍后核对并恢复，避免重试重复落库
+      announceChat('会诊中断');
       renderError(
         err.message || String(err),
         { question, askTurn, baselineMessageId }
@@ -19470,7 +19478,6 @@ async function send(question) {
     }
   } finally {
     clearInterval(elapsedTimer);
-    els.thread.setAttribute('aria-live', 'polite');
     busy = false;
     activeController = null;
     els.stop.hidden = true;

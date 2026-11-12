@@ -1281,7 +1281,10 @@ def test_app_js_streaming_keeps_aria_live_quiet(client):
     app_js = client.get("/static/app.js").text
 
     assert "setAttribute('aria-live', 'off')" in app_js
-    assert "setAttribute('aria-live', 'polite')" in app_js
+    # 终态通过独立的 chat-live 播报，不再把整页日志恢复为 polite
+    assert "announceChat('会诊意见已生成')" in app_js
+    assert "announceChat('已停止生成')" in app_js
+    assert "announceChat('会诊中断')" in app_js
     assert "previewReturnFocus" in app_js
 
 
