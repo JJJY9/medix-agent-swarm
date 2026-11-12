@@ -3302,7 +3302,8 @@ async def update_medication(
     )
     if item is None:
         raise HTTPException(
-            status_code=404, detail="记录不存在或内容不正确"
+            status_code=400,
+            detail="用药内容不正确，请检查剂量、日期等字段",
         )
     await record_audit(
         "medication.update", str(item["id"])
@@ -3407,14 +3408,22 @@ async def add_medication_log(
     """记录一次用药（打卡）。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    medication = await asyncio.to_thread(
+        store.get_medication, medication_id
+    )
+    if medication is None:
+        raise HTTPException(status_code=404, detail="药物不存在")
     log = await asyncio.to_thread(
-        get_session_store().add_medication_log,
+        store.add_medication_log,
         medication_id,
         request.taken_at,
         request.note,
     )
     if log is None:
-        raise HTTPException(status_code=404, detail="药物不存在或时间不正确")
+        raise HTTPException(
+            status_code=400, detail="服用时间或备注不正确"
+        )
     await record_audit(
         "medication.log",
         f"{log['medication_id']}·{log['taken_at']}",
@@ -3430,8 +3439,14 @@ async def skip_medication(
     """记录一次未服及原因；不计入已服次数，也不扣减库存。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    medication = await asyncio.to_thread(
+        store.get_medication, medication_id
+    )
+    if medication is None:
+        raise HTTPException(status_code=404, detail="药物不存在")
     log = await asyncio.to_thread(
-        get_session_store().add_medication_log,
+        store.add_medication_log,
         medication_id,
         request.skipped_at,
         request.note,
@@ -3439,7 +3454,9 @@ async def skip_medication(
         request.reason,
     )
     if log is None:
-        raise HTTPException(status_code=404, detail="药物不存在或时间不正确")
+        raise HTTPException(
+            status_code=400, detail="未服时间或原因不正确"
+        )
     await record_audit(
         "medication.skip",
         f"{log['medication_id']}·{log['taken_at']}·{log['skip_reason']}",
@@ -5454,7 +5471,7 @@ async def update_symptom(symptom_id: SafeIntPath, request: SymptomUpdateRequest)
         merged.get("note") or "",
     )
     if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+        raise HTTPException(status_code=400, detail="症状内容或时间不正确")
     await record_audit(
         "symptom.update", str(item["id"])
     )
@@ -8671,7 +8688,7 @@ async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
         merged.get("context") or "",
     )
     if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在或内容不正确")
+        raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
     from memory.session_store import critical_metric_alerts
 
     alerts = critical_metric_alerts(
@@ -14109,7 +14126,9 @@ async def knowledge_update(
             service.update_document, filename, content
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        message = str(e)
+        status_code = 404 if message.startswith("文档不存在") else 400
+        raise HTTPException(status_code=status_code, detail=message)
     except Exception as e:
         logger.exception("更新知识库文档失败")
         raise HTTPException(status_code=500, detail="保存文档失败，请稍后重试。")
