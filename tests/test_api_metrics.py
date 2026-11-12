@@ -186,6 +186,31 @@ def test_metrics_csv_import(client):
     assert empty.status_code == 400
 
 
+def test_metrics_csv_import_uses_form_profile_fallback(client):
+    content = "﻿" + (
+        "测量时间,患者档案,指标,数值1,单位\r\n"
+        "2026-02-01T08:00,,体重,61,kg\r\n"
+        "2026-02-02T08:00,爸爸,体重,70,kg\r\n"
+    )
+    response = client.post(
+        "/api/metrics/import",
+        data={"profile": "妈妈"},
+        files={"file": ("metrics.csv", content.encode("utf-8"), "text/csv")},
+    )
+
+    mom = client.get(
+        "/api/metrics", params={"profile": "妈妈"}
+    ).json()["metrics"]
+    dad = client.get(
+        "/api/metrics", params={"profile": "爸爸"}
+    ).json()["metrics"]
+
+    assert response.status_code == 200
+    assert response.json()["imported"] == 2
+    assert [row["value1"] for row in mom] == [61]
+    assert [row["value1"] for row in dad] == [70]
+
+
 def test_metrics_csv_export(client):
     old_day = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     client.post(

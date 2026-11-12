@@ -17795,6 +17795,8 @@ async function importMetricsCsv(file) {
 
   const form = new FormData();
   form.append('file', file);
+  const targetProfile = els.metricProfile ? els.metricProfile.value : '';
+  form.append('profile', targetProfile);
 
   try {
     const res = await fetch('/api/metrics/import', {
@@ -17809,6 +17811,9 @@ async function importMetricsCsv(file) {
     const parts = [`已导入 ${data.imported || 0} 条`];
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    if (targetProfile) {
+      parts.push(`空档案行归入「${targetProfile}」`);
+    }
     setMetricsStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await refreshMetrics();

@@ -8765,7 +8765,11 @@ async def export_metrics_csv(
 
 
 @app.post("/api/metrics/import")
-async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
+async def import_metrics_csv(
+    request: Request,
+    file: UploadFile = File(...),
+    profile: str = Form(""),
+):
     """从导出的 CSV 格式导入健康指标，重复记录自动跳过。"""
     import csv
     import io
@@ -8903,7 +8907,7 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
             context = "bedtime"
 
         records.append({
-            "profile": mapped.get("profile", ""),
+            "profile": mapped.get("profile", "") or profile,
             "metric": metric,
             "value1": value1,
             "value2": value2,
