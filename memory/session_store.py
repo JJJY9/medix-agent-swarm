@@ -5388,6 +5388,22 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 下一剂日期变化时同步接种提醒；清空日期表示系列结束
+            next_due = str(normalized["next_due"] or "")
+            if next_due:
+                self._conn.execute(
+                    """
+                    UPDATE reminders SET due_at = ?, updated_at = ?
+                     WHERE done = 0 AND vaccination_id = ?
+                    """,
+                    (next_due, now, int(vaccination_id)),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM reminders "
+                    "WHERE done = 0 AND vaccination_id = ?",
+                    (int(vaccination_id),),
+                )
         return self.get_vaccination(vaccination_id)
 
     def get_vaccination(
@@ -5443,7 +5459,13 @@ class SessionStore:
                 "DELETE FROM vaccinations WHERE id = ?",
                 (int(vaccination_id),),
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount == 0:
+                return False
+            self._conn.execute(
+                "DELETE FROM reminders WHERE done = 0 AND vaccination_id = ?",
+                (int(vaccination_id),),
+            )
+            return True
 
     def add_appointment(
         self,
@@ -5524,6 +5546,37 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 改期后同步预约提醒；取消/完成时去掉待办提醒
+            reminder_due = ""
+            if (
+                normalized["status"] == "upcoming"
+                and normalized["scheduled_at"]
+            ):
+                try:
+                    scheduled_dt = datetime.fromisoformat(
+                        normalized["scheduled_at"]
+                    )
+                except ValueError:
+                    scheduled_dt = None
+                if scheduled_dt is not None:
+                    reminder_due = max(
+                        scheduled_dt.date() - timedelta(days=1),
+                        datetime.now().date(),
+                    ).strftime("%Y-%m-%d")
+            if reminder_due:
+                self._conn.execute(
+                    """
+                    UPDATE reminders SET due_at = ?, updated_at = ?
+                     WHERE done = 0 AND appointment_id = ?
+                    """,
+                    (reminder_due, now, int(appointment_id)),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM reminders "
+                    "WHERE done = 0 AND appointment_id = ?",
+                    (int(appointment_id),),
+                )
         return self.get_appointment(appointment_id)
 
     def get_appointment(
@@ -5613,6 +5666,11 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return False
+            # 预约提醒随预约删除，避免遗留的待办在之后显示逾期
+            self._conn.execute(
+                "DELETE FROM reminders WHERE done = 0 AND appointment_id = ?",
+                (int(appointment_id),),
+            )
             # 复诊安排随预约删除回到未安排状态，便于重新一键安排
             self._conn.execute(
                 """
@@ -6161,11 +6219,25 @@ class SessionStore:
 
     def delete_care_item(self, care_id: int) -> bool:
         with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT profile, title FROM care_items WHERE id = ?",
+                (int(care_id),),
+            ).fetchone()
             cursor = self._conn.execute(
                 "DELETE FROM care_items WHERE id = ?",
                 (int(care_id),),
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount == 0:
+                return False
+            if row is not None:
+                # 复查提醒由标题自动生成，删除计划时一并清理未完成提醒
+                title = f"复查：{row['title'] or '复查'}"[:120]
+                self._conn.execute(
+                    "DELETE FROM reminders "
+                    "WHERE done = 0 AND profile = ? AND title = ?",
+                    (row["profile"] or "", title),
+                )
+            return True
 
     def add_visit_record(
         self,
