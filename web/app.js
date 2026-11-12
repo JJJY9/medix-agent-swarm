@@ -11197,6 +11197,10 @@ async function exportAppointmentsCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile ? els.metricProfile.value : '',
   });
+  const query = els.appointmentSearch
+    ? String(els.appointmentSearch.value || '').trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/appointments/export.csv?${params.toString()}`
@@ -12009,6 +12013,10 @@ async function exportAllergiesCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile ? els.metricProfile.value : '',
   });
+  const query = els.allergySearch
+    ? String(els.allergySearch.value || '').trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/allergies/export.csv?${params.toString()}`
@@ -12346,6 +12354,10 @@ async function exportCareItemsCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile ? els.metricProfile.value : '',
   });
+  const query = els.careSearch
+    ? String(els.careSearch.value || '').trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/care-items/export.csv?${params.toString()}`
@@ -12801,6 +12813,10 @@ async function exportVisitsCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile ? els.metricProfile.value : '',
   });
+  const query = els.visitSearch
+    ? String(els.visitSearch.value || '').trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/visits/export.csv?${params.toString()}`
@@ -13193,6 +13209,10 @@ async function exportConditionsCsv() {
   const params = new URLSearchParams({
     profile: els.metricProfile ? els.metricProfile.value : '',
   });
+  const query = els.conditionSearch
+    ? String(els.conditionSearch.value || '').trim()
+    : '';
+  if (query) params.set('q', query);
   try {
     const res = await fetch(
       `/api/conditions/export.csv?${params.toString()}`
