@@ -860,7 +860,10 @@ class AppState:
     def get_coordinator(self):
         if self.coordinator is None:
             from swarm import SwarmCoordinator
-            self.coordinator = SwarmCoordinator(enable_swarm=True)
+            coordinator = SwarmCoordinator(enable_swarm=True)
+            self.coordinator = coordinator
+            # 启动时失败、后续懒加载成功：清除错误状态，/api/status 恢复 ok
+            self.startup_error = None
         return self.coordinator
 
     async def warm_up(self):
@@ -949,24 +952,31 @@ async def auto_backup_loop() -> None:
     from core.backup import get_auto_backup_hours
 
     while True:
-        hours = get_auto_backup_hours()
-        if hours <= 0:
-            await asyncio.sleep(3600)
-            continue
-        interval = hours * 3600
-        wait = await asyncio.to_thread(auto_backup_wait_seconds, hours)
-        if wait > 0:
-            # 进程重启不应额外生成备份，否则连续重启会把历史快照
-            # 按份数挤出保留窗口，只剩同一天的重复文件
-            await asyncio.sleep(wait)
-            continue
         try:
-            path = await auto_backup_once()
-            if path:
-                logger.info(f"本地自动备份完成: {path}")
+            hours = get_auto_backup_hours()
+            if hours <= 0:
+                await asyncio.sleep(3600)
+                continue
+            interval = hours * 3600
+            wait = await asyncio.to_thread(
+                auto_backup_wait_seconds, hours
+            )
+            if wait > 0:
+                # 进程重启不应额外生成备份，否则连续重启会把历史快照
+                # 按份数挤出保留窗口，只剩同一天的重复文件
+                await asyncio.sleep(wait)
+                continue
+            try:
+                path = await auto_backup_once()
+                if path:
+                    logger.info(f"本地自动备份完成: {path}")
+            except Exception as e:
+                logger.warning(f"本地自动备份失败: {e}")
+            await asyncio.sleep(interval)
         except Exception as e:
-            logger.warning(f"本地自动备份失败: {e}")
-        await asyncio.sleep(interval)
+            # 备份目录不可访问/配置异常不应让任务永久退出
+            logger.warning(f"自动备份循环异常，稍后重试: {e}")
+            await asyncio.sleep(3600)
 
 
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
@@ -1385,9 +1395,8 @@ async def lifespan(_: FastAPI):
         state.get_coordinator()
     except Exception as e:
         state.startup_error = redact_secrets(str(e))
-        logger.error(f"初始化失败: {e}")
-        yield
-        return
+        # 不直接退出：首次请求会懒加载重试，后台维护任务也应继续运行
+        logger.error(f"初始化失败（将在首次请求时重试）: {e}")
     # 后台预热知识库，不阻塞服务启动；测试环境可跳过真实模型加载
     if str(os.environ.get("MEDIX_SKIP_WARMUP", "")).strip().lower() not in {
         "1", "true", "yes", "on"
@@ -1405,9 +1414,9 @@ async def lifespan(_: FastAPI):
             state.warmup_task = None
         archive_task.cancel()
         backup_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):
             await archive_task
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):
             await backup_task
         logger.info("MediX API 服务已停止")
 
@@ -5643,19 +5652,25 @@ async def _weekly_report_impl(
     profile: Optional[str] = None,
     days: int = 7,
     max_days: int = 90,
+    include_previous: bool = True,
 ):
-    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
+    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。
+
+    include_previous=False 时只加载本期数据，供 insights/dossier 等
+    不展示环比的使用方减少查询与聚合开销。
+    """
     from datetime import timedelta
 
     from memory import get_session_store
 
     days = max(1, min(int(days or 7), int(max_days or 90)))
+    window_days = days * 2 if include_previous else days
     store = get_session_store()
     now = datetime.now()
     end = now.strftime("%Y-%m-%d")
     start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, days * 2
+        store.list_metrics, profile, None, 100000, window_days
     )
     metrics = [
         item for item in raw_metrics
@@ -5669,7 +5684,7 @@ async def _weekly_report_impl(
         if prev_start <= str(item.get("measured_at") or "")[:10] < start
     ]
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, days * 2
+        store.list_symptoms, profile, 100000, window_days
     )
     symptoms = [
         item for item in raw_symptoms
@@ -5686,7 +5701,7 @@ async def _weekly_report_impl(
         store.list_medications, profile, False, 100000
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, days * 2
+        store.list_medication_logs, None, profile, 100000, 0, window_days
     )
     logs = [
         item for item in raw_logs
@@ -5704,9 +5719,10 @@ async def _weekly_report_impl(
     previous_skip_logs = [
         item for item in previous_logs if item.get("skipped")
     ]
+    session_window_start = prev_start if include_previous else start
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
-        profile, prev_start, f"{end}T23:59:59", 100000,
+        profile, session_window_start, f"{end}T23:59:59", 100000,
     )
     sessions = [
         item for item in raw_sessions
@@ -5989,7 +6005,7 @@ async def _weekly_report_impl(
             due_soon += 1
 
     raw_labs = await asyncio.to_thread(
-        store.list_lab_results, profile, None, None, days * 2, 100000, 0
+        store.list_lab_results, profile, None, None, window_days, 100000, 0
     )
     lab_results = [
         item for item in raw_labs
@@ -6102,7 +6118,7 @@ async def _weekly_report_impl(
     ]
 
     raw_visits = await asyncio.to_thread(
-        store.list_visit_records, profile, days * 2, "", 100000
+        store.list_visit_records, profile, window_days, "", 100000
     )
     # 复诊日期可能晚于就诊日期很多，统计复诊不能只看近 2×days 天的就诊
     followup_visits = await asyncio.to_thread(
@@ -7002,7 +7018,9 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
                 "level": "warning",
                 "alerts": family_alerts[:5],
             }
-    report = await _weekly_report_impl(profile=profile, days=days)
+    report = await _weekly_report_impl(
+        profile=profile, days=days, include_previous=False
+    )
     insights = _build_health_insights(
         report,
         safety=safety,
@@ -12438,7 +12456,8 @@ async def export_health_dossier(
     lines.append("")
 
     report = await _weekly_report_impl(
-        profile=profile_key, days=days, max_days=365
+        profile=profile_key, days=days, max_days=365,
+        include_previous=False,
     )
     safety = await _medication_safety_for_profile(store, profile_key)
     insights = [

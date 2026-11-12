@@ -241,6 +241,12 @@ def _matches(spec: Dict[str, Any], text: str, compact: str) -> bool:
         if len(alias) == 1:
             if compact == alias:
                 return True
+            # 单字项目（钾/钠/钙）与分组拼成「钾 电解质」时仍应识别；
+            # CJK 边界保证不会误匹配 血钾/钾离子/尿钾
+            if re.search(
+                rf"(?<![一-鿿]){re.escape(alias)}(?![一-鿿])", text
+            ):
+                return True
         elif alias in compact:
             return True
     for alias in spec.get("ascii", ()):

@@ -430,3 +430,15 @@ def test_extra_lab_classification_is_cached():
     info = _classify_extra.cache_info()
     assert info.misses == 1
     assert info.hits >= 50
+
+
+def test_single_char_analyte_with_panel_still_matches():
+    lab = {**_lab("钾", 7.0, "mmol/L"), "panel": "电解质"}
+    titles = _titles(["缬沙坦"], [lab])
+
+    assert "缬沙坦与血钾偏高" in titles
+
+
+def test_single_char_analyte_does_not_match_urine_panel():
+    lab = {**_lab("钾", 7.0, "mmol/L"), "panel": "尿电解质"}
+    assert _titles(["缬沙坦"], [lab]) == []
