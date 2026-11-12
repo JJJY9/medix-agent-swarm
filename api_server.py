@@ -7972,6 +7972,42 @@ async def health_search(
     }
 
 
+@app.get("/api/health/search/export.csv")
+async def export_health_search_csv(
+    q: str = "",
+    profile: Optional[str] = None,
+):
+    """导出全局健康搜索结果 CSV（带 BOM，最多 200 条）。"""
+    import csv
+    import io
+
+    data = await health_search(q=q, profile=profile, limit=200)
+    rows = [["类型", "时间", "患者档案", "标题", "详情"]]
+    for item in data.get("results") or []:
+        rows.append([
+            csv_safe_cell(item.get("label") or ""),
+            csv_safe_cell(str(item.get("at") or "")),
+            csv_safe_cell(item.get("profile") or ""),
+            csv_safe_cell(item.get("title") or ""),
+            csv_safe_cell(item.get("detail") or ""),
+        ])
+    buffer = io.StringIO()
+    csv.writer(buffer, lineterminator="\r\n").writerows(rows)
+    filename = (
+        "medix-health-search-"
+        + datetime.now().strftime("%Y%m%d")
+        + ".csv"
+    )
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/health/bp-monitoring")
 async def health_bp_monitoring(
     profile: Optional[str] = None,

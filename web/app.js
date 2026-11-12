@@ -299,6 +299,7 @@ const els = {
   healthSearchToggle: document.getElementById('health-search-toggle'),
   healthSearchInput: document.getElementById('health-search-input'),
   healthSearchClear: document.getElementById('health-search-clear'),
+  healthSearchExport: document.getElementById('health-search-export'),
   healthSearchAllProfiles: document.getElementById(
     'health-search-all-profiles'
   ),
@@ -7450,6 +7451,7 @@ function hideHealthSearchResults() {
     els.healthSearchResults.hidden = true;
     els.healthSearchResults.replaceChildren();
   }
+  if (els.healthSearchExport) els.healthSearchExport.hidden = true;
   setHealthSearchStatus('');
 }
 
@@ -7505,7 +7507,40 @@ async function runHealthSearch(rawQuery) {
       els.healthSearchResults.hidden = true;
       els.healthSearchResults.replaceChildren();
     }
+    if (els.healthSearchExport) els.healthSearchExport.hidden = true;
     setHealthSearchStatus(`搜索失败：${err.message || err}`, true);
+  }
+}
+
+async function exportHealthSearchCsv() {
+  const query = String(healthSearchQuery || '').trim();
+  if (!query) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const allProfiles = Boolean(
+    els.healthSearchAllProfiles && els.healthSearchAllProfiles.checked
+  );
+  const params = new URLSearchParams({ q: query });
+  if (!allProfiles) params.set('profile', profile);
+  try {
+    const res = await fetch(
+      `/api/health/search/export.csv?${params.toString()}`
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `服务返回 ${res.status}`);
+    }
+    const buffer = await res.arrayBuffer();
+    const stamp = todayLocalDate().replace(/-/g, '');
+    downloadFile(
+      new Blob([buffer], { type: 'text/csv;charset=utf-8' }),
+      `medix-health-search-${stamp}.csv`,
+      'text/csv;charset=utf-8'
+    );
+    setHealthSearchStatus('已导出搜索结果（最多 200 条）。');
+  } catch (err) {
+    setHealthSearchStatus(
+      `导出搜索结果失败：${err.message || err}`, true
+    );
   }
 }
 
@@ -7522,6 +7557,9 @@ function renderHealthSearchResults(data) {
     : profile ? `档案「${profile}」` : '未指定档案';
   els.healthSearchResults.replaceChildren();
   els.healthSearchResults.hidden = false;
+  if (els.healthSearchExport) {
+    els.healthSearchExport.hidden = results.length === 0;
+  }
   if (!results.length) {
     setHealthSearchStatus(`${scopeText}没有匹配「${query}」的记录。`);
     return;
@@ -20384,6 +20422,11 @@ els.healthSearchClear.addEventListener('click', () => {
   hideHealthSearchResults();
   els.healthSearchInput.focus();
 });
+if (els.healthSearchExport) {
+  els.healthSearchExport.addEventListener(
+    'click', exportHealthSearchCsv
+  );
+}
 function setEmergencyCardStatus(text, isError = false) {
   if (!els.emergencyCardStatus) return;
   els.emergencyCardStatus.textContent = text || '';
