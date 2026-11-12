@@ -393,9 +393,14 @@ _ALCOHOL_NEGATIONS = re.compile(
 )
 
 
-#: 「不得不喝酒」表示实际会喝，不是戒酒
-_ALCOHOL_DOUBLE_NEGATIONS = (
-    "不得不", "不能不", "不禁", "忍不住", "没法不", "无法不",
+#: 「不得不喝白酒」「不能不喝红酒」表示实际会喝，不是戒酒
+_ALCOHOL_DOUBLE_NEGATIONS = re.compile(
+    r"(?:不得不|不能不|忍不住|没法不|无法不)(?:喝|饮)?\s*$"
+)
+
+#: 「不喝酒就难受/睡不着」是在描述饮酒依赖，仍视为饮酒语境
+_ALCOHOL_DEPENDENCE_WORDS = (
+    "难受", "睡不着", "头痛", "失眠", "焦虑", "手抖", "心慌",
 )
 
 
@@ -416,9 +421,14 @@ def _has_alcohol_use(text: str) -> bool:
                 start = text.find(term, start + len(term))
         for position in matches:
             prefix = text[max(0, position - 8):position]
-            if prefix.rstrip().endswith(_ALCOHOL_DOUBLE_NEGATIONS):
+            if _ALCOHOL_DOUBLE_NEGATIONS.search(prefix):
                 return True
             if not _ALCOHOL_NEGATIONS.search(prefix):
+                return True
+            suffix = text[position + len(term):position + len(term) + 8]
+            if "就" in suffix and any(
+                word in suffix for word in _ALCOHOL_DEPENDENCE_WORDS
+            ):
                 return True
     return False
 

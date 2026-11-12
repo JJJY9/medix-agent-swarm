@@ -104,6 +104,20 @@ def test_alcohol_rules_cover_common_phrases_and_negation():
     )
     assert any("酒精" in alert["title"] for alert in forced["alerts"])
 
+    forced_noun = check_medication_safety(
+        "", {"medications": "头孢克肟；应酬不得不喝白酒"}
+    )
+    assert any(
+        "酒精" in alert["title"] for alert in forced_noun["alerts"]
+    )
+
+    dependent = check_medication_safety(
+        "", {"medications": "对乙酰氨基酚；不喝酒就睡不着"}
+    )
+    assert any(
+        "酒精" in alert["title"] for alert in dependent["alerts"]
+    )
+
     acetaminophen = check_medication_safety(
         "", {"medications": "对乙酰氨基酚；喝了点酒"}
     )
@@ -129,6 +143,9 @@ def test_red_flag_synonyms_and_pregnancy_negation():
     unsure = detect_red_flags("有没有怀孕不确定，现在阴道出血")
     assert "孕产期出血" in unsure["matches"]
 
+    unsure_ab = detect_red_flags("不知道是不是怀孕，见红")
+    assert "孕产期出血" in unsure_ab["matches"]
+
 
 def test_fever_false_positives_are_excluded():
     afebrile = detect_red_flags("已经不发烧了", {"age": "2个月"})
@@ -143,6 +160,16 @@ def test_fever_false_positives_are_excluded():
         "今天气温38度", {"history": "化疗后"}
     )
     assert weather["level"] == "none"
+
+    liquor = detect_red_flags(
+        "喝40度的白酒可以吗", {"history": "化疗后"}
+    )
+    assert liquor["level"] == "none"
+
+    real = detect_red_flags(
+        "今天气温39度，宝宝体温39度", {"age": "2个月"}
+    )
+    assert real["level"] == "emergency"
 
 
 def test_call_120_advice_not_negated_by_earlier_word():
