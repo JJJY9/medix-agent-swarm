@@ -73,3 +73,47 @@ def test_symptoms_with_same_content_but_different_created_at_are_kept(
     assert first["symptoms"] == 2
     assert len(rows) == 2
     assert second["symptoms"] == 0
+
+
+def test_metric_restore_keeps_same_minute_readings(tmp_path):
+    payload = {
+        "health_metrics": [
+            {
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": 60,
+                "unit": "kg",
+                "measured_at": "2026-11-01T08:00",
+                "context": "",
+                "note": "",
+                "created_at": "2026-11-01T08:00:10",
+            },
+            {
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": 60,
+                "unit": "kg",
+                "measured_at": "2026-11-01T08:00",
+                "context": "",
+                "note": "",
+                "created_at": "2026-11-01T08:00:40",
+            },
+        ]
+    }
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        first = store.import_data(payload)
+        rows = store.list_metrics("妈妈")
+        second = store.import_data(payload)
+    finally:
+        store.close()
+
+    # 同一分钟的两条同值读数都是合法记录，恢复时不能合并
+    assert first["metrics"] == 2
+    assert len(rows) == 2
+    assert {row["created_at"] for row in rows} == {
+        "2026-11-01T08:00:10",
+        "2026-11-01T08:00:40",
+    }
+    # 再次导入同一份备份仍然幂等
+    assert second["metrics"] == 0

@@ -3713,23 +3713,53 @@ class SessionStore:
                     if normalized is None:
                         invalid += 1
                         continue
-                    exists = self._conn.execute(
-                        """
-                        SELECT 1 FROM health_metrics
-                         WHERE profile = ? AND metric = ? AND measured_at = ?
-                           AND value1 = ? AND IFNULL(value2, -1) = IFNULL(?, -1)
-                           AND note = ? AND context = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["metric"],
-                            normalized["measured_at"],
-                            normalized["value1"],
-                            normalized["value2"],
-                            normalized["note"],
-                            normalized["context"],
-                        ),
-                    ).fetchone()
+                    # 备份带 created_at 时纳入判重键，避免同一分钟录入的
+                    # 两条同值读数在恢复时被当成重复丢弃
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM health_metrics
+                             WHERE profile = ? AND metric = ?
+                               AND measured_at = ?
+                               AND value1 = ?
+                               AND IFNULL(value2, -1) = IFNULL(?, -1)
+                               AND note = ? AND context = ?
+                               AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["metric"],
+                                normalized["measured_at"],
+                                normalized["value1"],
+                                normalized["value2"],
+                                normalized["note"],
+                                normalized["context"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM health_metrics
+                             WHERE profile = ? AND metric = ?
+                               AND measured_at = ?
+                               AND value1 = ?
+                               AND IFNULL(value2, -1) = IFNULL(?, -1)
+                               AND note = ? AND context = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["metric"],
+                                normalized["measured_at"],
+                                normalized["value1"],
+                                normalized["value2"],
+                                normalized["note"],
+                                normalized["context"],
+                            ),
+                        ).fetchone()
                     if exists:
                         continue
                     self._conn.execute(
@@ -3749,7 +3779,7 @@ class SessionStore:
                             normalized["measured_at"],
                             normalized["context"],
                             normalized["note"],
-                            now,
+                            created_key or now,
                         ),
                     )
                     metrics_imported += 1
