@@ -4943,7 +4943,10 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
 let openSessionSeq = 0;
 
 async function openSession(id) {
-  if (busy) return;
+  if (busy) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return false;
+  }
   const seq = ++openSessionSeq;
 
   try {
@@ -4952,7 +4955,7 @@ async function openSession(id) {
     const data = await res.json();
     // 拉取期间用户可能已经发起了新会诊：此时不能再渲染历史，
     // 否则会把流式输出清空并把 sessionId 改回旧会话
-    if (seq !== openSessionSeq || busy) return;
+    if (seq !== openSessionSeq || busy) return false;
 
     sessionId = id;
     safeStorageSet('medix.session', id);
@@ -4963,11 +4966,13 @@ async function openSession(id) {
     renderStoredMessages(data.messages || [], id, data.profile || '');
     setVitals('idle', '历史会诊');
     els.input.focus();
+    return true;
   } catch (err) {
-    if (seq !== openSessionSeq || busy) return;
+    if (seq !== openSessionSeq || busy) return false;
     closeHistory();
     renderError(`读取会诊记录失败：${err.message || err}`);
     els.input.focus();
+    return false;
   }
 }
 
@@ -7450,6 +7455,7 @@ async function loadMetrics(append = false) {
       els.metricsMore.hidden = items.length < METRICS_PAGE_SIZE;
     }
     renderMetrics(metricItemsCache, days, metric);
+    return true;
   } catch (err) {
     if (requestSeq !== metricsRequestSeq) return;
     if (!append) {
@@ -7460,7 +7466,13 @@ async function loadMetrics(append = false) {
       els.metricsEmpty.hidden = false;
       els.metricsEmpty.textContent =
         `加载失败：${err.message || err}`;
+    } else if (els.metricsMore) {
+      els.metricsMore.textContent = '加载失败，点击重试';
+      setMetricsStatus(
+        `加载更早记录失败：${err.message || err}`, true
+      );
     }
+    return false;
   }
 }
 
@@ -16647,6 +16659,10 @@ function renderTimeline(data) {
       li.setAttribute('role', 'button');
       li.title = '点击打开会诊记录';
       const openConsultation = () => {
+        if (busy) {
+          window.alert('会诊进行中，请先停止当前会诊。');
+          return;
+        }
         closeMetrics();
         openSession(event.id);
       };
@@ -19479,7 +19495,11 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 /* ---------- 提交主诉 ---------- */
 
 async function send(question) {
-  if (busy || !question.trim()) return;
+  if (busy) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
+  if (!question.trim()) return;
 
   busy = true;
   els.send.disabled = true;
@@ -21715,11 +21735,12 @@ els.metricsMore.addEventListener('click', async () => {
   const original = els.metricsMore.textContent;
   els.metricsMore.disabled = true;
   els.metricsMore.textContent = '加载中…';
+  let loaded = false;
   try {
-    await loadMetrics(true);
+    loaded = await loadMetrics(true);
   } finally {
     els.metricsMore.disabled = false;
-    els.metricsMore.textContent = original;
+    if (loaded) els.metricsMore.textContent = original;
   }
 });
 els.metricCancel.addEventListener('click', cancelMetricEdit);
