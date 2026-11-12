@@ -8860,20 +8860,17 @@ async def update_metric(metric_id: SafeIntPath, request: MetricUpdateRequest):
     ):
         raise HTTPException(status_code=400, detail="测量时间不能为空")
 
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    # 只更新请求实际给出的字段，未给出的字段在事务内沿用当前值
+    fields = request.model_dump(exclude_unset=True)
     item = await asyncio.to_thread(
-        store.update_metric,
-        metric_id,
-        merged.get("profile") or "",
-        merged.get("metric") or "",
-        merged.get("value1"),
-        merged.get("value2"),
-        merged.get("measured_at") or "",
-        merged.get("note") or "",
-        merged.get("context") or "",
+        store.update_metric, metric_id, **fields
     )
     if item is None:
-        raise HTTPException(status_code=400, detail="健康指标内容或范围不正确")
+        if await asyncio.to_thread(store.get_metric, metric_id) is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        raise HTTPException(
+            status_code=400, detail="健康指标内容或范围不正确"
+        )
     from memory.session_store import critical_metric_alerts
 
     alerts = critical_metric_alerts(
