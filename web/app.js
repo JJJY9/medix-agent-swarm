@@ -633,7 +633,7 @@ const els = {
   visitList: document.getElementById('visit-list'),
   visitEmpty: document.getElementById('visit-empty'),
   visitSearch: document.getElementById('visit-search'),
-  visitSummary: document.getElementById('visit-summary'),
+  visitSummaryText: document.getElementById('visit-summary-text'),
   conditionSection: document.getElementById('condition-section'),
   conditionName: document.getElementById('condition-name'),
   conditionIcd10: document.getElementById('condition-icd10'),
@@ -12557,11 +12557,11 @@ function renderVisits(items) {
     ? `没有匹配「${query}」的就诊记录。`
     : '还没有就诊记录。';
   if (items.length) {
-    els.visitSummary.hidden = false;
-    els.visitSummary.textContent =
+    els.visitSummaryText.hidden = false;
+    els.visitSummaryText.textContent =
       `${query ? '筛选' : '全部'} ${items.length} 条`;
   } else {
-    els.visitSummary.hidden = true;
+    els.visitSummaryText.hidden = true;
   }
   if (
     editingVisitId
@@ -20608,11 +20608,19 @@ for (const input of [
   });
 }
 els.metricType.addEventListener('change', () => {
+  if (editingMetricId) {
+    resetMetricForm();
+    setMetricsStatus('已取消编辑：指标类型已切换。');
+  }
   storeFilter(HEALTH_FILTER_KEYS.metricType, els.metricType.value);
   setMetricType(els.metricType.value);
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', () => {
+  if (editingMetricId) {
+    resetMetricForm();
+    setMetricsStatus('已取消编辑：档案已切换。');
+  }
   setAttachmentRefFilter(null);
   syncDossierExportButton();
   refreshMetrics();
