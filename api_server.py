@@ -7487,7 +7487,15 @@ async def health_timeline(
             )
     days = max(1, min(int(days or 30), 365))
     limit = max(1, min(int(limit or 100), 100000))
-    type_key = str(type or "").strip()
+    timeline_types = {
+        "metric", "symptom", "medication", "vaccination",
+        "appointment", "lab", "care", "visit", "consultation",
+        "attachment",
+    }
+    type_key = str(type or "").strip().lower()
+    if type_key not in timeline_types:
+        # 未知类型按未筛选处理，避免所有来源被误截到 1 条
+        type_key = ""
 
     def source_limit(kind: str) -> int:
         """单个数据源最多读取多少行。
@@ -7878,12 +7886,10 @@ async def health_timeline(
         return (event["at"], 1, str(event_id or ""))
 
     events.sort(key=sort_key, reverse=True)
-    if type in {
-        "metric", "symptom", "medication", "vaccination",
-        "appointment", "lab", "care", "visit", "consultation",
-        "attachment",
-    }:
-        events = [event for event in events if event.get("type") == type]
+    if type_key:
+        events = [
+            event for event in events if event.get("type") == type_key
+        ]
     if only_alert:
         events = [event for event in events if event.get("alert")]
     if only_risk:
