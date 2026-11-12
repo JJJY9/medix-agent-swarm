@@ -860,7 +860,10 @@ class AppState:
     def get_coordinator(self):
         if self.coordinator is None:
             from swarm import SwarmCoordinator
-            self.coordinator = SwarmCoordinator(enable_swarm=True)
+            coordinator = SwarmCoordinator(enable_swarm=True)
+            self.coordinator = coordinator
+            # 启动时失败、后续懒加载成功：清除错误状态，/api/status 恢复 ok
+            self.startup_error = None
         return self.coordinator
 
     async def warm_up(self):
@@ -949,24 +952,31 @@ async def auto_backup_loop() -> None:
     from core.backup import get_auto_backup_hours
 
     while True:
-        hours = get_auto_backup_hours()
-        if hours <= 0:
-            await asyncio.sleep(3600)
-            continue
-        interval = hours * 3600
-        wait = await asyncio.to_thread(auto_backup_wait_seconds, hours)
-        if wait > 0:
-            # 进程重启不应额外生成备份，否则连续重启会把历史快照
-            # 按份数挤出保留窗口，只剩同一天的重复文件
-            await asyncio.sleep(wait)
-            continue
         try:
-            path = await auto_backup_once()
-            if path:
-                logger.info(f"本地自动备份完成: {path}")
+            hours = get_auto_backup_hours()
+            if hours <= 0:
+                await asyncio.sleep(3600)
+                continue
+            interval = hours * 3600
+            wait = await asyncio.to_thread(
+                auto_backup_wait_seconds, hours
+            )
+            if wait > 0:
+                # 进程重启不应额外生成备份，否则连续重启会把历史快照
+                # 按份数挤出保留窗口，只剩同一天的重复文件
+                await asyncio.sleep(wait)
+                continue
+            try:
+                path = await auto_backup_once()
+                if path:
+                    logger.info(f"本地自动备份完成: {path}")
+            except Exception as e:
+                logger.warning(f"本地自动备份失败: {e}")
+            await asyncio.sleep(interval)
         except Exception as e:
-            logger.warning(f"本地自动备份失败: {e}")
-        await asyncio.sleep(interval)
+            # 备份目录不可访问/配置异常不应让任务永久退出
+            logger.warning(f"自动备份循环异常，稍后重试: {e}")
+            await asyncio.sleep(3600)
 
 
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
@@ -1385,9 +1395,8 @@ async def lifespan(_: FastAPI):
         state.get_coordinator()
     except Exception as e:
         state.startup_error = redact_secrets(str(e))
-        logger.error(f"初始化失败: {e}")
-        yield
-        return
+        # 不直接退出：首次请求会懒加载重试，后台维护任务也应继续运行
+        logger.error(f"初始化失败（将在首次请求时重试）: {e}")
     # 后台预热知识库，不阻塞服务启动；测试环境可跳过真实模型加载
     if str(os.environ.get("MEDIX_SKIP_WARMUP", "")).strip().lower() not in {
         "1", "true", "yes", "on"
@@ -1405,9 +1414,9 @@ async def lifespan(_: FastAPI):
             state.warmup_task = None
         archive_task.cancel()
         backup_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):
             await archive_task
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, Exception):
             await backup_task
         logger.info("MediX API 服务已停止")
 
