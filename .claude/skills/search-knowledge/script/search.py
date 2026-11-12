@@ -5,7 +5,7 @@ Search Knowledge Skill
 from typing import Dict, Any
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources, wrap_source_snippets, sanitize_untrusted_text
+from knowledge.sources import build_sources, sanitize_untrusted_text
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -76,7 +76,7 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
             "answer": format_results(formatted_results),
             "total_found": len(formatted_results),
             "query": query,
-            "sources": wrap_source_snippets(build_sources(results)),
+            "sources": build_sources(results),
         }
     else:
         return {

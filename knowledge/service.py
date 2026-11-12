@@ -73,6 +73,7 @@ class KnowledgeService:
             for path in entries:
                 if (
                     not path.is_file()
+                    or path.name.startswith(".")
                     or path.suffix.lower() not in SUPPORTED_SUFFIXES
                 ):
                     continue
@@ -135,6 +136,7 @@ class KnowledgeService:
                 try:
                     if (
                         path.is_file()
+                        and not path.name.startswith(".")
                         and path.suffix.lower() in SUPPORTED_SUFFIXES
                     ):
                         count += 1
@@ -174,6 +176,9 @@ class KnowledgeService:
             for path in sorted(self.docs_dir.iterdir()):
                 documents.append(self._describe(path, builtin=True))
             for path in sorted(self.upload_dir.iterdir()):
+                if path.name.startswith("."):
+                    # 在线编辑的临时文件或其它隐藏文件不进入列表与索引
+                    continue
                 if path.name in builtin_names:
                     # 历史遗留的同名上传会遮蔽内置文档，列表与预览只保留内置版本
                     logger.warning(
@@ -309,6 +314,13 @@ class KnowledgeService:
                 if (self.docs_dir / safe_name).exists():
                     raise ValueError("内置文档请通过仓库更新，不能在线编辑。")
                 raise ValueError("文档不存在。")
+
+            # 上次编辑中断留下的临时文件不进入索引，这里顺手清理
+            for stale in path.parent.glob(".*.tmp*"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
 
             suffix = path.suffix.lower()
             if suffix not in {".txt", ".md", ".markdown"}:

@@ -13,6 +13,7 @@ Windows 上导入 `milvus_lite` 会直接 ModuleNotFoundError。
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -53,49 +54,71 @@ class LocalVectorStore:
         self.collections: Dict[str, Dict[str, Any]] = {}
         #: 索引文件损坏时记录原因，搜索/统计会显式报错而不是静默返回空
         self.load_error = ""
+        self._lock = threading.RLock()
+        self._store_signature = None
         self._load()
 
     # ===== 持久化 =====
 
-    def _load(self):
-        if not self.store_path.exists():
-            return
+    def _file_signature(self):
         try:
-            data = json.loads(self.store_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("索引文件顶层不是对象")
-            loaded: Dict[str, Dict[str, Any]] = {}
-            for name, coll in data.items():
-                if not isinstance(coll, dict):
-                    raise ValueError(f"集合 {name} 结构无效")
-                dimension = int(coll["dimension"])
-                vectors = np.asarray(
-                    coll["vectors"], dtype=np.float32
-                ).reshape(-1, dimension)
-                contents = list(coll["contents"])
-                metadata = list(coll["metadata"])
-                if (
-                    dimension <= 0
-                    or vectors.shape[1] != dimension
-                    or len(contents) != vectors.shape[0]
-                    or len(metadata) != vectors.shape[0]
-                ):
-                    raise ValueError(f"集合 {name} 的向量与文本数量不一致")
-                loaded[name] = {
-                    **coll,
-                    "dimension": dimension,
-                    "vectors": vectors,
-                    "contents": contents,
-                    "metadata": metadata,
-                }
-            self.collections = loaded
-            logger.info(f"Loaded local vector store: {self.store_path}")
-        except Exception as e:
-            # 结构不一致时整体丢弃，让上层按“索引为空”触发重建，
-            # 而不是带着半损坏的集合永久返回错误
-            self.collections = {}
-            self.load_error = str(e)
-            logger.error(f"Failed to load local vector store: {e}")
+            stat = self.store_path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _load(self):
+        with self._lock:
+            self._store_signature = self._file_signature()
+            if not self.store_path.exists():
+                self.collections = {}
+                self.load_error = ""
+                return
+            try:
+                data = json.loads(self.store_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("索引文件顶层不是对象")
+                loaded: Dict[str, Dict[str, Any]] = {}
+                for name, coll in data.items():
+                    if not isinstance(coll, dict):
+                        raise ValueError(f"集合 {name} 结构无效")
+                    dimension = int(coll["dimension"])
+                    vectors = np.asarray(
+                        coll["vectors"], dtype=np.float32
+                    ).reshape(-1, dimension)
+                    contents = list(coll["contents"])
+                    metadata = list(coll["metadata"])
+                    if (
+                        dimension <= 0
+                        or vectors.shape[1] != dimension
+                        or len(contents) != vectors.shape[0]
+                        or len(metadata) != vectors.shape[0]
+                    ):
+                        raise ValueError(
+                            f"集合 {name} 的向量与文本数量不一致"
+                        )
+                    loaded[name] = {
+                        **coll,
+                        "dimension": dimension,
+                        "vectors": vectors,
+                        "contents": contents,
+                        "metadata": metadata,
+                    }
+                self.collections = loaded
+                self.load_error = ""
+                logger.info(f"Loaded local vector store: {self.store_path}")
+            except Exception as e:
+                # 结构不一致时整体丢弃，让上层按“索引为空”触发重建，
+                # 而不是带着半损坏的集合永久返回错误
+                self.collections = {}
+                self.load_error = str(e)
+                logger.error(f"Failed to load local vector store: {e}")
+
+    def _reload_if_changed_locked(self):
+        """其它进程重建索引后，本进程的内存副本要跟随磁盘更新。"""
+        if self._file_signature() != self._store_signature:
+            logger.info("Local vector index changed on disk, reloading")
+            self._load()
 
     def _save(self):
         try:
@@ -118,6 +141,7 @@ class LocalVectorStore:
             os.replace(temp_path, self.store_path)
             # 成功落盘后之前“文件损坏”的状态已解除（重建可恢复）
             self.load_error = ""
+            self._store_signature = self._file_signature()
         except Exception as e:
             logger.error(f"Failed to save local vector store: {e}")
             raise
@@ -125,7 +149,9 @@ class LocalVectorStore:
     # ===== MilvusClient 兼容接口 =====
 
     def has_collection(self, collection_name: str) -> bool:
-        return collection_name in self.collections
+        with self._lock:
+            self._reload_if_changed_locked()
+            return collection_name in self.collections
 
     def create_collection(
         self,
@@ -135,8 +161,10 @@ class LocalVectorStore:
         auto_id: bool = True,
         **kwargs,
     ):
-        if collection_name in self.collections:
-            return
+        with self._lock:
+            self._reload_if_changed_locked()
+            if collection_name in self.collections:
+                return
         self.collections[collection_name] = {
             "dimension": dimension,
             "metric_type": metric_type,
@@ -148,6 +176,8 @@ class LocalVectorStore:
         logger.info(f"Created local collection: {collection_name} (dim={dimension})")
 
     def insert(self, collection_name: str, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        with self._lock:
+            self._reload_if_changed_locked()
         coll = self.collections.get(collection_name)
         if coll is None:
             raise ValueError(f"Collection not found: {collection_name}")
@@ -174,22 +204,28 @@ class LocalVectorStore:
         output_fields: Optional[List[str]] = None,
         **kwargs,
     ) -> List[List[Dict[str, Any]]]:
-        if self.load_error:
-            raise RuntimeError(
-                f"本地向量索引加载失败，请重建知识库: {self.load_error}"
-            )
-        coll = self.collections.get(collection_name)
-        if coll is None or len(coll["contents"]) == 0:
-            return [[]]
+        with self._lock:
+            self._reload_if_changed_locked()
+            if self.load_error:
+                raise RuntimeError(
+                    f"本地向量索引加载失败，请重建知识库: {self.load_error}"
+                )
+            coll = self.collections.get(collection_name)
+            if coll is None or len(coll["contents"]) == 0:
+                return [[]]
+            # 快照引用：后续计算期间即使其它线程重建索引也不受影响
+            vectors = coll["vectors"]
+            contents = coll["contents"]
+            metadata = coll["metadata"]
 
         # 过滤候选集
         pattern = _decode_like_pattern(filter) if filter else None
         if pattern:
             candidates = [
-                i for i, meta in enumerate(coll["metadata"]) if pattern in meta
+                i for i, meta in enumerate(metadata) if pattern in meta
             ]
         else:
-            candidates = list(range(len(coll["contents"])))
+            candidates = list(range(len(contents)))
 
         results = []
         for query in data:
@@ -199,7 +235,7 @@ class LocalVectorStore:
 
             q = np.array(query, dtype=np.float32)
             q_norm = np.linalg.norm(q)
-            mat = coll["vectors"][candidates]
+            mat = vectors[candidates]
             norms = np.linalg.norm(mat, axis=1)
 
             denom = norms * q_norm
@@ -216,8 +252,8 @@ class LocalVectorStore:
                     # 与 Milvus COSINE 语义保持一致：distance 即余弦相似度
                     "distance": float(similarities[int(idx)]),
                     "entity": {
-                        "content": coll["contents"][real_idx],
-                        "metadata": coll["metadata"][real_idx],
+                        "content": contents[real_idx],
+                        "metadata": metadata[real_idx],
                     },
                 })
             results.append(hits)
@@ -238,11 +274,13 @@ class LocalVectorStore:
         self._save()
 
     def describe_collection(self, collection_name: str) -> Dict[str, Any]:
-        if self.load_error:
-            raise RuntimeError(
-                f"本地向量索引加载失败，请重建知识库: {self.load_error}"
-            )
-        coll = self.collections.get(collection_name)
-        if coll is None:
-            return {}
-        return {"num_entities": len(coll["contents"])}
+        with self._lock:
+            self._reload_if_changed_locked()
+            if self.load_error:
+                raise RuntimeError(
+                    f"本地向量索引加载失败，请重建知识库: {self.load_error}"
+                )
+            coll = self.collections.get(collection_name)
+            if coll is None:
+                return {}
+            return {"num_entities": len(coll["contents"])}

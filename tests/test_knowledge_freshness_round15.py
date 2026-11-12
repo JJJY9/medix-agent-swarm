@@ -51,6 +51,22 @@ def test_ensure_fresh_rebuilds_after_document_change(tmp_path):
     assert service.index_is_stale() is False
 
 
+def test_hidden_temp_files_are_not_indexed(tmp_path):
+    service, kb, uploads = _service(tmp_path)
+    (uploads / ".draft.tmp.md").write_text("临时草稿", encoding="utf-8")
+
+    service.rebuild()
+
+    assert all(
+        ".tmp" not in str(doc["metadata"]["filename"])
+        for doc in kb.documents
+    )
+    assert all(
+        ".tmp" not in item["filename"]
+        for item in service.list_documents()["documents"]
+    )
+
+
 def test_manifest_non_object_json_is_treated_as_stale(tmp_path):
     service, _kb, _uploads = _service(tmp_path)
     manifest = service.upload_dir.parent / "index_manifest.json"
@@ -103,6 +119,30 @@ def test_local_store_accepts_empty_vectors(tmp_path):
     assert not store.load_error
     assert store.has_collection("medical_knowledge")
     assert store.collections["medical_knowledge"]["vectors"].shape == (0, 4)
+
+
+def test_local_store_reloads_external_changes(tmp_path):
+    """其它进程重建索引后，本进程检索应跟随磁盘更新。"""
+    path = tmp_path / "kb.db"
+    first = LocalVectorStore(str(path))
+    first.create_collection("medical_knowledge", 2)
+    first.insert("medical_knowledge", [{
+        "vector": [1.0, 0.0],
+        "content": "旧内容",
+        "metadata": "{}",
+    }])
+
+    second = LocalVectorStore(str(path))
+    second.insert("medical_knowledge", [{
+        "vector": [0.0, 1.0],
+        "content": "新内容",
+        "metadata": "{}",
+    }])
+
+    hits = first.search("medical_knowledge", [[1.0, 0.0]], limit=5)[0]
+    assert {hit["entity"]["content"] for hit in hits} == {
+        "旧内容", "新内容"
+    }
 
 
 def test_module_level_freshness_helper(monkeypatch):

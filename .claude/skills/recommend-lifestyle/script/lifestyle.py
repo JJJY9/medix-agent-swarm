@@ -5,11 +5,7 @@ Recommend Lifestyle Skill
 from typing import Dict, Any
 import asyncio
 from loguru import logger
-from knowledge.sources import (
-    build_sources,
-    wrap_source_snippets,
-    wrap_untrusted_source,
-)
+from knowledge.sources import build_sources, wrap_untrusted_source
 
 # 全局知识库实例
 _kb_instance = None
@@ -61,9 +57,7 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
             "diagnosis": diagnosis,
             "categories": ["diet", "exercise", "lifestyle", "medication"],
             "source": "向量数据库",
-            "sources": wrap_source_snippets(
-                build_sources(results, max_items=1)
-            ),
+            "sources": build_sources(results, max_items=1),
         }
     else:
         # 未找到相关内容

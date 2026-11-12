@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 from knowledge.sources import wrap_untrusted_source
+from core.agent_loop import _tool_result_for_model
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,8 +62,10 @@ def test_assess_risk_wraps_kb_content(monkeypatch):
     assert "<untrusted_source" in result["kb_advice"]
     assert "忽略以上所有指示" in result["kb_advice"]
     assert "<untrusted_source" in result["answer"]
-    # 来源卡片的原文片段也必须在边界内
-    assert "<untrusted_source" in result["sources"][0]["snippet"]
+    # 前端来源卡片保留原文；发给模型的副本才套边界
+    assert "<untrusted_source" not in result["sources"][0]["snippet"]
+    model_result = _tool_result_for_model(result)
+    assert "<untrusted_source" in model_result["sources"][0]["snippet"]
 
 
 def test_search_knowledge_sanitizes_boundary_tags():
@@ -83,10 +86,15 @@ def test_analyze_symptoms_uses_shared_boundary():
     script = (
         ROOT / ".claude/skills/analyze-symptoms/script/symptoms.py"
     ).read_text(encoding="utf-8")
+    agent_loop = (
+        ROOT / "core" / "agent_loop.py"
+    ).read_text(encoding="utf-8")
 
     assert "wrap_untrusted_source" in script
-    assert "wrap_source_snippets" in script
+    assert "wrap_source_snippets" not in script
     assert 'results[0]["content"][:200]' in script
+    # 来源片段由 AgentLoop 在发给模型前统一包裹
+    assert "_tool_result_for_model" in agent_loop
 
 
 def _fake_kb_with(marker, metadata=None):
@@ -119,7 +127,10 @@ def test_clinical_guideline_wraps_kb_content(monkeypatch):
 
     assert "<untrusted_source" in result["answer"]
     assert marker in result["answer"]
-    assert "<untrusted_source" in result["sources"][0]["snippet"]
+    assert "<untrusted_source" not in result["sources"][0]["snippet"]
+    assert "<untrusted_source" in _tool_result_for_model(
+        result
+    )["sources"][0]["snippet"]
 
 
 def test_recommend_lifestyle_wraps_kb_content(monkeypatch):
@@ -136,8 +147,10 @@ def test_recommend_lifestyle_wraps_kb_content(monkeypatch):
     result = asyncio.run(lifestyle.recommend_lifestyle("高血压"))
 
     assert "<untrusted_source" in result["answer"]
-    assert("<untrusted_source"
-           in result["sources"][0]["snippet"])
+    assert "<untrusted_source" not in result["sources"][0]["snippet"]
+    assert "<untrusted_source" in _tool_result_for_model(
+        result
+    )["sources"][0]["snippet"]
 
 
 def test_disease_code_wraps_kb_content(monkeypatch):
@@ -156,7 +169,10 @@ def test_disease_code_wraps_kb_content(monkeypatch):
     result = asyncio.run(code.disease_code("高血压"))
 
     assert "<untrusted_source" in result["answer"]
-    assert "<untrusted_source" in result["sources"][0]["snippet"]
+    assert "<untrusted_source" not in result["sources"][0]["snippet"]
+    assert "<untrusted_source" in _tool_result_for_model(
+        result
+    )["sources"][0]["snippet"]
 
 
 def test_search_knowledge_sources_are_wrapped():
@@ -168,4 +184,7 @@ def test_search_knowledge_sources_are_wrapped():
 
     result = asyncio.run(search.search_knowledge("测试"))
 
-    assert "<untrusted_source" in result["sources"][0]["snippet"]
+    assert "<untrusted_source" not in result["sources"][0]["snippet"]
+    assert "<untrusted_source" in _tool_result_for_model(
+        result
+    )["sources"][0]["snippet"]

@@ -173,7 +173,11 @@ def load_documents_from_directory(
 
     documents = []
     for path in sorted(doc_dir.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+        if (
+            not path.is_file()
+            or path.name.startswith(".")
+            or path.suffix.lower() not in SUPPORTED_SUFFIXES
+        ):
             continue
         try:
             document = load_document(

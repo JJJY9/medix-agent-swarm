@@ -32,6 +32,14 @@ self.addEventListener('install', (event) => {
   })());
 });
 
+self.addEventListener('message', (event) => {
+  // 页面在用户确认刷新后发送 SKIP_WAITING，让等待中的新 Worker 激活；
+  // 安装期不主动跳过等待，避免加载中途切换外壳资源
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
@@ -72,7 +80,7 @@ self.addEventListener('fetch', (event) => {
     const cached = await cache.match(request);
     if (cached) return cached;
 
-    if (request.mode === 'navigate') {
+    if (request.mode === 'navigate' && url.pathname === '/') {
       // 深链（/?action=...）不在预缓存清单里：返回当前代的 '/' 外壳，
       // 不能把服务器上的新 HTML 写进旧缓存代，否则新 HTML 会配旧 JS/CSS。
       // ?action= 由 app.js 从 location.search 读取，深链功能不受影响。

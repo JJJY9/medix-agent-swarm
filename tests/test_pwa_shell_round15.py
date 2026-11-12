@@ -9,7 +9,7 @@ APP = (WEB / "app.js").read_text(encoding="utf-8")
 def test_service_worker_does_not_skip_waiting_mid_load():
     """新 Worker 不能在页面加载中途接管，否则旧 HTML 会配新资源。"""
     install = SW[SW.index("addEventListener('install'"):SW.index(
-        "addEventListener('activate'"
+        "addEventListener('message'"
     )]
     assert "self.skipWaiting()" not in install
 
@@ -41,6 +41,19 @@ def test_cache_put_failure_keeps_network_response():
     assert offline_index > put_index
 
 
+def test_skip_waiting_only_after_user_refresh():
+    # install 不主动跳过等待，但页面可在用户点刷新后发消息激活
+    assert "SKIP_WAITING" in SW
+    assert "self.skipWaiting()" in SW
+    assert "waiting.postMessage" in APP
+    assert "activateServiceWorkerUpdate" in APP
+
+
+def test_navigation_shell_only_for_root_path():
+    # 深链只限 '/'；/docs、/redoc 等页面不能被替换成应用外壳
+    assert "url.pathname === '/'" in SW
+
+
 def test_update_banner_survives_status_warnings():
     banner = APP[APP.index("function showBanner(html)"):APP.index(
         "function hideBanner()"
@@ -48,3 +61,10 @@ def test_update_banner_survives_status_warnings():
     assert "banner-update" in banner
     assert "swUpdateReady" in banner
     assert "sw-refresh" in banner
+
+    hide = APP[APP.index("function hideBanner()"):APP.index(
+        "function hideBanner()"
+    ) + 800]
+    # 警告恢复后只保留更新提示，不能把旧警告留在横幅里
+    assert "banner-update" in hide
+    assert "appendChild(updateBlock)" in hide

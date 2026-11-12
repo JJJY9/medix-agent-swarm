@@ -9,7 +9,6 @@ from loguru import logger
 from knowledge.sources import (
     build_sources,
     sanitize_untrusted_text,
-    wrap_source_snippets,
     wrap_untrusted_source,
 )
 
@@ -70,9 +69,7 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
                 details["category"] or metadata.get("category", ""), 80
             ),
             "source": "向量数据库",
-            "sources": wrap_source_snippets(
-                build_sources([doc], max_items=1)
-            ),
+            "sources": build_sources([doc], max_items=1),
         }
 
     # 未找到匹配小节

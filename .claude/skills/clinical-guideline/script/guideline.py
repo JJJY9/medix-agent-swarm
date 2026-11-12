@@ -9,7 +9,6 @@ from loguru import logger
 from knowledge.sources import (
     build_sources,
     sanitize_untrusted_text,
-    wrap_source_snippets,
     wrap_untrusted_source,
 )
 
@@ -99,9 +98,7 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
             ),
             "year": parsed["year"] or metadata.get("year", "N/A"),
             "source": "向量数据库",
-            "sources": wrap_source_snippets(
-                build_sources(results, max_items=max_results)
-            ),
+            "sources": build_sources(results, max_items=max_results),
         }
     else:
         # 未找到相关内容
