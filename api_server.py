@@ -15222,6 +15222,11 @@ def main():
     )
     args = parser.parse_args()
 
+    if not str(args.host or "").strip():
+        parser.error("--host 不能为空")
+    if not 1 <= args.port <= 65535:
+        parser.error("--port 必须在 1-65535 之间")
+
     allow_insecure = args.allow_insecure_lan or (
         (os.getenv(INSECURE_LAN_ENV) or "").strip().lower()
         in {"1", "true", "yes", "on"}
@@ -15245,13 +15250,18 @@ def main():
     import uvicorn
 
     logger.info(f"启动服务：http://{args.host}:{args.port}")
-    uvicorn.run(
-        "api_server:app" if args.reload else app,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        log_level="info",
-    )
+    try:
+        uvicorn.run(
+            "api_server:app" if args.reload else app,
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+            log_level="info",
+        )
+    except OSError as e:
+        # 无效端口/主机名或端口被占用时给可读提示，而不是裸 traceback
+        logger.error(f"无法启动服务（{args.host}:{args.port}）：{e}")
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

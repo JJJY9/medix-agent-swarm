@@ -49,6 +49,11 @@ def _is_unit_char(character: str) -> bool:
 class MedicalKnowledgeBase:
     """医学知识库"""
 
+    #: 默认库文件锚定到知识库目录，避免从其它 CWD 启动时新建空库
+    DEFAULT_DB_PATH = str(
+        Path(__file__).resolve().parent / "data" / "milvus_lite.db"
+    )
+
     _instance = None
     _instance_lock = threading.Lock()
     _init_lock = threading.Lock()
@@ -68,7 +73,7 @@ class MedicalKnowledgeBase:
 
     def _initialize(
         self,
-        db_path: str = "./knowledge/data/milvus_lite.db",
+        db_path: str = None,
         collection_name: str = "medical_knowledge",
         embedding_model: str = "BAAI/bge-small-zh-v1.5"
     ):
@@ -84,7 +89,7 @@ class MedicalKnowledgeBase:
         if hasattr(self, '_initialized'):
             return
 
-        self.db_path = db_path
+        self.db_path = db_path or self.DEFAULT_DB_PATH
         self.collection_name = collection_name
         # 重建索引在 drop→rename 之间会短暂没有 collection；
         # 用读写锁让并发检索等待替换完成，避免会诊静默检索为空
