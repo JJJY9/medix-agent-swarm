@@ -667,3 +667,30 @@ def test_visit_prep_clamps_days_and_handles_empty_profile(
         params={"profile": "空档案", "days": 0},
     ).json()
     assert one_day["days"] == 30
+
+
+def test_visit_prep_attachment_count_beyond_list_page(client_and_store):
+    client, store = client_and_store
+    now = datetime.now().isoformat(timespec="seconds")
+    with store._lock, store._conn:
+        store._conn.executemany(
+            "INSERT INTO attachments("
+            "profile,kind,ref_id,original_name,stored_name,mime,size,"
+            "note,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "妈妈", "other", 0, f"资料{index}.pdf",
+                    f"prep-{index}.pdf", "application/pdf", 10, "",
+                    now,
+                )
+                for index in range(1001)
+            ],
+        )
+
+    data = client.get(
+        "/api/health/visit-prep", params={"profile": "妈妈"}
+    ).json()
+
+    assert data["attachment_count"] == 1001
+    assert "携带资料（1001 份）" in data["text"]
+    assert "另有 991 份未列出" in data["text"]
