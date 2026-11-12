@@ -52,6 +52,14 @@
     ],
   };
 
+  // 血清化学项目不能取到尿/粪/脑脊液等同名标本
+  const LAB_PREFILL_PANEL_EXCLUDES = [
+    '尿', 'urine', '24小时', '24h', '粪便', 'stool',
+    '脑脊液', 'csf', '胸水', '腹水', '穿刺液',
+  ];
+  const LAB_PREFILL_SERUM_KEYS = new Set([
+    'creatinine', 'urea', 'bilirubin', 'albumin', 'ast', 'alt',
+  ]);
   const UNIT_MG_DL = /mg\/dl/;
   const UNIT_UMOL_L = /[uμµ]mol\/l/;
   const UNIT_G_L = /g\/l/;
@@ -78,11 +86,24 @@
     const excludes = (LAB_PREFILL_EXCLUDES[key] || []).map(
       normalizeLabName
     );
+    const serumOnly = LAB_PREFILL_SERUM_KEYS.has(key);
+    const panelExcludes = LAB_PREFILL_PANEL_EXCLUDES.map(
+      normalizeLabName
+    );
     return (items || []).find((item) => {
       const name = normalizeLabName(item.item);
       if (!name) return false;
       if (excludes.some((bad) => bad && name.includes(bad))) {
         return false;
+      }
+      if (serumOnly) {
+        const panel = normalizeLabName(item.panel);
+        if (
+          panel
+          && panelExcludes.some((bad) => bad && panel.includes(bad))
+        ) {
+          return false;
+        }
       }
       return aliases.some((alias) => alias && name.includes(alias));
     }) || null;

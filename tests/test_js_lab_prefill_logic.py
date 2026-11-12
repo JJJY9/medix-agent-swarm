@@ -43,7 +43,19 @@ assert.strictEqual(core.findLabItem(items, 'bilirubin').item, '总胆红素');
 assert.strictEqual(core.findLabItem(items, 'urea').item, '尿素');
 assert.strictEqual(core.findLabItem(items, 'ast').item, '谷草转氨酶');
 assert.strictEqual(core.findLabItem(items, 'alt'), null);
-assert.strictEqual(core.findLabItem(items, 'creatinine').item, '肌酐');
+assert.strictEqual(
+  core.findLabItem(items, 'creatinine').item, '肌酐'
+);
+const mixedPanels = [
+  { item: '肌酐', panel: '24小时尿', value: 9800, unit: 'μmol/24h' },
+  { item: '肌酐', panel: '肾功能', value: 88.4, unit: 'μmol/L' },
+];
+assert.strictEqual(
+  core.findLabItem(mixedPanels, 'creatinine').panel, '肾功能'
+);
+assert.strictEqual(
+  core.findLabItem([mixedPanels[0]], 'creatinine'), null
+);
 assert.strictEqual(
   core.findLabItem(items, 'platelets').item, '血小板计数'
 );
