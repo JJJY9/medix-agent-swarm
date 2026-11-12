@@ -237,3 +237,26 @@ def test_debug_log_does_not_include_model_output(tmp_path):
     assert marker not in text
     assert "LeadAgent assessment" in text
     assert result["subtasks"][0]["description"] == marker
+
+
+def test_empty_synthesis_falls_back_to_contributions():
+    context = SharedContext(session_id="fallback-test")
+    subtask = SubTask(
+        id="s1",
+        type="consultation",
+        description="给出建议",
+        assigned_agent="consultation_agent",
+    )
+    context.add_subtask(subtask)
+    assert context.start_subtask("s1")
+    context.complete_subtask(
+        "s1", "consultation_agent", {"answer": "各科室原始建议内容"}
+    )
+
+    agent = LeadAgent(llm_client=FakeChatLLM(""))
+    text = asyncio.run(agent.synthesize_results("测试问题", context))
+
+    # 汇总模型返回空内容时不能丢光所有科室意见
+    assert "各科室原始意见" in text
+    assert "各科室原始建议内容" in text
+    assert "免责声明" in text

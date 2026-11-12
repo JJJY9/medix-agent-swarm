@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
+import httpx
 from openai import (
     APIStatusError,
     APIConnectionError,
@@ -31,7 +32,14 @@ install_log_redaction()
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+    try:
+        load_dotenv(_ENV_PATH, encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        # PowerShell Set-Content / 旧版记事本默认非 UTF-8；不要让入口崩溃
+        logger.warning(
+            ".env 不是 UTF-8 编码，已跳过加载；请另存为 UTF-8 后重启"
+        )
 except ImportError:
     pass
 
@@ -238,6 +246,21 @@ def classify_llm_error(exc: Exception) -> LLMError:
         return LLMError(
             "llm_network",
             "无法连接模型服务，请检查网络或 base_url 配置。",
+            retryable=True,
+            status_code=status,
+        )
+
+    # 流式迭代阶段的 httpx 传输错误不会被 SDK 包装，按可重试网络错误处理
+    if isinstance(exc, httpx.TransportError) or any(
+        token in type_name
+        for token in (
+            "connecterror", "readerror", "writeerror",
+            "remoteprotocolerror", "protocolerror",
+        )
+    ):
+        return LLMError(
+            "llm_network",
+            "模型连接中断，请检查网络后重试。",
             retryable=True,
             status_code=status,
         )

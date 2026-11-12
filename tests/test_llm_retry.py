@@ -2,9 +2,10 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
-from core.llm_client import LLMClient, LLMError
+from core.llm_client import LLMClient, LLMError, classify_llm_error
 from swarm.lead_agent import LeadAgent
 from swarm.shared_context import SharedContext, SubTask
 
@@ -188,3 +189,14 @@ def test_lead_agent_synthesis_uses_stream_retry():
     assert text == "汇总答复"
     assert tokens == ["汇总"]
     assert usage["total_tokens"] == 7
+
+
+def test_streaming_httpx_transport_errors_are_retryable():
+    for error in (
+        httpx.ReadError("read failed"),
+        httpx.RemoteProtocolError("peer closed connection"),
+        httpx.ConnectError("connect failed"),
+    ):
+        classified = classify_llm_error(error)
+        assert classified.code == "llm_network"
+        assert classified.retryable is True

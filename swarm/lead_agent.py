@@ -576,6 +576,17 @@ class LeadAgent:
 **注意**：{reason}，以下分析模块未能完成：{', '.join(incomplete_tasks)}
 以下是基于已完成的 {len(completed_agents)} 个 Agent 的部分分析结果。"""
 
+        def fallback_answer() -> str:
+            """汇总模型返回空内容时，用各科室原始意见兜底，不能返回空答复。"""
+            body = "\n\n".join(contributions_text).strip()
+            if not body:
+                return "抱歉，Swarm 未能提供有效分析结果。"
+            return (
+                "汇总模型暂未生成结论，以下为各科室原始意见，"
+                "仅供参考：" + timeout_note + "\n\n" + body
+                + "\n\n【免责声明】以上信息仅供参考，不能替代医生诊断。"
+            )
+
         synthesis_prompt = f"""你是医疗 Swarm 的 Lead Agent，负责汇总多个专业 Agent 的分析结果。
 
 **用户问题**：{question}
@@ -637,7 +648,7 @@ class LeadAgent:
                     raise
                 if usage_out is not None:
                     usage_out.update(stream_usage)
-                return text
+                return str(text or "").strip() or fallback_answer()
 
             if on_token is not None and hasattr(self.llm_client, "chat_stream"):
                 stream_usage = {}
@@ -660,7 +671,7 @@ class LeadAgent:
                     raise
                 if usage_out is not None:
                     usage_out.update(stream_usage)
-                return text
+                return str(text or "").strip() or fallback_answer()
 
             if hasattr(self.llm_client, "chat_with_usage_retry"):
                 response, usage = await self.llm_client.chat_with_usage_retry(messages)
@@ -673,7 +684,7 @@ class LeadAgent:
             else:
                 response = await self.llm_client.chat(messages)
 
-            return response
+            return str(response or "").strip() or fallback_answer()
 
         except LLMError:
             raise

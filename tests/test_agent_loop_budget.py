@@ -271,3 +271,57 @@ def test_max_iterations_fallback_records_user_question():
         assert history[-1]["content"] == result["answer"]
     finally:
         memory.clear_session(session_id)
+
+
+class EmptyFinalLLM(FakeLLM):
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls.append(tools is not None)
+        if tools is None:
+            return LLMResponse(
+                content="", tool_calls=[], finish_reason="stop"
+            )
+        return LLMResponse(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call-empty", name="fake_skill", arguments={})
+            ],
+            finish_reason="tool_calls",
+        )
+
+
+def test_empty_final_answer_is_marked_degraded():
+    loop = AgentLoop(max_iterations=5, max_tool_calls=1)
+    agent = FakeAgent(EmptyFinalLLM())
+
+    result = asyncio.run(loop.run(agent, {"question": "测试问题"}))
+
+    # 兜底道歉不是有效答复，Swarm/统计需要能识别
+    assert result["degraded"] is True
+    assert result["warning"] == "empty_answer"
+    assert "抱歉" in result["answer"]
+
+
+class TruncatedFinalLLM(FakeLLM):
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls.append(tools is not None)
+        if tools is None:
+            return LLMResponse(
+                content="部分医疗建议", tool_calls=[], finish_reason="length"
+            )
+        return LLMResponse(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call-trunc", name="fake_skill", arguments={})
+            ],
+            finish_reason="tool_calls",
+        )
+
+
+def test_truncated_non_stream_answer_gets_notice():
+    loop = AgentLoop(max_iterations=5, max_tool_calls=0)
+    agent = FakeAgent(TruncatedFinalLLM())
+
+    result = asyncio.run(loop.run(agent, {"question": "测试问题"}))
+
+    assert "部分医疗建议" in result["answer"]
+    assert "达到长度上限" in result["answer"]
