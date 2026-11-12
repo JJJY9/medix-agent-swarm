@@ -1381,6 +1381,33 @@ def _warn_if_short_access_token() -> None:
             "建议更换更长的随机令牌。"
         )
 
+
+INSECURE_LAN_ENV = "MEDIX_ALLOW_INSECURE_LAN"
+
+
+def _is_loopback_host(host: str) -> bool:
+    text = str(host or "").strip().lower()
+    if text in ("localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def check_bind_security(
+    host: str, token: str, allow_insecure_lan: bool = False
+) -> Optional[str]:
+    """绑定非本机地址且未设置访问令牌时返回错误消息；可启动时返回 None。"""
+    if token or allow_insecure_lan or _is_loopback_host(host):
+        return None
+    return (
+        f"拒绝启动：绑定到 {host} 会向局域网暴露服务，但未设置 "
+        "MEDIX_ACCESS_TOKEN。请设置访问令牌；仅在完全可信的内网使用时，"
+        "可用 --allow-insecure-lan 或 MEDIX_ALLOW_INSECURE_LAN=1 显式放行。"
+    )
+
+
 # 自检端点会真实调用一次付费模型，单独限制频率
 diagnose_limiter = SlidingWindowLimiter(5)
 # 重建/上传会触发全量索引，限制频率避免放大资源消耗
@@ -14886,7 +14913,32 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true", help="开发模式，代码变更自动重载")
+    parser.add_argument(
+        "--allow-insecure-lan",
+        action="store_true",
+        help="未设置访问令牌时仍允许绑定非本机地址（仅限完全可信的内网）",
+    )
     args = parser.parse_args()
+
+    allow_insecure = args.allow_insecure_lan or (
+        (os.getenv(INSECURE_LAN_ENV) or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    bind_error = check_bind_security(
+        args.host, get_access_token(), allow_insecure
+    )
+    if bind_error:
+        logger.error(bind_error)
+        raise SystemExit(2)
+    if (
+        allow_insecure
+        and not get_access_token()
+        and not _is_loopback_host(args.host)
+    ):
+        logger.warning(
+            "已按显式配置在没有访问令牌的情况下绑定 "
+            f"{args.host}：局域网内任何设备都可读写健康数据，请确认网络可信。"
+        )
 
     import uvicorn
 
