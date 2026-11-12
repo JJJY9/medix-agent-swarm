@@ -4682,6 +4682,28 @@ async def _complete_care_item_old_reminders(
         await asyncio.to_thread(store.complete_reminder, reminder_id)
 
 
+async def _care_title_shared(store, item) -> bool:
+    """同一档案下是否还有另一个启用中的同名复查计划。
+
+    复查提醒按标题匹配；标题撞名时无法判断归属，保守跳过清理，
+    避免创建/完成一条计划时完成另一条计划的待办。
+    """
+    profile = item.get("profile") or ""
+    title = item.get("title") or ""
+    item_id = int(item.get("id") or 0)
+    try:
+        rows = await asyncio.to_thread(
+            store.list_care_items, profile, True, False, 1000
+        )
+    except Exception:
+        return True
+    return any(
+        int(row.get("id") or 0) != item_id
+        and (row.get("title") or "") == title
+        for row in rows
+    )
+
+
 async def _ensure_care_item_reminder(store, item):
     """按复查计划的下次日期创建提前 7 天的提醒；已有提醒时复用。
 
@@ -4714,6 +4736,9 @@ async def _ensure_care_item_reminder(store, item):
     )
     if reminder is None:
         return None, False
+    if await _care_title_shared(store, item):
+        # 同名计划共存时无法区分提醒归属，保留全部提醒
+        return reminder, created
     reminders = await asyncio.to_thread(
         store.list_reminders, True, item.get("profile") or ""
     )

@@ -1460,6 +1460,21 @@ def _normalize_reminder_repeat_until(value: Any) -> str:
     return text
 
 
+def _validate_repeat_window(
+    due_at: Any, repeat_days: Any, repeat_until: Any
+) -> None:
+    """重复截止不能早于首次到期日，否则规则永远不会生效。"""
+    if not repeat_days or not repeat_until:
+        return
+    try:
+        due_date = datetime.fromisoformat(str(due_at)).date()
+        until_date = datetime.fromisoformat(str(repeat_until)).date()
+    except (TypeError, ValueError):
+        return
+    if until_date < due_date:
+        raise ValueError("重复截止日期不能早于提醒日期")
+
+
 def _next_repeat_due(due_at: str, days: int) -> str:
     """在原到期日上按间隔顺延；已错过的周期自动跳到今天之后。"""
     days = max(1, int(days))
@@ -9537,6 +9552,7 @@ class SessionStore:
         advance_days = _normalize_reminder_advance(advance_days)
         repeat_days = _normalize_reminder_repeat_days(repeat_days)
         repeat_until = _normalize_reminder_repeat_until(repeat_until)
+        _validate_repeat_window(due_at, repeat_days, repeat_until)
         medication_id = _safe_db_id(medication_id)
         vaccination_id = _safe_db_id(vaccination_id)
         appointment_id = _safe_db_id(appointment_id)
@@ -9836,6 +9852,20 @@ class SessionStore:
         params.append(int(reminder_id))
 
         with self._lock, self._conn:
+            current = self._conn.execute(
+                "SELECT due_at, repeat_days, repeat_until "
+                "FROM reminders WHERE id = ?",
+                (int(reminder_id),),
+            ).fetchone()
+            if current is None:
+                return None
+            _validate_repeat_window(
+                due_at if due_at is not None else current["due_at"],
+                repeat_days if repeat_days is not None
+                else int(current["repeat_days"] or 0),
+                repeat_until if repeat_until is not None
+                else current["repeat_until"],
+            )
             cursor = self._conn.execute(
                 f"UPDATE reminders SET {', '.join(updates)} WHERE id = ?",
                 params,

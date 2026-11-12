@@ -8040,6 +8040,8 @@ async function locateHealthRecord(item, query = '') {
 
 let remindersFocused = null;
 let editingReminderId = null;
+//: 编辑前的原始日期（可含时间），用于日期未改动时保留时间部分
+let reminderEditOriginal = { due_at: '', repeat_until: '' };
 let reminderMedicationId = 0;
 let remindersRequestSeq = 0;
 let reminderSaving = false;
@@ -8066,6 +8068,7 @@ function defaultReminderDue() {
 function resetReminderForm() {
   editingReminderId = null;
   reminderMedicationId = 0;
+  reminderEditOriginal = { due_at: '', repeat_until: '' };
   els.reminderTitle.value = '';
   els.reminderNote.value = '';
   els.reminderDue.value = defaultReminderDue();
@@ -8080,6 +8083,10 @@ function resetReminderForm() {
 function editReminder(item) {
   editingReminderId = item.id;
   reminderMedicationId = Number(item.medication_id) || 0;
+  reminderEditOriginal = {
+    due_at: String(item.due_at || ''),
+    repeat_until: String(item.repeat_until || ''),
+  };
   els.reminderTitle.value = item.title || '';
   if (els.reminderProfile) {
     els.reminderProfile.value = item.profile || '';
@@ -9759,9 +9766,19 @@ async function addReminder() {
     0,
     Math.min(365, Number(els.reminderRepeat.value) || 0)
   ));
+  // 只改了标题/备注时保留原日期里的时间部分，避免把定时提醒存成全天
+  const dueValue = (
+    editingId
+    && reminderEditOriginal.due_at.slice(0, 10) === dueAt
+  ) ? reminderEditOriginal.due_at : dueAt;
+  const untilInput = els.reminderUntil.value || '';
+  const untilValue = (
+    editingId
+    && reminderEditOriginal.repeat_until.slice(0, 10) === untilInput
+  ) ? reminderEditOriginal.repeat_until : untilInput;
   const payload = {
     title,
-    due_at: dueAt,
+    due_at: dueValue,
     note: (els.reminderNote.value || '').trim(),
     profile: els.reminderProfile.value || '',
     advance_days: Math.trunc(Math.max(
@@ -9769,7 +9786,7 @@ async function addReminder() {
       Math.min(30, Number(els.reminderAdvance.value) || 0)
     )),
     repeat_days: repeatDays,
-    repeat_until: repeatDays > 0 ? (els.reminderUntil.value || '') : '',
+    repeat_until: repeatDays > 0 ? untilValue : '',
   };
   if (!editingId) {
     payload.session_id = sessionId || '';
@@ -17351,16 +17368,21 @@ async function completeDueMedicationReminder(item) {
     if (!res.ok) return null;
     const reminders = (await res.json()).reminders || [];
     const title = `用药：${item.name}`;
-    const candidates = reminders.filter((reminder) => {
-      if (reminder.done) return false;
-      const byId = Number(reminder.medication_id) === item.id;
-      const legacy = !Number(reminder.medication_id)
-        && reminder.title === title
-        && (reminder.profile || '') === (item.profile || '');
-      if (!byId && !legacy) return false;
-      const days = reminderDaysUntil(reminder.due_at);
-      return days !== null && days >= -1 && days <= 0;
-    });
+    const candidates = reminders
+      .filter((reminder) => {
+        if (reminder.done) return false;
+        const byId = Number(reminder.medication_id) === item.id;
+        const legacy = !Number(reminder.medication_id)
+          && reminder.title === title
+          && (reminder.profile || '') === (item.profile || '');
+        if (!byId && !legacy) return false;
+        const days = reminderDaysUntil(reminder.due_at);
+        // 打卡应完成今天或已逾期的提醒（不再限制只能逾期 1 天）
+        return days !== null && days <= 0;
+      })
+      .sort((a, b) => (
+        String(b.due_at || '').localeCompare(String(a.due_at || ''))
+      ));
     const dose = String(item.dose || '').trim();
     const due = (
       dose
@@ -17370,13 +17392,29 @@ async function completeDueMedicationReminder(item) {
         : null
     ) || candidates[0];
     if (!due) return null;
-    const completeRes = await fetch(`/api/reminders/${due.id}/complete`, {
-      method: 'POST',
-    });
-    if (!completeRes.ok) return null;
-    const data = await completeRes.json().catch(() => ({}));
-    return data.next && data.next.due_at
-      ? `已完成今日用药提醒，下次：${formatReminderDue(data.next.due_at)}。`
+    let current = due;
+    let next = null;
+    // 后端按“保留今天”顺延时，打卡后可能立刻生成今天到期的新提醒；
+    // 连续完成当天到期的提醒，直到下一次在未来或不再生成
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const completeRes = await fetch(
+        `/api/reminders/${current.id}/complete`, { method: 'POST' }
+      );
+      if (!completeRes.ok) {
+        return attempt > 0 ? '已完成今日用药提醒。' : null;
+      }
+      const data = await completeRes.json().catch(() => ({}));
+      next = data.next && data.next.due_at ? data.next : null;
+      if (
+        !next
+        || String(next.due_at).slice(0, 10) > todayLocalDate()
+      ) {
+        break;
+      }
+      current = next;
+    }
+    return next && next.due_at
+      ? `已完成今日用药提醒，下次：${formatReminderDue(next.due_at)}。`
       : '已完成今日用药提醒。';
   } catch {
     return null;
