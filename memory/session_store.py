@@ -663,6 +663,35 @@ def _frequency_count(token: str) -> Optional[int]:
     return _CN_DIGITS.get(token)
 
 
+#: 剂量中的数字+剂型，用于按实际服用量扣减库存
+_DOSE_QUANTITY_PATTERN = re.compile(
+    r"^(\d+(?:\.\d+)?)\s*(片|粒|袋|支|丸|包|毫升|ml|滴|喷)",
+    re.IGNORECASE,
+)
+_DOSE_UNIT_ALIASES = {"毫升": "ml"}
+
+
+def medication_dose_units(dose: Any, stock_unit: Any) -> float:
+    """解析一次服用占用的库存单位数；不确定时保守按 1 计。"""
+    match = _DOSE_QUANTITY_PATTERN.match(str(dose or "").strip())
+    if not match:
+        return 1.0
+    try:
+        quantity = float(match.group(1))
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    if not (1 <= quantity <= 100):
+        return 1.0
+    dose_unit = match.group(2).lower()
+    dose_unit = _DOSE_UNIT_ALIASES.get(dose_unit, dose_unit)
+    stock_key = str(stock_unit or "").strip().lower()
+    stock_key = _DOSE_UNIT_ALIASES.get(stock_key, stock_key)
+    if stock_key and dose_unit != stock_key:
+        # 例如剂量 5 mg 而库存单位是「片」，换算关系未知
+        return 1.0
+    return quantity
+
+
 def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
     """按常见频次描述估算每日应服次数；按需服用或无法识别时返回 None。"""
     text = " ".join(str(frequency or "").split())
@@ -7923,7 +7952,10 @@ class SessionStore:
         now = datetime.now().isoformat(timespec="microseconds")
         with self._lock, self._conn:
             medication = self._conn.execute(
-                "SELECT id, profile, stock FROM medications WHERE id = ?",
+                """
+                SELECT id, profile, stock, dose, stock_unit
+                  FROM medications WHERE id = ?
+                """,
                 (medication_id,),
             ).fetchone()
             if medication is None:
@@ -7961,7 +7993,10 @@ class SessionStore:
             stock_after: Optional[float] = None
             if not skipped_flag and stock is not None:
                 stock_before = max(0.0, float(stock))
-                stock_delta = -min(1.0, stock_before)
+                dose_units = medication_dose_units(
+                    medication["dose"], medication["stock_unit"]
+                )
+                stock_delta = -min(dose_units, stock_before)
                 stock_after = round(stock_before + stock_delta, 2)
                 self._conn.execute(
                     """
