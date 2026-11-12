@@ -1,4 +1,6 @@
 """全局健康搜索 API 测试。"""
+import csv
+import io
 from datetime import datetime, timedelta
 
 import pytest
@@ -419,3 +421,27 @@ def test_health_search_attachment_beyond_newest_page(client_and_store):
         row for row in data["results"] if row["type"] == "attachment"
     ]
     assert [row["title"] for row in attachments] == ["旧报告.pdf"]
+
+
+def test_health_search_export_csv(client_and_store):
+    client, _store = client_and_store
+    _seed_family(client)
+
+    response = client.get(
+        "/api/health/search/export.csv",
+        params={"q": "头晕", "profile": "妈妈"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    rows = list(csv.reader(io.StringIO(
+        response.content.decode("utf-8-sig")
+    )))
+    assert rows[0] == ["类型", "时间", "患者档案", "标题", "详情"]
+    assert any(
+        row[2] == "妈妈" and "头晕" in row[3] for row in rows[1:]
+    )
+
+    missing = client.get("/api/health/search/export.csv")
+    assert missing.status_code == 400

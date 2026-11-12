@@ -36,6 +36,16 @@ def test_search_can_cover_all_profiles():
     assert ".health-search-all {" in CSS
 
 
+def test_search_results_can_be_exported():
+    assert 'id="health-search-export"' in HTML
+    assert "exportHealthSearchCsv" in SCRIPT
+    assert "/api/health/search/export.csv?" in SCRIPT
+    assert "els.healthSearchExport.hidden = results.length === 0;" in SCRIPT
+    assert "els.healthSearchExport.hidden = true;" in SCRIPT
+    assert "els.healthSearchExport.addEventListener(" in SCRIPT
+    assert "已导出搜索结果（最多 200 条）。" in SCRIPT
+
+
 def test_attachment_result_has_preview_action():
     assert "item.type === 'attachment' && item.id" in SCRIPT
     assert "preview.textContent = '预览';" in SCRIPT
