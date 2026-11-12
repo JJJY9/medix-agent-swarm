@@ -17398,14 +17398,9 @@ async function toggleMedication(item) {
     const res = await fetch(`/api/medications/${item.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        profile: item.profile || '',
-        name: item.name,
-        dose: item.dose || '',
-        frequency: item.frequency || '',
-        note: item.note || '',
-        active: !item.active,
-      }),
+      // 只回传要改变的字段：列表快照可能已过期，整包回传会把
+      // 并发完成的改名/调量覆盖回旧值
+      body: JSON.stringify({ active: !item.active }),
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     setMedicationStatus(item.active ? '已停用药物。' : '已启用药物。');
