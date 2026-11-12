@@ -5,7 +5,7 @@ Analyze Symptoms Skill
 from typing import Dict, Any, List
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import build_sources, wrap_untrusted_source
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -115,9 +115,13 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
                     filter_type=None
                 )
                 if results and results[0]["score"] > 0.5:
+                    # 知识库可能包含用户上传文档：先声明不可信边界再放入结果
                     kb_insights.append({
                         "disease": disease,
-                        "info": results[0]["content"][:200]  # 限制长度
+                        "info": wrap_untrusted_source(
+                            results[0]["content"][:200],
+                            index=len(kb_insights) + 1,
+                        ),
                     })
                     source_docs.append(results[0])
         except Exception as e:

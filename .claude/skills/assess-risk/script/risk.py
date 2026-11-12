@@ -5,7 +5,7 @@ Assess Risk Skill
 from typing import Dict, Any, List
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import build_sources, wrap_untrusted_source
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -120,7 +120,10 @@ async def assess_risk(symptoms: str) -> Dict[str, Any]:
                 filter_type=None
             )
             if results and results[0]["score"] > 0.5:
-                kb_advice = results[0]["content"][:300]  # 限制长度
+                # 知识库可能包含用户上传文档：先声明不可信边界再放入结果
+                kb_advice = wrap_untrusted_source(
+                    results[0]["content"][:300]
+                )
                 sources = build_sources(results, max_items=1)
         except Exception as e:
             logger.warning(f"Failed to get KB advice: {e}")
