@@ -798,3 +798,21 @@ def test_metric_post_retry_is_idempotent(client):
     assert changed.status_code == 200
     assert changed.json()["metric"]["id"] != first.json()["metric"]["id"]
     assert len(client.get("/api/metrics").json()["metrics"]) == 2
+
+
+def test_repeated_readings_with_distinct_times_are_all_saved(client):
+    payload = {
+        "profile": "爸爸",
+        "metric": "glucose",
+        "value1": 9.5,
+    }
+    for minute in ("08:00", "08:01", "08:02"):
+        created = client.post(
+            "/api/metrics",
+            json={**payload, "measured_at": f"2026-11-01T{minute}"},
+        )
+        assert created.status_code == 200
+        assert created.json()["metric"].get("duplicate") is not True
+
+    rows = client.get("/api/metrics").json()["metrics"]
+    assert len(rows) == 3

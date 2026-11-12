@@ -5406,20 +5406,33 @@ class SessionStore:
             return None
 
         now = self._now()
+        auto_time = not str(measured_at or "").strip()
+        retry_now = datetime.now()
         retry_cutoff = (
-            datetime.now() - timedelta(seconds=120)
+            retry_now - timedelta(seconds=120)
         ).isoformat(timespec="seconds")
+        auto_cutoff = (
+            retry_now - timedelta(seconds=120)
+        ).isoformat(timespec="minutes")
         with self._lock, self._conn:
-            # 响应丢失后的重试会重新计算分钟级测量时间；短窗口内内容完全
-            # 相同的记录视为同一次保存，返回原记录而不是插入重复读数
+            # 响应丢失后的重试：显式测量时间时按原值比对；未填时间时服务端
+            # 会按当前分钟重新计算，跨分钟重试也要能识别为同一次保存
+            if auto_time:
+                time_condition = "measured_at >= ?"
+                time_value = auto_cutoff
+            else:
+                time_condition = "measured_at = ?"
+                time_value = normalized["measured_at"]
             duplicate = self._conn.execute(
-                """
+                f"""
                 SELECT id, profile, metric, value1, value2, unit,
                        measured_at, context, note, created_at
                   FROM health_metrics
                  WHERE profile = ? AND metric = ? AND value1 = ?
                    AND IFNULL(value2, -1) = IFNULL(?, -1)
-                   AND context = ? AND note = ? AND created_at >= ?
+                   AND context = ? AND note = ?
+                   AND {time_condition}
+                   AND created_at >= ?
                  ORDER BY id DESC LIMIT 1
                 """,
                 (
@@ -5429,6 +5442,7 @@ class SessionStore:
                     normalized["value2"],
                     normalized["context"],
                     normalized["note"],
+                    time_value,
                     retry_cutoff,
                 ),
             ).fetchone()
