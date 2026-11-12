@@ -294,7 +294,9 @@ def critical_metric_alerts(
                 "level": "critical",
                 "message": f"血压 {display} mmHg 达到危急值，请立即就医或拨打 120。",
             })
-        elif systolic < 90 or (second is not None and diastolic < 60):
+        elif systolic < 90:
+            # 低血压危急值只按收缩压判定；150/55 这类单纯舒张压偏低
+            # 不应被描述为整体血压偏低并升级为最高优先级警报
             alerts.append({
                 "level": "critical",
                 "message": f"血压 {display} mmHg 偏低，如伴头晕、乏力请及时就医。",
