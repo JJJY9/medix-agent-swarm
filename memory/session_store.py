@@ -44,17 +44,30 @@ def _bounded_offset(offset: Any) -> int:
 def _date_range_conditions(
     column: str, start: Any, end: Any
 ) -> Tuple[List[str], List[Any]]:
-    """按自然日闭区间生成日期过滤条件，供时间线/月历下推到 SQL。"""
+    """按自然日闭区间生成日期过滤条件，供时间线/月历下推到 SQL。
+
+    直接比较时间列可命中 (profile, time) 索引；结束日换算成次日再做
+    小于比较，避免对列使用 substr 导致索引失效。
+    """
     conditions: List[str] = []
     params: List[Any] = []
     start_day = str(start or "").strip()[:10]
     if start_day:
-        conditions.append(f"substr({column}, 1, 10) >= ?")
+        conditions.append(f"{column} >= ?")
         params.append(start_day)
     end_day = str(end or "").strip()[:10]
     if end_day:
-        conditions.append(f"substr({column}, 1, 10) <= ?")
-        params.append(end_day)
+        try:
+            next_day = (
+                datetime.strptime(end_day, "%Y-%m-%d")
+                + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        except ValueError:
+            conditions.append(f"substr({column}, 1, 10) <= ?")
+            params.append(end_day)
+        else:
+            conditions.append(f"{column} < ?")
+            params.append(next_day)
     return conditions, params
 
 
