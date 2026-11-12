@@ -7215,8 +7215,9 @@ class SessionStore:
         self, care_id: int, done_at: str = ""
     ) -> Optional[Dict[str, Any]]:
         """记录一次复查完成，并按间隔推算下次复查日期。"""
-        item = self.get_care_item(care_id)
-        if item is None:
+        try:
+            care_id = int(care_id)
+        except (TypeError, ValueError, OverflowError):
             return None
         done_text = str(done_at or "").strip()[:40]
         if done_text:
@@ -7232,21 +7233,49 @@ class SessionStore:
             done_date = datetime.strptime(done_text, "%Y-%m-%d").date()
         except ValueError:
             raise ValueError("完成时间格式应为 YYYY-MM-DD")
-        interval = max(1, int(item.get("interval_days") or 1))
-        next_due = (done_date + timedelta(days=interval)).strftime("%Y-%m-%d")
         now = self._now()
         with self._lock, self._conn:
+            # 间隔与写回必须在同一事务内读取，避免并发改期间隔时
+            # 用旧间隔算出错误的 next_due
+            row = self._conn.execute(
+                "SELECT interval_days FROM care_items WHERE id = ?",
+                (care_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            interval = max(1, int(row["interval_days"] or 1))
+            next_due = (
+                done_date + timedelta(days=interval)
+            ).strftime("%Y-%m-%d")
             cursor = self._conn.execute(
                 """
                 UPDATE care_items
                    SET last_done_at = ?, next_due_at = ?, updated_at = ?
                  WHERE id = ?
                 """,
-                (done_text, next_due, now, int(care_id)),
+                (done_text, next_due, now, care_id),
             )
             if cursor.rowcount == 0:
                 return None
-        return self.get_care_item(care_id)
+            # 返回更新后的整行也在同一锁域内读取
+            updated = self._conn.execute(
+                """
+                SELECT id, profile, title, interval_days, last_done_at,
+                       next_due_at, note, active, created_at, updated_at
+                  FROM care_items WHERE id = ?
+                """,
+                (care_id,),
+            ).fetchone()
+            if updated is None:
+                return None
+            data = dict(updated)
+            return {
+                **data,
+                **_care_item_view_fields(
+                    data, datetime.now().strftime("%Y-%m-%d")
+                ),
+                "active": bool(updated["active"]),
+            }
 
     def delete_care_item(self, care_id: int) -> bool:
         with self._write_and_checkpoint():
