@@ -46,8 +46,10 @@ def test_service_worker_install_is_atomic_and_versioned(client):
 
     assert "cache.addAll(SHELL)" in sw
     assert "caches.delete(CACHE_NAME)" in sw
-    assert "await self.skipWaiting()" in sw
+    # 不在 install 中 skipWaiting：避免页面加载中途切换外壳资源
+    assert "await self.skipWaiting()" not in sw
     assert "if (cached) return cached" in sw
+    assert "request.mode === 'navigate'" in sw
     assert "NETWORK_TIMEOUT_MS" not in sw
 
 

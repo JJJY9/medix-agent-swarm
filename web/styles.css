@@ -348,6 +348,9 @@ html[data-theme="dark"] .btn-icon .icon-sun { display: block; }
   padding: 1px 5px;
   border-radius: 3px;
 }
+.banner-update {
+  margin-top: 8px;
+}
 
 /* ---------- 工作区 ---------- */
 

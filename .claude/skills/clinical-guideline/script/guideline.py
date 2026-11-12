@@ -6,7 +6,11 @@ from typing import Dict, Any
 import asyncio
 import re
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import (
+    build_sources,
+    sanitize_untrusted_text,
+    wrap_untrusted_source,
+)
 
 # 全局知识库实例
 _kb_instance = None
@@ -16,6 +20,8 @@ def get_knowledge_base():
     if _kb_instance is None:
         from knowledge.milvus_kb import MedicalKnowledgeBase
         _kb_instance = MedicalKnowledgeBase()
+        from knowledge.service import ensure_knowledge_index_fresh
+        ensure_knowledge_index_fresh(_kb_instance)
     return _kb_instance
 
 
@@ -71,20 +77,24 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
         )
         # max_results 是调用方要求的条数，全部格式化而不是只返回第一条
         answer_parts = [
-            format_guideline(item["content"], item["metadata"])
-            for item in results[:max_results]
+            format_guideline(
+                item["content"], item["metadata"], index=index
+            )
+            for index, item in enumerate(results[:max_results], 1)
             if isinstance(item, dict) and item.get("content")
         ]
 
         return {
             "answer": "\n\n".join(answer_parts),
-            "guideline_title": (
+            "guideline_title": sanitize_untrusted_text(
                 parsed["title"]
-                or f"{metadata.get('disease', query)}相关临床指南"
+                or f"{metadata.get('disease', query)}相关临床指南",
+                120,
             ),
-            "organization": (
+            "organization": sanitize_untrusted_text(
                 parsed["organization"]
-                or metadata.get("organization", "N/A")
+                or metadata.get("organization", "N/A"),
+                120,
             ),
             "year": parsed["year"] or metadata.get("year", "N/A"),
             "source": "向量数据库",
@@ -123,7 +133,9 @@ def parse_guideline_meta(content: str) -> Dict[str, str]:
     }
 
 
-def format_guideline(content: str, metadata: Dict[str, Any]) -> str:
+def format_guideline(
+    content: str, metadata: Dict[str, Any], index: int = 1
+) -> str:
     """格式化临床指南信息（非首块不解析正文标题）。"""
     try:
         chunk_id = int(metadata.get("chunk_id") or 0)
@@ -137,10 +149,10 @@ def format_guideline(content: str, metadata: Dict[str, Any]) -> str:
     disease = metadata.get("disease", "N/A")
     output = [
         "【临床诊疗指南】\n",
-        f"指南名称：{parsed['title'] or f'{disease}相关临床指南'}",
-        f"发布机构：{parsed['organization'] or metadata.get('organization', 'N/A')}",
+        f"指南名称：{sanitize_untrusted_text(parsed['title'], 120) or f'{disease}相关临床指南'}",
+        f"发布机构：{sanitize_untrusted_text(parsed['organization'], 120) or metadata.get('organization', 'N/A')}",
         f"发布年份：{parsed['year'] or metadata.get('year', 'N/A')}",
-        f"\n内容：\n{content}"
+        f"\n内容：\n{wrap_untrusted_source(content, index=index)}"
     ]
 
     return "\n".join(output)

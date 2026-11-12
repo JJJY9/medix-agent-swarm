@@ -242,6 +242,33 @@ def test_family_dossier_window_excludes_old_unassigned_lab(
     assert response.json()["detail"] == "暂无患者档案"
 
 
+def test_family_dossier_includes_unassigned_vaccination(client_and_store):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/vaccinations", json={
+        "vaccine_name": "流感疫苗", "vaccinated_at": today,
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    assert "流感疫苗" in response.text
+
+
+def test_family_dossier_includes_unassigned_appointment(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    client.post("/api/appointments", json={
+        "title": "心内科复诊",
+        "scheduled_at": (now + timedelta(days=3)).strftime("%Y-%m-%dT09:00"),
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    assert "心内科复诊" in response.text
+
+
 def test_family_dossier_combines_named_and_unassigned_lab(
     client_and_store,
 ):

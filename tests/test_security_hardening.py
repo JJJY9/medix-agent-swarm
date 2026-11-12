@@ -103,3 +103,22 @@ def test_diagnose_api_returns_sanitized_base_url(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["base_url"] == "https://gateway.example.com/v1"
+
+
+def test_status_response_does_not_reveal_token_validity(monkeypatch):
+    """启用令牌后，状态响应不能随令牌是否正确而变化。"""
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "status-oracle-token")
+    client = TestClient(api_server.app)
+
+    wrong = client.get(
+        "/api/status", headers={"X-Medix-Token": "wrong"}
+    )
+    right = client.get(
+        "/api/status", headers={"X-Medix-Token": "status-oracle-token"}
+    )
+
+    assert wrong.status_code == 200
+    assert right.status_code == 200
+    assert wrong.json() == right.json()
+    assert right.json()["model_name"] is None
+    assert right.json()["base_url"] is None

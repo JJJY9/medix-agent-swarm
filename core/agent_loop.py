@@ -16,6 +16,31 @@ from .citations import merge_sources
 from .session_context import session_memory_scope, use_memory_scope
 from .usage import merge_usage
 
+
+def _tool_result_for_model(result: Any) -> Any:
+    """返回给模型看的工具结果副本。
+
+    来源卡片里的原文片段可能来自用户上传文档：发给模型时套上不可信
+    资料边界，但前端展示仍使用原始 snippet，避免界面出现边界标签。
+    """
+    if not isinstance(result, dict):
+        return result
+    sources = result.get("sources")
+    if not isinstance(sources, list):
+        return result
+    from knowledge.sources import wrap_untrusted_source
+
+    wrapped = []
+    for source in sources:
+        if isinstance(source, dict):
+            item = dict(source)
+            if item.get("snippet"):
+                item["snippet"] = wrap_untrusted_source(item["snippet"])
+            wrapped.append(item)
+        else:
+            wrapped.append(source)
+    return {**result, "sources": wrapped}
+
 # Harness Engineering: 约束验证和自动修复
 try:
     from constraints import ConstraintValidator
@@ -252,7 +277,7 @@ class AgentLoop:
                                 tool_message = agent.llm_client.create_tool_message(
                                     tool_call_id=tool_call.id,
                                     tool_name=tool_call.name,
-                                    result=tool_result
+                                    result=_tool_result_for_model(tool_result)
                                 )
                             except Exception as e:
                                 logger.error(f"Failed to serialize tool result: {e}")

@@ -20143,13 +20143,33 @@ function networkErrorMessage(err) {
 function showBanner(html) {
   els.banner.innerHTML = html;
   els.banner.hidden = false;
+  if (swUpdateReady && !document.getElementById('sw-refresh')) {
+    // 状态轮询的配置/知识库警告不能盖掉新版本刷新按钮
+    const update = document.createElement('div');
+    update.className = 'banner-update';
+    update.innerHTML =
+      '新版本已就绪，请在合适时刷新页面。'
+      + ' <button type="button" class="btn-quiet" id="sw-refresh">'
+      + '刷新页面</button>';
+    const button = update.querySelector('#sw-refresh');
+    if (button) {
+      button.addEventListener('click', activateServiceWorkerUpdate);
+    }
+    els.banner.appendChild(update);
+  }
 }
 
 function hideBanner() {
   if (swUpdateReady) {
     // 新版本提示优先保留；按钮已存在时只恢复可见性，
     // 避免 20 秒一次的状态轮询重建 DOM 导致焦点丢失
+    const updateBlock = els.banner.querySelector('.banner-update');
     if (document.getElementById('sw-refresh')) {
+      if (updateBlock) {
+        // 之前短暂出现的配置/知识库警告已经恢复，只保留更新提示
+        els.banner.innerHTML = '';
+        els.banner.appendChild(updateBlock);
+      }
       els.banner.hidden = false;
     } else {
       showUpdateBanner();
@@ -22520,6 +22540,28 @@ function describeServiceWorker() {
   return { text: '未注册或注册失败', ok: false };
 }
 
+function activateServiceWorkerUpdate() {
+  const waiting = swRegistration && swRegistration.waiting;
+  if (!waiting || typeof waiting.postMessage !== 'function') {
+    window.location.reload();
+    return;
+  }
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+  waiting.postMessage({ type: 'SKIP_WAITING' });
+  // 旧版 Worker 可能还没有 SKIP_WAITING 监听：兜底做一次普通刷新
+  setTimeout(() => {
+    if (!reloading) {
+      reloading = true;
+      window.location.reload();
+    }
+  }, 2000);
+}
+
 function showUpdateBanner() {
   swUpdateReady = true;
   if (document.getElementById('sw-refresh')) {
@@ -22532,7 +22574,7 @@ function showUpdateBanner() {
   );
   const button = document.getElementById('sw-refresh');
   if (button) {
-    button.addEventListener('click', () => window.location.reload());
+    button.addEventListener('click', activateServiceWorkerUpdate);
   }
 }
 

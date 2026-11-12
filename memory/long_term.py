@@ -265,6 +265,7 @@ class LongTermMemory:
     ) -> Iterator[Dict[str, Any]]:
         """分页遍历某个命名空间下的全部记忆。"""
         page = 1
+        last_first_id = None
         while page <= max_pages:
             try:
                 result = self.mem0.get_all(
@@ -281,11 +282,28 @@ class LongTermMemory:
                 yield from self._extract_memories(result)
                 return
             batch = self._extract_memories(result)
-            for item in batch:
-                yield item
+            if not batch:
+                return
+            first_id = batch[0].get("id")
+            if (
+                page > 1
+                and first_id is not None
+                and str(first_id) == str(last_first_id)
+            ):
+                # 服务端忽略 page 参数时每页都返回同一批，继续翻页只会
+                # 重复处理；停止并让调用方按已枚举结果处理
+                logger.warning(
+                    "Mem0 get_all 分页未前进，停止遍历该命名空间"
+                )
+                return
+            last_first_id = first_id
+            yield from batch
             if len(batch) < page_size:
                 return
             page += 1
+        logger.warning(
+            f"Mem0 记忆遍历达到最大页数 {max_pages}，可能漏掉部分记忆"
+        )
 
     def _delete_memory(self, memory_id: str) -> bool:
         try:
@@ -298,27 +316,37 @@ class LongTermMemory:
     def _delete_matching(
         self, user_id: str, predicate
     ) -> int:
-        """按 metadata 条件逐条删除记忆，返回删除条数。"""
-        deleted = 0
+        """按 metadata 条件逐条删除记忆，返回删除条数。
+
+        先完整枚举并收集 id，再统一删除：边翻页边删除会让服务端分页
+        偏移前移，超过一页的命名空间会漏删。predicate 为 None 时删除
+        该命名空间下的全部记忆（含 metadata 缺失/非对象的条目）。
+        """
+        matching_ids: List[str] = []
         try:
             for item in self._iter_memories(user_id):
-                metadata = item.get("metadata")
-                if not isinstance(metadata, dict):
-                    continue
-                if not predicate(metadata):
-                    continue
+                if predicate is not None:
+                    metadata = item.get("metadata")
+                    if not isinstance(metadata, dict):
+                        continue
+                    if not predicate(metadata):
+                        continue
                 memory_id = item.get("id")
                 if not memory_id:
                     continue
-                try:
-                    if self._delete_memory(str(memory_id)):
-                        deleted += 1
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to delete Mem0 memory {memory_id}: {e}"
-                    )
+                matching_ids.append(str(memory_id))
         except Exception as e:
             logger.error(f"Failed to list Mem0 memories for deletion: {e}")
+
+        deleted = 0
+        for memory_id in matching_ids:
+            try:
+                if self._delete_memory(memory_id):
+                    deleted += 1
+            except Exception as e:
+                logger.warning(
+                    f"Failed to delete Mem0 memory {memory_id}: {e}"
+                )
         return deleted
 
     def delete_session_summary(
@@ -359,7 +387,7 @@ class LongTermMemory:
             logger.warning(
                 f"Mem0 delete_all failed, falling back to per-item: {e}"
             )
-            return self._delete_matching(scope, lambda meta: True)
+            return self._delete_matching(scope, None)
 
 
 

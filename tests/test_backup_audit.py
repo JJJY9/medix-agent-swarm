@@ -42,6 +42,18 @@ def test_import_preserves_duplicate_audit_events(tmp_path):
         again = target.import_data(data)
         assert again["audit_log"] == 0
         assert len(target.list_audit_log(limit=10)) == 3
+
+        # 备份 3 条、库里已有 1 条时只补 2 条
+        partial = SessionStore(str(tmp_path / "partial.db"))
+        try:
+            partial.import_data({
+                "sessions": [], "audit_log": [row],
+            })
+            result = partial.import_data(data)
+            assert result["audit_log"] == 2
+            assert len(partial.list_audit_log(limit=10)) == 3
+        finally:
+            partial.close()
     finally:
         target.close()
 

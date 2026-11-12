@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -72,6 +73,7 @@ class KnowledgeService:
             for path in entries:
                 if (
                     not path.is_file()
+                    or path.name.startswith(".")
                     or path.suffix.lower() not in SUPPORTED_SUFFIXES
                 ):
                     continue
@@ -91,7 +93,8 @@ class KnowledgeService:
                 self._manifest_path().read_text(encoding="utf-8")
             )
             return str(payload.get("fingerprint") or "")
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):
+            # 合法 JSON 但不是对象（如 []、1）时没有 .get
             return ""
 
     def _write_manifest(self, fingerprint: str) -> None:
@@ -111,6 +114,16 @@ class KnowledgeService:
         with self._lock:
             return self._read_manifest() != self._document_fingerprint()
 
+    def ensure_fresh(self) -> None:
+        """检索前确保索引与文档一致。
+
+        技能与深度研究直接调用 MedicalKnowledgeBase.search，不经过
+        HTTP 检索端点；在它们创建知识库实例前调用本方法，避免删除/
+        更新文档后仍检索到旧索引。
+        """
+        with self._lock:
+            self._ensure_index_fresh_locked()
+
     def _document_count(self) -> int:
         """文档目录中可索引文件的数量（用于判断空库是否需要重建）。"""
         count = 0
@@ -123,6 +136,7 @@ class KnowledgeService:
                 try:
                     if (
                         path.is_file()
+                        and not path.name.startswith(".")
                         and path.suffix.lower() in SUPPORTED_SUFFIXES
                     ):
                         count += 1
@@ -162,6 +176,9 @@ class KnowledgeService:
             for path in sorted(self.docs_dir.iterdir()):
                 documents.append(self._describe(path, builtin=True))
             for path in sorted(self.upload_dir.iterdir()):
+                if path.name.startswith("."):
+                    # 在线编辑的临时文件或其它隐藏文件不进入列表与索引
+                    continue
                 if path.name in builtin_names:
                     # 历史遗留的同名上传会遮蔽内置文档，列表与预览只保留内置版本
                     logger.warning(
@@ -298,6 +315,13 @@ class KnowledgeService:
                     raise ValueError("内置文档请通过仓库更新，不能在线编辑。")
                 raise ValueError("文档不存在。")
 
+            # 上次编辑中断留下的临时文件不进入索引，这里顺手清理
+            for stale in path.parent.glob(".*.tmp*"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
             suffix = path.suffix.lower()
             if suffix not in {".txt", ".md", ".markdown"}:
                 raise ValueError("仅支持在线编辑 TXT / Markdown 文档。")
@@ -306,15 +330,17 @@ class KnowledgeService:
             if len(content) > MAX_UPLOAD_BYTES:
                 raise ValueError("文件超过 5 MB 限制。")
 
-            original = path.read_bytes()
-            path.write_bytes(content)
-            restrict_permissions(path, 0o600)
+            # 先写同后缀临时文件再原子替换：写入中断不会截断原文件
+            temp_path = path.with_name(f".{path.stem}.tmp{path.suffix}")
             try:
-                document = load_document(path)
+                temp_path.write_bytes(content)
+                restrict_permissions(temp_path, 0o600)
+                document = load_document(temp_path)
                 if not document:
                     raise ValueError("文档内容为空或无法解析。")
+                os.replace(temp_path, path)
             except Exception:
-                path.write_bytes(original)
+                temp_path.unlink(missing_ok=True)
                 raise
 
         logger.info(
@@ -481,3 +507,19 @@ def get_knowledge_service() -> KnowledgeService:
     if _service is None:
         _service = KnowledgeService()
     return _service
+
+
+_freshness_lock = threading.Lock()
+
+
+def ensure_knowledge_index_fresh(kb: Any = None) -> None:
+    """技能入口在检索前调用：索引与磁盘文档不一致时自动重建。
+
+    传入技能自己的知识库实例可复用它完成重建，避免同一进程再加载
+    一份 embedding 模型；重建仍用模块级锁串行，防止并发技能互相覆盖。
+    """
+    if kb is None:
+        get_knowledge_service().ensure_fresh()
+        return
+    with _freshness_lock:
+        KnowledgeService(kb=kb).ensure_fresh()
