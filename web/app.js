@@ -13323,6 +13323,7 @@ async function deleteCondition(item) {
 }
 
 let editingMedicationId = null;
+let medicationEditSnapshot = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
@@ -13356,6 +13357,7 @@ function setMedicationStatus(text, isError = false) {
 function resetMedicationForm() {
   editingMedicationId = null;
   editingMedicationProfile = '';
+  medicationEditSnapshot = null;
   els.medicationName.value = '';
   els.medicationDose.value = '';
   els.medicationFrequency.value = '';
@@ -17468,6 +17470,12 @@ function editMedication(item) {
     ? ''
     : String(item.stock);
   els.medicationStockUnit.value = item.stock_unit || '';
+  // 记录打开表单时的库存快照：保存时只有用户真正改过才回传库存，
+  // 否则会把期间打卡扣减的库存写回去并触发“盘点”清零历史扣减
+  medicationEditSnapshot = {
+    stock: els.medicationStock.value.trim(),
+    stockUnit: els.medicationStockUnit.value.trim(),
+  };
   els.medicationLowStock.value = String(
     item.low_stock_threshold === null
       || item.low_stock_threshold === undefined
@@ -17510,6 +17518,7 @@ async function saveMedication() {
     els.medicationLowStock.focus();
     return;
   }
+  const stockUnit = (els.medicationStockUnit.value || '').trim();
   const payload = {
     profile: editingId
       ? editingMedicationProfile
@@ -17520,13 +17529,24 @@ async function saveMedication() {
     note: (els.medicationNote.value || '').trim(),
     active: els.medicationActive.checked,
     stock,
-    stock_unit: (els.medicationStockUnit.value || '').trim(),
+    stock_unit: stockUnit,
     low_stock_threshold: threshold,
     expiry_date: els.medicationExpiry.value || '',
     started_at: els.medicationStartedAt.value || '',
     stopped_at: els.medicationStoppedAt.value || '',
     stop_reason: (els.medicationStopReason.value || '').trim(),
   };
+  if (
+    editingId
+    && medicationEditSnapshot
+    && stockText === medicationEditSnapshot.stock
+    && stockUnit === medicationEditSnapshot.stockUnit
+  ) {
+    // 库存未改动：不发送旧快照，服务端沿用锁内当前值，
+    // 避免覆盖期间打卡产生的扣减
+    delete payload.stock;
+    delete payload.stock_unit;
+  }
 
   medicationSaving = true;
   els.medicationSave.disabled = true;
