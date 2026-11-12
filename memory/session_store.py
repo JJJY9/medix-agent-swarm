@@ -8104,31 +8104,42 @@ class SessionStore:
     def update_metric(
         self,
         metric_id: int,
-        profile: str,
-        metric: str,
-        value1: Any,
-        value2: Any = None,
-        measured_at: str = "",
-        note: str = "",
-        context: str = "",
+        profile: Any = _UNSET,
+        metric: Any = _UNSET,
+        value1: Any = _UNSET,
+        value2: Any = _UNSET,
+        measured_at: Any = _UNSET,
+        note: Any = _UNSET,
+        context: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
-        """更新一条健康指标记录；记录不存在或字段无效时返回 None。"""
+        """更新一条健康指标记录；未给出的字段沿用事务内读到的原值。"""
         try:
             metric_id = int(metric_id)
         except (TypeError, ValueError, OverflowError):
             return None
 
-        normalized = _normalize_metric(
-            profile, metric, value1, value2, measured_at, note, context
-        )
-        if normalized is None:
-            return None
-
         with self._lock, self._conn:
-            existing = self._conn.execute(
-                "SELECT 1 FROM health_metrics WHERE id = ?", (metric_id,)
+            previous = self._conn.execute(
+                """
+                SELECT profile, metric, value1, value2, measured_at,
+                       note, context
+                  FROM health_metrics WHERE id = ?
+                """,
+                (metric_id,),
             ).fetchone()
-            if existing is None:
+            if previous is None:
+                return None
+            normalized = _normalize_metric(
+                previous["profile"] if profile is _UNSET else profile,
+                previous["metric"] if metric is _UNSET else metric,
+                previous["value1"] if value1 is _UNSET else value1,
+                previous["value2"] if value2 is _UNSET else value2,
+                previous["measured_at"]
+                if measured_at is _UNSET else measured_at,
+                previous["note"] if note is _UNSET else note,
+                previous["context"] if context is _UNSET else context,
+            )
+            if normalized is None:
                 return None
             self._conn.execute(
                 """
