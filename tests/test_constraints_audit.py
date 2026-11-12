@@ -267,3 +267,17 @@ def test_diagnose_conclusion_mentions_kb_failure(diagnose_module, capsys):
 
     output = capsys.readouterr().out
     assert "存在问题" in output
+
+
+def test_consultation_agent_recommended_tools_cover_symptom_triage(validator):
+    for tool in ("analyze_symptoms", "clinical_guideline"):
+        assert validator.validate_tool_call("consultation_agent", tool)[
+            "valid"
+        ], tool
+
+
+def test_disallowed_tool_reports_reason(validator):
+    result = validator.validate_tool_call("consultation_agent", "deep_research")
+
+    assert result["valid"] is False
+    assert "推荐工具列表" in result["reason"]

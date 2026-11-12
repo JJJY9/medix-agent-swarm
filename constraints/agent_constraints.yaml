@@ -13,6 +13,8 @@ agents:
       - search_knowledge
       - recommend_lifestyle
       - assess_risk
+      - analyze_symptoms
+      - clinical_guideline
       - search_history
       - search_similar_cases
 

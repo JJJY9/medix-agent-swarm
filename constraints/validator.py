@@ -329,7 +329,6 @@ class ConstraintValidator:
         # 检查工具是否在允许列表中
         if tool_name not in allowed_tools:
             reason = f"工具 {tool_name} 不在 {agent_id} 的推荐工具列表中"
-            logger.warning(f"⚠️ {reason}")
             return {
                 "valid": False,
                 "reason": reason,
