@@ -7402,10 +7402,13 @@ async def health_timeline(
 
         每类都按时间倒序返回，5×limit（至少 1000）足够覆盖全局前 limit 条
         与“加载更多”分页，同时避免把 10 万行全部物化成事件字典。
-        q/alert/risk 后置过滤也复用这个上限。type 指定时其余来源只取 1 条。
+        q/alert/risk 是合并后的后置过滤，命中行可能落在截断之外，
+        因此带筛选时放宽读取上限。type 指定时其余来源只取 1 条。
         """
         if type_key and type_key != kind:
             return 1
+        if str(q or "").strip() or only_alert or only_risk:
+            return min(max(limit * 20, 5000), 20000)
         return max(limit * 5, 1000)
 
     store = get_session_store()
