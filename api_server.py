@@ -7077,7 +7077,8 @@ async def health_timeline(
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
     from memory.session_store import (
-        METRIC_TYPES, metric_context_label, metric_over_target,
+        LOWER_BOUND_TARGET_METRICS, METRIC_TYPES,
+        metric_context_label, metric_over_target,
     )
 
     day = str(date or "").strip()
@@ -7211,6 +7212,11 @@ async def health_timeline(
             "critical": bool(critical_alerts),
             "critical_message": (
                 critical_alerts[0]["message"] if critical_alerts else ""
+            ),
+            "target_direction": (
+                "low"
+                if item["metric"] in LOWER_BOUND_TARGET_METRICS
+                else "high"
             ),
         })
     for item in raw_symptoms:
@@ -7472,7 +7478,7 @@ async def export_timeline_csv(
     q: str = "",
     date: Optional[str] = None,
 ):
-    """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、超标、高危会诊与关键字筛选。"""
+    """导出健康时间线 CSV（带 BOM），可按档案、天数、类型、异常、高危会诊与关键字筛选。"""
     import csv
     import io
 
@@ -7498,7 +7504,7 @@ async def export_timeline_csv(
         "attachment": "资料",
     }
     events = data["events"]
-    rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "超标"]]
+    rows = [["时间", "类型", "项目", "数值", "患者档案", "备注", "异常"]]
     for event in events:
         rows.append([
             csv_safe_cell(event.get("at", "")),
@@ -8936,7 +8942,7 @@ def _family_attention(
     if over_target:
         return {
             "level": "warning",
-            "label": f"指标超标 {len(over_target)} 项",
+            "label": f"指标未达标 {len(over_target)} 项",
             "detail": "、".join(
                 f"{item.get('label', '')} {item.get('value', '')}"
                 f"{item.get('unit') or ''}"
@@ -9011,6 +9017,7 @@ async def family_overview(days: int = 7):
     """家庭健康总览：按档案汇总最近指标、用药、提醒、症状与会诊。"""
     from memory import get_session_store
     from memory.session_store import (
+        LOWER_BOUND_TARGET_METRICS,
         adherence_rate,
         METRIC_TYPES,
         metric_over_target,
@@ -9124,6 +9131,9 @@ async def family_overview(days: int = 7):
             "unit": item.get("unit") or default_unit,
             "measured_at": item.get("measured_at", ""),
             "over_target": over_target,
+            "target_direction": (
+                "low" if metric in LOWER_BOUND_TARGET_METRICS else "high"
+            ),
             "critical_alerts": alerts,
         })
 
@@ -9568,7 +9578,11 @@ async def export_family_overview_csv(days: int = 7):
         metric_text = "；".join(
             (
                 f"{metric['label']} {metric['value']} {metric['unit']}".strip()
-                + ("（超标）" if metric.get("over_target") else "")
+                + (
+                    "（低于目标）"
+                    if metric.get("target_direction") == "low"
+                    else "（超标）"
+                ) if metric.get("over_target") else ""
             )
             for metric in (item.get("metrics") or [])[:3]
         )
@@ -12092,7 +12106,11 @@ async def export_health_dossier(
             if target is not None and metric_over_target(
                 metric, item["value1"], item.get("value2"), target
             ):
-                details.append("超标")
+                details.append(
+                    "低于目标"
+                    if metric in LOWER_BOUND_TARGET_METRICS
+                    else "超标"
+                )
             from memory.session_store import critical_metric_alerts
 
             if critical_metric_alerts(

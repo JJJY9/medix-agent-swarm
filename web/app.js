@@ -2419,7 +2419,7 @@ function buildVisitSummaryHtml({
     <h2>指标概览</h2>
     ${summaryRows
       ? `<table><thead><tr><th>指标</th><th>记录</th><th>最新</th><th>平均</th><th>最低–最高</th><th>达标</th></tr></thead><tbody>${summaryRows}</tbody></table>
-        <p class="muted">达标列为未超过目标上限（血氧为不低于目标下限）的记录数；未设置目标的指标显示「—」。</p>`
+        <p class="muted">达标列为未超过目标上限（血氧、睡眠、步数为不低于目标下限）的记录数；未设置目标的指标显示「—」。</p>`
       : '<p class="muted">还没有健康指标记录。</p>'}
   </section>
 
@@ -8862,7 +8862,12 @@ function renderFamilyOverview(data) {
         && item.critical_alerts.length > 0;
       chips.appendChild(familyChip(
         `${item.label} ${item.value}${unit}`
-        + (critical ? ' 危急' : item.over_target ? ' 超标' : ''),
+        + (
+          critical ? ' 危急'
+            : item.over_target
+              ? (item.target_direction === 'low' ? ' 低于目标' : ' 超标')
+              : ''
+        ),
         critical || item.over_target ? 'family-chip-alert' : ''
       ));
     }
@@ -9054,7 +9059,9 @@ function familyOverviewText(data) {
           Array.isArray(item.critical_alerts)
           && item.critical_alerts.length
             ? '（危急）'
-            : item.over_target ? '（超标）' : ''
+            : item.over_target
+              ? (item.target_direction === 'low' ? '（低于目标）' : '（超标）')
+              : ''
         )
       )).join('、'));
     }
@@ -16224,7 +16231,7 @@ function renderTimeline(data) {
   if (query) {
     els.timelineEmpty.textContent = `没有匹配「${query}」的记录。`;
   } else if (onlyAlert) {
-    els.timelineEmpty.textContent = `${rangeText}没有超标的记录。`;
+    els.timelineEmpty.textContent = `${rangeText}没有异常的记录。`;
   } else if (riskOnly) {
     els.timelineEmpty.textContent = `${rangeText}没有高危会诊记录。`;
   } else if (type) {
@@ -16270,7 +16277,8 @@ function renderTimeline(data) {
           ? '到期'
           : event.type === 'appointment'
             ? '就诊'
-            : event.type === 'lab' ? '异常' : '超标';
+            : event.type === 'lab' ? '异常'
+              : event.target_direction === 'low' ? '低于目标' : '超标';
       title.appendChild(alertBadge);
     }
 

@@ -162,7 +162,25 @@ def test_attention_metric_over_target(client_and_store):
     attention = _attention_for(client, "妈妈")
 
     assert attention["level"] == "warning"
-    assert attention["label"] == "指标超标 1 项"
+    assert attention["label"] == "指标未达标 1 项"
+
+
+def test_attention_lower_bound_sleep_is_not_labelled_over(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 7,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 5,
+        "measured_at": f"{_date(0)}T23:00",
+    })
+
+    attention = _attention_for(client, "妈妈")
+
+    assert attention["level"] == "warning"
+    assert attention["label"] == "指标未达标 1 项"
+    assert "超标" not in attention["label"]
 
 
 def test_attention_expiring_medication(client_and_store):

@@ -251,3 +251,23 @@ def test_dossier_health_tips_cover_requested_window(client_and_store):
     assert "近 365 天出现 1 次危急值" in wide.text
     assert "190/130" in wide.text
     assert "- 近 30 天暂未发现需要特别关注的问题。" in narrow.text
+
+
+def test_health_dossier_marks_low_sleep_direction(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 7,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 5,
+        "measured_at": now,
+    })
+
+    text = client.get(
+        "/api/health/dossier.md", params={"profile": "妈妈", "days": 7}
+    ).text
+
+    assert "低于目标" in text
+    assert "超标" not in text

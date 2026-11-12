@@ -336,3 +336,37 @@ def test_family_overview_csv_export(client_and_store):
     assert mom[6].startswith("待办 1")
     assert mom[7] == "0"
     assert mom[18]
+
+
+def test_family_overview_marks_low_metrics_direction(client_and_store):
+    import csv
+    import io
+
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 7,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 5,
+        "measured_at": now,
+    })
+
+    data = client.get("/api/family/overview").json()
+    mom = {item["name"]: item for item in data["profiles"]}["妈妈"]
+    metric = next(
+        item for item in mom["metrics"] if item["metric"] == "sleep"
+    )
+    assert metric["over_target"] is True
+    assert metric["target_direction"] == "low"
+
+    export = client.get(
+        "/api/family/overview/export.csv", params={"days": 7}
+    )
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+    mom_row = next(row for row in rows[1:] if row[0] == "妈妈")
+    assert "（低于目标）" in mom_row[3]
+    assert "（超标）" not in mom_row[3]
