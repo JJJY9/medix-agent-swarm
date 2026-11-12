@@ -123,20 +123,25 @@ def _cn_number(text: str) -> Optional[float]:
     section = 0
     current = 0
     last_unit = 0
+    zero_placeholder = False
     for char in integer_part:
         if char in _CN_DIGITS:
             current = _CN_DIGITS[char]
+            if char in ("零", "〇"):
+                zero_placeholder = True
         elif char in _CN_UNITS:
             unit = _CN_UNITS[char]
             section += (current or 1) * unit
             last_unit = unit
             current = 0
+            zero_placeholder = False
         else:
             return None
-    # 「一百二」按惯例是 120，「一千二」是 1200
-    if current and last_unit == 100:
+    # 「一百二」按惯例是 120，「一千二」是 1200；
+    # 「一百零五」中的零已经明确占位，不能再用省略规则
+    if current and not zero_placeholder and last_unit == 100:
         current *= 10
-    elif current and last_unit == 1000:
+    elif current and not zero_placeholder and last_unit == 1000:
         current *= 100
     total = section + current
     if decimal_part:
@@ -298,13 +303,17 @@ def _units_in(
     text: str, exclude: List[Tuple[int, int]]
 ) -> List[str]:
     found: List[str] = []
+    # 长单位优先占位，避免「公斤」内部的「斤」被当成第二个单位
+    claimed: List[Tuple[int, int]] = []
     for token in _ALL_UNIT_TOKENS:
         spans = [
             span for span in _token_spans(text, token)
             if not any(_overlaps(span, item) for item in exclude)
+            and not any(_overlaps(span, item) for item in claimed)
         ]
         if spans:
             found.append(token)
+            claimed.extend(spans)
     return found
 
 
