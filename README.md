@@ -615,13 +615,13 @@ python main.py
 
 项目已附带 `.vscode/` 配置：
 
-1. 打开项目文件夹，VSCode 会提示选择解释器 —— 选 `.venv\Scripts\python.exe`
+1. 打开项目文件夹，VSCode 会提示选择解释器 —— Windows 选 `.venv\Scripts\python.exe`，macOS/Linux 选 `.venv/bin/python`
 2. 按 `F5`，在下列配置中选择：
    - **启动 Web 服务（浏览器界面）** — 推荐
    - **命令行对话（main.py）**
    - **初始化知识库**
    - **运行测试套件**
-3. 也可以按 `Ctrl+Shift+B` 直接跑默认任务（启动 Web 服务）
+3. 也可以按 `Ctrl+Shift+B`（macOS 为 `Cmd+Shift+B`）直接跑默认任务（启动 Web 服务）
 
 ### 平台说明（Windows）
 
@@ -891,29 +891,34 @@ REDIS_CONFIG = {
 ```python
 # 方式1: 内存存储（默认，无需配置）
 from memory.short_term import ShortTermMemory
-memory = ShortTermMemory(session_id="user_123", storage_type="memory")
+memory = ShortTermMemory()
 
 # 方式2: Redis持久化（可选）
-memory = ShortTermMemory(session_id="user_123", storage_type="redis")
+memory = ShortTermMemory(
+    storage_type="redis",
+    redis_config={"host": "localhost", "port": 6379},
+)
 ```
 
 **使用示例**：
 ```python
+session_id = "user_123"
+
 # 添加消息
-memory.add_message(role="user", content="我有高血压")
-memory.add_message(role="assistant", content="高血压需要...")
+memory.add_message(session_id=session_id, role="user", content="我有高血压")
+memory.add_message(session_id=session_id, role="assistant", content="高血压需要...")
 
 # 获取对话历史（最近10条）
-history = memory.get_messages(limit=10)
+history = memory.get_recent_messages(session_id=session_id, limit=10)
 
 # 会话结束时清空
-memory.clear()
+memory.clear_session(session_id)
 ```
 
 **存储方式**：
 - **内存**（默认）：无需配置，保留时间60分钟
 - **Redis**（可选）：需配置 REDIS_CONFIG，支持持久化
-- 存储容量：最近10条消息
+- 存储容量：单会话最多保留 1000 条；Agent 每轮读取最近 10 条
 
 #### 长期记忆（Mem0）
 
@@ -930,13 +935,22 @@ MEM0_CONFIG = {
 **使用示例**：
 ```python
 from memory.long_term import LongTermMemory
-memory = LongTermMemory(user_id="user_123")
 
-# 存储会话总结
-memory.add("患者有高血压，给出了生活方式建议")
+# 也可以在构造时显式传入 {"api_key": "..."}
+memory = LongTermMemory()
+
+# 存储会话总结（session_id/question/answer 均必填）
+memory.add_session_summary(
+    session_id="s1",
+    question="高血压患者如何管理？",
+    answer="建议限盐、规律监测血压并按医嘱用药。",
+    user_id="medix_local",
+)
 
 # 检索相关记忆
-results = memory.search("高血压患者如何管理？")
+results = memory.search_similar_sessions(
+    "高血压患者如何管理？", limit=5, user_id="medix_local"
+)
 # → 返回历史相似案例
 ```
 
