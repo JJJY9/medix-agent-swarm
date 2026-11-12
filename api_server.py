@@ -7406,13 +7406,19 @@ async def health_timeline(
     }
 
     events: List[Dict[str, Any]] = []
+    now_window = datetime.now()
+    today_key = now_window.strftime("%Y-%m-%d")
+    # 保留一周内的预约/复查，但不让几个月后的远期事件排在最前
+    future_limit = (
+        now_window + timedelta(days=7)
+    ).strftime("%Y-%m-%d")
 
     def in_window(at: str) -> bool:
         if not at:
             return False
         if day:
             return at[:10] == day
-        return at[:10] >= start
+        return start <= at[:10] <= future_limit
 
     def format_value(value: Any) -> str:
         number = float(value)
