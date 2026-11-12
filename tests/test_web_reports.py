@@ -995,6 +995,18 @@ def test_app_js_medication_review_hardening(client):
     # 审计标签补全
     assert "'metric_target.set': '设置指标目标'" in app_js
     assert "'maintenance.purge': '维护清理'" in app_js
+    for action, label in (
+        ("'metric.create': '添加健康记录'", "添加健康记录"),
+        ("'vaccination.create': '添加疫苗接种'", "添加疫苗接种"),
+        ("'appointment.create': '添加就诊预约'", "添加就诊预约"),
+        ("'attachment.link': '关联就医资料'", "关联就医资料"),
+        ("'allergy.import': '导入过敏史'", "导入过敏史"),
+        ("'condition.template': '套用慢病模板'", "套用慢病模板"),
+        ("'care.done': '完成复查'", "完成复查"),
+        ("'lab.update': '修改化验结果'", "修改化验结果"),
+        ("'visit.followup': '创建复诊安排'", "创建复诊安排"),
+    ):
+        assert action in app_js, label
     # 窄屏操作区可换行
     assert "flex-wrap: wrap" in css
     assert "max-width: 55%" in css
