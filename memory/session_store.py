@@ -9348,6 +9348,32 @@ class SessionStore:
             )
         return attachment
 
+    def delete_attachments_bulk(
+        self, attachment_ids: Any
+    ) -> List[Dict[str, Any]]:
+        """批量删除附件登记，只提交并 checkpoint 一次；文件由调用方清理。"""
+        values = sorted({
+            parsed for parsed in (
+                _safe_db_id(value) for value in (attachment_ids or [])
+            ) if parsed
+        })
+        if not values:
+            return []
+        attachments = []
+        for value in values:
+            item = self.get_attachment(value)
+            if item is not None:
+                attachments.append(item)
+        if not attachments:
+            return []
+        placeholders = ",".join("?" for _ in attachments)
+        with self._write_and_checkpoint():
+            self._conn.execute(
+                f"DELETE FROM attachments WHERE id IN ({placeholders})",
+                [item["id"] for item in attachments],
+            )
+        return attachments
+
     def detach_attachments(self, kind: str, ref_id: int) -> int:
         """解除附件与已删除业务记录（就诊/化验）的关联。"""
         kind_key = str(kind or "").strip().lower()
@@ -10040,6 +10066,23 @@ class SessionStore:
                 "DELETE FROM reminders WHERE id = ?", (int(reminder_id),)
             )
             return cursor.rowcount > 0
+
+    def delete_reminders_bulk(self, reminder_ids: Any) -> int:
+        """批量删除提醒，只提交并 checkpoint 一次。"""
+        values = sorted({
+            parsed for parsed in (
+                _safe_db_id(value) for value in (reminder_ids or [])
+            ) if parsed
+        })
+        if not values:
+            return 0
+        placeholders = ",".join("?" for _ in values)
+        with self._write_and_checkpoint():
+            cursor = self._conn.execute(
+                f"DELETE FROM reminders WHERE id IN ({placeholders})",
+                values,
+            )
+            return int(cursor.rowcount or 0)
 
     def update_reminder(
         self,
