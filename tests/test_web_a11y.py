@@ -37,6 +37,15 @@ def test_kb_editor_escape_exits_edit_and_keeps_focus():
     assert edit_pos < close_pos
 
 
+def test_kb_draft_guard_covers_all_close_paths():
+    assert "function exitKbPreviewEdit(force = false)" in SCRIPT
+    assert "function closeKbPreview(force = false)" in SCRIPT
+    assert "function closeKb(restoreFocus = false, force = false)" in SCRIPT
+    assert "if (!exitKbPreviewEdit(force)) return false;" in SCRIPT
+    assert "if (!closeKb()) return" in SCRIPT
+    assert "closeKbPreview(true)" in SCRIPT
+
+
 def test_nested_row_actions_and_ime_escape_are_guarded():
     assert SCRIPT.count("event.target !== event.currentTarget") >= 1
     assert SCRIPT.count("e.target !== e.currentTarget") >= 2
