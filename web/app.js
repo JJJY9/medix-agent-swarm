@@ -7311,6 +7311,7 @@ async function refreshMetrics() {
   loadCalendar();
   loadFamilyCompare();
   loadHomeGlance();
+  loadFamilyOverview();
 }
 
 function metricRangeDays() {

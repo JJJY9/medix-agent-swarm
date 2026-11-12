@@ -58,5 +58,9 @@ def test_home_glance_insight_opens_panel():
     assert "els.homeGlanceInsight.classList.toggle" in SCRIPT
 
 
+def test_metric_changes_refresh_family_overview():
+    assert "loadHomeGlance();\n  loadFamilyOverview();\n}" in SCRIPT
+
+
 def test_home_glance_insight_style():
     assert ".home-glance-card.is-alert .home-glance-value" in CSS
