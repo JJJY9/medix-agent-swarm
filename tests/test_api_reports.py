@@ -470,3 +470,23 @@ def test_weekly_report_integrates_new_health_records(client_and_store):
     }
     assert glucose_contexts["fasting"]["label"] == "空腹"
     assert glucose_contexts["postprandial"]["avg_value1"] == 8.5
+
+
+def test_weekly_report_latest_visit_older_than_window(client_and_store):
+    client, _store = client_and_store
+    old_visit = (
+        datetime.now() - timedelta(days=100)
+    ).strftime("%Y-%m-%d")
+
+    client.post("/api/visits", json={
+        "profile": "妈妈", "diagnosis": "旧就诊",
+        "visit_date": old_visit,
+    })
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "妈妈", "days": 7}
+    ).json()
+
+    assert report["visits"]["count"] == 0
+    assert report["visits"]["latest"]["diagnosis"] == "旧就诊"
+    assert report["visits"]["latest"]["visit_date"] == old_visit
