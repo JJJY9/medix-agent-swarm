@@ -834,6 +834,7 @@ class AppState:
         self.kb_status = "pending"  # pending | loading | ready | failed
         self.kb_error: Optional[str] = None
         self.startup_error: Optional[str] = None
+        self.warmup_task = None
 
     def get_coordinator(self):
         if self.coordinator is None:
@@ -1314,13 +1315,21 @@ async def lifespan(_: FastAPI):
         logger.error(f"初始化失败: {e}")
         yield
         return
-    # 后台预热知识库，不阻塞服务启动
-    asyncio.create_task(state.warm_up())
+    # 后台预热知识库，不阻塞服务启动；测试环境可跳过真实模型加载
+    if str(os.environ.get("MEDIX_SKIP_WARMUP", "")).strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        state.warmup_task = asyncio.create_task(state.warm_up())
     archive_task = asyncio.create_task(auto_archive_loop())
     backup_task = asyncio.create_task(auto_backup_loop())
     try:
         yield
     finally:
+        if state.warmup_task is not None:
+            state.warmup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await state.warmup_task
+            state.warmup_task = None
         archive_task.cancel()
         backup_task.cancel()
         with suppress(asyncio.CancelledError):
