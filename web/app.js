@@ -299,6 +299,9 @@ const els = {
   healthSearchToggle: document.getElementById('health-search-toggle'),
   healthSearchInput: document.getElementById('health-search-input'),
   healthSearchClear: document.getElementById('health-search-clear'),
+  healthSearchAllProfiles: document.getElementById(
+    'health-search-all-profiles'
+  ),
   healthSearchStatus: document.getElementById('health-search-status'),
   healthSearchResults: document.getElementById('health-search-results'),
   insightSection: document.getElementById('insight-section'),
@@ -7471,11 +7474,17 @@ async function runHealthSearch(rawQuery) {
     return;
   }
   const profile = els.metricProfile ? els.metricProfile.value : '';
+  const allProfiles = Boolean(
+    els.healthSearchAllProfiles && els.healthSearchAllProfiles.checked
+  );
+  const profileQuery = allProfiles
+    ? ''
+    : `&profile=${encodeURIComponent(profile)}`;
   setHealthSearchStatus('正在搜索…');
   try {
     const res = await fetch(
       `/api/health/search?q=${encodeURIComponent(query)}`
-      + `&limit=200&profile=${encodeURIComponent(profile)}`
+      + `&limit=200${profileQuery}`
     );
     const data = await res.json().catch(() => ({}));
     if (seq !== healthSearchSeq) return;
@@ -7498,7 +7507,12 @@ function renderHealthSearchResults(data) {
   const query = String(data.query || healthSearchQuery || '');
   const results = data.results || [];
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  const scopeText = profile ? `档案「${profile}」` : '未指定档案';
+  const allProfiles = Boolean(
+    els.healthSearchAllProfiles && els.healthSearchAllProfiles.checked
+  );
+  const scopeText = allProfiles
+    ? '全部档案'
+    : profile ? `档案「${profile}」` : '未指定档案';
   els.healthSearchResults.replaceChildren();
   els.healthSearchResults.hidden = false;
   if (!results.length) {
@@ -20342,6 +20356,11 @@ els.healthSearchInput.addEventListener('keydown', (event) => {
   }
   runHealthSearch(els.healthSearchInput.value);
 });
+if (els.healthSearchAllProfiles) {
+  els.healthSearchAllProfiles.addEventListener('change', () => {
+    if (healthSearchQuery) runHealthSearch(healthSearchQuery);
+  });
+}
 els.healthSearchClear.addEventListener('click', () => {
   if (healthSearchTimer) {
     clearTimeout(healthSearchTimer);
