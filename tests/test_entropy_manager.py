@@ -39,7 +39,9 @@ def test_deduplicate_messages_keeps_latest_duplicate():
     unique = manager.deduplicate_messages(messages)
 
     assert len(unique) == 2
-    assert unique[0]["timestamp"] == "2026-02-01"
+    # 保留最新一条重复消息的原位置，而不是把它挪到最早位置
+    assert unique[-1]["timestamp"] == "2026-02-01"
+    assert unique[0]["content"] == "建议低盐饮食。"
 
 
 def test_compress_session_history_respects_max_messages():

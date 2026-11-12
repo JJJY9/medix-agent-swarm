@@ -55,6 +55,7 @@ node_modules/
 # 向量库本地文件（由 import_hardcoded_data.py 生成，不入库）
 knowledge/data/*.local.json
 knowledge/data/*.db
+knowledge/data/index_manifest.json
 
 # 用户上传的知识库文档（运行时生成）
 knowledge/data/uploads/

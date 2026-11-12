@@ -90,8 +90,8 @@ class DeepResearchWorkflow:
         logger.info(f"Planned {len(sub_queries)} sub-queries")
 
         # Step 2: 并行搜索
-        web_results: List[SearchResult] = []
-        kb_results: List[Document] = []
+        web_groups: List[List[SearchResult]] = []
+        kb_groups: List[List[Document]] = []
 
         search_tasks = []
 
@@ -122,10 +122,13 @@ class DeepResearchWorkflow:
                 if isinstance(result, list):
                     if len(result) > 0:
                         if isinstance(result[0], SearchResult):
-                            web_results.extend(result)
+                            web_groups.append(list(result))
                         elif isinstance(result[0], dict):
                             # Milvus 返回的是字典列表
-                            kb_results.extend(result)
+                            kb_groups.append(list(result))
+
+        web_results = self._round_robin(web_groups)
+        kb_results = self._round_robin(kb_groups)
 
         # 多个子查询经常命中同一网页，按 URL 去重后再综合
         web_results = self._dedupe_web_results(web_results)
@@ -150,6 +153,22 @@ class DeepResearchWorkflow:
 
         logger.info("DeepResearch completed")
         return report
+
+    @staticmethod
+    def _round_robin(groups: List[List[Any]]) -> List[Any]:
+        """按查询轮转合并，避免证据综合的条数上限只取到第一个查询。"""
+        merged: List[Any] = []
+        index = 0
+        while True:
+            added = False
+            for group in groups:
+                if index < len(group):
+                    merged.append(group[index])
+                    added = True
+            if not added:
+                break
+            index += 1
+        return merged
 
     @staticmethod
     def _dedupe_web_results(items: List[Any]) -> List[Any]:

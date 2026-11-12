@@ -17,13 +17,13 @@ def merge_usage(
     values: Dict[str, int] = {}
     for key in ("prompt_tokens", "completion_tokens"):
         try:
-            values[key] = int(usage.get(key) or 0)
+            values[key] = max(0, int(usage.get(key) or 0))
         except (TypeError, ValueError, OverflowError):
             values[key] = 0
 
     raw_total = usage.get("total_tokens")
     try:
-        values["total_tokens"] = int(raw_total or 0)
+        values["total_tokens"] = max(0, int(raw_total or 0))
     except (TypeError, ValueError, OverflowError):
         values["total_tokens"] = 0
 

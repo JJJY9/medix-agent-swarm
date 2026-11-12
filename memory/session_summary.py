@@ -352,7 +352,12 @@ class SessionSummaryManager:
     负责保存和检索会话总结
     """
 
-    def __init__(self, base_dir: str = "memory/swarm/session_summaries"):
+    def __init__(
+        self,
+        base_dir: str = str(
+            Path(__file__).resolve().parent / "swarm" / "session_summaries"
+        ),
+    ):
         self.base_dir = Path(base_dir)
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)

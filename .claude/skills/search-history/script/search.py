@@ -79,14 +79,19 @@ def format_history(messages: list) -> str:
 
     output = ["【当前会话历史】\n"]
 
-    # 按角色分组显示
-    for i, msg in enumerate(messages, 1):
+    turn = 0
+    for msg in messages:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
-        timestamp = msg.get("timestamp", "")
-
+        if role == "system":
+            # 熵压缩生成的早期历史摘要不能被丢掉
+            output.append("【历史摘要】")
+            output.append(content)
+            output.append("")
+            continue
         if role == "user":
-            output.append(f"【轮次 {i // 2 + 1}】")
+            turn += 1
+            output.append(f"【轮次 {turn}】")
             output.append(f"用户: {content}")
         elif role == "assistant":
             output.append(f"系统: {content[:200]}..." if len(content) > 200 else f"系统: {content}")
