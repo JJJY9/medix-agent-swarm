@@ -14218,6 +14218,7 @@ let attachmentLinking = false;
 let attachmentLinkRefRequestSeq = 0;
 let attachmentPreviewUrl = null;
 let attachmentPreviewItem = null;
+let attachmentPreviewReturnFocus = null;
 let attachmentRefCounts = { visit: {}, lab: {} };
 let attachmentRefFilter = null;
 let attachmentFilterTimer = null;
@@ -15171,6 +15172,7 @@ async function editAttachmentNote(item) {
 }
 
 function closeAttachmentPreview() {
+  const wasOpen = els.attachmentPreview && !els.attachmentPreview.hidden;
   if (attachmentPreviewUrl) {
     URL.revokeObjectURL(attachmentPreviewUrl);
     attachmentPreviewUrl = null;
@@ -15183,11 +15185,20 @@ function closeAttachmentPreview() {
     els.attachmentPreviewTitle.textContent = '';
   }
   if (els.attachmentPreview) els.attachmentPreview.hidden = true;
+  if (
+    wasOpen
+    && attachmentPreviewReturnFocus
+    && attachmentPreviewReturnFocus.isConnected
+  ) {
+    attachmentPreviewReturnFocus.focus();
+  }
+  attachmentPreviewReturnFocus = null;
 }
 
 function openAttachmentPreview(item, url) {
   if (!els.attachmentPreview || !els.attachmentPreviewBody) return false;
   closeAttachmentPreview();
+  attachmentPreviewReturnFocus = document.activeElement;
   attachmentPreviewUrl = url;
   attachmentPreviewItem = item;
   if (els.attachmentPreviewTitle) {
@@ -21456,6 +21467,33 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (e.key !== 'Tab') return;
+  const preview = els.attachmentPreview;
+  if (preview && !preview.hidden) {
+    const focusables = Array.from(preview.querySelectorAll(
+      'button:not([disabled]), [href], iframe, '
+      + '[tabindex]:not([tabindex="-1"])'
+    ));
+    if (focusables.length) {
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!preview.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+        return;
+      }
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+        return;
+      }
+      if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+        return;
+      }
+    }
+    return;
+  }
   const drawer = activeDrawer();
   if (!drawer) return;
 

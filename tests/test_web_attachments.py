@@ -136,6 +136,10 @@ def test_attachment_preview_modal_wiring():
     assert "anchor.download = attachmentPreviewItem.original_name" in SCRIPT
     assert "els.attachmentPreviewDownload.addEventListener(" in SCRIPT
     assert "attachmentPreviewUrl" in SCRIPT
+    assert "attachmentPreviewReturnFocus" in SCRIPT
+    assert "preview.contains(document.activeElement)" in SCRIPT
+    assert "focusables[focusables.length - 1]" in SCRIPT
+    assert "attachmentPreviewReturnFocus.focus();" in SCRIPT
     assert "mime.startsWith('image/')" in SCRIPT
     assert "document.createElement('iframe')" in SCRIPT
     assert "els.attachmentPreview.hidden = false;" in SCRIPT
