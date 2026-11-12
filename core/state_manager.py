@@ -26,6 +26,9 @@ class AgentState:
     max_iterations: int = 5
     input_data: Dict[str, Any] = field(default_factory=dict)
     intermediate_results: List[Dict[str, Any]] = field(default_factory=list)
+    #: 工具轮次的短期记忆条目；成功收尾时随提问/回答一起写入，
+    #: 取消或失败时随状态丢弃，避免留下孤立的工具调用片段
+    pending_memory: List[Any] = field(default_factory=list)
     final_result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)

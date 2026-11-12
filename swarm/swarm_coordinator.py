@@ -941,6 +941,35 @@ class SwarmCoordinator:
             result = await worker.process_subtask(
                 subtask, shared_context=shared_context
             )
+            degraded_reason = ""
+            if isinstance(result, dict):
+                degraded_reason = str(
+                    result.get("warning") or result.get("error") or ""
+                )
+                if result.get("degraded"):
+                    degraded_reason = degraded_reason or "degraded"
+            if degraded_reason:
+                # 重试耗尽/收尾失败后的道歉文本不是有效科室意见，
+                # 记入失败并保留已消耗的 token
+                shared_context.data.setdefault(
+                    "failed_usage", []
+                ).append({
+                    "usage": result.get("usage") or {},
+                    "llm_calls": int(result.get("llm_calls") or 0),
+                })
+                try:
+                    shared_context.fail_subtask(
+                        subtask.id, worker.agent_id, degraded_reason
+                    )
+                except ValueError as state_error:
+                    logger.error(
+                        f"记录子任务降级状态时出错: {state_error}"
+                    )
+                logger.warning(
+                    f"{worker.agent_id}: Degraded {subtask.type}: "
+                    f"{degraded_reason}"
+                )
+                return
             shared_context.complete_subtask(subtask.id, worker.agent_id, result)
             logger.info(f"{worker.agent_id}: Completed {subtask.type}")
         except asyncio.CancelledError as e:

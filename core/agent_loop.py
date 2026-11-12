@@ -186,14 +186,14 @@ class AgentLoop:
                         # 添加 assistant 消息（包含 tool_calls）
                         messages.append(self._create_assistant_message_with_tools(llm_response))
 
-                        # 记录 assistant 消息到短期记忆
+                        # 记录 assistant 消息到短期记忆；先缓冲，成功收尾时
+                        # 再与提问/回答一起写入，取消时不会留下孤立片段
                         if self.short_term_memory and session_id and persist_memory:
                             tool_names = [tc.name for tc in llm_response.tool_calls]
-                            self.short_term_memory.add_message(
-                                session_id=session_id,
-                                role="assistant",
-                                content=f"调用工具：{', '.join(tool_names)}"
-                            )
+                            state.pending_memory.append((
+                                "assistant",
+                                f"调用工具：{', '.join(tool_names)}",
+                            ))
 
                         # 执行每个 Skill 调用（超出预算的调用返回错误结果，
                         # 保证每条 tool_call 都有配对的 tool 消息）
@@ -266,14 +266,13 @@ class AgentLoop:
                                 }
                             messages.append(tool_message)
 
-                            # 记录结果到短期记忆
+                            # 记录结果到短期记忆（同样先缓冲）
                             if self.short_term_memory and session_id and persist_memory:
                                 result_summary = str(tool_result)[:200]
-                                self.short_term_memory.add_message(
-                                    session_id=session_id,
-                                    role="tool",
-                                    content=f"{tool_call.name}: {result_summary}"
-                                )
+                                state.pending_memory.append((
+                                    "tool",
+                                    f"{tool_call.name}: {result_summary}",
+                                ))
 
                         # 超出预算的 tool_call 也要补一条结果，避免历史里
                         # 留下没有 tool 响应的调用导致下一轮请求 400
@@ -384,6 +383,7 @@ class AgentLoop:
                             'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
                             'iterations': state.iteration,
                             'warning': 'finalize_failed',
+                            'degraded': True,
                             'error': str(e),
                             # 降级也要保留已消耗的用量，避免费用与预算统计漏记
                             'usage': dict(usage),
@@ -428,6 +428,7 @@ class AgentLoop:
                         user_input=user_question,
                     )
                     result['warning'] = 'max_iterations_reached'
+                    result['degraded'] = True
                     state.mark_completed(result)
                     logger.info("Generated fallback answer after max iterations")
 
@@ -445,6 +446,7 @@ class AgentLoop:
                             user_input=user_question,
                         )
                         result['warning'] = 'max_iterations_reached'
+                        result['degraded'] = True
                         result['error'] = str(e)
                         state.mark_completed(result)
                     except Exception as finalize_error:
@@ -456,6 +458,7 @@ class AgentLoop:
                             'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
                             'iterations': state.iteration,
                             'warning': 'max_iterations_reached',
+                            'degraded': True,
                             'error': str(e),
                             'usage': dict(usage),
                             'llm_calls': llm_calls,
@@ -551,7 +554,22 @@ class AgentLoop:
         )
         if usage is not None:
             merge_usage(usage, response.usage)
-        return response.content or ""
+        content = response.content or ""
+        finish_reason = str(getattr(response, "finish_reason", "") or "")
+        # 非流式收尾同样要告知截断/过滤，不能把半句医疗建议当完整答复
+        if finish_reason == "length":
+            logger.warning("⚠️ 非流式最终答复因长度限制被截断")
+            content += (
+                "\n\n[回答内容达到长度上限，已截断。"
+                "建议简化问题后重试。]"
+            )
+        elif finish_reason == "content_filter":
+            logger.warning("⚠️ 非流式最终答复被内容安全策略过滤")
+            content += (
+                "\n\n[部分内容因安全策略被过滤，"
+                "建议换一种表述或咨询医生。]"
+            )
+        return content
 
     async def _finalize(
         self,
@@ -568,9 +586,11 @@ class AgentLoop:
     ) -> Dict[str, Any]:
         """执行输出约束校验/自动修复，写入短期记忆并产出最终结果。"""
         final_answer = (final_answer or "").strip()
+        fallback_used = False
         if not final_answer:
             # 预算耗尽等路径可能拿到空文本；与 max_iterations 兜底保持一致
             final_answer = "抱歉，未能生成有效答复，请稍后重试或简化问题。"
+            fallback_used = True
 
         # Harness Engineering: 验证和修复输出
         if self.validator and final_answer:
@@ -645,6 +665,10 @@ class AgentLoop:
             'usage': dict(usage or {}),
             'llm_calls': llm_calls
         }
+        if fallback_used:
+            # 兜底道歉不是有效医疗意见，上层（Swarm/统计）需要区分
+            result['degraded'] = True
+            result['warning'] = 'empty_answer'
 
         # 让 Agent 进行结果后处理（如提取建议等）；
         # 后处理失败不应覆盖已经生成并通过校验的有效回答
@@ -664,6 +688,16 @@ class AgentLoop:
                         role="user",
                         content=user_input
                     )
+                # 工具轮次缓冲在成功收尾时按时间顺序补齐
+                for role, content in (
+                    getattr(state, "pending_memory", None) or []
+                ):
+                    self.short_term_memory.add_message(
+                        session_id=session_id,
+                        role=role,
+                        content=content,
+                    )
+                state.pending_memory = []
                 self.short_term_memory.add_message(
                     session_id=session_id,
                     role="assistant",
