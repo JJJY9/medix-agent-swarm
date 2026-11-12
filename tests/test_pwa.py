@@ -79,6 +79,15 @@ def test_app_js_reconciles_aborted_stream_and_guards_bulk_delete(client):
     assert "会诊进行中，暂不能批量删除会话" in app_js
 
 
+def test_shell_pads_chrome_for_safe_areas(client):
+    styles = client.get("/static/styles.css").text
+
+    assert "env(safe-area-inset-top, 0px)" in styles
+    assert "env(safe-area-inset-right, 0px)" in styles
+    assert "env(safe-area-inset-bottom, 0px)" in styles
+    assert "env(safe-area-inset-left, 0px)" in styles
+
+
 def test_shell_accessibility_regions_and_focusable_scrollable_areas(client):
     index = client.get("/").text
     app_js = client.get("/static/app.js").text
