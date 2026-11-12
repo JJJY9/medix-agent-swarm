@@ -40,6 +40,13 @@ except ImportError:  # pragma: no cover - constraints 是可选模块
     ConstraintValidator = None
     CONSTRAINTS_AVAILABLE = False
 
+try:
+    from validation.auto_fixer import AutoFixer
+    AUTO_FIXER_AVAILABLE = True
+except ImportError:  # pragma: no cover - validation 是可选模块
+    AutoFixer = None
+    AUTO_FIXER_AVAILABLE = False
+
 
 #: 单次会诊最多拆出的子任务数，与 constraints/swarm_constraints.yaml 保持一致
 MAX_SWARM_SUBTASKS = 5
@@ -105,6 +112,16 @@ class SwarmCoordinator:
         else:
             self.validator = None
 
+        # 汇总答案同样需要约束兜底与自动修复
+        if AUTO_FIXER_AVAILABLE:
+            try:
+                self.auto_fixer = AutoFixer()
+            except Exception as e:
+                logger.warning(f"Swarm 自动修复器加载失败: {e}")
+                self.auto_fixer = None
+        else:
+            self.auto_fixer = None
+
         # 将短期记忆注入到所有 Worker Agent 的 Loop
         # 注意：LeadAgent 不继承 BaseAgent，没有 loop 属性，不需要注入
         for worker in self.worker_pool:
@@ -122,6 +139,63 @@ class SwarmCoordinator:
             "research_agent": self.research_agent
         }
         return mapping.get(agent_id)
+
+    def _enforce_final_constraints(self, answer: str, question: str) -> str:
+        """对 Swarm 汇总答案执行约束校验与两轮自动修复。
+
+        Worker 的答案各自经过 AgentLoop 校验，但 LeadAgent 重新生成的汇总
+        文本没有；这里补上同样的免责声明/高危就医兜底。
+        """
+        if not self.validator or not answer:
+            return answer
+        agent_id = "swarm_lead"
+        result = self.validator.validate_output(
+            agent_id, answer, user_input=question
+        )
+        if result.get("valid"):
+            return answer
+        logger.warning(
+            f"⚠️ Swarm 汇总输出约束违规: {result.get('violations')}"
+        )
+        if not self.auto_fixer or not result.get("auto_fixable"):
+            return answer
+
+        fixed = self.auto_fixer.fix_output(
+            answer,
+            result.get("auto_fixable", []),
+            user_input=question,
+        )
+        if fixed == answer:
+            return answer
+        recheck = self.validator.validate_output(
+            agent_id, fixed, user_input=question
+        )
+        if recheck.get("valid"):
+            logger.info("✅ Swarm 汇总答案已自动修复")
+            return fixed
+        if recheck.get("auto_fixable"):
+            second = self.auto_fixer.fix_output(
+                fixed,
+                recheck.get("auto_fixable", []),
+                user_input=question,
+            )
+            if second != fixed:
+                final_check = self.validator.validate_output(
+                    agent_id, second, user_input=question
+                )
+                if final_check.get("valid"):
+                    logger.info("✅ Swarm 汇总答案二次修复后已无违规")
+                else:
+                    logger.warning(
+                        "⚠️ Swarm 汇总答案二次修复后仍有违规: "
+                        f"{final_check.get('violations')}"
+                    )
+                return second
+        logger.warning(
+            "⚠️ Swarm 汇总答案自动修复后仍有违规: "
+            f"{recheck.get('violations')}"
+        )
+        return fixed
 
     async def _restore_short_term_context(self, session_id: str) -> None:
         """服务重启后从 SQLite 恢复最近问答，保证多轮上下文不中断。"""
@@ -630,6 +704,9 @@ class SwarmCoordinator:
             timeout_occurred=timeout_occurred,
             on_token=on_token,
             usage_out=synthesis_usage
+        )
+        final_answer = self._enforce_final_constraints(
+            final_answer, question
         )
 
         end_time = datetime.now()
