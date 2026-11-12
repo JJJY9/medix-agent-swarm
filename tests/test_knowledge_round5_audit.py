@@ -2,6 +2,7 @@
 import asyncio
 import importlib.util
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,8 @@ def _knowledge_base(client, collection="c"):
     kb.embedding_dim = 3
     kb.embedding_model = FakeEmbeddingModel()
     kb._initialized = True
+    # 绕过 __init__ 构造时需补齐索引读写锁，重建路径会在锁内替换集合
+    kb._index_lock = threading.RLock()
     return kb
 
 
