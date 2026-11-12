@@ -846,7 +846,8 @@ function showAuthGate(message = '') {
 
   // 401 可能在抽屉打开时到达，先关闭其他模态，避免两个 aria-modal 并存
   closeHistory();
-  closeKb();
+  // 安全门优先展示；未保存草稿在此时让位于重新认证
+  closeKb(false, true);
   closeCalc();
   closeDiagnose();
   closeMetrics();
@@ -3164,6 +3165,8 @@ async function startNewSession() {
     window.alert('会诊进行中，请先停止当前会诊。');
     return;
   }
+  // 知识库编辑草稿未保存时先确认，取消则保留当前页面
+  if (!closeKb()) return;
   // 作废仍在途的历史会话请求，避免旧响应覆盖刚创建的新会话
   openSessionSeq += 1;
 
@@ -4014,7 +4017,7 @@ function renderCompare(left, right) {
 async function openCompare(ids) {
   if (ids.length !== 2) return;
   closeHistory();
-  closeKb();
+  if (!closeKb()) return;
   closeCalc();
   closeDiagnose();
   closeMetrics();
@@ -4803,7 +4806,7 @@ async function manageLocalBackups() {
 let lastFocused = null;
 
 function openHistory() {
-  closeKb();
+  if (!closeKb()) return false;
   closeDiagnose();
   closeCalc();
   closeMetrics();
@@ -5318,7 +5321,15 @@ function renderKbDocuments(documents) {
   }
 }
 
-function exitKbPreviewEdit() {
+function exitKbPreviewEdit(force = false) {
+  if (
+    !force
+    && previewEditing
+    && els.kbPreviewEditor.value !== previewEditOriginal
+    && !window.confirm('放弃未保存的修改？')
+  ) {
+    return false;
+  }
   previewEditing = false;
   previewEditingFilename = '';
   previewEditOriginal = '';
@@ -5340,10 +5351,11 @@ function exitKbPreviewEdit() {
   ) {
     els.kbPreviewEdit.focus();
   }
+  return true;
 }
 
-function closeKbPreview() {
-  exitKbPreviewEdit();
+function closeKbPreview(force = false) {
+  if (!exitKbPreviewEdit(force)) return false;
   previewFilename = '';
   previewEditable = false;
   els.kbPreview.hidden = true;
@@ -5357,12 +5369,13 @@ function closeKbPreview() {
     previewReturnFocus.focus();
   }
   previewReturnFocus = null;
+  return true;
 }
 
 async function previewKbDocument(filename) {
   const seq = ++kbPreviewSeq;
   previewReturnFocus = document.activeElement;
-  exitKbPreviewEdit();
+  if (!exitKbPreviewEdit()) return;
   previewFilename = filename;
   previewEditable = false;
   els.kbPreviewEdit.hidden = true;
@@ -5623,7 +5636,8 @@ function openKb() {
   els.kbClose.focus();
 }
 
-function closeKb(restoreFocus = false) {
+function closeKb(restoreFocus = false, force = false) {
+  if (!exitKbPreviewEdit(force)) return false;
   kbOpen = false;
   els.kbDrawer.hidden = true;
   els.kbBackdrop.hidden = true;
@@ -5632,6 +5646,7 @@ function closeKb(restoreFocus = false) {
   if (restoreFocus && kbFocused instanceof HTMLElement) {
     kbFocused.focus();
   }
+  return true;
 }
 
 async function uploadKbDocument(fileOverride = null) {
@@ -5737,7 +5752,7 @@ async function deleteKbDocument(filename) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `删除失败（${res.status}）`);
 
-    if (previewFilename === filename) closeKbPreview();
+    if (previewFilename === filename) closeKbPreview(true);
     setKbStatus(`已删除 ${filename}。`);
     await loadKnowledge();
     checkStatus();
@@ -6182,7 +6197,7 @@ async function loadDiagnostics() {
 
 function openDiagnose() {
   closeHistory();
-  closeKb();
+  if (!closeKb()) return;
   closeCalc();
   closeMetrics();
   closeReminders();
@@ -7466,7 +7481,7 @@ async function loadMetrics(append = false) {
 
 async function openMetrics() {
   closeHistory();
-  closeKb();
+  if (!closeKb()) return;
   closeCalc();
   closeDiagnose();
   closeReminders();
@@ -8064,7 +8079,7 @@ function setRemindersStatus(text, isError = false) {
 
 async function openReminders() {
   closeHistory();
-  closeKb();
+  if (!closeKb()) return;
   closeCalc();
   closeDiagnose();
   closeMetrics();
@@ -18376,7 +18391,7 @@ function setCalcTool(tool) {
 
 function openCalc() {
   closeHistory();
-  closeKb();
+  if (!closeKb()) return;
   closeDiagnose();
   closeMetrics();
   closeReminders();
@@ -21938,13 +21953,7 @@ document.addEventListener('keydown', (e) => {
       return;
     }
     if (kbOpen && previewEditing) {
-      // 编辑文档时 Esc 先退出编辑，不关闭抽屉、不静默丢弃草稿
-      if (
-        els.kbPreviewEditor.value !== previewEditOriginal
-        && !window.confirm('放弃未保存的修改？')
-      ) {
-        return;
-      }
+      // 编辑文档时 Esc 先退出编辑；有未保存修改时由 exitKbPreviewEdit 确认
       exitKbPreviewEdit();
       return;
     }
