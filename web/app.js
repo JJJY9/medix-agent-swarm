@@ -16011,9 +16011,9 @@ function visitPrepWindow() {
   return { key: value, sinceLast, days };
 }
 
-function visitPrepWindowQuery(window) {
-  return `&days=${window.days}`
-    + (window.sinceLast ? '&since_last_visit=true' : '');
+function visitPrepWindowQuery(prepWindow) {
+  return `&days=${prepWindow.days}`
+    + (prepWindow.sinceLast ? '&since_last_visit=true' : '');
 }
 
 function setVisitPrepStatus(text, isError = false) {
@@ -16208,7 +16208,7 @@ async function loadVisitPrep() {
     setVisitPrepStatus('请先选择患者档案', true);
     return;
   }
-  const window = visitPrepWindow();
+  const prepWindow = visitPrepWindow();
   const requestSeq = ++visitPrepRequestSeq;
   visitPrepLoading = true;
   els.visitPrepGenerate.disabled = true;
@@ -16216,14 +16216,14 @@ async function loadVisitPrep() {
   try {
     const res = await fetch(
       `/api/health/visit-prep?profile=${encodeURIComponent(profile)}`
-      + visitPrepWindowQuery(window)
+      + visitPrepWindowQuery(prepWindow)
     );
     const data = await res.json().catch(() => ({}));
     if (requestSeq !== visitPrepRequestSeq) return;
     if (!res.ok) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
-    visitPrepCache = { data, profile, window: window.key };
+    visitPrepCache = { data, profile, window: prepWindow.key };
     renderVisitPrep(data);
     setVisitPrepStatus(
       `已生成：${data.start} 至 ${data.end}`
@@ -16254,9 +16254,13 @@ async function loadVisitPrep() {
 
 async function copyVisitPrep() {
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  const window = visitPrepWindow();
+  const prepWindow = visitPrepWindow();
   const cache = visitPrepCache;
-  if (!cache || cache.profile !== profile || cache.window !== window.key) {
+  if (
+    !cache
+    || cache.profile !== profile
+    || cache.window !== prepWindow.key
+  ) {
     setVisitPrepStatus('准备单尚未生成，请先点击生成。', true);
     return;
   }
@@ -16270,9 +16274,13 @@ async function copyVisitPrep() {
 
 function exportVisitPrep() {
   const profile = els.metricProfile ? els.metricProfile.value : '';
-  const window = visitPrepWindow();
+  const prepWindow = visitPrepWindow();
   const cache = visitPrepCache;
-  if (!cache || cache.profile !== profile || cache.window !== window.key) {
+  if (
+    !cache
+    || cache.profile !== profile
+    || cache.window !== prepWindow.key
+  ) {
     setVisitPrepStatus('准备单尚未生成，请先点击生成。', true);
     return;
   }
@@ -16293,14 +16301,14 @@ async function printVisitPrep() {
     setVisitPrepStatus('请先选择患者档案', true);
     return;
   }
-  const window = visitPrepWindow();
+  const prepWindow = visitPrepWindow();
   const button = els.visitPrepPrint;
   if (button) button.disabled = true;
   setVisitPrepStatus('正在准备打印版…');
   try {
     const res = await fetch(
       `/api/health/visit-prep/print?profile=${encodeURIComponent(profile)}`
-      + visitPrepWindowQuery(window)
+      + visitPrepWindowQuery(prepWindow)
     );
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

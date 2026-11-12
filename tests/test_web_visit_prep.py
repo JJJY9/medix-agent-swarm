@@ -14,7 +14,7 @@ def test_visit_prep_panel_exists():
     assert '<option value="last">上次就诊以来</option>' in HTML
     assert "visitPrepWindow()" in SCRIPT
     assert "since_last_visit=true" in SCRIPT
-    assert "cache.window !== window.key" in SCRIPT
+    assert "cache.window !== prepWindow.key" in SCRIPT
     assert "上次就诊以来" in SCRIPT
     assert 'id="visit-prep-generate"' in HTML
     assert 'id="visit-prep-copy"' in HTML
@@ -107,3 +107,14 @@ def test_visit_prep_styles_exist():
     assert ".visit-prep-heading" in STYLES
     assert ".visit-prep-questions" in STYLES
     assert "#visit-prep-status.error" in STYLES
+
+
+def test_visit_prep_print_does_not_shadow_global_window():
+    start = SCRIPT.index("async function printVisitPrep()")
+    block = SCRIPT[start:start + 1400]
+
+    assert "const prepWindow = visitPrepWindow();" in block
+    assert "visitPrepWindowQuery(prepWindow)" in block
+    assert "window.open(url, '_blank')" in block
+    # 任何函数都不得再用局部变量遮蔽浏览器全局 window
+    assert "const window = visitPrepWindow();" not in SCRIPT
