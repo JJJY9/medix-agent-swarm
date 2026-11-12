@@ -98,7 +98,7 @@ def test_reminder_import_same_id_different_profile_is_kept(client_and_store):
     assert profiles == {"妈妈", "爸爸"}
 
 
-def test_reminder_import_same_id_same_profile_is_still_skipped(
+def test_reminder_import_same_id_same_profile_different_created_at_is_kept(
     client_and_store,
 ):
     client, store = client_and_store
@@ -131,7 +131,8 @@ def test_reminder_import_same_id_same_profile_is_still_skipped(
     reminders = client.get(
         "/api/reminders", params={"include_done": True}
     ).json()["reminders"]
+    # 编号相同不等于同一条提醒：创建时间不同，应各自保留
     assert len([
         item for item in reminders
         if item["title"] == "复诊" and item["profile"] == "妈妈"
-    ]) == 1
+    ]) == 2
