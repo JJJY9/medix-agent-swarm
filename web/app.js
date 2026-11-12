@@ -7384,6 +7384,7 @@ async function openMetrics() {
   if (activeProfile && profilesCache[activeProfile]) {
     setMetricProfileValue(activeProfile);
   }
+  syncDossierExportButton();
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
   if (els.symptomTime && !els.symptomTime.value) {
     els.symptomTime.value = metricNowLocal();
@@ -16925,6 +16926,17 @@ async function exportTimelineCsv() {
   }
 }
 
+function syncDossierExportButton() {
+  if (!els.healthDossierExport) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  els.healthDossierExport.textContent = profile
+    ? '导出档案'
+    : '导出家庭档案';
+  els.healthDossierExport.title = profile
+    ? `导出「${profile}」的健康档案`
+    : '导出全部家庭成员的健康档案';
+}
+
 async function exportHealthDossier() {
   const profile = els.metricProfile.value;
   const isFamily = !profile;
@@ -20587,6 +20599,7 @@ els.metricType.addEventListener('change', () => {
 });
 els.metricProfile.addEventListener('change', () => {
   setAttachmentRefFilter(null);
+  syncDossierExportButton();
   refreshMetrics();
   loadDataQuality();
   loadBpMonitoring();

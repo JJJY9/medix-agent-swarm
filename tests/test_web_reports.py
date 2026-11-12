@@ -847,6 +847,10 @@ def test_app_js_ships_health_dossier_export(client):
     assert 'id="health-dossier-export"' in html
     assert "async function exportHealthDossier" in app_js
     assert "/api/health/dossier.md" in app_js
+    assert "function syncDossierExportButton" in app_js
+    assert "els.healthDossierExport.textContent = profile" in app_js
+    assert "'导出家庭档案'" in app_js
+    assert "syncDossierExportButton();" in app_js
 
 
 def test_app_js_ships_history_risk_badge(client):
