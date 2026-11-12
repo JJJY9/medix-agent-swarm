@@ -527,6 +527,7 @@ class LLMClient:
 
             chunks: List[str] = []
             callback_failed = False
+            finish_reason = ""
 
             try:
                 async for chunk in stream:
@@ -537,7 +538,10 @@ class LLMClient:
 
                     if not chunk.choices:
                         continue
-                    content = getattr(chunk.choices[0].delta, "content", None)
+                    choice = chunk.choices[0]
+                    if getattr(choice, "finish_reason", None):
+                        finish_reason = choice.finish_reason
+                    content = getattr(choice.delta, "content", None)
                     if not content:
                         continue
                     content = strip_lone_surrogates(content)
@@ -562,7 +566,26 @@ class LLMClient:
                     except Exception:
                         pass
 
-            return "".join(chunks)
+            text = "".join(chunks)
+            notice = ""
+            if finish_reason == "length":
+                notice = (
+                    "\n\n[回答内容达到长度上限，已截断。"
+                    "建议简化问题后重试。]"
+                )
+            elif finish_reason == "content_filter":
+                notice = (
+                    "\n\n[部分内容因安全策略被过滤，"
+                    "建议换一种表述或咨询医生。]"
+                )
+            if notice:
+                text += notice
+                if on_token and not callback_failed:
+                    try:
+                        on_token(notice)
+                    except Exception:
+                        pass
+            return text
 
         except LLMError:
             raise
