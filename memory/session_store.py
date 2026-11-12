@@ -5667,6 +5667,7 @@ class SessionStore:
         offset: int = 0,
         start: str = "",
         end: str = "",
+        q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         try:
@@ -5689,6 +5690,15 @@ class SessionStore:
             conditions.append("status = 'upcoming'")
             conditions.append("substr(scheduled_at, 1, 10) >= ?")
             params.append(today)
+        query = str(q or "").strip()
+        if query:
+            like = _like_pattern(query)
+            conditions.append(
+                "(title LIKE ? ESCAPE '\\' OR department LIKE ? ESCAPE '\\'"
+                " OR doctor LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\'"
+                " OR note LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like] * 6)
         range_conditions, range_params = _date_range_conditions(
             "scheduled_at", start, end
         )
@@ -6194,6 +6204,7 @@ class SessionStore:
         limit: int = 1000,
         start: str = "",
         end: str = "",
+        q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions: List[str] = []
@@ -6208,6 +6219,14 @@ class SessionStore:
             conditions.append("active = 1")
             conditions.append("next_due_at < ?")
             params.append(today)
+        query = str(q or "").strip()
+        if query:
+            like = _like_pattern(query)
+            conditions.append(
+                "(title LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\'"
+                " OR profile LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like] * 3)
         range_conditions, range_params = _date_range_conditions(
             "next_due_at", start, end
         )
@@ -6621,6 +6640,7 @@ class SessionStore:
         active_only: bool = False,
         status: Optional[str] = None,
         limit: int = 1000,
+        q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions_sql: List[str] = []
@@ -6636,6 +6656,14 @@ class SessionStore:
                 raise ValueError("状态应为 active/controlled/resolved")
             conditions_sql.append("status = ?")
             params.append(status_key)
+        query = str(q or "").strip()
+        if query:
+            like = _like_pattern(query)
+            conditions_sql.append(
+                "(name LIKE ? ESCAPE '\\' OR icd10 LIKE ? ESCAPE '\\'"
+                " OR note LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like] * 4)
         where = (
             f"WHERE {' AND '.join(conditions_sql)}"
             if conditions_sql else ""

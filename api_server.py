@@ -3748,6 +3748,7 @@ async def list_appointments(
     upcoming: bool = False,
     limit: int = 1000,
     offset: int = 0,
+    q: str = "",
 ):
     """就诊预约列表（可按档案、状态与是否只看待就诊筛选）。"""
     from memory import get_session_store
@@ -3757,7 +3758,7 @@ async def list_appointments(
     try:
         items = await asyncio.to_thread(
             get_session_store().list_appointments,
-            profile, status, upcoming, limit, offset,
+            profile, status, upcoming, limit, offset, q=q,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3842,16 +3843,25 @@ async def delete_appointment(appointment_id: SafeIntPath):
 
 
 @app.get("/api/appointments/export.csv")
-async def export_appointments_csv(profile: Optional[str] = None):
-    """导出就诊预约 CSV（带 BOM），可按档案筛选。"""
+async def export_appointments_csv(
+    profile: Optional[str] = None,
+    status: Optional[str] = None,
+    upcoming: bool = False,
+    q: str = "",
+):
+    """导出就诊预约 CSV（带 BOM），支持档案、状态与关键字筛选。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    items = await asyncio.to_thread(
-        get_session_store().list_appointments, profile, None, False, 100000, 0
-    )
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_appointments,
+            profile, status, upcoming, 100000, 0, q=q,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     status_labels = {
         "upcoming": "待就诊",
         "completed": "已完成",
@@ -4311,16 +4321,25 @@ async def delete_allergy(allergy_id: SafeIntPath):
 
 
 @app.get("/api/allergies/export.csv")
-async def export_allergies_csv(profile: Optional[str] = None):
-    """导出过敏史 CSV（带 BOM），可按档案筛选。"""
+async def export_allergies_csv(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    kind: Optional[str] = None,
+    q: str = "",
+):
+    """导出过敏史 CSV（带 BOM），支持档案、类型、状态与关键字筛选。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    items = await asyncio.to_thread(
-        get_session_store().list_allergies, profile, False, None, "", 100000
-    )
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_allergies,
+            profile, active_only, kind, q, 100000,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     severity_labels = {
         "mild": "轻度",
         "moderate": "中度",
@@ -4529,6 +4548,7 @@ async def list_care_items(
     active_only: bool = False,
     overdue: bool = False,
     limit: int = 1000,
+    q: str = "",
 ):
     """复查计划列表（可按档案、状态与逾期筛选）。"""
     from memory import get_session_store
@@ -4536,7 +4556,7 @@ async def list_care_items(
     limit = max(1, min(int(limit or 1000), 100000))
     items = await asyncio.to_thread(
         get_session_store().list_care_items,
-        profile, active_only, overdue, limit,
+        profile, active_only, overdue, limit, q=q,
     )
     return {"care_items": items}
 
@@ -4645,8 +4665,13 @@ async def delete_care_item(care_id: SafeIntPath):
 
 
 @app.get("/api/care-items/export.csv")
-async def export_care_items_csv(profile: Optional[str] = None):
-    """导出复查计划 CSV（带 BOM）。"""
+async def export_care_items_csv(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    overdue: bool = False,
+    q: str = "",
+):
+    """导出复查计划 CSV（带 BOM），支持状态与关键字筛选。"""
     import csv
     import io
 
@@ -4654,7 +4679,7 @@ async def export_care_items_csv(profile: Optional[str] = None):
 
     items = await asyncio.to_thread(
         get_session_store().list_care_items,
-        profile, False, False, 100000,
+        profile, active_only, overdue, 100000, q=q,
     )
     rows = [[
         "复查项目", "患者档案", "间隔天数", "上次完成", "下次复查",
@@ -4920,7 +4945,11 @@ async def delete_visit(visit_id: SafeIntPath):
 
 
 @app.get("/api/visits/export.csv")
-async def export_visits_csv(profile: Optional[str] = None):
+async def export_visits_csv(
+    profile: Optional[str] = None,
+    days: int = 0,
+    q: str = "",
+):
     """导出就诊记录 CSV（带 BOM）。"""
     import csv
     import io
@@ -4929,7 +4958,7 @@ async def export_visits_csv(profile: Optional[str] = None):
 
     items = await asyncio.to_thread(
         get_session_store().list_visit_records,
-        profile, 0, "", 100000,
+        profile, days, q, 100000,
     )
     rows = [[
         "就诊日期", "患者档案", "科室", "医生", "机构", "诊断",
@@ -5051,6 +5080,7 @@ async def list_conditions(
     active_only: bool = False,
     status: Optional[str] = None,
     limit: int = 1000,
+    q: str = "",
 ):
     """慢病/健康问题清单（可按档案、状态筛选）。"""
     from memory import get_session_store
@@ -5059,7 +5089,7 @@ async def list_conditions(
     try:
         items = await asyncio.to_thread(
             get_session_store().list_conditions,
-            profile, active_only, status, limit,
+            profile, active_only, status, limit, q=q,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5207,16 +5237,25 @@ async def delete_condition(condition_id: SafeIntPath):
 
 
 @app.get("/api/conditions/export.csv")
-async def export_conditions_csv(profile: Optional[str] = None):
-    """导出慢病/健康问题 CSV（带 BOM）。"""
+async def export_conditions_csv(
+    profile: Optional[str] = None,
+    active_only: bool = False,
+    status: Optional[str] = None,
+    q: str = "",
+):
+    """导出慢病/健康问题 CSV（带 BOM），支持状态与关键字筛选。"""
     import csv
     import io
 
     from memory import get_session_store
 
-    items = await asyncio.to_thread(
-        get_session_store().list_conditions, profile, False, None, 100000
-    )
+    try:
+        items = await asyncio.to_thread(
+            get_session_store().list_conditions,
+            profile, active_only, status, 100000, q=q,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     status_labels = {
         "active": "管理中",
         "controlled": "已控制",
