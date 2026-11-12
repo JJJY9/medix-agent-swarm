@@ -88,6 +88,20 @@ def test_shell_pads_chrome_for_safe_areas(client):
     assert "env(safe-area-inset-left, 0px)" in styles
 
 
+def test_mobile_workspace_pads_horizontal_safe_areas(client):
+    styles = client.get("/static/styles.css").text
+
+    # 横屏刘海屏下正文与输入框不落到左右安全区下面
+    assert (
+        "padding-left: calc(16px + env(safe-area-inset-left, 0px));"
+        in styles
+    )
+    assert (
+        "padding-right: calc(16px + env(safe-area-inset-right, 0px));"
+        in styles
+    )
+
+
 def test_shell_accessibility_regions_and_focusable_scrollable_areas(client):
     index = client.get("/").text
     app_js = client.get("/static/app.js").text
