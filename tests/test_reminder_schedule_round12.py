@@ -104,6 +104,14 @@ def test_same_title_care_plans_do_not_complete_each_other(
     # 完成第一条计划不能顺带完成第二条计划的提醒
     assert second_reminder["id"] in pending
 
+    # 删除第一条计划也不能删掉同名计划的提醒
+    client.delete(f"/api/care-items/{first['id']}")
+    pending = {
+        row["id"]: row
+        for row in client.get("/api/reminders").json()["reminders"]
+    }
+    assert second_reminder["id"] in pending
+
 
 def test_reminder_edit_keeps_time_part():
     assert "reminderEditOriginal" in SCRIPT

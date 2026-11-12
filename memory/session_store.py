@@ -1733,6 +1733,38 @@ def _backup_checksum(payload: Dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _validate_export_payload(payload: Dict[str, Any]) -> None:
+    """导出的备份必须能被 import_data 重新导入。
+
+    单条消息/单会话消息数/总量上限只在导入端强制；导出端不校验会
+    生成“下载成功却无法恢复”的备份。
+    """
+    total_chars = 0
+    for session in payload.get("sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        messages = session.get("messages") or []
+        if len(messages) > MAX_BACKUP_SESSION_MESSAGES:
+            raise ValueError(
+                f"单个会话的消息数超过可导入上限 "
+                f"{MAX_BACKUP_SESSION_MESSAGES} 条，无法导出为可恢复备份。"
+            )
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            length = len(str(message.get("content") or ""))
+            if length > MAX_BACKUP_MESSAGE_CHARS:
+                raise ValueError(
+                    f"存在超过 {MAX_BACKUP_MESSAGE_CHARS} 字符的单条消息，"
+                    "无法导出为可恢复备份。"
+                )
+            total_chars += length
+    if total_chars > MAX_BACKUP_TOTAL_CHARS:
+        raise ValueError(
+            "会话消息总量超过可导入上限，无法导出为可恢复备份。"
+        )
+
+
 class SessionStore:
     """基于 SQLite 的会话与消息存储。"""
 
@@ -3466,6 +3498,7 @@ class SessionStore:
             "conditions": self.list_conditions(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
+        _validate_export_payload(payload)
         return payload
 
     def import_data(
@@ -4394,6 +4427,8 @@ class SessionStore:
                         raw_appointment_id_map[raw_id] = appointment_id
 
             lab_results_imported = 0
+            existing_lab_counts: Dict[tuple, int] = {}
+            imported_lab_counts: Dict[tuple, int] = {}
             if isinstance(raw_lab_results, list):
                 for raw in raw_lab_results[
                     :IMPORT_LIST_LIMITS["lab_results"]
@@ -4419,43 +4454,41 @@ class SessionStore:
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    if created_key:
-                        # 备份带创建时间：同一天/同一检测时间的多条化验
-                        # 只要内容不同就必须各自保留
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM lab_results
-                             WHERE profile = ? AND item = ?
-                               AND tested_at = ? AND created_at = ?
-                               AND value = ? AND unit = ?
-                            """,
-                            (
-                                normalized["profile"],
-                                normalized["item"],
-                                normalized["tested_at"],
-                                created_key,
-                                normalized["value"],
-                                normalized["unit"],
-                            ),
+                    # 判重键覆盖所有会展示的字段：同一时刻不同分组/机构/
+                    # 参考范围/备注的化验必须各自保留；按数量判重保证
+                    # 同一备份的多条同类记录与跨来源重复导入都正确
+                    conditions = [
+                        "profile = ?", "panel = ?", "item = ?",
+                        "tested_at = ?", "value = ?", "unit = ?",
+                        "ref_low IS ?", "ref_high IS ?",
+                        "lab_name = ?", "note = ?",
+                    ]
+                    params: List[Any] = [
+                        normalized["profile"], normalized["panel"],
+                        normalized["item"], normalized["tested_at"],
+                        normalized["value"], normalized["unit"],
+                        normalized["ref_low"], normalized["ref_high"],
+                        normalized["lab_name"], normalized["note"],
+                    ]
+                    lab_key = (
+                        normalized["profile"], normalized["panel"],
+                        normalized["item"], normalized["tested_at"],
+                        normalized["value"], normalized["unit"],
+                        normalized["ref_low"], normalized["ref_high"],
+                        normalized["lab_name"], normalized["note"],
+                    )
+                    if lab_key not in existing_lab_counts:
+                        count_row = self._conn.execute(
+                            "SELECT COUNT(*) AS total FROM lab_results "
+                            "WHERE " + " AND ".join(conditions),
+                            params,
                         ).fetchone()
-                    else:
-                        # CSV 导入没有创建时间：同一天/同一检测时间的多条
-                        # 化验只要内容不同就必须各自保留，重复导入仍幂等
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM lab_results
-                             WHERE profile = ? AND item = ?
-                               AND tested_at = ? AND value = ? AND unit = ?
-                            """,
-                            (
-                                normalized["profile"],
-                                normalized["item"],
-                                normalized["tested_at"],
-                                normalized["value"],
-                                normalized["unit"],
-                            ),
-                        ).fetchone()
-                    if duplicate is not None:
+                        existing_lab_counts[lab_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_lab_counts.get(lab_key, 0)
+                    imported_lab_counts[lab_key] = seen + 1
+                    if seen < existing_lab_counts[lab_key]:
                         continue
                     self._conn.execute(
                         """
@@ -4856,6 +4889,8 @@ class SessionStore:
             reminders_imported = 0
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
+            existing_reminder_counts: Dict[tuple, int] = {}
+            imported_reminder_counts: Dict[tuple, int] = {}
             pre_existing_reminder_ids = {
                 int(row["id"])
                 for row in self._conn.execute(
@@ -4950,12 +4985,35 @@ class SessionStore:
                     vaccination_id = raw_vaccination_id_map.get(
                         raw_vaccination_id, 0
                     )
+                    if not vaccination_id and raw_vaccination_id > 0:
+                        # CSV 只带疫苗 id：确认同档案后关联到库中已有记录
+                        vac_row = self._conn.execute(
+                            "SELECT id, profile FROM vaccinations WHERE id = ?",
+                            (raw_vaccination_id,),
+                        ).fetchone()
+                        if (
+                            vac_row is not None
+                            and _normalize_profile_name(vac_row["profile"])
+                            == profile
+                        ):
+                            vaccination_id = int(vac_row["id"])
                     raw_appointment_id = _safe_db_id(
                         raw.get("appointment_id")
                     )
                     appointment_id = raw_appointment_id_map.get(
                         raw_appointment_id, 0
                     )
+                    if not appointment_id and raw_appointment_id > 0:
+                        appt_row = self._conn.execute(
+                            "SELECT id, profile FROM appointments WHERE id = ?",
+                            (raw_appointment_id,),
+                        ).fetchone()
+                        if (
+                            appt_row is not None
+                            and _normalize_profile_name(appt_row["profile"])
+                            == profile
+                        ):
+                            appointment_id = int(appt_row["id"])
                     done = 1 if raw.get("done") in (1, True, "1") else 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
@@ -4995,39 +5053,80 @@ class SessionStore:
                                     same_id["id"]
                                 )
                                 continue
-                    if reminder_id > 0 and raw.get("created_at"):
-                        # 备份导入用 created_at 去重：提醒改期后仍能识别
-                        exists = self._conn.execute(
-                            """
-                            SELECT id FROM reminders
-                             WHERE title = ? AND profile = ? AND note = ?
-                               AND session_id = ? AND created_at = ?
-                            """,
-                            (title, profile, note, session_id, created_at),
-                        ).fetchone()
+                    has_created = bool(
+                        str(raw.get("created_at") or "").strip()
+                    )
+                    identity_key = (
+                        title, profile, note, session_id,
+                        created_at if has_created else due_at,
+                    )
+                    if identity_key not in existing_reminder_counts:
+                        if has_created:
+                            count_row = self._conn.execute(
+                                """
+                                SELECT COUNT(*) AS total FROM reminders
+                                 WHERE title = ? AND profile = ?
+                                   AND note = ? AND session_id = ?
+                                   AND created_at = ?
+                                """,
+                                (
+                                    title, profile, note, session_id,
+                                    created_at,
+                                ),
+                            ).fetchone()
+                        else:
+                            count_row = self._conn.execute(
+                                """
+                                SELECT COUNT(*) AS total FROM reminders
+                                 WHERE title = ? AND profile = ?
+                                   AND note = ? AND session_id = ?
+                                   AND due_at = ?
+                                """,
+                                (
+                                    title, profile, note, session_id,
+                                    due_at,
+                                ),
+                            ).fetchone()
+                        existing_reminder_counts[identity_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_reminder_counts.get(identity_key, 0)
+                    imported_reminder_counts[identity_key] = seen + 1
+                    if has_created:
+                        # 按数量判重：同批创建的多条提醒（created_at 相同）
+                        # 删除后仍能恢复；重复导入整份备份仍然幂等
+                        skip_existing = (
+                            seen < existing_reminder_counts[identity_key]
+                        )
                     else:
-                        # CSV 导入没有 created_at：按内容与到期日去重
-                        exists = self._conn.execute(
-                            """
-                            SELECT id FROM reminders
-                             WHERE title = ? AND profile = ? AND note = ?
-                               AND session_id = ? AND due_at = ?
-                            """,
-                            (title, profile, note, session_id, due_at),
-                        ).fetchone()
-                    if (
-                        exists is not None
-                        and reminder_id > 0
-                        and raw.get("created_at")
-                        and int(exists["id"]) not in pre_existing_reminder_ids
-                    ):
-                        # 不能把本次备份导入刚插入的提醒当成既有记录，否则会
-                        # 丢掉备份里同标题/同日期的另一条提醒；CSV 导入没有
-                        # 备份 id/created_at，仍需按内容去重同一文件内的重复行
-                        exists = None
-                    if exists is not None:
+                        # CSV 没有创建时间：同一文件内的完全重复行只导入
+                        # 一次；重复导入同一文件时按库中已有数量跳过
+                        skip_existing = (
+                            seen >= 1
+                            or existing_reminder_counts[identity_key] > 0
+                        )
+                    if skip_existing:
                         if reminder_id > 0:
-                            raw_reminder_id_map[reminder_id] = int(exists["id"])
+                            existing_row = self._conn.execute(
+                                """
+                                SELECT id FROM reminders
+                                 WHERE title = ? AND profile = ?
+                                   AND note = ? AND session_id = ?
+                                """
+                                + (
+                                    " AND created_at = ?"
+                                    if has_created else " AND due_at = ?"
+                                )
+                                + " ORDER BY id LIMIT 1",
+                                (
+                                    title, profile, note, session_id,
+                                    created_at if has_created else due_at,
+                                ),
+                            ).fetchone()
+                            if existing_row is not None:
+                                raw_reminder_id_map[reminder_id] = int(
+                                    existing_row["id"]
+                                )
                         continue
                     cursor = self._conn.execute(
                         """
@@ -7143,13 +7242,21 @@ class SessionStore:
             if cursor.rowcount == 0:
                 return False
             if row is not None:
-                # 复查提醒由标题自动生成，删除计划时一并清理未完成提醒
-                title = f"复查：{row['title'] or '复查'}"[:120]
-                self._conn.execute(
-                    "DELETE FROM reminders "
-                    "WHERE done = 0 AND profile = ? AND title = ?",
-                    (row["profile"] or "", title),
-                )
+                # 复查提醒由标题自动生成；同档案还有其它启用中的同名计划
+                # 时无法判断提醒归属，保守保留，避免误删另一条计划的提醒
+                shared = self._conn.execute(
+                    "SELECT 1 FROM care_items "
+                    "WHERE active = 1 AND profile = ? AND title = ? "
+                    "LIMIT 1",
+                    (row["profile"] or "", row["title"] or ""),
+                ).fetchone()
+                if shared is None:
+                    title = f"复查：{row['title'] or '复查'}"[:120]
+                    self._conn.execute(
+                        "DELETE FROM reminders "
+                        "WHERE done = 0 AND profile = ? AND title = ?",
+                        (row["profile"] or "", title),
+                    )
             return True
 
     def add_visit_record(

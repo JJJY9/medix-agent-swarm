@@ -13187,7 +13187,7 @@ async def export_reminders_csv(
     rows = [[
         "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
         "重复截止", "重复来源ID", "备注", "关联药物ID", "关联药物",
-        "关联会话ID", "ID",
+        "关联疫苗ID", "关联预约ID", "关联会话ID", "ID",
     ]]
     for item in items:
         medication_id = int(item.get("medication_id") or 0)
@@ -13203,6 +13203,8 @@ async def export_reminders_csv(
             csv_safe_cell(item.get("note", "")),
             medication_id or "",
             csv_safe_cell(medication_names.get(medication_id, "")),
+            int(item.get("vaccination_id") or 0) or "",
+            int(item.get("appointment_id") or 0) or "",
             csv_safe_cell(item.get("session_id", "")),
             int(item.get("id") or 0) or "",
         ])
@@ -13410,6 +13412,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
         "备注": "note",
         "关联药物ID": "medication_id",
         "关联药物": "medication_name",
+        "关联疫苗ID": "vaccination_id",
+        "关联预约ID": "appointment_id",
         "关联会话ID": "session_id",
         "ID": "id",
     }
@@ -13458,6 +13462,18 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
         except (TypeError, ValueError):
             medication_id = 0
         try:
+            vaccination_id = max(
+                0, int(mapped.get("vaccination_id") or 0)
+            )
+        except (TypeError, ValueError):
+            vaccination_id = 0
+        try:
+            appointment_id = max(
+                0, int(mapped.get("appointment_id") or 0)
+            )
+        except (TypeError, ValueError):
+            appointment_id = 0
+        try:
             reminder_id = max(0, int(mapped.get("id") or 0))
         except (TypeError, ValueError):
             reminder_id = 0
@@ -13474,6 +13490,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             "repeats_from": repeats_from,
             "medication_id": medication_id,
             "medication_name": mapped.get("medication_name", ""),
+            "vaccination_id": vaccination_id,
+            "appointment_id": appointment_id,
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 
