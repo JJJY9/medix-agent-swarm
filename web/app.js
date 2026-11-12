@@ -413,6 +413,7 @@ const els = {
   remindersImport: document.getElementById('reminders-import'),
   remindersTemplate: document.getElementById('reminders-template'),
   remindersCompleteDue: document.getElementById('reminders-complete-due'),
+  remindersSnoozeDue: document.getElementById('reminders-snooze-due'),
   remindersImportFile: document.getElementById('reminders-import-file'),
   reminderPlanInterval: document.getElementById('reminder-plan-interval'),
   reminderPlanUnit: document.getElementById('reminder-plan-unit'),
@@ -8134,6 +8135,11 @@ function renderReminders(items) {
   els.remindersEmpty.hidden = items.length > 0;
 
   let dueCount = 0;
+  const todayKey = todayLocalDate();
+  const overdueCount = (reminderItemsCache || []).filter(
+    (item) => !item.done
+      && String(item.due_at || '').slice(0, 10) < todayKey
+  ).length;
   const groupCounts = {};
   for (const item of items) {
     const key = reminderGroupOf(item);
@@ -8279,6 +8285,12 @@ function renderReminders(items) {
   els.remindersDueHint.textContent = dueCount
     ? `有 ${dueCount} 条提醒已到期`
     : '';
+  if (els.remindersSnoozeDue) {
+    els.remindersSnoozeDue.hidden = overdueCount === 0;
+    els.remindersSnoozeDue.textContent = overdueCount
+      ? `推迟逾期 1 天（${overdueCount}）`
+      : '推迟逾期 1 天';
+  }
   // 用全量缓存判断条目是否真的被删除：搜索/逾期/日历筛选
   // 只是临时隐藏，不应清空正在编辑的表单
   if (
@@ -9506,6 +9518,57 @@ async function completeDueReminders() {
     + (failed ? `，${failed} 条失败` : '')
     + '。';
   setRemindersStatus(message, failed > 0);
+  await loadReminders();
+}
+
+async function snoozeDueReminders() {
+  const button = els.remindersSnoozeDue;
+  if (!button || button.disabled || reminderActionBusy) return;
+  const today = todayLocalDate();
+  const overdue = (reminderItemsCache || []).filter(
+    (item) => !item.done
+      && String(item.due_at || '').slice(0, 10) < today
+  );
+  if (!overdue.length) {
+    setRemindersStatus('没有已逾期的提醒。');
+    return;
+  }
+  if (!window.confirm(
+    `将 ${overdue.length} 条已逾期提醒推迟 1 天？`
+  )) {
+    return;
+  }
+
+  reminderActionBusy = true;
+  button.disabled = true;
+  button.textContent = '处理中…';
+  let success = 0;
+  let failed = 0;
+  try {
+    for (const item of overdue) {
+      try {
+        const res = await fetch(
+          `/api/reminders/${item.id}/snooze?days=1`,
+          { method: 'POST' }
+        );
+        if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+        success += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  } finally {
+    reminderActionBusy = false;
+    button.disabled = false;
+    button.textContent = '推迟逾期 1 天';
+  }
+
+  setRemindersStatus(
+    `已推迟 ${success} 条逾期提醒`
+    + (failed ? `，${failed} 条失败` : '')
+    + '。',
+    failed > 0
+  );
   await loadReminders();
 }
 
@@ -21273,6 +21336,7 @@ els.remindersTemplate?.addEventListener('click', () => {
   downloadCsvTemplate('reminders');
 });
 els.remindersCompleteDue?.addEventListener('click', completeDueReminders);
+els.remindersSnoozeDue?.addEventListener('click', snoozeDueReminders);
 
 els.historyFavoriteFilter.addEventListener('click', () => {
   favoritesOnly = !favoritesOnly;
