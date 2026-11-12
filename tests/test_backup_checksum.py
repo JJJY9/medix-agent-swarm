@@ -99,6 +99,26 @@ def test_api_rejects_tampered_backup(tmp_path, monkeypatch):
         store.close()
 
 
+def test_api_imports_legacy_backup_missing_new_fields(tmp_path, monkeypatch):
+    """API 导入也必须接受缺少后续新增字段的历史备份。"""
+    monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
+    store = SessionStore(str(tmp_path / "api-legacy.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    try:
+        client = TestClient(api_server.app)
+        store.save_exchange("s1", "问题", "答复")
+        data = client.get("/api/sessions/export").json()
+        data.pop("vaccinations")
+        data["checksum"] = _backup_checksum(data)
+
+        response = client.post("/api/sessions/import", json=data)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["skipped"] == 1
+    finally:
+        store.close()
+
+
 def _as_browser_json(value):
     """模拟浏览器 JSON.stringify：整数值的 float 会变成 int。"""
     if isinstance(value, float) and value.is_integer():
