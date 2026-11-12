@@ -72,3 +72,26 @@ def test_reminder_calendar_respects_show_done(client):
     assert "const visible = (items || []).filter((item) => (" in app_js
     assert "els.remindersShowDone && els.remindersShowDone.checked" in app_js
     assert "|| !item.done);" in app_js
+
+
+def test_reminder_focus_is_restored_after_rerender(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "function captureReminderFocusLabel()" in app_js
+    assert "function restoreReminderFocusLabel(label)" in app_js
+    assert "const focusLabel = captureReminderFocusLabel();" in app_js
+    assert "restoreReminderFocusLabel(focusLabel);" in app_js
+    # 跳转/重绘后仍按 aria-label 找回同一操作按钮
+    assert "node.getAttribute('aria-label') === label" in app_js
+
+
+def test_reminder_load_failure_clears_previous_profile(client):
+    app_js = client.get("/static/app.js").text
+
+    start = app_js.index("async function loadReminders()")
+    body = app_js[start:start + 1600]
+    tail = body[body.index("catch (err)"):]
+
+    assert "reminderItemsCache = [];" in tail
+    assert "updateClearDoneButton([]);" in tail
+    assert "refreshReminderViews();" in tail
