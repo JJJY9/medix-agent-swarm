@@ -6677,6 +6677,15 @@ class SessionStore:
         )
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                """
+                SELECT profile, title, next_due_at, active
+                  FROM care_items WHERE id = ?
+                """,
+                (int(care_id),),
+            ).fetchone()
+            if previous is None:
+                return None
             cursor = self._conn.execute(
                 """
                 UPDATE care_items
@@ -6694,6 +6703,58 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            old_title = f"复查：{previous['title'] or '复查'}"[:120]
+            new_title = f"复查：{normalized['title'] or '复查'}"[:120]
+            old_profile = previous["profile"] or ""
+            new_profile = normalized["profile"]
+            was_active = bool(int(previous["active"] or 0))
+            now_active = bool(int(normalized["active"] or 0))
+            if was_active and not now_active:
+                # 停用复查计划后不再提醒复查；重新启用时由用户按需重建
+                self._conn.execute(
+                    "DELETE FROM reminders "
+                    "WHERE done = 0 AND profile = ? AND title = ?",
+                    (old_profile, old_title),
+                )
+            else:
+                if old_title != new_title or old_profile != new_profile:
+                    self._conn.execute(
+                        """
+                        UPDATE reminders
+                           SET title = ?, profile = ?, updated_at = ?
+                         WHERE done = 0 AND profile = ? AND title = ?
+                        """,
+                        (
+                            new_title, new_profile, now,
+                            old_profile, old_title,
+                        ),
+                    )
+                due = str(normalized["next_due_at"] or "")[:10]
+                if now_active and due and due != (
+                    previous["next_due_at"] or ""
+                ):
+                    try:
+                        due_date = datetime.strptime(
+                            due, "%Y-%m-%d"
+                        ).date()
+                    except ValueError:
+                        due_date = None
+                    if due_date is not None:
+                        reminder_due = max(
+                            due_date - timedelta(days=7),
+                            datetime.now().date(),
+                        ).strftime("%Y-%m-%d")
+                        self._conn.execute(
+                            """
+                            UPDATE reminders
+                               SET due_at = ?, note = ?, updated_at = ?
+                             WHERE done = 0 AND profile = ? AND title = ?
+                            """,
+                            (
+                                reminder_due, f"下次复查 {due}", now,
+                                new_profile, new_title,
+                            ),
+                        )
         return self.get_care_item(care_id)
 
     def get_care_item(self, care_id: int) -> Optional[Dict[str, Any]]:
@@ -7874,6 +7935,14 @@ class SessionStore:
                     reason = normalized["stop_reason"]
                     changes.append(
                         f"停药{('：' + reason) if reason else ''}"
+                    )
+                    # 停药后不再每日提醒服用；重新启用时由用户按需重建
+                    self._conn.execute(
+                        """
+                        DELETE FROM reminders
+                         WHERE done = 0 AND medication_id = ?
+                        """,
+                        (medication_id,),
                     )
             if previous["started_at"] != normalized["started_at"]:
                 changes.append(

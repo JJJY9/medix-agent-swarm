@@ -138,3 +138,58 @@ def test_vaccination_clearing_next_due_removes_reminder(
     assert all(
         row["id"] != reminder["id"] for row in _reminders(client)
     )
+
+
+def test_care_item_reschedule_and_deactivate_sync_reminder(
+    client_and_store,
+):
+    client, _store = client_and_store
+    care_item = client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "眼底检查",
+        "interval_days": 365, "next_due_at": _date(10),
+    }).json()["care_item"]
+    reminder = client.post(
+        f"/api/care-items/{care_item['id']}/reminder"
+    ).json()["reminder"]
+    assert reminder["due_at"] == _date(3)
+
+    client.patch(
+        f"/api/care-items/{care_item['id']}",
+        json={"next_due_at": _date(17)},
+    )
+    updated = next(
+        row for row in _reminders(client) if row["id"] == reminder["id"]
+    )
+    assert updated["due_at"] == _date(10)
+    assert _date(17) in updated["note"]
+
+    client.patch(
+        f"/api/care-items/{care_item['id']}",
+        json={"active": False},
+    )
+    assert all(
+        row["id"] != reminder["id"] for row in _reminders(client)
+    )
+
+
+def test_stopping_medication_removes_pending_reminder(client_and_store):
+    client, _store = client_and_store
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平", "frequency": "每日一次",
+    }).json()["medication"]
+    reminder = client.post("/api/reminders", json={
+        "title": "用药：氨氯地平",
+        "due_at": _date(0),
+        "profile": "妈妈",
+        "repeat_days": 1,
+        "medication_id": medication["id"],
+    }).json()["reminder"]
+
+    client.patch(
+        f"/api/medications/{medication['id']}",
+        json={"active": False, "stop_reason": "医生调整"},
+    )
+
+    assert all(
+        row["id"] != reminder["id"] for row in _reminders(client)
+    )
