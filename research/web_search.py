@@ -20,8 +20,8 @@ except ImportError:  # 离线测试环境可能没有安装 beautifulsoup4
 try:
     try:
         from ddgs import DDGS
-        # ddgs 支持的命名后端
-        _DDGS_BACKENDS = ("bing", "duckduckgo", "auto")
+        # ddgs 9.x 已禁用 bing 后端，继续指定会每次先失败一轮
+        _DDGS_BACKENDS = ("duckduckgo", "auto")
     except ImportError:
         from duckduckgo_search import DDGS
         # 旧版 duckduckgo_search 只接受 api/html/lite
@@ -150,6 +150,13 @@ class WebSearchTool:
                     raise RuntimeError(
                         "所有搜索后端均失败：" + "；".join(backend_errors)
                     )
+                if not search_results:
+                    # 后端正常返回但确实没有结果：立即返回，不要重试
+                    logger.info(
+                        "No results found "
+                        f"(query_length={len(str(query or ''))})"
+                    )
+                    return []
 
                 # 处理搜索结果
                 for result in search_results:

@@ -52,7 +52,8 @@ _RULES: Tuple[Dict[str, Any], ...] = (
         "key": "peptic_ulcer",
         "keywords": (
             "胃溃疡", "十二指肠溃疡", "十二指肠球部溃疡",
-            "复合性溃疡", "消化道溃疡", "消化道出血", "胃出血",
+            "复合性溃疡", "消化道溃疡", "消化性溃疡",
+            "消化道出血", "胃出血",
         ),
         "drug_groups": ("nsaids", "anticoagulants_antiplatelets"),
         "title": "溃疡/消化道出血与出血风险药物",
@@ -153,6 +154,12 @@ def _condition_names(conditions: Sequence[Any]) -> List[str]:
 
 _INACTIVE_MARKERS = ("已治愈", "治愈后", "家族史", "已好转", "已恢复")
 
+#: 这些词说明疾病仍在活动期，前面的「未/无」不是否定
+_ACTIVE_MARKERS = (
+    "未控制", "未治疗", "未愈", "未规范治疗", "未达标",
+    "控制不佳", "控制不良",
+)
+
 
 def _is_inactive_condition(name: str) -> bool:
     normalized = unicodedata.normalize("NFKC", name).lower()
@@ -165,6 +172,9 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     """判断疾病名是否以否定/已排除的语气提到该关键词。"""
     if "未治愈" in normalized:
         return False
+    if any(marker in normalized for marker in _ACTIVE_MARKERS):
+        # 「未控制的糖尿病」是活动疾病，不能被「未」当成否定
+        return False
     token = keyword.lower()
     if re.search(
         rf"(?:无|没有|否认|排除|非|未)[^，。；,;:：]{{0,6}}"
@@ -173,8 +183,9 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     ):
         return True
     if re.search(
-        rf"(?:no|without|negative for|denies|no history of)"
-        rf"[a-z ]{{0,20}}{re.escape(token)}",
+        rf"\b(?:no|without|denies)\b[a-z ]{{0,20}}"
+        rf"{re.escape(token)}"
+        rf"|negative for[a-z ]{{0,20}}{re.escape(token)}",
         normalized,
     ):
         return True

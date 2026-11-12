@@ -24,10 +24,27 @@ _UNTRUSTED_TITLE_LIMIT = 300
 _UNTRUSTED_SNIPPET_LIMIT = 500
 _UNTRUSTED_KB_LIMIT = 300
 
+#: 第三方文本里伪造的边界标签会提前闭合来源段，必须先中和
+_UNTRUSTED_TAG_PATTERN = re.compile(
+    r"<\s*/?\s*untrusted_source", re.IGNORECASE
+)
+
 
 def _sanitize_untrusted(value: Any, limit: int) -> str:
-    """归一化空白并截断第三方文本（含换行，防止伪造提示词小节）。"""
-    return " ".join(str(value or "").split())[:limit]
+    """归一化空白、中和边界标签并截断第三方文本。"""
+    text = " ".join(str(value or "").split())
+    text = _UNTRUSTED_TAG_PATTERN.sub("［untrusted_source", text)
+    return text[:limit]
+
+
+def _kb_source_title(metadata: Dict[str, Any]) -> str:
+    """知识库元数据用 disease/filename 表示标题，不能一律显示“医学知识”。"""
+    return str(
+        metadata.get("title")
+        or metadata.get("disease")
+        or metadata.get("filename")
+        or "医学知识"
+    )
 
 #: 列表行前缀（- / * / • 或数字编号），提示词并未强制模型只用 "-"
 _LIST_PREFIX_PATTERN = re.compile(r'^\s*(?:[-*•]\s*|\d+[.、)）:：]\s*)')
@@ -242,7 +259,7 @@ class EvidenceSynthesizer:
                 prompt += (
                     "标题: "
                     + _sanitize_untrusted(
-                        metadata.get('title', '医学知识'),
+                        _kb_source_title(metadata),
                         _UNTRUSTED_TITLE_LIMIT,
                     )
                     + "\n"
@@ -375,7 +392,7 @@ class EvidenceSynthesizer:
             metadata = doc.get('metadata', {})
             report.sources.append({
                 "type": "knowledge_base",
-                "title": metadata.get("title", "医学知识"),
+                "title": _kb_source_title(metadata),
                 "id": doc.get('id', 'unknown')
             })
 
