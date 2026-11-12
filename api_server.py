@@ -2155,6 +2155,8 @@ async def export_sessions():
 
     try:
         data = await asyncio.to_thread(get_session_store().export_data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("导出会话失败")
         raise HTTPException(status_code=500, detail="导出会话失败，请稍后重试。")

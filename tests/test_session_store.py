@@ -387,6 +387,19 @@ def test_export_data_includes_sessions_and_messages(store):
     assert sessions["s2"]["messages"][0]["content"] == "问题二"
 
 
+def test_export_refuses_table_over_import_limit(store, monkeypatch):
+    import memory.session_store as store_module
+
+    store.add_metric("妈妈", "weight", 62.0)
+    store.add_metric("妈妈", "weight", 63.0)
+    monkeypatch.setitem(
+        store_module.IMPORT_LIST_LIMITS, "health_metrics", 1
+    )
+
+    with pytest.raises(ValueError, match="健康指标"):
+        store.export_data()
+
+
 def test_favorite_filter_and_usage(store):
     store.save_exchange(
         "s1", "收藏问题", "收藏答复",
