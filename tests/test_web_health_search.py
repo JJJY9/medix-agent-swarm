@@ -96,6 +96,13 @@ def test_search_scope_is_visible():
     assert "`${scopeText}没有匹配「${query}」的记录。`" in SCRIPT
 
 
+def test_hidden_search_resets_query_state():
+    assert (
+        "function hideHealthSearchResults() {\n"
+        "  healthSearchQuery = '';"
+    ) in SCRIPT
+
+
 def test_deep_link_and_shortcut():
     assert "action === 'search'" in SCRIPT
     assert "await runHealthSearch(searchQuery)" in SCRIPT

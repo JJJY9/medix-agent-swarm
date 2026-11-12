@@ -64,3 +64,11 @@ def test_clear_done_button_visible_without_showing_done(client):
         "els.remindersShowDone.addEventListener('change', refreshReminderViews);"
         in app_js
     )
+
+
+def test_reminder_calendar_respects_show_done(client):
+    app_js = client.get("/static/app.js").text
+
+    assert "const visible = (items || []).filter((item) => (" in app_js
+    assert "els.remindersShowDone && els.remindersShowDone.checked" in app_js
+    assert "|| !item.done);" in app_js

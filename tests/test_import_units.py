@@ -26,6 +26,7 @@ def test_metric_import_converts_common_units(client_and_store):
         "2026-11-01T08:00,妈妈,腰围,31.5,,in,英寸\n"
         "2026-11-01T08:00,妈妈,体温,98.6,,F,华氏\n"
         "2026-11-01T08:00,妈妈,血糖,126,,mg/dL,毫克\n"
+        "2026-11-01T08:00,妈妈,饮水量,1.5,,L,升\n"
         "2026-11-01T08:00,妈妈,血压,16,10.7,kPa,千帕\n"
         "2026-11-01T08:00,妈妈,体重,70,,,\n"
         "2026-11-01T08:00,妈妈,体重,11,,stone,未知单位\n"
@@ -38,7 +39,7 @@ def test_metric_import_converts_common_units(client_and_store):
 
     assert response.status_code == 200
     result = response.json()
-    assert result["imported"] == 6
+    assert result["imported"] == 7
     assert result["invalid"] == 1
 
     metrics = client.get("/api/metrics").json()["metrics"]
@@ -55,6 +56,7 @@ def test_metric_import_converts_common_units(client_and_store):
     assert by_metric["glucose"][0]["value1"] == pytest.approx(6.99, abs=0.02)
     assert by_metric["bp"][0]["value1"] == pytest.approx(120.01, abs=0.1)
     assert by_metric["bp"][0]["value2"] == pytest.approx(80.26, abs=0.1)
+    assert by_metric["water"][0]["value1"] == pytest.approx(1500.0)
     assert not any(
         item["metric"] == "weight" and item["value1"] == 11
         for item in metrics

@@ -7444,6 +7444,7 @@ function setHealthSearchStatus(text, isError = false) {
 }
 
 function hideHealthSearchResults() {
+  healthSearchQuery = '';
   if (els.healthSearchResults) {
     els.healthSearchResults.hidden = true;
     els.healthSearchResults.replaceChildren();
@@ -8051,8 +8052,11 @@ function renderReminderCalendar(items) {
     : '月历';
   if (!reminderCalendarOpen) return;
 
+  const visible = (items || []).filter((item) => (
+    els.remindersShowDone && els.remindersShowDone.checked
+  ) || !item.done);
   const counts = {};
-  for (const item of items || []) {
+  for (const item of visible) {
     const due = String(item.due_at || '').slice(0, 10);
     if (!due) continue;
     counts[due] = (counts[due] || 0) + 1;

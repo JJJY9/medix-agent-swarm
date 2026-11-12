@@ -1062,6 +1062,12 @@ def _convert_import_metric(
     if text in identity.get(metric, set()):
         return value1, value2
 
+    if metric == "water":
+        factor = {"l": 1000.0, "升": 1000.0, "公升": 1000.0}.get(text)
+        if factor is None:
+            return None
+        return value1 * factor, value2
+
     if metric == "weight":
         factor = {
             "lb": 0.45359237, "lbs": 0.45359237, "磅": 0.45359237,
