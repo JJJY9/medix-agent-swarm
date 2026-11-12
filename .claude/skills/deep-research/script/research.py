@@ -4,6 +4,7 @@ Deep Research Skill
 整合网络搜索和 Milvus 医学知识库进行深度研究
 """
 from typing import Dict, Any
+import asyncio
 from loguru import logger
 
 
@@ -51,7 +52,9 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
 
         from research.deep_research_workflow import DeepResearchWorkflow
 
-        workflow = DeepResearchWorkflow()
+        # 构造函数会加载知识库/Embedding 模型，必须放到线程里，
+        # 否则冷启动首次调用会阻塞整个 FastAPI 事件循环
+        workflow = await asyncio.to_thread(DeepResearchWorkflow)
 
         # 执行研究
         # 注意：DeepResearchWorkflow.run() 返回的是 ResearchReport 对象，不是 dict
