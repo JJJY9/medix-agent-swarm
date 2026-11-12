@@ -14567,6 +14567,7 @@ let attachmentLinkRefRequestSeq = 0;
 let attachmentPreviewUrl = null;
 let attachmentPreviewItem = null;
 let attachmentPreviewReturnFocus = null;
+let attachmentPreviewRequestSeq = 0;
 let attachmentRefCounts = { visit: {}, lab: {} };
 let attachmentRefFilter = null;
 let attachmentFilterTimer = null;
@@ -15520,6 +15521,8 @@ async function editAttachmentNote(item) {
 }
 
 function closeAttachmentPreview() {
+  // 关闭后作废仍在途的打开请求，避免旧响应重新弹出预览
+  attachmentPreviewRequestSeq += 1;
   const wasOpen = els.attachmentPreview && !els.attachmentPreview.hidden;
   if (attachmentPreviewUrl) {
     URL.revokeObjectURL(attachmentPreviewUrl);
@@ -15581,6 +15584,7 @@ function downloadPreviewAttachment() {
 }
 
 async function openAttachmentFile(item, download = false) {
+  const requestSeq = download ? 0 : ++attachmentPreviewRequestSeq;
   try {
     const res = await fetch(`/api/attachments/${item.id}/file`);
     if (!res.ok) {
@@ -15588,6 +15592,13 @@ async function openAttachmentFile(item, download = false) {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     const blob = await res.blob();
+    if (
+      !download
+      && (requestSeq !== attachmentPreviewRequestSeq || !metricsOpen)
+    ) {
+      // 已有更新的查看请求，或抽屉已关闭：丢弃本次响应
+      return;
+    }
     const url = URL.createObjectURL(blob);
     if (download) {
       const anchor = document.createElement('a');
