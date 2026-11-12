@@ -280,7 +280,7 @@ class BulkSessionsRequest(StrictRequestModel):
 
 
 class BulkIdsRequest(StrictRequestModel):
-    ids: List[int] = Field(..., min_length=1, max_length=500)
+    ids: List[int] = Field(..., min_length=1, max_length=2000)
 
 
 class BulkArchiveRequest(BulkSessionsRequest):
