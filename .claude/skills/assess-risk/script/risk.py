@@ -19,10 +19,10 @@ def get_knowledge_base():
     """获取知识库单例"""
     global _kb_instance
     if _kb_instance is None:
-        from knowledge.service import ensure_knowledge_index_fresh
-        ensure_knowledge_index_fresh()
         from knowledge.milvus_kb import MedicalKnowledgeBase
         _kb_instance = MedicalKnowledgeBase()
+        from knowledge.service import ensure_knowledge_index_fresh
+        ensure_knowledge_index_fresh(_kb_instance)
     return _kb_instance
 
 

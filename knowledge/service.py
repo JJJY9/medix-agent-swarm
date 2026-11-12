@@ -497,6 +497,17 @@ def get_knowledge_service() -> KnowledgeService:
     return _service
 
 
-def ensure_knowledge_index_fresh() -> None:
-    """技能入口在检索前调用：索引与磁盘文档不一致时自动重建。"""
-    get_knowledge_service().ensure_fresh()
+_freshness_lock = threading.Lock()
+
+
+def ensure_knowledge_index_fresh(kb: Any = None) -> None:
+    """技能入口在检索前调用：索引与磁盘文档不一致时自动重建。
+
+    传入技能自己的知识库实例可复用它完成重建，避免同一进程再加载
+    一份 embedding 模型；重建仍用模块级锁串行，防止并发技能互相覆盖。
+    """
+    if kb is None:
+        get_knowledge_service().ensure_fresh()
+        return
+    with _freshness_lock:
+        KnowledgeService(kb=kb).ensure_fresh()

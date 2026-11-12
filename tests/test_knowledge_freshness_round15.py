@@ -121,6 +121,24 @@ def test_module_level_freshness_helper(monkeypatch):
     assert calls == [True]
 
 
+def test_kb_scoped_freshness_reuses_instance(monkeypatch):
+    used = []
+
+    class FakeService:
+        def __init__(self, kb=None):
+            self.kb = kb
+
+        def ensure_fresh(self):
+            used.append(self.kb)
+
+    monkeypatch.setattr("knowledge.service.KnowledgeService", FakeService)
+    fake_kb = object()
+
+    ensure_knowledge_index_fresh(fake_kb)
+
+    assert used == [fake_kb]
+
+
 def test_skill_scripts_refresh_index_before_creating_kb():
     from pathlib import Path
 
@@ -137,8 +155,8 @@ def test_skill_scripts_refresh_index_before_creating_kb():
         script = (
             root / ".claude" / "skills" / name / "script" / filename
         ).read_text(encoding="utf-8")
-        assert "ensure_knowledge_index_fresh()" in script, name
+        assert "ensure_knowledge_index_fresh(_kb_instance)" in script, name
     research = (
         root / "research" / "deep_research_workflow.py"
     ).read_text(encoding="utf-8")
-    assert "ensure_knowledge_index_fresh()" in research
+    assert "ensure_knowledge_index_fresh(_kb_instance)" in research
