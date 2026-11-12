@@ -10,6 +10,7 @@ import re
 from loguru import logger
 
 from core import LLMClient
+from core.usage import merge_usage
 from research.web_search import SearchResult
 
 #: 列表行前缀（- / * / • 或数字编号），提示词并未强制模型只用 "-"
@@ -112,7 +113,8 @@ class EvidenceSynthesizer:
         self,
         query: str,
         web_results: List[SearchResult] = None,
-        kb_results: List[Dict[str, Any]] = None
+        kb_results: List[Dict[str, Any]] = None,
+        usage_out: Optional[Dict[str, int]] = None,
     ) -> ResearchReport:
         """
         综合多来源信息
@@ -121,6 +123,7 @@ class EvidenceSynthesizer:
             query: 研究问题
             web_results: 网络搜索结果
             kb_results: 知识库检索结果
+            usage_out: 可选用量字典，累计本次综合的 token 消耗
 
         Returns:
             研究报告
@@ -138,10 +141,16 @@ class EvidenceSynthesizer:
         prompt = self._build_synthesis_prompt(query, web_results, kb_results)
 
         try:
-            # 调用 LLM 进行综合
-            response = await self.llm_client.chat([
-                {"role": "user", "content": prompt}
-            ])
+            # 调用 LLM 进行综合，同时累计 token 用量
+            messages = [{"role": "user", "content": prompt}]
+            if hasattr(self.llm_client, "chat_with_usage"):
+                response, usage = await self.llm_client.chat_with_usage(
+                    messages
+                )
+                if usage_out is not None and usage:
+                    merge_usage(usage_out, usage)
+            else:
+                response = await self.llm_client.chat(messages)
 
             # 解析响应生成报告
             report = self._parse_response(query, response, web_results, kb_results)

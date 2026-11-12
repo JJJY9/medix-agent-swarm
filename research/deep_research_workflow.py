@@ -9,6 +9,7 @@ import asyncio
 import re
 
 from core import LLMClient
+from core.usage import merge_usage
 from research.web_search import WebSearchTool, SearchResult
 from knowledge.milvus_kb import MedicalKnowledgeBase
 from research.evidence_synthesizer import EvidenceSynthesizer, ResearchReport
@@ -63,7 +64,8 @@ class DeepResearchWorkflow:
         self,
         question: str,
         max_web_results: int = 10,
-        max_kb_results: int = 5
+        max_kb_results: int = 5,
+        usage_out: Optional[Dict[str, int]] = None,
     ) -> ResearchReport:
         """
         执行深度研究
@@ -72,6 +74,7 @@ class DeepResearchWorkflow:
             question: 研究问题
             max_web_results: 最大网络搜索结果数
             max_kb_results: 最大知识库检索结果数
+            usage_out: 可选用量字典，累计规划与综合的 token 消耗
 
         Returns:
             研究报告
@@ -81,7 +84,7 @@ class DeepResearchWorkflow:
         )
 
         # Step 1: 查询规划
-        sub_queries = await self._plan_queries(question)
+        sub_queries = await self._plan_queries(question, usage_out=usage_out)
         logger.info(f"Planned {len(sub_queries)} sub-queries")
 
         # Step 2: 并行搜索
@@ -134,7 +137,8 @@ class DeepResearchWorkflow:
         report = await self.synthesizer.synthesize(
             query=question,
             web_results=web_results,
-            kb_results=kb_results
+            kb_results=kb_results,
+            usage_out=usage_out,
         )
         if not report.key_findings:
             logger.warning("Report has no key findings")
@@ -215,7 +219,11 @@ class DeepResearchWorkflow:
             logger.error(f"Milvus search failed: {e}")
             return []
 
-    async def _plan_queries(self, question: str) -> List[str]:
+    async def _plan_queries(
+        self,
+        question: str,
+        usage_out: Optional[Dict[str, int]] = None,
+    ) -> List[str]:
         """
         查询规划：将复杂问题拆解为多个子查询
 
@@ -245,9 +253,15 @@ class DeepResearchWorkflow:
 """
 
         try:
-            response = await self.llm_client.chat([
-                {"role": "user", "content": prompt}
-            ])
+            messages = [{"role": "user", "content": prompt}]
+            if hasattr(self.llm_client, "chat_with_usage"):
+                response, usage = await self.llm_client.chat_with_usage(
+                    messages
+                )
+                if usage_out is not None and usage:
+                    merge_usage(usage_out, usage)
+            else:
+                response = await self.llm_client.chat(messages)
 
             # 解析子查询
             lines = response.strip().split('\n')
