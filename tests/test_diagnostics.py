@@ -50,6 +50,21 @@ def test_cli_report_includes_runtime_and_database_errors(capsys):
     assert "环境正常" not in out
 
 
+def test_cli_prechecks_required_modules_before_importing_core():
+    module = _load_diagnose_script()
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "scripts" / "diagnose.py"
+    ).read_text(encoding="utf-8")
+
+    assert callable(module._missing_dependencies)
+    assert "importlib.util.find_spec" in source
+    assert "请先安装依赖：python -m pip install -r requirements.txt" in source
+    assert source.index("_missing = _missing_dependencies()") < source.index(
+        "from core.console import ensure_utf8_stdio"
+    )
+
+
 def test_report_shape():
     report = collect_report()
 

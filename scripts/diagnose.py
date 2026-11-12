@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -22,9 +23,50 @@ from typing import Any, Dict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.console import ensure_utf8_stdio
+#: 不导入 core 也能检查的必需依赖（core/__init__ 会连锁导入整个 agent 栈）
+_REQUIRED_MODULES = (
+    ("openai", "openai"),
+    ("loguru", "loguru"),
+    ("yaml", "pyyaml"),
+    ("dotenv", "python-dotenv"),
+    ("numpy", "numpy"),
+    ("fastapi", "fastapi"),
+    ("uvicorn", "uvicorn"),
+    ("sentence_transformers", "sentence-transformers"),
+)
 
-ensure_utf8_stdio()
+
+def _missing_dependencies() -> list:
+    missing = []
+    for module_name, package_name in _REQUIRED_MODULES:
+        try:
+            available = (
+                importlib.util.find_spec(module_name) is not None
+            )
+        except (ImportError, ModuleNotFoundError, ValueError):
+            available = False
+        if not available:
+            missing.append(package_name)
+    return missing
+
+
+_missing = _missing_dependencies()
+if _missing:
+    print("❌ 缺少依赖：" + "、".join(_missing))
+    print("请先安装依赖：python -m pip install -r requirements.txt")
+    raise SystemExit(2)
+
+try:
+    from core.console import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
+except Exception:
+    # 标准输出仍是 GBK 时，至少保证本脚本的报错不会因 emoji 再抛异常
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 try:
     from core.diagnostics import check_api, check_llm, collect_report
