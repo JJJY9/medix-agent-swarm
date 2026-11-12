@@ -3699,21 +3699,42 @@ class SessionStore:
                     )
                     if normalized is None:
                         continue
-                    existing = self._conn.execute(
-                        """
-                        SELECT id FROM medications
-                         WHERE profile = ? AND name = ? AND dose = ?
-                           AND frequency = ?
-                        """,
-                        (
-                            normalized["profile"], normalized["name"],
-                            normalized["dose"], normalized["frequency"],
-                        ),
-                    ).fetchone()
+                    created_key = str(raw.get("created_at") or "").strip()[:40]
+                    if created_key:
+                        # 备份带创建时间：同一创建时间且停药日期相同视为同一条
+                        # 记录（本地改在用状态后重复导入不新增）；停药日期不同
+                        # 则是停用后重开的新疗程，必须各自保留。
+                        existing = self._conn.execute(
+                            """
+                            SELECT id FROM medications
+                             WHERE profile = ? AND name = ? AND dose = ?
+                               AND frequency = ? AND created_at = ?
+                               AND COALESCE(stopped_at, '') = ?
+                            """,
+                            (
+                                normalized["profile"], normalized["name"],
+                                normalized["dose"], normalized["frequency"],
+                                created_key,
+                                normalized["stopped_at"],
+                            ),
+                        ).fetchone()
+                    else:
+                        # CSV 导入没有创建时间，保持原有四列去重以维持幂等
+                        existing = self._conn.execute(
+                            """
+                            SELECT id FROM medications
+                             WHERE profile = ? AND name = ? AND dose = ?
+                               AND frequency = ?
+                            """,
+                            (
+                                normalized["profile"], normalized["name"],
+                                normalized["dose"], normalized["frequency"],
+                            ),
+                        ).fetchone()
                     if existing is not None:
                         actual_id = int(existing["id"])
                     else:
-                        created_at = str(raw.get("created_at") or now)[:40]
+                        created_at = created_key or now
                         updated_at = str(
                             raw.get("updated_at") or created_at
                         )[:40]
