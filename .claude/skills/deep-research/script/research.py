@@ -38,6 +38,8 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
     except (TypeError, ValueError):
         scale = 2
 
+    usage: Dict[str, int] = {}
+
     try:
         # 调用深度研究工作流
         import sys
@@ -56,7 +58,8 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
         report = await workflow.run(
             question=query,  # 参数名是 question，不是 query
             max_web_results=scale * 5,
-            max_kb_results=scale * 3
+            max_kb_results=scale * 3,
+            usage_out=usage,
         )
 
         # report 是 ResearchReport 对象，有以下属性：
@@ -76,7 +79,9 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
             "source_count": len(report.sources),
             "evidence_level": report.evidence_level,
             "status": "error" if failed else "completed",
-            "data_sources": data_sources
+            "data_sources": data_sources,
+            "usage": usage,
+            "llm_calls": 2,
         }
 
     except Exception as e:
@@ -87,7 +92,9 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
             "confidence": "low",
             "source_count": 0,
             "status": "error",
-            "data_sources": ""
+            "data_sources": "",
+            "usage": usage,
+            "llm_calls": 0,
         }
 
 

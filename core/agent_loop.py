@@ -232,6 +232,17 @@ class AgentLoop:
 
                             # 收集 Skill 返回的知识库来源，最终随意见一起展示
                             if isinstance(tool_result, dict):
+                                # 工具内部也可能调用 LLM（如 deep_research），
+                                # 其用量需要并入本轮会诊的 token/费用统计
+                                tool_usage = tool_result.get("usage")
+                                if isinstance(tool_usage, dict):
+                                    merge_usage(usage, tool_usage)
+                                try:
+                                    llm_calls += int(
+                                        tool_result.get("llm_calls") or 0
+                                    )
+                                except (TypeError, ValueError, OverflowError):
+                                    pass
                                 tool_sources = tool_result.get("sources")
                                 if isinstance(tool_sources, list):
                                     sources.extend(tool_sources)
