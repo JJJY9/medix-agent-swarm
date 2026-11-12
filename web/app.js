@@ -11461,6 +11461,8 @@ let editingLabProfile = '';
 let labSaving = false;
 let labRequestSeq = 0;
 let labItemsCache = [];
+// 列表一次最多渲染的行数；迷你图仍基于完整缓存，避免十万级 DOM 节点
+let labRenderLimit = 300;
 let labSearchTimer = null;
 
 function setLabStatus(text, isError = false) {
@@ -11583,8 +11585,25 @@ function renderLabs(items) {
     resetLabForm();
   }
   const sparklineSeen = new Set();
+  // 按「项目 + 单位」一次性分组排序，避免每行都全量过滤并排序缓存
+  const seriesByItem = new Map();
+  for (const row of labItemsCache || []) {
+    const key = `${row.item}\u0000${row.unit || ''}`;
+    let list = seriesByItem.get(key);
+    if (!list) {
+      list = [];
+      seriesByItem.set(key, list);
+    }
+    list.push(row);
+  }
+  for (const list of seriesByItem.values()) {
+    list.sort((a, b) => (
+      String(a.tested_at || '').localeCompare(String(b.tested_at || ''))
+    ));
+  }
 
-  for (const item of items) {
+  const visible = items.slice(0, labRenderLimit);
+  for (const item of visible) {
     const li = document.createElement('li');
     li.className = 'metric-item';
 
@@ -11641,15 +11660,9 @@ function renderLabs(items) {
     ].filter(Boolean).join(' · ');
 
     main.append(title, meta);
-    const series = (labItemsCache || [])
-      .filter((row) => (
-        row.item === item.item
-        && (row.unit || '') === (item.unit || '')
-      ))
-      .sort((a, b) => (
-        String(a.tested_at || '').localeCompare(String(b.tested_at || ''))
-      ))
-      .slice(-20);
+    const series = (seriesByItem.get(
+      `${item.item}\u0000${item.unit || ''}`
+    ) || []).slice(-20);
     const sparkline = renderLabSparkline(series);
     const sparkKey = `${item.item}\u0000${item.unit || ''}`;
     if (sparkline && !sparklineSeen.has(sparkKey)) {
@@ -11693,6 +11706,21 @@ function renderLabs(items) {
     li.append(main, actions);
     els.labList.appendChild(li);
   }
+  if (items.length > visible.length) {
+    const more = document.createElement('li');
+    more.className = 'lab-more';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'metric-edit';
+    button.textContent =
+      `显示更多（还有 ${items.length - visible.length} 条）`;
+    button.addEventListener('click', () => {
+      labRenderLimit += 300;
+      renderLabs(filterLabs(labItemsCache));
+    });
+    more.appendChild(button);
+    els.labList.appendChild(more);
+  }
 }
 
 async function loadLabs() {
@@ -11707,6 +11735,7 @@ async function loadLabs() {
     const data = await res.json();
     if (requestSeq !== labRequestSeq) return;
     labItemsCache = data.lab_results || [];
+    labRenderLimit = 300;
     renderLabs(filterLabs(labItemsCache));
   } catch {
     if (requestSeq !== labRequestSeq) return;
