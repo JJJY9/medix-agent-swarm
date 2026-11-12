@@ -1352,6 +1352,26 @@ KNOWLEDGE_WRITE_PATHS = {
     "/api/knowledge/upload-batch",
 }
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
+# 访问令牌错误尝试限制，避免局域网内暴力猜测
+auth_failure_limiter = SlidingWindowLimiter(10, window=300)
+_short_access_token_warned = False
+
+
+def _warn_if_short_access_token() -> None:
+    """令牌过短时提醒一次；不拒绝启动，避免影响已有部署。"""
+    global _short_access_token_warned
+    token = get_access_token()
+    if (
+        token
+        and len(token) < 16
+        and not _short_access_token_warned
+    ):
+        _short_access_token_warned = True
+        logger.warning(
+            "MEDIX_ACCESS_TOKEN 长度不足 16 个字符，容易被猜测，"
+            "建议更换更长的随机令牌。"
+        )
+
 # 自检端点会真实调用一次付费模型，单独限制频率
 diagnose_limiter = SlidingWindowLimiter(5)
 # 重建/上传会触发全量索引，限制频率避免放大资源消耗
@@ -1478,6 +1498,21 @@ def _rate_limit_key(request: Request) -> str:
         return f"token:{digest}"
     host = request.client.host if request.client else "unknown"
     return f"ip:{host}"
+
+
+def _client_ip_key(request: Request) -> str:
+    """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。"""
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """本机请求不参与令牌错误限流（本机进程本身已可信）。"""
+    host = request.client.host if request.client else ""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host in {"testclient", "localhost"}
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -1608,12 +1643,31 @@ async def require_access_token(request: Request, call_next):
         get_access_token()
         and path.startswith("/api/")
         and path not in PUBLIC_API_PATHS
-        and not is_authorized(request)
     ):
-        return add_security_headers(JSONResponse(
-            status_code=401,
-            content={"detail": "需要访问令牌", "code": "auth_required"},
-        ))
+        _warn_if_short_access_token()
+        if not is_authorized(request):
+            if not _is_loopback_client(request):
+                allowed, retry_after = auth_failure_limiter.check(
+                    _client_ip_key(request)
+                )
+                if not allowed:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(retry_after, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(retry_after))
+                            )
+                        },
+                    ))
+            return add_security_headers(JSONResponse(
+                status_code=401,
+                content={"detail": "需要访问令牌", "code": "auth_required"},
+            ))
 
     if path in CHAT_PATHS:
         chat_limiter.limit = get_rate_limit()

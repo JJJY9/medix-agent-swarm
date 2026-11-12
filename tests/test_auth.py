@@ -1,9 +1,11 @@
 """可选访问令牌校验的离线测试。"""
 import pytest
 from fastapi.testclient import TestClient
+from loguru import logger
 
 import api_server
 import memory
+from core.ratelimit import SlidingWindowLimiter
 from memory.session_store import SessionStore
 
 
@@ -112,3 +114,50 @@ def test_non_ascii_token_is_compared_safely(client, monkeypatch):
 
     assert ok.status_code == 200
     assert wrong.status_code == 401
+
+
+def test_remote_wrong_tokens_are_rate_limited(client, monkeypatch):
+    token = "a-secure-random-token-123"
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", token)
+    monkeypatch.setattr(
+        api_server, "auth_failure_limiter",
+        SlidingWindowLimiter(2, window=300),
+    )
+    monkeypatch.setattr(
+        api_server, "_is_loopback_client", lambda request: False
+    )
+    wrong = {"X-Medix-Token": "bad-guess"}
+
+    first = client.get("/api/sessions", headers=wrong)
+    second = client.get("/api/sessions", headers=wrong)
+    limited = client.get("/api/sessions", headers=wrong)
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert limited.status_code == 429
+    assert limited.json()["code"] == "auth_rate_limited"
+    assert limited.headers.get("Retry-After")
+
+    # 正确令牌不进入失败计数，不会被错误尝试连累
+    ok = client.get("/api/sessions", headers={"X-Medix-Token": token})
+    assert ok.status_code == 200
+
+
+def test_short_access_token_warns_once(client, monkeypatch):
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "short")
+    api_server._short_access_token_warned = False
+    messages = []
+    sink = logger.add(
+        lambda message: messages.append(str(message)), level="WARNING"
+    )
+    try:
+        client.get("/api/sessions")
+        client.get("/api/sessions")
+    finally:
+        logger.remove(sink)
+        api_server._short_access_token_warned = False
+
+    warnings = [
+        message for message in messages if "长度不足 16" in message
+    ]
+    assert len(warnings) == 1
