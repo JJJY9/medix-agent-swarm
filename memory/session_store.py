@@ -4239,17 +4239,47 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM allergies
-                         WHERE profile = ? AND substance = ? AND kind = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["substance"],
-                            normalized["kind"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    # 同一过敏原可能有多次不同反应（如先皮疹后休克），
+                    # 判重必须带上反应/程度/发现时间，不能只按物质+类型
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM allergies
+                             WHERE profile = ? AND substance = ?
+                               AND kind = ? AND reaction = ?
+                               AND severity = ? AND noted_at = ?
+                               AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["substance"],
+                                normalized["kind"],
+                                normalized["reaction"],
+                                normalized["severity"],
+                                normalized["noted_at"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM allergies
+                             WHERE profile = ? AND substance = ?
+                               AND kind = ? AND reaction = ?
+                               AND severity = ? AND noted_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["substance"],
+                                normalized["kind"],
+                                normalized["reaction"],
+                                normalized["severity"],
+                                normalized["noted_at"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4264,7 +4294,7 @@ class SessionStore:
                             normalized["reaction"], normalized["severity"],
                             normalized["kind"], normalized["active"],
                             normalized["noted_at"], normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
@@ -4437,16 +4467,44 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM conditions
-                         WHERE profile = ? AND name = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["name"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    # 同名慢病可能是不同次诊断/不同状态，判重需带上
+                    # 诊断时间、状态与严重程度，避免复发记录被吞掉
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM conditions
+                             WHERE profile = ? AND name = ?
+                               AND diagnosed_at = ? AND status = ?
+                               AND severity = ? AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["name"],
+                                normalized["diagnosed_at"],
+                                normalized["status"],
+                                normalized["severity"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM conditions
+                             WHERE profile = ? AND name = ?
+                               AND diagnosed_at = ? AND status = ?
+                               AND severity = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["name"],
+                                normalized["diagnosed_at"],
+                                normalized["status"],
+                                normalized["severity"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4462,7 +4520,7 @@ class SessionStore:
                             normalized["diagnosed_at"],
                             normalized["status"],
                             normalized["severity"], normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
