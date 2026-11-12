@@ -69,6 +69,121 @@ _MEDICATION_TERMS = (
 _COUNT_UNIT_SUFFIX = re.compile(r"(?:片|粒|支)\s*$")
 #: “误服 20 片”是中毒描述，不是处方
 _OVERDOSE_PATTERN = re.compile(r"(?:误服|过量|超量|超过|中毒|自杀|自伤|服毒)")
+#: 复述患者现有用药、说明书剂量或明确否定性建议，不是开处方
+_SAFE_PRESCRIPTION_CONTEXT = re.compile(
+    r"(?:"
+    r"正在(?:服用|使用|口服|注射)|目前在?(?:服用|使用)|"
+    r"已经?(?:服用|使用)|长期(?:服用|使用)|一直(?:服用|使用)|"
+    r"既往(?:用药|服用)|现有用药|您(?:目前|正在)?(?:服用|使用)的|"
+    r"常见剂量|常用剂量|常规剂量|说明书|最大剂量|"
+    r"(?:不建议|不推荐|无需|不必|不能|不可以|勿|不要|避免|禁止|别|"
+    r"不可|不宜|不应)(?:自行)?(?:服用|使用|口服|注射)"
+    r")"
+)
+#: 相互作用/联合用药提示，需同时出现风险提示才视为安全语境
+_INTERACTION_MARKER = re.compile(
+    r"(?:相互作用|联合使用|联合应用|联合用药|同时(?:服用|使用)|"
+    r"(?<!适)合用|联用)"
+)
+_INTERACTION_WARNING = re.compile(
+    r"(?:相互作用|风险|出血|禁忌|不良反应|注意|监测|谨慎|增加|避免|"
+    r"不宜|慎用)"
+)
+#: 同一分句里出现明确的用药推荐时，安全语境不成立（“不建议服用”除外）
+#: 允许推荐词与用药词之间隔着药名/剂量列表，但不能跨标点。
+_AFFIRMATIVE_MEDICATION_ADVICE = re.compile(
+    r"(?<![不无])(?:建议|推荐|可以|可|应|请|需要|需|必须|务必|坚持|"
+    r"一定要|最好|宜)"
+    r"([^，。；！？\n]{0,30}?)"
+    r"(?:服用|使用|吃|口服|注射|应用|合用|联用|加用|改用|换用|换成|"
+    r"改为|调整为|加量|减量|增量|增至|降至)"
+)
+#: 推荐动词与用药动词之间出现否定时，不视为肯定性用药建议
+_NEGATION_IN_MEDICATION_ADVICE = re.compile(
+    r"(?:勿|不要|避免|禁止|别|不可|不宜|不应|不建议|不推荐|无需|不必|"
+    r"不能|不可以)"
+)
+#: 上一分句里的推荐语气可能支配下一分句的用药（“建议在医生指导下，长期服用…”）
+_RECOMMENDATION_VERB = re.compile(
+    r"(?<![不无])(?:建议|推荐|必须|务必|请|需要|需|最好|宜|应|可以|可)"
+)
+_USE_VERB = re.compile(
+    r"(?:服用|使用|吃|口服|注射|应用|合用|联用|加用|改用|换用|换成|"
+    r"改为|调整为|加量|减量|增量|增至|降至)"
+)
+
+
+def _clause_text(text: str, match: "re.Match[str]") -> str:
+    """返回匹配所在完整分句（两侧以标点或换行分隔）。"""
+    start = match.start()
+    while start > 0 and text[start - 1] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        start -= 1
+    end = match.end()
+    while end < len(text) and text[end] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        end += 1
+    return text[start:end]
+
+
+def _previous_clause_text(text: str, match: "re.Match[str]") -> str:
+    """返回匹配前一个由逗号类标点连接的分句，用于识别跨分句的推荐语气。"""
+    start = match.start()
+    while start > 0 and text[start - 1] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
+        start -= 1
+    pos = start - 1
+    if pos < 0 or text[pos] not in "，、,;":
+        return ""
+    end = pos
+    prev_start = end
+    while (
+        prev_start > 0
+        and text[prev_start - 1] not in _DIAGNOSIS_CLAUSE_DELIMITERS
+    ):
+        prev_start -= 1
+    return text[prev_start:end].strip()
+
+
+def _has_affirmative_medication_advice(text: str) -> bool:
+    """是否含明确的用药推荐（排除推荐动词后带否定的情况）。"""
+    for advice in _AFFIRMATIVE_MEDICATION_ADVICE.finditer(text):
+        if not _NEGATION_IN_MEDICATION_ADVICE.search(advice.group(1)):
+            return True
+    return False
+
+
+def _match_in_safe_medication_context(text: str, match: "re.Match[str]") -> bool:
+    """判断剂量匹配是否只是在复述现有用药/说明书信息，而非给出处方。
+
+    只按分句判断，避免相邻分句的“正在服用”等措辞豁免另一分句里的换药建议；
+    但上一分句的推荐语气（“建议在医生指导下，”）可以支配当前分句的用药。
+    """
+    clause = _clause_text(text, match)
+    if _has_affirmative_medication_advice(clause):
+        return False
+    previous = _previous_clause_text(text, match)
+    if (
+        previous
+        and _RECOMMENDATION_VERB.search(previous)
+        and _USE_VERB.search(clause)
+    ):
+        return False
+    if _SAFE_PRESCRIPTION_CONTEXT.search(clause):
+        return True
+    if (
+        _INTERACTION_MARKER.search(clause)
+        and _INTERACTION_WARNING.search(clause)
+    ):
+        return True
+    # 相互作用提示可能写在上一分句（“与华法林合用时，布洛芬 200mg 会增加出血风险”）
+    if (
+        previous
+        and _INTERACTION_MARKER.search(previous)
+        and (
+            _INTERACTION_WARNING.search(previous)
+            or _INTERACTION_WARNING.search(clause)
+        )
+    ):
+        return True
+    return False
 
 
 def _clause_prefix(text: str, start: int) -> str:
@@ -130,6 +245,8 @@ def _contains_prescription(output: str) -> bool:
         for match in pattern.finditer(output):
             if _match_is_overdose(output, match):
                 continue
+            if _match_in_safe_medication_context(output, match):
+                continue
             # 片/粒/支也可能是食物（“每天吃一片面包”），
             # 没有明确药名或“药”语境时不算处方
             if (
@@ -144,14 +261,20 @@ def _contains_prescription(output: str) -> bool:
 
     # 有用药语境时，片/粒计数也可能是食物，需再匹配具体用法
     for match in _COUNT_UNIT_PATTERN.finditer(output):
-        if not _match_is_overdose(output, match):
-            return True
+        if _match_is_overdose(output, match):
+            continue
+        if _match_in_safe_medication_context(output, match):
+            continue
+        return True
 
     # 已知药名 + 任意剂量（如“布洛芬 200mg”）
     if known_drug:
         for match in _DOSE_PATTERN.finditer(output):
-            if not _match_is_overdose(output, match):
-                return True
+            if _match_is_overdose(output, match):
+                continue
+            if _match_in_safe_medication_context(output, match):
+                continue
+            return True
     return False
 
 

@@ -572,11 +572,8 @@ class AgentLoop:
                             user_input=user_input,
                         )
                         if not recheck.get("valid"):
-                            logger.warning(
-                                "⚠️ 自动修复后仍有违规: "
-                                f"{recheck.get('violations')}"
-                            )
                             # 再尝试一轮可自动修复项（例如截断后补回声明）
+                            second_pass = None
                             if (
                                 self.auto_fixer
                                 and recheck.get("auto_fixable")
@@ -586,8 +583,28 @@ class AgentLoop:
                                     recheck.get("auto_fixable"),
                                     user_input=user_input,
                                 )
-                                if second_pass != final_answer:
-                                    final_answer = second_pass
+                            if (
+                                second_pass is not None
+                                and second_pass != final_answer
+                            ):
+                                final_answer = second_pass
+                                final_check = self.validator.validate_output(
+                                    agent.agent_id,
+                                    final_answer,
+                                    user_input=user_input,
+                                )
+                                if final_check.get("valid"):
+                                    logger.info("✅ 二次自动修复后已无违规")
+                                else:
+                                    logger.warning(
+                                        "⚠️ 二次自动修复后仍有违规: "
+                                        f"{final_check.get('violations')}"
+                                    )
+                            else:
+                                logger.warning(
+                                    "⚠️ 自动修复后仍有违规: "
+                                    f"{recheck.get('violations')}"
+                                )
 
         result = {
             'answer': final_answer,
