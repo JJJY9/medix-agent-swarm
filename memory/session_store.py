@@ -6302,31 +6302,33 @@ class SessionStore:
             conditions.append("profile = ?")
             params.append(_normalize_profile_name(profile))
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sub_where = ""
+        sub_params: List[Any] = []
+        if profile is not None:
+            sub_where = "AND l2.profile = ?"
+            sub_params.append(params[0])
         with self._lock:
             rows = self._conn.execute(
                 f"""
-                SELECT * FROM (
-                    SELECT id, profile, panel, item, value, unit, ref_low,
-                           ref_high, tested_at, lab_name, note,
-                           created_at, updated_at,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY item
-                               ORDER BY tested_at DESC, id DESC
-                           ) AS row_number
-                      FROM lab_results
-                     {where}
-                )
-                WHERE row_number = 1
-                ORDER BY item ASC
+                SELECT l.id, l.profile, l.panel, l.item, l.value, l.unit,
+                       l.ref_low, l.ref_high, l.tested_at, l.lab_name,
+                       l.note, l.created_at, l.updated_at
+                  FROM lab_results l
+                  JOIN (
+                      SELECT DISTINCT item FROM lab_results {where}
+                  ) d ON d.item = l.item
+                 WHERE l.id = (
+                       SELECT l2.id FROM lab_results l2
+                        WHERE l2.item = d.item {sub_where}
+                        ORDER BY l2.tested_at DESC, l2.id DESC
+                        LIMIT 1
+                 )
+                 ORDER BY l.item ASC
                 """,
-                params,
+                [*params, *sub_params],
             ).fetchall()
         return [
-            {
-                **{key: row[key] for key in row.keys()
-                   if key != "row_number"},
-                **_lab_result_view_fields(dict(row)),
-            }
+            {**dict(row), **_lab_result_view_fields(dict(row))}
             for row in rows
         ]
 
