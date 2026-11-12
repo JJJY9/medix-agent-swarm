@@ -2014,6 +2014,8 @@ async def list_sessions(
         total_turns = 0
         total_calls = 0
         totals_usage: Dict[str, int] = {}
+        helpful = 0
+        unhelpful = 0
         scan_offset = 0
         # 逐页扫描到结束：固定 2000 条上限会让后面的高危会话被静默忽略
         while True:
@@ -2049,6 +2051,9 @@ async def list_sessions(
                         )
                     total_turns += int(stat.get("turns") or 0)
                     total_calls += int(stat.get("llm_calls") or 0)
+                    feedback = stat.get("feedback") or {}
+                    helpful += int(feedback.get("helpful") or 0)
+                    unhelpful += int(feedback.get("unhelpful") or 0)
                 matched.extend(batch_matched)
             if len(batch) < 200:
                 break
@@ -2071,7 +2076,13 @@ async def list_sessions(
             "turns": total_turns,
             "llm_calls": total_calls,
             "usage": totals_usage,
-            "feedback": None,
+            "feedback": {
+                "total": helpful + unhelpful,
+                "helpful": helpful,
+                "unhelpful": unhelpful,
+                "rate": round(helpful / (helpful + unhelpful) * 100, 1)
+                if helpful + unhelpful else None,
+            },
         }
         return {"sessions": sessions, "summary": summary}
     sessions, total, combined = await asyncio.gather(

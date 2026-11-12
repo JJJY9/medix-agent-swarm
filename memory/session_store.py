@@ -1413,6 +1413,7 @@ def _new_usage_entry() -> Dict[str, Any]:
         },
         "llm_calls": 0,
         "turns": 0,
+        "feedback": {"helpful": 0, "unhelpful": 0},
     }
 
 
@@ -1445,6 +1446,17 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
         entry["usage"]["total_tokens"] += total
 
     entry["llm_calls"] += _usage_int(metadata.get("llm_calls"))
+
+    feedback = metadata.get("feedback")
+    if isinstance(feedback, dict):
+        try:
+            rating = int(feedback.get("rating"))
+        except (TypeError, ValueError, OverflowError):
+            rating = 0
+        if rating == 1:
+            entry["feedback"]["helpful"] += 1
+        elif rating == -1:
+            entry["feedback"]["unhelpful"] += 1
 
 
 def _match_snippet(content: str, query: str, radius: int = 60) -> str:
