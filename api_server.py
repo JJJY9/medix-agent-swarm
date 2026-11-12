@@ -12200,7 +12200,7 @@ async def export_health_dossier(
         store.list_appointments, profile_key, None, False, 100000, 0
     )
     lab_results = await asyncio.to_thread(
-        store.list_lab_results, profile_key, None, None, 0, 100000, 0
+        store.list_lab_results, profile_key, None, None, days, 300, 0
     )
     allergies = await asyncio.to_thread(
         store.list_allergies, profile_key, False, None, "", 1000
@@ -12466,6 +12466,10 @@ async def export_health_dossier(
 
     lines.append("## 最近化验")
     if lab_results:
+        if len(lab_results) >= 300:
+            lines.append(
+                f"- 化验记录较多，仅显示近 {days} 天内最近 300 条"
+            )
         for item in lab_results:
             value = f"{float(item.get('value') or 0):g}"
             unit = str(item.get("unit") or "")
