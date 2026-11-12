@@ -124,3 +124,24 @@ def test_parse_response_clamps_confidence():
 
     assert too_high.confidence == 1.0
     assert normal.confidence == 0.2
+
+
+def test_deep_research_milvus_search_runs_off_event_loop():
+    pytest.importorskip("sentence_transformers")
+    from research.deep_research_workflow import DeepResearchWorkflow
+
+    class FakeKB:
+        thread = None
+
+        def search(self, query, top_k, filter_type=None):
+            self.thread = threading.current_thread()
+            return [{"content": "结果", "score": 0.8}]
+
+    workflow = DeepResearchWorkflow.__new__(DeepResearchWorkflow)
+    fake = FakeKB()
+    workflow.knowledge_base = fake
+
+    results = asyncio.run(workflow._search_milvus("高血压", top_k=3))
+
+    assert results and results[0]["content"] == "结果"
+    assert fake.thread is not threading.main_thread()

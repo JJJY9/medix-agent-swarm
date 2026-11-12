@@ -209,7 +209,14 @@ class DeepResearchWorkflow:
             文档列表（字典格式）
         """
         try:
-            results = self.knowledge_base.search(query=query, top_k=top_k, filter_type=None)
+            # Milvus Lite 检索是同步阻塞调用（可能加载索引/模型），
+            # 放进线程避免卡住整个 API 事件循环
+            results = await asyncio.to_thread(
+                self.knowledge_base.search,
+                query=query,
+                top_k=top_k,
+                filter_type=None,
+            )
             logger.debug(
                 f"Milvus search returned {len(results)} results "
                 f"(query_length={len(str(query or ''))})"
