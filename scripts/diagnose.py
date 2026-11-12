@@ -32,7 +32,8 @@ _REQUIRED_MODULES = (
     ("numpy", "numpy"),
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn"),
-    ("sentence_transformers", "sentence-transformers"),
+    # sentence-transformers 只影响知识库，交给报告标记缺失即可，
+    # 不让它阻断自检本身（CI 的轻量依赖集不含它）
 )
 
 
