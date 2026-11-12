@@ -2215,21 +2215,36 @@ class SessionStore:
                     "ALTER TABLE medication_logs ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''"
                 )
 
-            # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式
+            # 旧版本可能保存了空格分隔或仅日期的时间，统一为可排序格式。
+            # 先用 GLOB 在 SQL 侧排除已是规范格式的行，避免每次启动把
+            # 全部历史记录读进 Python 再逐行解析
+            canonical_pattern = (
+                "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+                "T[0-9][0-9]:[0-9][0-9]"
+            )
             for table, column in (
                 ("health_metrics", "measured_at"),
                 ("symptoms", "recorded_at"),
             ):
                 rows = self._conn.execute(
-                    f"SELECT id, {column} AS value FROM {table}"
+                    f"SELECT id, {column} AS value FROM {table} "
+                    f"WHERE {column} NOT GLOB ? "
+                    f"AND {column} NOT GLOB ?",
+                    (
+                        canonical_pattern,
+                        f"{canonical_pattern}:[0-9][0-9]",
+                    ),
                 ).fetchall()
+                updates = []
                 for row in rows:
                     canonical = _canonical_local_time(row["value"])
                     if canonical and canonical != row["value"]:
-                        self._conn.execute(
-                            f"UPDATE {table} SET {column} = ? WHERE id = ?",
-                            (canonical, row["id"]),
-                        )
+                        updates.append((canonical, row["id"]))
+                if updates:
+                    self._conn.executemany(
+                        f"UPDATE {table} SET {column} = ? WHERE id = ?",
+                        updates,
+                    )
 
     @staticmethod
     def _now() -> str:
