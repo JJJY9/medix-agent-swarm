@@ -175,3 +175,22 @@ def test_prune_backups_ignores_unmanaged_files(tmp_path):
     assert newest.exists()
     assert not older.exists()
     assert notes.exists()
+
+
+def test_session_outputs_removed_if_deleted_during_save():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "swarm" / "swarm_coordinator.py"
+    ).read_text(encoding="utf-8")
+
+    summary_save = source.index("save_summary, summary")
+    summary_cleanup = source.index("delete_summary, session_id")
+    memory_save = source.index("add_session_summary,")
+    memory_cleanup = source.index(
+        "delete_session_summary,", memory_save
+    )
+
+    assert summary_save < summary_cleanup
+    assert memory_save < memory_cleanup

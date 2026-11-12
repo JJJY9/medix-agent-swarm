@@ -741,6 +741,15 @@ class SwarmCoordinator:
                 await asyncio.to_thread(
                     self.session_manager.save_summary, summary
                 )
+                # 删除可能发生在检查之后：落盘后再核对并清理
+                if self.session_store.is_session_deleted(session_id):
+                    await asyncio.to_thread(
+                        self.session_manager.delete_summary, session_id
+                    )
+                    logger.info(
+                        "Session deleted during summary save; summary removed "
+                        f"(session={session_id})"
+                    )
         except Exception as e:
             logger.error(f"Failed to generate session summary: {e}")
 
@@ -755,12 +764,15 @@ class SwarmCoordinator:
         else:
             try:
                 # 保存会话总结
+                memory_user_id = (
+                    memory_scope or session_memory_scope(session_id)
+                )
                 memory_id = await asyncio.to_thread(
                     self.long_term_memory.add_session_summary,
                     session_id=session_id,
                     question=question,
                     answer=final_answer,
-                    user_id=memory_scope or session_memory_scope(session_id),
+                    user_id=memory_user_id,
                     metadata={
                         "mode": "swarm",
                         "agents_count": len(shared_context.agent_contributions),
@@ -769,7 +781,18 @@ class SwarmCoordinator:
                     },
                 )
 
-                if memory_id:
+                # 删除可能发生在检查之后：写入后再核对并清理
+                if self.session_store.is_session_deleted(session_id):
+                    await asyncio.to_thread(
+                        self.long_term_memory.delete_session_summary,
+                        session_id,
+                        user_id=memory_user_id,
+                    )
+                    logger.info(
+                        "Session deleted during Mem0 save; memory removed "
+                        f"(session={session_id})"
+                    )
+                elif memory_id:
                     logger.info(f"Saved to Mem0 long-term memory (session={session_id})")
                 else:
                     logger.warning(f"Mem0 long-term memory not saved (session={session_id})")
