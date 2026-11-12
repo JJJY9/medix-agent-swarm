@@ -7415,6 +7415,7 @@ class SessionStore:
             reason_key = str(skip_reason or "").strip().lower()
             if reason_key not in MEDICATION_SKIP_REASONS:
                 return None
+        explicit_time = bool(str(taken_at or "").strip())
         taken_at = str(taken_at or "").strip()[:40]
         if not taken_at:
             taken_at = datetime.now().isoformat(timespec="minutes")
@@ -7434,6 +7435,34 @@ class SessionStore:
             if medication is None:
                 return None
             stock = medication["stock"]
+            if not skipped_flag and not explicit_time:
+                # 默认时间戳的重复打卡（双击/响应丢失重试）同一分钟只记一次；
+                # 显式传入时间的记录用于补录或统计，仍允许多条
+                duplicate = self._conn.execute(
+                    """
+                    SELECT id, note, stock_delta, created_at
+                      FROM medication_logs
+                     WHERE medication_id = ? AND taken_at = ?
+                       AND skipped = 0
+                     ORDER BY id LIMIT 1
+                    """,
+                    (medication_id, taken_at),
+                ).fetchone()
+                if duplicate is not None:
+                    return {
+                        "id": int(duplicate["id"]),
+                        "medication_id": medication["id"],
+                        "profile": medication["profile"],
+                        "taken_at": taken_at,
+                        "note": duplicate["note"],
+                        "stock_delta": float(duplicate["stock_delta"] or 0),
+                        "stock_after": stock,
+                        "skipped": False,
+                        "skip_reason": "",
+                        "skip_reason_label": "",
+                        "created_at": duplicate["created_at"],
+                        "duplicate": True,
+                    }
             stock_delta = 0.0
             stock_after: Optional[float] = None
             if not skipped_flag and stock is not None:
