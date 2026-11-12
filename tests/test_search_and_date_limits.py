@@ -66,7 +66,8 @@ def test_overlong_search_query_does_not_crash_lists(client_and_store):
     client.post("/api/visits", json={
         "profile": "妈妈", "visit_date": today, "diagnosis": "高血压",
     })
-    long_query = "a" * 5000
+    # 超过 SQLite LIKE 模式上限（约 5 万字符）才真正覆盖截断修复
+    long_query = "a" * 60000
 
     for path in ("/api/metrics", "/api/allergies", "/api/visits"):
         response = client.get(path, params={"q": long_query})

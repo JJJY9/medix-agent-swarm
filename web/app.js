@@ -20143,6 +20143,20 @@ function networkErrorMessage(err) {
 function showBanner(html) {
   els.banner.innerHTML = html;
   els.banner.hidden = false;
+  if (swUpdateReady && !document.getElementById('sw-refresh')) {
+    // 状态轮询的配置/知识库警告不能盖掉新版本刷新按钮
+    const update = document.createElement('div');
+    update.className = 'banner-update';
+    update.innerHTML =
+      '新版本已就绪，请在合适时刷新页面。'
+      + ' <button type="button" class="btn-quiet" id="sw-refresh">'
+      + '刷新页面</button>';
+    const button = update.querySelector('#sw-refresh');
+    if (button) {
+      button.addEventListener('click', () => window.location.reload());
+    }
+    els.banner.appendChild(update);
+  }
 }
 
 function hideBanner() {

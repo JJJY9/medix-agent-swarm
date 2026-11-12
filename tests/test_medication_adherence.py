@@ -111,3 +111,35 @@ def test_expected_doses_round_to_zero_for_long_interval(client_and_store):
     ).json()["medications"]
     assert medications[0]["expected_range_doses"] == 0
     assert medications[0]["expected_week_doses"] == 0
+
+
+def test_expected_doses_and_adherence_use_started_at(client_and_store):
+    """补录开始用药日期后，应服次数与依从率分母按 started_at 计算。"""
+    client, _store = client_and_store
+    now = datetime.now()
+    started = (now - timedelta(days=13)).strftime("%Y-%m-%d")
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "二甲双胍", "frequency": "每日两次",
+        "started_at": started,
+    }).json()["medication"]
+    for day in range(6, 0, -1):
+        base = (now - timedelta(days=day)).strftime("%Y-%m-%d")
+        for hour in (8, 20):
+            client.post(
+                f"/api/medications/{medication['id']}/logs",
+                json={"taken_at": f"{base}T{hour:02d}:00"},
+            )
+
+    data = client.get(
+        "/api/medications", params={"profile": "妈妈", "days": 7}
+    ).json()["medications"][0]
+    assert data["expected_week_doses"] == 14
+    assert data["expected_range_doses"] == 14
+
+    report = client.get(
+        "/api/reports/weekly", params={"profile": "妈妈", "days": 7}
+    ).json()
+    adherence = report["medications"]["adherence"]
+    assert adherence["expected"] == 14
+    assert adherence["taken"] == 12
+    assert adherence["rate"] == 86

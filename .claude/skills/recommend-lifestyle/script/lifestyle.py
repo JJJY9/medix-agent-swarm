@@ -5,7 +5,11 @@ Recommend Lifestyle Skill
 from typing import Dict, Any
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import (
+    build_sources,
+    wrap_source_snippets,
+    wrap_untrusted_source,
+)
 
 # 全局知识库实例
 _kb_instance = None
@@ -13,6 +17,8 @@ _kb_instance = None
 def get_knowledge_base():
     global _kb_instance
     if _kb_instance is None:
+        from knowledge.service import ensure_knowledge_index_fresh
+        ensure_knowledge_index_fresh()
         from knowledge.milvus_kb import MedicalKnowledgeBase
         _kb_instance = MedicalKnowledgeBase()
     return _kb_instance
@@ -55,7 +61,9 @@ async def recommend_lifestyle(diagnosis: str) -> Dict[str, Any]:
             "diagnosis": diagnosis,
             "categories": ["diet", "exercise", "lifestyle", "medication"],
             "source": "向量数据库",
-            "sources": build_sources(results, max_items=1),
+            "sources": wrap_source_snippets(
+                build_sources(results, max_items=1)
+            ),
         }
     else:
         # 未找到相关内容
@@ -76,7 +84,7 @@ def format_advice(diagnosis: str, content: str) -> str:
     """格式化生活方式建议"""
     output = [
         f"【{diagnosis}生活方式建议】\n",
-        content,
+        wrap_untrusted_source(content),
         "\n【免责声明】",
         "以上建议仅供参考，具体请咨询医生或营养师。"
     ]

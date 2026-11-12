@@ -62,11 +62,38 @@ class LocalVectorStore:
             return
         try:
             data = json.loads(self.store_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("索引文件顶层不是对象")
+            loaded: Dict[str, Dict[str, Any]] = {}
             for name, coll in data.items():
-                coll["vectors"] = np.array(coll["vectors"], dtype=np.float32)
-                self.collections[name] = coll
+                if not isinstance(coll, dict):
+                    raise ValueError(f"集合 {name} 结构无效")
+                dimension = int(coll["dimension"])
+                vectors = np.asarray(
+                    coll["vectors"], dtype=np.float32
+                ).reshape(-1, dimension)
+                contents = list(coll["contents"])
+                metadata = list(coll["metadata"])
+                if (
+                    dimension <= 0
+                    or vectors.shape[1] != dimension
+                    or len(contents) != vectors.shape[0]
+                    or len(metadata) != vectors.shape[0]
+                ):
+                    raise ValueError(f"集合 {name} 的向量与文本数量不一致")
+                loaded[name] = {
+                    **coll,
+                    "dimension": dimension,
+                    "vectors": vectors,
+                    "contents": contents,
+                    "metadata": metadata,
+                }
+            self.collections = loaded
             logger.info(f"Loaded local vector store: {self.store_path}")
         except Exception as e:
+            # 结构不一致时整体丢弃，让上层按“索引为空”触发重建，
+            # 而不是带着半损坏的集合永久返回错误
+            self.collections = {}
             self.load_error = str(e)
             logger.error(f"Failed to load local vector store: {e}")
 

@@ -27,7 +27,8 @@ self.addEventListener('install', (event) => {
       // 而新缓存又不完整，离线外壳会彻底丢失
       throw error;
     }
-    await self.skipWaiting();
+    // 不在安装完成时 skipWaiting：页面加载中途切换 controller 会让
+    // 旧 HTML 配上新外壳资源；由更新横幅引导用户在合适时刷新
   })());
 });
 
@@ -35,7 +36,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys
+          // 只清理本应用的外壳缓存代，不能删掉同源其它缓存
+          .filter((key) => (
+            key.startsWith('medix-shell-') && key !== CACHE_NAME
+          ))
+          .map((key) => caches.delete(key))
       ))
       .then(() => self.clients.claim())
   );
@@ -66,10 +72,28 @@ self.addEventListener('fetch', (event) => {
     const cached = await cache.match(request);
     if (cached) return cached;
 
+    if (request.mode === 'navigate') {
+      // 深链（/?action=...）不在预缓存清单里：返回当前代的 '/' 外壳，
+      // 不能把服务器上的新 HTML 写进旧缓存代，否则新 HTML 会配旧 JS/CSS。
+      // ?action= 由 app.js 从 location.search 读取，深链功能不受影响。
+      const shell = await cache.match('/');
+      if (shell) return shell;
+      try {
+        return await fetch(request);
+      } catch {
+        return offlineResponse(request);
+      }
+    }
+
     try {
       const response = await fetch(request);
       if (response && response.ok) {
-        await cache.put(request, response.clone());
+        try {
+          await cache.put(request, response.clone());
+        } catch (error) {
+          // 缓存失败不能影响已经成功的网络响应
+          console.warn('[medix-sw] 写入外壳缓存失败', error);
+        }
       }
       return response;
     } catch {

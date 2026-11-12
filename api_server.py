@@ -2057,8 +2057,11 @@ async def get_status(request: Request):
         long_term = getattr(state.coordinator, "long_term_memory", None)
         mem0_enabled = bool(getattr(long_term, "enabled", False))
 
-    # 状态接口保持公开供登录页探活，但未授权时不返回内部路径、模型地址和原始异常
-    privileged = is_authorized(request)
+    # 状态接口保持公开供登录页探活。启用访问令牌后，响应不能随请求
+    # 携带的令牌是否有效而变化，否则会变成不受限流的令牌爆破预言机：
+    # 模型配置与原始异常只在未启用令牌时返回。
+    token_required = bool(get_access_token())
+    privileged = not token_required
     startup_error = state.startup_error
     kb_error = state.kb_error
     if not privileged:
@@ -2069,7 +2072,7 @@ async def get_status(request: Request):
         "ok": state.startup_error is None,
         "web_build": WEB_BUILD_ID,
         "startup_error": startup_error,
-        "auth_required": bool(get_access_token()),
+        "auth_required": token_required,
         "llm_configured": bool(api_key),
         "pricing": get_pricing(),
         "monthly_token_budget": get_token_budget(),

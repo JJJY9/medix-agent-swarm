@@ -6,7 +6,12 @@ from typing import Dict, Any, Optional
 import asyncio
 import re
 from loguru import logger
-from knowledge.sources import build_sources
+from knowledge.sources import (
+    build_sources,
+    sanitize_untrusted_text,
+    wrap_source_snippets,
+    wrap_untrusted_source,
+)
 
 # 全局知识库实例
 _kb_instance = None
@@ -14,6 +19,8 @@ _kb_instance = None
 def get_knowledge_base():
     global _kb_instance
     if _kb_instance is None:
+        from knowledge.service import ensure_knowledge_index_fresh
+        ensure_knowledge_index_fresh()
         from knowledge.milvus_kb import MedicalKnowledgeBase
         _kb_instance = MedicalKnowledgeBase()
     return _kb_instance
@@ -59,10 +66,13 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             "answer": format_code_info(disease_name, content),
             "icd10_code": metadata.get("icd10_code")
             or details["icd10_code"],
-            "category": details["category"]
-            or metadata.get("category", ""),
+            "category": sanitize_untrusted_text(
+                details["category"] or metadata.get("category", ""), 80
+            ),
             "source": "向量数据库",
-            "sources": build_sources([doc], max_items=1),
+            "sources": wrap_source_snippets(
+                build_sources([doc], max_items=1)
+            ),
         }
 
     # 未找到匹配小节
@@ -127,7 +137,7 @@ def format_code_info(disease_name: str, content: str) -> str:
     """格式化疾病编码信息"""
     output = [
         f"【疾病编码信息】\n",
-        content
+        wrap_untrusted_source(content)
     ]
 
     return "\n".join(output)

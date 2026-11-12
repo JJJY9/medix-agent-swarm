@@ -118,6 +118,18 @@ def test_update_uploaded_document(service):
         svc.update_document("a.pdf", b"x")
 
 
+def test_update_document_failure_keeps_original(service):
+    svc, _kb = service
+    saved = svc.save_upload("我的文档.md", "原始内容".encode("utf-8"))
+
+    with pytest.raises(ValueError):
+        svc.update_document(saved["filename"], b"   ")
+
+    full = svc.preview_document(saved["filename"], max_chars=None)
+    assert full["content"] == "原始内容"
+    assert list(svc.upload_dir.glob(".*.tmp*")) == []
+
+
 def test_preview_builtin_and_upload(service):
     svc, _ = service
 

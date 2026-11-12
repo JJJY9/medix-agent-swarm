@@ -46,6 +46,32 @@ def _is_unit_char(character: str) -> bool:
     )
 
 
+def _is_decimal_point(text: str, position: int) -> bool:
+    """数字中间的小数点不是句界（如 3.5、0.12）。"""
+    return (
+        position > 0
+        and position + 1 < len(text)
+        and text[position - 1].isdigit()
+        and text[position + 1].isdigit()
+    )
+
+
+def _sentence_boundary(text: str, lower: int, end: int) -> int:
+    """在 [lower, end) 内寻找真正的句/段边界，跳过小数点。"""
+    best = -1
+    for mark in "\n。！？；.!?;":
+        position = text.rfind(mark, lower, end)
+        while (
+            position >= lower
+            and mark == "."
+            and _is_decimal_point(text, position)
+        ):
+            position = text.rfind(mark, lower, position)
+        if position > best:
+            best = position
+    return best
+
+
 class MedicalKnowledgeBase:
     """医学知识库"""
 
@@ -169,16 +195,12 @@ class MedicalKnowledgeBase:
 
         chunks = []
         start = 0
-        boundary_chars = "\n。！？；.!?;"
         while start < len(text):
             end = min(len(text), start + chunk_size)
             if end < len(text):
                 # 优先在句/段边界附近结束，避免把一句话或数值单位切断
                 lower = max(start + 1, end - max(1, chunk_size // 5))
-                boundary = max(
-                    text.rfind(mark, lower, end)
-                    for mark in boundary_chars
-                )
+                boundary = _sentence_boundary(text, lower, end)
                 if boundary > start:
                     end = boundary + 1
                 elif end < len(text) and _is_unit_char(text[end]):
