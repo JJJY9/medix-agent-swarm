@@ -20434,13 +20434,41 @@ els.healthSearchInput.addEventListener('input', (event) => {
   }, 250);
 });
 els.healthSearchInput.addEventListener('keydown', (event) => {
-  if (event.isComposing || event.key !== 'Enter') return;
+  if (event.isComposing) return;
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const results = Array.from(
+      els.healthSearchResults.querySelectorAll('.search-result')
+    );
+    if (!results.length) return;
+    event.preventDefault();
+    results[event.key === 'ArrowDown' ? 0 : results.length - 1].focus();
+    return;
+  }
+  if (event.key !== 'Enter') return;
   event.preventDefault();
   if (healthSearchTimer) {
     clearTimeout(healthSearchTimer);
     healthSearchTimer = null;
   }
   runHealthSearch(els.healthSearchInput.value);
+});
+els.healthSearchResults.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    els.healthSearchInput.focus();
+    return;
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const results = Array.from(
+    els.healthSearchResults.querySelectorAll('.search-result')
+  );
+  if (!results.length) return;
+  event.preventDefault();
+  const current = results.indexOf(document.activeElement);
+  const next = event.key === 'ArrowDown'
+    ? Math.min(results.length - 1, current + 1)
+    : Math.max(0, current - 1);
+  results[next].focus();
 });
 if (els.healthSearchAllProfiles) {
   els.healthSearchAllProfiles.addEventListener('change', () => {
