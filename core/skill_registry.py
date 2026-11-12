@@ -7,7 +7,22 @@ from dataclasses import dataclass
 import inspect
 import asyncio
 import contextvars
+import os
 from loguru import logger
+
+#: 单个 Skill 的最长执行时间；网络检索或外部记忆卡住时避免占住整次会诊
+SKILL_TIMEOUT_ENV = "MEDIX_SKILL_TIMEOUT"
+DEFAULT_SKILL_TIMEOUT = 60.0
+MAX_SKILL_TIMEOUT = 600.0
+
+
+def get_skill_timeout() -> float:
+    raw = (os.getenv(SKILL_TIMEOUT_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_SKILL_TIMEOUT
+    except (TypeError, ValueError):
+        value = DEFAULT_SKILL_TIMEOUT
+    return max(1.0, min(value, MAX_SKILL_TIMEOUT))
 
 
 @dataclass
@@ -164,22 +179,39 @@ class SkillRegistry:
                 f"(arg keys={sorted(str(key) for key in kwargs)})"
             )
 
+            timeout = get_skill_timeout()
             if skill['is_async']:
                 # Async skill
-                result = await skill['function'](**kwargs)
+                result = await asyncio.wait_for(
+                    skill['function'](**kwargs), timeout=timeout
+                )
             else:
                 # Sync skill - run in executor. run_in_executor 不会自动
                 # 复制 contextvars，需要手动 copy_context 才能看到当前记忆作用域
                 loop = asyncio.get_event_loop()
                 ctx = contextvars.copy_context()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: ctx.run(lambda: skill['function'](**kwargs))
+                # 线程无法强杀：超时后放弃等待，让会诊继续收尾
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: ctx.run(lambda: skill['function'](**kwargs))
+                    ),
+                    timeout=timeout,
                 )
 
             logger.debug(f"Skill {name} completed successfully")
             return result
 
+        except asyncio.TimeoutError:
+            timeout = get_skill_timeout()
+            error_msg = f"Skill 执行超时（{timeout:g} 秒）：{name}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "skill": name,
+                "timeout": True,
+            }
         except Exception as e:
             error_msg = f"Skill execution failed: {name} - {str(e)}"
             logger.error(error_msg)

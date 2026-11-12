@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 
 import api_server
 import memory
-from core.lab_values import lab_critical_alerts
+from core.lab_values import (
+    _analyte_index,
+    _lab_item_text,
+    lab_critical_alerts,
+    normalize_lab_measurement,
+)
 from memory.session_store import SessionStore
 
 
@@ -280,3 +285,23 @@ def test_family_insight_labels_member_and_stale_dossier(client_and_store):
     )
     assert "（危急值）" in dossier.text
     assert "结果较旧" in dossier.text
+
+
+def test_analyte_resolution_is_cached_across_rows():
+    _analyte_index.cache_clear()
+    first = _analyte_index(_lab_item_text("血钾"))
+    assert first >= 0
+
+    for _ in range(100):
+        assert normalize_lab_measurement("血钾", 4.2, "mmol/L") is not None
+        assert lab_critical_alerts("血钾", 7.0, "mmol/L")
+
+    info = _analyte_index.cache_info()
+    assert info.misses == 1
+    assert info.hits >= 200
+
+
+def test_analyte_cache_distinguishes_unknown_items():
+    assert _analyte_index(_lab_item_text("未知项目")) == -1
+    assert _analyte_index(_lab_item_text("")) == -1
+

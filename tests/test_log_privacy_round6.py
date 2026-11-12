@@ -41,6 +41,18 @@ def test_access_log_query_string_is_redacted():
     assert "/api/symptoms?<redacted>" in message
 
 
+def test_lead_agent_logs_do_not_dump_subtask_content():
+    source = (
+        PROJECT_ROOT / "swarm" / "lead_agent.py"
+    ).read_text(encoding="utf-8")
+
+    for leaked in ("{item!r}", "{data!r}", "{raw_agent!r}"):
+        assert leaked not in source
+    assert "type(item).__name__" in source
+    assert "type(data).__name__" in source
+    assert "len(str(raw_agent or \"\"))" in source
+
+
 def test_skill_logs_do_not_include_patient_queries(client):
     assert client.get("/static/app.js").status_code == 200
 

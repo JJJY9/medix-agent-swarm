@@ -144,11 +144,11 @@ python api_server.py
 
 ```bash
 python api_server.py --port 8080          # 换端口
-python api_server.py --host 0.0.0.0       # 允许局域网访问
+python api_server.py --host 0.0.0.0       # 允许局域网访问（需设置 MEDIX_ACCESS_TOKEN）
 python api_server.py --reload             # 开发模式，改代码自动重载
 ```
 
-> 用 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`。设置后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer`）。为了不把令牌写进访问日志，不再支持 `?token=` 查询参数。
+> 用 `--host 0.0.0.0` 暴露到局域网时，**必须**同时设置 `MEDIX_ACCESS_TOKEN`：未设置令牌时服务会拒绝启动，避免同网段任何设备无凭证读取全部问诊与影像、或调用删除接口。确实在完全可信的内网使用时，可以加 `--allow-insecure-lan`（或设置 `MEDIX_ALLOW_INSECURE_LAN=1`）显式放行，启动时会打印醒目警告。设置令牌后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer`）。为了不把令牌写进访问日志，不再支持 `?token=` 查询参数。
 >
 > 服务会校验 Host 头以防 DNS rebinding：IP 地址、`localhost` 与 `testserver` 默认允许；如需通过局域网域名访问，请设置 `MEDIX_ALLOWED_HOSTS=medix.local`（逗号分隔多个域名）。
 
@@ -546,7 +546,7 @@ MEM0_CONFIG = {"api_key": "m0-your-api-key-here"}   # 可选，不填则自动�
 - 日志、异常提示和接口错误响应统一经过 `core/security.py` 脱敏：完整 Key 只会显示为 `sk-a***k1L2` 这样的首尾形式，即使模型 SDK 在报错文本里带出 Key 也不会原样输出。
 - `tests/test_secret_hygiene.py` 会在 CI 中扫描所有已跟踪文件，发现 `sk-`、`ghp_`、`AKIA` 或私钥头等疑似密钥时直接失败；同时校验 `.env` 被忽略且未被跟踪。
 - 如果 Key 已经进入 Git 历史，仅删除文件不够：请立即在服务商控制台轮换 Key，再用 `git filter-repo` 清理历史并强制推送（私有仓库同样建议处理）。
-- 通过 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`，避免任何人直接消耗你的模型额度。
+- 通过 `--host 0.0.0.0` 暴露到局域网时，必须同时设置 `MEDIX_ACCESS_TOKEN`（未设置会拒绝启动），避免任何人直接消耗你的模型额度；仅在完全可信的内网可显式使用 `--allow-insecure-lan` 放行。
 
 
 ### 4. 初始化知识库

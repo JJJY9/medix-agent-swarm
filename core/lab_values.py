@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 #: 结果超过该天数时在提示后附加「结果较旧」说明
@@ -248,6 +249,28 @@ def _matches(spec: Dict[str, Any], text: str, compact: str) -> bool:
     return False
 
 
+def _lab_item_text(item: Any) -> str:
+    return " ".join(
+        unicodedata.normalize("NFKC", str(item or "")).lower().split()
+    )
+
+
+@lru_cache(maxsize=2048)
+def _analyte_index(text: str) -> int:
+    """把化验项目名解析为 ANALYTES 下标；未识别返回 -1。
+
+    项目名基数很低（真实数据通常几十种），对整表逐行跑 10 组别名正则
+    是纯浪费；缓存后每行只剩一次字典查找。
+    """
+    compact = _compact(text)
+    if not compact:
+        return -1
+    for index, spec in enumerate(ANALYTES):
+        if _matches(spec, text, compact):
+            return index
+    return -1
+
+
 def _count_factor(unit: str) -> Optional[float]:
     """把白细胞/血小板的常见单位换算为 ×10⁹/L 的系数。"""
     if not unit:
@@ -322,29 +345,23 @@ def normalize_lab_measurement(
     item: Any, value: Any, unit: Any
 ) -> Optional[Dict[str, Any]]:
     """把化验值换算为规范单位；无法识别时返回 None。"""
-    text = " ".join(
-        unicodedata.normalize("NFKC", str(item or "")).lower().split()
-    )
-    compact = _compact(text)
-    if not compact:
+    spec_index = _analyte_index(_lab_item_text(item))
+    if spec_index < 0:
         return None
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    for spec in ANALYTES:
-        if not _matches(spec, text, compact):
-            continue
-        normalized = _normalized_value(number, unit, spec)
-        if normalized is None:
-            return None
-        return {
-            "analyte": spec["key"],
-            "label": spec["label"],
-            "value": round(normalized, 4),
-            "unit": spec["unit_label"],
-        }
-    return None
+    spec = ANALYTES[spec_index]
+    normalized = _normalized_value(number, unit, spec)
+    if normalized is None:
+        return None
+    return {
+        "analyte": spec["key"],
+        "label": spec["label"],
+        "value": round(normalized, 4),
+        "unit": spec["unit_label"],
+    }
 
 
 def lab_critical_alerts(
@@ -354,25 +371,19 @@ def lab_critical_alerts(
     tested_at: Any = None,
 ) -> List[Dict[str, Any]]:
     """返回化验达到危急值时的提示；未识别或无法换算时返回空列表。"""
-    text = " ".join(
-        unicodedata.normalize("NFKC", str(item or "")).lower().split()
-    )
-    compact = _compact(text)
-    if not compact:
+    spec_index = _analyte_index(_lab_item_text(item))
+    if spec_index < 0:
         return []
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return []
-    for spec in ANALYTES:
-        if not _matches(spec, text, compact):
-            continue
-        normalized = _normalized_value(number, unit, spec)
-        if normalized is None:
-            return []
-        if spec.get("low") is not None and normalized < float(spec["low"]):
-            return [_build_alert(spec, "low", normalized, tested_at)]
-        if spec.get("high") is not None and normalized > float(spec["high"]):
-            return [_build_alert(spec, "high", normalized, tested_at)]
+    spec = ANALYTES[spec_index]
+    normalized = _normalized_value(number, unit, spec)
+    if normalized is None:
         return []
+    if spec.get("low") is not None and normalized < float(spec["low"]):
+        return [_build_alert(spec, "low", normalized, tested_at)]
+    if spec.get("high") is not None and normalized > float(spec["high"]):
+        return [_build_alert(spec, "high", normalized, tested_at)]
     return []

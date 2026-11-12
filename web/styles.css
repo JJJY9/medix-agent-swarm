@@ -1774,12 +1774,15 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 16px 18px 10px;
   border-bottom: 1px solid var(--rule-soft);
 }
 
 .drawer-head h2 {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-family: var(--serif);
   font-size: 17px;
@@ -1788,6 +1791,9 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 
 .drawer-profile-chip {
   flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--rule-soft);
@@ -1797,9 +1803,11 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 }
 
 .drawer-head-actions {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .drawer-close {

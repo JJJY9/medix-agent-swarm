@@ -570,7 +570,18 @@ class SwarmCoordinator:
                         "total_time": (end_time - start_time).total_seconds(),
                     },
                 )
-                if memory_id:
+                # 删除可能发生在检查之后：写入后再核对并清理外部记忆
+                if self.session_store.is_session_deleted(session_id):
+                    await asyncio.to_thread(
+                        self.long_term_memory.delete_session_summary,
+                        session_id,
+                        user_id=memory_scope,
+                    )
+                    logger.info(
+                        "Session deleted during long-term memory save; "
+                        f"memory removed (session={session_id})"
+                    )
+                elif memory_id:
                     logger.info(f"Saved to long-term memory (session={session_id}, mode={mode})")
                 else:
                     logger.warning(f"Long-term memory not saved (session={session_id}, mode={mode})")
