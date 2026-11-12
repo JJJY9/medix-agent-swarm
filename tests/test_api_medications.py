@@ -121,7 +121,8 @@ def test_medications_api_validation(client_and_store):
 
     assert blank.status_code == 400
     assert missing_name.status_code == 422
-    assert future_log.status_code == 404
+    # 药物存在、时间非法：属于请求内容问题，不是 404
+    assert future_log.status_code == 400
 
 
 def test_medication_logs_api_roundtrip(client_and_store):

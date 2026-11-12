@@ -152,7 +152,7 @@ def test_metrics_api_update(client):
     assert len(listed.json()["metrics"]) == 1
     assert listed.json()["metrics"][0]["note"] == "复测"
     assert missing.status_code == 404
-    assert invalid.status_code == 404
+    assert invalid.status_code == 400
 
 
 def test_metrics_csv_import(client):
