@@ -223,7 +223,13 @@ def _unit_key(unit: Any) -> str:
         .replace("μ", "u")
         .replace("µ", "u")
         .replace("×", "x")
+        .replace("^", "")
+        .replace("(", "")
+        .replace(")", "")
+        .replace("·", "")
     )
+    # EMR 常见写法 mL/min1.73m2、mL/min/1.73m^2 都归一到同一键
+    text = re.sub(r"ml/min/?1\.73m?2?", "ml/min/1.73m2", text)
     return re.sub(r"\s+", "", text)
 
 

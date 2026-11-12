@@ -7526,8 +7526,14 @@ class SessionStore:
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
+        today_start = f"{today}T00:00"
+        tomorrow_start = (
+            now + timedelta(days=1)
+        ).strftime("%Y-%m-%dT00:00")
         week_cutoff = (now - timedelta(days=6)).strftime("%Y-%m-%d")
         range_cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        week_start = f"{week_cutoff}T00:00"
+        range_start = f"{range_cutoff}T00:00"
         with self._lock:
             rows = self._conn.execute(
                 f"""
@@ -7539,52 +7545,49 @@ class SessionStore:
                            SELECT MAX(taken_at) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at < ?
                        ) AS last_taken_at,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
-                              AND substr(l.taken_at, 1, 10) = ?
+                              AND l.taken_at >= ? AND l.taken_at < ?
                        ) AS today_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
-                              AND substr(l.taken_at, 1, 10) >= ?
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at >= ? AND l.taken_at < ?
                        ) AS week_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
-                              AND substr(l.taken_at, 1, 10) >= ?
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at >= ? AND l.taken_at < ?
                        ) AS range_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 1
-                              AND substr(l.taken_at, 1, 10) = ?
+                              AND l.taken_at >= ? AND l.taken_at < ?
                        ) AS skipped_today,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 1
-                              AND substr(l.taken_at, 1, 10) >= ?
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at >= ? AND l.taken_at < ?
                        ) AS skipped_range,
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 1
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at < ?
                        ) AS last_skip_at,
                        (
                            SELECT l.skip_reason FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 1
-                              AND substr(l.taken_at, 1, 10) <= ?
+                              AND l.taken_at < ?
                             ORDER BY l.taken_at DESC, l.id DESC LIMIT 1
                        ) AS last_skip_reason
                   FROM medications{where}
@@ -7592,8 +7595,13 @@ class SessionStore:
                  LIMIT ? OFFSET ?
                 """,
                 [
-                    today, today, week_cutoff, today, range_cutoff, today,
-                    today, range_cutoff, today, today, today,
+                    tomorrow_start,
+                    today_start, tomorrow_start,
+                    week_start, tomorrow_start,
+                    range_start, tomorrow_start,
+                    today_start, tomorrow_start,
+                    range_start, tomorrow_start,
+                    tomorrow_start, tomorrow_start,
                 ]
                 + params
                 + [limit, offset],
