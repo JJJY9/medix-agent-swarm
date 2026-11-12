@@ -7143,12 +7143,12 @@ class SessionStore:
     def update_medication(
         self,
         medication_id: int,
-        profile: str,
-        name: str,
-        dose: str = "",
-        frequency: str = "",
-        note: str = "",
-        active: Any = True,
+        profile: Any = _UNSET,
+        name: Any = _UNSET,
+        dose: Any = _UNSET,
+        frequency: Any = _UNSET,
+        note: Any = _UNSET,
+        active: Any = _UNSET,
         stock: Any = _UNSET,
         stock_unit: Any = _UNSET,
         low_stock_threshold: Any = _UNSET,
@@ -7157,7 +7157,7 @@ class SessionStore:
         stopped_at: Any = _UNSET,
         stop_reason: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
-        """更新一条用药记录；不存在或无效时返回 None。"""
+        """更新一条用药记录；未给出的字段沿用事务内读到的原值。"""
         try:
             medication_id = int(medication_id)
         except (TypeError, ValueError, OverflowError):
@@ -7166,7 +7166,7 @@ class SessionStore:
         with self._lock, self._conn:
             previous = self._conn.execute(
                 """
-                SELECT profile, name, dose, frequency, active,
+                SELECT profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
                        started_at, stopped_at, stop_reason
                   FROM medications WHERE id = ?
@@ -7176,12 +7176,13 @@ class SessionStore:
             if previous is None:
                 return None
             normalized = _normalize_medication(
-                profile,
-                name,
-                dose,
-                frequency,
-                note,
-                active,
+                previous["profile"] if profile is _UNSET else profile,
+                previous["name"] if name is _UNSET else name,
+                previous["dose"] if dose is _UNSET else dose,
+                previous["frequency"]
+                if frequency is _UNSET else frequency,
+                previous["note"] if note is _UNSET else note,
+                previous["active"] if active is _UNSET else active,
                 previous["stock"] if stock is _UNSET else stock,
                 previous["stock_unit"]
                 if stock_unit is _UNSET else stock_unit,
