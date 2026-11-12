@@ -35,6 +35,13 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
             "query": "原始查询"
         }
     """
+    try:
+        max_results = int(max_results)
+    except (TypeError, ValueError, OverflowError):
+        max_results = 5
+    # 负值会退化成整库返回，过大值会撑爆上下文
+    max_results = max(1, min(max_results, 20))
+
     logger.info(
         "Searching knowledge base: "
         f"query_length={len(str(query or ''))}, max_results={max_results}"
