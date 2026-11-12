@@ -5214,13 +5214,14 @@ class SessionStore:
                     f"DELETE FROM sessions WHERE id IN ({marks})",
                     found,
                 )
-                # 与 delete_session 一致：登记墓碑，进行中的会诊无法写回
-                for session_id in found:
-                    self._deleted_sessions[session_id] = None
-                while len(self._deleted_sessions) > self._max_deleted_sessions:
-                    self._deleted_sessions.pop(
-                        next(iter(self._deleted_sessions))
-                    )
+            # 与 delete_session 一致：即使会话行尚未创建（第一轮会诊
+            # 进行中），也登记墓碑，答复完成后不能把已删除的会话写回
+            for session_id in ids:
+                self._deleted_sessions[session_id] = None
+            while len(self._deleted_sessions) > self._max_deleted_sessions:
+                self._deleted_sessions.pop(
+                    next(iter(self._deleted_sessions))
+                )
         return {
             "deleted": [sid for sid in ids if sid in profiles],
             "missing": [sid for sid in ids if sid not in profiles],
