@@ -1903,6 +1903,8 @@ class SessionStore:
                     ON lab_results(profile, tested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_lab_results_item_time
                     ON lab_results(item, tested_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_lab_results_time
+                    ON lab_results(tested_at DESC);
                 CREATE TABLE IF NOT EXISTS allergies (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile    TEXT NOT NULL DEFAULT '',
@@ -6260,8 +6262,10 @@ class SessionStore:
             params.append(panel_key)
         cutoff = _days_cutoff(days)
         if cutoff:
-            conditions.append("substr(tested_at, 1, 10) >= ?")
-            params.append(cutoff[:10])
+            # 用原始时间戳比较才能命中 (profile, tested_at) 索引；
+            # substr(tested_at, 1, 10) 会退化为逐行扫描
+            conditions.append("tested_at >= ?")
+            params.append(cutoff)
         range_conditions, range_params = _date_range_conditions(
             "tested_at", start, end
         )
@@ -7983,11 +7987,14 @@ class SessionStore:
             params.append(_normalize_profile_name(profile))
         cutoff = _days_cutoff(days)
         if cutoff:
-            conditions.append("substr(l.taken_at, 1, 10) >= ?")
-            params.append(cutoff[:10])
-            end_of_today = datetime.now().strftime("%Y-%m-%d")
-            conditions.append("substr(l.taken_at, 1, 10) <= ?")
-            params.append(end_of_today)
+            # 原始时间戳范围才能命中 (medication_id, taken_at) 索引
+            conditions.append("l.taken_at >= ?")
+            params.append(cutoff)
+            tomorrow = (
+                datetime.now() + timedelta(days=1)
+            ).strftime("%Y-%m-%dT00:00")
+            conditions.append("l.taken_at < ?")
+            params.append(tomorrow)
         range_conditions, range_params = _date_range_conditions(
             "l.taken_at", start, end
         )
