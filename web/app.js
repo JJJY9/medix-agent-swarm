@@ -7444,6 +7444,7 @@ function setHealthSearchStatus(text, isError = false) {
 }
 
 function hideHealthSearchResults() {
+  healthSearchSeq += 1;
   healthSearchQuery = '';
   if (els.healthSearchResults) {
     els.healthSearchResults.hidden = true;
