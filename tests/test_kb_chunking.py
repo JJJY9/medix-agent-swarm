@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from knowledge.milvus_kb import MedicalKnowledgeBase
+# sentence_transformers 体积较大，离线 CI 不安装
+pytest.importorskip("sentence_transformers")
+
+from knowledge.milvus_kb import MedicalKnowledgeBase  # noqa: E402
 
 
 def _chunker():
