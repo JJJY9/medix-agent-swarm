@@ -1,4 +1,5 @@
 """就医资料附件前端接线测试。"""
+import re
 from pathlib import Path
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -116,10 +117,19 @@ def test_attachment_failed_reload_clears_stale_selection():
 
 
 def test_attachment_ref_filter_resets_on_profile_change():
-    assert (
-        "els.metricProfile.addEventListener('change', () => {\n"
-        "  setAttachmentRefFilter(null);"
-    ) in SCRIPT
+    handler = re.search(
+        r"els\.metricProfile\.addEventListener\('change', \(\) => \{(.*?)\n\}\);",
+        SCRIPT,
+        re.S,
+    )
+    assert handler
+    body = handler.group(1)
+    assert "setAttachmentRefFilter(null);" in body
+    # 存在指标编辑态时先取消编辑，再清理附件筛选
+    if "resetMetricForm();" in body:
+        assert body.index("resetMetricForm();") < body.index(
+            "setAttachmentRefFilter(null);"
+        )
 
 
 def test_attachment_export_selected_wiring():
