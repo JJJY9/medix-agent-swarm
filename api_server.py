@@ -5203,7 +5203,9 @@ CHRONIC_CARE_TEMPLATES = (
             ("眼底检查", 365),
             ("足部检查", 365),
         ),
-        "targets": (("glucose", 7.0, None),),
+        # 不创建无情境区分的血糖目标：空腹 7.0 会把正常餐后血糖判为
+        # 超标，并屏蔽分情境的血糖提示；由健康提示按情境判定
+        "targets": (),
     },
     {
         "key": "ckd",
@@ -6720,7 +6722,7 @@ def _build_health_insights(
                         "metric",
                         metric="bp",
                     ))
-        elif metric == "glucose":
+        if metric == "glucose":
             contexts = {
                 str(item.get("context") or "unspecified"): item
                 for item in (report.get("metric_contexts") or {})

@@ -117,9 +117,9 @@ def test_diabetes_template_uses_glucose_target(client_and_store):
         "糖化血红蛋白", "尿微量白蛋白/肌酐比", "血脂",
         "眼底检查", "足部检查",
     ]
-    assert data["targets_created"][0]["metric"] == "glucose"
-    assert data["targets_created"][0]["value1"] == 7.0
-    assert data["targets_created"][0]["value2"] is None
+    # 血糖目标必须区分空腹/餐后；模板不再创建无情境区分的 ≤7.0 目标，
+    # 由健康提示按情境判定
+    assert data["targets_created"] == []
     hba1c = next(
         item for item in data["care_items_created"]
         if item["title"] == "糖化血红蛋白"
