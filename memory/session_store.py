@@ -4678,7 +4678,10 @@ class SessionStore:
                     # 数据行一律插入新 id，撞号时不能静默丢弃
                     if reminder_id > 0:
                         same_id = self._conn.execute(
-                            "SELECT id, title, profile FROM reminders WHERE id = ?",
+                            """
+                            SELECT id, title, profile, due_at, created_at
+                              FROM reminders WHERE id = ?
+                            """,
                             (reminder_id,),
                         ).fetchone()
                         if (
@@ -4688,11 +4691,22 @@ class SessionStore:
                             and _normalize_profile_name(same_id["profile"])
                             == profile
                         ):
-                            # 同一编号、同标题、同档案才视为已导入
-                            raw_reminder_id_map[reminder_id] = int(
-                                same_id["id"]
+                            raw_created = str(
+                                raw.get("created_at") or ""
+                            ).strip()[:40]
+                            # 撞号不等于同一条提醒：备份带创建时间时按创建
+                            # 时间确认身份，CSV 没有创建时间时按到期日确认
+                            same_identity = (
+                                str(same_id["created_at"] or "")
+                                == raw_created
+                                if raw_created
+                                else str(same_id["due_at"] or "") == due_at
                             )
-                            continue
+                            if same_identity:
+                                raw_reminder_id_map[reminder_id] = int(
+                                    same_id["id"]
+                                )
+                                continue
                     if reminder_id > 0 and raw.get("created_at"):
                         # 备份导入用 created_at 去重：提醒改期后仍能识别
                         exists = self._conn.execute(
