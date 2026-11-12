@@ -8382,9 +8382,34 @@ function searchFilteredReminders() {
 }
 
 function refreshReminderViews() {
+  const focusLabel = captureReminderFocusLabel();
   const items = searchFilteredReminders();
   renderReminderCalendar(items);
   renderFilteredReminders();
+  restoreReminderFocusLabel(focusLabel);
+}
+
+function captureReminderFocusLabel() {
+  const active = document.activeElement;
+  if (!active || !els.remindersList) return '';
+  if (!els.remindersList.contains(active)) return '';
+  return active.getAttribute('aria-label') || '';
+}
+
+function restoreReminderFocusLabel(label) {
+  if (!label || !els.remindersList) return;
+  const nodes = Array.from(
+    els.remindersList.querySelectorAll('button, select')
+  );
+  const target = nodes.find(
+    (node) => node.getAttribute('aria-label') === label
+  );
+  if (target) {
+    target.focus();
+  } else if (nodes.length) {
+    // 当前条目已被完成/删除：聚焦下一条的第一个操作，键盘操作不中断
+    nodes[0].focus();
+  }
 }
 
 function renderFilteredReminders() {
@@ -9513,6 +9538,11 @@ async function loadReminders() {
     loadReminderStats();
   } catch (err) {
     if (requestSeq !== remindersRequestSeq) return;
+    // 切换档案后加载失败时清空旧档案数据，避免把上一位患者的提醒
+    // 继续显示在界面上并被误完成或误删
+    reminderItemsCache = [];
+    updateClearDoneButton([]);
+    refreshReminderViews();
     setRemindersStatus(`加载提醒失败：${err.message || err}`, true);
   }
 }
