@@ -357,3 +357,37 @@ def test_old_medications_table_is_migrated(tmp_path):
     assert {"stock", "stock_unit", "low_stock_threshold", "expiry_date"} <= columns
     assert items[0]["name"] == "旧药"
     assert items[0]["stock"] is None
+
+
+def test_stock_deducts_by_dose_units(client_and_store):
+    client, store = client_and_store
+    taken_at = datetime.now().isoformat(timespec="minutes")
+
+    two_tablets = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "药A", "dose": "2片",
+        "stock": 30, "stock_unit": "片",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{two_tablets['id']}/logs",
+        json={"taken_at": taken_at},
+    )
+
+    milligram_dose = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "药B", "dose": "5 mg",
+        "stock": 10, "stock_unit": "片",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{milligram_dose['id']}/logs",
+        json={"taken_at": taken_at},
+    )
+
+    first = store.get_medication(two_tablets["id"])
+    second = store.get_medication(milligram_dose["id"])
+    first_logs = store.list_medication_logs(two_tablets["id"])
+    second_logs = store.list_medication_logs(milligram_dose["id"])
+
+    assert first["stock"] == 28
+    assert first_logs[0]["stock_delta"] == -2
+    # 剂量单位与库存单位不一致时无法换算，保守扣 1
+    assert second["stock"] == 9
+    assert second_logs[0]["stock_delta"] == -1
