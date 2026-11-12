@@ -288,6 +288,7 @@ def test_app_js_ships_extended_metric_types(client):
     assert 'value="waist"' in html
     assert 'value="sleep"' in html
     assert 'value="steps"' in html
+    assert 'value="water"' in html
     assert "血氧饱和度" in app_js
     assert "腰围参考" in app_js
     assert "睡眠时长" in app_js
@@ -296,11 +297,16 @@ def test_app_js_ships_extended_metric_types(client):
     assert "步数" in app_js
     assert "步数（步）" in html
     assert "常见目标为每日 6000–10000 步" in app_js
+    assert "饮水量" in app_js
+    assert "饮水量（ml）" in html
+    assert "心衰、肾功能不全或医生要求限水" in app_js
     assert "metric === 'sleep'" in app_js
     assert "metric === 'steps'" in app_js
+    assert "metric === 'water'" in app_js
     assert "sleep: { value1: 7 }" in app_js
     assert "steps: { value1: 6000 }" in app_js
-    assert "'waist', 'sleep', 'steps'" in app_js
+    assert "water: { value1: 1500 }" in app_js
+    assert "'waist', 'sleep', 'steps', 'water'" in app_js
 
 
 def test_app_js_ships_reminder_calendar(client):

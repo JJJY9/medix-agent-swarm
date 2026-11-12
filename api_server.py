@@ -512,7 +512,7 @@ class MetricRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ]
     value1: float
@@ -538,7 +538,7 @@ class MetricUpdateRequest(StrictRequestModel):
     profile: Optional[str] = Field(None, max_length=40)
     metric: Optional[Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ]] = None
     value1: Optional[float] = None
@@ -802,10 +802,15 @@ class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ]
-    value1: float = Field(..., description="目标上限（血压为收缩压）")
+    value1: float = Field(
+        ...,
+        description=(
+            "目标值（默认上限；血氧/睡眠/步数/饮水量为下限，血压为收缩压）"
+        ),
+    )
     value2: Optional[float] = Field(None, description="血压目标舒张压")
 
 
@@ -1045,6 +1050,7 @@ def _convert_import_metric(
         "weight": {"kg", "千克", "公斤"},
         "waist": {"cm", "厘米"},
         "steps": {"步"},
+        "water": {"ml", "毫升"},
         "temperature": {"°c", "c", "摄氏", "摄氏度", "celsius"},
         "glucose": {"mmol/l", "mmol", "毫摩尔/升"},
         "bp": {"mmhg", "毫米汞柱"},
@@ -2737,7 +2743,7 @@ async def list_metrics(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
@@ -2768,7 +2774,7 @@ async def metric_summary(
 
     if metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
@@ -8482,7 +8488,7 @@ async def export_metrics_csv(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
@@ -8502,6 +8508,7 @@ async def export_metrics_csv(
         "waist": "腰围",
         "sleep": "睡眠时长",
         "steps": "步数",
+        "water": "饮水量",
         "phq9": "PHQ-9 评分",
         "gad7": "GAD-7 评分",
         "cat": "CAT 评分",
@@ -8616,10 +8623,13 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
         "睡眠": "sleep",
         "步数": "steps",
         "步行": "steps",
+        "饮水量": "water",
+        "饮水": "water",
+        "喝水": "water",
     }
     allowed = {
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
         "auditc", "mmrc"
     }
 

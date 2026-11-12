@@ -22,6 +22,7 @@ _METRIC_ALIASES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("waist", ("腰围", "waist")),
     ("sleep", ("睡眠时长", "睡眠", "睡了", "sleep")),
     ("steps", ("步数", "步行", "走了", "steps")),
+    ("water", ("饮水量", "饮水", "喝水", "water")),
 )
 
 #: 未写指标名时按无歧义单位推断；mmol/L、cm 之类可能是其他指标，不推断
@@ -32,6 +33,7 @@ _UNIT_METRICS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("heart_rate", ("bpm", "次/分", "次/分钟")),
     ("spo2", ("%",)),
     ("steps", ("步",)),
+    ("water", ("ml", "毫升")),
 )
 
 #: 每个指标接受的单位与换算系数（"f_to_c" 表示华氏度转摄氏度）
@@ -49,6 +51,7 @@ _METRIC_UNITS: Dict[str, Dict[str, Any]] = {
     "spo2": {"%": 1.0},
     "waist": {"cm": 1.0, "厘米": 1.0},
     "steps": {"步": 1.0},
+    "water": {"ml": 1.0, "毫升": 1.0},
 }
 
 _ALL_UNIT_TOKENS = sorted(
@@ -359,7 +362,7 @@ def parse_quick_metric(text: Any) -> Dict[str, Any]:
         if not metric:
             raise QuickEntryError(
                 "unknown_metric",
-                "没有识别到指标，请写明血压、血糖、体重、体温、心率、血氧、腰围、睡眠时长或步数。",
+                "没有识别到指标，请写明血压、血糖、体重、体温、心率、血氧、腰围、睡眠时长、步数或饮水量。",
             )
         alias_span = (0, 0)
         exclude = []

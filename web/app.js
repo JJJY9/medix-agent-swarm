@@ -2422,7 +2422,7 @@ function buildVisitSummaryHtml({
     <h2>指标概览</h2>
     ${summaryRows
       ? `<table><thead><tr><th>指标</th><th>记录</th><th>最新</th><th>平均</th><th>最低–最高</th><th>达标</th></tr></thead><tbody>${summaryRows}</tbody></table>
-        <p class="muted">达标列为未超过目标上限（血氧、睡眠、步数为不低于目标下限）的记录数；未设置目标的指标显示「—」。</p>`
+        <p class="muted">达标列为未超过目标上限（血氧、睡眠、步数、饮水量为不低于目标下限）的记录数；未设置目标的指标显示「—」。</p>`
       : '<p class="muted">还没有健康指标记录。</p>'}
   </section>
 
@@ -6277,6 +6277,7 @@ const METRIC_UNITS = {
   waist: 'cm',
   sleep: '小时',
   steps: '步',
+  water: 'ml',
   phq9: '分',
   gad7: '分',
   cat: '分',
@@ -6303,6 +6304,7 @@ const METRIC_NAMES = {
   waist: '腰围',
   sleep: '睡眠时长',
   steps: '步数',
+  water: '饮水量',
   phq9: 'PHQ-9 评分',
   gad7: 'GAD-7 评分',
   cat: 'CAT 评分',
@@ -6320,6 +6322,7 @@ const METRIC_REFERENCES = {
   waist: '腰围参考：男性 <90 cm、女性 <85 cm（中国成人中心性肥胖标准）。',
   sleep: '成人通常建议每晚 7–9 小时；长期睡眠不足或嗜睡建议咨询医生。',
   steps: '常见目标为每日 6000–10000 步；请结合年龄、基础疾病与医生建议调整。',
+  water: '饮水量目标因年龄、活动量、心肾功能而异；如有心衰、肾功能不全或医生要求限水，请遵医嘱。',
   phq9: '评分越高提示抑郁症状越明显，需结合临床访谈判断。',
   gad7: '评分越高提示焦虑症状越明显，需结合临床访谈判断。',
   cat: 'CAT 总分 0–40，分数越高提示慢阻肺对生活影响越大。',
@@ -6405,7 +6408,8 @@ function findMetricTarget(profile, metric) {
 }
 
 function targetIsLowerBound(metric) {
-  return metric === 'spo2' || metric === 'sleep' || metric === 'steps';
+  return metric === 'spo2' || metric === 'sleep'
+    || metric === 'steps' || metric === 'water';
 }
 
 const METRIC_TARGET_DEFAULTS = {
@@ -6414,6 +6418,7 @@ const METRIC_TARGET_DEFAULTS = {
   heart_rate: { value1: 100 },
   sleep: { value1: 7 },
   steps: { value1: 6000 },
+  water: { value1: 1500 },
 };
 
 function formatMetricTarget(target) {
@@ -7115,8 +7120,8 @@ function renderMetricWeekly(summaries) {
   list.replaceChildren();
   const order = [
     'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
-    'waist', 'sleep', 'steps', 'phq9', 'gad7', 'cat', 'ess', 'auditc',
-    'mmrc',
+    'waist', 'sleep', 'steps', 'water', 'phq9', 'gad7', 'cat', 'ess',
+    'auditc', 'mmrc',
   ];
   const items = (summaries || [])
     .filter((item) => item.count > 0)
@@ -7248,7 +7253,7 @@ async function loadMetricOverview() {
     let count = 0;
     for (const metric of [
       'bp', 'weight', 'glucose', 'temperature', 'heart_rate',
-      'spo2', 'waist', 'sleep', 'steps', 'phq9', 'gad7', 'cat',
+      'spo2', 'waist', 'sleep', 'steps', 'water', 'phq9', 'gad7', 'cat',
       'ess', 'auditc', 'mmrc',
     ]) {
       const item = latest[metric];

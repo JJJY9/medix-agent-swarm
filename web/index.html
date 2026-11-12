@@ -624,7 +624,7 @@
     <div class="quick-entry" id="quick-entry">
       <label class="calc-field">快速记录
         <input id="quick-entry-input" type="text" maxlength="120"
-          placeholder="如：血压 150/95 早上 / 血糖 7.8 空腹 / 睡眠 7.5 小时" autocomplete="off">
+          placeholder="如：血压 150/95 早上 / 血糖 7.8 空腹 / 睡眠 7.5 小时 / 饮水 1500 ml" autocomplete="off">
       </label>
       <div class="quick-entry-actions">
         <button type="button" class="btn-quiet" id="quick-entry-parse">解析</button>
@@ -796,6 +796,7 @@
             <option value="waist">腰围（cm）</option>
             <option value="sleep">睡眠时长（小时）</option>
             <option value="steps">步数（步）</option>
+            <option value="water">饮水量（ml）</option>
           </optgroup>
           <optgroup label="量表评分">
             <option value="phq9">PHQ-9 评分（分）</option>
@@ -1368,6 +1369,7 @@
           <option value="temperature">体温</option>
           <option value="sleep">睡眠时长</option>
           <option value="steps">步数</option>
+          <option value="water">饮水量</option>
         </select>
         <label class="sr-only" for="compare-range">对比范围</label>
         <select id="compare-range" aria-label="对比范围">
