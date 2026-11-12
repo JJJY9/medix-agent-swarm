@@ -662,6 +662,20 @@ def test_export_attachments_csv(client_and_store):
     )))
     assert [row[1] for row in ref_rows[1:]] == ["出院小结.pdf"]
 
+    _upload(client, profile="", file_name="未指定.pdf")
+    all_rows = list(csv.reader(io.StringIO(
+        client.get("/api/attachments/export.csv").content.decode("utf-8-sig")
+    )))
+    assert {"出院小结.pdf", "其他.pdf", "未指定.pdf"} <= {
+        row[1] for row in all_rows[1:]
+    }
+    unassigned_rows = list(csv.reader(io.StringIO(
+        client.get(
+            "/api/attachments/export.csv", params={"profile": ""}
+        ).content.decode("utf-8-sig")
+    )))
+    assert [row[1] for row in unassigned_rows[1:]] == ["未指定.pdf"]
+
 
 def test_attachment_ref_counts(client_and_store):
     client, _store = client_and_store

@@ -14447,7 +14447,7 @@ async function exportAttachmentArchive(ids = null) {
 async function exportAttachmentCsv() {
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const params = new URLSearchParams();
-  if (profile) params.set('profile', profile);
+  params.set('profile', profile);
   if (attachmentRefFilter) {
     params.set('kind', attachmentRefFilter.kind);
     params.set('ref_id', String(attachmentRefFilter.refId));
