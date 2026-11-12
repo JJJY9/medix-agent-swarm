@@ -96,7 +96,7 @@ class MedicalKnowledgeBase:
         self._index_lock = threading.RLock()
 
         # 确保数据目录存在
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
         # 初始化 Embedding 模型（支持本地路径）
         # 优先检查本地缓存路径
@@ -120,8 +120,8 @@ class MedicalKnowledgeBase:
         logger.info(f"Embedding model loaded (dimension={self.embedding_dim})")
 
         # 初始化向量库（Milvus Lite，Windows 上自动降级到本地实现）
-        logger.info(f"Initializing vector store: {db_path}")
-        self.milvus_client = _create_vector_store(db_path)
+        logger.info(f"Initializing vector store: {self.db_path}")
+        self.milvus_client = _create_vector_store(self.db_path)
 
         # 创建 collection（如果不存在）
         self._ensure_collection()

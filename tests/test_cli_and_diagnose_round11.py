@@ -36,6 +36,15 @@ def test_kb_default_db_path_is_absolute():
     assert path.parent.parent.name == "knowledge"
 
 
+def test_kb_initialize_uses_resolved_db_path():
+    script = (ROOT / "knowledge" / "milvus_kb.py").read_text(
+        encoding="utf-8"
+    )
+    # 默认参数改为 None 后，后续每处都必须使用解析后的 self.db_path
+    assert "Path(self.db_path).parent.mkdir" in script
+    assert "_create_vector_store(self.db_path)" in script
+
+
 def test_web_e2e_sends_access_token():
     script = (ROOT / "examples" / "test_web_e2e.py").read_text(
         encoding="utf-8"
