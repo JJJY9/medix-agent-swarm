@@ -3714,6 +3714,10 @@ class SessionStore:
                     profiles_imported += 1
 
             metrics_imported = 0
+            # 按内容统计库中已有条数：同一备份里同分钟的多条同值读数
+            # 仍会全部恢复，跨来源重复导入则按数量合并跳过
+            existing_metric_counts: Dict[tuple, int] = {}
+            imported_metric_counts: Dict[tuple, int] = {}
             if isinstance(raw_metrics, list):
                 for raw in raw_metrics[:IMPORT_LIST_LIMITS["health_metrics"]]:
                     if not isinstance(raw, dict):
@@ -3730,37 +3734,22 @@ class SessionStore:
                     if normalized is None:
                         invalid += 1
                         continue
-                    # 备份带 created_at 时纳入判重键，避免同一分钟录入的
-                    # 两条同值读数在恢复时被当成重复丢弃
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    if created_key:
-                        exists = self._conn.execute(
+                    metric_key = (
+                        normalized["profile"],
+                        normalized["metric"],
+                        normalized["measured_at"],
+                        normalized["value1"],
+                        normalized["value2"],
+                        normalized["note"],
+                        normalized["context"],
+                    )
+                    if metric_key not in existing_metric_counts:
+                        count_row = self._conn.execute(
                             """
-                            SELECT 1 FROM health_metrics
-                             WHERE profile = ? AND metric = ?
-                               AND measured_at = ?
-                               AND value1 = ?
-                               AND IFNULL(value2, -1) = IFNULL(?, -1)
-                               AND note = ? AND context = ?
-                               AND created_at = ?
-                            """,
-                            (
-                                normalized["profile"],
-                                normalized["metric"],
-                                normalized["measured_at"],
-                                normalized["value1"],
-                                normalized["value2"],
-                                normalized["note"],
-                                normalized["context"],
-                                created_key,
-                            ),
-                        ).fetchone()
-                    else:
-                        exists = self._conn.execute(
-                            """
-                            SELECT 1 FROM health_metrics
+                            SELECT COUNT(*) AS total FROM health_metrics
                              WHERE profile = ? AND metric = ?
                                AND measured_at = ?
                                AND value1 = ?
@@ -3777,7 +3766,12 @@ class SessionStore:
                                 normalized["context"],
                             ),
                         ).fetchone()
-                    if exists:
+                        existing_metric_counts[metric_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_metric_counts.get(metric_key, 0)
+                    imported_metric_counts[metric_key] = seen + 1
+                    if seen < existing_metric_counts[metric_key]:
                         continue
                     self._conn.execute(
                         """
@@ -5160,7 +5154,7 @@ class SessionStore:
         """批量归档或移出归档；返回实际更新与缺失的会话 id。"""
         ids: List[str] = []
         for raw in session_ids:
-            session_id = str(raw or "").strip()[:64]
+            session_id = str(raw or "").strip()
             if session_id and session_id not in ids:
                 ids.append(session_id)
         if not ids:
@@ -5194,7 +5188,7 @@ class SessionStore:
         """
         ids: List[str] = []
         for raw in session_ids:
-            session_id = str(raw or "").strip()[:64]
+            session_id = str(raw or "").strip()
             if session_id and session_id not in ids:
                 ids.append(session_id)
         if not ids:
@@ -5563,11 +5557,12 @@ class SessionStore:
         now = self._now()
         auto_time = not str(measured_at or "").strip()
         retry_now = datetime.now()
+        # 只把数十秒内的重复提交视为重试；同值复测通常发生在更久之后
         retry_cutoff = (
-            retry_now - timedelta(seconds=120)
+            retry_now - timedelta(seconds=30)
         ).isoformat(timespec="seconds")
         auto_cutoff = (
-            retry_now - timedelta(seconds=120)
+            retry_now - timedelta(seconds=30)
         ).isoformat(timespec="minutes")
         with self._lock, self._conn:
             # 响应丢失后的重试：显式测量时间时按原值比对；未填时间时服务端
@@ -6918,15 +6913,40 @@ class SessionStore:
             new_profile = normalized["profile"]
             was_active = bool(int(previous["active"] or 0))
             now_active = bool(int(normalized["active"] or 0))
+
+            def reminder_title_shared(profile: str, title: str) -> bool:
+                """同一档案下是否还有另一个启用中的同名复查计划。
+
+                复查提醒没有 id 关联，标题撞名时无法判断归属，保守跳过
+                同步，避免删掉/改写另一条计划的提醒。
+                """
+                row = self._conn.execute(
+                    "SELECT 1 FROM care_items "
+                    "WHERE id != ? AND active = 1 "
+                    "AND profile = ? AND title = ? LIMIT 1",
+                    (int(care_id), profile, title),
+                ).fetchone()
+                return row is not None
+
+            old_shared = reminder_title_shared(
+                old_profile, previous["title"] or ""
+            )
+            new_shared = reminder_title_shared(
+                new_profile, normalized["title"] or ""
+            )
             if was_active and not now_active:
                 # 停用复查计划后不再提醒复查；重新启用时由用户按需重建
-                self._conn.execute(
-                    "DELETE FROM reminders "
-                    "WHERE done = 0 AND profile = ? AND title = ?",
-                    (old_profile, old_title),
-                )
+                if not old_shared:
+                    self._conn.execute(
+                        "DELETE FROM reminders "
+                        "WHERE done = 0 AND profile = ? AND title = ?",
+                        (old_profile, old_title),
+                    )
             else:
-                if old_title != new_title or old_profile != new_profile:
+                if (
+                    (old_title != new_title or old_profile != new_profile)
+                    and not (old_shared or new_shared)
+                ):
                     self._conn.execute(
                         """
                         UPDATE reminders
@@ -6939,8 +6959,10 @@ class SessionStore:
                         ),
                     )
                 due = str(normalized["next_due_at"] or "")[:10]
-                if now_active and due and due != (
-                    previous["next_due_at"] or ""
+                if (
+                    now_active and due
+                    and due != (previous["next_due_at"] or "")
+                    and not new_shared
                 ):
                     try:
                         due_date = datetime.strptime(
@@ -8187,13 +8209,16 @@ class SessionStore:
                     changes.append(
                         f"停药{('：' + reason) if reason else ''}"
                     )
-                    # 停药后不再每日提醒服用；重新启用时由用户按需重建
+                    # 只删除服药提醒；补货/药物到期提醒仍需保留
                     self._conn.execute(
                         """
                         DELETE FROM reminders
-                         WHERE done = 0 AND medication_id = ?
+                         WHERE done = 0 AND medication_id = ? AND title = ?
                         """,
-                        (medication_id,),
+                        (
+                            medication_id,
+                            f"用药：{normalized['name']}"[:120],
+                        ),
                     )
             if previous["started_at"] != normalized["started_at"]:
                 changes.append(
@@ -8336,7 +8361,7 @@ class SessionStore:
                 if skipped_flag:
                     duplicate = self._conn.execute(
                         """
-                        SELECT id, note, skip_reason, created_at
+                        SELECT id, note, skip_reason, taken_at, created_at
                           FROM medication_logs
                          WHERE medication_id = ? AND skipped = 1
                            AND skip_reason = ?
@@ -8353,7 +8378,7 @@ class SessionStore:
                             "id": int(duplicate["id"]),
                             "medication_id": medication["id"],
                             "profile": medication["profile"],
-                            "taken_at": taken_at,
+                            "taken_at": duplicate["taken_at"],
                             "note": duplicate["note"],
                             "stock_delta": 0.0,
                             "stock_after": stock,
@@ -8368,7 +8393,7 @@ class SessionStore:
                 else:
                     duplicate = self._conn.execute(
                         """
-                        SELECT id, note, stock_delta, created_at
+                        SELECT id, note, stock_delta, taken_at, created_at
                           FROM medication_logs
                          WHERE medication_id = ? AND skipped = 0
                            AND taken_at >= ? AND note = ?
@@ -8382,7 +8407,7 @@ class SessionStore:
                             "id": int(duplicate["id"]),
                             "medication_id": medication["id"],
                             "profile": medication["profile"],
-                            "taken_at": taken_at,
+                            "taken_at": duplicate["taken_at"],
                             "note": duplicate["note"],
                             "stock_delta": float(duplicate["stock_delta"] or 0),
                             "stock_after": stock,

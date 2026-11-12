@@ -85,6 +85,7 @@ def test_cross_minute_retry_is_idempotent(tmp_path):
 
     # 跨分钟重试识别为同一次打卡，不新增记录也不再扣库存
     assert duplicate["duplicate"] is True
+    assert duplicate["taken_at"] == previous_minute
     assert len(logs) == 1
     assert refreshed["stock"] == 10
 
