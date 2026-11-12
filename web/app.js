@@ -21675,6 +21675,18 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* 文件拖到上传区域之外时阻止浏览器默认打开文件并卸载当前界面 */
+for (const type of ['dragover', 'drop']) {
+  document.addEventListener(type, (event) => {
+    if (
+      event.dataTransfer
+      && Array.from(event.dataTransfer.types || []).includes('Files')
+    ) {
+      event.preventDefault();
+    }
+  });
+}
+
 els.skipLink.addEventListener('click', (event) => {
   event.preventDefault();
   els.input.focus();
