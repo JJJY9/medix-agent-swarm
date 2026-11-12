@@ -8003,17 +8003,26 @@ class SessionStore:
                 return None
             stock = medication["stock"]
             if not skipped_flag and not explicit_time:
-                # 默认时间戳的重复打卡（双击/响应丢失重试）同一分钟只记一次；
+                # 默认时间戳的重复打卡（双击/响应丢失重试）短窗口内只记一次；
+                # 重试可能跨到下一分钟，因此按分钟窗口而不是精确相等匹配；
                 # 显式传入时间的记录用于补录或统计，仍允许多条
+                retry_now = datetime.now()
+                retry_cutoff = (
+                    retry_now - timedelta(seconds=120)
+                ).isoformat(timespec="seconds")
+                minute_cutoff = (
+                    retry_now - timedelta(seconds=120)
+                ).isoformat(timespec="minutes")
                 duplicate = self._conn.execute(
                     """
                     SELECT id, note, stock_delta, created_at
                       FROM medication_logs
-                     WHERE medication_id = ? AND taken_at = ?
-                       AND skipped = 0
+                     WHERE medication_id = ? AND skipped = 0
+                       AND taken_at >= ? AND note = ?
+                       AND created_at >= ?
                      ORDER BY id LIMIT 1
                     """,
-                    (medication_id, taken_at),
+                    (medication_id, minute_cutoff, note, retry_cutoff),
                 ).fetchone()
                 if duplicate is not None:
                     return {
