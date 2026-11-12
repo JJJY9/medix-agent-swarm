@@ -7781,16 +7781,40 @@ class SessionStore:
             for row in rows
         ]
 
-    def list_all_attachments(self) -> List[Dict[str, Any]]:
-        """返回全部附件登记（不做分页上限截断），供完整性检查使用。"""
+    def list_all_attachments(
+        self,
+        profile: Optional[str] = None,
+        start: str = "",
+        end: str = "",
+    ) -> List[Dict[str, Any]]:
+        """返回附件登记（可按档案与日期筛选，不做分页上限截断）。
+
+        供完整性检查、时间线与健康搜索使用：一次扫描取全量，
+        避免逐页 OFFSET + 窗口聚合的重复开销。
+        """
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        start_day = str(start or "").strip()[:10]
+        if start_day:
+            conditions.append("substr(created_at, 1, 10) >= ?")
+            params.append(start_day)
+        end_day = str(end or "").strip()[:10]
+        if end_day:
+            conditions.append("substr(created_at, 1, 10) <= ?")
+            params.append(end_day)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT id, profile, kind, ref_id, original_name,
                        stored_name, mime, size, note, created_at
-                  FROM attachments
+                  FROM attachments{where}
                  ORDER BY created_at DESC, id DESC
-                """
+                """,
+                params,
             ).fetchall()
         return [
             {

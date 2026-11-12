@@ -7271,19 +7271,10 @@ async def _list_attachments_paged(
     start: str = "",
     end: str = "",
 ) -> List[Dict[str, Any]]:
-    """分页读取附件登记，避免单页上限导致较旧附件被静默丢弃。"""
-    items: List[Dict[str, Any]] = []
-    offset = 0
-    while offset < 100000:
-        page = await asyncio.to_thread(
-            store.list_attachments,
-            profile, None, None, 1000, offset, "", None, start, end,
-        )
-        items.extend(page)
-        if len(page) < 1000:
-            break
-        offset += 1000
-    return items
+    """一次读取附件登记（时间线与健康搜索只需轻量字段）。"""
+    return await asyncio.to_thread(
+        store.list_all_attachments, profile, start, end
+    )
 
 
 @app.get("/api/timeline")
