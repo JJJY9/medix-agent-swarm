@@ -107,6 +107,14 @@ def test_attachment_bulk_delete_wiring():
     assert ".attachment-select {" in STYLES
 
 
+def test_attachment_failed_reload_clears_stale_selection():
+    assert (
+        "attachmentTotalSize = 0;\n"
+        "      attachmentSelectedIds.clear();\n"
+        "      updateAttachmentSelection();"
+    ) in SCRIPT
+
+
 def test_attachment_export_selected_wiring():
     assert 'id="attachment-export-selected"' in HTML
     assert "导出选中" in HTML

@@ -377,3 +377,45 @@ def test_health_search_includes_attachment_metadata(client_and_store):
         "/api/health/search", params={"q": "就诊资料", "profile": "妈妈"}
     ).json()
     assert by_kind["counts"]["attachment"] == 1
+
+
+def test_health_search_attachment_beyond_newest_page(client_and_store):
+    client, store = client_and_store
+    old_at = (datetime.now() - timedelta(days=5)).isoformat(
+        timespec="seconds"
+    )
+    recent_at = datetime.now().isoformat(timespec="seconds")
+
+    with store._lock, store._conn:
+        store._conn.execute(
+            "INSERT INTO attachments("
+            "profile,kind,ref_id,original_name,stored_name,mime,size,note,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "妈妈", "other", 0, "旧报告.pdf", "old-report.pdf",
+                "application/pdf", 100, "", old_at,
+            ),
+        )
+        store._conn.executemany(
+            "INSERT INTO attachments("
+            "profile,kind,ref_id,original_name,stored_name,mime,size,note,"
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "妈妈", "other", 0, f"新附件{index}.pdf",
+                    f"new-{index}.pdf", "application/pdf", 100, "",
+                    recent_at,
+                )
+                for index in range(1001)
+            ],
+        )
+
+    data = client.get(
+        "/api/health/search",
+        params={"q": "旧报告", "profile": "妈妈"},
+    ).json()
+
+    attachments = [
+        row for row in data["results"] if row["type"] == "attachment"
+    ]
+    assert [row["title"] for row in attachments] == ["旧报告.pdf"]

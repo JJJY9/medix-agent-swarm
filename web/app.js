@@ -14689,6 +14689,8 @@ async function loadAttachments(append = false) {
       attachmentItemsCache = [];
       attachmentTotalCount = 0;
       attachmentTotalSize = 0;
+      attachmentSelectedIds.clear();
+      updateAttachmentSelection();
       els.attachmentList.replaceChildren();
       els.attachmentsSummary.textContent = '';
       els.attachmentMore.hidden = true;
