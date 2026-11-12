@@ -977,6 +977,22 @@ def csv_restore_cell(value: Any) -> str:
     return text
 
 
+#: CSV 状态列中明确表示"停用"的写法；空值与其他未知值按在用处理，
+#: 避免把用户手写的变体（已停药/暂停等）误导入为在用药物
+_CSV_INACTIVE_STATUS = {
+    "停用", "已停用", "停用中", "已停药", "停药", "暂停", "已暂停",
+    "停服", "已停服", "0", "false", "no", "否",
+}
+
+
+def csv_active_status(value: Any) -> bool:
+    """解析 CSV 状态列：只有明确的停用值才视为停用，空值默认为在用。"""
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return True
+    return text not in _CSV_INACTIVE_STATUS
+
+
 #: CSV 导入模板：列名与导出文件保持一致，示例行帮助用户直接开始录入
 CSV_IMPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "metrics": {
@@ -3125,7 +3141,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             "dose": mapped.get("dose", ""),
             "frequency": mapped.get("frequency", ""),
             "note": mapped.get("note", ""),
-            "active": active not in ("停用", "0", "false", "False", "否"),
+            "active": csv_active_status(active),
             "stock": mapped.get("stock") or None,
             "stock_unit": mapped.get("stock_unit", ""),
             "low_stock_threshold": mapped.get("low_stock_threshold") or 0,
@@ -4462,7 +4478,7 @@ async def import_allergies_csv(
             "reaction": mapped.get("reaction", ""),
             "severity": severity_map.get(severity, severity or "moderate"),
             "kind": kind_map.get(kind, kind or "drug"),
-            "active": active not in ("已停用", "停用", "0", "false", "False", "否"),
+            "active": csv_active_status(active),
             "noted_at": mapped.get("noted_at", ""),
             "note": mapped.get("note", ""),
         })
