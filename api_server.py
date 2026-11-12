@@ -151,7 +151,9 @@ def _bounded_offset(offset: Any) -> int:
 
 
 class ChatRequest(StrictRequestModel):
-    question: str = Field(..., min_length=1, description="用户健康问题")
+    question: str = Field(
+        ..., min_length=1, max_length=2000, description="用户健康问题"
+    )
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     context: Optional[Dict[str, Any]] = Field(None, description="额外上下文（年龄、既往史等）")
     enable_swarm: bool = Field(True, description="是否允许群体智能协作")
@@ -174,6 +176,23 @@ class ChatRequest(StrictRequestModel):
         ):
             raise ValueError("会话 ID 不合法")
         return text
+
+    @model_validator(mode="after")
+    def _validate_context_size(self):
+        """限制追问上下文体积，避免同一段文本被多次拼进提示词。"""
+        if self.context is None:
+            return self
+        if len(self.context) > 50:
+            raise ValueError("上下文项过多")
+        try:
+            serialized = json.dumps(
+                self.context, ensure_ascii=False, default=str
+            )
+        except (TypeError, ValueError):
+            raise ValueError("上下文包含无法序列化的内容")
+        if len(serialized) > 8000:
+            raise ValueError("上下文内容过长")
+        return self
 
 
 class SessionResponse(BaseModel):
@@ -1432,6 +1451,9 @@ def _body_limit_for_path(path: str) -> int:
         return MAX_UPLOAD_BYTES + 1024 * 1024
     if path.endswith("/import"):
         return MAX_UPLOAD_BYTES + 1024 * 1024
+    if path in ("/api/chat", "/api/chat/stream"):
+        # 问题上限 2000 字、上下文上限 8000 字，64KB 足够且能挡住灌入
+        return 64 * 1024
     return 2 * 1024 * 1024
 
 
