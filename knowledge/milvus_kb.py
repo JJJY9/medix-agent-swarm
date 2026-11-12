@@ -39,6 +39,13 @@ def _create_vector_store(db_path: str):
         return LocalVectorStore(db_path)
 
 
+def _is_unit_char(character: str) -> bool:
+    """英文/数字/单位符号：分块边界不应把它们切成两半。"""
+    return character.isascii() and (
+        character.isalnum() or character in "/%."
+    )
+
+
 class MedicalKnowledgeBase:
     """医学知识库"""
 
@@ -157,11 +164,42 @@ class MedicalKnowledgeBase:
 
         chunks = []
         start = 0
+        boundary_chars = "\n。！？；.!?;"
         while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-            chunks.append(chunk)
-            start = end - overlap  # 重叠
+            end = min(len(text), start + chunk_size)
+            if end < len(text):
+                # 优先在句/段边界附近结束，避免把一句话或数值单位切断
+                lower = max(start + 1, end - max(1, chunk_size // 5))
+                boundary = max(
+                    text.rfind(mark, lower, end)
+                    for mark in boundary_chars
+                )
+                if boundary > start:
+                    end = boundary + 1
+                elif end < len(text) and _is_unit_char(text[end]):
+                    # 例如 "...140/90mm|Hg..."：把边界挪到整个数值/单位
+                    # token 之前；超长连续 token 无法避免切分时保持原边界
+                    token_start = end
+                    limit = max(start + 1, end - 24)
+                    while (
+                        token_start > limit
+                        and _is_unit_char(text[token_start - 1])
+                    ):
+                        token_start -= 1
+                    if (
+                        token_start > start
+                        and token_start < end
+                        and not (
+                            token_start == limit
+                            and token_start > start
+                            and _is_unit_char(text[token_start - 1])
+                        )
+                    ):
+                        end = token_start
+            chunks.append(text[start:end])
+            if end >= len(text):
+                break
+            start = max(end - overlap, start + 1)  # 重叠
 
         return chunks
 
