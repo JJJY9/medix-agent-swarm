@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import hashlib
 import ipaddress
 import uuid
@@ -908,6 +909,20 @@ async def auto_backup_once():
     return await asyncio.to_thread(create_backup, payload)
 
 
+def auto_backup_wait_seconds(hours: int) -> float:
+    """距下一份自动备份还需等待的秒数；没有备份或已到期返回 0。"""
+    from core.backup import latest_backup
+
+    latest = latest_backup()
+    if latest is None:
+        return 0.0
+    try:
+        age = time.time() - latest.stat().st_mtime
+    except OSError:
+        return 0.0
+    return max(0.0, hours * 3600 - age)
+
+
 async def auto_backup_loop() -> None:
     """按 MEDIX_AUTO_BACKUP_HOURS 定期备份；关闭时每小时检查一次配置。"""
     from core.backup import get_auto_backup_hours
@@ -917,13 +932,20 @@ async def auto_backup_loop() -> None:
         if hours <= 0:
             await asyncio.sleep(3600)
             continue
+        interval = hours * 3600
+        wait = await asyncio.to_thread(auto_backup_wait_seconds, hours)
+        if wait > 0:
+            # 进程重启不应额外生成备份，否则连续重启会把历史快照
+            # 按份数挤出保留窗口，只剩同一天的重复文件
+            await asyncio.sleep(wait)
+            continue
         try:
             path = await auto_backup_once()
             if path:
                 logger.info(f"本地自动备份完成: {path}")
         except Exception as e:
             logger.warning(f"本地自动备份失败: {e}")
-        await asyncio.sleep(hours * 3600)
+        await asyncio.sleep(interval)
 
 
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
