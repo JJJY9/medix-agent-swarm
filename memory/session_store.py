@@ -4223,16 +4223,20 @@ class SessionStore:
                             ),
                         ).fetchone()
                     else:
-                        # CSV 导入没有创建时间，保持原有三列去重以维持幂等
+                        # CSV 导入没有创建时间：同一天/同一检测时间的多条
+                        # 化验只要内容不同就必须各自保留，重复导入仍幂等
                         duplicate = self._conn.execute(
                             """
                             SELECT id FROM lab_results
-                             WHERE profile = ? AND item = ? AND tested_at = ?
+                             WHERE profile = ? AND item = ?
+                               AND tested_at = ? AND value = ? AND unit = ?
                             """,
                             (
                                 normalized["profile"],
                                 normalized["item"],
                                 normalized["tested_at"],
+                                normalized["value"],
+                                normalized["unit"],
                             ),
                         ).fetchone()
                     if duplicate is not None:
