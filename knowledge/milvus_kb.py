@@ -79,6 +79,9 @@ class MedicalKnowledgeBase:
 
         self.db_path = db_path
         self.collection_name = collection_name
+        # 重建索引在 drop→rename 之间会短暂没有 collection；
+        # 用读写锁让并发检索等待替换完成，避免会诊静默检索为空
+        self._index_lock = threading.RLock()
 
         # 确保数据目录存在
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -218,47 +221,52 @@ class MedicalKnowledgeBase:
         # 先完成分块与向量化；重建时先写入临时 collection，
         # 成功后再原子替换，避免插入失败把旧索引清空
         if replace_existing:
-            staging_name = f"{self.collection_name}__staging"
-            if self.milvus_client.has_collection(staging_name):
-                self.milvus_client.drop_collection(staging_name)
-            self.milvus_client.create_collection(
-                collection_name=staging_name,
-                dimension=self.embedding_dim,
-                metric_type="COSINE",
-                auto_id=True,
-            )
-            try:
-                self.milvus_client.insert(staging_name, data)
-            except Exception:
-                self.milvus_client.drop_collection(staging_name)
-                raise
-
-            try:
-                if self.milvus_client.has_collection(self.collection_name):
-                    self.milvus_client.drop_collection(self.collection_name)
-                self.milvus_client.rename_collection(
-                    staging_name, self.collection_name
-                )
-                logger.info(f"Successfully replaced with {len(data)} chunks")
-                return len(data)
-            except Exception as e:
-                # 后端不支持 rename 时退回“清空后重建”，此时数据已在
-                # staging 中写入过一次，二次插入失败的概率显著降低
-                logger.warning(f"原子替换索引失败，回退到重建: {e}")
-                if self.milvus_client.has_collection(self.collection_name):
-                    self.milvus_client.drop_collection(self.collection_name)
-                self._ensure_collection()
-                self.milvus_client.insert(self.collection_name, data)
-                if self.milvus_client.has_collection(staging_name):
-                    self.milvus_client.drop_collection(staging_name)
-                logger.info(f"Successfully added {len(data)} chunks")
-                return len(data)
+            with self._index_lock:
+                return self._replace_with_staging(data)
 
         # 插入
         self.milvus_client.insert(self.collection_name, data)
         logger.info(f"Successfully added {len(data)} chunks")
 
         return len(data)
+
+    def _replace_with_staging(self, data: List[Dict[str, Any]]) -> int:
+        """在持有索引锁时用 staging collection 原子替换正式索引。"""
+        staging_name = f"{self.collection_name}__staging"
+        if self.milvus_client.has_collection(staging_name):
+            self.milvus_client.drop_collection(staging_name)
+        self.milvus_client.create_collection(
+            collection_name=staging_name,
+            dimension=self.embedding_dim,
+            metric_type="COSINE",
+            auto_id=True,
+        )
+        try:
+            self.milvus_client.insert(staging_name, data)
+        except Exception:
+            self.milvus_client.drop_collection(staging_name)
+            raise
+
+        try:
+            if self.milvus_client.has_collection(self.collection_name):
+                self.milvus_client.drop_collection(self.collection_name)
+            self.milvus_client.rename_collection(
+                staging_name, self.collection_name
+            )
+            logger.info(f"Successfully replaced with {len(data)} chunks")
+            return len(data)
+        except Exception as e:
+            # 后端不支持 rename 时退回“清空后重建”，此时数据已在
+            # staging 中写入过一次，二次插入失败的概率显著降低
+            logger.warning(f"原子替换索引失败，回退到重建: {e}")
+            if self.milvus_client.has_collection(self.collection_name):
+                self.milvus_client.drop_collection(self.collection_name)
+            self._ensure_collection()
+            self.milvus_client.insert(self.collection_name, data)
+            if self.milvus_client.has_collection(staging_name):
+                self.milvus_client.drop_collection(staging_name)
+            logger.info(f"Successfully added {len(data)} chunks")
+            return len(data)
 
     def search(
         self,
@@ -292,13 +300,16 @@ class MedicalKnowledgeBase:
 
         # 检索
         try:
-            results = self.milvus_client.search(
-                collection_name=self.collection_name,
-                data=[query_vector.tolist()],
-                limit=top_k,
-                filter=filter_expr,
-                output_fields=["content", "metadata"]
-            )
+            # 重建期间 drop→rename 之间没有正式 collection：
+            # 检索在锁内等待替换完成，而不是静默返回空结果
+            with self._index_lock:
+                results = self.milvus_client.search(
+                    collection_name=self.collection_name,
+                    data=[query_vector.tolist()],
+                    limit=top_k,
+                    filter=filter_expr,
+                    output_fields=["content", "metadata"]
+                )
         except Exception as e:
             logger.error(f"Search failed: {e}")
             raise ValueError(f"知识库检索失败：{e}") from e
