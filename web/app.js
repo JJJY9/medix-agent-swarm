@@ -7457,10 +7457,12 @@ function renderHealthSearchResults(data) {
   if (!els.healthSearchResults) return;
   const query = String(data.query || healthSearchQuery || '');
   const results = data.results || [];
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  const scopeText = profile ? `档案「${profile}」` : '未指定档案';
   els.healthSearchResults.replaceChildren();
   els.healthSearchResults.hidden = false;
   if (!results.length) {
-    setHealthSearchStatus(`没有匹配「${query}」的记录。`);
+    setHealthSearchStatus(`${scopeText}没有匹配「${query}」的记录。`);
     return;
   }
   const counts = data.counts || {};
@@ -7471,7 +7473,7 @@ function renderHealthSearchResults(data) {
       `${HEALTH_SEARCH_LABELS[key] || key} ${Number(value)}`
     ));
   setHealthSearchStatus(
-    `共 ${total} 条`
+    `${scopeText} · 共 ${total} 条`
     + (total > results.length ? `，显示 ${results.length} 条` : '')
     + (summaryParts.length ? `：${summaryParts.join(' · ')}` : '')
   );

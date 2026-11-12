@@ -76,6 +76,12 @@ def test_truncation_is_reported_to_user():
     assert "显示 ${results.length} 条" in SCRIPT
 
 
+def test_search_scope_is_visible():
+    assert "const scopeText = profile ? `档案「${profile}」` : '未指定档案';" in SCRIPT
+    assert "`${scopeText} · 共 ${total} 条`" in SCRIPT
+    assert "`${scopeText}没有匹配「${query}」的记录。`" in SCRIPT
+
+
 def test_deep_link_and_shortcut():
     assert "action === 'search'" in SCRIPT
     assert "await runHealthSearch(searchQuery)" in SCRIPT
