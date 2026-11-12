@@ -1840,6 +1840,15 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   color: var(--ink-soft);
 }
 
+.health-search-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
 .health-search-status.error { color: var(--danger, #b42318); }
 
 .health-search-results {

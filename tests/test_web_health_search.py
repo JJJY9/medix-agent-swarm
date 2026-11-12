@@ -17,13 +17,23 @@ def test_search_ui_exists():
 
 def test_search_requests_scoped_endpoint():
     assert "/api/health/search?q=" in SCRIPT
-    assert "&limit=200&profile=${encodeURIComponent(profile)}" in SCRIPT
+    assert "`&limit=200${profileQuery}`" in SCRIPT
+    assert "&profile=${encodeURIComponent(profile)}" in SCRIPT
     assert "runHealthSearch" in SCRIPT
     assert "renderHealthSearchResults" in SCRIPT
     assert "renderHealthSearchItem" in SCRIPT
     assert "HEALTH_SEARCH_LABELS" in SCRIPT
     assert "attachment: '资料'" in SCRIPT
     assert "event.isComposing" in SCRIPT
+
+
+def test_search_can_cover_all_profiles():
+    assert 'id="health-search-all-profiles"' in HTML
+    assert 'class="health-search-all"' in HTML
+    assert "healthSearchAllProfiles" in SCRIPT
+    assert "const profileQuery = allProfiles" in SCRIPT
+    assert "if (healthSearchQuery) runHealthSearch(healthSearchQuery);" in SCRIPT
+    assert ".health-search-all {" in CSS
 
 
 def test_attachment_result_has_preview_action():
@@ -77,7 +87,8 @@ def test_truncation_is_reported_to_user():
 
 
 def test_search_scope_is_visible():
-    assert "const scopeText = profile ? `档案「${profile}」` : '未指定档案';" in SCRIPT
+    assert "const scopeText = allProfiles" in SCRIPT
+    assert "'全部档案'" in SCRIPT
     assert "`${scopeText} · 共 ${total} 条`" in SCRIPT
     assert "`${scopeText}没有匹配「${query}」的记录。`" in SCRIPT
 
