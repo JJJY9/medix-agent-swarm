@@ -129,7 +129,9 @@ def test_finalize_failure_keeps_usage():
 
     result = asyncio.run(loop.run(agent, {"question": "测试"}))
 
-    assert result["warning"] == "finalize_failed"
+    # 后处理失败不再回退成通用错误文案，回答与用量都保留
+    assert result["answer"] == "最终答复"
+    assert result.get("warning") != "finalize_failed"
     assert result["usage"]["total_tokens"] == 99
     assert result["llm_calls"] >= 1
 
