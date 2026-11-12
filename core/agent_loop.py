@@ -419,46 +419,49 @@ class AgentLoop:
                         agent, messages, on_token, usage
                     )
 
-                    result = {
-                        'answer': final_text or '抱歉，未能完成任务',
-                        'iterations': state.iteration,
-                        'sources': merge_sources(sources),
-                        'usage': dict(usage),
-                        'llm_calls': llm_calls,
-                        'warning': 'max_iterations_reached'
-                    }
-
-                    # 记录最终回答到短期记忆；强制收尾路径也补上用户问题，
-                    # 避免留下没有提问的回答
-                    if self.short_term_memory and session_id and persist_memory:
-                        if user_question:
-                            self.short_term_memory.add_message(
-                                session_id=session_id,
-                                role="user",
-                                content=user_question
-                            )
-                        self.short_term_memory.add_message(
-                            session_id=session_id,
-                            role="assistant",
-                            content=result['answer']
-                        )
-
+                    # 强制收尾文本同样要经过约束校验/自动修复与后处理，
+                    # 不能手工拼一个绕过 validator 的 result
+                    result = await self._finalize(
+                        agent, state, final_text, session_id,
+                        tool_call_count, sources, usage, llm_calls,
+                        remember=persist_memory,
+                        user_input=user_question,
+                    )
+                    result['warning'] = 'max_iterations_reached'
                     state.mark_completed(result)
                     logger.info("Generated fallback answer after max iterations")
 
                 except Exception as e:
                     logger.error(f"Failed to generate fallback answer: {e}")
-                    # 降级到简单提取
-                    result = {
-                        'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
-                        'iterations': state.iteration,
-                        'warning': 'max_iterations_reached',
-                        'error': str(e),
-                        'usage': dict(usage),
-                        'llm_calls': llm_calls,
-                        'sources': merge_sources(sources),
-                    }
-                    state.mark_completed(result)
+                    partial = (
+                        getattr(e, "partial_text", "") or ""
+                    ).strip()
+                    try:
+                        # 流式中断时保留已生成的部分内容，并走同一套校验
+                        result = await self._finalize(
+                            agent, state, partial, session_id,
+                            tool_call_count, sources, usage, llm_calls,
+                            remember=persist_memory,
+                            user_input=user_question,
+                        )
+                        result['warning'] = 'max_iterations_reached'
+                        result['error'] = str(e)
+                        state.mark_completed(result)
+                    except Exception as finalize_error:
+                        logger.error(
+                            "Fallback finalize failed: "
+                            f"{finalize_error}"
+                        )
+                        result = {
+                            'answer': '抱歉，系统在处理您的问题时遇到了问题。建议您简化问题或稍后重试。',
+                            'iterations': state.iteration,
+                            'warning': 'max_iterations_reached',
+                            'error': str(e),
+                            'usage': dict(usage),
+                            'llm_calls': llm_calls,
+                            'sources': merge_sources(sources),
+                        }
+                        state.mark_completed(result)
 
             logger.info(f"Agent Loop finished: status={state.status.value}, iterations={state.iteration}")
             return state.final_result or {}
@@ -643,25 +646,33 @@ class AgentLoop:
             'llm_calls': llm_calls
         }
 
-        # 让 Agent 进行结果后处理（如提取建议等）
+        # 让 Agent 进行结果后处理（如提取建议等）；
+        # 后处理失败不应覆盖已经生成并通过校验的有效回答
         if hasattr(agent, 'post_process_result'):
-            result = await agent.post_process_result(result, final_answer)
+            try:
+                result = await agent.post_process_result(result, final_answer)
+            except Exception as e:
+                logger.warning(f"结果后处理失败，保留原始答复: {e}")
 
         # 后处理成功后再写入短期记忆，保证记忆与最终持久化的回答一致；
         # 收尾异常时不会留下孤立提问或与 SQLite 不同的旧回答
         if self.short_term_memory and session_id and remember:
-            if user_input:
+            try:
+                if user_input:
+                    self.short_term_memory.add_message(
+                        session_id=session_id,
+                        role="user",
+                        content=user_input
+                    )
                 self.short_term_memory.add_message(
                     session_id=session_id,
-                    role="user",
-                    content=user_input
+                    role="assistant",
+                    content=result.get('answer') or final_answer or "(empty response)"
                 )
-            self.short_term_memory.add_message(
-                session_id=session_id,
-                role="assistant",
-                content=result.get('answer') or final_answer or "(empty response)"
-            )
-            logger.debug(f"Recorded exchange to short-term memory (session={session_id})")
+                logger.debug(f"Recorded exchange to short-term memory (session={session_id})")
+            except Exception as e:
+                # 记忆写入失败不能作废本轮医疗咨询
+                logger.warning(f"写入短期记忆失败: {e}")
 
         state.mark_completed(result)
         return result
