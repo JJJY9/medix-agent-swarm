@@ -7067,7 +7067,7 @@ function renderMetricWeekly(summaries) {
   list.replaceChildren();
   const order = [
     'bp', 'weight', 'glucose', 'temperature', 'heart_rate', 'spo2',
-    'waist', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
+    'waist', 'sleep', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
   ];
   const items = (summaries || [])
     .filter((item) => item.count > 0)
@@ -7199,7 +7199,8 @@ async function loadMetricOverview() {
     let count = 0;
     for (const metric of [
       'bp', 'weight', 'glucose', 'temperature', 'heart_rate',
-      'spo2', 'waist', 'phq9', 'gad7', 'cat', 'ess', 'auditc', 'mmrc',
+      'spo2', 'waist', 'sleep', 'phq9', 'gad7', 'cat', 'ess',
+      'auditc', 'mmrc',
     ]) {
       const item = latest[metric];
       if (!item) continue;
