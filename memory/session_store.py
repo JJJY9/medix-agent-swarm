@@ -6204,22 +6204,43 @@ class SessionStore:
     def update_allergy(
         self,
         allergy_id: int,
-        profile: str,
-        substance: str,
-        reaction: str = "",
-        severity: str = "moderate",
-        kind: str = "drug",
-        active: Any = True,
-        noted_at: str = "",
-        note: str = "",
+        profile: Any = _UNSET,
+        substance: Any = _UNSET,
+        reaction: Any = _UNSET,
+        severity: Any = _UNSET,
+        kind: Any = _UNSET,
+        active: Any = _UNSET,
+        noted_at: Any = _UNSET,
+        note: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
-        """整体更新一条过敏史；记录不存在时返回 None。"""
-        normalized = _normalize_allergy(
-            profile, substance, reaction, severity, kind,
-            active, noted_at, note,
-        )
+        """更新一条过敏史；未给出的字段沿用事务内读到的原值。"""
+        try:
+            allergy_id = int(allergy_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                """
+                SELECT profile, substance, reaction, severity, kind,
+                       active, noted_at, note
+                  FROM allergies WHERE id = ?
+                """,
+                (allergy_id,),
+            ).fetchone()
+            if previous is None:
+                return None
+            normalized = _normalize_allergy(
+                previous["profile"] if profile is _UNSET else profile,
+                previous["substance"]
+                if substance is _UNSET else substance,
+                previous["reaction"] if reaction is _UNSET else reaction,
+                previous["severity"] if severity is _UNSET else severity,
+                previous["kind"] if kind is _UNSET else kind,
+                previous["active"] if active is _UNSET else active,
+                previous["noted_at"] if noted_at is _UNSET else noted_at,
+                previous["note"] if note is _UNSET else note,
+            )
             cursor = self._conn.execute(
                 """
                 UPDATE allergies
@@ -6233,7 +6254,7 @@ class SessionStore:
                     normalized["reaction"], normalized["severity"],
                     normalized["kind"], normalized["active"],
                     normalized["noted_at"], normalized["note"], now,
-                    int(allergy_id),
+                    allergy_id,
                 ),
             )
             if cursor.rowcount == 0:
@@ -6811,20 +6832,41 @@ class SessionStore:
     def update_condition(
         self,
         condition_id: int,
-        profile: str,
-        name: str,
-        icd10: str = "",
-        diagnosed_at: str = "",
-        status: str = "active",
-        severity: str = "moderate",
-        note: str = "",
+        profile: Any = _UNSET,
+        name: Any = _UNSET,
+        icd10: Any = _UNSET,
+        diagnosed_at: Any = _UNSET,
+        status: Any = _UNSET,
+        severity: Any = _UNSET,
+        note: Any = _UNSET,
     ) -> Optional[Dict[str, Any]]:
-        """整体更新一条慢病/健康问题；记录不存在时返回 None。"""
-        normalized = _normalize_condition(
-            profile, name, icd10, diagnosed_at, status, severity, note,
-        )
+        """更新一条慢病/健康问题；未给出的字段沿用事务内读到的原值。"""
+        try:
+            condition_id = int(condition_id)
+        except (TypeError, ValueError, OverflowError):
+            return None
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                """
+                SELECT profile, name, icd10, diagnosed_at, status,
+                       severity, note
+                  FROM conditions WHERE id = ?
+                """,
+                (condition_id,),
+            ).fetchone()
+            if previous is None:
+                return None
+            normalized = _normalize_condition(
+                previous["profile"] if profile is _UNSET else profile,
+                previous["name"] if name is _UNSET else name,
+                previous["icd10"] if icd10 is _UNSET else icd10,
+                previous["diagnosed_at"]
+                if diagnosed_at is _UNSET else diagnosed_at,
+                previous["status"] if status is _UNSET else status,
+                previous["severity"] if severity is _UNSET else severity,
+                previous["note"] if note is _UNSET else note,
+            )
             cursor = self._conn.execute(
                 """
                 UPDATE conditions
@@ -6836,7 +6878,7 @@ class SessionStore:
                     normalized["profile"], normalized["name"],
                     normalized["icd10"], normalized["diagnosed_at"],
                     normalized["status"], normalized["severity"],
-                    normalized["note"], now, int(condition_id),
+                    normalized["note"], now, condition_id,
                 ),
             )
             if cursor.rowcount == 0:

@@ -4356,19 +4356,10 @@ async def update_allergy(
     existing = await asyncio.to_thread(store.get_allergy, allergy_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    fields = request.model_dump(exclude_unset=True)
     try:
         item = await asyncio.to_thread(
-            store.update_allergy,
-            allergy_id,
-            merged.get("profile") or "",
-            merged.get("substance") or "",
-            merged.get("reaction") or "",
-            merged.get("severity") or "moderate",
-            merged.get("kind") or "drug",
-            bool(merged.get("active", True)),
-            merged.get("noted_at") or "",
-            merged.get("note") or "",
+            store.update_allergy, allergy_id, **fields
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5202,18 +5193,10 @@ async def update_condition(
     existing = await asyncio.to_thread(store.get_condition, condition_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="记录不存在")
-    merged = {**existing, **request.model_dump(exclude_unset=True)}
+    fields = request.model_dump(exclude_unset=True)
     try:
         item = await asyncio.to_thread(
-            store.update_condition,
-            condition_id,
-            merged.get("profile") or "",
-            merged.get("name") or "",
-            merged.get("icd10") or "",
-            merged.get("diagnosed_at") or "",
-            merged.get("status") or "active",
-            merged.get("severity") or "moderate",
-            merged.get("note") or "",
+            store.update_condition, condition_id, **fields
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
