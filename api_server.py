@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import hashlib
 import ipaddress
@@ -1345,6 +1346,10 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
 #: 就医资料附件：本机目录与允许的扩展名
 ATTACHMENT_DIR = project_root / "data" / "attachments"
+#: 复查模板与复诊安排都需要“检查后插入”，用进程内锁把整段串行化，
+#: 避免两个标签页同时操作生成重复预约/计划
+_TEMPLATE_APPLY_LOCK = threading.Lock()
+_VISIT_FOLLOWUP_LOCK = threading.Lock()
 MAX_ATTACHMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 # 图片在浏览器中解码后才占内存；限制像素规模，避免小文件解压炸弹
 MAX_ATTACHMENT_PIXELS = 40_000_000
@@ -4998,117 +5003,128 @@ async def update_visit(
     return {"ok": True, "visit": item}
 
 
+def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
+    """在一个线程内串行完成“读就诊→建预约→建提醒→写回关联”。"""
+    with _VISIT_FOLLOWUP_LOCK:
+        visit = store.get_visit_record(visit_id)
+        if visit is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        followup_date = str(visit.get("next_followup_date") or "")[:10]
+        if not followup_date:
+            raise HTTPException(
+                status_code=400, detail="该就诊记录没有填写下次复诊日期"
+            )
+        try:
+            followup_day = datetime.strptime(
+                followup_date, "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="下次复诊日期格式不正确"
+            )
+
+        appointment = None
+        appointment_created = False
+        linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
+        if linked_appointment_id:
+            appointment = store.get_appointment(linked_appointment_id)
+            if appointment and appointment.get("status") == "cancelled":
+                appointment = None
+        profile = visit.get("profile") or ""
+        title = (
+            f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
+        )[:120]
+        if appointment is None:
+            # 并发重试时复用同一就诊已创建的同名预约
+            for candidate in store.list_appointments(
+                profile, None, False, 100000, 0
+            ):
+                if (
+                    candidate.get("title") == title
+                    and str(candidate.get("scheduled_at") or "")[:10]
+                    == followup_date
+                    and candidate.get("status") != "cancelled"
+                ):
+                    appointment = candidate
+                    break
+        if appointment is None:
+            appointment = store.add_appointment(
+                profile,
+                title,
+                visit.get("department") or "",
+                visit.get("doctor") or "",
+                visit.get("facility") or "",
+                f"{followup_date}T09:00",
+                "upcoming",
+                f"由就诊记录 #{visit_id} 自动创建",
+            )
+            appointment_created = True
+
+        reminder = None
+        reminder_created = False
+        linked_reminder_id = int(visit.get("followup_reminder_id") or 0)
+        if linked_reminder_id:
+            reminder = store.get_reminder(linked_reminder_id)
+            if (
+                reminder
+                and int(reminder.get("appointment_id") or 0)
+                != int(appointment["id"])
+            ):
+                reminder = None
+        if reminder is None:
+            reminders = store.list_reminders(True, profile)
+            for candidate in reminders:
+                if int(candidate.get("appointment_id") or 0) == int(
+                    appointment["id"]
+                ):
+                    reminder = candidate
+                    break
+        if reminder is None:
+            today = datetime.now().date()
+            reminder_due = max(followup_day - timedelta(days=1), today)
+            note = " ".join(
+                part for part in (
+                    f"复诊 {followup_date}",
+                    visit.get("department") or "",
+                    visit.get("doctor") or "",
+                ) if part
+            )[:300]
+            reminder = store.add_reminder(
+                title,
+                reminder_due.strftime("%Y-%m-%d"),
+                note,
+                "",
+                profile,
+                0,
+                0,
+                "",
+                0,
+                0,
+                int(appointment["id"]),
+            )
+            reminder_created = True
+
+        store.set_visit_followup_links(
+            visit_id, appointment["id"], reminder["id"]
+        )
+        return {
+            "appointment": appointment,
+            "appointment_created": appointment_created,
+            "reminder": reminder,
+            "reminder_created": reminder_created,
+        }
+
+
 @app.post("/api/visits/{visit_id}/schedule-followup")
 async def schedule_visit_followup(visit_id: SafeIntPath):
     """按就诊记录的下次复诊日期创建预约，并生成提前 1 天提醒。"""
     from memory import get_session_store
 
-    store = get_session_store()
-    visit = await asyncio.to_thread(store.get_visit_record, visit_id)
-    if visit is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    followup_date = str(visit.get("next_followup_date") or "")[:10]
-    if not followup_date:
-        raise HTTPException(
-            status_code=400, detail="该就诊记录没有填写下次复诊日期"
-        )
-    try:
-        followup_day = datetime.strptime(followup_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="下次复诊日期格式不正确")
-
-    appointment = None
-    appointment_created = False
-    linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
-    if linked_appointment_id:
-        appointment = await asyncio.to_thread(
-            store.get_appointment, linked_appointment_id
-        )
-        if appointment and appointment.get("status") == "cancelled":
-            appointment = None
-    if appointment is None:
-        title = (
-            f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
-        )[:120]
-        appointment = await asyncio.to_thread(
-            store.add_appointment,
-            visit.get("profile") or "",
-            title,
-            visit.get("department") or "",
-            visit.get("doctor") or "",
-            visit.get("facility") or "",
-            f"{followup_date}T09:00",
-            "upcoming",
-            f"由就诊记录 #{visit_id} 自动创建",
-        )
-        appointment_created = True
-
-    reminder = None
-    reminder_created = False
-    linked_reminder_id = int(visit.get("followup_reminder_id") or 0)
-    if linked_reminder_id:
-        reminder = await asyncio.to_thread(
-            store.get_reminder, linked_reminder_id
-        )
-        if (
-            reminder
-            and int(reminder.get("appointment_id") or 0)
-            != int(appointment["id"])
-        ):
-            reminder = None
-    if reminder is None:
-        reminders = await asyncio.to_thread(
-            store.list_reminders, True, visit.get("profile") or ""
-        )
-        for candidate in reminders:
-            if int(candidate.get("appointment_id") or 0) == int(
-                appointment["id"]
-            ):
-                reminder = candidate
-                break
-    if reminder is None:
-        today = datetime.now().date()
-        reminder_due = max(followup_day - timedelta(days=1), today)
-        title = (
-            f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
-        )[:120]
-        note = " ".join(
-            part for part in (
-                f"复诊 {followup_date}",
-                visit.get("department") or "",
-                visit.get("doctor") or "",
-            ) if part
-        )[:300]
-        reminder = await asyncio.to_thread(
-            store.add_reminder,
-            title,
-            reminder_due.strftime("%Y-%m-%d"),
-            note,
-            "",
-            visit.get("profile") or "",
-            0,
-            0,
-            "",
-            0,
-            0,
-            int(appointment["id"]),
-        )
-        reminder_created = True
-
-    await asyncio.to_thread(
-        store.set_visit_followup_links,
-        visit_id,
-        appointment["id"],
-        reminder["id"],
+    result = await asyncio.to_thread(
+        _schedule_followup_sync, get_session_store(), int(visit_id)
     )
     await record_audit("visit.followup", str(visit_id))
-    return {
-        "ok": True,
-        "appointment": appointment,
-        "appointment_created": appointment_created,
-        "reminder": reminder,
-        "reminder_created": reminder_created,
-    }
+    return {"ok": True, **result}
 
 
 @app.delete("/api/visits/{visit_id}")
@@ -5336,67 +5352,81 @@ async def update_condition(
     }
 
 
+def _apply_condition_template_sync(
+    store, condition_id: int
+) -> Dict[str, Any]:
+    """串行完成模板检查与插入，避免并发重复生成复查计划。"""
+    with _TEMPLATE_APPLY_LOCK:
+        condition = store.get_condition(condition_id)
+        if condition is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        template = _condition_template(condition)
+        if template is None:
+            raise HTTPException(
+                status_code=400, detail="该慢病暂无可用模板"
+            )
+        profile = condition.get("profile") or ""
+
+        existing = store.list_care_items(
+            profile, True, False, 100000
+        )
+        existing_titles = {
+            str(row.get("title") or "") for row in existing
+        }
+        today = datetime.now().date()
+        created_items = []
+        skipped_titles = []
+        for title, interval in template["care_items"]:
+            if title in existing_titles:
+                skipped_titles.append(title)
+                continue
+            item = store.add_care_item(
+                profile,
+                title,
+                interval,
+                "",
+                (today + timedelta(days=interval)).strftime("%Y-%m-%d"),
+                f"慢病模板：{condition.get('name') or template['name']}",
+                True,
+            )
+            created_items.append(item)
+            existing_titles.add(title)
+
+        targets = store.list_metric_targets(profile)
+        existing_metrics = {row.get("metric") for row in targets}
+        created_targets = []
+        skipped_targets = []
+        for metric, value1, value2 in template["targets"]:
+            if metric in existing_metrics:
+                skipped_targets.append(metric)
+                continue
+            target = store.set_metric_target(
+                profile, metric, value1, value2
+            )
+            if target is not None:
+                created_targets.append(target)
+
+        return {
+            "template": template["name"],
+            "care_items_created": created_items,
+            "care_items_skipped": skipped_titles,
+            "targets_created": created_targets,
+            "targets_skipped": skipped_targets,
+        }
+
+
 @app.post("/api/conditions/{condition_id}/apply-template")
 async def apply_condition_template(condition_id: SafeIntPath):
     """按慢病类型一键生成复查计划与指标目标；已有项目自动跳过。"""
     from memory import get_session_store
 
-    store = get_session_store()
-    condition = await asyncio.to_thread(store.get_condition, condition_id)
-    if condition is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    template = _condition_template(condition)
-    if template is None:
-        raise HTTPException(status_code=400, detail="该慢病暂无可用模板")
-    profile = condition.get("profile") or ""
-
-    existing = await asyncio.to_thread(
-        store.list_care_items, profile, True, False, 100000
+    result = await asyncio.to_thread(
+        _apply_condition_template_sync,
+        get_session_store(),
+        int(condition_id),
     )
-    existing_titles = {str(row.get("title") or "") for row in existing}
-    today = datetime.now().date()
-    created_items = []
-    skipped_titles = []
-    for title, interval in template["care_items"]:
-        if title in existing_titles:
-            skipped_titles.append(title)
-            continue
-        item = await asyncio.to_thread(
-            store.add_care_item,
-            profile,
-            title,
-            interval,
-            "",
-            (today + timedelta(days=interval)).strftime("%Y-%m-%d"),
-            f"慢病模板：{condition.get('name') or template['name']}",
-            True,
-        )
-        created_items.append(item)
-        existing_titles.add(title)
-
-    targets = await asyncio.to_thread(store.list_metric_targets, profile)
-    existing_metrics = {row.get("metric") for row in targets}
-    created_targets = []
-    skipped_targets = []
-    for metric, value1, value2 in template["targets"]:
-        if metric in existing_metrics:
-            skipped_targets.append(metric)
-            continue
-        target = await asyncio.to_thread(
-            store.set_metric_target, profile, metric, value1, value2
-        )
-        if target is not None:
-            created_targets.append(target)
-
     await record_audit("condition.template", str(condition_id))
-    return {
-        "ok": True,
-        "template": template["name"],
-        "care_items_created": created_items,
-        "care_items_skipped": skipped_titles,
-        "targets_created": created_targets,
-        "targets_skipped": skipped_targets,
-    }
+    return {"ok": True, **result}
 
 
 @app.delete("/api/conditions/{condition_id}")
@@ -14732,10 +14762,21 @@ def _erase_session_summaries(session_ids: List[str]) -> None:
             logger.warning(f"删除会话总结失败（忽略）: {redact_secrets(str(e))}")
 
 
+#: 首轮会诊在 sessions 行创建前也要固定档案归属：同一会话的并发请求
+#: 必须在进程内认领同一档案，避免各用各的过敏/慢病上下文
+_PROFILE_CLAIMS: Dict[str, str] = {}
+_PROFILE_CLAIMS_LOCK = threading.Lock()
+
+
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:
-    """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。"""
+    """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。
+
+    sessions 行由会诊完成时写入；首轮并发请求在行创建前先按会话 ID
+    认领档案，保证同一会话的所有请求使用同一个患者的上下文。
+    """
     from memory import get_session_store
 
+    requested = " ".join(str(requested or "").split())
     try:
         session = await asyncio.to_thread(
             get_session_store().get_session, session_id
@@ -14743,7 +14784,21 @@ async def _resolve_memory_profile(session_id: str, requested: str) -> str:
     except Exception:
         session = None
     bound = str((session or {}).get("profile") or "").strip()
-    return bound or str(requested or "").strip()
+    if bound:
+        with _PROFILE_CLAIMS_LOCK:
+            _PROFILE_CLAIMS.pop(session_id, None)
+        return bound
+    with _PROFILE_CLAIMS_LOCK:
+        claimed = _PROFILE_CLAIMS.get(session_id) or ""
+        if claimed:
+            return claimed
+        if requested:
+            if len(_PROFILE_CLAIMS) >= 10000:
+                # 大量失败会话可能留下未落库的认领，极端情况下重置，
+                # 最坏退化为旧行为而不是无限增长
+                _PROFILE_CLAIMS.clear()
+            _PROFILE_CLAIMS[session_id] = requested
+        return requested
 
 
 def _empty_answer_reason() -> str:
