@@ -122,6 +122,7 @@ def test_parse_other_metrics_and_unit_inference():
     assert parse_quick_metric("走了 6500")["value1"] == 6500
     assert parse_quick_metric("饮水 1500 ml")["metric"] == "water"
     assert parse_quick_metric("喝水 1200毫升")["value1"] == 1200
+    assert parse_quick_metric("喝了 800ml")["value1"] == 800
     assert parse_quick_metric("1500ml")["metric"] == "water"
     assert parse_quick_metric("体重 62.5 kg")["metric"] == "weight"
     assert parse_quick_metric("62.5kg")["metric"] == "weight"

@@ -22,7 +22,7 @@ _METRIC_ALIASES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("waist", ("腰围", "waist")),
     ("sleep", ("睡眠时长", "睡眠", "睡了", "sleep")),
     ("steps", ("步数", "步行", "走了", "steps")),
-    ("water", ("饮水量", "饮水", "喝水", "water")),
+    ("water", ("饮水量", "饮水", "喝水", "喝了", "water")),
 )
 
 #: 未写指标名时按无歧义单位推断；mmol/L、cm 之类可能是其他指标，不推断
