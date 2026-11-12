@@ -77,12 +77,14 @@ def test_reminder_calendar_respects_show_done(client):
 def test_reminder_focus_is_restored_after_rerender(client):
     app_js = client.get("/static/app.js").text
 
-    assert "function captureReminderFocusLabel()" in app_js
-    assert "function restoreReminderFocusLabel(label)" in app_js
-    assert "const focusLabel = captureReminderFocusLabel();" in app_js
-    assert "restoreReminderFocusLabel(focusLabel);" in app_js
+    assert "function captureReminderFocusState()" in app_js
+    assert "function restoreReminderFocusState(state)" in app_js
+    assert "const focusState = captureReminderFocusState();" in app_js
+    assert "restoreReminderFocusState(focusState);" in app_js
     # 跳转/重绘后仍按 aria-label 找回同一操作按钮
-    assert "node.getAttribute('aria-label') === label" in app_js
+    assert "node.getAttribute('aria-label') === state.label" in app_js
+    # 条目已消失时按原位置聚焦下一条，而不是跳回列表顶部
+    assert "Number(state.index) || 0" in app_js
 
 
 def test_reminder_load_failure_clears_previous_profile(client):
