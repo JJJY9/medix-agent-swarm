@@ -447,6 +447,7 @@ def test_extended_metric_types(client):
         ("waist", 82, "cm"),
         ("sleep", 7.5, "小时"),
         ("steps", 8000, "步"),
+        ("water", 1500, "ml"),
     ):
         created = client.post(
             "/api/metrics",
@@ -481,6 +482,10 @@ def test_extended_metric_types(client):
         "/api/metrics", json={"metric": "steps", "value1": 100001}
     )
     assert invalid_steps.status_code == 400
+    invalid_water = client.post(
+        "/api/metrics", json={"metric": "water", "value1": 20001}
+    )
+    assert invalid_water.status_code == 400
 
 
 def test_metrics_api_offset(client):
@@ -557,6 +562,35 @@ def test_metrics_summary_sleep_lower_bound_target(client):
     )
     assert exported.status_code == 200
     assert "睡眠时长" in exported.content.decode("utf-8-sig")
+
+
+def test_metrics_summary_water_lower_bound_target(client):
+    for value in (1200, 1800):
+        client.post(
+            "/api/metrics",
+            json={
+                "profile": "妈妈",
+                "metric": "water",
+                "value1": value,
+                "measured_at": "2026-01-02T08:00",
+            },
+        )
+    client.put(
+        "/api/metric-targets",
+        json={"profile": "妈妈", "metric": "water", "value1": 1500},
+    )
+
+    body = client.get(
+        "/api/metrics/summary", params={"metric": "water", "profile": "妈妈"}
+    ).json()
+
+    assert body["target"] == {"value1": 1500.0, "value2": None}
+    assert body["within_target"] == 1
+    exported = client.get(
+        "/api/metrics/export.csv", params={"metric": "water"}
+    )
+    assert exported.status_code == 200
+    assert "饮水量" in exported.content.decode("utf-8-sig")
 
 
 def test_screener_metrics_roundtrip(client):
