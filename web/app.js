@@ -5197,6 +5197,7 @@ let previewEditable = false;
 let previewReturnFocus = null;
 let previewEditing = false;
 let previewEditingFilename = '';
+let previewEditOriginal = '';
 let kbPreviewSeq = 0;
 
 function setKbStatus(text, isError = false) {
@@ -5277,6 +5278,7 @@ function renderKbDocuments(documents) {
 function exitKbPreviewEdit() {
   previewEditing = false;
   previewEditingFilename = '';
+  previewEditOriginal = '';
   els.kbPreviewEditor.hidden = true;
   els.kbPreviewBody.hidden = false;
   els.kbPreviewSave.hidden = true;
@@ -5286,6 +5288,15 @@ function exitKbPreviewEdit() {
   els.kbPreviewEdit.textContent = '编辑';
   els.kbPreviewSave.disabled = false;
   els.kbPreviewSave.textContent = '保存';
+  // 取消/保存后焦点不能留在已隐藏的按钮或编辑器上
+  if (
+    els.kbPreview && !els.kbPreview.hidden
+    && !els.kbPreviewEdit.hidden
+    && !els.kbPreviewEdit.disabled
+    && document.activeElement !== els.kbPreviewEdit
+  ) {
+    els.kbPreviewEdit.focus();
+  }
 }
 
 function closeKbPreview() {
@@ -5368,6 +5379,7 @@ async function startKbPreviewEdit() {
     if (seq !== kbPreviewSeq || previewFilename !== filename) return;
 
     els.kbPreviewEditor.value = data.content || '';
+    previewEditOriginal = els.kbPreviewEditor.value;
     previewEditing = true;
     previewEditingFilename = filename;
     els.kbPreviewBody.hidden = true;
@@ -21785,6 +21797,17 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (els.attachmentPreview && !els.attachmentPreview.hidden) {
       closeAttachmentPreview();
+      return;
+    }
+    if (kbOpen && previewEditing) {
+      // 编辑文档时 Esc 先退出编辑，不关闭抽屉、不静默丢弃草稿
+      if (
+        els.kbPreviewEditor.value !== previewEditOriginal
+        && !window.confirm('放弃未保存的修改？')
+      ) {
+        return;
+      }
+      exitKbPreviewEdit();
       return;
     }
     if (historyOpen) closeHistory(true);

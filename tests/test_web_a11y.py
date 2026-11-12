@@ -14,3 +14,16 @@ def test_chat_live_region_is_scoped():
     assert "announceChat('会诊中断')" in SCRIPT
     # 不再把整页问诊日志恢复为 polite
     assert "els.thread.setAttribute('aria-live', 'polite')" not in SCRIPT
+
+
+def test_kb_editor_escape_exits_edit_and_keeps_focus():
+    assert 'aria-label="编辑文档内容"' in HTML
+    assert "let previewEditOriginal = '';" in SCRIPT
+    assert "previewEditOriginal = els.kbPreviewEditor.value;" in SCRIPT
+    assert "放弃未保存的修改" in SCRIPT
+    assert "if (kbOpen && previewEditing) {" in SCRIPT
+    # Esc 分支在关闭抽屉之前处理编辑态
+    escape_pos = SCRIPT.index("if (e.key === 'Escape') {")
+    close_pos = SCRIPT.index("if (kbOpen) closeKb(true);", escape_pos)
+    edit_pos = SCRIPT.index("if (kbOpen && previewEditing) {", escape_pos)
+    assert edit_pos < close_pos
