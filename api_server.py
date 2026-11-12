@@ -11252,6 +11252,9 @@ async def health_visit_prep(
             store.list_attachments, profile_key, None, None, 100, 0
         ),
     )
+    attachment_stats = await asyncio.to_thread(
+        store.attachment_kind_stats, profile_key
+    )
 
     # “目前用药”只统计仍在用的药物；停用药物在窗口内的旧打卡
     # 不应让准备单出现没有对应药物条目的依从数字
@@ -11484,7 +11487,9 @@ async def health_visit_prep(
         if item.get("overdue") or item.get("due_today") or item.get("due_soon")
     ][:5]
 
-    attachment_count = len(attachments)
+    attachment_count = sum(
+        int(item.get("count") or 0) for item in attachment_stats
+    )
     visit_ref_map = {
         int(row["id"]): row for row in visits if row.get("id")
     }
