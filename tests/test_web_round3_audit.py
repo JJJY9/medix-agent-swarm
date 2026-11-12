@@ -114,12 +114,12 @@ def test_terminal_cards_are_announced(client):
 
     assert app_js.count("wrap.setAttribute('role', 'alert');") >= 2
     assert re.search(
-        r"els\.thread\.setAttribute\('aria-live', 'polite'\);\s*"
+        r"announceChat\('已停止生成'\);\s*"
         r"renderStopped\(",
         app_js,
     )
     assert re.search(
-        r"els\.thread\.setAttribute\('aria-live', 'polite'\);\s*"
-        r"// 传输错误也可能发生在服务端已保存之后",
+        r"announceChat\('会诊中断'\);\s*"
+        r"renderError\(",
         app_js,
     )

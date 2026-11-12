@@ -92,7 +92,8 @@
 
     <div class="thread-col">
       <h1 class="sr-only">MediX 多智能体医疗助手问诊记录</h1>
-      <div class="thread" id="thread" role="log" aria-live="polite" aria-label="问诊记录" tabindex="0">
+      <p class="sr-only" id="chat-live" role="status" aria-live="polite" aria-atomic="true"></p>
+      <div class="thread" id="thread" role="log" aria-live="off" aria-label="问诊记录" tabindex="0">
 
         <div class="empty" id="empty-state">
           <h2>描述您的症状，由多学科会诊给出综合意见</h2>
