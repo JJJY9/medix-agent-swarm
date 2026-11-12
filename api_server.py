@@ -5845,6 +5845,10 @@ async def _weekly_report_impl(
     raw_visits = await asyncio.to_thread(
         store.list_visit_records, profile, days * 2, "", 100000
     )
+    # 复诊日期可能晚于就诊日期很多，统计复诊不能只看近 2×days 天的就诊
+    followup_visits = await asyncio.to_thread(
+        store.list_visit_records, profile, 0, "", 100000
+    )
     visits = [
         item for item in raw_visits
         if start <= str(item.get("visit_date") or "")[:10] <= end
@@ -5854,12 +5858,12 @@ async def _weekly_report_impl(
         if prev_start <= str(item.get("visit_date") or "")[:10] < start
     ]
     upcoming_followups = [
-        item for item in raw_visits
+        item for item in followup_visits
         if today <= str(item.get("next_followup_date") or "")[:10]
         <= horizon
     ]
     overdue_followups = [
-        item for item in raw_visits
+        item for item in followup_visits
         if str(item.get("next_followup_date") or "")[:10]
         and str(item.get("next_followup_date") or "")[:10] < today
         and not item.get("followup_scheduled")

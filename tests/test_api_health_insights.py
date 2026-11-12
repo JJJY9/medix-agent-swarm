@@ -709,3 +709,18 @@ def test_insights_glucose_merges_fasting_and_unspecified(
     # 空腹 1 次 + 未分情境 5 次，按次数加权后平均应约为 9.07
     assert "共 6 次" in fasting["detail"]
     assert "9.06" in fasting["title"] or "9.07" in fasting["title"]
+
+
+def test_insights_followup_overdue_beyond_visit_window(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/visits", json={
+        "profile": "妈妈", "visit_date": _date(-120),
+        "diagnosis": "高血压复诊", "next_followup_date": _date(-30),
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈", "days": 30}
+    ).json()
+    keys = [item["key"] for item in data["insights"]]
+
+    assert "followup_overdue" in keys
