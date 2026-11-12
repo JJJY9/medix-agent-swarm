@@ -743,3 +743,47 @@ def test_insights_completed_vaccine_series_not_overdue(client_and_store):
     keys = [item["key"] for item in data["insights"]]
 
     assert "vaccine_overdue" not in keys
+
+
+def test_family_insights_label_members_and_avoid_family_average(
+    client_and_store,
+):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 190, "value2": 130,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "bp", "value1": 185, "value2": 125,
+        "measured_at": f"{_date(0)}T09:00",
+    })
+
+    data = client.get("/api/health/insights", params={"days": 30}).json()
+    insights = {item["key"]: item for item in data["insights"]}
+
+    critical = insights["critical"]
+    assert "妈妈：" in critical["detail"]
+    assert "爸爸：" in critical["detail"]
+
+    bp = insights["metric_bp_single"]
+    assert "家庭成员" in bp["title"]
+    assert "平均" not in bp["detail"]
+
+
+def test_single_profile_bp_insight_still_uses_average(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 150, "value2": 95,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈", "days": 30}
+    ).json()
+    bp = next(
+        item for item in data["insights"]
+        if item["key"] == "metric_bp_single"
+    )
+
+    assert "家庭成员" not in bp["title"]
+    assert "平均" in bp["detail"]

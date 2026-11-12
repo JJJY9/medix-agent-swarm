@@ -6176,6 +6176,7 @@ async def _weekly_report_impl(
 
     critical_count = 0
     critical_items = []
+    family_scope = not str(profile or "").strip()
     for item in metrics:
         alerts = critical_metric_alerts(
             item.get("metric"), item.get("value1"), item.get("value2")
@@ -6191,7 +6192,11 @@ async def _weekly_report_impl(
             if item.get("value2") is not None:
                 value += f"/{float(item['value2']):g}"
             unit = item.get("unit") or ""
-            critical_items.append(f"{label} {value} {unit}".strip())
+            text = f"{label} {value} {unit}".strip()
+            if family_scope:
+                member = str(item.get("profile") or "") or "未指定档案"
+                text = f"{member}：{text}"
+            critical_items.append(text)
 
     streak = _streak_info(
         await asyncio.to_thread(store.recorded_days, profile, 3650)
@@ -6426,6 +6431,7 @@ def _build_health_insights(
 
     days = int(report.get("days") or 7)
     insights: List[Dict[str, str]] = []
+    family_scope = not str(report.get("profile") or "").strip()
 
     critical = report.get("critical_alerts") or {}
     if critical.get("count"):
@@ -6528,8 +6534,16 @@ def _build_health_insights(
                 insights.append(_health_insight(
                     "metric_bp_single",
                     "warning",
-                    f"单次血压最高 {max1:g}/{max2:g} mmHg",
-                    f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。",
+                    (
+                        f"家庭成员单次血压最高 {max1:g}/{max2:g} mmHg"
+                        if family_scope
+                        else f"单次血压最高 {max1:g}/{max2:g} mmHg"
+                    ),
+                    (
+                        "家庭范围内单次最高读数；请按成员分别查看各自血压。"
+                        if family_scope
+                        else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。"
+                    ),
                     "单次明显升高也需要复测；持续偏高请咨询医生。",
                     "metric",
                     metric="bp",
@@ -6538,9 +6552,18 @@ def _build_health_insights(
                 insights.append(_health_insight(
                     "metric_bp_single",
                     "info",
-                    f"有血压读数达到 {max1:g}/{max2:g} mmHg",
-                    f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
-                    "建议早晚测量并记录。",
+                    (
+                        f"家庭成员有血压读数达到 {max1:g}/{max2:g} mmHg"
+                        if family_scope
+                        else f"有血压读数达到 {max1:g}/{max2:g} mmHg"
+                    ),
+                    (
+                        "家庭范围内出现偏高读数；"
+                        "建议按成员分别复测并记录。"
+                        if family_scope
+                        else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
+                        "建议早晚测量并记录。"
+                    ),
                     "设置血压目标后可自动判断是否达标。",
                     "metric",
                     metric="bp",
