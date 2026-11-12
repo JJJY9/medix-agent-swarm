@@ -80,6 +80,44 @@ def test_schedule_followup_creates_appointment_and_reminder(client_and_store):
     assert "visit.followup" in actions
 
 
+def test_visit_followup_links_survive_backup_restore(
+    client_and_store, tmp_path
+):
+    client, store = client_and_store
+    visit = _create_visit(client)
+    followup = client.post(
+        f"/api/visits/{visit['id']}/schedule-followup"
+    ).json()
+    backup = store.export_data()
+
+    target = SessionStore(str(tmp_path / "restored-followup.db"))
+    try:
+        # 目标库已有预约/提醒，导入后的自增编号会与备份内编号不同
+        target.add_appointment(
+            "爸爸", "已存在预约", scheduled_at=f"{_date(1)}T09:00"
+        )
+        target.add_reminder("已存在提醒", _date(1), profile="爸爸")
+        result = target.import_data(backup)
+
+        restored = target.list_visit_records("妈妈")[0]
+        appointments = [
+            row for row in target.list_appointments()
+            if row["profile"] == "妈妈"
+        ]
+        reminders = [
+            row for row in target.list_reminders(include_done=True)
+            if row["profile"] == "妈妈"
+        ]
+        assert result["visit_records"] == 1
+        assert restored["followup_appointment_id"] == appointments[0]["id"]
+        assert restored["followup_reminder_id"] == reminders[0]["id"]
+        # 关联已按目标库重新映射，而不是沿用备份内的旧编号
+        assert appointments[0]["id"] != followup["appointment"]["id"]
+        assert reminders[0]["id"] != followup["reminder"]["id"]
+    finally:
+        target.close()
+
+
 def test_schedule_followup_is_idempotent(client_and_store):
     client, _store = client_and_store
     visit = _create_visit(client)
