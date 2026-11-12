@@ -1098,3 +1098,17 @@ def test_bulk_sessions_use_batched_store_calls(tmp_path, monkeypatch):
     assert deleted.json()["missing"] == ["missing"]
     assert remaining.json()["sessions"] == []
     assert [item["id"] for item in archived_rows.json()["sessions"]] == ["s2"]
+
+
+def test_messages_session_role_index_exists(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        names = {
+            row["name"]
+            for row in store._conn.execute("PRAGMA index_list(messages)")
+        }
+    finally:
+        store.close()
+
+    # 分页会话的用量查询按 (session_id, role) 走复合索引
+    assert "idx_messages_session_role" in names
