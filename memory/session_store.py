@@ -41,6 +41,36 @@ def _bounded_offset(offset: Any) -> int:
     return max(0, min(int(offset or 0), MAX_SQLITE_INT))
 
 
+def _date_range_conditions(
+    column: str, start: Any, end: Any
+) -> Tuple[List[str], List[Any]]:
+    """按自然日闭区间生成日期过滤条件，供时间线/月历下推到 SQL。
+
+    直接比较时间列可命中 (profile, time) 索引；结束日换算成次日再做
+    小于比较，避免对列使用 substr 导致索引失效。
+    """
+    conditions: List[str] = []
+    params: List[Any] = []
+    start_day = str(start or "").strip()[:10]
+    if start_day:
+        conditions.append(f"{column} >= ?")
+        params.append(start_day)
+    end_day = str(end or "").strip()[:10]
+    if end_day:
+        try:
+            next_day = (
+                datetime.strptime(end_day, "%Y-%m-%d")
+                + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+        except ValueError:
+            conditions.append(f"substr({column}, 1, 10) <= ?")
+            params.append(end_day)
+        else:
+            conditions.append(f"{column} < ?")
+            params.append(next_day)
+    return conditions, params
+
+
 def _safe_db_id(value: Any) -> int:
     """把导入数据里的 id 限制在 SQLite 可绑定范围，越界按 0 处理。"""
     try:
@@ -4909,6 +4939,8 @@ class SessionStore:
         days: int = 0,
         offset: int = 0,
         q: str = "",
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -4948,6 +4980,11 @@ class SessionStore:
             ).isoformat(timespec="seconds")
             conditions.append("measured_at <= ?")
             params.append(end_of_today)
+        range_conditions, range_params = _date_range_conditions(
+            "measured_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY measured_at DESC, id DESC LIMIT ? OFFSET ?"
@@ -5288,7 +5325,11 @@ class SessionStore:
         return dict(row) if row else None
 
     def list_vaccinations(
-        self, profile: Optional[str] = None, limit: int = 1000
+        self,
+        profile: Optional[str] = None,
+        limit: int = 1000,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions = []
@@ -5296,6 +5337,11 @@ class SessionStore:
         if profile is not None:
             conditions.append("profile = ?")
             params.append(_normalize_profile_name(profile))
+        range_conditions, range_params = _date_range_conditions(
+            "vaccinated_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5429,6 +5475,8 @@ class SessionStore:
         upcoming: bool = False,
         limit: int = 1000,
         offset: int = 0,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         try:
@@ -5451,6 +5499,11 @@ class SessionStore:
             conditions.append("status = 'upcoming'")
             conditions.append("substr(scheduled_at, 1, 10) >= ?")
             params.append(today)
+        range_conditions, range_params = _date_range_conditions(
+            "scheduled_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5598,6 +5651,8 @@ class SessionStore:
         days: int = 0,
         limit: int = 1000,
         offset: int = 0,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         try:
@@ -5621,6 +5676,11 @@ class SessionStore:
         if cutoff:
             conditions.append("substr(tested_at, 1, 10) >= ?")
             params.append(cutoff[:10])
+        range_conditions, range_params = _date_range_conditions(
+            "tested_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5937,6 +5997,8 @@ class SessionStore:
         active_only: bool = False,
         overdue: bool = False,
         limit: int = 1000,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions: List[str] = []
@@ -5951,6 +6013,11 @@ class SessionStore:
             conditions.append("active = 1")
             conditions.append("next_due_at < ?")
             params.append(today)
+        range_conditions, range_params = _date_range_conditions(
+            "next_due_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -6199,6 +6266,8 @@ class SessionStore:
         days: int = 0,
         q: str = "",
         limit: int = 1000,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions: List[str] = []
@@ -6210,6 +6279,11 @@ class SessionStore:
         if cutoff:
             conditions.append("substr(visit_date, 1, 10) >= ?")
             params.append(cutoff[:10])
+        range_conditions, range_params = _date_range_conditions(
+            "visit_date", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         query = str(q or "").strip()
         if query:
             like = f"%{query}%"
@@ -6424,6 +6498,8 @@ class SessionStore:
         limit: int = 100,
         days: int = 0,
         offset: int = 0,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         """按记录时间倒序返回症状，可按档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -6446,6 +6522,11 @@ class SessionStore:
             ).isoformat(timespec="seconds")
             conditions.append("recorded_at <= ?")
             params.append(end_of_today)
+        range_conditions, range_params = _date_range_conditions(
+            "recorded_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = f"""
             SELECT id, profile, symptom, severity, note, recorded_at, created_at
@@ -7153,6 +7234,8 @@ class SessionStore:
         limit: int = 100,
         offset: int = 0,
         days: int = 0,
+        start: str = "",
+        end: str = "",
     ) -> List[Dict[str, Any]]:
         """按服用时间倒序返回到药记录，可按药物、档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -7179,6 +7262,11 @@ class SessionStore:
             end_of_today = datetime.now().strftime("%Y-%m-%d")
             conditions.append("substr(l.taken_at, 1, 10) <= ?")
             params.append(end_of_today)
+        range_conditions, range_params = _date_range_conditions(
+            "l.taken_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -7459,6 +7547,40 @@ class SessionStore:
             }
             for row in rows
         ]
+
+    def count_attachments_by_day(
+        self,
+        profile: Optional[str] = None,
+        start: str = "",
+        end: str = "",
+    ) -> Dict[str, int]:
+        """按上传日期统计附件份数，供健康月历使用。"""
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        range_conditions, range_params = _date_range_conditions(
+            "created_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT substr(created_at, 1, 10) AS day,
+                       COUNT(*) AS total
+                  FROM attachments
+                 {where}
+                 GROUP BY day
+                """,
+                params,
+            ).fetchall()
+        return {
+            str(row["day"]): int(row["total"])
+            for row in rows if row["day"]
+        }
 
     def list_attachment_stored_names(self) -> List[str]:
         """返回全部附件的存储文件名，用于清理前复核。"""
