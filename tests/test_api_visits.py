@@ -237,3 +237,38 @@ def test_visits_backup_roundtrip_and_profile_rename(
     store.rename_profile("妈妈", "母亲")
     moved = store.list_visit_records("母亲")
     assert [row["id"] for row in moved] == [item["id"]]
+
+
+def test_visit_appointment_link_remapped_on_restore(
+    client_and_store, tmp_path
+):
+    client, store = client_and_store
+    appointment = client.post("/api/appointments", json={
+        "profile": "妈妈",
+        "title": "心内科复诊",
+        "scheduled_at": f"{_date(0)}T09:00",
+        "status": "completed",
+    }).json()["appointment"]
+    client.post("/api/visits", json={
+        "profile": "妈妈",
+        "appointment_id": appointment["id"],
+        "visit_date": _date(0),
+        "diagnosis": "高血压复诊",
+    })
+    backup = store.export_data()
+
+    target = SessionStore(str(tmp_path / "restored-link.db"))
+    try:
+        target.add_appointment(
+            "爸爸", "占位预约", scheduled_at=f"{_date(1)}T09:00"
+        )
+        target.import_data(backup)
+        restored = target.list_visit_records("妈妈")[0]
+        restored_appointment = [
+            row for row in target.list_appointments()
+            if row["profile"] == "妈妈"
+        ][0]
+        assert restored_appointment["id"] != appointment["id"]
+        assert restored["appointment_id"] == restored_appointment["id"]
+    finally:
+        target.close()

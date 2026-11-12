@@ -4202,6 +4202,7 @@ class SessionStore:
                     care_items_imported += 1
 
             visit_records_imported = 0
+            visit_link_updates: List[Tuple[int, int, int]] = []
             if isinstance(raw_visit_records, list):
                 for raw in raw_visit_records[
                     :IMPORT_LIST_LIMITS["visit_records"]
@@ -4225,6 +4226,25 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
+                    raw_appointment = _safe_db_id(
+                        raw.get("appointment_id")
+                    )
+                    mapped_appointment_id = (
+                        raw_appointment_id_map.get(raw_appointment, 0)
+                        if raw_appointment else 0
+                    )
+                    raw_followup_appointment = _safe_db_id(
+                        raw.get("followup_appointment_id")
+                    )
+                    mapped_followup_appointment_id = (
+                        raw_appointment_id_map.get(
+                            raw_followup_appointment, 0
+                        )
+                        if raw_followup_appointment else 0
+                    )
+                    raw_followup_reminder = _safe_db_id(
+                        raw.get("followup_reminder_id")
+                    )
                     duplicate = self._conn.execute(
                         """
                         SELECT id FROM visit_records
@@ -4239,29 +4259,42 @@ class SessionStore:
                     ).fetchone()
                     if duplicate is not None:
                         continue
-                    self._conn.execute(
+                    cursor = self._conn.execute(
                         """
                         INSERT INTO visit_records(
                             profile, appointment_id, visit_date, department,
                             doctor, facility, diagnosis, advice,
-                            prescription, next_followup_date, note,
-                            created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            prescription, next_followup_date,
+                            followup_appointment_id, followup_reminder_id,
+                            note, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             normalized["profile"],
-                            normalized["appointment_id"],
+                            mapped_appointment_id,
                             normalized["visit_date"],
                             normalized["department"],
                             normalized["doctor"], normalized["facility"],
                             normalized["diagnosis"], normalized["advice"],
                             normalized["prescription"],
                             normalized["next_followup_date"],
+                            mapped_followup_appointment_id,
+                            0,
                             normalized["note"],
                             str(raw.get("created_at") or now)[:40],
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
+                    new_visit_id = int(cursor.lastrowid or 0)
+                    if new_visit_id and (
+                        mapped_followup_appointment_id
+                        or raw_followup_reminder
+                    ):
+                        visit_link_updates.append((
+                            new_visit_id,
+                            mapped_followup_appointment_id,
+                            raw_followup_reminder,
+                        ))
                     visit_records_imported += 1
 
             conditions_imported = 0
@@ -4509,6 +4542,31 @@ class SessionStore:
                         "UPDATE reminders SET repeats_from = ? WHERE id = ?",
                         (parent_id, new_id),
                     )
+
+            # 复诊提醒在就诊记录之后导入，回填就诊记录的复诊关联
+            for (
+                visit_id,
+                followup_appointment_id,
+                raw_followup_reminder_id,
+            ) in visit_link_updates:
+                followup_reminder_id = raw_reminder_id_map.get(
+                    raw_followup_reminder_id, 0
+                )
+                if not followup_appointment_id and not followup_reminder_id:
+                    continue
+                self._conn.execute(
+                    """
+                    UPDATE visit_records
+                       SET followup_appointment_id = ?,
+                           followup_reminder_id = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        followup_appointment_id,
+                        followup_reminder_id,
+                        visit_id,
+                    ),
+                )
 
             audit_imported = 0
             if isinstance(raw_audit, list):
