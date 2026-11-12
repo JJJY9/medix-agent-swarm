@@ -512,7 +512,8 @@ class MetricRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ]
     value1: float
     value2: Optional[float] = None
@@ -537,7 +538,8 @@ class MetricUpdateRequest(StrictRequestModel):
     profile: Optional[str] = Field(None, max_length=40)
     metric: Optional[Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ]] = None
     value1: Optional[float] = None
     value2: Optional[float] = None
@@ -800,7 +802,8 @@ class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ]
     value1: float = Field(..., description="目标上限（血压为收缩压）")
     value2: Optional[float] = Field(None, description="血压目标舒张压")
@@ -1041,6 +1044,7 @@ def _convert_import_metric(
     identity = {
         "weight": {"kg", "千克", "公斤"},
         "waist": {"cm", "厘米"},
+        "steps": {"步"},
         "temperature": {"°c", "c", "摄氏", "摄氏度", "celsius"},
         "glucose": {"mmol/l", "mmol", "毫摩尔/升"},
         "bp": {"mmhg", "毫米汞柱"},
@@ -2732,7 +2736,8 @@ async def list_metrics(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     limit = max(1, min(int(limit or 100), 500))
@@ -2762,7 +2767,8 @@ async def metric_summary(
 
     if metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
     days = max(0, min(int(days or 0), 3650))
@@ -8428,7 +8434,8 @@ async def export_metrics_csv(
 
     if metric and metric not in (
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     ):
         raise HTTPException(status_code=400, detail="不支持的健康指标类型")
 
@@ -8557,10 +8564,13 @@ async def import_metrics_csv(request: Request, file: UploadFile = File(...)):
         "腰围": "waist",
         "睡眠时长": "sleep",
         "睡眠": "sleep",
+        "步数": "steps",
+        "步行": "steps",
     }
     allowed = {
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
-        "waist", "sleep", "phq9", "gad7", "cat", "ess", "auditc", "mmrc"
+        "waist", "sleep", "steps", "phq9", "gad7", "cat", "ess",
+        "auditc", "mmrc"
     }
 
     records = []

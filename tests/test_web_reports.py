@@ -287,15 +287,20 @@ def test_app_js_ships_extended_metric_types(client):
     assert 'value="spo2"' in html
     assert 'value="waist"' in html
     assert 'value="sleep"' in html
+    assert 'value="steps"' in html
     assert "血氧饱和度" in app_js
     assert "腰围参考" in app_js
     assert "睡眠时长" in app_js
     assert "睡眠时长（小时）" in html
     assert "成人通常建议每晚 7–9 小时" in app_js
+    assert "步数" in app_js
+    assert "步数（步）" in html
+    assert "常见目标为每日 6000–10000 步" in app_js
     assert "metric === 'sleep'" in app_js
+    assert "metric === 'steps'" in app_js
     assert "sleep: { value1: 7 }" in app_js
-    assert "'waist', 'sleep', 'phq9'" in app_js
-    assert "'spo2', 'waist', 'sleep'" in app_js
+    assert "steps: { value1: 6000 }" in app_js
+    assert "'waist', 'sleep', 'steps'" in app_js
 
 
 def test_app_js_ships_reminder_calendar(client):

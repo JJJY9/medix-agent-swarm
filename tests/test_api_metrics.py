@@ -446,6 +446,7 @@ def test_extended_metric_types(client):
         ("spo2", 97, "%"),
         ("waist", 82, "cm"),
         ("sleep", 7.5, "小时"),
+        ("steps", 8000, "步"),
     ):
         created = client.post(
             "/api/metrics",
@@ -476,6 +477,10 @@ def test_extended_metric_types(client):
         "/api/metrics", json={"metric": "sleep", "value1": 25}
     )
     assert invalid_sleep.status_code == 400
+    invalid_steps = client.post(
+        "/api/metrics", json={"metric": "steps", "value1": 100001}
+    )
+    assert invalid_steps.status_code == 400
 
 
 def test_metrics_api_offset(client):

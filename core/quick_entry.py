@@ -21,6 +21,7 @@ _METRIC_ALIASES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("spo2", ("血氧饱和度", "血氧", "spo2")),
     ("waist", ("腰围", "waist")),
     ("sleep", ("睡眠时长", "睡眠", "睡了", "sleep")),
+    ("steps", ("步数", "步行", "走了", "steps")),
 )
 
 #: 未写指标名时按无歧义单位推断；mmol/L、cm 之类可能是其他指标，不推断
@@ -356,7 +357,7 @@ def parse_quick_metric(text: Any) -> Dict[str, Any]:
         if not metric:
             raise QuickEntryError(
                 "unknown_metric",
-                "没有识别到指标，请写明血压、血糖、体重、体温、心率、血氧、腰围或睡眠时长。",
+                "没有识别到指标，请写明血压、血糖、体重、体温、心率、血氧、腰围、睡眠时长或步数。",
             )
         alias_span = (0, 0)
         exclude = []
