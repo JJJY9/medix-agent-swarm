@@ -7736,6 +7736,9 @@ async function locateHealthRecord(item, query = '') {
   if (item.type === 'attachment') {
     setAttachmentRefFilter(null);
     if (els.attachmentFilterKind) els.attachmentFilterKind.value = '';
+    if (els.attachmentFilterLinked) els.attachmentFilterLinked.value = '';
+    if (els.attachmentFilterStart) els.attachmentFilterStart.value = '';
+    if (els.attachmentFilterEnd) els.attachmentFilterEnd.value = '';
     if (els.attachmentFilterQ) {
       els.attachmentFilterQ.value = item.title || query || '';
       els.attachmentFilterQ.dispatchEvent(
@@ -20530,6 +20533,7 @@ els.metricType.addEventListener('change', () => {
   refreshMetrics();
 });
 els.metricProfile.addEventListener('change', () => {
+  setAttachmentRefFilter(null);
   refreshMetrics();
   loadDataQuality();
   loadBpMonitoring();

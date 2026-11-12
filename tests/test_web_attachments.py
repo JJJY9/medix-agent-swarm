@@ -115,6 +115,13 @@ def test_attachment_failed_reload_clears_stale_selection():
     ) in SCRIPT
 
 
+def test_attachment_ref_filter_resets_on_profile_change():
+    assert (
+        "els.metricProfile.addEventListener('change', () => {\n"
+        "  setAttachmentRefFilter(null);"
+    ) in SCRIPT
+
+
 def test_attachment_export_selected_wiring():
     assert 'id="attachment-export-selected"' in HTML
     assert "导出选中" in HTML
