@@ -849,6 +849,7 @@ function showAuthGate(message = '') {
   closeMetrics();
   closeReminders();
   closeCompare();
+  closeAttachmentPreview();
   authGateOpen = true;
   els.authGate.hidden = false;
   syncPageInert();
@@ -4778,6 +4779,7 @@ function openHistory() {
   closeMetrics();
   closeReminders();
   closeCompare();
+  closeAttachmentPreview();
   lastFocused = document.activeElement;
   historyOpen = true;
   els.historyDrawer.hidden = false;
@@ -5541,6 +5543,7 @@ function openKb() {
   closeMetrics();
   closeReminders();
   closeCompare();
+  closeAttachmentPreview();
   kbFocused = document.activeElement;
   kbOpen = true;
   els.kbDrawer.hidden = false;
@@ -7371,6 +7374,7 @@ async function openMetrics() {
   closeDiagnose();
   closeReminders();
   closeCompare();
+  closeAttachmentPreview();
   metricsFocused = document.activeElement;
   metricsOpen = true;
   els.metricsDrawer.hidden = false;
@@ -7383,6 +7387,9 @@ async function openMetrics() {
   const activeProfile = els.profileSelect.value;
   if (activeProfile && profilesCache[activeProfile]) {
     setMetricProfileValue(activeProfile);
+  }
+  if (healthSearchQuery) {
+    runHealthSearch(healthSearchQuery);
   }
   syncDossierExportButton();
   if (!els.metricTime.value) els.metricTime.value = metricNowLocal();
@@ -7942,6 +7949,7 @@ async function openReminders() {
   closeDiagnose();
   closeMetrics();
   closeCompare();
+  closeAttachmentPreview();
   remindersFocused = document.activeElement;
   remindersOpen = true;
   els.remindersDrawer.hidden = false;
@@ -20829,15 +20837,6 @@ if (els.attachmentUpload) {
         'click', downloadPreviewAttachment
       );
     }
-    document.addEventListener('keydown', (event) => {
-      if (
-        event.key === 'Escape'
-        && els.attachmentPreview
-        && !els.attachmentPreview.hidden
-      ) {
-        closeAttachmentPreview();
-      }
-    });
   }
   if (els.attachmentExportSelected) {
     els.attachmentExportSelected.addEventListener(
@@ -21604,6 +21603,10 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (e.key === 'Escape') {
+    if (els.attachmentPreview && !els.attachmentPreview.hidden) {
+      closeAttachmentPreview();
+      return;
+    }
     if (historyOpen) closeHistory(true);
     if (kbOpen) closeKb(true);
     if (diagOpen) closeDiagnose(true);
