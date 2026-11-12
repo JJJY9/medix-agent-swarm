@@ -3148,6 +3148,8 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("medications", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "medication.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -3155,7 +3157,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -4226,13 +4228,15 @@ async def import_lab_results_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("lab_results", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "lab.import", detail=f"imported={imported} invalid={invalid}"
     )
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -4478,13 +4482,15 @@ async def import_allergies_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("allergies", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "allergy.import", detail=f"imported={imported} invalid={invalid}"
     )
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -5462,6 +5468,8 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("symptoms", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "symptom.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -5469,7 +5477,7 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -9007,6 +9015,8 @@ async def import_metrics_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("metrics", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "metric.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -9014,7 +9024,7 @@ async def import_metrics_csv(
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -13144,6 +13154,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("reminders", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "reminder.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -13151,7 +13163,7 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 

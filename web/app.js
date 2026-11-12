@@ -9903,8 +9903,8 @@ async function importRemindersCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或日期无效`);
-    if (data.invalid) parts.push(`缺少内容或日期 ${data.invalid} 行`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setRemindersStatus(parts.join('，') + '。', data.imported === 0);
     await refreshReminderProfileOptions();
     await loadReminders();
@@ -10401,7 +10401,7 @@ async function importSymptomsCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或时间无效`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setSymptomStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
@@ -10516,7 +10516,7 @@ async function importMedicationsCsv(file) {
 
     const parts = [`已导入 ${data.imported || 0} 条`];
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
-    if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setMedicationStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await loadMedications();
@@ -17829,7 +17829,7 @@ async function importMetricsCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     if (targetProfile) {
       parts.push(`空档案行归入「${targetProfile}」`);

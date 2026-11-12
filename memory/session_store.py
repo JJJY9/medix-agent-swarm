@@ -3575,6 +3575,7 @@ class SessionStore:
                         raw.get("context", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     exists = self._conn.execute(
                         """
@@ -3684,6 +3685,7 @@ class SessionStore:
                         raw.get("note", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     exists = self._conn.execute(
                         """
@@ -3741,6 +3743,7 @@ class SessionStore:
                         raw.get("stop_reason", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     created_key = str(raw.get("created_at") or "").strip()[:40]
                     if created_key:
@@ -4453,10 +4456,12 @@ class SessionStore:
                         str(raw.get("title") or "").split()
                     )[:MAX_REMINDER_TITLE_LENGTH]
                     if not title:
+                        invalid += 1
                         continue
                     try:
                         due_at = _normalize_reminder_due(raw.get("due_at"))
                     except ValueError:
+                        invalid += 1
                         continue
                     note = " ".join(
                         str(raw.get("note") or "").split()
