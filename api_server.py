@@ -14208,16 +14208,11 @@ async def bulk_archive_sessions(request: BulkArchiveRequest):
     from memory import get_session_store
 
     store = get_session_store()
-    updated = 0
-    missing = []
-    for session_id in dict.fromkeys(request.ids):
-        ok = await asyncio.to_thread(
-            store.set_archived, session_id, request.archived
-        )
-        if ok:
-            updated += 1
-        else:
-            missing.append(session_id)
+    result = await asyncio.to_thread(
+        store.set_archived_many, request.ids, request.archived
+    )
+    updated = len(result["updated"])
+    missing = result["missing"]
 
     await record_audit(
         "session.bulk_archive",
@@ -14241,22 +14236,17 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
 
     store = get_session_store()
     memory = ShortTermMemory()
-    deleted = 0
-    missing = []
     ids = list(dict.fromkeys(request.ids))
-    entries = []
+    result = await asyncio.to_thread(store.delete_sessions_many, ids)
+    deleted = len(result["deleted"])
+    missing = result["missing"]
     for session_id in ids:
-        existing = await asyncio.to_thread(store.get_session, session_id)
-        entries.append(
-            (str((existing or {}).get("profile") or ""), session_id)
-        )
         memory.clear_session(session_id)
         memory.seal_session(session_id)
-        ok = await asyncio.to_thread(store.delete_session, session_id)
-        if ok:
-            deleted += 1
-        else:
-            missing.append(session_id)
+    entries = [
+        (result["profiles"].get(session_id, ""), session_id)
+        for session_id in ids
+    ]
 
     await asyncio.to_thread(_erase_long_term_entries, entries)
     await asyncio.to_thread(_erase_session_summaries, ids)

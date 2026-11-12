@@ -5137,6 +5137,85 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
+    def set_archived_many(
+        self, session_ids: List[str], archived: bool
+    ) -> Dict[str, List[str]]:
+        """批量归档或移出归档；返回实际更新与缺失的会话 id。"""
+        ids: List[str] = []
+        for raw in session_ids:
+            session_id = str(raw or "").strip()[:64]
+            if session_id and session_id not in ids:
+                ids.append(session_id)
+        if not ids:
+            return {"updated": [], "missing": []}
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock, self._conn:
+            rows = self._conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            found = [row["id"] for row in rows]
+            if found:
+                marks = ",".join("?" for _ in found)
+                self._conn.execute(
+                    f"UPDATE sessions SET archived = ? "
+                    f"WHERE id IN ({marks})",
+                    [1 if archived else 0, *found],
+                )
+        found_set = set(found)
+        return {
+            "updated": [sid for sid in ids if sid in found_set],
+            "missing": [sid for sid in ids if sid not in found_set],
+        }
+
+    def delete_sessions_many(
+        self, session_ids: List[str]
+    ) -> Dict[str, Any]:
+        """批量删除会话与消息，只提交并 checkpoint 一次。
+
+        返回被删会话的 id、缺失 id 及档案名，供调用方清理长期记忆。
+        """
+        ids: List[str] = []
+        for raw in session_ids:
+            session_id = str(raw or "").strip()[:64]
+            if session_id and session_id not in ids:
+                ids.append(session_id)
+        if not ids:
+            return {"deleted": [], "missing": [], "profiles": {}}
+        placeholders = ",".join("?" for _ in ids)
+        with self._write_and_checkpoint():
+            rows = self._conn.execute(
+                f"SELECT id, profile FROM sessions "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            profiles = {
+                row["id"]: row["profile"] or "" for row in rows
+            }
+            if profiles:
+                found = list(profiles)
+                marks = ",".join("?" for _ in found)
+                self._conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({marks})",
+                    found,
+                )
+                self._conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({marks})",
+                    found,
+                )
+                # 与 delete_session 一致：登记墓碑，进行中的会诊无法写回
+                for session_id in found:
+                    self._deleted_sessions[session_id] = None
+                while len(self._deleted_sessions) > self._max_deleted_sessions:
+                    self._deleted_sessions.pop(
+                        next(iter(self._deleted_sessions))
+                    )
+        return {
+            "deleted": [sid for sid in ids if sid in profiles],
+            "missing": [sid for sid in ids if sid not in profiles],
+            "profiles": profiles,
+        }
+
     def archive_older_than(self, days: int) -> int:
         """把最后更新早于 N 天的未归档会话自动归档，返回处理数量。"""
         try:
