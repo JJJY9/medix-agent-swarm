@@ -618,3 +618,32 @@ def test_timeline_search_scans_beyond_newest_source_page(client_and_store):
     }).json()
 
     assert [event["note"] for event in data["events"]] == ["稀有记录"]
+
+
+def test_timeline_unknown_type_does_not_truncate_sources(
+    client_and_store,
+):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+    for value in (60, 61, 62):
+        client.post("/api/metrics", json={
+            "profile": "妈妈", "metric": "weight", "value1": value,
+            "measured_at": now,
+        })
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头晕", "severity": 3,
+        "recorded_at": now,
+    })
+
+    unknown = client.get("/api/timeline", params={
+        "profile": "妈妈", "days": 7, "type": "unknown",
+    }).json()["events"]
+    upper = client.get("/api/timeline", params={
+        "profile": "妈妈", "days": 7, "type": "Metric",
+    }).json()["events"]
+
+    # 未知类型按未筛选处理，所有来源仍完整返回
+    assert len(unknown) == 4
+    # 大小写不同的合法类型仍按类型过滤
+    assert {event["type"] for event in upper} == {"metric"}
+    assert len(upper) == 3
