@@ -5151,6 +5151,7 @@ async def export_visits_csv(
 
     from memory import get_session_store
 
+    days = max(0, min(int(days or 0), 3650))
     items = await asyncio.to_thread(
         get_session_store().list_visit_records,
         profile, days, q, 100000,
@@ -5910,6 +5911,8 @@ async def _weekly_report_impl(
             "with_second": 0,
             "max1": None,
             "max2": None,
+            "peak": None,
+            "peak2": None,
             "latest": None,
             "earliest": None,
             "target": None,
@@ -5918,18 +5921,16 @@ async def _weekly_report_impl(
         entry["count"] += 1
         first_value = float(item["value1"])
         entry["sum1"] += first_value
-        entry["max1"] = (
-            first_value if entry["max1"] is None
-            else max(entry["max1"], first_value)
-        )
+        if entry["max1"] is None or first_value > entry["max1"]:
+            entry["max1"] = first_value
+            entry["peak"] = item
         if item.get("value2") is not None:
             second_value = float(item["value2"])
             entry["sum2"] += second_value
             entry["with_second"] += 1
-            entry["max2"] = (
-                second_value if entry["max2"] is None
-                else max(entry["max2"], second_value)
-            )
+            if entry["max2"] is None or second_value > entry["max2"]:
+                entry["max2"] = second_value
+                entry["peak2"] = item
         if entry["latest"] is None:
             entry["latest"] = item
         measured_at = str(item.get("measured_at") or "")
@@ -5986,6 +5987,8 @@ async def _weekly_report_impl(
             ),
             "max_value1": entry["max1"],
             "max_value2": entry["max2"],
+            "peak": entry["peak"],
+            "peak2": entry["peak2"],
             "latest": entry["latest"],
             "earliest": entry["earliest"],
             "target": entry["target"],
@@ -6666,16 +6669,40 @@ def _build_health_insights(
                     metric=metric,
                 ))
         elif metric == "bp":
-            max1 = float(row.get("max_value1") or 0)
-            max2 = float(row.get("max_value2") or 0)
-            if max1 >= 160 or max2 >= 100:
+            sys_peak = row.get("peak") or {}
+            dia_peak = row.get("peak2") or {}
+            sys_high = float(sys_peak.get("value1") or 0)
+            sys_low = (
+                float(sys_peak["value2"])
+                if sys_peak.get("value2") is not None else 0.0
+            )
+            dia_high = (
+                float(dia_peak["value1"])
+                if dia_peak.get("value1") is not None else 0.0
+            )
+            dia_low = float(dia_peak.get("value2") or 0)
+
+            def bp_reading(high_limit: int, low_limit: int):
+                """优先引用收缩压最高的真实读数，其次舒张压最高的读数。
+
+                两个最大值可能来自不同次测量，不能拼成一条不存在的血压。
+                """
+                if sys_high >= high_limit or sys_low >= low_limit:
+                    return sys_high, sys_low
+                if dia_high >= high_limit or dia_low >= low_limit:
+                    return dia_high, dia_low
+                return None
+
+            reading = bp_reading(160, 100)
+            if reading is not None:
+                high, low = reading
                 insights.append(_health_insight(
                     "metric_bp_single",
                     "warning",
                     (
-                        f"家庭成员单次血压最高 {max1:g}/{max2:g} mmHg"
+                        f"家庭成员血压最高 {high:g}/{low:g} mmHg"
                         if family_scope
-                        else f"单次血压最高 {max1:g}/{max2:g} mmHg"
+                        else f"单次血压最高 {high:g}/{low:g} mmHg"
                     ),
                     (
                         "家庭范围内单次最高读数；请按成员分别查看各自血压。"
@@ -6686,26 +6713,29 @@ def _build_health_insights(
                     "metric",
                     metric="bp",
                 ))
-            elif max1 >= 140 or max2 >= 90:
-                insights.append(_health_insight(
-                    "metric_bp_single",
-                    "info",
-                    (
-                        f"家庭成员有血压读数达到 {max1:g}/{max2:g} mmHg"
-                        if family_scope
-                        else f"有血压读数达到 {max1:g}/{max2:g} mmHg"
-                    ),
-                    (
-                        "家庭范围内出现偏高读数；"
-                        "建议按成员分别复测并记录。"
-                        if family_scope
-                        else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
-                        "建议早晚测量并记录。"
-                    ),
-                    "设置血压目标后可自动判断是否达标。",
-                    "metric",
-                    metric="bp",
-                ))
+            else:
+                reading = bp_reading(140, 90)
+                if reading is not None:
+                    high, low = reading
+                    insights.append(_health_insight(
+                        "metric_bp_single",
+                        "info",
+                        (
+                            f"家庭成员有血压读数达到 {high:g}/{low:g} mmHg"
+                            if family_scope
+                            else f"有血压读数达到 {high:g}/{low:g} mmHg"
+                        ),
+                        (
+                            "家庭范围内出现偏高读数；"
+                            "建议按成员分别复测并记录。"
+                            if family_scope
+                            else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
+                            "建议早晚测量并记录。"
+                        ),
+                        "设置血压目标后可自动判断是否达标。",
+                        "metric",
+                        metric="bp",
+                    ))
         elif metric == "glucose":
             contexts = {
                 str(item.get("context") or "unspecified"): item
