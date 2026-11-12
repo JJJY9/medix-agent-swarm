@@ -4117,17 +4117,41 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM lab_results
-                         WHERE profile = ? AND item = ? AND tested_at = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["item"],
-                            normalized["tested_at"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        # 备份带创建时间：同一天/同一检测时间的多条化验
+                        # 只要内容不同就必须各自保留
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM lab_results
+                             WHERE profile = ? AND item = ?
+                               AND tested_at = ? AND created_at = ?
+                               AND value = ? AND unit = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["item"],
+                                normalized["tested_at"],
+                                created_key,
+                                normalized["value"],
+                                normalized["unit"],
+                            ),
+                        ).fetchone()
+                    else:
+                        # CSV 导入没有创建时间，保持原有三列去重以维持幂等
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM lab_results
+                             WHERE profile = ? AND item = ? AND tested_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["item"],
+                                normalized["tested_at"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4144,7 +4168,7 @@ class SessionStore:
                             normalized["unit"], normalized["ref_low"],
                             normalized["ref_high"], normalized["tested_at"],
                             normalized["lab_name"], normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
