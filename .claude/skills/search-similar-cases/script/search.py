@@ -47,8 +47,8 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
         # 导入长期记忆系统
         from memory.long_term import LongTermMemory
 
-        # 获取长期记忆实例
-        memory = LongTermMemory()
+        # 获取长期记忆实例；客户端初始化可能做网络校验，必须放线程池
+        memory = await asyncio.to_thread(LongTermMemory)
 
         if not memory.enabled:
             return {

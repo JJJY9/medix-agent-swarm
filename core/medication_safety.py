@@ -109,6 +109,8 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("泼尼松", ("泼尼松", "强的松", "prednisone")),
         ("地塞米松", ("地塞米松", "dexamethasone")),
         ("甲泼尼龙", ("甲泼尼龙", "methylprednisolone")),
+        ("氢化可的松", ("氢化可的松", "hydrocortisone")),
+        ("倍他米松", ("倍他米松", "betamethasone")),
     ),
     "statins": (
         ("阿托伐他汀", ("阿托伐他汀", "atorvastatin")),
@@ -193,6 +195,8 @@ DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
         ("阿普唑仑", ("阿普唑仑", "alprazolam")),
         ("劳拉西泮", ("劳拉西泮", "lorazepam")),
         ("氯硝西泮", ("氯硝西泮", "clonazepam")),
+        ("艾司唑仑", ("艾司唑仑", "estazolam")),
+        ("咪达唑仑", ("咪达唑仑", "midazolam")),
     ),
     "sulfonylureas": (
         ("格列本脲", ("格列本脲", "glibenclamide")),
@@ -377,9 +381,56 @@ INTERACTION_RULES: Tuple[Tuple[str, str, str, str], ...] = (
 )
 
 ALCOHOL_TERMS = (
-    "喝酒", "饮酒", "喝了酒", "啤酒", "白酒", "红酒", "药酒",
+    "喝酒", "喝了酒", "喝了点酒", "喝点酒", "少量饮酒", "饮酒",
+    "啤酒", "白酒", "红酒", "药酒",
     "alcohol", "beer", "wine",
 )
+
+#: 紧贴酒类词前的否定/戒断表达（「不喝酒」「不喝啤酒」「已经戒酒」）
+_ALCOHOL_NEGATIONS = re.compile(
+    r"(?:不|没|没有|无|未|不再|已经?戒|戒了|忌|从不|别|勿|禁止)"
+    r"(?:再|怎么|太|会|能|想|敢|喝|饮)?\s*$"
+)
+
+
+#: 「不得不喝白酒」「不能不喝红酒」表示实际会喝，不是戒酒
+_ALCOHOL_DOUBLE_NEGATIONS = re.compile(
+    r"(?:不得不|不能不|忍不住|没法不|无法不)(?:喝|饮)?\s*$"
+)
+
+#: 「不喝酒就难受/睡不着」是在描述饮酒依赖，仍视为饮酒语境
+_ALCOHOL_DEPENDENCE_WORDS = (
+    "难受", "睡不着", "头痛", "失眠", "焦虑", "手抖", "心慌",
+)
+
+
+def _has_alcohol_use(text: str) -> bool:
+    """文本是否提到当前饮酒；否定或戒酒表述不算。"""
+    for term in ALCOHOL_TERMS:
+        if term.isascii():
+            # 英文按单词边界匹配，避免 wine 命中 swine
+            pattern = re.compile(
+                rf"(?<![a-z0-9_]){re.escape(term)}s?(?![a-z0-9_])"
+            )
+            matches = [match.start() for match in pattern.finditer(text)]
+        else:
+            matches = []
+            start = text.find(term)
+            while start != -1:
+                matches.append(start)
+                start = text.find(term, start + len(term))
+        for position in matches:
+            prefix = text[max(0, position - 8):position]
+            if _ALCOHOL_DOUBLE_NEGATIONS.search(prefix):
+                return True
+            if not _ALCOHOL_NEGATIONS.search(prefix):
+                return True
+            suffix = text[position + len(term):position + len(term) + 8]
+            if "就" in suffix and any(
+                word in suffix for word in _ALCOHOL_DEPENDENCE_WORDS
+            ):
+                return True
+    return False
 
 #: 过敏史 → (展示名, 过敏词, 需要警惕的药物组)
 ALLERGY_RULES: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
@@ -576,8 +627,28 @@ def _term_matches(text: str, term: str) -> bool:
     return lowered in text
 
 
+#: 局部用糖皮质激素不进入全身相互作用判断
+_TOPICAL_STEROID_MARKERS = (
+    "滴眼", "眼液", "滴耳", "乳膏", "软膏", "外用", "喷雾",
+    "洗剂", "凝胶", "贴剂",
+)
+
+
 def _find_drugs(text: str, group: str) -> List[str]:
     """返回文本中命中的组内规范药名（去重、保持定义顺序）。"""
+    if group == "alcohol":
+        # 酒类是行为描述而非药名：必须排除「不喝酒」「已戒酒」
+        return ["酒精"] if _has_alcohol_use(text) else []
+    if group == "corticosteroids":
+        # 逐条药物过滤：氢化可的松乳膏/滴眼液不算全身用药
+        segments = re.split(r"[；;\n]", text)
+        text = "；".join(
+            segment for segment in segments
+            if not any(
+                marker in segment
+                for marker in _TOPICAL_STEROID_MARKERS
+            )
+        )
     found: List[str] = []
     for canonical, aliases in DRUG_GROUPS.get(group, ()):
         if any(_alias_matches(text, alias) for alias in aliases):
@@ -762,8 +833,8 @@ def check_medication_safety(
             "detail": f"检测到：{'、'.join(drugs)}。{detail}",
         })
 
-    if _find_drugs(drug_text, "cephalosporins") and any(
-        _term_matches(drug_text, term) for term in ALCOHOL_TERMS
+    if _find_drugs(drug_text, "cephalosporins") and _has_alcohol_use(
+        drug_text
     ):
         alerts.append({
             "severity": "info",
@@ -771,8 +842,8 @@ def check_medication_safety(
             "detail": "部分头孢类药物与酒精同用可能出现双硫仑样反应。用药期间及停药后数天内建议避免饮酒，具体请咨询医生或药师。",
         })
 
-    if _find_drugs(drug_text, "acetaminophen") and any(
-        _term_matches(drug_text, term) for term in ALCOHOL_TERMS
+    if _find_drugs(drug_text, "acetaminophen") and _has_alcohol_use(
+        drug_text
     ):
         alerts.append({
             "severity": "warning",

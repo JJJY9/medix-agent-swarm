@@ -31,6 +31,8 @@ RED_FLAG_PHRASES = (
     ("意识模糊", "意识改变"),
     ("意识不清", "意识改变"),
     ("昏迷", "意识丧失"),
+    ("意识丧失", "意识丧失"),
+    ("不省人事", "意识丧失"),
     ("晕厥", "晕厥"),
     ("昏倒", "晕厥"),
     ("抽搐", "抽搐"),
@@ -53,6 +55,7 @@ RED_FLAG_PHRASES = (
     ("呕血", "呕血"),
     ("吐血", "呕血"),
     ("咯血", "咯血"),
+    ("咳血", "咯血"),
     ("黑便", "消化道出血征象"),
     ("血便", "消化道出血征象"),
     ("高热不退", "持续高热"),
@@ -103,8 +106,24 @@ _ALMOST_PATTERN = re.compile(
     r"(?:差点|险些|几乎|差一点|差些)\s*(?:没有|没)?\s*$"
 )
 
+#: 「不排除/不能排除 X」表示 X 仍有可能，不能当成否定
+_DOUBLE_NEGATION_SUFFIXES = (
+    "不排除", "不能排除", "无法排除", "未排除",
+    "不除外", "不能除外", "无法除外", "未除外",
+)
+
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
+
+#: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
+PREGNANCY_UNCERTAIN_PATTERN = re.compile(
+    r"(?:有没有|是不是|有无|怀没)\s*怀孕"
+    r"|(?:不确定|不知道|不清楚)(?:是否|是不是|有没有)?\s*怀孕"
+)
+PREGNANCY_UNCERTAIN_TERMS = (
+    "有没有怀孕", "是否怀孕", "有无怀孕", "不知道有没有怀孕",
+    "不确定是否怀孕", "可能怀孕", "怀疑怀孕", "会不会怀孕",
+)
 
 #: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
 PREGNANCY_BLEEDING_TERMS = (
@@ -116,6 +135,12 @@ PREGNANCY_BLEEDING_TERMS = (
 def _is_negated(prefix: str) -> bool:
     """前缀是否以否定结构结束（"没有"、"未见"、"无"…）。"""
     if _ALMOST_PATTERN.search(prefix):
+        return False
+    stripped = prefix.rstrip()
+    if any(
+        stripped.endswith(term) for term in _DOUBLE_NEGATION_SUFFIXES
+    ):
+        # 「不排除酮症酸中毒」是阳性警示，不是否定
         return False
     return bool(_NEGATION_PATTERN.search(prefix))
 
@@ -253,7 +278,18 @@ def has_visit_recommendation(text: str) -> bool:
                 ):
                     return True
                 start = sentence.find(term, start + len(term))
-    return bool(_CALL_120_PATTERN.search(text))
+        for call in _CALL_120_PATTERN.finditer(sentence):
+            prefix = sentence[:call.start()]
+            tail = prefix.rstrip()[-10:]
+            negated = any(
+                negation in tail for negation in _VISIT_NEGATIONS
+            )
+            questioning = any(
+                marker in prefix for marker in _QUESTION_MARKERS
+            ) or sentence.rstrip().endswith(("吗", "呢"))
+            if not negated and not questioning:
+                return True
+    return False
 
 EMERGENCY_MESSAGE = (
     "描述中包含急症警示信号，请立即拨打 120 或前往急诊科，"
@@ -261,8 +297,16 @@ EMERGENCY_MESSAGE = (
 )
 
 #: 需要结合上下文判断的高危情况
-FEVER_TERMS = ("发热", "发烧", "高烧", "低烧", "烧到")
-TEMPERATURE_PATTERN = re.compile(r"体温\s*(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)")
+FEVER_TERMS = (
+    "发热", "发烧", "高烧", "低烧", "烧到", "高热", "烧了", "体温高",
+)
+TEMPERATURE_PATTERN = re.compile(
+    # 有发热语境时接受「体温 39」「发烧 38.5 度」等写法
+    r"(?:体温|发烧|发热|高烧|低烧|烧到)[^，。；！？\n]{0,8}"
+    r"(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*(?:°\s*c|℃|度)?"
+    # 明确摄氏单位时可直接出现（仍需排除气温/水温等）
+    r"|(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*(?:°\s*c|℃)"
+)
 IMMUNOSUPPRESSION_TERMS = (
     "化疗", "放疗", "免疫抑制", "器官移植", "骨髓移植", "造血干细胞移植",
     "艾滋病", "hiv", "长期激素", "长期使用激素", "甲氨蝶呤", "环孢素",
@@ -342,17 +386,47 @@ def _parse_age_months(age: Any) -> Optional[float]:
     return total if (years or months or days or _AGE_BARE.match(text)) else None
 
 
+#: 「气温/水温/酒精度 38 度」不是体温
+_NON_BODY_TEMPERATURE_WORDS = (
+    "气温", "水温", "室温", "油温", "酒精度", "环境温度",
+    "室外温度", "天气温度", "洗澡水", "洗澡", "房间", "空调",
+    "白酒", "啤酒", "红酒", "喝酒",
+)
+
+
 def _has_fever(text: str) -> bool:
     for term in FEVER_TERMS:
         start = text.find(term)
         while start != -1:
             prefix = _clause_prefix(text, start)
+            stripped = prefix.rstrip()
+            if term == "烧了" and (
+                stripped.endswith("退")
+                or stripped.endswith(("火", "燃烧"))
+                or stripped.endswith(
+                    ("不发", "没发", "没有发", "未发", "再发")
+                )
+            ):
+                # 「已经退烧了」「不发烧了」不是发热
+                start = text.find(term, start + len(term))
+                continue
+            if term == "高热":
+                following = text[start + len(term):start + len(term) + 1]
+                if following in ("量", "能", "卡", "食", "饮", "效", "烹"):
+                    # 「高热量/高热能」不是发热
+                    start = text.find(term, start + len(term))
+                    continue
             if not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
 
     for match in TEMPERATURE_PATTERN.finditer(text):
-        prefix = _clause_prefix(text, match.start())
+        # 显式摄氏温度分支从数字开始；有发热语境的分支由上下文保证
+        if match.group(0)[:1].isdigit():
+            window = text[max(0, match.start() - 8):match.end() + 8]
+            if any(word in window for word in _NON_BODY_TEMPERATURE_WORDS):
+                continue
+        prefix = _clause_prefix(text, match.start(), lookback=8)
         if not _is_negated(prefix):
             return True
     return False
@@ -460,8 +534,16 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 break
             start = text.find(phrase, start + len(phrase))
 
+    pregnancy_mentioned = (
+        PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
+        or any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
+        or any(
+            _positive_mention(text, term)
+            for term in PREGNANCY_TERMS
+        )
+    )
     if (
-        any(term in text for term in PREGNANCY_TERMS)
+        pregnancy_mentioned
         and any(
             _positive_mention(text, term)
             for term in PREGNANCY_BLEEDING_TERMS

@@ -500,14 +500,21 @@ class ConstraintValidator:
         required_agents = []
 
         for rule in rules:
-            # 检查症状关键词
+            # 检查症状关键词：必须做否定感知匹配，避免「无呕血」
+            # 「否认自杀想法」被当成高危症状强制升级 Swarm
             if_symptoms = rule.get('if_symptoms', [])
-            if any(symptom in question for symptom in if_symptoms):
-                required_agents.extend(rule['must_include'])
-                logger.info(
-                    f"🔒 检测到高危症状，必须包含: {rule['must_include']}"
-                    f"（{rule['reason']}）"
-                )
+            if if_symptoms:
+                from core.triage import has_positive_mention
+
+                if any(
+                    has_positive_mention(question, symptom)
+                    for symptom in if_symptoms
+                ):
+                    required_agents.extend(rule['must_include'])
+                    logger.info(
+                        f"🔒 检测到高危症状，必须包含: {rule['must_include']}"
+                        f"（{rule['reason']}）"
+                    )
 
             # 检查一般关键词
             if_keywords = rule.get('if_keywords', [])

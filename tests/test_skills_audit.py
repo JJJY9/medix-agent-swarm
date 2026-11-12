@@ -44,11 +44,14 @@ def test_skill_registry_rejects_unknown_and_missing_arguments():
 
     unknown = asyncio.run(registry.execute("demo", query="x", top_k=3))
     missing = asyncio.run(registry.execute("demo"))
+    blank = asyncio.run(registry.execute("demo", query="   "))
 
     assert unknown["success"] is False
     assert "未知参数" in unknown["error"] and "top_k" in unknown["error"]
     assert missing["success"] is False
     assert "缺少必填参数" in missing["error"]
+    assert blank["success"] is False
+    assert "缺少必填参数" in blank["error"]
     assert calls == []
 
 

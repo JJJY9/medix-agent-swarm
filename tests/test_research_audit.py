@@ -112,6 +112,33 @@ def test_web_search_runs_backend_in_thread(monkeypatch):
     assert results and results[0].title == "标题"
 
 
+def test_web_search_no_results_does_not_retry(monkeypatch):
+    calls = []
+
+    class FakeDDGS:
+        def text(self, *args, **kwargs):
+            calls.append(1)
+            return []
+
+    monkeypatch.setattr(
+        web_search_module, "DDGS", FakeDDGS, raising=False
+    )
+    monkeypatch.setattr(web_search_module, "DDGS_AVAILABLE", True)
+
+    tool = WebSearchTool()
+    results = asyncio.run(tool.search("无结果", retry_count=2))
+
+    assert results == []
+    # 后端正常返回空结果时只跑一轮，不按重试次数重复搜索
+    assert len(calls) <= 2
+
+
+def test_no_results_not_treated_as_backend_failure():
+    from research import web_search as module
+
+    assert "bing" not in module._DDGS_BACKENDS
+
+
 def test_parse_response_clamps_confidence():
     synthesizer = EvidenceSynthesizer.__new__(EvidenceSynthesizer)
 

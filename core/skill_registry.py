@@ -152,7 +152,13 @@ class SkillRegistry:
             }
         missing = [
             param.name for param in parameters
-            if param.required and kwargs.get(param.name) is None
+            if param.required and (
+                kwargs.get(param.name) is None
+                or (
+                    isinstance(kwargs.get(param.name), str)
+                    and not kwargs[param.name].strip()
+                )
+            )
         ]
         if missing:
             return {

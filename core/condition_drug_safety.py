@@ -52,7 +52,8 @@ _RULES: Tuple[Dict[str, Any], ...] = (
         "key": "peptic_ulcer",
         "keywords": (
             "胃溃疡", "十二指肠溃疡", "十二指肠球部溃疡",
-            "复合性溃疡", "消化道溃疡", "消化道出血", "胃出血",
+            "复合性溃疡", "消化道溃疡", "消化性溃疡",
+            "消化道出血", "胃出血",
         ),
         "drug_groups": ("nsaids", "anticoagulants_antiplatelets"),
         "title": "溃疡/消化道出血与出血风险药物",
@@ -153,6 +154,13 @@ def _condition_names(conditions: Sequence[Any]) -> List[str]:
 
 _INACTIVE_MARKERS = ("已治愈", "治愈后", "家族史", "已好转", "已恢复")
 
+#: 这些词说明疾病仍在活动期，前面的「未/无」不是否定
+_ACTIVE_MARKERS = (
+    "未控制", "未治疗", "未愈", "未规范治疗", "未达标",
+    "控制不佳", "控制不良", "没有控制好", "没控制好", "控制不好",
+    "未规律", "未缓解", "未稳定", "未愈合", "未手术",
+)
+
 
 def _is_inactive_condition(name: str) -> bool:
     normalized = unicodedata.normalize("NFKC", name).lower()
@@ -166,6 +174,14 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     if "未治愈" in normalized:
         return False
     token = keyword.lower()
+    # 活动状态限定语只在包含该疾病的分句内生效，避免
+    # 「无糖尿病，血压未达标」把未达标算到糖尿病头上
+    clauses = re.split(r"[，。；,;：:\s]+", normalized)
+    target_clause = next(
+        (clause for clause in clauses if token in clause), ""
+    )
+    if any(marker in target_clause for marker in _ACTIVE_MARKERS):
+        return False
     if re.search(
         rf"(?:无|没有|否认|排除|非|未)[^，。；,;:：]{{0,6}}"
         rf"{re.escape(token)}",
@@ -173,8 +189,9 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     ):
         return True
     if re.search(
-        rf"(?:no|without|negative for|denies|no history of)"
-        rf"[a-z ]{{0,20}}{re.escape(token)}",
+        rf"\b(?:no|without|denies)\b[a-z ]{{0,20}}"
+        rf"{re.escape(token)}"
+        rf"|negative for[a-z ]{{0,20}}{re.escape(token)}",
         normalized,
     ):
         return True
