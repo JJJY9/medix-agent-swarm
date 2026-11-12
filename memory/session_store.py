@@ -7522,6 +7522,71 @@ class SessionStore:
             int(row["ref_id"]): int(row["total"]) for row in rows
         }
 
+    def list_visit_records_by_ids(
+        self, ids: Any
+    ) -> List[Dict[str, Any]]:
+        """按编号批量读取就诊记录，供附件关联摘要使用。"""
+        values = {
+            parsed for parsed in (_safe_db_id(value) for value in (ids or []))
+            if parsed
+        }
+        if not values:
+            return []
+        ordered = sorted(values)
+        rows: List[Any] = []
+        with self._lock:
+            for index in range(0, len(ordered), 500):
+                chunk = ordered[index:index + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(self._conn.execute(
+                    f"""
+                    SELECT id, profile, appointment_id, visit_date,
+                           department, doctor, facility, diagnosis, advice,
+                           prescription, next_followup_date,
+                           followup_appointment_id, followup_reminder_id,
+                           note, created_at, updated_at
+                      FROM visit_records
+                     WHERE id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall())
+        today = datetime.now().strftime("%Y-%m-%d")
+        return [
+            {**dict(row), **_visit_record_view_fields(dict(row), today)}
+            for row in rows
+        ]
+
+    def list_lab_results_by_ids(
+        self, ids: Any
+    ) -> List[Dict[str, Any]]:
+        """按编号批量读取化验结果，供附件关联摘要使用。"""
+        values = {
+            parsed for parsed in (_safe_db_id(value) for value in (ids or []))
+            if parsed
+        }
+        if not values:
+            return []
+        ordered = sorted(values)
+        rows: List[Any] = []
+        with self._lock:
+            for index in range(0, len(ordered), 500):
+                chunk = ordered[index:index + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(self._conn.execute(
+                    f"""
+                    SELECT id, profile, panel, item, value, unit, ref_low,
+                           ref_high, tested_at, lab_name, note,
+                           created_at, updated_at
+                      FROM lab_results
+                     WHERE id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall())
+        return [
+            {**dict(row), **_lab_result_view_fields(dict(row))}
+            for row in rows
+        ]
+
     def get_attachment(
         self, attachment_id: int
     ) -> Optional[Dict[str, Any]]:

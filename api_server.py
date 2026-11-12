@@ -10255,7 +10255,7 @@ async def list_attachments(
     lab_map: Dict[int, Dict[str, Any]] = {}
     if visit_ids:
         visits = await asyncio.to_thread(
-            store.list_visit_records, None, 0, "", 100000
+            store.list_visit_records_by_ids, visit_ids
         )
         visit_map = {
             int(row["id"]): row for row in visits
@@ -10263,7 +10263,7 @@ async def list_attachments(
         }
     if lab_ids:
         labs = await asyncio.to_thread(
-            store.list_lab_results, None, None, None, 0, 100000, 0
+            store.list_lab_results_by_ids, lab_ids
         )
         lab_map = {
             int(row["id"]): row for row in labs
