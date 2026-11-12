@@ -679,6 +679,23 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
             return float(value)
     if re.search(r"每(?:两|2)\s*(?:周|星期|礼拜)", text):
         return 1 / 14
+    every_hours = re.search(
+        r"每\s*(?:隔)?\s*([一二两三四五六七八九十\d]+)\s*(?:个)?\s*小时",
+        text,
+    )
+    if every_hours:
+        count = _frequency_count(every_hours.group(1))
+        if count and 1 <= count <= 24:
+            return 24 / count
+    weekday_list = re.search(
+        r"每(?:周|星期|礼拜)\s*"
+        r"([一二三四五六日天](?:[\s、，,和及]+[一二三四五六日天])*)",
+        text,
+    )
+    if weekday_list:
+        weekdays = re.findall(r"[一二三四五六日天]", weekday_list.group(1))
+        if weekdays:
+            return len(weekdays) / 7
     weekly = re.search(
         r"每(?:周|星期|礼拜)\s*([一二两三四五六七八九十\d]+)?\s*次?", text
     )
@@ -695,8 +712,15 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
         return 1 / count if count else None
     if re.search(r"每(?:个)?月", text):
         return 1 / 30
+    per_day = re.search(
+        r"([一二两三四五六七八九十\d]+)\s*次\s*/\s*(?:日|天)", text
+    )
+    if per_day:
+        count = _frequency_count(per_day.group(1))
+        return float(count) if count else None
     daily = re.search(
-        r"(?:每(?:日|天|晚|早)|一日|一天)\s*([一二两三四五六七八九十\d]+)?\s*次",
+        r"(?:每(?:日|天|晚|早)|一日|一天|1日|1天)"
+        r"\s*([一二两三四五六七八九十\d]+)?\s*次",
         text,
     )
     if daily:
@@ -1903,6 +1927,8 @@ class SessionStore:
                     ON lab_results(profile, tested_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_lab_results_item_time
                     ON lab_results(item, tested_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_lab_results_time
+                    ON lab_results(tested_at DESC);
                 CREATE TABLE IF NOT EXISTS allergies (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile    TEXT NOT NULL DEFAULT '',
@@ -2224,6 +2250,19 @@ class SessionStore:
     def is_session_deleted(self, session_id: str) -> bool:
         with self._lock:
             return str(session_id or "").strip() in self._deleted_sessions
+
+    def revive_session(self, session_id: str) -> None:
+        """解除删除墓碑；用于同一编号被复用发起新会诊的场景。
+
+        不写入任何行：save_exchange 已经使用 INSERT OR IGNORE，
+        第一次问答会正常创建会话。删除进行中的会诊仍会重新登记墓碑，
+        因此不会把迟到结果写回。
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return
+        with self._lock:
+            self._deleted_sessions.pop(session_id, None)
 
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
@@ -6260,8 +6299,10 @@ class SessionStore:
             params.append(panel_key)
         cutoff = _days_cutoff(days)
         if cutoff:
-            conditions.append("substr(tested_at, 1, 10) >= ?")
-            params.append(cutoff[:10])
+            # 用原始时间戳比较才能命中 (profile, tested_at) 索引；
+            # substr(tested_at, 1, 10) 会退化为逐行扫描
+            conditions.append("tested_at >= ?")
+            params.append(cutoff)
         range_conditions, range_params = _date_range_conditions(
             "tested_at", start, end
         )
@@ -7983,11 +8024,14 @@ class SessionStore:
             params.append(_normalize_profile_name(profile))
         cutoff = _days_cutoff(days)
         if cutoff:
-            conditions.append("substr(l.taken_at, 1, 10) >= ?")
-            params.append(cutoff[:10])
-            end_of_today = datetime.now().strftime("%Y-%m-%d")
-            conditions.append("substr(l.taken_at, 1, 10) <= ?")
-            params.append(end_of_today)
+            # 原始时间戳范围才能命中 (medication_id, taken_at) 索引
+            conditions.append("l.taken_at >= ?")
+            params.append(cutoff)
+            tomorrow = (
+                datetime.now() + timedelta(days=1)
+            ).strftime("%Y-%m-%dT00:00")
+            conditions.append("l.taken_at < ?")
+            params.append(tomorrow)
         range_conditions, range_params = _date_range_conditions(
             "l.taken_at", start, end
         )

@@ -1505,7 +1505,7 @@ function renderFeedback(payload) {
       if (e.key === 'Enter') {
         e.preventDefault();
         commit();
-      } else if (e.key === 'Escape') {
+      } else if (e.key === 'Escape' && !e.isComposing) {
         e.preventDefault();
         closeForm();
       }
@@ -7801,6 +7801,8 @@ function renderHealthSearchItem(item, query) {
   const open = () => locateHealthRecord(item, query);
   li.addEventListener('click', open);
   li.addEventListener('keydown', (event) => {
+    // 内部预览按钮的事件不要冒泡成整行定位
+    if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       open();
@@ -16652,6 +16654,7 @@ function renderTimeline(data) {
       };
       li.addEventListener('click', openConsultation);
       li.addEventListener('keydown', (e) => {
+        if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           openConsultation();
@@ -16672,6 +16675,7 @@ function renderTimeline(data) {
       };
       li.addEventListener('click', openAttachment);
       li.addEventListener('keydown', (e) => {
+        if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           openAttachment();
@@ -21900,6 +21904,8 @@ els.compareClose.addEventListener('click', () => closeCompare(true));
 els.compareBackdrop.addEventListener('click', () => closeCompare(true));
 
 document.addEventListener('keydown', (e) => {
+  // 输入法选词时的 Esc/Enter 属于组合输入，不能触发全局快捷键或关闭抽屉
+  if (e.isComposing || e.keyCode === 229) return;
   if (
     (e.ctrlKey || e.metaKey)
     && e.shiftKey

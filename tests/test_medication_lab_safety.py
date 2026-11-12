@@ -415,3 +415,15 @@ def test_family_overview_attention_includes_medication_lab(client_and_store):
     mom = next(item for item in overview if item["name"] == "妈妈")
     assert mom["medication_lab_safety"]["count"] >= 1
     assert "用药安全" in mom["attention"]["label"]
+
+
+def test_single_char_analyte_with_panel_still_matches():
+    lab = {**_lab("钾", 7.0, "mmol/L"), "panel": "电解质"}
+    titles = _titles(["缬沙坦"], [lab])
+
+    assert "缬沙坦与血钾偏高" in titles
+
+
+def test_single_char_analyte_does_not_match_urine_panel():
+    lab = {**_lab("钾", 7.0, "mmol/L"), "panel": "尿电解质"}
+    assert _titles(["缬沙坦"], [lab]) == []
