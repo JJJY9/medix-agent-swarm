@@ -362,3 +362,31 @@ def test_data_quality_lab_unitless_names(client_and_store):
     assert set(issues["lab_missing_unit"]["detail"].split("、")) == set(
         flagged
     )
+
+
+def test_data_quality_scopes_attachments_to_selected_profile(
+    client_and_store,
+):
+    client, store = client_and_store
+    store.add_attachment(
+        "妈妈", "visit", 0, "妈妈附件.pdf", "mom-missing.pdf",
+        "application/pdf", 10, "",
+    )
+    store.add_attachment(
+        "", "visit", 0, "未指定附件.pdf", "unassigned-missing.pdf",
+        "application/pdf", 10, "",
+    )
+
+    explicit = _by_key(
+        client.get(
+            "/api/health/data-quality", params={"profile": ""}
+        ).json()
+    )
+    assert explicit["attachment_missing"]["count"] == 1
+    assert "未指定附件.pdf" in explicit["attachment_missing"]["detail"]
+    assert "妈妈附件.pdf" not in explicit["attachment_missing"]["detail"]
+
+    everything = _by_key(
+        client.get("/api/health/data-quality").json()
+    )
+    assert everything["attachment_missing"]["count"] == 2

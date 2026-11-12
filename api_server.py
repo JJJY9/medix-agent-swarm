@@ -6788,7 +6788,7 @@ async def health_data_quality(profile: Optional[str] = None):
         ),
         asyncio.to_thread(_attachment_dir_files),
     )
-    if profile:
+    if profile is not None:
         profile_key = _normalized_profile_key(profile)
         attachments = [
             item for item in attachments
@@ -10348,7 +10348,7 @@ async def attachment_ref_counts(profile: Optional[str] = None):
 
 @app.get("/api/attachments/export.csv")
 async def export_attachments_csv(
-    profile: str = "",
+    profile: Optional[str] = None,
     kind: str = "",
     ref_id: Optional[int] = None,
     start: str = "",
@@ -10368,7 +10368,7 @@ async def export_attachments_csv(
     offset = 0
     while offset < 100000:
         data = await list_attachments(
-            profile=profile or None,
+            profile=profile,
             kind=kind,
             ref_id=ref_id,
             limit=1000,
