@@ -155,3 +155,26 @@ def test_backup_manage_ui_is_wired(client_and_store):
     assert "manageLocalBackups" in app_js
     assert "method: 'DELETE'" in app_js
     assert "/api/backups/${encodeURIComponent(target.name)}" in app_js
+
+
+def test_backup_picker_lists_all_backups_returned_by_api(client_and_store):
+    client, _store, backup_dir = client_and_store
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(12):
+        (backup_dir / f"medix-backup-20260101-{index:06d}.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    listing = client.get("/api/backups").json()["backups"]
+
+    assert len(listing) == 12
+    app_js = client.get("/static/app.js").text
+    for function_name in (
+        "async function restoreBackup()",
+        "async function manageLocalBackups()",
+    ):
+        start = app_js.index(function_name)
+        end = app_js.find("\nasync function ", start + len(function_name))
+        body = app_js[start:end if end != -1 else None]
+        assert "slice(0, 10)" not in body
+        assert "backups || []" in body
