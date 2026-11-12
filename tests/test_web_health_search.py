@@ -135,3 +135,13 @@ def test_search_styles():
     assert ".health-search-results" in CSS
     assert ".search-result" in CSS
     assert ".search-result mark" in CSS
+
+
+def test_search_results_support_keyboard_navigation():
+    assert "event.key === 'ArrowDown' || event.key === 'ArrowUp'" in SCRIPT
+    assert (
+        "els.healthSearchResults.querySelectorAll('.search-result')"
+        in SCRIPT
+    )
+    assert "results[next].focus();" in SCRIPT
+    assert "els.healthSearchInput.focus();" in SCRIPT
