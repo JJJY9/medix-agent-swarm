@@ -54,6 +54,9 @@ def test_result_click_locates_record():
     assert "openReminders()" in SCRIPT
     assert "item.type === 'attachment'" in SCRIPT
     assert "els.attachmentFilterQ.value = item.title || query || '';" in SCRIPT
+    assert "els.attachmentFilterLinked.value = '';" in SCRIPT
+    assert "els.attachmentFilterStart.value = '';" in SCRIPT
+    assert "els.attachmentFilterEnd.value = '';" in SCRIPT
     assert "attachments-section" in SCRIPT
     assert "已定位附件" in SCRIPT
     assert "els.remindersShowDone.checked = Boolean(item.done)" in SCRIPT
