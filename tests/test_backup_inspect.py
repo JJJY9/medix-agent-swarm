@@ -52,6 +52,17 @@ def test_inspect_backup_counts_and_checksum(client_and_store):
     assert data["exported_at"]
 
 
+def test_inspect_empty_backup_is_not_restore_ready(client_and_store):
+    client, store, backup_dir = client_and_store
+    backup = create_backup(store.export_data(), directory=backup_dir)
+
+    data = client.get(f"/api/backups/{backup.name}/inspect").json()
+
+    assert data["total_records"] == 0
+    assert data["restore_ready"] is False
+    assert "备份中没有可恢复记录。" in data["warnings"]
+
+
 def test_inspect_warns_attachments_not_in_backup(client_and_store):
     client, store, backup_dir = client_and_store
     backup = _make_backup(store, backup_dir)

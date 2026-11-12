@@ -2501,6 +2501,7 @@ async def inspect_local_backup(name: str):
         checksum_ok is not False
         and not sessions_type_error
         and has_backup_arrays
+        and total_records > 0
     )
 
     return {
