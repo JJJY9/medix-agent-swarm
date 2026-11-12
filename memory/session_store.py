@@ -7548,6 +7548,40 @@ class SessionStore:
             for row in rows
         ]
 
+    def count_attachments_by_day(
+        self,
+        profile: Optional[str] = None,
+        start: str = "",
+        end: str = "",
+    ) -> Dict[str, int]:
+        """按上传日期统计附件份数，供健康月历使用。"""
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        range_conditions, range_params = _date_range_conditions(
+            "created_at", start, end
+        )
+        conditions.extend(range_conditions)
+        params.extend(range_params)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT substr(created_at, 1, 10) AS day,
+                       COUNT(*) AS total
+                  FROM attachments
+                 {where}
+                 GROUP BY day
+                """,
+                params,
+            ).fetchall()
+        return {
+            str(row["day"]): int(row["total"])
+            for row in rows if row["day"]
+        }
+
     def list_attachment_stored_names(self) -> List[str]:
         """返回全部附件的存储文件名，用于清理前复核。"""
         with self._lock:

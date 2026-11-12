@@ -8187,8 +8187,8 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     visits = await asyncio.to_thread(
         store.list_visit_records, profile, 0, "", 100000, start, end
     )
-    raw_attachments = await _list_attachments_paged(
-        store, profile, start, end
+    attachment_daily = await asyncio.to_thread(
+        store.count_attachments_by_day, profile, start, end
     )
 
     days: Dict[str, Dict[str, int]] = {}
@@ -8283,10 +8283,9 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         at = str(item.get("visit_date") or "")
         if in_month(at):
             bucket(at[:10])["visits"] += 1
-    for item in raw_attachments:
-        at = str(item.get("created_at") or "")
-        if in_month(at):
-            bucket(at[:10])["attachments"] += 1
+    for day_key, total in attachment_daily.items():
+        if in_month(day_key):
+            bucket(day_key)["attachments"] += int(total)
 
     totals = {
         key: sum(entry[key] for entry in days.values())
