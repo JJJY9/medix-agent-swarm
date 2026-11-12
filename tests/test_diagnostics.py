@@ -1,5 +1,7 @@
 """环境自检模块的单元测试。"""
+import importlib.util
 import sys
+from pathlib import Path
 
 from core.diagnostics import (
     MIN_PYTHON,
@@ -8,6 +10,44 @@ from core.diagnostics import (
     collect_report,
 )
 from memory.session_store import SessionStore
+
+
+def _load_diagnose_script():
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "scripts" / "diagnose.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "medix_diagnose_script", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cli_report_includes_runtime_and_database_errors(capsys):
+    module = _load_diagnose_script()
+    report = module.collect_report()
+    report["runtime"] = {
+        **report.get("runtime", {}),
+        "session_db": "/tmp/sessions.db",
+        "db_exists": True,
+        "sessions": 2,
+        "messages": 4,
+        "attachment_count": 1,
+        "attachment_size": 1024,
+        "auth_enabled": False,
+        "rate_limit": 30,
+        "db_error": "database disk image is malformed",
+    }
+
+    module.print_report(report)
+    out = capsys.readouterr().out
+
+    assert "运行时：" in out
+    assert "/tmp/sessions.db" in out
+    assert "数据库读取失败" in out
+    assert "环境正常" not in out
 
 
 def test_report_shape():
