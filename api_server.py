@@ -5403,6 +5403,28 @@ async def latest_metrics(profile: Optional[str] = None, days: int = 0):
     return {"metrics": items}
 
 
+def _latest_vaccination_ids(vaccinations: List[Dict[str, Any]]) -> set:
+    """返回每个 (档案, 疫苗) 最新一剂的记录 id。
+
+    多剂次疫苗完成后，旧剂次的 next_due 不代表仍需补种；逾期与下一剂
+    只应看最新一剂。
+    """
+    latest: Dict[tuple, tuple] = {}
+    for item in vaccinations:
+        name = str(item.get("vaccine_name") or "")
+        if not name:
+            continue
+        key = (item.get("profile") or "", name)
+        try:
+            item_id = int(item.get("id") or 0)
+        except (TypeError, ValueError, OverflowError):
+            item_id = 0
+        rank = (str(item.get("vaccinated_at") or ""), item_id)
+        if key not in latest or rank > latest[key][0]:
+            latest[key] = (rank, item_id)
+    return {entry[1] for entry in latest.values()}
+
+
 async def _weekly_report_impl(
     profile: Optional[str] = None,
     days: int = 7,
@@ -5809,14 +5831,17 @@ async def _weekly_report_impl(
         item for item in vaccinations
         if start <= str(item.get("vaccinated_at") or "")[:10] <= end
     ]
+    latest_vaccination_ids = _latest_vaccination_ids(vaccinations)
     vaccine_overdue = [
         item for item in vaccinations
-        if str(item.get("next_due") or "")[:10]
+        if int(item.get("id") or 0) in latest_vaccination_ids
+        and str(item.get("next_due") or "")[:10]
         and str(item.get("next_due") or "")[:10] < today
     ]
     vaccine_upcoming = [
         item for item in vaccinations
-        if today <= str(item.get("next_due") or "")[:10] <= horizon
+        if int(item.get("id") or 0) in latest_vaccination_ids
+        and today <= str(item.get("next_due") or "")[:10] <= horizon
     ]
 
     appointments = await asyncio.to_thread(
@@ -7149,6 +7174,10 @@ async def health_timeline(
     raw_vaccinations = await asyncio.to_thread(
         store.list_vaccinations, profile, 100000, start, window_end
     )
+    all_vaccinations = await asyncio.to_thread(
+        store.list_vaccinations, profile, 100000
+    )
+    latest_vaccination_ids = _latest_vaccination_ids(all_vaccinations)
     raw_appointments = await asyncio.to_thread(
         store.list_appointments,
         profile, None, False, 100000, 0, start, window_end,
@@ -7310,7 +7339,11 @@ async def health_timeline(
             "value": f"第 {int(item.get('dose_number') or 1)} 剂"
             + (f" · 下一剂 {next_due}" if next_due else ""),
             "note": item.get("note", ""),
-            "alert": bool(next_due and next_due <= today),
+            "alert": bool(
+                int(item.get("id") or 0) in latest_vaccination_ids
+                and next_due
+                and next_due <= today
+            ),
         })
 
     for item in raw_appointments:
@@ -9327,6 +9360,7 @@ async def family_overview(days: int = 7):
             }
 
     vaccinations_by_profile: Dict[str, Dict[str, Any]] = {}
+    latest_vaccination_ids = _latest_vaccination_ids(vaccinations)
     for item in vaccinations:
         profile = item.get("profile") or ""
         if not profile:
@@ -9341,6 +9375,8 @@ async def family_overview(days: int = 7):
                 "dose_number": int(item.get("dose_number") or 0),
                 "vaccinated_at": item.get("vaccinated_at", ""),
             }
+        if int(item.get("id") or 0) not in latest_vaccination_ids:
+            continue
         due = str(item.get("next_due") or "")[:10]
         if due:
             if due < today:
