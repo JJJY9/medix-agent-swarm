@@ -8087,6 +8087,9 @@ function searchFilteredReminders() {
       return days !== null && days < 0;
     });
   }
+  if (!(els.remindersShowDone && els.remindersShowDone.checked)) {
+    items = items.filter((item) => !item.done);
+  }
   return items;
 }
 
@@ -9195,15 +9198,14 @@ function refreshOverview() {
 async function loadReminders() {
   const requestSeq = ++remindersRequestSeq;
   try {
-    const includeDone = Boolean(
-      els.remindersShowDone && els.remindersShowDone.checked
-    );
     const params = new URLSearchParams();
     const profile = els.remindersProfile
       ? els.remindersProfile.value
       : '';
     if (profile) params.set('profile', profile);
-    if (includeDone) params.set('include_done', 'true');
+    // 始终取回已完成提醒，让「清理已完成」在未勾选显示时也能显示数量；
+    // 是否渲染已完成由 searchFilteredReminders 统一过滤
+    params.set('include_done', 'true');
     const query = params.toString();
     const res = await fetch(`/api/reminders${query ? `?${query}` : ''}`);
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
@@ -20418,7 +20420,7 @@ els.reminderDueQuick.addEventListener('click', (event) => {
     ? addMonthsToDate(todayLocalDate(), 1)
     : localDateAfter(days);
 });
-els.remindersShowDone.addEventListener('change', loadReminders);
+els.remindersShowDone.addEventListener('change', refreshReminderViews);
 els.remindersProfile.addEventListener('change', loadReminders);
 if (els.reminderStatsRange) {
   els.reminderStatsRange.addEventListener('change', () => {
