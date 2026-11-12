@@ -1786,6 +1786,16 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
   font-weight: 600;
 }
 
+.drawer-profile-chip {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--rule-soft);
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .drawer-head-actions {
   display: inline-flex;
   align-items: center;

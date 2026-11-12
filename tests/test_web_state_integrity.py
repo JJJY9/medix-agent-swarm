@@ -5,6 +5,7 @@ from pathlib import Path
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 SCRIPT = (WEB_DIR / "app.js").read_text(encoding="utf-8")
 HTML = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+CSS = (WEB_DIR / "styles.css").read_text(encoding="utf-8")
 
 
 def test_html_ids_are_unique():
@@ -42,3 +43,11 @@ def test_metric_edit_is_cancelled_when_filter_changes():
     assert "已取消编辑：指标类型已切换。" in type_handler.group(1)
     assert profile_handler and "resetMetricForm();" in profile_handler.group(1)
     assert "已取消编辑：档案已切换。" in profile_handler.group(1)
+
+
+def test_drawer_shows_active_profile_chip():
+    assert 'id="metrics-profile-chip"' in HTML
+    assert ".drawer-profile-chip {" in CSS
+    assert "function syncMetricsProfileChip()" in SCRIPT
+    assert "档案：${profile}" in SCRIPT
+    assert "syncMetricsProfileChip();" in SCRIPT

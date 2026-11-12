@@ -296,6 +296,7 @@ const els = {
   metricsDrawer: document.getElementById('metrics-drawer'),
   metricsBackdrop: document.getElementById('metrics-backdrop'),
   metricsClose: document.getElementById('metrics-close'),
+  metricsProfileChip: document.getElementById('metrics-profile-chip'),
   healthSearchToggle: document.getElementById('health-search-toggle'),
   healthSearchInput: document.getElementById('health-search-input'),
   healthSearchClear: document.getElementById('health-search-clear'),
@@ -7388,6 +7389,7 @@ async function openMetrics() {
   if (activeProfile && profilesCache[activeProfile]) {
     setMetricProfileValue(activeProfile);
   }
+  syncMetricsProfileChip();
   if (healthSearchQuery) {
     runHealthSearch(healthSearchQuery);
   }
@@ -16042,14 +16044,24 @@ function resetVisitPrep() {
   setVisitPrepStatus('');
 }
 
+function syncMetricsProfileChip() {
+  if (!els.metricsProfileChip) return;
+  const profile = els.metricProfile ? els.metricProfile.value : '';
+  els.metricsProfileChip.textContent = profile
+    ? `档案：${profile}`
+    : '未指定档案';
+}
+
 function setMetricProfileValue(value) {
-  if (!els.metricProfile || els.metricProfile.value === value) {
-    return false;
+  let changed = false;
+  if (els.metricProfile && els.metricProfile.value !== value) {
+    els.metricProfile.value = value;
+    // 程序化切换档案不会触发 change，必须在这里清空准备单
+    resetVisitPrep();
+    changed = true;
   }
-  els.metricProfile.value = value;
-  // 程序化切换档案不会触发 change，必须在这里清空准备单
-  resetVisitPrep();
-  return true;
+  syncMetricsProfileChip();
+  return changed;
 }
 
 function renderVisitPrep(data) {
@@ -20658,6 +20670,7 @@ els.metricProfile.addEventListener('change', () => {
     resetMetricForm();
     setMetricsStatus('已取消编辑：档案已切换。');
   }
+  syncMetricsProfileChip();
   setAttachmentRefFilter(null);
   syncDossierExportButton();
   refreshMetrics();
