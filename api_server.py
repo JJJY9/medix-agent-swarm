@@ -90,6 +90,8 @@ def _compute_web_build_id() -> str:
     for name in (
         "index.html", "app.js", "lab-prefill-core.js", "styles.css",
         "theme-init.js", "sw.js", "manifest.webmanifest",
+        # 图标也在 Service Worker 的 SHELL 中，替换图标必须更换缓存名
+        "icons/icon-192.png", "icons/icon-512.png",
     ):
         path = WEB_DIR / name
         try:
@@ -267,7 +269,9 @@ class AttachmentLinkRequest(StrictRequestModel):
 
 
 class AttachmentNoteRequest(StrictRequestModel):
-    note: str = Field("", max_length=300, description="附件备注")
+    note: Optional[str] = Field(
+        None, max_length=300, description="附件备注；空字符串表示清空"
+    )
 
 
 class BulkSessionsRequest(StrictRequestModel):
@@ -966,13 +970,16 @@ async def auto_backup_loop() -> None:
                 # 按份数挤出保留窗口，只剩同一天的重复文件
                 await asyncio.sleep(wait)
                 continue
+            failed = False
             try:
                 path = await auto_backup_once()
                 if path:
                     logger.info(f"本地自动备份完成: {path}")
             except Exception as e:
+                failed = True
                 logger.warning(f"本地自动备份失败: {e}")
-            await asyncio.sleep(interval)
+            # 失败后不要睡满整个间隔（最长 30 天），先按小时重试
+            await asyncio.sleep(min(interval, 3600) if failed else interval)
         except Exception as e:
             # 备份目录不可访问/配置异常不应让任务永久退出
             logger.warning(f"自动备份循环异常，稍后重试: {e}")
@@ -1345,6 +1352,22 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_UPLOAD_BATCH_BYTES = MAX_UPLOAD_BYTES * 10
 #: 就医资料附件：本机目录与允许的扩展名
 ATTACHMENT_DIR = project_root / "data" / "attachments"
+
+
+def _attachment_dir() -> Path:
+    """附件目录跟随当前会话库：默认库仍使用 data/attachments。
+
+    使用 MEDIX_SESSION_DB 切换数据库时，附件也必须跟随，否则孤儿清理
+    会把另一数据库仍在引用的文件当成无主文件删除。
+    """
+    from memory import get_session_store
+
+    try:
+        db_path = get_session_store().db_path
+    except Exception:
+        return ATTACHMENT_DIR
+    return Path(db_path).parent / "attachments"
+
 MAX_ATTACHMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 # 图片在浏览器中解码后才占内存；限制像素规模，避免小文件解压炸弹
 MAX_ATTACHMENT_PIXELS = 40_000_000
@@ -2537,8 +2560,9 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
 @app.get("/api/backups")
 async def list_local_backups():
     """列出本地自动备份，供恢复入口选择。"""
-    from core.backup import list_backups
+    from core.backup import get_backup_keep, list_backups
 
+    keep = max(1, get_backup_keep())
     items = []
     for path in await asyncio.to_thread(list_backups):
         try:
@@ -2552,7 +2576,7 @@ async def list_local_backups():
                 stat.st_mtime
             ).isoformat(timespec="seconds"),
         })
-        if len(items) >= 50:
+        if len(items) >= keep:
             break
     return {"backups": items}
 
@@ -2738,14 +2762,25 @@ async def inspect_local_backup(name: str):
         and total_records > 0
     )
 
+    raw_version = payload.get("version")
+    version = (
+        strip_lone_surrogates(raw_version)
+        if isinstance(raw_version, str) else raw_version
+    )
+    if isinstance(version, float) and not math.isfinite(version):
+        version = None
+    exported_at = payload.get("exported_at")
+    if exported_at is not None:
+        exported_at = strip_lone_surrogates(str(exported_at))[:40]
+
     return {
         "name": path.name,
         "size": stat.st_size,
         "modified_at": datetime.fromtimestamp(
             stat.st_mtime
         ).isoformat(timespec="seconds"),
-        "version": payload.get("version"),
-        "exported_at": payload.get("exported_at"),
+        "version": version,
+        "exported_at": exported_at,
         "checksum_present": checksum_present,
         "checksum_ok": checksum_ok,
         "counts": counts,
@@ -10553,7 +10588,7 @@ async def export_family_compare_csv(metric: str = "weight", days: int = 30):
 
 def _attachment_dir_files() -> Dict[str, Dict[str, Any]]:
     """扫描附件目录中的文件，返回文件名到大小/修改时间的映射。"""
-    base = ATTACHMENT_DIR.resolve()
+    base = _attachment_dir().resolve()
     files: Dict[str, Dict[str, Any]] = {}
     if not base.is_dir():
         return files
@@ -10794,7 +10829,7 @@ async def upload_attachment(
                 status_code=400, detail="关联记录不属于该患者档案"
             )
 
-    attachment_dir = ATTACHMENT_DIR.resolve()
+    attachment_dir = _attachment_dir().resolve()
     attachment_dir.mkdir(parents=True, exist_ok=True)
     restrict_permissions(attachment_dir, 0o700)
     stored_name = f"{uuid.uuid4().hex}{suffix}"
@@ -10952,7 +10987,7 @@ async def list_attachments(
                 lab.get("panel") or "",
             ) if part)
         item["ref_label"] = label[:100]
-    attachment_dir = ATTACHMENT_DIR.resolve()
+    attachment_dir = _attachment_dir().resolve()
     for item in items:
         stored_name = str(item.get("stored_name") or "")
         target = None
@@ -11166,8 +11201,12 @@ async def update_attachment_note(
     )
     if item is None:
         raise HTTPException(status_code=404, detail="附件不存在")
+    fields = _patch_payload(payload)
+    if "note" not in fields:
+        # 与其它 PATCH 端点一致：未给出字段保持原值
+        return {"ok": True, "attachment": item}
     updated = await asyncio.to_thread(
-        store.update_attachment_note, attachment_id, payload.note
+        store.update_attachment_note, attachment_id, fields["note"]
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="附件不存在")
@@ -11185,7 +11224,7 @@ async def download_attachment(attachment_id: SafeIntPath):
     )
     if item is None:
         raise HTTPException(status_code=404, detail="附件不存在")
-    attachment_dir = ATTACHMENT_DIR.resolve()
+    attachment_dir = _attachment_dir().resolve()
     target = (attachment_dir / str(item.get("stored_name") or "")).resolve()
     if target.parent != attachment_dir or not target.is_file():
         raise HTTPException(status_code=404, detail="附件文件不存在")
@@ -11209,7 +11248,7 @@ async def delete_attachment(attachment_id: SafeIntPath):
     )
     if item is None:
         raise HTTPException(status_code=404, detail="附件不存在")
-    attachment_dir = ATTACHMENT_DIR.resolve()
+    attachment_dir = _attachment_dir().resolve()
     target = (
         attachment_dir / str(item.get("stored_name") or "")
     ).resolve()
@@ -11345,7 +11384,7 @@ async def export_attachments_zip(
         items = [by_id[value] for value in selected_ids]
 
     def _build() -> Tuple[Any, int, int]:
-        base = ATTACHMENT_DIR.resolve()
+        base = _attachment_dir().resolve()
         manifest = {
             "version": 1,
             "exported_at": datetime.now().isoformat(timespec="seconds"),
@@ -11516,7 +11555,7 @@ async def cleanup_attachment_orphans(request: AttachmentCleanupRequest):
         )
 
     def _remove(names: List[str]) -> tuple:
-        base = ATTACHMENT_DIR.resolve()
+        base = _attachment_dir().resolve()
         removed = 0
         failed = 0
         skipped = 0

@@ -368,7 +368,7 @@
     autocomplete="off"
   />
   <div class="history-toolbar">
-    <p class="history-summary" id="history-summary" hidden></p>
+    <p class="history-summary" id="history-summary" role="status" aria-live="polite" hidden></p>
     <button type="button" class="history-favorite-filter" id="history-favorite-filter" aria-pressed="false" title="只看收藏" aria-label="只看收藏">☆</button>
     <button type="button" class="history-favorite-filter history-archive-filter" id="history-archive-filter" aria-pressed="false" title="查看已归档" aria-label="查看已归档">归档</button>
     <label class="sr-only" for="history-risk-filter">按风险筛选</label>
@@ -463,7 +463,7 @@
 
   <ul class="history-list" id="history-list"></ul>
   <button type="button" class="btn-quiet history-more" id="history-more" hidden>加载更多</button>
-  <p class="drawer-empty" id="history-empty" hidden>还没有历史会诊，提交一次主诉后会自动保存。</p>
+  <p class="drawer-empty" id="history-empty" role="status" hidden>还没有历史会诊，提交一次主诉后会自动保存。</p>
 </aside>
 
 <!-- 知识库管理抽屉 -->
@@ -1458,7 +1458,7 @@
         <button type="button" class="btn-quiet" id="timeline-more" hidden>加载更多</button>
         <button type="button" class="btn-quiet timeline-date-chip" id="timeline-date-chip" hidden></button>
       </div>
-      <p class="metric-reference" id="timeline-summary" hidden></p>
+      <p class="metric-reference" id="timeline-summary" role="status" aria-live="polite" hidden></p>
       <ul class="timeline-list" id="timeline-list"></ul>
       <p class="metrics-empty" id="timeline-empty" hidden>所选范围内还没有健康记录。</p>
     </details>
