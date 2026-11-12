@@ -1357,8 +1357,8 @@ async def test_memory_no_duplication():
 # 主测试流程
 # ============================================================================
 
-async def main():
-    """运行所有测试"""
+async def main() -> int:
+    """运行所有测试；返回失败数，供命令行设置退出码。"""
     print("\n" + "🧪 "*35)
     print(" "*15 + "MediX Agent Swarm 完整测试套件")
     print(" "*10 + "Phase 1-6: Agent Loop + Swarm + Memory + Tools + DeepResearch + Milvus")
@@ -1458,7 +1458,8 @@ async def main():
         print(f"\n⚠️  有 {failed} 个测试失败，请检查")
 
     print("="*70 + "\n")
+    return failed
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(1 if asyncio.run(main()) else 0)
