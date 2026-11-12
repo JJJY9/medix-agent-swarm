@@ -49,7 +49,10 @@ def read_text_file(path: Path) -> str:
     text = data.decode("utf-8", errors="replace")
     if "\x00" in text or text.count("�") > max(1, len(text) // 20):
         raise ValueError("文件编码无法识别，请另存为 UTF-8 后重试。")
-    logger.warning(f"Unknown encoding, decoded with replacement: {path.name}")
+    logger.warning(
+        "Unknown encoding, decoded with replacement: "
+        f"name_length={len(path.name)}"
+    )
     return text.lstrip("﻿")
 
 
@@ -177,7 +180,11 @@ def load_documents_from_directory(
                 path, id_prefix=id_prefix, is_upload=is_upload
             )
         except Exception as e:
-            logger.error(f"Failed to load {path.name}: {e}")
+            # 文件名可能含患者信息，日志只保留长度与异常类型
+            logger.error(
+                "Failed to load document: "
+                f"name_length={len(path.name)}, error={type(e).__name__}"
+            )
             continue
         if document:
             documents.append(document)

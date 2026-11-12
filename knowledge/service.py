@@ -111,11 +111,40 @@ class KnowledgeService:
         with self._lock:
             return self._read_manifest() != self._document_fingerprint()
 
+    def _document_count(self) -> int:
+        """文档目录中可索引文件的数量（用于判断空库是否需要重建）。"""
+        count = 0
+        for directory in (self.docs_dir, self.upload_dir):
+            try:
+                entries = directory.iterdir()
+            except OSError:
+                continue
+            for path in entries:
+                try:
+                    if (
+                        path.is_file()
+                        and path.suffix.lower() in SUPPORTED_SUFFIXES
+                    ):
+                        count += 1
+                except OSError:
+                    continue
+        return count
+
     def _ensure_index_fresh_locked(self) -> None:
         fingerprint = self._document_fingerprint()
         if self._read_manifest() == fingerprint:
-            return
-        logger.info("Knowledge index is stale, rebuilding before search")
+            # 清单匹配但向量库可能被删除或换了工作目录：
+            # 有文档却没有索引时必须重建，不能静默返回空检索
+            try:
+                indexed = int(self.kb.count_documents() or 0)
+            except Exception as e:
+                logger.warning(f"读取知识库索引数量失败: {e}")
+                indexed = 0
+            if indexed > 0 or self._document_count() == 0:
+                return
+            logger.warning("索引清单匹配但向量库为空，触发重建")
+        else:
+            logger.info("Knowledge index is stale, rebuilding before search")
         try:
             self._rebuild_locked(True)
         except Exception as e:
@@ -136,7 +165,8 @@ class KnowledgeService:
                 if path.name in builtin_names:
                     # 历史遗留的同名上传会遮蔽内置文档，列表与预览只保留内置版本
                     logger.warning(
-                        f"Ignoring upload shadowed by builtin document: {path.name}"
+                        "Ignoring upload shadowed by builtin document: "
+                        f"name_length={len(path.name)}"
                     )
                     continue
                 documents.append(self._describe(path, builtin=False))
@@ -182,8 +212,13 @@ class KnowledgeService:
 
         with self._lock:
             target = self._unique_path(safe_name)
-            target.write_bytes(content)
-            restrict_permissions(target, 0o600)
+            try:
+                target.write_bytes(content)
+                restrict_permissions(target, 0o600)
+            except Exception:
+                # 磁盘满/占用导致半写时清理残留，避免下次重建索引残缺文件
+                target.unlink(missing_ok=True)
+                raise
             try:
                 document = load_document(target, id_prefix="upload_")
                 if not document:
@@ -341,7 +376,8 @@ class KnowledgeService:
             if filename in builtin_names:
                 shadowed_count += 1
                 logger.warning(
-                    f"Skipping upload shadowed by builtin document: {filename}"
+                    "Skipping upload shadowed by builtin document: "
+                    f"name_length={len(filename)}"
                 )
                 continue
             filtered_uploads.append(document)
@@ -363,7 +399,7 @@ class KnowledgeService:
                 duplicate_count += 1
                 logger.info(
                     "Skipping duplicate document content: "
-                    f"{document.get('id')}"
+                    f"hash_prefix={content_key[:8]}"
                 )
                 continue
             seen_contents.add(content_key)

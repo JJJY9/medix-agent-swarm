@@ -3575,6 +3575,7 @@ class SessionStore:
         skipped = 0
         invalid = 0
         messages_imported = 0
+        revived_sessions: List[str] = []
         now = self._now()
 
         with self._lock, self._conn:
@@ -3661,8 +3662,9 @@ class SessionStore:
                         profile,
                     ),
                 )
-                # 显式恢复备份即重新启用该会话，解除删除墓碑
-                self._deleted_sessions.pop(session_id, None)
+                # 显式恢复备份即重新启用该会话；等事务提交后再解除墓碑，
+                # 避免中途校验失败回滚时把删除状态也一起丢掉
+                revived_sessions.append(session_id)
                 self._conn.executemany(
                     """
                     INSERT INTO messages(session_id, role, content, metadata, created_at)
@@ -5106,6 +5108,11 @@ class SessionStore:
                         (action, target, detail, created_at),
                     )
                     audit_imported += 1
+
+        if revived_sessions:
+            with self._lock:
+                for session_id in revived_sessions:
+                    self._deleted_sessions.pop(session_id, None)
 
         return {
             "imported": imported,
