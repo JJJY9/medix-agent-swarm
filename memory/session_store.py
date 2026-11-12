@@ -679,6 +679,23 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
             return float(value)
     if re.search(r"每(?:两|2)\s*(?:周|星期|礼拜)", text):
         return 1 / 14
+    every_hours = re.search(
+        r"每\s*(?:隔)?\s*([一二两三四五六七八九十\d]+)\s*(?:个)?\s*小时",
+        text,
+    )
+    if every_hours:
+        count = _frequency_count(every_hours.group(1))
+        if count and 1 <= count <= 24:
+            return 24 / count
+    weekday_list = re.search(
+        r"每(?:周|星期|礼拜)\s*"
+        r"([一二三四五六日天](?:[\s、，,和及]+[一二三四五六日天])*)",
+        text,
+    )
+    if weekday_list:
+        weekdays = re.findall(r"[一二三四五六日天]", weekday_list.group(1))
+        if weekdays:
+            return len(weekdays) / 7
     weekly = re.search(
         r"每(?:周|星期|礼拜)\s*([一二两三四五六七八九十\d]+)?\s*次?", text
     )
@@ -695,8 +712,15 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
         return 1 / count if count else None
     if re.search(r"每(?:个)?月", text):
         return 1 / 30
+    per_day = re.search(
+        r"([一二两三四五六七八九十\d]+)\s*次\s*/\s*(?:日|天)", text
+    )
+    if per_day:
+        count = _frequency_count(per_day.group(1))
+        return float(count) if count else None
     daily = re.search(
-        r"(?:每(?:日|天|晚|早)|一日|一天)\s*([一二两三四五六七八九十\d]+)?\s*次",
+        r"(?:每(?:日|天|晚|早)|一日|一天|1日|1天)"
+        r"\s*([一二两三四五六七八九十\d]+)?\s*次",
         text,
     )
     if daily:
