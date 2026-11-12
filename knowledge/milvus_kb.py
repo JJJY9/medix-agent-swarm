@@ -7,6 +7,7 @@
 3. 知识库管理
 """
 import json
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from loguru import logger
@@ -42,14 +43,23 @@ class MedicalKnowledgeBase:
     """医学知识库"""
 
     _instance = None
+    _instance_lock = threading.Lock()
+    _init_lock = threading.Lock()
 
     def __new__(cls, *args, **kwargs):
-        """实现单例模式"""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+        """实现线程安全的单例模式"""
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
 
-    def __init__(
+    def __init__(self, *args, **kwargs):
+        with type(self)._init_lock:
+            if hasattr(self, '_initialized'):
+                return
+            self._initialize(*args, **kwargs)
+
+    def _initialize(
         self,
         db_path: str = "./knowledge/data/milvus_lite.db",
         collection_name: str = "medical_knowledge",
