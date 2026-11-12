@@ -134,6 +134,74 @@ def test_health_search_matches_across_categories(client_and_store):
     }
 
 
+def test_health_search_multiword_matches_across_fields(client_and_store):
+    """多词查询应能在不同字段之间命中，不能被单列 SQL 预过滤丢弃。"""
+    client, _store = client_and_store
+    client.post("/api/symptoms", json={
+        "profile": "妈妈", "symptom": "头痛", "note": "失眠",
+        "severity": 3, "recorded_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/lab-results", json={
+        "profile": "妈妈", "item": "血红蛋白", "panel": "血常规",
+        "value": 120, "unit": "g/L", "tested_at": f"{_date(0)}T09:00",
+    })
+    client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平", "dose": "5 mg",
+    })
+
+    symptom = client.get(
+        "/api/health/search", params={"q": "头痛 失眠"}
+    ).json()
+    assert [item["type"] for item in symptom["results"]] == ["symptom"]
+
+    lab = client.get(
+        "/api/health/search", params={"q": "血红蛋白 血常规"}
+    ).json()
+    assert [item["type"] for item in lab["results"]] == ["lab"]
+
+    medication = client.get(
+        "/api/health/search", params={"q": "氨氯地平 5 mg"}
+    ).json()
+    assert [item["type"] for item in medication["results"]] == [
+        "medication"
+    ]
+
+    export = client.get(
+        "/api/health/search/export.csv", params={"q": "头痛 失眠"}
+    )
+    assert export.status_code == 200
+    rows = list(
+        csv.reader(io.StringIO(export.content.decode("utf-8-sig")))
+    )
+    assert len(rows) == 2
+    assert rows[1][0] == "症状"
+
+
+def test_health_search_multiword_metric_label_keeps_note_matches(
+    client_and_store,
+):
+    """多词命中指标标签时，不能只返回该指标而丢掉其它指标的备注命中。"""
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "phq9", "value1": 12,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 6,
+        "note": "PHQ-9 评分 15 分，睡眠差",
+        "measured_at": f"{_date(0)}T09:00",
+    })
+
+    data = client.get(
+        "/api/health/search", params={"q": "PHQ-9 评分"}
+    ).json()
+    metrics = [
+        item for item in data["results"] if item["type"] == "metric"
+    ]
+
+    assert {item["metric"] for item in metrics} == {"phq9", "sleep"}
+
+
 def test_health_search_profile_scoping(client_and_store):
     client, _store = client_and_store
     client.post("/api/symptoms", json={

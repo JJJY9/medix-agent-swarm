@@ -395,3 +395,66 @@ def test_family_overview_completed_vaccine_series_not_overdue(
 
     assert mom["vaccinations"]["count"] == 2
     assert mom["vaccinations"]["overdue"] == 0
+
+
+def test_family_overview_recorded_today_counts_stopped_medication_logs(
+    client_and_store,
+):
+    """停药当天的打卡日志仍算今天的健康记录，与 streak 口径一致。"""
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={"name": "奶奶", "context": {}})
+    medication = client.post("/api/medications", json={
+        "profile": "奶奶", "name": "阿司匹林",
+    }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": f"{today}T08:00"},
+    )
+    client.patch(
+        f"/api/medications/{medication['id']}",
+        json={"active": False},
+    )
+
+    data = client.get("/api/family/overview").json()
+    grandma = next(
+        row for row in data["profiles"] if row["name"] == "奶奶"
+    )
+
+    assert grandma["medications"]["active"] == 0
+    assert grandma["recorded_today"] is True
+    assert grandma["streak"] >= 1
+
+
+def test_family_overview_vaccine_overdue_detail_uses_overdue_dose(
+    client_and_store,
+):
+    """疫苗逾期提示应指向已逾期的那一剂，而不是另一支疫苗的未来日期。"""
+    client, _store = client_and_store
+    now = datetime.now()
+    overdue_date = (now - timedelta(days=30)).strftime("%Y-%m-%d")
+    future_date = (now + timedelta(days=20)).strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={"name": "孩子", "context": {}})
+    client.post("/api/vaccinations", json={
+        "profile": "孩子", "vaccine_name": "流感疫苗", "dose_number": 1,
+        "vaccinated_at": (now - timedelta(days=400)).strftime("%Y-%m-%d"),
+        "next_due": overdue_date,
+    })
+    client.post("/api/vaccinations", json={
+        "profile": "孩子", "vaccine_name": "乙肝疫苗", "dose_number": 2,
+        "vaccinated_at": (now - timedelta(days=10)).strftime("%Y-%m-%d"),
+        "next_due": future_date,
+    })
+
+    data = client.get("/api/family/overview").json()
+    child = next(
+        row for row in data["profiles"] if row["name"] == "孩子"
+    )
+
+    assert child["vaccinations"]["overdue"] == 1
+    assert child["vaccinations"]["next_due"] == future_date
+    attention = child["attention"]
+    assert attention["label"] == "疫苗逾期 1 剂"
+    assert "流感疫苗" in attention["detail"]
+    assert overdue_date in attention["detail"]
+    assert future_date not in attention["detail"]

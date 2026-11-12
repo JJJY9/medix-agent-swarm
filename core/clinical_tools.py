@@ -773,13 +773,14 @@ def calculate_apri(
     uln_value = float(ast_uln)
     if ast_value <= 0 or platelet_value <= 0 or uln_value <= 0:
         raise ValueError("AST、血小板与正常上限必须大于 0。")
-    score = round(
-        (ast_value / uln_value) / platelet_value * 100, 2
-    )
-    if score < 0.5:
+    raw_score = (ast_value / uln_value) / platelet_value * 100
+    # 风险分层必须使用未取整的值：1.503 舍入成 1.5 会被误判为灰区。
+    # 展示保留三位小数，避免四舍五入后的数值与分层结论互相矛盾。
+    score = round(raw_score, 3)
+    if raw_score < 0.5:
         risk = "低风险"
         detail = "显著肝纤维化可能性较低"
-    elif score <= 1.5:
+    elif raw_score <= 1.5:
         risk = "不确定"
         detail = "结果处于灰区，需结合 FIB-4、弹性成像等评估"
     else:

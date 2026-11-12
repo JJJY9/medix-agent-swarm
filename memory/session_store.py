@@ -33,6 +33,10 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sessions.db
 #: SQLite 参数绑定只接受有符号 64 位整数，超出会抛 OverflowError
 MAX_SQLITE_INT = 2**63 - 1
 
+#: 搜索词上限：SQLite LIKE 模式默认上限约 5 万字符，取 2000 留足余量；
+#: 正常查询不会被截断，避免 SQL 过滤与 Python 侧摘要匹配语义不一致
+MAX_SEARCH_QUERY_LENGTH = 2000
+
 
 #: 用于区分「未提供字段」与显式空值
 _UNSET = object()
@@ -64,7 +68,8 @@ def _date_range_conditions(
                 datetime.strptime(end_day, "%Y-%m-%d")
                 + timedelta(days=1)
             ).strftime("%Y-%m-%d")
-        except ValueError:
+        except (ValueError, OverflowError):
+            # 非法日期，或 9999-12-31 加一天越过 datetime.max
             conditions.append(f"substr({column}, 1, 10) <= ?")
             params.append(end_day)
         else:
@@ -1585,7 +1590,7 @@ def _match_snippet(content: str, query: str, radius: int = 60) -> str:
 def _like_pattern(query: str) -> str:
     """生成转义过 % / _ 的 LIKE 模式，避免搜索词被当作通配符。"""
     escaped = (
-        (query or "").strip()
+        (query or "").strip()[:MAX_SEARCH_QUERY_LENGTH]
         .replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
@@ -2151,28 +2156,29 @@ class SessionStore:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN medication_id INTEGER NOT NULL DEFAULT 0"
                 )
-                # 旧提醒按「用药：药名 + 档案」回填关联，尽量恢复联动
-                self._conn.execute(
-                    """
-                    UPDATE reminders
-                       SET medication_id = (
-                           SELECT m.id FROM medications m
-                            WHERE reminders.title = substr(
-                                      '用药：' || m.name, 1, 120
-                                  )
-                              AND m.profile = reminders.profile
-                            ORDER BY m.id LIMIT 1
-                       )
-                     WHERE medication_id = 0
-                       AND EXISTS (
-                           SELECT 1 FROM medications m
-                            WHERE reminders.title = substr(
-                                      '用药：' || m.name, 1, 120
-                                  )
-                              AND m.profile = reminders.profile
-                       )
-                    """
-                )
+            # 旧提醒、以及升级中断或旧备份恢复后的提醒，都按
+            # 「用药：药名 + 档案」补关联；语句幂等，每次启动可安全重跑
+            self._conn.execute(
+                """
+                UPDATE reminders
+                   SET medication_id = (
+                       SELECT m.id FROM medications m
+                        WHERE reminders.title = substr(
+                                  '用药：' || m.name, 1, 120
+                              )
+                          AND m.profile = reminders.profile
+                        ORDER BY m.id LIMIT 1
+                   )
+                 WHERE medication_id = 0
+                   AND EXISTS (
+                       SELECT 1 FROM medications m
+                        WHERE reminders.title = substr(
+                                  '用药：' || m.name, 1, 120
+                              )
+                          AND m.profile = reminders.profile
+                   )
+                """
+            )
             if "vaccination_id" not in reminder_columns:
                 self._conn.execute(
                     "ALTER TABLE reminders ADD COLUMN vaccination_id INTEGER NOT NULL DEFAULT 0"
@@ -2422,6 +2428,58 @@ class SessionStore:
                 names.update(row["name"] for row in rows)
         return sorted(names)
 
+    def has_unassigned_records(self, days: int = 30) -> bool:
+        """是否存在未指定档案（profile 为空）且会在健康档案中展示的记录。
+
+        判定口径与 export_health_dossier 保持一致：已完成提醒不展示，
+        症状/化验/会诊受 days 窗口限制。
+        """
+        try:
+            days = max(1, min(int(days or 30), 365))
+        except (TypeError, ValueError, OverflowError):
+            days = 30
+        cutoff = (
+            datetime.now() - timedelta(days=days - 1)
+        ).strftime("%Y-%m-%d")
+        checks = (
+            ("reminders", "profile = '' AND done = 0", ()),
+            ("health_metrics", "profile = ''", ()),
+            ("medications", "profile = ''", ()),
+            ("vaccinations", "profile = ''", ()),
+            ("appointments", "profile = ''", ()),
+            ("allergies", "profile = ''", ()),
+            ("care_items", "profile = ''", ()),
+            ("visit_records", "profile = ''", ()),
+            ("conditions", "profile = ''", ()),
+            ("attachments", "profile = ''", ()),
+            (
+                "symptoms",
+                "profile = '' AND substr(recorded_at, 1, 10) >= ?",
+                (cutoff,),
+            ),
+            (
+                "lab_results",
+                "profile = '' AND substr(tested_at, 1, 10) >= ?",
+                (cutoff,),
+            ),
+        )
+        with self._lock:
+            for table, where, params in checks:
+                row = self._conn.execute(
+                    f"SELECT 1 FROM {table} WHERE {where} LIMIT 1",
+                    params,
+                ).fetchone()
+                if row is not None:
+                    return True
+            row = self._conn.execute(
+                "SELECT 1 FROM sessions s WHERE s.profile = ''"
+                " AND substr(s.created_at, 1, 10) >= ?"
+                " AND EXISTS (SELECT 1 FROM messages m"
+                " WHERE m.session_id = s.id) LIMIT 1",
+                (cutoff,),
+            ).fetchone()
+        return row is not None
+
     def save_exchange(
         self,
         session_id: str,
@@ -2510,6 +2568,8 @@ class SessionStore:
         """
         limit = max(1, min(int(limit or 50), 100000))
         offset = _bounded_offset(offset)
+        # 与 SQL LIKE 使用同一个搜索词，避免摘要匹配仍用超长原文
+        query = str(query or "").strip()[:MAX_SEARCH_QUERY_LENGTH]
         sql = """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
                    s.archived, s.tags, s.profile,
@@ -4987,6 +5047,20 @@ class SessionStore:
                             ).fetchone()
                             if med_row is not None:
                                 medication_id = int(med_row["id"])
+                    if not medication_id and title.startswith("用药："):
+                        # 旧备份没有 medication_id 字段，按「用药：药名」
+                        # 标题恢复与本次导入药物的联动
+                        med_row = self._conn.execute(
+                            """
+                            SELECT id FROM medications
+                             WHERE profile = ?
+                               AND substr('用药：' || name, 1, 120) = ?
+                             ORDER BY id LIMIT 1
+                            """,
+                            (profile, title),
+                        ).fetchone()
+                        if med_row is not None:
+                            medication_id = int(med_row["id"])
                     raw_vaccination_id = _safe_db_id(
                         raw.get("vaccination_id")
                     )
@@ -5197,6 +5271,10 @@ class SessionStore:
                 )
 
             audit_imported = 0
+            # 同一分钟内的相同审计事件是正常数据，按数量判重：
+            # 重复导入同一备份保持幂等，备份内的多重事件不会被丢弃
+            existing_audit_counts: Dict[tuple, int] = {}
+            imported_audit_counts: Dict[tuple, int] = {}
             if isinstance(raw_audit, list):
                 for raw in raw_audit[:IMPORT_LIST_LIMITS["audit_log"]]:
                     if not isinstance(raw, dict):
@@ -5213,22 +5291,29 @@ class SessionStore:
                         str(raw.get("detail") or "").split()
                     )[:500]
                     created_at = str(raw.get("created_at") or now)[:40]
-                    exists = self._conn.execute(
-                        """
-                        SELECT 1 FROM audit_log
-                         WHERE action = ? AND target = ?
-                           AND detail = ? AND created_at = ?
-                        """,
-                        (action, target, detail, created_at),
-                    ).fetchone()
-                    if exists:
+                    audit_key = (action, target, detail, created_at)
+                    if audit_key not in existing_audit_counts:
+                        count_row = self._conn.execute(
+                            """
+                            SELECT COUNT(*) AS total FROM audit_log
+                             WHERE action = ? AND target = ?
+                               AND detail = ? AND created_at = ?
+                            """,
+                            audit_key,
+                        ).fetchone()
+                        existing_audit_counts[audit_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_audit_counts.get(audit_key, 0)
+                    imported_audit_counts[audit_key] = seen + 1
+                    if seen < existing_audit_counts[audit_key]:
                         continue
                     self._conn.execute(
                         """
                         INSERT INTO audit_log(action, target, detail, created_at)
                         VALUES (?, ?, ?, ?)
                         """,
-                        (action, target, detail, created_at),
+                        audit_key,
                     )
                     audit_imported += 1
 
@@ -6913,9 +6998,10 @@ class SessionStore:
             params.append(kind_key)
         query = str(q or "").strip()
         if query:
-            like = f"%{query}%"
+            like = _like_pattern(query)
             conditions.append(
-                "(substance LIKE ? OR reaction LIKE ? OR note LIKE ?)"
+                "(substance LIKE ? ESCAPE '\\' OR reaction LIKE ? ESCAPE '\\'"
+                " OR note LIKE ? ESCAPE '\\')"
             )
             params.extend([like, like, like])
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -7531,10 +7617,13 @@ class SessionStore:
         params.extend(range_params)
         query = str(q or "").strip()
         if query:
-            like = f"%{query}%"
+            like = _like_pattern(query)
             conditions.append(
-                "(diagnosis LIKE ? OR advice LIKE ? OR doctor LIKE ?"
-                " OR department LIKE ? OR facility LIKE ? OR note LIKE ?)"
+                "(diagnosis LIKE ? ESCAPE '\\' OR advice LIKE ? ESCAPE '\\'"
+                " OR doctor LIKE ? ESCAPE '\\'"
+                " OR department LIKE ? ESCAPE '\\'"
+                " OR facility LIKE ? ESCAPE '\\'"
+                " OR note LIKE ? ESCAPE '\\')"
             )
             params.extend([like] * 6)
         search_clause, search_params = _like_any_condition(
@@ -8180,10 +8269,15 @@ class SessionStore:
                 ),
                 "last_taken_at": row["last_taken_at"] or "",
                 "expected_week_doses": _expected_week_doses(
-                    row["frequency"], row["created_at"], now
+                    row["frequency"],
+                    row["started_at"] or row["created_at"],
+                    now,
                 ),
                 "expected_range_doses": expected_doses_for_period(
-                    row["frequency"], row["created_at"], now, days
+                    row["frequency"],
+                    row["started_at"] or row["created_at"],
+                    now,
+                    days,
                 ),
             }
             for row in rows

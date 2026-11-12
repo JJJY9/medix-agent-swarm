@@ -23,6 +23,80 @@ def test_export_and_import_include_audit_log(tmp_path):
         target.close()
 
 
+def test_import_preserves_duplicate_audit_events(tmp_path):
+    """同一分钟的相同审计事件应全部恢复，重复导入仍保持幂等。"""
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        row = {
+            "action": "medication.log",
+            "target": "1·2026-11-05T04:49",
+            "detail": "",
+            "created_at": "2026-11-05T04:49:10",
+        }
+        data = {"sessions": [], "audit_log": [row, row, row]}
+
+        first = target.import_data(data)
+        assert first["audit_log"] == 3
+        assert len(target.list_audit_log(limit=10)) == 3
+
+        again = target.import_data(data)
+        assert again["audit_log"] == 0
+        assert len(target.list_audit_log(limit=10)) == 3
+    finally:
+        target.close()
+
+
+def test_import_links_legacy_medication_reminder(tmp_path):
+    """旧备份没有 medication_id，导入后应按「用药：药名」恢复联动。"""
+    store = SessionStore(str(tmp_path / "legacy.db"))
+    try:
+        result = store.import_data({
+            "sessions": [],
+            "medications": [{
+                "name": "氨氯地平", "profile": "妈妈", "dose": "5 mg",
+            }],
+            "reminders": [{
+                "title": "用药：氨氯地平", "profile": "妈妈",
+                "due_at": "2026-11-20",
+            }],
+        })
+
+        assert result["medications"] == 1
+        assert result["reminders"] == 1
+        reminders = store.list_reminders(True, "妈妈")
+        assert reminders[0]["medication_id"] > 0
+        medications = store.list_medications("妈妈", False, 10)
+        assert reminders[0]["medication_id"] == medications[0]["id"]
+    finally:
+        store.close()
+
+
+def test_startup_backfills_reminder_medication_link(tmp_path):
+    """升级中断或旧库恢复留下的 medication_id=0 提醒，重启时应补关联。"""
+    db_path = str(tmp_path / "upgrade.db")
+    store = SessionStore(db_path)
+    try:
+        medication = store.add_medication("妈妈", "氨氯地平")
+        reminder = store.add_reminder(
+            "用药：氨氯地平", "2026-11-20", profile="妈妈"
+        )
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE reminders SET medication_id = 0 WHERE id = ?",
+                (reminder["id"],),
+            )
+        medication_id = medication["id"]
+    finally:
+        store.close()
+
+    reopened = SessionStore(db_path)
+    try:
+        reminders = reopened.list_reminders(True, "妈妈")
+        assert reminders[0]["medication_id"] == medication_id
+    finally:
+        reopened.close()
+
+
 def test_reminder_id_collision_keeps_both_records(tmp_path):
     store = SessionStore(str(tmp_path / "reminders.db"))
     try:
