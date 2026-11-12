@@ -4343,6 +4343,22 @@ async def import_allergies_csv(
     }
 
 
+async def _complete_care_item_old_reminders(
+    store, reminders, title: str, keep_id: int = 0
+) -> None:
+    """完成同一复查计划下旧的未完成提醒，避免完成后仍显示逾期。"""
+    for reminder in reminders:
+        if reminder.get("done") or reminder.get("title") != title:
+            continue
+        try:
+            reminder_id = int(reminder.get("id"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if keep_id and reminder_id == keep_id:
+            continue
+        await asyncio.to_thread(store.complete_reminder, reminder_id)
+
+
 async def _ensure_care_item_reminder(store, item):
     """按复查计划的下次日期创建提前 7 天的提醒；已有提醒时复用。
 
@@ -4369,6 +4385,9 @@ async def _ensure_care_item_reminder(store, item):
             and str(reminder.get("due_at") or "")[:10]
             == reminder_due.strftime("%Y-%m-%d")
         ):
+            await _complete_care_item_old_reminders(
+                store, reminders, title, keep_id=int(reminder["id"])
+            )
             return reminder, False
     reminder = await asyncio.to_thread(
         store.add_reminder,
@@ -4384,6 +4403,7 @@ async def _ensure_care_item_reminder(store, item):
         0,
         0,
     )
+    await _complete_care_item_old_reminders(store, reminders, title)
     return reminder, True
 
 
