@@ -49,3 +49,18 @@ def test_snooze_due_button_and_function_are_wired(client):
     assert "`/api/reminders/${item.id}/snooze?days=1`" in app_js
     assert "已推迟 ${success} 条逾期提醒" in app_js
     assert "推迟逾期 1 天（${overdueCount}）" in app_js
+
+
+def test_clear_done_button_visible_without_showing_done(client):
+    index = client.get("/").text
+    app_js = client.get("/static/app.js").text
+
+    assert 'id="reminders-clear-done"' in index
+    assert "updateClearDoneButton" in app_js
+    assert "params.set('include_done', 'true');" in app_js
+    assert "if (!(els.remindersShowDone && els.remindersShowDone.checked))" in app_js
+    assert "items = items.filter((item) => !item.done);" in app_js
+    assert (
+        "els.remindersShowDone.addEventListener('change', refreshReminderViews);"
+        in app_js
+    )
