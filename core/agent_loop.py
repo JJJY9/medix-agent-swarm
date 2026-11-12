@@ -319,8 +319,24 @@ class AgentLoop:
                     else:
                         logger.info(f"LLM provided final response (no tool calls)")
                         finalizing = True
+                        final_content = llm_response.content or ""
+                        if (
+                            llm_response.finish_reason == "length"
+                            and final_content
+                        ):
+                            logger.warning("⚠️ 最终答复因长度限制被截断")
+                            final_content += (
+                                "\n\n[回答内容达到长度上限，已截断。"
+                                "建议简化问题后重试。]"
+                            )
+                        elif llm_response.finish_reason == "content_filter":
+                            logger.warning("⚠️ 最终答复被内容安全策略过滤")
+                            final_content += (
+                                "\n\n[部分内容因安全策略被过滤，"
+                                "建议换一种表述或咨询医生。]"
+                            )
                         result = await self._finalize(
-                            agent, state, llm_response.content or "", session_id,
+                            agent, state, final_content, session_id,
                             tool_call_count, sources, usage, llm_calls,
                             remember=persist_memory,
                             user_input=user_question,
