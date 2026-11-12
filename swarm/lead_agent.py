@@ -600,18 +600,46 @@ class LeadAgent:
 
             if on_token is not None and hasattr(self.llm_client, "chat_stream_retry"):
                 stream_usage: Dict[str, int] = {}
-                text = await self.llm_client.chat_stream_retry(
-                    messages, on_token=on_token, usage_out=stream_usage
-                )
+                try:
+                    text = await self.llm_client.chat_stream_retry(
+                        messages, on_token=on_token, usage_out=stream_usage
+                    )
+                except LLMError as e:
+                    if usage_out is not None:
+                        usage_out.update(stream_usage)
+                    partial = str(getattr(e, "partial_text", "") or "")
+                    if partial:
+                        logger.warning(
+                            "Swarm 汇总流式中断，保留已生成的部分文本"
+                        )
+                        return partial + (
+                            "\n\n[汇总在生成过程中中断，以上为已完成部分，"
+                            "请稍后重试获取完整结论。]"
+                        )
+                    raise
                 if usage_out is not None:
                     usage_out.update(stream_usage)
                 return text
 
             if on_token is not None and hasattr(self.llm_client, "chat_stream"):
                 stream_usage = {}
-                text = await self.llm_client.chat_stream(
-                    messages, on_token=on_token, usage_out=stream_usage
-                )
+                try:
+                    text = await self.llm_client.chat_stream(
+                        messages, on_token=on_token, usage_out=stream_usage
+                    )
+                except LLMError as e:
+                    if usage_out is not None:
+                        usage_out.update(stream_usage)
+                    partial = str(getattr(e, "partial_text", "") or "")
+                    if partial:
+                        logger.warning(
+                            "Swarm 汇总流式中断，保留已生成的部分文本"
+                        )
+                        return partial + (
+                            "\n\n[汇总在生成过程中中断，以上为已完成部分，"
+                            "请稍后重试获取完整结论。]"
+                        )
+                    raise
                 if usage_out is not None:
                     usage_out.update(stream_usage)
                 return text
