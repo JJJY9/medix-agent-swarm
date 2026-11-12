@@ -1520,6 +1520,24 @@ def _like_pattern(query: str) -> str:
     return f"%{escaped}%"
 
 
+def _like_any_condition(
+    columns: Tuple[str, ...], query: Any
+) -> Tuple[Optional[str], List[Any]]:
+    """生成多列 LIKE 预过滤条件；空查询返回 (None, [])。
+
+    调用方必须确保 columns 覆盖 Python 侧匹配的全部已存字段，
+    否则预过滤会漏掉本来应命中的记录。
+    """
+    text = str(query or "").strip()
+    if not text:
+        return None, []
+    like = _like_pattern(text)
+    clause = "(" + " OR ".join(
+        f"{column} LIKE ? ESCAPE '\\'" for column in columns
+    ) + ")"
+    return clause, [like] * len(columns)
+
+
 def _days_cutoff(days: int) -> Optional[str]:
     """把“最近 N 天”转换成自然日窗口的下限（含今天，共 N 天）。"""
     try:
@@ -5185,6 +5203,9 @@ class SessionStore:
         q: str = "",
         start: str = "",
         end: str = "",
+        search_q: str = "",
+        search_metric_codes: Optional[List[str]] = None,
+        search_contexts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -5215,6 +5236,35 @@ class SessionStore:
                 "(note LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')"
             )
             params.extend([like, like])
+        search_parts: List[str] = []
+        search_part_params: List[Any] = []
+        metric_codes = [
+            code for code in (search_metric_codes or ())
+            if code in METRIC_TYPES
+        ]
+        if metric_codes:
+            search_parts.append(
+                "metric IN (" + ",".join("?" for _ in metric_codes) + ")"
+            )
+            search_part_params.extend(metric_codes)
+        context_codes = [
+            code for code in (search_contexts or ())
+            if code in METRIC_CONTEXT_LABELS
+        ]
+        if context_codes:
+            search_parts.append(
+                "context IN (" + ",".join("?" for _ in context_codes) + ")"
+            )
+            search_part_params.extend(context_codes)
+        search_clause, search_params = _like_any_condition(
+            ("metric", "unit", "context", "note"), search_q
+        )
+        if search_clause:
+            search_parts.append(search_clause)
+            search_part_params.extend(search_params)
+        if search_parts:
+            conditions.append("(" + " OR ".join(search_parts) + ")")
+            params.extend(search_part_params)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("measured_at >= ?")
@@ -5603,6 +5653,7 @@ class SessionStore:
         limit: int = 1000,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions = []
@@ -5615,6 +5666,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("vaccine_name", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5978,6 +6035,7 @@ class SessionStore:
         offset: int = 0,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         try:
@@ -6006,6 +6064,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("item", "panel", "lab_name", "unit", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -6616,6 +6680,7 @@ class SessionStore:
         limit: int = 1000,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions: List[str] = []
@@ -6640,6 +6705,16 @@ class SessionStore:
                 " OR department LIKE ? OR facility LIKE ? OR note LIKE ?)"
             )
             params.extend([like] * 6)
+        search_clause, search_params = _like_any_condition(
+            (
+                "diagnosis", "advice", "prescription", "doctor",
+                "department", "facility", "note",
+            ),
+            search_q,
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -6857,6 +6932,7 @@ class SessionStore:
         offset: int = 0,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按记录时间倒序返回症状，可按档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -6884,6 +6960,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("symptom", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = f"""
             SELECT id, profile, symptom, severity, note, recorded_at, created_at
@@ -7101,6 +7183,7 @@ class SessionStore:
         limit: int = 1000,
         offset: int = 0,
         days: int = 7,
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按名称返回用药清单，可按档案、在用状态与最近天数筛选。"""
         limit = max(1, min(int(limit or 1000), 100000))
@@ -7119,6 +7202,12 @@ class SessionStore:
             params.append(_normalize_profile_name(profile))
         if active_only:
             conditions.append("active = 1")
+        search_clause, search_params = _like_any_condition(
+            ("name", "dose", "frequency", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -8585,6 +8674,7 @@ class SessionStore:
         self,
         include_done: bool = False,
         profile: Optional[str] = None,
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按到期时间升序返回随访提醒，默认只返回未完成的，可按档案筛选。"""
         clauses: List[str] = []
@@ -8595,6 +8685,12 @@ class SessionStore:
             profile = _normalize_profile_name(profile)
             clauses.append("profile = ?")
             params.append(profile)
+        search_clause, search_params = _like_any_condition(
+            ("title", "note"), search_q
+        )
+        if search_clause:
+            clauses.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._conn.execute(

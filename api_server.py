@@ -7838,6 +7838,73 @@ def _health_search_number(value: Any) -> str:
     return str(value)
 
 
+def _health_search_prefilter(type_key: str, key: str) -> str:
+    """返回可安全下推到 SQL 的预过滤词；空串表示不能下推。
+
+    只有查询不可能命中 Python 侧拼出的派生文本（指标中文名、状态标签、
+    化验参考范围等）时才下推，确保 SQL 结果是最终结果的超集。
+    """
+    if not key:
+        return ""
+    if type_key == "metric":
+        # 中文指标名/情境名由调用方翻译成存储代码后并入 SQL；
+        # 此处仍返回原始查询用于匹配备注、单位等存储文本
+        return key
+    if type_key == "medication":
+        return "" if key in "在用" or key in "停用" else key
+    if type_key == "lab":
+        if "–" in key or "≥" in key or "≤" in key:
+            return ""
+        if any(character.isdigit() for character in key):
+            return ""
+        return "" if any(
+            key in label for label in ("偏高", "偏低", "危急值")
+        ) else key
+    if type_key == "vaccination":
+        if any(character.isdigit() for character in key):
+            return ""
+        return "" if "第" in key or "剂" in key else key
+    if type_key == "appointment":
+        return "" if any(
+            key in label for label in ("待就诊", "已完成", "已取消")
+        ) else key
+    if type_key == "care":
+        return "" if key in "已停用" else key
+    if type_key == "allergy":
+        return "" if any(
+            key in label
+            for label in ("轻度", "中度", "重度", "药物", "食物",
+                          "环境", "其他", "已停用")
+        ) else key
+    if type_key == "condition":
+        return "" if any(
+            key in label
+            for label in ("管理中", "已控制", "已痊愈", "轻度", "中度",
+                          "重度")
+        ) else key
+    if type_key == "reminder":
+        return "" if key in "已完成" or key in "待处理" else key
+    if type_key == "symptom" or type_key == "visit":
+        return key
+    # 附件与其余类型的匹配依赖关联记录或派生文本，不做 SQL 预过滤
+    return ""
+
+
+def _health_search_metric_filters(key: str):
+    """把中文指标名/情境名翻译为存储代码，供 SQL 预过滤使用。"""
+    from memory.session_store import METRIC_CONTEXT_LABELS, METRIC_TYPES
+
+    codes = [
+        code for code, (label, _unit, _range) in METRIC_TYPES.items()
+        if key in str(label or "").lower()
+    ]
+    contexts = [
+        code for code, label in METRIC_CONTEXT_LABELS.items()
+        if key in str(label or "").lower()
+    ]
+    return codes, contexts
+
+
 @app.get("/api/health/search")
 async def health_search(
     q: str = "",
@@ -7866,36 +7933,63 @@ async def health_search(
     limit = max(1, min(int(limit or 50), 200))
     store = get_session_store()
 
+    sql_queries = {
+        type_key: _health_search_prefilter(type_key, key)
+        for type_key in HEALTH_SEARCH_TYPE_ORDER
+    }
+    metric_codes, metric_contexts = _health_search_metric_filters(key)
+
     (
         metrics, symptoms, medications, labs, vaccinations,
         appointments, care_items, visits, allergies, conditions,
         reminders, attachments,
     ) = await asyncio.gather(
         asyncio.to_thread(
-            store.list_metrics, profile, None, 100000, 0, 0, ""
-        ),
-        asyncio.to_thread(store.list_symptoms, profile, 100000, 0, 0),
-        asyncio.to_thread(
-            store.list_medications, profile, False, 100000, 0, 7
-        ),
-        asyncio.to_thread(
-            store.list_lab_results, profile, None, None, 0, 100000, 0
-        ),
-        asyncio.to_thread(store.list_vaccinations, profile, 100000),
-        asyncio.to_thread(
-            store.list_appointments, profile, None, False, 100000, 0
+            store.list_metrics, profile, None, 100000, 0, 0, "",
+            search_q=sql_queries["metric"],
+            search_metric_codes=metric_codes,
+            search_contexts=metric_contexts,
         ),
         asyncio.to_thread(
-            store.list_care_items, profile, False, False, 100000
-        ),
-        asyncio.to_thread(store.list_visit_records, profile, 0, "", 100000),
-        asyncio.to_thread(
-            store.list_allergies, profile, False, None, "", 100000
+            store.list_symptoms, profile, 100000, 0, 0,
+            search_q=sql_queries["symptom"],
         ),
         asyncio.to_thread(
-            store.list_conditions, profile, False, None, 100000
+            store.list_medications, profile, False, 100000, 0, 7,
+            search_q=sql_queries["medication"],
         ),
-        asyncio.to_thread(store.list_reminders, True, profile),
+        asyncio.to_thread(
+            store.list_lab_results, profile, None, None, 0, 100000, 0,
+            search_q=sql_queries["lab"],
+        ),
+        asyncio.to_thread(
+            store.list_vaccinations, profile, 100000,
+            search_q=sql_queries["vaccination"],
+        ),
+        asyncio.to_thread(
+            store.list_appointments, profile, None, False, 100000, 0,
+            q=sql_queries["appointment"],
+        ),
+        asyncio.to_thread(
+            store.list_care_items, profile, False, False, 100000,
+            q=sql_queries["care"],
+        ),
+        asyncio.to_thread(
+            store.list_visit_records, profile, 0, "", 100000,
+            search_q=sql_queries["visit"],
+        ),
+        asyncio.to_thread(
+            store.list_allergies, profile, False, None,
+            sql_queries["allergy"], 100000,
+        ),
+        asyncio.to_thread(
+            store.list_conditions, profile, False, None, 100000,
+            sql_queries["condition"],
+        ),
+        asyncio.to_thread(
+            store.list_reminders, True, profile,
+            search_q=sql_queries["reminder"],
+        ),
         _list_attachments_paged(store, profile),
     )
 
