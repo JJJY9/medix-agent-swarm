@@ -48,6 +48,11 @@ def test_parse_chinese_numbers():
     assert parse_quick_metric("体重 一百五")["value1"] == 150
     assert parse_quick_metric("体重 两百五")["value1"] == 250
 
+    # 「零」占位时不能再套用省略规则
+    assert parse_quick_metric("血压 一百零五/七十")["value1"] == 105
+    assert parse_quick_metric("体重 二百零五")["value1"] == 205
+    assert parse_quick_metric("饮水 一千零五毫升")["value1"] == 1005
+
 
 def test_numbers_must_be_next_to_metric():
     parsed = parse_quick_metric("餐后2小时血糖7.8")
@@ -77,11 +82,18 @@ def test_time_and_date_prefixes_do_not_win():
 
 def test_units_are_converted_or_rejected():
     assert parse_quick_metric("体重 120斤")["value1"] == 60
+    assert parse_quick_metric("体重 62.5公斤")["value1"] == 62.5
+    assert parse_quick_metric("体重六十公斤")["value1"] == 60
+    assert parse_quick_metric("100公斤")["value1"] == 100
     assert parse_quick_metric("血糖 126mg/dL")["value1"] == 7
     assert parse_quick_metric("体温 98.6°F")["value1"] == 37
     with pytest.raises(QuickEntryError) as error:
         parse_quick_metric("体重 120cm")
     assert error.value.code == "unknown_unit"
+    # 真正并存的两个单位仍应报歧义
+    with pytest.raises(QuickEntryError) as error:
+        parse_quick_metric("体重 62公斤 2斤")
+    assert error.value.code == "ambiguous_unit"
 
 
 def test_signed_and_leading_dot_numbers_are_rejected_by_range():
