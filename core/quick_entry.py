@@ -22,7 +22,7 @@ _METRIC_ALIASES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("waist", ("腰围", "waist")),
     ("sleep", ("睡眠时长", "睡眠", "睡了", "sleep")),
     ("steps", ("步数", "步行", "走了", "steps")),
-    ("water", ("饮水量", "饮水", "喝水", "喝了", "water")),
+    ("water", ("饮水量", "饮水", "喝水", "喝水量", "喝了", "water")),
 )
 
 #: 未写指标名时按无歧义单位推断；mmol/L、cm 之类可能是其他指标，不推断
@@ -33,7 +33,7 @@ _UNIT_METRICS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("heart_rate", ("bpm", "次/分", "次/分钟")),
     ("spo2", ("%",)),
     ("steps", ("步",)),
-    ("water", ("ml", "毫升")),
+    ("water", ("ml", "毫升", "l", "升", "公升")),
 )
 
 #: 每个指标接受的单位与换算系数（"f_to_c" 表示华氏度转摄氏度）
@@ -51,7 +51,10 @@ _METRIC_UNITS: Dict[str, Dict[str, Any]] = {
     "spo2": {"%": 1.0},
     "waist": {"cm": 1.0, "厘米": 1.0},
     "steps": {"步": 1.0},
-    "water": {"ml": 1.0, "毫升": 1.0},
+    "water": {
+        "ml": 1.0, "毫升": 1.0,
+        "l": 1000.0, "升": 1000.0, "公升": 1000.0,
+    },
 }
 
 _ALL_UNIT_TOKENS = sorted(
@@ -269,11 +272,17 @@ def _metric_context(metric: str, text: str) -> str:
 def _token_spans(text: str, token: str) -> List[Tuple[int, int]]:
     spans: List[Tuple[int, int]] = []
     if token.isascii() and any(char.isalpha() for char in token):
+        # 单个 l 不能匹配 mmol/l 末尾的 l，也不能匹配 ml 中的 l
+        prefix = r"(?<![a-z/])" if token == "l" else r"(?<![a-z])"
         match = re.search(
-            rf"(?<![a-z]){re.escape(token)}(?![a-z])", text
+            rf"{prefix}{re.escape(token)}(?![a-z])", text
         )
         if match:
             spans.append(match.span())
+    elif token == "升":
+        # 「升高」「上升」不是单位，只在数字/空格后的升作为单位
+        pattern = re.compile(r"(?<![一-鿿])升")
+        spans.extend(match.span() for match in pattern.finditer(text))
     else:
         start = 0
         while True:

@@ -124,6 +124,13 @@ def test_parse_other_metrics_and_unit_inference():
     assert parse_quick_metric("喝水 1200毫升")["value1"] == 1200
     assert parse_quick_metric("喝了 800ml")["value1"] == 800
     assert parse_quick_metric("1500ml")["metric"] == "water"
+    assert parse_quick_metric("饮水 1.5 升")["value1"] == 1500
+    assert parse_quick_metric("喝了 2L 水")["value1"] == 2000
+    assert parse_quick_metric("饮水 1.5l")["value1"] == 1500
+    assert parse_quick_metric("喝水 2 公升")["value1"] == 2000
+    # 「升高」不是单位，不能影响血糖解析
+    assert parse_quick_metric("血糖升高 7.8")["value1"] == 7.8
+    assert parse_quick_metric("血糖 7.8 mmol/L")["value1"] == 7.8
     assert parse_quick_metric("体重 62.5 kg")["metric"] == "weight"
     assert parse_quick_metric("62.5kg")["metric"] == "weight"
     assert parse_quick_metric("血压 150/95 mmHg")["metric"] == "bp"
