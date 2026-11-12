@@ -218,6 +218,29 @@ def test_insights_no_target_single_high_reading(client_and_store):
     ]
 
 
+def test_insights_bp_single_high_quotes_real_reading(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 180, "value2": 95,
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "bp", "value1": 150, "value2": 110,
+        "measured_at": f"{_date(0)}T09:00",
+    })
+
+    data = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+    bp = next(
+        item for item in data["insights"] if item["key"] == "metric_bp_single"
+    )
+
+    # 收缩压与舒张压的最高值来自不同读数，不能拼成 180/110
+    assert "180/95" in bp["title"]
+    assert "180/110" not in bp["title"]
+
+
 def test_insights_glucose_context_thresholds(client_and_store):
     client, _store = client_and_store
     for hour in (13, 19):

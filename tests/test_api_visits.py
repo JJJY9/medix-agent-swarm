@@ -272,3 +272,20 @@ def test_visit_appointment_link_remapped_on_restore(
         assert restored["appointment_id"] == restored_appointment["id"]
     finally:
         target.close()
+
+
+def test_visits_export_clamps_huge_days(client_and_store):
+    client, _store = client_and_store
+    client.post("/api/visits", json={
+        "profile": "妈妈", "diagnosis": "复查", "visit_date": _date(0),
+    })
+
+    exported = client.get(
+        "/api/visits/export.csv", params={"days": 10 ** 18}
+    )
+
+    assert exported.status_code == 200
+    rows = list(csv.reader(
+        io.StringIO(exported.content.decode("utf-8-sig"))
+    ))
+    assert len(rows) == 2
