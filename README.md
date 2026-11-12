@@ -149,6 +149,8 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 ```
 
 > 用 `--host 0.0.0.0` 暴露到局域网时，建议同时设置 `MEDIX_ACCESS_TOKEN`。设置后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer`）。为了不把令牌写进访问日志，不再支持 `?token=` 查询参数。
+>
+> 服务会校验 Host 头以防 DNS rebinding：IP 地址、`localhost` 与 `testserver` 默认允许；如需通过局域网域名访问，请设置 `MEDIX_ALLOWED_HOSTS=medix.local`（逗号分隔多个域名）。
 
 ### 界面说明
 
@@ -867,6 +869,7 @@ REDIS_CONFIG = {
 | --- | --- |
 | `MEDIX_API_KEY` / `MEDIX_BASE_URL` / `MEDIX_MODEL` | 覆盖 LLM 的密钥、地址与模型名（默认取 `config.py`） |
 | `MEDIX_ACCESS_TOKEN` | 访问令牌；设置后所有 API 需要 `Authorization: Bearer <token>`（默认关闭） |
+| `MEDIX_ALLOWED_HOSTS` | 允许的 Host 域名（逗号分隔）；IP 地址与 localhost 默认允许（默认空） |
 | `MEDIX_LOG_LEVEL` | 服务日志级别（默认 `INFO`）；调试可设为 `DEBUG` |
 | `MEDIX_RATE_LIMIT` | 每个客户端每分钟会诊请求上限（默认 30，`0` 表示关闭） |
 | `MEDIX_TIMEOUT` | 模型请求超时秒数（默认 60） |
