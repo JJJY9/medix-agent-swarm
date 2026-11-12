@@ -126,7 +126,7 @@ ANALYTES: Tuple[Dict[str, Any], ...] = (
         "label": "白细胞",
         "cjk": ("白细胞计数", "白细胞"),
         "ascii": ("wbc", "leukocyte", "leukocytes"),
-        "exclude": ("尿", "urine", "分类", "介素", "抗体"),
+        "exclude": ("尿", "urine", "分类", "介素", "抗体", "酯酶"),
         "unit_family": "count",
         "unit_label": "×10⁹/L",
         "low": 1.0,
@@ -401,11 +401,18 @@ def lab_critical_alerts(
     value: Any,
     unit: Any,
     tested_at: Any = None,
+    panel: Any = None,
 ) -> List[Dict[str, Any]]:
-    """返回化验达到危急值时的提示；未识别或无法换算时返回空列表。"""
-    classification = _analyte_classification(
-        _lab_item_text(item), _unit_key(unit)
-    )
+    """返回化验达到危急值时的提示；未识别或无法换算时返回空列表。
+
+    panel 参与项目识别：尿/粪便等标本的同类项目（如尿钾、尿糖）
+    不能套用血液危急值阈值。
+    """
+    text = _lab_item_text(item)
+    panel_text = _lab_item_text(panel)
+    if panel_text:
+        text = f"{text} {panel_text}"
+    classification = _analyte_classification(text, _unit_key(unit))
     if classification is None:
         return []
     spec_index, factor = classification

@@ -103,9 +103,9 @@ class QuickEntryError(ValueError):
 def _normalize(text: Any) -> str:
     normalized = unicodedata.normalize("NFKC", str(text or ""))
     normalized = " ".join(normalized.lower().split())
-    # 「7点8」「37度2」按小数处理；「7点」后面没有数字时保持原样
-    normalized = re.sub(r"([0-9])\s*点\s*([0-9])", r"\1.\2", normalized)
-    normalized = re.sub(r"([0-9])\s*度\s*([0-9])", r"\1.\2", normalized)
+    # 「7点8」「37度2」按小数处理；「7点」「3点 5.6」是时间，不能合并
+    normalized = re.sub(r"([0-9])点([0-9])", r"\1.\2", normalized)
+    normalized = re.sub(r"([0-9])度([0-9])", r"\1.\2", normalized)
     normalized = re.sub(
         r"(?<=[零〇一二两三四五六七八九十百千])度"
         r"(?=[零〇一二两三四五六七八九])",
@@ -198,11 +198,37 @@ def _distance(span: Tuple[int, int], alias: Tuple[int, int]) -> int:
     return -1
 
 
+#: 数字后方紧跟这些词时属于时间/日期/年龄，不是指标读数
+#: （度 不在列表中：37.2 度是合法体温读数；小时 对睡眠时长是单位）
+_TEMPORAL_SUFFIX = re.compile(
+    r"\s*(点|时|小时|分钟|秒|月|日|号|岁|周|天|年)"
+)
+
+
+def _is_temporal_number(
+    text: str, span: Tuple[int, int], allow_hours: bool = False
+) -> bool:
+    match = _TEMPORAL_SUFFIX.match(text, span[1])
+    if not match:
+        return False
+    if allow_hours and match.group(1) in ("时", "小时"):
+        return False
+    return True
+
+
 def _nearest_number(
-    text: str, alias_span: Tuple[int, int], exclude: List[Tuple[int, int]]
+    text: str,
+    alias_span: Tuple[int, int],
+    exclude: List[Tuple[int, int]],
+    allow_hours: bool = False,
 ) -> Optional[float]:
-    """取距离指标名最近且不与别名重叠的数值。"""
-    best: Optional[Tuple[Tuple[int, int], str]] = None
+    """取距离指标名最近且不与别名重叠的数值。
+
+    优先采用阿拉伯数字；中文数字只在没有阿拉伯数字候选时使用，
+    避免「一般」「二型」「十月八日」等词里的数字抢先命中。
+    """
+    ascii_best: Optional[Tuple[Tuple[int, int, int], str]] = None
+    cn_best: Optional[Tuple[Tuple[int, int, int], str]] = None
     for match in _NUMBER_PATTERN.finditer(text):
         span = match.span()
         if _overlaps(span, alias_span):
@@ -212,12 +238,20 @@ def _nearest_number(
         distance = _distance(span, alias_span)
         if distance < 0 or distance > _MAX_NUMBER_DISTANCE:
             continue
+        if _is_temporal_number(text, span, allow_hours):
+            continue
         # 距离相同时优先指标名后面的数值
         after = 0 if span[0] >= alias_span[1] else 1
         key = (distance, after, span[0])
-        if best is None or key < best[0]:
-            best = (key, match.group(0))
-    return _number(best[1]) if best else None
+        token = match.group(0)
+        is_ascii = token[:1].isdigit() or token[:1] in "+-."
+        if is_ascii:
+            if ascii_best is None or key < ascii_best[0]:
+                ascii_best = (key, token)
+        elif cn_best is None or key < cn_best[0]:
+            cn_best = (key, token)
+    chosen = ascii_best or cn_best
+    return _number(chosen[1]) if chosen else None
 
 
 def _pair_candidates(
@@ -418,7 +452,10 @@ def parse_quick_metric(text: Any) -> Dict[str, Any]:
             )
         first, second = chosen
     else:
-        first = _nearest_number(normalized, alias_span, exclude)
+        first = _nearest_number(
+            normalized, alias_span, exclude,
+            allow_hours=(metric == "sleep"),
+        )
         second = None
         if first is None:
             raise QuickEntryError(

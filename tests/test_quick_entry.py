@@ -275,3 +275,23 @@ def test_confirmed_preview_saves_through_existing_endpoint(client_and_store):
     assert metric["value1"] == 7.8
     assert metric["context"] == "fasting"
     assert metric["note"] == "血糖 7.8 空腹"
+
+
+def test_time_and_date_numbers_are_not_readings():
+    postprandial = parse_quick_metric("血糖 餐后2小时 7.8")
+    assert postprandial["value1"] == 7.8
+    assert postprandial["context"] == "postprandial"
+
+    assert parse_quick_metric("血糖 下午3点 5.6")["value1"] == 5.6
+    assert parse_quick_metric("血糖 十月八日 6.1")["value1"] == 6.1
+
+
+def test_chinese_numerals_inside_words_are_ignored():
+    assert parse_quick_metric("血糖 一般 6.1")["value1"] == 6.1
+    assert parse_quick_metric("血糖 一直 6.1")["value1"] == 6.1
+    assert parse_quick_metric("血糖 二型 6.1")["value1"] == 6.1
+
+
+def test_decimal_forms_still_parse():
+    assert parse_quick_metric("血糖 7点8")["value1"] == 7.8
+    assert parse_quick_metric("体温 37度2")["value1"] == 37.2
