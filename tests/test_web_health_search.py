@@ -112,6 +112,14 @@ def test_hidden_search_resets_query_state():
         "  healthSearchSeq += 1;\n"
         "  healthSearchQuery = '';"
     ) in SCRIPT
+    assert "healthSearchAbort.abort();" in SCRIPT
+
+
+def test_new_search_aborts_previous_request():
+    assert "const controller = new AbortController();" in SCRIPT
+    assert "signal: controller.signal" in SCRIPT
+    assert "err.name === 'AbortError'" in SCRIPT
+    assert "healthSearchAbort === controller" in SCRIPT
 
 
 def test_deep_link_and_shortcut():

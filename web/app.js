@@ -7437,6 +7437,7 @@ const HEALTH_SEARCH_LABELS = {
 let healthSearchTimer = null;
 let healthSearchSeq = 0;
 let healthSearchQuery = '';
+let healthSearchAbort = null;
 
 function setHealthSearchStatus(text, isError = false) {
   if (!els.healthSearchStatus) return;
@@ -7448,6 +7449,10 @@ function setHealthSearchStatus(text, isError = false) {
 function hideHealthSearchResults() {
   healthSearchSeq += 1;
   healthSearchQuery = '';
+  if (healthSearchAbort) {
+    healthSearchAbort.abort();
+    healthSearchAbort = null;
+  }
   if (els.healthSearchResults) {
     els.healthSearchResults.hidden = true;
     els.healthSearchResults.replaceChildren();
@@ -7483,6 +7488,12 @@ async function runHealthSearch(rawQuery) {
     hideHealthSearchResults();
     return;
   }
+  if (healthSearchAbort) {
+    healthSearchAbort.abort();
+    healthSearchAbort = null;
+  }
+  const controller = new AbortController();
+  healthSearchAbort = controller;
   const profile = els.metricProfile ? els.metricProfile.value : '';
   const allProfiles = Boolean(
     els.healthSearchAllProfiles && els.healthSearchAllProfiles.checked
@@ -7494,7 +7505,8 @@ async function runHealthSearch(rawQuery) {
   try {
     const res = await fetch(
       `/api/health/search?q=${encodeURIComponent(query)}`
-      + `&limit=200${profileQuery}`
+      + `&limit=200${profileQuery}`,
+      { signal: controller.signal }
     );
     const data = await res.json().catch(() => ({}));
     if (seq !== healthSearchSeq) return;
@@ -7503,6 +7515,7 @@ async function runHealthSearch(rawQuery) {
     }
     renderHealthSearchResults(data);
   } catch (err) {
+    if (err.name === 'AbortError') return;
     if (seq !== healthSearchSeq) return;
     if (els.healthSearchResults) {
       els.healthSearchResults.hidden = true;
@@ -7510,6 +7523,8 @@ async function runHealthSearch(rawQuery) {
     }
     if (els.healthSearchExport) els.healthSearchExport.hidden = true;
     setHealthSearchStatus(`搜索失败：${err.message || err}`, true);
+  } finally {
+    if (healthSearchAbort === controller) healthSearchAbort = null;
   }
 }
 
