@@ -233,3 +233,31 @@ def test_auto_backup_loop_skips_recent_backup(tmp_path, monkeypatch):
 
     assert calls == []
     assert sleeps and 0 < sleeps[0] <= 6 * 3600
+
+
+def test_auto_backup_loop_survives_wait_errors(monkeypatch):
+    monkeypatch.setenv("MEDIX_AUTO_BACKUP_HOURS", "6")
+
+    async def broken_wait(hours):
+        raise RuntimeError("backup dir unavailable")
+
+    monkeypatch.setattr(
+        api_server, "auto_backup_wait_seconds", broken_wait
+    )
+
+    class StopLoop(Exception):
+        pass
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        raise StopLoop()
+
+    monkeypatch.setattr(api_server.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(StopLoop):
+        asyncio.run(api_server.auto_backup_loop())
+
+    # 等待时长计算失败后不退出循环，而是记录并在一小时后重试
+    assert sleeps == [3600]
