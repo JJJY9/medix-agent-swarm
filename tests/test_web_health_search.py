@@ -99,6 +99,7 @@ def test_search_scope_is_visible():
 def test_hidden_search_resets_query_state():
     assert (
         "function hideHealthSearchResults() {\n"
+        "  healthSearchSeq += 1;\n"
         "  healthSearchQuery = '';"
     ) in SCRIPT
 
