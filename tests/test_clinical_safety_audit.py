@@ -67,6 +67,20 @@ def test_colloquial_chest_pain_triggers_validator_warning():
     )
 
 
+def test_negated_high_risk_symptoms_do_not_require_diagnostic_agent():
+    validator = ConstraintValidator()
+
+    assert "diagnostic_agent" not in validator.get_required_agents(
+        "我没有呕血也没有黑便，只是胃疼"
+    )
+    assert "diagnostic_agent" not in validator.get_required_agents(
+        "无抽搐，只是头晕"
+    )
+    assert "diagnostic_agent" not in validator.get_required_agents(
+        "否认自杀想法"
+    )
+
+
 @pytest.mark.parametrize("question", [
     "过敏原：阿莫西林，能吃头孢吗",
     "过敏药物：阿莫西林，能吃头孢吗",
