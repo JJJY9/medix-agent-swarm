@@ -366,6 +366,7 @@ def test_metrics_summary_api(client):
     invalid = client.get(
         "/api/metrics/summary", params={"metric": "unknown"}
     )
+    missing = client.get("/api/metrics/summary")
     other_profile = client.get(
         "/api/metrics/summary", params={"profile": "孩子", "metric": "weight"}
     )
@@ -383,6 +384,7 @@ def test_metrics_summary_api(client):
     assert overall.json()["count"] == 4
     assert overall.json()["value1"]["prev_avg"] is None
     assert invalid.status_code == 400
+    assert missing.status_code == 422
     assert other_profile.json()["count"] == 0
 
 
