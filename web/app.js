@@ -17831,6 +17831,9 @@ async function importMetricsCsv(file) {
     const parts = [`已导入 ${data.imported || 0} 条`];
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    if (data.context_ignored) {
+      parts.push(`忽略 ${data.context_ignored} 条不适用的情境标签`);
+    }
     if (targetProfile) {
       parts.push(`空档案行归入「${targetProfile}」`);
     }
