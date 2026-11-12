@@ -5367,7 +5367,34 @@ class SessionStore:
             return None
 
         now = self._now()
+        retry_cutoff = (
+            datetime.now() - timedelta(seconds=120)
+        ).isoformat(timespec="seconds")
         with self._lock, self._conn:
+            # 响应丢失后的重试会重新计算分钟级测量时间；短窗口内内容完全
+            # 相同的记录视为同一次保存，返回原记录而不是插入重复读数
+            duplicate = self._conn.execute(
+                """
+                SELECT id, profile, metric, value1, value2, unit,
+                       measured_at, context, note, created_at
+                  FROM health_metrics
+                 WHERE profile = ? AND metric = ? AND value1 = ?
+                   AND IFNULL(value2, -1) = IFNULL(?, -1)
+                   AND context = ? AND note = ? AND created_at >= ?
+                 ORDER BY id DESC LIMIT 1
+                """,
+                (
+                    normalized["profile"],
+                    normalized["metric"],
+                    normalized["value1"],
+                    normalized["value2"],
+                    normalized["context"],
+                    normalized["note"],
+                    retry_cutoff,
+                ),
+            ).fetchone()
+            if duplicate is not None:
+                return {**dict(duplicate), "duplicate": True}
             cursor = self._conn.execute(
                 """
                 INSERT INTO health_metrics(

@@ -771,3 +771,30 @@ def test_metrics_api_searches_notes_and_profile(client):
         "/api/metrics", params={"q": "爸爸"}
     ).json()["metrics"]
     assert [item["value1"] for item in by_profile] == [70]
+
+
+def test_metric_post_retry_is_idempotent(client):
+    payload = {
+        "profile": "妈妈",
+        "metric": "weight",
+        "value1": 60.5,
+        "measured_at": "2026-11-01T08:00",
+        "note": "晨起",
+    }
+
+    first = client.post("/api/metrics", json=payload)
+    second = client.post("/api/metrics", json=payload)
+    assert first.status_code == second.status_code == 200
+    assert second.json()["metric"]["id"] == first.json()["metric"]["id"]
+    assert second.json()["metric"]["duplicate"] is True
+
+    rows = client.get("/api/metrics").json()["metrics"]
+    assert len(rows) == 1
+    assert rows[0]["value1"] == 60.5
+
+    changed = client.post(
+        "/api/metrics", json={**payload, "value1": 61.2}
+    )
+    assert changed.status_code == 200
+    assert changed.json()["metric"]["id"] != first.json()["metric"]["id"]
+    assert len(client.get("/api/metrics").json()["metrics"]) == 2
