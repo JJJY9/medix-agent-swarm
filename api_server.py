@@ -3265,12 +3265,56 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     }
 
 
+def _evaluate_medication_safety(
+    names: List[str],
+    allergy_parts: List[str],
+    context_age: str,
+    context_sex: str,
+    lab_rows: List[Dict[str, Any]],
+    condition_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """根据已加载的数据计算单个成员的用药安全提示。"""
+    from core.medication_safety import check_medication_safety
+    from core.medication_lab_safety import check_medication_lab_safety
+    from core.condition_drug_safety import check_condition_drug_safety
+
+    safety = check_medication_safety(
+        "",
+        {
+            "medications": "、".join(names),
+            "allergies": "；".join(allergy_parts),
+        },
+    )
+    lab_alerts = check_medication_lab_safety(
+        names, lab_rows, {"age": context_age, "sex": context_sex}
+    ).get("alerts") or []
+    condition_alerts = check_condition_drug_safety(
+        names, condition_rows
+    ).get("alerts") or []
+    if lab_alerts or condition_alerts:
+        # 化验与慢病提示在前，既有过敏/相互作用提示全部保留
+        merged = (
+            [
+                {**alert, "source": "lab"}
+                for alert in lab_alerts
+            ]
+            + [
+                {**alert, "source": "condition"}
+                for alert in condition_alerts
+            ]
+            + [
+                {**alert, "source": "base"}
+                for alert in (safety.get("alerts") or [])
+            ]
+        )
+        safety = {"level": "warning", "alerts": merged[:15]}
+    return safety
+
+
 async def _medication_safety_for_profile(
     store: Any, profile: str
 ) -> Dict[str, Any]:
     """按当前档案的在用药物与过敏史检查新增/修改后的用药安全。"""
-    from core.medication_safety import check_medication_safety
-
     active = await asyncio.to_thread(
         store.list_medications, profile, True, 1000
     )
@@ -3302,51 +3346,128 @@ async def _medication_safety_for_profile(
             context_age = str(saved_context.get("age") or "")
             context_sex = str(saved_context.get("sex") or "")
             break
-    safety = check_medication_safety(
-        "",
-        {
-            "medications": "、".join(names),
-            "allergies": "；".join(allergy_parts),
-        },
-    )
     lab_rows = []
     if names:
         lab_rows = await asyncio.to_thread(
             store.list_lab_results, profile, None, None, 180, 100000, 0
         )
-    from core.medication_lab_safety import check_medication_lab_safety
-
-    lab_alerts = check_medication_lab_safety(
-        names, lab_rows, {"age": context_age, "sex": context_sex}
-    ).get("alerts") or []
     condition_rows: List[Dict[str, Any]] = []
     if names:
         condition_rows = await asyncio.to_thread(
             store.list_conditions, profile, True, None, 1000
         )
-    from core.condition_drug_safety import check_condition_drug_safety
+    return _evaluate_medication_safety(
+        names, allergy_parts, context_age, context_sex,
+        lab_rows, condition_rows,
+    )
 
-    condition_alerts = check_condition_drug_safety(
-        names, condition_rows
-    ).get("alerts") or []
-    if lab_alerts or condition_alerts:
-        # 化验与慢病提示在前，既有过敏/相互作用提示全部保留
-        merged = (
-            [
-                {**alert, "source": "lab"}
-                for alert in lab_alerts
-            ]
-            + [
-                {**alert, "source": "condition"}
-                for alert in condition_alerts
-            ]
-            + [
-                {**alert, "source": "base"}
-                for alert in (safety.get("alerts") or [])
-            ]
+
+async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
+    """一次性加载全部成员数据，再按档案分组计算用药安全提示。"""
+    active = await asyncio.to_thread(
+        store.list_medications, None, True, 100000
+    )
+    allergies = await asyncio.to_thread(
+        store.list_allergies, None, True, None, "", 100000
+    )
+    saved_profiles = await asyncio.to_thread(store.list_profiles)
+    used_names = await asyncio.to_thread(store.list_used_profile_names)
+
+    candidates = {
+        _normalized_profile_key(item.get("name") or "")
+        for item in saved_profiles
+        if item.get("name")
+    }
+    candidates.update(
+        _normalized_profile_key(name) for name in used_names if name
+    )
+    candidates.update(
+        _normalized_profile_key(item.get("profile") or "")
+        for item in active
+    )
+    candidates.update(
+        _normalized_profile_key(item.get("profile") or "")
+        for item in allergies
+    )
+    candidates.add("")
+
+    meds_by: Dict[str, List[Dict[str, Any]]] = {}
+    for item in active:
+        meds_by.setdefault(
+            _normalized_profile_key(item.get("profile") or ""), []
+        ).append(item)
+    allergies_by: Dict[str, List[Dict[str, Any]]] = {}
+    for item in allergies:
+        allergies_by.setdefault(
+            _normalized_profile_key(item.get("profile") or ""), []
+        ).append(item)
+    contexts = {
+        _normalized_profile_key(item.get("name") or ""): (
+            item.get("context") or {}
         )
-        safety = {"level": "warning", "alerts": merged[:15]}
-    return safety
+        for item in saved_profiles
+        if item.get("name")
+    }
+
+    lab_rows: List[Dict[str, Any]] = []
+    condition_rows: List[Dict[str, Any]] = []
+    if active:
+        lab_rows = await asyncio.to_thread(
+            store.list_lab_results, None, None, None, 180, 100000, 0
+        )
+        condition_rows = await asyncio.to_thread(
+            store.list_conditions, None, True, None, 100000
+        )
+    labs_by: Dict[str, List[Dict[str, Any]]] = {}
+    for item in lab_rows:
+        labs_by.setdefault(
+            _normalized_profile_key(item.get("profile") or ""), []
+        ).append(item)
+    conditions_by: Dict[str, List[Dict[str, Any]]] = {}
+    for item in condition_rows:
+        conditions_by.setdefault(
+            _normalized_profile_key(item.get("profile") or ""), []
+        ).append(item)
+
+    family_alerts: List[Dict[str, Any]] = []
+    for name in sorted(candidates):
+        context = contexts.get(name) or {}
+        allergy_parts = [
+            str(item.get("substance") or "").strip()
+            for item in allergies_by.get(name, [])
+            if item.get("substance")
+        ]
+        context_allergies = str(
+            context.get("allergies") or ""
+        ).strip()
+        if context_allergies:
+            allergy_parts.append(context_allergies)
+        names = [
+            str(item.get("name") or "").strip()
+            for item in meds_by.get(name, [])
+            if item.get("name")
+        ]
+        member_safety = _evaluate_medication_safety(
+            names,
+            allergy_parts,
+            str(context.get("age") or ""),
+            str(context.get("sex") or ""),
+            labs_by.get(name, []),
+            conditions_by.get(name, []),
+        )
+        if member_safety.get("level") != "warning":
+            continue
+        for alert in member_safety.get("alerts") or []:
+            family_alerts.append({
+                **alert,
+                "title": (
+                    f"{name or '未指定档案'}："
+                    f"{alert.get('title') or ''}"
+                )[:160],
+            })
+    if not family_alerts:
+        return None
+    return {"level": "warning", "alerts": family_alerts[:5]}
 
 
 @app.post("/api/medications")
@@ -6948,36 +7069,8 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
     if profile is not None:
         safety = await _medication_safety_for_profile(store, profile)
     else:
-        # 家庭范围按成员分别检查用药安全，避免首页卡片误报「一切正常」
-        used_names = await asyncio.to_thread(store.list_used_profile_names)
-        saved_profiles = await asyncio.to_thread(store.list_profiles)
-        candidates = {
-            str(item.get("name") or "")
-            for item in saved_profiles
-            if item.get("name")
-        }
-        candidates.update(str(name) for name in used_names if name)
-        candidates.add("")
-        family_alerts: List[Dict[str, Any]] = []
-        for name in sorted(candidates):
-            member_safety = await _medication_safety_for_profile(
-                store, name
-            )
-            if member_safety.get("level") != "warning":
-                continue
-            for alert in member_safety.get("alerts") or []:
-                family_alerts.append({
-                    **alert,
-                    "title": (
-                        f"{name or '未指定档案'}："
-                        f"{alert.get('title') or ''}"
-                    )[:160],
-                })
-        if family_alerts:
-            safety = {
-                "level": "warning",
-                "alerts": family_alerts[:5],
-            }
+        # 家庭范围一次加载全部成员数据后分组计算，避免每个成员重复查询
+        safety = await _family_medication_safety(store)
     report = await _weekly_report_impl(profile=profile, days=days)
     insights = _build_health_insights(
         report,

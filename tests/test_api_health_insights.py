@@ -743,3 +743,35 @@ def test_insights_completed_vaccine_series_not_overdue(client_and_store):
     keys = [item["key"] for item in data["insights"]]
 
     assert "vaccine_overdue" not in keys
+
+
+def test_family_insights_batches_safety_queries(
+    client_and_store, monkeypatch,
+):
+    client, store = client_and_store
+    for name in ("妈妈", "爸爸"):
+        client.post("/api/medications", json={
+            "profile": name, "name": "氨氯地平", "dose": "5 mg",
+        })
+
+    counts = {}
+    for method in (
+        "list_profiles", "list_medications", "list_allergies",
+        "list_lab_results", "list_conditions",
+    ):
+        original = getattr(store, method)
+
+        def make(method_name, func):
+            def wrapped(*args, **kwargs):
+                counts[method_name] = counts.get(method_name, 0) + 1
+                return func(*args, **kwargs)
+            return wrapped
+
+        monkeypatch.setattr(store, method, make(method, original))
+
+    client.get("/api/health/insights", params={"days": 30})
+
+    # 全员数据只加载一次；用药清单另有一次来自周报聚合
+    assert counts.get("list_allergies") == 1
+    assert counts.get("list_profiles") == 1
+    assert counts.get("list_medications", 0) <= 2
