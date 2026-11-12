@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from core.fs_permissions import restrict_permissions
+
 from .documents import (
     SUPPORTED_SUFFIXES,
     infer_metadata,
@@ -41,6 +43,7 @@ class KnowledgeService:
         self.upload_dir = Path(upload_dir or DEFAULT_UPLOAD_DIR)
         self.docs_dir.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
+        restrict_permissions(self.upload_dir, 0o700)
         self._kb = kb
         self._lock = threading.RLock()
 
@@ -110,6 +113,7 @@ class KnowledgeService:
         with self._lock:
             target = self._unique_path(safe_name)
             target.write_bytes(content)
+            restrict_permissions(target, 0o600)
             try:
                 document = load_document(target, id_prefix="upload_")
                 if not document:
@@ -199,6 +203,7 @@ class KnowledgeService:
 
             original = path.read_bytes()
             path.write_bytes(content)
+            restrict_permissions(path, 0o600)
             try:
                 document = load_document(path)
                 if not document:
