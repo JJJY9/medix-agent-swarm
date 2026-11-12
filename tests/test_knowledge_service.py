@@ -246,6 +246,33 @@ def test_search_surfaces_index_errors(service):
         svc.search("高血压")
 
 
+def test_index_staleness_detected_and_search_rebuilds(service):
+    svc, kb = service
+    svc.rebuild()
+    assert svc.index_is_stale() is False
+
+    svc.save_upload("新增指南.md", "新增内容".encode("utf-8"))
+    assert svc.index_is_stale() is True
+
+    svc.search("高血压")
+    assert svc.index_is_stale() is False
+    assert kb.replace_flags[-1] is True
+
+
+def test_stale_index_search_fails_instead_of_using_old_vectors(service):
+    svc, kb = service
+    svc.rebuild()
+    svc.save_upload("新增指南.md", "新增内容".encode("utf-8"))
+
+    def broken_add(*args, **kwargs):
+        raise RuntimeError("embedding model unavailable")
+
+    kb.add_documents = broken_add
+
+    with pytest.raises(ValueError, match="自动重建失败"):
+        svc.search("高血压")
+
+
 def test_long_duplicate_filenames_stay_distinct(service):
     svc, _ = service
     raw_name = "a" * 112 + ".markdown"
