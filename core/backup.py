@@ -11,6 +11,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -138,6 +139,15 @@ def create_backup(
     # 同秒并发的手动/自动备份必须串行选择文件名、写入临时文件并轮转，
     # 否则多个线程会共用同一个 .tmp 或互相覆盖最终文件
     with _BACKUP_WRITE_LOCK:
+        # 进程被强杀时 mkstemp 的 .tmp 不会被清理；过期临时文件含完整
+        # 健康数据，下次创建备份时顺带删除
+        cutoff = time.time() - 3600
+        for stale in target_dir.glob(f"{BACKUP_PREFIX}*.json.*.tmp"):
+            try:
+                if stale.is_file() and stale.stat().st_mtime < cutoff:
+                    stale.unlink(missing_ok=True)
+            except OSError:
+                continue
         stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
         base = f"{BACKUP_PREFIX}{stamp}"
         path = target_dir / f"{base}.json"

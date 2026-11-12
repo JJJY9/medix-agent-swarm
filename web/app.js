@@ -1477,6 +1477,9 @@ function renderFeedback(payload) {
       status.textContent = `反馈失败：${err.message || err}`;
     } finally {
       Object.values(buttons).forEach((btn) => { btn.disabled = false; });
+      // 提交按钮随表单一起被移除，焦点回到对应的评分按钮
+      const focusTarget = buttons[Number(current)] || buttons[next];
+      if (focusTarget && focusTarget.isConnected) focusTarget.focus();
     }
   };
 
@@ -7610,6 +7613,10 @@ function hideHealthSearchResults() {
 }
 
 async function openHealthSearch() {
+  if (els.attachmentPreview && !els.attachmentPreview.hidden) {
+    // 全屏附件预览打开时先关闭，避免把焦点移到遮罩后的搜索框
+    closeAttachmentPreview();
+  }
   if (!metricsOpen) {
     const opening = openMetrics();
     if (els.healthSearchInput) {
@@ -10121,7 +10128,10 @@ function resetMetricForm() {
 }
 
 function cancelMetricEdit() {
+  const hadFocus = document.activeElement === els.metricCancel;
   resetMetricForm();
+  // 取消按钮被隐藏后焦点不能掉到 body
+  if (hadFocus && els.metricAdd) els.metricAdd.focus();
   setMetricsStatus('已取消编辑。');
 }
 
@@ -14610,6 +14620,7 @@ async function saveQuickEntry() {
       els.quickEntryUndo.hidden = !quickEntryLastSavedId;
     }
     const alerts = data.critical_alerts || [];
+    const saveHadFocus = document.activeElement === els.quickEntrySave;
     clearQuickEntryPreview();
     if (els.quickEntryInput) els.quickEntryInput.value = '';
     if (alerts.length) {
@@ -14619,6 +14630,10 @@ async function saveQuickEntry() {
       );
     } else {
       setQuickEntryStatus('已保存快速记录。');
+    }
+    // 保存按钮隐藏后焦点回到输入框，键盘用户可继续记录
+    if (saveHadFocus && els.quickEntryInput) {
+      els.quickEntryInput.focus();
     }
     await refreshMetrics();
     loadBpMonitoring();
@@ -14678,6 +14693,7 @@ let attachmentPreviewUrl = null;
 let attachmentPreviewItem = null;
 let attachmentPreviewReturnFocus = null;
 let attachmentPreviewRequestSeq = 0;
+let attachmentPreviewFocusGuard = null;
 let attachmentRefCounts = { visit: {}, lab: {} };
 let attachmentRefFilter = null;
 let attachmentFilterTimer = null;
@@ -15633,6 +15649,10 @@ async function editAttachmentNote(item) {
 function closeAttachmentPreview() {
   // 关闭后作废仍在途的打开请求，避免旧响应重新弹出预览
   attachmentPreviewRequestSeq += 1;
+  if (attachmentPreviewFocusGuard) {
+    document.removeEventListener('focusin', attachmentPreviewFocusGuard);
+    attachmentPreviewFocusGuard = null;
+  }
   const wasOpen = els.attachmentPreview && !els.attachmentPreview.hidden;
   if (attachmentPreviewUrl) {
     URL.revokeObjectURL(attachmentPreviewUrl);
@@ -15676,10 +15696,25 @@ function openAttachmentPreview(item, url) {
     const frame = document.createElement('iframe');
     frame.src = url;
     frame.title = item.original_name || '附件预览';
+    // PDF 查看器内部的键盘事件不会冒泡到父文档；禁止 Tab 进入 iframe
+    frame.tabIndex = -1;
     body.appendChild(frame);
   }
   els.attachmentPreview.hidden = false;
   if (els.attachmentPreviewClose) els.attachmentPreviewClose.focus();
+  // 焦点一旦离开模态预览（如点击 PDF 后 Tab 落到 body），拉回关闭按钮
+  attachmentPreviewFocusGuard = (event) => {
+    if (!els.attachmentPreview || els.attachmentPreview.hidden) {
+      document.removeEventListener(
+        'focusin', attachmentPreviewFocusGuard
+      );
+      attachmentPreviewFocusGuard = null;
+      return;
+    }
+    if (els.attachmentPreview.contains(event.target)) return;
+    if (els.attachmentPreviewClose) els.attachmentPreviewClose.focus();
+  };
+  document.addEventListener('focusin', attachmentPreviewFocusGuard);
   return true;
 }
 
@@ -19988,6 +20023,15 @@ async function checkStatusOnce() {
       // 恢复连接后主动重试一次，而不是要求用户手动刷新
       statusWasDown = false;
       void retryAfterReconnect();
+      // 页面可能是离线时由旧 Service Worker 缓存的；后端恢复后主动
+      // 检查一次新外壳，发现新 worker 时提示刷新
+      if (swRegistration) {
+        swRegistration.update().then(() => {
+          if (swRegistration.waiting || swRegistration.installing) {
+            showUpdateBanner();
+          }
+        }).catch(() => {});
+      }
     }
 
     // 资产更新不会改变 service worker（旧实现），轮询状态里的构建号
@@ -20076,8 +20120,22 @@ async function checkStatusOnce() {
       return;
     }
     setVitals('bad', '无法连接服务');
-    showBanner(`无法连接后端服务：${escapeHtml(err.message)}`);
+    showBanner(
+      `无法连接后端服务：${escapeHtml(networkErrorMessage(err))}`
+    );
   }
+}
+
+function networkErrorMessage(err) {
+  const message = String((err && err.message) || err || '');
+  if (
+    (typeof TypeError !== 'undefined' && err instanceof TypeError)
+    || /failed to fetch|networkerror|load failed|network request failed/i
+      .test(message)
+  ) {
+    return '无法连接本地后端服务，请确认服务已启动';
+  }
+  return message || '未知错误';
 }
 
 function showBanner(html) {
@@ -21117,7 +21175,9 @@ if (els.reminderStatsRange) {
   });
 }
 els.reminderCancel.addEventListener('click', () => {
+  const hadFocus = document.activeElement === els.reminderCancel;
   resetReminderForm();
+  if (hadFocus && els.reminderTitle) els.reminderTitle.focus();
   setRemindersStatus('已取消编辑。');
 });
 els.reminderTitle.addEventListener('keydown', (event) => {
@@ -22132,6 +22192,9 @@ document.addEventListener('keydown', (e) => {
     if (!metricsOpen) {
       openHealthSearch();
     } else if (els.healthSearchInput) {
+      if (els.attachmentPreview && !els.attachmentPreview.hidden) {
+        closeAttachmentPreview();
+      }
       els.healthSearchInput.focus();
     }
     return;

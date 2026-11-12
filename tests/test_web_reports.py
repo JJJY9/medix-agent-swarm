@@ -97,7 +97,8 @@ def test_app_js_escapes_banner_error_text(client):
 
     assert "escapeHtml(data.startup_error" in app_js
     assert "escapeHtml(data.knowledge_base.error)" in app_js
-    assert "escapeHtml(err.message)" in app_js
+    assert "escapeHtml(networkErrorMessage(err))" in app_js
+    assert "function networkErrorMessage(err)" in app_js
 
 
 def test_app_js_ships_sessions_csv_export(client):
