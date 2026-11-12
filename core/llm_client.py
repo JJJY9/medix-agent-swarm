@@ -166,6 +166,8 @@ class LLMError(Exception):
         self.user_message = safe_message
         self.retryable = retryable
         self.status_code = status_code
+        # 流式响应中途失败时，保留已经推送给前端的文本
+        self.partial_text = ""
 
 
 def classify_llm_error(exc: Exception) -> LLMError:
@@ -438,10 +440,12 @@ class LLMClient:
         """
         for attempt in range(max_retries):
             emitted = False
+            partial: List[str] = []
 
             def guarded_on_token(delta: str) -> None:
                 nonlocal emitted
                 emitted = True
+                partial.append(delta)
                 if on_token is not None:
                     on_token(delta)
 
@@ -453,6 +457,8 @@ class LLMClient:
                     **kwargs
                 )
             except LLMError as e:
+                if emitted:
+                    e.partial_text = "".join(partial)
                 if emitted or not e.retryable or attempt == max_retries - 1:
                     raise
                 logger.warning(
