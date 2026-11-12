@@ -940,7 +940,8 @@ def auto_backup_wait_seconds(hours: int) -> float:
         age = time.time() - latest.stat().st_mtime
     except OSError:
         return 0.0
-    return max(0.0, hours * 3600 - age)
+    # 文件时间戳精度可能让 age 略小于 0，等待时间不应超过一个间隔
+    return min(hours * 3600, max(0.0, hours * 3600 - age))
 
 
 async def auto_backup_loop() -> None:
