@@ -62,6 +62,20 @@ def test_raas_blockers_with_reduced_egfr():
     assert _titles(["缬沙坦"], [_lab("eGFR", 70, "mL/min/1.73m²")]) == []
 
 
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "mL/min/1.73m^2",
+        "mL/(min·1.73m²)",
+        "mL/min1.73m2",
+        "ml/min/1.73",
+    ],
+)
+def test_egfr_unit_variants_are_recognized(unit):
+    titles = _titles(["缬沙坦"], [_lab("eGFR", 45, unit)])
+    assert "缬沙坦与肾功能下降" in titles
+
+
 def test_egfr_is_estimated_from_creatinine_when_missing():
     labs = [_lab("肌酐", 150, "μmol/L")]
     context = {"age": "70", "sex": "女"}
