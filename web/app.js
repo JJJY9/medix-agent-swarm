@@ -13396,6 +13396,30 @@ function filterMedications(items) {
   });
 }
 
+function captureMedicationFocusLabel() {
+  const active = document.activeElement;
+  if (!active) return '';
+  const inList = (
+    (els.medicationList && els.medicationList.contains(active))
+    || (els.todayMedsList && els.todayMedsList.contains(active))
+  );
+  return inList ? (active.getAttribute('aria-label') || '') : '';
+}
+
+function restoreMedicationFocusLabel(label) {
+  if (!label) return;
+  for (const root of [els.medicationList, els.todayMedsList]) {
+    if (!root) continue;
+    const button = Array.from(root.querySelectorAll('button')).find(
+      (candidate) => candidate.getAttribute('aria-label') === label
+    );
+    if (button) {
+      button.focus();
+      return;
+    }
+  }
+}
+
 function renderMedications(items) {
   if (!els.medicationList) return;
   els.medicationList.replaceChildren();
@@ -13675,9 +13699,11 @@ function renderMedications(items) {
 }
 
 async function toggleMedicationHistory(item) {
+  const focusLabel = captureMedicationFocusLabel();
   if (medicationHistoryOpen.has(item.id)) {
     medicationHistoryOpen.delete(item.id);
     renderMedications(filterMedications(medicationItemsCache));
+    restoreMedicationFocusLabel(focusLabel);
     return;
   }
   medicationHistoryOpen.add(item.id);
@@ -13700,15 +13726,18 @@ async function toggleMedicationHistory(item) {
       );
       medicationHistoryBusy.delete(item.id);
       renderMedications(filterMedications(medicationItemsCache));
+      restoreMedicationFocusLabel(focusLabel);
       return;
     }
     medicationHistoryBusy.delete(item.id);
   }
   renderMedications(filterMedications(medicationItemsCache));
+  restoreMedicationFocusLabel(focusLabel);
 }
 
 async function loadMedications() {
   if (!els.medicationList) return;
+  const focusLabel = captureMedicationFocusLabel();
   const requestSeq = ++medicationRequestSeq;
   medicationHistoryCache.clear();
   medicationHistoryOpen.clear();
@@ -13724,6 +13753,7 @@ async function loadMedications() {
     if (requestSeq !== medicationRequestSeq) return;
     medicationItemsCache = data.medications || [];
     renderMedications(filterMedications(medicationItemsCache));
+    restoreMedicationFocusLabel(focusLabel);
   } catch {
     // 同上：失败时清空旧档案的用药清单
     if (requestSeq !== medicationRequestSeq) return;
