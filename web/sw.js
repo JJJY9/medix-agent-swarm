@@ -77,3 +77,30 @@ self.addEventListener('fetch', (event) => {
     }
   })());
 });
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    // 提醒通知点击后聚焦已打开的窗口并跳到提醒面板；
+    // 没有窗口时新开一个，由前端 handleLaunchAction 处理 ?action=reminders
+    const target = '/?action=reminders';
+    const windows = await self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    });
+    for (const client of windows) {
+      if ('focus' in client) {
+        await client.focus();
+        if ('navigate' in client) {
+          try {
+            await client.navigate(target);
+          } catch {
+            // 导航失败时至少已聚焦窗口
+          }
+        }
+        return;
+      }
+    }
+    await self.clients.openWindow(target);
+  })());
+});

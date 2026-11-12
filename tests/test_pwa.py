@@ -55,7 +55,8 @@ def test_app_js_keeps_offline_state_and_handles_sw_updates(client):
     app_js = client.get("/static/app.js").text
 
     assert re.search(
-        r"\} catch \(err\) \{\s*if \(navigator\.onLine === false\) \{",
+        r"\} catch \(err\) \{\s*statusWasDown = true;\s*"
+        r"if \(navigator\.onLine === false\) \{",
         app_js,
     )
     assert "OFFLINE_BANNER" in app_js
