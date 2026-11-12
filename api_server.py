@@ -2560,9 +2560,8 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
 @app.get("/api/backups")
 async def list_local_backups():
     """列出本地自动备份，供恢复入口选择。"""
-    from core.backup import get_backup_keep, list_backups
+    from core.backup import MAX_BACKUP_KEEP, list_backups
 
-    keep = max(1, get_backup_keep())
     items = []
     for path in await asyncio.to_thread(list_backups):
         try:
@@ -2576,7 +2575,7 @@ async def list_local_backups():
                 stat.st_mtime
             ).isoformat(timespec="seconds"),
         })
-        if len(items) >= keep:
+        if len(items) >= MAX_BACKUP_KEEP:
             break
     return {"backups": items}
 
