@@ -117,6 +117,8 @@ def test_parse_other_metrics_and_unit_inference():
     assert parse_quick_metric("睡了 8 小时")["value1"] == 8
     assert parse_quick_metric("睡眠 7.5")["value1"] == 7.5
     assert parse_quick_metric("步数 8000")["metric"] == "steps"
+    assert parse_quick_metric("步数 8000 步")["value1"] == 8000
+    assert parse_quick_metric("6500步")["metric"] == "steps"
     assert parse_quick_metric("走了 6500")["value1"] == 6500
     assert parse_quick_metric("体重 62.5 kg")["metric"] == "weight"
     assert parse_quick_metric("62.5kg")["metric"] == "weight"
