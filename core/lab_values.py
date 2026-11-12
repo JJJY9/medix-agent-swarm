@@ -288,21 +288,41 @@ def _count_factor(unit: str) -> Optional[float]:
     return None
 
 
+def _unit_factor(key: str, spec: Dict[str, Any]) -> Optional[float]:
+    if spec.get("unit_family") == "count":
+        return _count_factor(key)
+    if spec.get("unitless"):
+        return 1.0 if not key or key in {
+            "ratio", "比值", "无", "-", "—",
+        } else None
+    return (spec.get("units") or {}).get(key)
+
+
 def _normalized_value(
     value: float, unit: Any, spec: Dict[str, Any]
 ) -> Optional[float]:
-    key = _unit_key(unit)
-    if spec.get("unit_family") == "count":
-        factor = _count_factor(key)
-    elif spec.get("unitless"):
-        factor = 1.0 if not key or key in {
-            "ratio", "比值", "无", "-", "—",
-        } else None
-    else:
-        factor = (spec.get("units") or {}).get(key)
+    factor = _unit_factor(_unit_key(unit), spec)
     if factor is None:
         return None
     return value * factor
+
+
+@lru_cache(maxsize=2048)
+def _analyte_classification(
+    text: str, unit_key: str
+) -> Optional[Tuple[int, float]]:
+    """缓存（项目名, 单位）→（分析物下标, 换算系数）。
+
+    项目名与单位在真实数据里基数很低；逐行重复做 10 组别名正则与单位
+    归一化是纯浪费，数值换算仍按每行执行。
+    """
+    index = _analyte_index(text)
+    if index < 0:
+        return None
+    factor = _unit_factor(unit_key, ANALYTES[index])
+    if factor is None:
+        return None
+    return (index, factor)
 
 
 def _is_stale(tested_at: Any) -> bool:
@@ -345,21 +365,21 @@ def normalize_lab_measurement(
     item: Any, value: Any, unit: Any
 ) -> Optional[Dict[str, Any]]:
     """把化验值换算为规范单位；无法识别时返回 None。"""
-    spec_index = _analyte_index(_lab_item_text(item))
-    if spec_index < 0:
+    classification = _analyte_classification(
+        _lab_item_text(item), _unit_key(unit)
+    )
+    if classification is None:
         return None
+    spec_index, factor = classification
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return None
     spec = ANALYTES[spec_index]
-    normalized = _normalized_value(number, unit, spec)
-    if normalized is None:
-        return None
     return {
         "analyte": spec["key"],
         "label": spec["label"],
-        "value": round(normalized, 4),
+        "value": round(number * factor, 4),
         "unit": spec["unit_label"],
     }
 
@@ -371,15 +391,18 @@ def lab_critical_alerts(
     tested_at: Any = None,
 ) -> List[Dict[str, Any]]:
     """返回化验达到危急值时的提示；未识别或无法换算时返回空列表。"""
-    spec_index = _analyte_index(_lab_item_text(item))
-    if spec_index < 0:
+    classification = _analyte_classification(
+        _lab_item_text(item), _unit_key(unit)
+    )
+    if classification is None:
         return []
+    spec_index, factor = classification
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return []
     spec = ANALYTES[spec_index]
-    normalized = _normalized_value(number, unit, spec)
+    normalized = number * factor
     if normalized is None:
         return []
     if spec.get("low") is not None and normalized < float(spec["low"]):

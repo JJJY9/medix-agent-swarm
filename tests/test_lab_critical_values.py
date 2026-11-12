@@ -288,7 +288,10 @@ def test_family_insight_labels_member_and_stale_dossier(client_and_store):
 
 
 def test_analyte_resolution_is_cached_across_rows():
+    from core.lab_values import _analyte_classification
+
     _analyte_index.cache_clear()
+    _analyte_classification.cache_clear()
     first = _analyte_index(_lab_item_text("血钾"))
     assert first >= 0
 
@@ -296,9 +299,9 @@ def test_analyte_resolution_is_cached_across_rows():
         assert normalize_lab_measurement("血钾", 4.2, "mmol/L") is not None
         assert lab_critical_alerts("血钾", 7.0, "mmol/L")
 
-    info = _analyte_index.cache_info()
+    info = _analyte_classification.cache_info()
     assert info.misses == 1
-    assert info.hits >= 200
+    assert info.hits >= 199
 
 
 def test_analyte_cache_distinguishes_unknown_items():

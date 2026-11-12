@@ -415,3 +415,18 @@ def test_family_overview_attention_includes_medication_lab(client_and_store):
     mom = next(item for item in overview if item["name"] == "妈妈")
     assert mom["medication_lab_safety"]["count"] >= 1
     assert "用药安全" in mom["attention"]["label"]
+
+
+def test_extra_lab_classification_is_cached():
+    from core.medication_lab_safety import _classify_extra
+
+    _classify_extra.cache_clear()
+    expected = _classify_extra("谷丙转氨酶", "u/l")
+    assert expected is not None
+
+    for _ in range(50):
+        assert _classify_extra("谷丙转氨酶", "u/l") == expected
+
+    info = _classify_extra.cache_info()
+    assert info.misses == 1
+    assert info.hits >= 50

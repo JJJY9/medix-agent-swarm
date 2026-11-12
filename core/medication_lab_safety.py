@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, List, Optional
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.clinical_tools import calculate_egfr
 from core.lab_values import normalize_lab_measurement, normalize_unit_key
@@ -40,19 +41,14 @@ def _ascii_token(text: str, token: str) -> bool:
     ) is not None
 
 
-def _normalize_extra(
-    item: Any, value: Any, unit: Any
-) -> Optional[Dict[str, Any]]:
-    """识别 ALT、eGFR 与地高辛浓度并换算为规范单位。"""
-    text = _text(item)
+@lru_cache(maxsize=2048)
+def _classify_extra(
+    text: str, unit_key: str
+) -> Optional[Tuple[str, str, str, float]]:
+    """缓存（项目名, 单位）→（分析物, 标签, 规范单位, 换算系数）。"""
     compact = _compact(text)
     if not compact:
         return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    key = normalize_unit_key(unit)
 
     if (
         any(alias in compact for alias in ("谷丙转氨酶", "丙氨酸氨基转移酶"))
@@ -67,41 +63,45 @@ def _normalize_extra(
             or ("谷草转氨酶" in compact and "谷丙转氨酶" in compact)
         ):
             return None
-        factor = _ALT_UNITS.get(key)
+        factor = _ALT_UNITS.get(unit_key)
         if factor is None:
             return None
-        return {
-            "analyte": "alt",
-            "label": "ALT",
-            "value": round(number * factor, 2),
-            "unit": "U/L",
-            "factor": factor,
-        }
+        return ("alt", "ALT", "U/L", factor)
 
     if "肾小球滤过率" in compact or _ascii_token(text, "egfr"):
-        factor = _EGFR_UNITS.get(key)
+        factor = _EGFR_UNITS.get(unit_key)
         if factor is None:
             return None
-        return {
-            "analyte": "egfr",
-            "label": "eGFR",
-            "value": round(number * factor, 2),
-            "unit": "mL/min/1.73m²",
-            "factor": factor,
-        }
+        return ("egfr", "eGFR", "mL/min/1.73m²", factor)
 
     if "地高辛" in compact or _ascii_token(text, "digoxin"):
-        factor = _DIGOXIN_UNITS.get(key)
+        factor = _DIGOXIN_UNITS.get(unit_key)
         if factor is None:
             return None
-        return {
-            "analyte": "digoxin",
-            "label": "地高辛浓度",
-            "value": round(number * factor, 4),
-            "unit": "ng/mL",
-            "factor": factor,
-        }
+        return ("digoxin", "地高辛浓度", "ng/mL", factor)
     return None
+
+
+def _normalize_extra(
+    item: Any, value: Any, unit: Any
+) -> Optional[Dict[str, Any]]:
+    """识别 ALT、eGFR 与地高辛浓度并换算为规范单位。"""
+    classification = _classify_extra(_text(item), normalize_unit_key(unit))
+    if classification is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    analyte, label, unit_label, factor = classification
+    decimals = 4 if analyte == "digoxin" else 2
+    return {
+        "analyte": analyte,
+        "label": label,
+        "value": round(number * factor, decimals),
+        "unit": unit_label,
+        "factor": factor,
+    }
 
 
 def _collect_measurements(
