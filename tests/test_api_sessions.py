@@ -251,6 +251,30 @@ def test_tags_api_and_filter(tmp_path, monkeypatch):
     assert missing.status_code == 404
 
 
+def test_risk_filter_summary_includes_feedback(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "risk.db"))
+    assistant_id = store.save_exchange(
+        "s1", "胸痛", "风险评估：高危，请立即就医。",
+        metadata={"usage": {"total_tokens": 10}, "llm_calls": 1},
+    )
+    store.set_message_feedback("s1", assistant_id, 1)
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+    try:
+        client = TestClient(api_server.app)
+        data = client.get(
+            "/api/sessions", params={"risk": "high"}
+        ).json()
+    finally:
+        store.close()
+
+    assert data["summary"]["feedback"] == {
+        "total": 1,
+        "helpful": 1,
+        "unhelpful": 0,
+        "rate": 100.0,
+    }
+
+
 def test_feedback_api_roundtrip(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "sessions.db"))
     assistant_id = store.save_exchange(
