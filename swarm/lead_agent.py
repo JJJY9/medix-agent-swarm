@@ -528,9 +528,15 @@ class LeadAgent:
         completed_agents = []
         for contrib in all_contributions:
             subtask = shared_context.get_subtask(contrib.subtask_id)
+            if isinstance(contrib.result, dict):
+                answer_text = str(contrib.result.get("answer") or "").strip()
+            else:
+                answer_text = str(contrib.result or "").strip()
+            if not answer_text:
+                answer_text = "(未提供文本答案)"
             contributions_text.append(
                 f"**{contrib.agent_id}** ({subtask.type if subtask else '未知'}):\n"
-                f"{contrib.result}"
+                f"{answer_text}"
             )
             completed_agents.append(contrib.agent_id)
 

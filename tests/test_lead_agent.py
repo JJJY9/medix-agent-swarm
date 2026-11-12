@@ -174,3 +174,41 @@ def test_synthesize_results_without_callback_uses_blocking_chat():
     assert text == "非流式答复"
     assert llm.stream_calls == 0
     assert llm.chat_calls == 1
+
+
+class CapturingChatLLM:
+    def __init__(self):
+        self.messages = None
+
+    async def chat(self, messages, **kwargs):
+        self.messages = messages
+        return "汇总答复"
+
+
+def test_synthesis_prompt_uses_answer_text_only():
+    context = SharedContext(session_id="prompt-test")
+    context.add_subtask(SubTask(
+        id="s1",
+        type="test_task",
+        description="测试任务",
+        assigned_agent="consultation_agent",
+    ))
+    context.start_subtask("s1")
+    context.complete_subtask("s1", "consultation_agent", {
+        "answer": "贡献正文",
+        "iterations": 3,
+        "agent_id": "consultation_agent",
+        "sources": [{"title": "内部来源"}],
+        "usage": {"prompt_tokens": 10},
+    })
+    llm = CapturingChatLLM()
+
+    asyncio.run(
+        LeadAgent(llm_client=llm).synthesize_results("测试问题", context)
+    )
+
+    prompt = llm.messages[0]["content"]
+    assert "贡献正文" in prompt
+    assert "iterations" not in prompt
+    assert "'answer'" not in prompt
+    assert "内部来源" not in prompt
