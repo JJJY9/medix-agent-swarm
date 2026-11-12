@@ -70,6 +70,7 @@ from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
+from core.fs_permissions import restrict_permissions
 from core.pricing import get_pricing
 from core.budget import get_token_budget
 from core.serialization import (
@@ -10645,12 +10646,14 @@ async def upload_attachment(
 
     attachment_dir = ATTACHMENT_DIR.resolve()
     attachment_dir.mkdir(parents=True, exist_ok=True)
+    restrict_permissions(attachment_dir, 0o700)
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = (attachment_dir / stored_name).resolve()
     if target.parent != attachment_dir:
         raise HTTPException(status_code=400, detail="附件名称不正确")
     try:
         target.write_bytes(content)
+        restrict_permissions(target, 0o600)
     except OSError:
         logger.warning("附件写入失败")
         raise HTTPException(status_code=500, detail="附件保存失败")

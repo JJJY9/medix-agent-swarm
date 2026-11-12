@@ -21,6 +21,7 @@ from loguru import logger
 
 from core.serialization import sanitize_json
 from core.lab_values import lab_critical_alerts
+from core.fs_permissions import restrict_permissions
 from core.backup import (
     MAX_BACKUP_MESSAGE_CHARS,
     MAX_BACKUP_SESSION_MESSAGES,
@@ -1676,6 +1677,22 @@ class SessionStore:
         self._deleted_sessions: Dict[str, None] = {}
         self._max_deleted_sessions = 4096
         self._init_schema()
+        self._harden_permissions()
+
+    def _harden_permissions(self) -> None:
+        """把数据库与应用数据目录限制为仅当前用户可访问。
+
+        自定义 MEDIX_SESSION_DB 只收紧数据库文件本身，不改变用户目录
+        的权限；Windows 上的 chmod 不生效但会被忽略。
+        """
+        data_root = DEFAULT_DB_PATH.parent
+        try:
+            if self.db_path.resolve().parent == data_root.resolve():
+                restrict_permissions(data_root, 0o700)
+        except OSError:
+            pass
+        for suffix in ("", "-wal", "-shm"):
+            restrict_permissions(Path(str(self.db_path) + suffix), 0o600)
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:

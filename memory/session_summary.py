@@ -21,6 +21,8 @@ import re
 import uuid
 from loguru import logger
 
+from core.fs_permissions import restrict_permissions
+
 
 @dataclass
 class AgentParticipation:
@@ -354,6 +356,7 @@ class SessionSummaryManager:
         self.base_dir = Path(base_dir)
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
+            restrict_permissions(self.base_dir, 0o700)
         except OSError as e:
             # 总结是可选功能，目录不可写不应拖垮整个协调器
             logger.warning(f"会话总结目录不可用: {e}")
@@ -379,6 +382,7 @@ class SessionSummaryManager:
         date_dir = self.base_dir / date_str
         if create:
             date_dir.mkdir(parents=True, exist_ok=True)
+            restrict_permissions(date_dir, 0o700)
         if hashed:
             digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:10]
             filename = f"{safe_id}-{digest}.md"
@@ -429,6 +433,7 @@ class SessionSummaryManager:
             )
             temp_path.write_text(content, encoding="utf-8")
             temp_path.replace(summary_path)
+            restrict_permissions(summary_path, 0o600)
             logger.info(f"Saved session summary: {summary.session_id}")
         except Exception as e:
             if temp_path is not None:
