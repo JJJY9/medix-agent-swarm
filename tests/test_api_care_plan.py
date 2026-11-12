@@ -236,3 +236,33 @@ def test_care_items_backup_roundtrip_and_profile_rename(
     store.rename_profile("妈妈", "母亲")
     moved = store.list_care_items("母亲")
     assert [row["id"] for row in moved] == [item["id"]]
+
+
+def test_care_done_completes_previous_reminder(client_and_store):
+    client, _store = client_and_store
+    item = client.post("/api/care-items", json={
+        "profile": "妈妈",
+        "title": "眼底检查",
+        "interval_days": 365,
+        "next_due_at": _date(10),
+    }).json()["care_item"]
+    old = client.post(
+        f"/api/care-items/{item['id']}/reminder"
+    ).json()["reminder"]
+    assert old["due_at"] == _date(3)
+
+    done = client.post(f"/api/care-items/{item['id']}/done", json={})
+    assert done.status_code == 200
+    new = done.json()["reminder"]
+    assert new["id"] != old["id"]
+
+    reminders = client.get(
+        "/api/reminders",
+        params={"include_done": True, "profile": "妈妈"},
+    ).json()["reminders"]
+    by_id = {row["id"]: row for row in reminders}
+    assert by_id[old["id"]]["done"] is True
+    assert by_id[new["id"]]["done"] is False
+    assert [row["id"] for row in reminders if not row["done"]] == [
+        new["id"]
+    ]
