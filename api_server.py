@@ -5643,19 +5643,25 @@ async def _weekly_report_impl(
     profile: Optional[str] = None,
     days: int = 7,
     max_days: int = 90,
+    include_previous: bool = True,
 ):
-    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。"""
+    """近 N 天健康小结：指标、症状、用药打卡、会诊与待办提醒汇总。
+
+    include_previous=False 时只加载本期数据，供 insights/dossier 等
+    不展示环比的使用方减少查询与聚合开销。
+    """
     from datetime import timedelta
 
     from memory import get_session_store
 
     days = max(1, min(int(days or 7), int(max_days or 90)))
+    window_days = days * 2 if include_previous else days
     store = get_session_store()
     now = datetime.now()
     end = now.strftime("%Y-%m-%d")
     start = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
-        store.list_metrics, profile, None, 100000, days * 2
+        store.list_metrics, profile, None, 100000, window_days
     )
     metrics = [
         item for item in raw_metrics
@@ -5669,7 +5675,7 @@ async def _weekly_report_impl(
         if prev_start <= str(item.get("measured_at") or "")[:10] < start
     ]
     raw_symptoms = await asyncio.to_thread(
-        store.list_symptoms, profile, 100000, days * 2
+        store.list_symptoms, profile, 100000, window_days
     )
     symptoms = [
         item for item in raw_symptoms
@@ -5686,7 +5692,7 @@ async def _weekly_report_impl(
         store.list_medications, profile, False, 100000
     )
     raw_logs = await asyncio.to_thread(
-        store.list_medication_logs, None, profile, 100000, 0, days * 2
+        store.list_medication_logs, None, profile, 100000, 0, window_days
     )
     logs = [
         item for item in raw_logs
@@ -5704,9 +5710,10 @@ async def _weekly_report_impl(
     previous_skip_logs = [
         item for item in previous_logs if item.get("skipped")
     ]
+    session_window_start = prev_start if include_previous else start
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
-        profile, prev_start, f"{end}T23:59:59", 100000,
+        profile, session_window_start, f"{end}T23:59:59", 100000,
     )
     sessions = [
         item for item in raw_sessions
@@ -5989,7 +5996,7 @@ async def _weekly_report_impl(
             due_soon += 1
 
     raw_labs = await asyncio.to_thread(
-        store.list_lab_results, profile, None, None, days * 2, 100000, 0
+        store.list_lab_results, profile, None, None, window_days, 100000, 0
     )
     lab_results = [
         item for item in raw_labs
@@ -6102,7 +6109,7 @@ async def _weekly_report_impl(
     ]
 
     raw_visits = await asyncio.to_thread(
-        store.list_visit_records, profile, days * 2, "", 100000
+        store.list_visit_records, profile, window_days, "", 100000
     )
     # 复诊日期可能晚于就诊日期很多，统计复诊不能只看近 2×days 天的就诊
     followup_visits = await asyncio.to_thread(
@@ -6978,7 +6985,9 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
                 "level": "warning",
                 "alerts": family_alerts[:5],
             }
-    report = await _weekly_report_impl(profile=profile, days=days)
+    report = await _weekly_report_impl(
+        profile=profile, days=days, include_previous=False
+    )
     insights = _build_health_insights(
         report,
         safety=safety,
@@ -12408,7 +12417,8 @@ async def export_health_dossier(
     lines.append("")
 
     report = await _weekly_report_impl(
-        profile=profile_key, days=days, max_days=365
+        profile=profile_key, days=days, max_days=365,
+        include_previous=False,
     )
     safety = await _medication_safety_for_profile(store, profile_key)
     insights = [

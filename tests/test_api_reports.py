@@ -1,4 +1,5 @@
 """每周健康小结 API 的离线测试。"""
+import asyncio
 from datetime import datetime, timedelta
 
 import pytest
@@ -470,3 +471,26 @@ def test_weekly_report_integrates_new_health_records(client_and_store):
     }
     assert glucose_contexts["fasting"]["label"] == "空腹"
     assert glucose_contexts["postprandial"]["avg_value1"] == 8.5
+
+
+def test_weekly_report_can_skip_previous_window(
+    client_and_store, monkeypatch,
+):
+    _client, store = client_and_store
+    recorded = {}
+
+    original = store.list_metrics
+
+    def wrapped(*args, **kwargs):
+        recorded["days"] = args[3] if len(args) > 3 else kwargs.get("days")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "list_metrics", wrapped)
+
+    report = asyncio.run(api_server._weekly_report_impl(
+        profile="妈妈", days=7, include_previous=False,
+    ))
+
+    # 只加载本期 7 天，不再为环比多读一倍数据
+    assert recorded["days"] == 7
+    assert report["metrics"]["count"] == 0
