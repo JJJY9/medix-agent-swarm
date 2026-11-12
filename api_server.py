@@ -2259,27 +2259,9 @@ async def import_sessions(request: ImportSessionsRequest):
     """导入备份文件；已存在的会话编号会跳过，不覆盖现有记录。"""
     from memory import get_session_store
 
-    payload = {
-        "version": request.version,
-        "sessions": request.sessions,
-        "profiles": request.profiles,
-        "health_metrics": request.health_metrics,
-        "metric_targets": request.metric_targets,
-        "reminders": request.reminders,
-        "symptoms": request.symptoms,
-        "medications": request.medications,
-        "medication_logs": request.medication_logs,
-        "medication_history": request.medication_history,
-        "vaccinations": request.vaccinations,
-        "appointments": request.appointments,
-        "lab_results": request.lab_results,
-        "allergies": request.allergies,
-        "care_items": request.care_items,
-        "visit_records": request.visit_records,
-        "conditions": request.conditions,
-        "audit_log": request.audit_log,
-        "checksum": request.checksum,
-    }
+    # 只回传请求中实际出现的字段：历史备份可能没有后续新增的列表，
+    # 若补成 None 参与校验和计算，会让原本有效的旧备份被判为篡改。
+    payload = request.model_dump(exclude_unset=True)
     try:
         result = await asyncio.to_thread(
             get_session_store().import_data, payload
