@@ -9023,7 +9023,8 @@ async function loadHomeGlance() {
       fetch('/api/metrics/latest'),
       fetch('/api/symptoms?limit=1').catch(() => null),
       fetch('/api/medications?active_only=true&limit=50').catch(() => null),
-      fetch('/api/reports/weekly').catch(() => null),
+      // 首页概览不展示环比，跳过上一周期数据以减小查询窗口
+      fetch('/api/reports/weekly?include_previous=false').catch(() => null),
       fetch(insightsUrl).catch(() => null),
     ]);
     if (!remindersRes.ok || !metricsRes.ok) {
