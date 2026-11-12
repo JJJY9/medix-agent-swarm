@@ -115,6 +115,12 @@ _DOUBLE_NEGATION_SUFFIXES = (
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
 
+#: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
+PREGNANCY_UNCERTAIN_TERMS = (
+    "有没有怀孕", "是否怀孕", "有无怀孕", "不知道有没有怀孕",
+    "不确定是否怀孕", "可能怀孕", "怀疑怀孕", "会不会怀孕",
+)
+
 #: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
 PREGNANCY_BLEEDING_TERMS = (
     "阴道出血", "阴道流血", "阴道大量出血", "产道出血",
@@ -270,8 +276,9 @@ def has_visit_recommendation(text: str) -> bool:
                 start = sentence.find(term, start + len(term))
         for call in _CALL_120_PATTERN.finditer(sentence):
             prefix = sentence[:call.start()]
+            tail = prefix.rstrip()[-10:]
             negated = any(
-                negation in prefix for negation in _VISIT_NEGATIONS
+                negation in tail for negation in _VISIT_NEGATIONS
             )
             questioning = any(
                 marker in prefix for marker in _QUESTION_MARKERS
@@ -372,21 +379,41 @@ def _parse_age_months(age: Any) -> Optional[float]:
     return total if (years or months or days or _AGE_BARE.match(text)) else None
 
 
+#: 「气温/水温/酒精度 38 度」不是体温
+_NON_BODY_TEMPERATURE_WORDS = (
+    "气温", "水温", "室温", "油温", "酒精度", "环境温度",
+    "室外温度", "天气温度",
+)
+
+
 def _has_fever(text: str) -> bool:
     for term in FEVER_TERMS:
         start = text.find(term)
         while start != -1:
             prefix = _clause_prefix(text, start)
-            if term == "烧了" and prefix.rstrip().endswith("退"):
-                # 「已经退烧了」不是发热
+            stripped = prefix.rstrip()
+            if term == "烧了" and (
+                stripped.endswith("退")
+                or stripped.endswith(("不发", "没发", "没有发", "未发"))
+            ):
+                # 「已经退烧了」「不发烧了」不是发热
                 start = text.find(term, start + len(term))
                 continue
+            if term == "高热":
+                following = text[start + len(term):start + len(term) + 1]
+                if following in ("量", "能", "卡", "食", "饮", "效", "烹"):
+                    # 「高热量/高热能」不是发热
+                    start = text.find(term, start + len(term))
+                    continue
             if not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
 
     for match in TEMPERATURE_PATTERN.finditer(text):
-        prefix = _clause_prefix(text, match.start())
+        window = text[max(0, match.start() - 8):match.end()]
+        if any(word in window for word in _NON_BODY_TEMPERATURE_WORDS):
+            continue
+        prefix = _clause_prefix(text, match.start(), lookback=8)
         if not _is_negated(prefix):
             return True
     return False
@@ -494,11 +521,15 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 break
             start = text.find(phrase, start + len(phrase))
 
-    if (
-        any(
+    pregnancy_mentioned = (
+        any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
+        or any(
             _positive_mention(text, term)
             for term in PREGNANCY_TERMS
         )
+    )
+    if (
+        pregnancy_mentioned
         and any(
             _positive_mention(text, term)
             for term in PREGNANCY_BLEEDING_TERMS

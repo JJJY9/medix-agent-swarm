@@ -66,6 +66,13 @@ def test_uncontrolled_conditions_are_active():
     )
     assert nocturnal["alerts"]
 
+    negated_diabetes = check_condition_drug_safety(
+        ["泼尼松"], ["无糖尿病，血压未达标"]
+    )
+    assert not any(
+        "糖尿病" in alert["title"] for alert in negated_diabetes["alerts"]
+    )
+
 
 def test_alcohol_rules_cover_common_phrases_and_negation():
     drunk = check_medication_safety(
@@ -78,6 +85,25 @@ def test_alcohol_rules_cover_common_phrases_and_negation():
     )
     assert not any("酒精" in alert["title"] for alert in abstinent["alerts"])
 
+    abstinent_beer = check_medication_safety(
+        "", {"medications": "头孢克肟；平时不喝啤酒"}
+    )
+    assert not any(
+        "酒精" in alert["title"] for alert in abstinent_beer["alerts"]
+    )
+
+    forbidden = check_medication_safety(
+        "", {"medications": "头孢克肟；别喝红酒"}
+    )
+    assert not any(
+        "酒精" in alert["title"] for alert in forbidden["alerts"]
+    )
+
+    forced = check_medication_safety(
+        "", {"medications": "头孢克肟；应酬时不得不喝酒"}
+    )
+    assert any("酒精" in alert["title"] for alert in forced["alerts"])
+
     acetaminophen = check_medication_safety(
         "", {"medications": "对乙酰氨基酚；喝了点酒"}
     )
@@ -88,6 +114,9 @@ def test_drug_groups_include_common_members():
     assert find_drugs("艾司唑仑", "benzodiazepines") == ["艾司唑仑"]
     assert find_drugs("氢化可的松", "corticosteroids") == ["氢化可的松"]
     assert find_drugs("倍他米松", "corticosteroids") == ["倍他米松"]
+    # 外用制剂不进入全身糖皮质激素相互作用
+    assert find_drugs("氢化可的松乳膏", "corticosteroids") == []
+    assert find_drugs("倍他米松滴眼液", "corticosteroids") == []
 
 
 def test_red_flag_synonyms_and_pregnancy_negation():
@@ -96,6 +125,30 @@ def test_red_flag_synonyms_and_pregnancy_negation():
 
     not_pregnant = detect_red_flags("没有怀孕，但是阴道出血")
     assert "孕产期出血" not in not_pregnant["matches"]
+
+    unsure = detect_red_flags("有没有怀孕不确定，现在阴道出血")
+    assert "孕产期出血" in unsure["matches"]
+
+
+def test_fever_false_positives_are_excluded():
+    afebrile = detect_red_flags("已经不发烧了", {"age": "2个月"})
+    assert afebrile["level"] == "none"
+
+    calories = detect_red_flags(
+        "高热量饮食可以吗", {"history": "化疗后"}
+    )
+    assert calories["level"] == "none"
+
+    weather = detect_red_flags(
+        "今天气温38度", {"history": "化疗后"}
+    )
+    assert weather["level"] == "none"
+
+
+def test_call_120_advice_not_negated_by_earlier_word():
+    assert has_visit_recommendation(
+        "不需要犹豫，请立即拨打120。"
+    ) is True
 
 
 def test_egfr_unit_with_space_normalizes():

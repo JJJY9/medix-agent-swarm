@@ -386,9 +386,16 @@ ALCOHOL_TERMS = (
     "alcohol", "beer", "wine",
 )
 
-#: 紧贴酒类词前的否定/戒断表达（「不喝酒」「已经戒酒」不算在用）
+#: 紧贴酒类词前的否定/戒断表达（「不喝酒」「不喝啤酒」「已经戒酒」）
 _ALCOHOL_NEGATIONS = re.compile(
-    r"(?:不|没|没有|无|未|不再|已经?戒|戒了|忌|从不)\s*$"
+    r"(?:不|没|没有|无|未|不再|已经?戒|戒了|忌|从不|别|勿|禁止)"
+    r"(?:再|怎么|太|会|能|想|敢|喝|饮)?\s*$"
+)
+
+
+#: 「不得不喝酒」表示实际会喝，不是戒酒
+_ALCOHOL_DOUBLE_NEGATIONS = (
+    "不得不", "不能不", "不禁", "忍不住", "没法不", "无法不",
 )
 
 
@@ -400,17 +407,19 @@ def _has_alcohol_use(text: str) -> bool:
             pattern = re.compile(
                 rf"(?<![a-z0-9_]){re.escape(term)}s?(?![a-z0-9_])"
             )
-            for match in pattern.finditer(text):
-                prefix = text[max(0, match.start() - 8):match.start()]
-                if not _ALCOHOL_NEGATIONS.search(prefix):
-                    return True
-            continue
-        start = text.find(term)
-        while start != -1:
-            prefix = text[max(0, start - 8):start]
+            matches = [match.start() for match in pattern.finditer(text)]
+        else:
+            matches = []
+            start = text.find(term)
+            while start != -1:
+                matches.append(start)
+                start = text.find(term, start + len(term))
+        for position in matches:
+            prefix = text[max(0, position - 8):position]
+            if prefix.rstrip().endswith(_ALCOHOL_DOUBLE_NEGATIONS):
+                return True
             if not _ALCOHOL_NEGATIONS.search(prefix):
                 return True
-            start = text.find(term, start + len(term))
     return False
 
 #: 过敏史 → (展示名, 过敏词, 需要警惕的药物组)
@@ -608,11 +617,28 @@ def _term_matches(text: str, term: str) -> bool:
     return lowered in text
 
 
+#: 局部用糖皮质激素不进入全身相互作用判断
+_TOPICAL_STEROID_MARKERS = (
+    "滴眼", "眼液", "滴耳", "乳膏", "软膏", "外用", "喷雾",
+    "洗剂", "凝胶", "贴剂",
+)
+
+
 def _find_drugs(text: str, group: str) -> List[str]:
     """返回文本中命中的组内规范药名（去重、保持定义顺序）。"""
     if group == "alcohol":
         # 酒类是行为描述而非药名：必须排除「不喝酒」「已戒酒」
         return ["酒精"] if _has_alcohol_use(text) else []
+    if group == "corticosteroids":
+        # 逐条药物过滤：氢化可的松乳膏/滴眼液不算全身用药
+        segments = re.split(r"[；;\n]", text)
+        text = "；".join(
+            segment for segment in segments
+            if not any(
+                marker in segment
+                for marker in _TOPICAL_STEROID_MARKERS
+            )
+        )
     found: List[str] = []
     for canonical, aliases in DRUG_GROUPS.get(group, ()):
         if any(_alias_matches(text, alias) for alias in aliases):

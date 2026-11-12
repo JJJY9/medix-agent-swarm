@@ -157,7 +157,8 @@ _INACTIVE_MARKERS = ("已治愈", "治愈后", "家族史", "已好转", "已恢
 #: 这些词说明疾病仍在活动期，前面的「未/无」不是否定
 _ACTIVE_MARKERS = (
     "未控制", "未治疗", "未愈", "未规范治疗", "未达标",
-    "控制不佳", "控制不良",
+    "控制不佳", "控制不良", "没有控制好", "没控制好", "控制不好",
+    "未规律", "未缓解", "未稳定", "未愈合", "未手术",
 )
 
 
@@ -172,10 +173,15 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     """判断疾病名是否以否定/已排除的语气提到该关键词。"""
     if "未治愈" in normalized:
         return False
-    if any(marker in normalized for marker in _ACTIVE_MARKERS):
-        # 「未控制的糖尿病」是活动疾病，不能被「未」当成否定
-        return False
     token = keyword.lower()
+    # 活动状态限定语只在包含该疾病的分句内生效，避免
+    # 「无糖尿病，血压未达标」把未达标算到糖尿病头上
+    clauses = re.split(r"[，。；,;：:\s]+", normalized)
+    target_clause = next(
+        (clause for clause in clauses if token in clause), ""
+    )
+    if any(marker in target_clause for marker in _ACTIVE_MARKERS):
+        return False
     if re.search(
         rf"(?:无|没有|否认|排除|非|未)[^，。；,;:：]{{0,6}}"
         rf"{re.escape(token)}",
