@@ -1020,6 +1020,20 @@ def csv_restore_cell(value: Any) -> str:
     return text
 
 
+def csv_number(value: Any) -> str:
+    """导出浮点数时保留可往返的精度（:g 会把大数/小数截成 6 位）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if not math.isfinite(number):
+        return ""
+    text = repr(number)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
 #: CSV 状态列中明确表示"停用"的写法；空值与其他未知值按在用处理，
 #: 避免把用户手写的变体（已停药/暂停等）误导入为在用药物
 _CSV_INACTIVE_STATUS = {
@@ -3057,9 +3071,9 @@ async def export_medications_csv(
             str(expected) if expected else "",
             str(adherence_rate(taken, expected))
             if expected else "",
-            "" if item.get("stock") is None else f"{item['stock']:g}",
+            "" if item.get("stock") is None else csv_number(item["stock"]),
             csv_safe_cell(item.get("stock_unit", "")),
-            f"{float(item.get('low_stock_threshold') or 0):g}",
+            csv_number(item.get("low_stock_threshold") or 0),
             csv_safe_cell(item.get("expiry_date", "")),
             csv_safe_cell("、".join(alerts)),
             csv_safe_cell(item.get("started_at", "")),
@@ -4161,12 +4175,12 @@ async def export_lab_results_csv(
             csv_safe_cell(row.get("profile", "")),
             csv_safe_cell(row.get("panel", "")),
             csv_safe_cell(row.get("item", "")),
-            f"{float(row.get('value') or 0):g}",
+            csv_number(row.get('value') or 0),
             csv_safe_cell(row.get("unit", "")),
             "" if row.get("ref_low") is None
-            else f"{float(row['ref_low']):g}",
+            else csv_number(row["ref_low"]),
             "" if row.get("ref_high") is None
-            else f"{float(row['ref_high']):g}",
+            else csv_number(row["ref_high"]),
             flag,
             "是" if row.get("critical") else "",
             csv_safe_cell(row.get("lab_name", "")),
