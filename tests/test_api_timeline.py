@@ -561,3 +561,30 @@ def test_timeline_vaccination_alert_only_for_latest_dose(client_and_store):
 
     assert len(events) == 2
     assert all(event["alert"] is False for event in events)
+
+
+def test_timeline_excludes_far_future_appointments(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    future = (now + timedelta(days=120)).strftime("%Y-%m-%d")
+
+    client.post("/api/appointments", json={
+        "profile": "妈妈", "title": "今日复诊",
+        "scheduled_at": f"{today}T09:00",
+    })
+    client.post("/api/appointments", json={
+        "profile": "妈妈", "title": "远期复诊",
+        "scheduled_at": f"{future}T09:00",
+    })
+
+    events = client.get(
+        "/api/timeline", params={"profile": "妈妈", "days": 30}
+    ).json()["events"]
+    appointment_titles = [
+        event["title"] for event in events
+        if event["type"] == "appointment"
+    ]
+
+    assert "今日复诊" in appointment_titles
+    assert "远期复诊" not in appointment_titles
