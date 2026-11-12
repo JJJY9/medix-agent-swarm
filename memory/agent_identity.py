@@ -17,6 +17,8 @@ import json
 import re
 import threading
 
+from loguru import logger
+
 
 #: 所有 AgentIdentityManager 实例共享的读改写锁
 _IDENTITY_LOCK = threading.RLock()
@@ -288,6 +290,31 @@ class AgentIdentityManager:
 
             try:
                 content = identity.to_markdown()
+                if identity_path.exists():
+                    # 无法识别但合法的旧 IDENTITY.md 先备份，避免被
+                    # 新统计整体覆写后永久丢失
+                    try:
+                        existing = identity_path.read_text(
+                            encoding="utf-8"
+                        )
+                        recognized = any(
+                            marker in existing
+                            for marker in (
+                                "# Agent:", "**类型**:", "**类型**：",
+                                "## 核心能力", "## 专长领域",
+                            )
+                        )
+                    except Exception:
+                        existing = ""
+                        recognized = True
+                    if existing.strip() and not recognized:
+                        backup = identity_path.with_name(
+                            "IDENTITY.md.bak"
+                        )
+                        backup.write_text(existing, encoding="utf-8")
+                        logger.warning(
+                            "IDENTITY.md 无法识别，已备份为 IDENTITY.md.bak"
+                        )
                 temp_path = identity_path.with_name(
                     identity_path.name + ".tmp"
                 )

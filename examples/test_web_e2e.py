@@ -26,9 +26,16 @@ BASE = "http://127.0.0.1:8000"
 TOKEN = (os.getenv("MEDIX_ACCESS_TOKEN") or "").strip()
 
 
+def _header_token(token: str) -> str:
+    """HTTP 头按 latin-1 传输；把 UTF-8 令牌字节映射到 latin-1 字符。"""
+    return token.encode("utf-8").decode("latin-1")
+
+
 def ask(question: str, sid: str) -> dict:
     events = []
-    headers = {"X-Medix-Token": TOKEN} if TOKEN else {}
+    headers = (
+        {"X-Medix-Token": _header_token(TOKEN)} if TOKEN else {}
+    )
     with httpx.Client(timeout=300) as client:
         with client.stream(
             "POST",

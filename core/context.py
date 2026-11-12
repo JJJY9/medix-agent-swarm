@@ -70,8 +70,14 @@ def _format_recent_history(value: Any) -> str:
         content = str(item.get("content") or "").strip()
         if not content:
             continue
-        role = "用户" if str(item.get("role")) == "user" else "助手"
-        lines.append(f"{role}：{content}")
+        role = str(item.get("role"))
+        role_label = {
+            "user": "用户",
+            "assistant": "助手",
+            "system": "历史摘要",
+            "tool": "工具结果",
+        }.get(role, "助手")
+        lines.append(f"{role_label}：{content}")
     return "\n".join(lines)
 
 
@@ -113,13 +119,9 @@ def format_context(
         if text:
             lines.append(f"{label}：{text}")
 
+    history_text = ""
     if include_internal:
         history_text = _format_recent_history(context.get("recent_history"))
-        if history_text:
-            lines.append(
-                f"{INTERNAL_CONTEXT_LABELS['recent_history']}：\n"
-                f"{history_text}"
-            )
         cases_text = _format_historical_cases(
             context.get("historical_cases")
         )
@@ -138,7 +140,28 @@ def format_context(
         if text:
             lines.append(f"{key}：{text}")
 
-    return "\n".join(lines)[:max_length]
+    body = "\n".join(lines)
+    if history_text:
+        # 最近对话放在最后并预留预算，避免长背景把最新追问整段截掉
+        header = f"{INTERNAL_CONTEXT_LABELS['recent_history']}：\n"
+        reserve = min(
+            len(header) + len(history_text),
+            max(200, max_length // 3),
+        )
+        body = body[:max(0, max_length - reserve - 1)]
+        available = (
+            max_length - len(body) - (1 if body else 0) - len(header)
+        )
+        if available > 0:
+            snippet = history_text[-available:]
+            if len(history_text) > available:
+                # 从下一条完整消息开始，避免截断半句话
+                newline = snippet.find("\n")
+                if newline >= 0:
+                    snippet = snippet[newline + 1:]
+            body = (body + "\n" if body else "") + header + snippet
+
+    return body[:max_length]
 
 
 def public_context(context: Any) -> Dict[str, Any]:

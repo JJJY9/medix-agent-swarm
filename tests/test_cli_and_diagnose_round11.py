@@ -50,6 +50,6 @@ def test_web_e2e_sends_access_token():
         encoding="utf-8"
     )
     assert 'os.getenv("MEDIX_ACCESS_TOKEN")' in script
-    assert '"X-Medix-Token": TOKEN' in script
+    assert '"X-Medix-Token": _header_token(TOKEN)' in script
     assert "resp.status_code != 200" in script
     assert "未收到 result 事件" in script

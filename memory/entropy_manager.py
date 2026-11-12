@@ -41,27 +41,26 @@ class MemoryEntropyManager:
         if not messages:
             return []
 
-        unique_messages = []
-        index_by_hash = {}
-
-        for msg in messages:
+        # 从后往前保留每条内容最后一次出现的位置：先正序去重会把
+        # 最新一条重复消息挪到最早位置，压缩后最新一轮可能被当成旧历史
+        unique_reversed = []
+        seen_hashes = set()
+        for msg in reversed(messages):
             content = msg.get("content", "")
             role = msg.get("role", "")
-
-            # 生成内容哈希
-            content_hash = hashlib.md5(f"{role}:{content}".encode()).hexdigest()
-
-            if content_hash not in index_by_hash:
-                index_by_hash[content_hash] = len(unique_messages)
-                unique_messages.append(msg)
-            else:
-                # 重复消息保留最新一条（时间戳/元数据以新消息为准）
-                unique_messages[index_by_hash[content_hash]] = msg
+            content_hash = hashlib.md5(
+                f"{role}:{content}".encode()
+            ).hexdigest()
+            if content_hash in seen_hashes:
                 logger.debug(
                     "🗑️ Deduplicated message "
-                    f"(role={msg.get('role', '')}, length={len(content)})"
+                    f"(role={role}, length={len(content)})"
                 )
+                continue
+            seen_hashes.add(content_hash)
+            unique_reversed.append(msg)
 
+        unique_messages = list(reversed(unique_reversed))
         removed_count = len(messages) - len(unique_messages)
         if removed_count > 0:
             logger.info(f"🗑️ Removed {removed_count} duplicate messages")

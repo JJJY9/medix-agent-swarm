@@ -32,8 +32,13 @@ async function waitForAnswer(page, timeoutMs = 240000) {
   while (Date.now() < deadline) {
     const state = await page.evaluate(() => {
       if (document.querySelector('.failure')) return 'failure';
-      if (document.querySelector('.note')) return 'answer';
-      return 'running';
+      const note = document.querySelector('.note');
+      if (!note) return 'running';
+      // 流式占位卡也带 .note：必须等 streaming 结束且发送按钮恢复
+      if (note.classList.contains('streaming')) return 'running';
+      const send = document.getElementById('send');
+      if (send && send.disabled) return 'running';
+      return 'answer';
     });
     if (state !== 'running') return state;
     await wait(1000);
@@ -137,9 +142,16 @@ async function expandForFullCapture(page, expand) {
 
   const state = await waitForAnswer(page);
   console.log(`   结果：${state}`);
-  if (state === 'failure') {
-    const msg = await page.textContent('.failure');
-    console.error('   会诊失败：', msg);
+  if (state !== 'answer') {
+    if (state === 'failure') {
+      const msg = await page.textContent('.failure');
+      console.error('   会诊失败：', msg);
+    } else {
+      console.error('   等待会诊答复超时');
+    }
+    await browser.close();
+    process.exitCode = 1;
+    return;
   }
 
   console.log('03 完整会诊意见（展开内部滚动后整页截取）');
@@ -180,6 +192,17 @@ async function expandForFullCapture(page, expand) {
   await mp.click('#send');
   const mState = await waitForAnswer(mp);
   console.log(`   结果：${mState}`);
+  if (mState !== 'answer') {
+    console.error(
+      mState === 'failure'
+        ? '   移动端会诊失败'
+        : '   移动端等待答复超时'
+    );
+    await mobile.close();
+    await browser.close();
+    process.exitCode = 1;
+    return;
+  }
   await mp.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await wait(600);
   await shoot(mp, '06-移动端-会诊意见.png');

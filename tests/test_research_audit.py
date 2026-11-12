@@ -153,6 +153,19 @@ def test_parse_response_clamps_confidence():
     assert normal.confidence == 0.2
 
 
+def test_round_robin_keeps_each_query_visible():
+    pytest.importorskip("sentence_transformers")
+    from research.deep_research_workflow import DeepResearchWorkflow
+
+    merged = DeepResearchWorkflow._round_robin([
+        ["a1", "a2", "a3"],
+        ["b1", "b2"],
+        ["c1"],
+    ])
+
+    assert merged == ["a1", "b1", "c1", "a2", "b2", "a3"]
+
+
 def test_deep_research_milvus_search_runs_off_event_loop():
     pytest.importorskip("sentence_transformers")
     from research.deep_research_workflow import DeepResearchWorkflow

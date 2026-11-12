@@ -149,7 +149,11 @@ async def interactive_mode():
                     print(f"  {i}. {suggestion}")
 
             # 显示免责声明
-            print(f"\n{result['disclaimer']}")
+            disclaimer = str(
+                result.get("disclaimer")
+                or "以上信息仅供参考，不能替代专业医生的诊断和治疗。"
+            )
+            print(f"\n{disclaimer}")
             print("\n" + "=" * 60 + "\n")
 
         except KeyboardInterrupt:

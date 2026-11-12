@@ -80,6 +80,25 @@ def test_base_agent_renders_recent_history_for_workers():
     assert text.rstrip().endswith("用户问题：那还需要吃布洛芬吗？")
 
 
+def test_recent_history_keeps_latest_message_under_truncation():
+    history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"消息{index}" + "长" * 40,
+        }
+        for index in range(60)
+    ]
+
+    text = format_context({
+        "history": "背" * 2000,
+        "recent_history": history,
+    }, max_length=800, include_internal=True)
+
+    assert "最近对话：" in text
+    assert "消息59" in text
+    assert len(text) <= 800
+
+
 def test_format_context_handles_invalid_and_long_input():
     assert format_context(None) == ""
     assert format_context("not a dict") == ""

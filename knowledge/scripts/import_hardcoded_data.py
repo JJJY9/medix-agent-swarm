@@ -15,16 +15,19 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from loguru import logger
+from core.console import ensure_utf8_stdio
 from knowledge.milvus_kb import MedicalKnowledgeBase
 from knowledge.service import KnowledgeService
 
+ensure_utf8_stdio()
 
-def main():
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="导入医学知识文档")
     parser.add_argument(
         "--append",
         action="store_true",
-        help="追加导入而不是重建索引（默认重建，避免重复）",
+        help="已弃用：追加会重复写入全部文档，现在统一按幂等重建执行",
     )
     args = parser.parse_args()
 
@@ -33,11 +36,15 @@ def main():
     logger.info("=" * 70)
 
     service = KnowledgeService()
+    if args.append:
+        logger.warning(
+            "--append 会重复写入全部文档，已改为幂等重建（不再追加）"
+        )
     try:
-        result = service.rebuild(replace_existing=not args.append)
+        result = service.rebuild(replace_existing=True)
     except ValueError as e:
         logger.error(str(e))
-        return
+        return 1
 
     logger.info(
         f"完成：{result['documents']} 个文档（内置 {result['builtin_documents']} / "
@@ -61,7 +68,8 @@ def main():
             )
         else:
             logger.warning(f"  ⚠️  '{query}' → 未找到结果")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
