@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict, List
 
 #: 知识库原文可能来自用户上传文档，进入提示词前必须声明为不可信资料
@@ -11,6 +12,18 @@ UNTRUSTED_CONTENT_NOTE = (
 )
 #: 单条注入提示词的知识库内容上限；分块为 1024 字，正常不会截断
 MAX_UNTRUSTED_CONTENT_CHARS = 1500
+#: 内容中出现该序列时可以伪造/提前闭合不可信边界，必须中和
+_UNTRUSTED_TAG_PATTERN = re.compile(
+    r"<\s*/?\s*untrusted_source", re.IGNORECASE
+)
+
+
+def sanitize_untrusted_text(
+    text: Any, max_chars: int = MAX_UNTRUSTED_CONTENT_CHARS
+) -> str:
+    """限制长度并中和内容里伪造的不可信边界标签。"""
+    raw = _UNTRUSTED_TAG_PATTERN.sub("［untrusted_source", str(text or ""))
+    return raw[:max_chars]
 
 
 def wrap_untrusted_source(
@@ -19,11 +32,33 @@ def wrap_untrusted_source(
     max_chars: int = MAX_UNTRUSTED_CONTENT_CHARS,
 ) -> str:
     """把知识库原文包进不可信资料来源边界并限制长度。"""
-    text = str(content or "")[:max_chars]
+    text = sanitize_untrusted_text(content, max_chars)
     return (
         f"{UNTRUSTED_CONTENT_NOTE}\n"
         f'<untrusted_source index="{index}">\n{text}\n</untrusted_source>'
     )
+
+
+def wrap_source_snippets(
+    sources: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """把来源卡片里的原文片段包进不可信边界。
+
+    技能的工具结果会整体进入模型上下文：snippet 是检索原文，
+    title/filename/source 也可能来自用户上传的文档元数据。
+    """
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source["snippet"] = wrap_untrusted_source(
+            source.get("snippet")
+        )
+        for field in ("title", "filename", "source"):
+            if source.get(field):
+                source[field] = sanitize_untrusted_text(
+                    source.get(field), 160
+                )
+    return sources
 
 
 def _score(doc: Dict[str, Any]) -> float:
