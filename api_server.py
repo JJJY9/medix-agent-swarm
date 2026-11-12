@@ -8925,8 +8925,11 @@ async def import_metrics_csv(
         "auditc", "mmrc"
     }
 
+    from memory.session_store import METRIC_CONTEXTS
+
     records = []
     invalid = 0
+    context_ignored = 0
     try:
         csv_rows = list(reader)
     except csv.Error as e:
@@ -8983,6 +8986,11 @@ async def import_metrics_csv(
             context = "evening"
         elif metric == "glucose" and context == "evening":
             context = "bedtime"
+        allowed_contexts = METRIC_CONTEXTS.get(metric, ())
+        if context and allowed_contexts and context not in allowed_contexts:
+            # 情境只是可选标签；不适用于该指标时忽略标签而不是丢弃整条读数
+            context = ""
+            context_ignored += 1
 
         records.append({
             "profile": mapped.get("profile", "") or profile,
@@ -9009,13 +9017,17 @@ async def import_metrics_csv(
     imported = int(result.get("metrics", 0))
     await record_audit(
         "metric.import",
-        detail=f"imported={imported} invalid={invalid}",
+        detail=(
+            f"imported={imported} invalid={invalid} "
+            f"context_ignored={context_ignored}"
+        ),
     )
     return {
         "ok": True,
         "imported": imported,
         "skipped": len(records) - imported,
         "invalid": invalid,
+        "context_ignored": context_ignored,
     }
 
 
