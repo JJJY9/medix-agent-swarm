@@ -930,7 +930,9 @@ def test_app_js_links_medication_log_and_reminder(client):
     assert "async function completeDueMedicationReminder" in app_js
     assert "async function reopenLinkedMedicationReminder" in app_js
     assert "已完成今日用药提醒" in app_js
-    assert "days >= -1 && days <= 0" in app_js
+    # 打卡完成所有逾期/今天到期的提醒，并在顺延到今天时继续完成
+    assert "days <= 0" in app_js
+    assert "attempt < 10" in app_js
     assert "candidates.find(" in app_js
     assert "readPatientContext().allergies" in app_js
 

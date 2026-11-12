@@ -4682,6 +4682,28 @@ async def _complete_care_item_old_reminders(
         await asyncio.to_thread(store.complete_reminder, reminder_id)
 
 
+async def _care_title_shared(store, item) -> bool:
+    """同一档案下是否还有另一个启用中的同名复查计划。
+
+    复查提醒按标题匹配；标题撞名时无法判断归属，保守跳过清理，
+    避免创建/完成一条计划时完成另一条计划的待办。
+    """
+    profile = item.get("profile") or ""
+    title = item.get("title") or ""
+    item_id = int(item.get("id") or 0)
+    try:
+        rows = await asyncio.to_thread(
+            store.list_care_items, profile, True, False, 1000
+        )
+    except Exception:
+        return True
+    return any(
+        int(row.get("id") or 0) != item_id
+        and (row.get("title") or "") == title
+        for row in rows
+    )
+
+
 async def _ensure_care_item_reminder(store, item):
     """按复查计划的下次日期创建提前 7 天的提醒；已有提醒时复用。
 
@@ -4714,6 +4736,9 @@ async def _ensure_care_item_reminder(store, item):
     )
     if reminder is None:
         return None, False
+    if await _care_title_shared(store, item):
+        # 同名计划共存时无法区分提醒归属，保留全部提醒
+        return reminder, created
     reminders = await asyncio.to_thread(
         store.list_reminders, True, item.get("profile") or ""
     )
@@ -13171,7 +13196,7 @@ async def export_reminders_csv(
     rows = [[
         "到期日", "内容", "档案", "状态", "提前天数", "重复天数",
         "重复截止", "重复来源ID", "备注", "关联药物ID", "关联药物",
-        "关联会话ID", "ID",
+        "关联疫苗ID", "关联预约ID", "关联会话ID", "ID",
     ]]
     for item in items:
         medication_id = int(item.get("medication_id") or 0)
@@ -13187,6 +13212,8 @@ async def export_reminders_csv(
             csv_safe_cell(item.get("note", "")),
             medication_id or "",
             csv_safe_cell(medication_names.get(medication_id, "")),
+            int(item.get("vaccination_id") or 0) or "",
+            int(item.get("appointment_id") or 0) or "",
             csv_safe_cell(item.get("session_id", "")),
             int(item.get("id") or 0) or "",
         ])
@@ -13394,6 +13421,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
         "备注": "note",
         "关联药物ID": "medication_id",
         "关联药物": "medication_name",
+        "关联疫苗ID": "vaccination_id",
+        "关联预约ID": "appointment_id",
         "关联会话ID": "session_id",
         "ID": "id",
     }
@@ -13442,6 +13471,18 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
         except (TypeError, ValueError):
             medication_id = 0
         try:
+            vaccination_id = max(
+                0, int(mapped.get("vaccination_id") or 0)
+            )
+        except (TypeError, ValueError):
+            vaccination_id = 0
+        try:
+            appointment_id = max(
+                0, int(mapped.get("appointment_id") or 0)
+            )
+        except (TypeError, ValueError):
+            appointment_id = 0
+        try:
             reminder_id = max(0, int(mapped.get("id") or 0))
         except (TypeError, ValueError):
             reminder_id = 0
@@ -13458,6 +13499,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             "repeats_from": repeats_from,
             "medication_id": medication_id,
             "medication_name": mapped.get("medication_name", ""),
+            "vaccination_id": vaccination_id,
+            "appointment_id": appointment_id,
             "done": status in ("已完成", "完成", "done", "1", "true", "True"),
         })
 
