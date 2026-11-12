@@ -145,6 +145,32 @@ def test_lab_filters_and_latest(client_and_store):
     }
 
 
+def test_latest_labs_keep_panels_separate(client_and_store):
+    client, _store = client_and_store
+    early = (datetime.now() - timedelta(days=1)).isoformat(
+        timespec="minutes"
+    )
+    late = datetime.now().isoformat(timespec="minutes")
+    client.post("/api/lab-results", json={
+        "profile": "妈妈", "panel": "肾功能", "item": "肌酐",
+        "value": 88.4, "unit": "μmol/L", "tested_at": early,
+    })
+    client.post("/api/lab-results", json={
+        "profile": "妈妈", "panel": "24小时尿", "item": "肌酐",
+        "value": 9800, "unit": "μmol/L", "tested_at": late,
+    })
+
+    latest = client.get(
+        "/api/lab-results/latest", params={"profile": "妈妈"}
+    ).json()["lab_results"]
+    creatinine = [row for row in latest if row["item"] == "肌酐"]
+
+    # 尿标本不能覆盖同名的血清结果
+    assert {row["panel"] for row in creatinine} == {
+        "肾功能", "24小时尿",
+    }
+
+
 def test_lab_results_export_import_roundtrip(client_and_store):
     client, _store = client_and_store
     client.post("/api/lab-results", json={

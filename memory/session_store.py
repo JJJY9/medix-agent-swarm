@@ -6599,7 +6599,7 @@ class SessionStore:
     def latest_lab_results(
         self, profile: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """每个化验项目最近一次结果，用于计算器预填与摘要。"""
+        """每个（项目, 分组）最近一次结果，避免尿/血同名项目互相覆盖。"""
         conditions: List[str] = []
         params: List[Any] = []
         if profile is not None:
@@ -6619,15 +6619,16 @@ class SessionStore:
                        l.note, l.created_at, l.updated_at
                   FROM lab_results l
                   JOIN (
-                      SELECT DISTINCT item FROM lab_results {where}
-                  ) d ON d.item = l.item
+                      SELECT DISTINCT item, panel FROM lab_results {where}
+                  ) d ON d.item = l.item AND d.panel = l.panel
                  WHERE l.id = (
                        SELECT l2.id FROM lab_results l2
-                        WHERE l2.item = d.item {sub_where}
+                        WHERE l2.item = d.item AND l2.panel = d.panel
+                          {sub_where}
                         ORDER BY l2.tested_at DESC, l2.id DESC
                         LIMIT 1
                  )
-                 ORDER BY l.item ASC
+                 ORDER BY l.item ASC, l.panel ASC
                 """,
                 [*params, *sub_params],
             ).fetchall()

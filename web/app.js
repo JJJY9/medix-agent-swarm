@@ -4398,7 +4398,10 @@ async function refreshAfterBackupImport(result) {
   await loadUsageTrend();
   await loadUsageBudget();
   if (result.profiles) await initProfiles();
-  if (result.targets) loadMetricTargets();
+  if (result.targets) {
+    await loadMetricTargets();
+    updateMetricTargetDisplay();
+  }
   if (
     result.metrics || result.symptoms || result.reminders
     || result.medications || result.medication_logs
@@ -6424,7 +6427,7 @@ const METRIC_NAMES = {
   mmrc: 'mMRC 分级',
 };
 const METRIC_REFERENCES = {
-  bp: '家庭血压参考：<135/85 mmHg；≥135/85 建议复测并咨询医生。',
+  bp: '家庭血压参考：≤135/85 mmHg；高于 135/85 建议复测并咨询医生。',
   weight: '体重需结合身高计算 BMI，单一体重没有统一正常范围。',
   glucose: '血糖参考值需结合空腹/餐后与化验单，本工具不做诊断。',
   temperature: '腋温参考：36.0–37.3 °C。',
@@ -13368,7 +13371,9 @@ async function applyConditionTemplate(item) {
       + (targets ? `，并设置指标目标 ${targets} 项。` : '。')
     );
     await loadCareItems();
-    loadMetricTargets();
+    // 新目标要立刻反映到目标行与记录徽标，而不是等重开抽屉
+    await loadMetricTargets();
+    refreshMetrics();
     refreshOverview();
   } catch (err) {
     setConditionStatus(`套用模板失败：${err.message || err}`, true);
@@ -14045,14 +14050,28 @@ function weeklyMetricText(row) {
   let change = '';
   const previous = row.prev_avg_value1;
   if (previous !== null && previous !== undefined) {
-    const diff = Number(row.avg_value1) - Number(previous);
-    if (Number.isFinite(diff)) {
-      if (Math.abs(diff) < 0.05) {
+    const diffs = [];
+    const diff1 = Number(row.avg_value1) - Number(previous);
+    if (Number.isFinite(diff1)) diffs.push(diff1);
+    if (
+      row.avg_value2 !== null && row.avg_value2 !== undefined
+      && row.prev_avg_value2 !== null
+      && row.prev_avg_value2 !== undefined
+    ) {
+      const diff2 = Number(row.avg_value2)
+        - Number(row.prev_avg_value2);
+      if (Number.isFinite(diff2)) diffs.push(diff2);
+    }
+    if (diffs.length) {
+      if (diffs.every((diff) => Math.abs(diff) < 0.05)) {
         change = '，较上期持平';
       } else {
-        const arrow = diff > 0 ? '↑' : '↓';
-        const magnitude = Math.round(Math.abs(diff) * 10) / 10;
-        change = `，较上期 ${arrow}${magnitude}${unit}`;
+        // 血压同时比较收缩压/舒张压，任一明显变化都不能写成持平
+        change = '，较上期 ' + diffs.map((diff) => {
+          if (Math.abs(diff) < 0.05) return '持平';
+          const arrow = diff > 0 ? '↑' : '↓';
+          return `${arrow}${Math.round(Math.abs(diff) * 10) / 10}`;
+        }).join('/') + unit;
       }
     }
   }
@@ -18312,7 +18331,9 @@ async function prefillApriFromLab() {
       els.calcApriUln.value = String(uln);
       ulnText = `，AST 正常上限按化验单带入 ${uln} U/L`;
     } else {
-      ulnText = '；未找到 AST 参考上限，正常上限仍为 40 U/L，'
+      // 没有参考上限时恢复默认 40，不能沿用上一条化验带入的 ULN
+      els.calcApriUln.value = '40';
+      ulnText = '；未找到 AST 参考上限，正常上限已恢复为 40 U/L，'
         + '请按化验单调整';
     }
     setCalcStatus(
@@ -18402,6 +18423,10 @@ async function prefillChildPughFromLab() {
     els.calcChildBilirubin.value = String(bilirubinScore);
     els.calcChildAlbumin.value = String(albuminScore);
     els.calcChildInr.value = String(inrScore);
+    // 腹水/肝性脑病无法从化验推断，必须回到默认“无”，
+    // 不能让上一位患者的选择参与本次分级
+    els.calcChildAscites.value = '1';
+    els.calcChildEncephalopathy.value = '1';
     setCalcStatus(
       `已带入总胆红素 ${Math.round(bilirubinValue.value * 10) / 10} `
       + `μmol/L（${bilirubinScore} 分）、白蛋白 `
@@ -18434,6 +18459,11 @@ async function prefillCurb65FromLab() {
     els.calcCurbUrea.value = String(
       Math.round(ureaValue.value * 10) / 10
     );
+    // 手工项也先重置，避免沿用上一位患者的血压/呼吸/意识状态
+    els.calcCurbSbp.value = '';
+    els.calcCurbDbp.value = '';
+    els.calcCurbRr.value = '';
+    els.calcCurbConfusion.checked = false;
     let bp = null;
     let bpFailed = false;
     try {
@@ -18540,17 +18570,19 @@ function openCalc() {
     ).trim();
   }
   const age = Number.parseInt(context.age, 10);
-  if (Number.isFinite(age)) {
-    els.calcEgfrAge.value = String(age);
-    els.calcChadsAge.value = String(age);
-    els.calcCurbAge.value = String(age);
-    els.calcHasBledAge.value = String(age);
-  }
-  if (context.sex === '女' || context.sex === '男') {
-    const sex = context.sex === '女' ? 'female' : 'male';
-    els.calcEgfrSex.value = sex;
-    els.calcChadsSex.value = sex;
-  }
+  // 每次打开都按当前患者覆盖年龄/性别；缺失时清空，
+  // 不能沿用上一位患者的值
+  const ageText = Number.isFinite(age) ? String(age) : '';
+  els.calcEgfrAge.value = ageText;
+  els.calcChadsAge.value = ageText;
+  els.calcCurbAge.value = ageText;
+  els.calcHasBledAge.value = ageText;
+  if (els.calcFib4Age) els.calcFib4Age.value = ageText;
+  const sexText = context.sex === '女'
+    ? 'female'
+    : context.sex === '男' ? 'male' : '';
+  els.calcEgfrSex.value = sexText;
+  els.calcChadsSex.value = sexText;
 
   let storedTool = '';
   try {
