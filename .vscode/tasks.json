@@ -4,21 +4,21 @@
     {
       "label": "安装依赖",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/Scripts/python.exe -m pip install -r requirements.txt",
+      "command": "${command:python.interpreterPath} -m pip install -r requirements.txt",
       "problemMatcher": [],
       "group": "build"
     },
     {
       "label": "初始化知识库",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/Scripts/python.exe knowledge/scripts/import_hardcoded_data.py",
+      "command": "${command:python.interpreterPath} knowledge/scripts/import_hardcoded_data.py",
       "problemMatcher": [],
       "group": "build"
     },
     {
       "label": "启动 Web 服务",
       "type": "shell",
-      "command": "${workspaceFolder}/.venv/Scripts/python.exe api_server.py --port 8000",
+      "command": "${command:python.interpreterPath} api_server.py --port 8000",
       "problemMatcher": [],
       "isBackground": true,
       "group": {

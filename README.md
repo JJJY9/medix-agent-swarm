@@ -615,7 +615,7 @@ python main.py
 
 项目已附带 `.vscode/` 配置：
 
-1. 打开项目文件夹，VSCode 会提示选择解释器 —— 选 `.venv\Scripts\python.exe`
+1. 打开项目文件夹，VSCode 通常会自动发现 `.venv`；若没有，Windows 手动选择 `.venv\Scripts\python.exe`，macOS/Linux 选择 `.venv/bin/python`
 2. 按 `F5`，在下列配置中选择：
    - **启动 Web 服务（浏览器界面）** — 推荐
    - **命令行对话（main.py）**

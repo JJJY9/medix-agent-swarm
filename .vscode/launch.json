@@ -6,10 +6,12 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/api_server.py",
-      "args": ["--port", "8000"],
+      "args": [
+        "--port",
+        "8000"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "justMyCode": false,
       "envFile": "${workspaceFolder}/.env"
     },
@@ -20,7 +22,6 @@
       "program": "${workspaceFolder}/main.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "justMyCode": false,
       "envFile": "${workspaceFolder}/.env"
     },
@@ -31,7 +32,6 @@
       "program": "${workspaceFolder}/knowledge/scripts/import_hardcoded_data.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "justMyCode": false
     },
     {
@@ -41,7 +41,6 @@
       "program": "${workspaceFolder}/examples/test_all.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
-      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "justMyCode": false
     }
   ]
