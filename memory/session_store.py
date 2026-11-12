@@ -388,9 +388,41 @@ def adherence_rate(taken: Any, expected: Any) -> Optional[int]:
     return min(100, round(taken_value / expected_value * 100 + 1e-9))
 
 
+def _normalize_datetime_text(value: Any, limit: int = 40) -> str:
+    """把 Excel/WPS 常见的日期写法规整为 ISO 风格文本。
+
+    只做格式规整，不判断日期是否真实存在；后续 fromisoformat 负责校验，
+    因此 2026/2/30 之类仍会被拒绝。
+    """
+    text = str(value or "").strip()[:limit]
+    match = re.match(
+        r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?(.*)$", text
+    )
+    if not match:
+        return text
+    year, month, day, rest = match.groups()
+    rest = rest.strip()
+    if rest[:1] in ("T", "t"):
+        rest = rest[1:].strip()
+    if rest:
+        clock = re.match(
+            r"^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(\.\d+)?)?(.*)$", rest
+        )
+        if clock:
+            hour, minute, second, fraction, suffix = clock.groups()
+            rest = f"T{int(hour):02d}:{int(minute):02d}"
+            if second is not None:
+                rest += f":{int(second):02d}{fraction or ''}"
+            rest += suffix
+        else:
+            # 允许空格分隔日期与时间（Excel 另存 CSV 的常见格式）
+            rest = "T" + rest
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}{rest}"
+
+
 def _canonical_local_time(value: Any) -> Optional[str]:
     """把合法 ISO 时间规范化为本地 T 分隔格式；无效返回 None。"""
-    text = str(value or "").strip()[:40]
+    text = _normalize_datetime_text(value)
     if not text:
         return None
     try:
@@ -1320,7 +1352,7 @@ def _normalize_condition(
 
 
 def _normalize_reminder_due(value: Any) -> str:
-    due = str(value or "").strip()[:32]
+    due = _normalize_datetime_text(value, limit=32)
     if not due or not REMINDER_DATE_PATTERN.match(due):
         raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
     try:
@@ -1360,7 +1392,7 @@ def _normalize_reminder_repeat_days(value: Any) -> int:
 
 
 def _normalize_reminder_repeat_until(value: Any) -> str:
-    text = str(value or "").strip()[:32]
+    text = _normalize_datetime_text(value, limit=32)
     if not text:
         return ""
     try:
