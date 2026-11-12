@@ -7377,6 +7377,19 @@ async def health_timeline(
             )
     days = max(1, min(int(days or 30), 365))
     limit = max(1, min(int(limit or 100), 100000))
+    type_key = str(type or "").strip()
+
+    def source_limit(kind: str) -> int:
+        """单个数据源最多读取多少行。
+
+        每类都按时间倒序返回，5×limit（至少 1000）足够覆盖全局前 limit 条
+        与“加载更多”分页，同时避免把 10 万行全部物化成事件字典。
+        q/alert/risk 后置过滤也复用这个上限。type 指定时其余来源只取 1 条。
+        """
+        if type_key and type_key != kind:
+            return 1
+        return max(limit * 5, 1000)
+
     store = get_session_store()
     if day:
         start = day
@@ -7390,38 +7403,46 @@ async def health_timeline(
     attachment_end = day or datetime.now().strftime("%Y-%m-%d")
     raw_metrics = await asyncio.to_thread(
         store.list_metrics,
-        profile, None, 100000, window_days, 0, "", start, window_end,
+        profile, None, source_limit("metric"), window_days, 0, "",
+        start, window_end,
     )
     raw_symptoms = await asyncio.to_thread(
         store.list_symptoms,
-        profile, 100000, window_days, 0, start, window_end,
+        profile, source_limit("symptom"), window_days, 0,
+        start, window_end,
     )
     raw_logs = await asyncio.to_thread(
         store.list_medication_logs,
-        None, profile, 100000, 0, window_days, start, window_end,
-    )
-    raw_vaccinations = await asyncio.to_thread(
-        store.list_vaccinations, profile, 100000, start, window_end
+        None, profile, source_limit("medication"), 0, window_days,
+        start, window_end,
     )
     all_vaccinations = await asyncio.to_thread(
         store.list_vaccinations, profile, 100000
     )
+    vaccination_end = day or datetime.now().strftime("%Y-%m-%d")
+    raw_vaccinations = [
+        item for item in all_vaccinations
+        if start <= str(item.get("vaccinated_at") or "")[:10]
+        <= vaccination_end
+    ]
     latest_vaccination_ids = _latest_vaccination_ids(all_vaccinations)
     raw_appointments = await asyncio.to_thread(
         store.list_appointments,
-        profile, None, False, 100000, 0, start, window_end,
+        profile, None, False, source_limit("appointment"), 0,
+        start, window_end,
     )
     raw_lab_results = await asyncio.to_thread(
         store.list_lab_results,
-        profile, None, None, 0, 100000, 0, start, window_end,
+        profile, None, None, 0, source_limit("lab"), 0,
+        start, window_end,
     )
     raw_care_items = await asyncio.to_thread(
         store.list_care_items,
-        profile, False, False, 100000, start, window_end,
+        profile, False, False, source_limit("care"), start, window_end,
     )
     raw_visit_records = await asyncio.to_thread(
         store.list_visit_records,
-        profile, 0, "", 100000, start, window_end,
+        profile, 0, "", source_limit("visit"), start, window_end,
     )
     raw_attachments = await _list_attachments_paged(
         store, profile, start, attachment_end
@@ -7434,7 +7455,7 @@ async def health_timeline(
     )
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
-        profile, start, session_end, 100000, True,
+        profile, start, session_end, source_limit("consultation"), True,
     )
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
