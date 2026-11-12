@@ -212,7 +212,7 @@ def test_timeline_csv_export(client_and_store):
     assert export.status_code == 200
     assert export.content.startswith(b"\xef\xbb\xbf")
     assert rows[0] == [
-        "时间", "类型", "项目", "数值", "患者档案", "备注", "超标",
+        "时间", "类型", "项目", "数值", "患者档案", "备注", "异常",
     ]
     assert {row[1] for row in rows[1:]} == {"指标", "症状"}
     assert any(row[2].startswith("'=SUM") for row in rows[1:])
@@ -511,3 +511,24 @@ def test_timeline_date_finds_attachment_beyond_newest_page(client_and_store):
     ).json()
 
     assert [event["title"] for event in data["events"]] == ["旧报告.pdf"]
+
+
+def test_timeline_metric_event_marks_low_direction(client_and_store):
+    client, _store = client_and_store
+    now = datetime.now().isoformat(timespec="minutes")
+    client.put("/api/metric-targets", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 7,
+    })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "sleep", "value1": 5,
+        "measured_at": now,
+    })
+
+    data = client.get(
+        "/api/timeline",
+        params={"profile": "妈妈", "type": "metric", "days": 7},
+    ).json()
+
+    event = data["events"][0]
+    assert event["alert"] is True
+    assert event["target_direction"] == "low"
