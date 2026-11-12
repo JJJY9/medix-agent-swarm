@@ -6769,6 +6769,16 @@ function setMetricType(type) {
   ) ? previous : '';
 }
 
+function selectMetricType(type) {
+  // 编辑中的表单属于另一条记录；先退出编辑，避免保存时把它改成新类型
+  if (editingMetricId) {
+    resetMetricForm();
+    setMetricsStatus('已取消编辑：指标类型已切换。');
+  }
+  setMetricType(type);
+  refreshMetrics();
+}
+
 async function refreshMetricProfileOptions() {
   const usedNames = await fetchUsedProfileNames();
   const current = els.metricProfile.value;
@@ -7321,8 +7331,7 @@ function renderMetricWeekly(summaries) {
     }
 
     button.addEventListener('click', () => {
-      setMetricType(metric);
-      refreshMetrics();
+      selectMetricType(metric);
     });
     li.appendChild(button);
     list.appendChild(li);
@@ -7387,8 +7396,7 @@ async function loadMetricOverview() {
         + (grade ? ` · ${grade.label}` : '');
       chip.title = `${formatTime(item.measured_at)}${item.note ? ` · ${item.note}` : ''}`;
       chip.addEventListener('click', () => {
-        setMetricType(metric);
-        refreshMetrics();
+        selectMetricType(metric);
       });
       els.metricOverviewGrid.appendChild(chip);
       count += 1;
