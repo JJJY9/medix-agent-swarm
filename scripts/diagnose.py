@@ -31,7 +31,7 @@ _REQUIRED_MODULES = (
     ("dotenv", "python-dotenv"),
     ("numpy", "numpy"),
     ("fastapi", "fastapi"),
-    ("uvicorn", "uvicorn"),
+    # uvicorn 只在启动服务时需要，自检与离线测试环境不必安装
     # sentence-transformers 只影响知识库，交给报告标记缺失即可，
     # 不让它阻断自检本身（CI 的轻量依赖集不含它）
 )
