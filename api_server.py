@@ -19,6 +19,7 @@ import re
 import sys
 import tempfile
 import hashlib
+import ipaddress
 import uuid
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
@@ -1541,7 +1542,7 @@ def _same_origin(request: Request, value: str) -> bool:
 
 
 def _is_cross_site_request(request: Request) -> bool:
-    """拒绝带跨站来源的写请求；无 Origin/Referer 的脚本客户端不受影响。"""
+    """拒绝带跨站来源的请求；无 Origin/Referer 的脚本客户端不受影响。"""
     site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if site == "cross-site":
         return True
@@ -1554,17 +1555,50 @@ def _is_cross_site_request(request: Request) -> bool:
     return False
 
 
+def _host_header_allowed(request: Request) -> bool:
+    """校验 Host 头，防止 DNS rebinding 把恶意域名解析到本机。
+
+    IP 字面量（含局域网地址）默认允许；localhost 与 testserver 放行；
+    其它域名需要在 MEDIX_ALLOWED_HOSTS 中显式配置（逗号分隔）。
+    """
+    host = str(request.headers.get("host") or "").strip()
+    if not host:
+        return False
+    if host.startswith("["):
+        end = host.find("]")
+        hostname = host[1:end] if end != -1 else ""
+    else:
+        hostname = host.split(":", 1)[0]
+    hostname = hostname.strip().lower().rstrip(".")
+    if not hostname:
+        return False
+    if hostname in {"localhost", "testserver"}:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    allowed = {
+        value.strip().lower()
+        for value in os.environ.get("MEDIX_ALLOWED_HOSTS", "").split(",")
+        if value.strip()
+    }
+    return hostname in allowed
+
+
 @app.middleware("http")
 async def require_access_token(request: Request, call_next):
     """设置 MEDIX_ACCESS_TOKEN 后，为 API 增加可选的访问令牌校验。"""
     # 子路径部署时 request.url.path 会带 root_path 前缀，
     # 直接匹配 /api/ 会整体跳过鉴权与限流
     path = _scope_route_path(request.scope)
-    if (
-        request.method in _UNSAFE_HTTP_METHODS
-        and path.startswith("/api/")
-        and _is_cross_site_request(request)
-    ):
+    if not _host_header_allowed(request):
+        return add_security_headers(JSONResponse(
+            status_code=421,
+            content={"detail": "Host 头不受信任", "code": "host_rejected"},
+        ))
+    if path.startswith("/api/") and _is_cross_site_request(request):
         return add_security_headers(JSONResponse(
             status_code=403,
             content={"detail": "跨站请求被拒绝", "code": "csrf_rejected"},

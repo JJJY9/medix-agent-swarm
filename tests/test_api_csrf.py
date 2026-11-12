@@ -71,11 +71,46 @@ def test_same_origin_and_script_clients_are_allowed(client_and_store):
     assert store.get_reminder(reminder_id)["done"] is False
 
 
-def test_cross_site_get_is_not_blocked(client_and_store):
+def test_cross_site_get_is_rejected(client_and_store):
     client, _store = client_and_store
 
     response = client.get(
         "/api/reminders", headers={"Origin": "https://evil.example"}
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 403
+    assert response.json()["code"] == "csrf_rejected"
+
+
+def test_untrusted_host_header_is_rejected(client_and_store):
+    client, _store = client_and_store
+
+    response = client.get(
+        "/api/status", headers={"Host": "evil.example"}
+    )
+
+    assert response.status_code == 421
+    assert response.json()["code"] == "host_rejected"
+
+
+def test_ip_and_allowed_hostnames_are_accepted(
+    client_and_store, monkeypatch
+):
+    client, _store = client_and_store
+    for host in (
+        "127.0.0.1:8000", "192.168.1.20:8000",
+        "[::1]:8000", "localhost:8000", "testserver",
+    ):
+        response = client.get("/api/status", headers={"Host": host})
+        assert response.status_code == 200, host
+
+    blocked = client.get(
+        "/api/status", headers={"Host": "medix.local"}
+    )
+    assert blocked.status_code == 421
+
+    monkeypatch.setenv("MEDIX_ALLOWED_HOSTS", "medix.local")
+    allowed = client.get(
+        "/api/status", headers={"Host": "medix.local"}
+    )
+    assert allowed.status_code == 200
