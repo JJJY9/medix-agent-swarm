@@ -193,3 +193,71 @@ def test_stopping_medication_removes_pending_reminder(client_and_store):
     assert all(
         row["id"] != reminder["id"] for row in _reminders(client)
     )
+
+
+def test_stopping_medication_keeps_stock_and_expiry_reminders(
+    client_and_store,
+):
+    client, _store = client_and_store
+    medication = client.post("/api/medications", json={
+        "profile": "妈妈", "name": "氨氯地平", "stock": 3,
+        "low_stock_threshold": 7, "expiry_date": _date(20),
+    }).json()["medication"]
+    stock = client.post(
+        f"/api/medications/{medication['id']}/reminder",
+        params={"kind": "stock"},
+    ).json()["reminder"]
+    expiry = client.post(
+        f"/api/medications/{medication['id']}/reminder",
+        params={"kind": "expiry"},
+    ).json()["reminder"]
+    daily = client.post("/api/reminders", json={
+        "title": "用药：氨氯地平",
+        "due_at": _date(0),
+        "profile": "妈妈",
+        "repeat_days": 1,
+        "medication_id": medication["id"],
+    }).json()["reminder"]
+
+    client.patch(
+        f"/api/medications/{medication['id']}",
+        json={"active": False},
+    )
+
+    remaining = {row["id"] for row in _reminders(client)}
+    # 停药只停服药提醒；补货与药物到期提醒仍需保留
+    assert daily["id"] not in remaining
+    assert stock["id"] in remaining
+    assert expiry["id"] in remaining
+
+
+def test_same_title_care_plan_does_not_touch_other_reminder(
+    client_and_store,
+):
+    client, _store = client_and_store
+    first = client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "眼底检查",
+        "interval_days": 365, "next_due_at": _date(10),
+    }).json()["care_item"]
+    second = client.post("/api/care-items", json={
+        "profile": "妈妈", "title": "眼底检查",
+        "interval_days": 365, "next_due_at": _date(10),
+    }).json()["care_item"]
+    reminder = client.post(
+        f"/api/care-items/{second['id']}/reminder"
+    ).json()["reminder"]
+    assert reminder["due_at"] == _date(3)
+
+    client.patch(
+        f"/api/care-items/{first['id']}", json={"active": False}
+    )
+    client.patch(
+        f"/api/care-items/{first['id']}",
+        json={"next_due_at": _date(30)},
+    )
+
+    updated = next(
+        row for row in _reminders(client) if row["id"] == reminder["id"]
+    )
+    # 同名计划无法区分归属时保守跳过同步，不能删除或改写另一条的提醒
+    assert updated["due_at"] == _date(3)

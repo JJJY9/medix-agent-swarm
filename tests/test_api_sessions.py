@@ -1112,3 +1112,57 @@ def test_messages_session_role_index_exists(tmp_path):
 
     # 分页会话的用量查询按 (session_id, role) 走复合索引
     assert "idx_messages_session_role" in names
+
+
+def test_bulk_sessions_use_full_ids_without_truncation(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    prefix = "d" * 64
+    store.save_exchange(prefix, "问题 A", "答复 A")
+    store.save_exchange(prefix + "-tail", "问题 B", "答复 B")
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        deleted = client.post(
+            "/api/bulk/sessions/delete",
+            json={"ids": [prefix + "-tail"]},
+        )
+        remaining = client.get("/api/sessions")
+        archived = client.patch(
+            "/api/bulk/sessions/archive",
+            json={"ids": [prefix], "archived": True},
+        )
+        archived_rows = client.get(
+            "/api/sessions", params={"archived": "true"}
+        )
+    finally:
+        store.close()
+
+    # 超过 64 字符的 id 不能截断后命中另一条会话
+    assert deleted.json() == {"ok": True, "deleted": 1, "missing": []}
+    assert [item["id"] for item in remaining.json()["sessions"]] == [prefix]
+    assert archived.json()["updated"] == 1
+    assert [item["id"] for item in archived_rows.json()["sessions"]] == [
+        prefix
+    ]
+
+
+def test_bulk_delete_tombstones_inflight_sessions(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        # 第一轮会诊进行中：sessions 行尚未创建
+        response = client.post(
+            "/api/bulk/sessions/delete",
+            json={"ids": ["inflight-bulk"]},
+        )
+        saved = store.save_exchange("inflight-bulk", "问题", "答复")
+        exists = store.get_session("inflight-bulk")
+    finally:
+        store.close()
+
+    assert response.status_code == 200
+    assert saved is None
+    assert exists is None

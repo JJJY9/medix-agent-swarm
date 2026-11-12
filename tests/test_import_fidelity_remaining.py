@@ -117,3 +117,32 @@ def test_metric_restore_keeps_same_minute_readings(tmp_path):
     }
     # 再次导入同一份备份仍然幂等
     assert second["metrics"] == 0
+
+
+def test_restore_backup_skips_readings_already_present(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.add_metric(
+            "妈妈", "weight", 60, measured_at="2026-11-01T08:00",
+        )
+        # 备份行的 created_at 与库中记录（API 写入时刻）不同，但内容相同
+        result = store.import_data({
+            "health_metrics": [{
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": 60,
+                "value2": None,
+                "unit": "kg",
+                "measured_at": "2026-11-01T08:00",
+                "context": "",
+                "note": "",
+                "created_at": "2026-11-01T08:00:05",
+            }],
+        })
+        rows = store.list_metrics("妈妈")
+    finally:
+        store.close()
+
+    # 跨来源恢复按内容数量判重，不能重复插入同一条读数
+    assert result["metrics"] == 0
+    assert len(rows) == 1
