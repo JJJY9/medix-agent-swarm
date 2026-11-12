@@ -13779,12 +13779,19 @@ async def set_session_tags(session_id: str, request: TagsRequest):
     """覆盖会话标签（最多 5 个，每个最长 20 字）。"""
     from memory import get_session_store
 
-    tags = await asyncio.to_thread(
-        get_session_store().set_tags, session_id, request.tags
-    )
+    store = get_session_store()
+    tags = await asyncio.to_thread(store.set_tags, session_id, request.tags)
     if tags is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    await record_audit("session.tags", session_id, "、".join(tags))
+    try:
+        # 标签可能含“抑郁”“化疗”等健康信息：清理该会话历史审计中的原文
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.tags"], session_id, session_id, "tags=redacted",
+        )
+    except Exception as e:
+        logger.warning(f"清理历史标签审计失败: {e}")
+    await record_audit("session.tags", session_id, f"count={len(tags)}")
     return {"ok": True, "session_id": session_id, "tags": tags}
 
 
@@ -13897,11 +13904,20 @@ async def bulk_tag_sessions(request: BulkTagsRequest):
             updated += 1
             normalized = tags
 
+    try:
+        # 批量审计没有单条 target，按 action 清理全部历史标签原文
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.bulk_tags"], "", "", "tags=redacted",
+            match_all=True,
+        )
+    except Exception as e:
+        logger.warning(f"清理批量标签审计失败: {e}")
     await record_audit(
         "session.bulk_tags",
         detail=(
             f"updated={updated} missing={len(missing)} "
-            f"tags={'、'.join(normalized)}"
+            f"count={len(normalized)}"
         ),
     )
     return {

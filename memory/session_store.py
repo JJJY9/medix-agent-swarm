@@ -8342,14 +8342,17 @@ class SessionStore:
         prefix: str,
         replacement: str,
         detail: Optional[str] = None,
+        match_all: bool = False,
     ) -> int:
         """把以 prefix 开头的审计 target 替换为不可识别内容。
 
         用于删除健康记录/档案时清理历史审计中残留的症状、药名或档案名。
+        match_all=True 时忽略 target 前缀，清理该 action 的全部历史行
+        （批量操作没有单条 target，无法按前缀定位）。
         """
         actions = [str(action) for action in actions if str(action)]
         prefix = str(prefix or "")
-        if not actions or not prefix:
+        if not actions or (not prefix and not match_all):
             return 0
         placeholders = ",".join("?" for _ in actions)
         sets = ["target = ?"]
@@ -8358,14 +8361,17 @@ class SessionStore:
             sets.append("detail = ?")
             params.append(str(detail)[:500])
         params.extend(actions)
-        params.extend([prefix, len(prefix), prefix])
+        target_filter = ""
+        if not match_all:
+            target_filter = "AND (target = ? OR substr(target, 1, ?) = ?)"
+            params.extend([prefix, len(prefix), prefix])
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 f"""
                 UPDATE audit_log
                    SET {", ".join(sets)}
                  WHERE action IN ({placeholders})
-                   AND (target = ? OR substr(target, 1, ?) = ?)
+                   {target_filter}
                 """,
                 params,
             )
