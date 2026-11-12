@@ -66,3 +66,49 @@ def test_skill_logs_do_not_include_patient_queries(client):
     assert "Recommending lifestyle for: {diagnosis}" not in joined
     assert "query_length=" in joined
     assert "diagnosis_length=" in joined
+
+
+def _access_record(path):
+    return logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        "",
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", "GET", path, "1.1", 200),
+        None,
+    )
+
+
+def test_access_log_path_segments_are_redacted():
+    for path, expected in (
+        (
+            "/api/profiles/%E5%A6%88%E5%A6%88",
+            "/api/profiles/<redacted>",
+        ),
+        (
+            "/api/knowledge/documents/%E4%BD%93%E6%A3%80.pdf",
+            "/api/knowledge/documents/<redacted>",
+        ),
+        (
+            "/api/profiles/%E5%A6%88%E5%A6%88?x=1",
+            "/api/profiles/<redacted>?<redacted>",
+        ),
+    ):
+        record = _access_record(path)
+        assert _AccessLogQueryFilter().filter(record) is True
+        message = record.getMessage()
+        assert "%E5%A6%88%E5%A6%88" not in message
+        assert "%E4%BD%93%E6%A3%80" not in message
+        assert expected in message
+
+
+def test_knowledge_service_logs_do_not_include_filenames():
+    text = (PROJECT_ROOT / "knowledge/service.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Saved knowledge upload: {target.name}" not in text
+    assert "Deleted knowledge upload: {safe_name}" not in text
+    assert "Updated knowledge upload: {path.name}" not in text
+    assert "name_length=" in text

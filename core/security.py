@@ -164,17 +164,31 @@ def configure_server_logging() -> None:
 
 
 class _AccessLogQueryFilter(logging.Filter):
-    """删除 uvicorn 访问日志中的查询串，避免患者搜索词/档案名入日志。"""
+    """脱敏 uvicorn 访问日志中的查询串与患者/文档路径片段。"""
+
+    #: 这些路径把患者姓名或文件名放在路径中，必须整体替换
+    _SENSITIVE_PATH_RE = re.compile(
+        r"(/api/(?:profiles|knowledge/documents)/)[^/?]+"
+    )
+
+    @classmethod
+    def _redact_path(cls, path: str) -> str:
+        redacted = cls._SENSITIVE_PATH_RE.sub(r"\1<redacted>", path)
+        if "?" in redacted:
+            redacted = redacted.split("?", 1)[0] + "?<redacted>"
+        return redacted
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             args = record.args
             if isinstance(args, tuple) and len(args) >= 3:
                 path = args[2]
-                if isinstance(path, str) and "?" in path:
-                    updated = list(args)
-                    updated[2] = path.split("?", 1)[0] + "?<redacted>"
-                    record.args = tuple(updated)
+                if isinstance(path, str):
+                    redacted = self._redact_path(path)
+                    if redacted != path:
+                        updated = list(args)
+                        updated[2] = redacted
+                        record.args = tuple(updated)
         except Exception:
             pass
         return True

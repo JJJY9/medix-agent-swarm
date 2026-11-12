@@ -118,7 +118,10 @@ class KnowledgeService:
                 target.unlink(missing_ok=True)
                 raise
 
-        logger.info(f"Saved knowledge upload: {target.name} ({len(content)} bytes)")
+        logger.info(
+            "Saved knowledge upload: "
+            f"name_length={len(target.name)} ({len(content)} bytes)"
+        )
         return {"filename": target.name, "size": len(content)}
 
     def delete_document(self, filename: str) -> bool:
@@ -130,7 +133,9 @@ class KnowledgeService:
                     raise ValueError("内置文档请通过仓库更新，不能在此删除。")
                 return False
             path.unlink()
-        logger.info(f"Deleted knowledge upload: {safe_name}")
+        logger.info(
+            f"Deleted knowledge upload: name_length={len(safe_name)}"
+        )
         return True
 
     def preview_document(
@@ -202,7 +207,10 @@ class KnowledgeService:
                 path.write_bytes(original)
                 raise
 
-        logger.info(f"Updated knowledge upload: {path.name} ({len(content)} bytes)")
+        logger.info(
+            "Updated knowledge upload: "
+            f"name_length={len(path.name)} ({len(content)} bytes)"
+        )
         return {"filename": path.name, "size": len(content)}
 
     def search(
