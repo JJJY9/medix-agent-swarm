@@ -212,3 +212,28 @@ def test_synthesis_prompt_uses_answer_text_only():
     assert "iterations" not in prompt
     assert "'answer'" not in prompt
     assert "内部来源" not in prompt
+
+
+def test_debug_log_does_not_include_model_output(tmp_path):
+    from loguru import logger
+
+    marker = "胸闷三天患者主诉"
+    content = (
+        '{"subtasks": [{"description": "' + marker + '", '
+        '"assigned_agent": "diagnostic_agent"}]}'
+    )
+    sink_path = tmp_path / "lead.log"
+    sink_id = logger.add(
+        str(sink_path), format="{message}", level="DEBUG",
+        encoding="utf-8",
+    )
+    try:
+        result = _decompose(content)
+    finally:
+        logger.remove(sink_id)
+
+    text = sink_path.read_text(encoding="utf-8")
+    # 模型输出复述主诉，DEBUG 日志只保留长度
+    assert marker not in text
+    assert "LeadAgent assessment" in text
+    assert result["subtasks"][0]["description"] == marker
