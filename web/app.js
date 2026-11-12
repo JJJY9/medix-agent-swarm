@@ -4457,10 +4457,25 @@ async function importHistoryBackup() {
     const auditCount = Array.isArray(data.audit_log)
       ? data.audit_log.length
       : 0;
+    const extraCounts = [
+      ["lab_results", "条化验结果"],
+      ["allergies", "条过敏史"],
+      ["conditions", "条慢病记录"],
+      ["care_items", "个复查计划"],
+      ["visit_records", "次就诊记录"],
+      ["vaccinations", "次接种记录"],
+      ["appointments", "个就诊预约"],
+      ["medication_history", "条用药变更"],
+    ].map(([key, label]) => [
+      key,
+      label,
+      Array.isArray(data[key]) ? data[key].length : 0,
+    ]);
     if (
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
       && !medicationCount && !medicationLogCount && !auditCount
+      && !extraCounts.some(([, , value]) => value > 0)
     ) {
       window.alert('备份文件中没有可导入的数据。');
       return;
@@ -4474,6 +4489,9 @@ async function importHistoryBackup() {
       symptomCount ? `${symptomCount} 条症状记录` : '',
       medicationCount ? `${medicationCount} 条用药记录` : '',
       medicationLogCount ? `${medicationLogCount} 次用药打卡` : '',
+      ...extraCounts
+        .filter(([, , value]) => value > 0)
+        .map(([, label, value]) => `${value} ${label}`),
       auditCount ? `${auditCount} 条操作记录` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
