@@ -500,3 +500,29 @@ def test_health_search_export_can_filter_type(client_and_store):
         params={"q": "血压", "type": "unknown"},
     )
     assert invalid.status_code == 400
+
+
+def test_export_type_filter_applies_before_global_limit(client_and_store):
+    client, store = client_and_store
+    for index in range(230):
+        store.add_metric(
+            "妈妈", "weight", 60.0,
+            measured_at=f"{_date(-index)}T08:00", note="复查",
+        )
+    store.add_lab_result(
+        "妈妈", "ALT", 55, "U/L", 7, 40,
+        tested_at=f"{_date(-300)}T09:00", note="复查",
+    )
+
+    export = client.get(
+        "/api/health/search/export.csv",
+        params={"q": "复查", "profile": "妈妈", "type": "lab"},
+    )
+    rows = list(csv.reader(io.StringIO(
+        export.content.decode("utf-8-sig")
+    )))
+
+    assert export.status_code == 200
+    assert len(rows) == 2
+    assert rows[1][0] == "化验"
+    assert "ALT" in rows[1][3]

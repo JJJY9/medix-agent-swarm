@@ -7742,6 +7742,7 @@ async def health_search(
     per_type_limit: int = Query(
         HEALTH_SEARCH_PER_TYPE_LIMIT, include_in_schema=False
     ),
+    only_type: str = Query("", alias="type", include_in_schema=False),
 ):
     """跨健康记录搜索：指标、症状、用药、化验、疫苗、预约、复查、就诊、过敏、慢病、提醒与就医资料。"""
     from memory import get_session_store
@@ -7750,6 +7751,9 @@ async def health_search(
     per_type_limit = max(
         1, min(int(per_type_limit or HEALTH_SEARCH_PER_TYPE_LIMIT), 200)
     )
+    only_type = str(only_type or "").strip()
+    if only_type and only_type not in HEALTH_SEARCH_TYPE_ORDER:
+        raise HTTPException(status_code=400, detail="未知的搜索类型")
 
     query = " ".join(str(q or "").split())[:HEALTH_SEARCH_MAX_QUERY_CHARS]
     if not query:
@@ -8113,8 +8117,13 @@ async def health_search(
     counts = {
         type_key: len(items) for type_key, items in buckets.items()
     }
+    if only_type:
+        # 按类型导出时先收窄类型再套全局上限，避免其它类型占满 200 条
+        counts = {only_type: counts.get(only_type, 0)}
     results: List[Dict[str, Any]] = []
-    for type_key in HEALTH_SEARCH_TYPE_ORDER:
+    for type_key in (
+        (only_type,) if only_type else HEALTH_SEARCH_TYPE_ORDER
+    ):
         items = sorted(
             buckets[type_key], key=lambda item: item["at"], reverse=True
         )
@@ -8145,11 +8154,13 @@ async def export_health_search_csv(
     if type_key and type_key not in HEALTH_SEARCH_TYPE_ORDER:
         raise HTTPException(status_code=400, detail="未知的搜索类型")
     data = await health_search(
-        q=q, profile=profile, limit=200, per_type_limit=200
+        q=q,
+        profile=profile,
+        limit=200,
+        per_type_limit=200,
+        only_type=type_key,
     )
     items = data.get("results") or []
-    if type_key:
-        items = [item for item in items if item.get("type") == type_key]
     rows = [["类型", "时间", "患者档案", "标题", "详情"]]
     for item in items:
         rows.append([
