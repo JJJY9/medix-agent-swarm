@@ -8682,7 +8682,7 @@ class SessionStore:
         attachment = self.get_attachment(attachment_id)
         if attachment is None:
             return None
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             self._conn.execute(
                 "DELETE FROM attachments WHERE id = ?", (int(attachment_id),)
             )
@@ -8794,7 +8794,7 @@ class SessionStore:
             metric_id = int(metric_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM health_metrics WHERE id = ?", (metric_id,)
             )
@@ -8883,7 +8883,7 @@ class SessionStore:
 
     def delete_metric_target(self, profile: str, metric: str) -> bool:
         profile = _normalize_profile_name(profile)
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM metric_targets WHERE profile = ? AND metric = ?",
                 (profile, str(metric or "").strip()),
@@ -9002,7 +9002,7 @@ class SessionStore:
         if not match_all:
             target_filter = "AND (target = ? OR substr(target, 1, ?) = ?)"
             params.extend([prefix, len(prefix), prefix])
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 f"""
                 UPDATE audit_log
@@ -9374,7 +9374,7 @@ class SessionStore:
             return True
 
     def delete_reminder(self, reminder_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM reminders WHERE id = ?", (int(reminder_id),)
             )
@@ -9523,7 +9523,7 @@ class SessionStore:
         if not cutoff:
             return empty
 
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             # 统一交给 SQLite 的 datetime() 解析，兼容 "T" 与空格分隔、
             # 时区后缀和带时分秒/仅日期的历史数据；无效时间不参与删除
             condition = (
@@ -9559,7 +9559,6 @@ class SessionStore:
                 self._deleted_sessions.pop(
                     next(iter(self._deleted_sessions))
                 )
-        self._checkpoint_wal()
         return {
             "sessions": int(sessions_deleted),
             "messages": int(messages_deleted),
