@@ -2853,8 +2853,8 @@ async def list_metrics(
 
 @app.get("/api/metrics/summary")
 async def metric_summary(
+    metric: str,
     profile: Optional[str] = None,
-    metric: str = "",
     days: int = 0,
 ):
     """所选范围内的指标统计（平均/最高/最低，以及与上一周期的差值）。"""
