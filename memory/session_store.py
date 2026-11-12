@@ -3755,20 +3755,42 @@ class SessionStore:
                     if normalized is None:
                         invalid += 1
                         continue
-                    exists = self._conn.execute(
-                        """
-                        SELECT 1 FROM symptoms
-                         WHERE profile = ? AND symptom = ? AND severity = ?
-                           AND recorded_at = ? AND note = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["symptom"],
-                            normalized["severity"],
-                            normalized["recorded_at"],
-                            normalized["note"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    if created_key:
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM symptoms
+                             WHERE profile = ? AND symptom = ?
+                               AND severity = ? AND recorded_at = ?
+                               AND note = ? AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["symptom"],
+                                normalized["severity"],
+                                normalized["recorded_at"],
+                                normalized["note"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        exists = self._conn.execute(
+                            """
+                            SELECT 1 FROM symptoms
+                             WHERE profile = ? AND symptom = ?
+                               AND severity = ? AND recorded_at = ?
+                               AND note = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["symptom"],
+                                normalized["severity"],
+                                normalized["recorded_at"],
+                                normalized["note"],
+                            ),
+                        ).fetchone()
                     if exists:
                         continue
                     self._conn.execute(
@@ -3784,7 +3806,7 @@ class SessionStore:
                             normalized["severity"],
                             normalized["note"],
                             normalized["recorded_at"],
-                            now,
+                            created_key or now,
                         ),
                     )
                     symptoms_imported += 1
@@ -3833,16 +3855,24 @@ class SessionStore:
                             ),
                         ).fetchone()
                     else:
-                        # CSV 导入没有创建时间，保持原有四列去重以维持幂等
+                        # CSV 导入没有创建时间：按完整疗程字段判重，
+                        # 同一药物的不同开始/停药日期必须各自保留
                         existing = self._conn.execute(
                             """
                             SELECT id FROM medications
                              WHERE profile = ? AND name = ? AND dose = ?
                                AND frequency = ?
+                               AND COALESCE(started_at, '') = ?
+                               AND COALESCE(stopped_at, '') = ?
+                               AND stop_reason = ? AND active = ?
                             """,
                             (
                                 normalized["profile"], normalized["name"],
                                 normalized["dose"], normalized["frequency"],
+                                normalized["started_at"],
+                                normalized["stopped_at"],
+                                normalized["stop_reason"],
+                                normalized["active"],
                             ),
                         ).fetchone()
                     if existing is not None:
