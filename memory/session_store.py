@@ -7134,7 +7134,12 @@ class SessionStore:
             )
             if normalized is None:
                 return None
-            reset_stock = stock is not _UNSET
+            # 只有库存基线实际变化（盘点/换单位）时才清空历史打卡的
+            # stock_delta；普通编辑即使回传当前库存也不能破坏历史扣减。
+            reset_stock = (
+                normalized["stock"] != previous["stock"]
+                or normalized["stock_unit"] != previous["stock_unit"]
+            )
             cursor = self._conn.execute(
                 """
                 UPDATE medications
