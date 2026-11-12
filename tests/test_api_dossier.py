@@ -163,6 +163,71 @@ def test_family_dossier_requires_profiles(client_and_store):
     assert response.json()["detail"] == "暂无患者档案"
 
 
+def test_family_dossier_includes_unassigned_lab(client_and_store):
+    """只有未指定档案的化验时，家庭档案也应导出而不是 400。"""
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/lab-results", json={
+        "item": "ALT", "value": 60, "unit": "U/L",
+        "tested_at": f"{today}T09:00",
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    text = response.text
+    assert "# 健康档案：" in text
+    assert "ALT" in text
+
+
+def test_family_dossier_includes_unassigned_visit(client_and_store):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/visits", json={
+        "visit_date": today, "diagnosis": "高血压复诊",
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    assert "高血压复诊" in response.text
+
+
+def test_family_dossier_includes_unassigned_attachment(client_and_store):
+    client, store = client_and_store
+    store.add_attachment(
+        "", "lab", 0, "化验单.pdf", "c.pdf",
+        "application/pdf", 100, "",
+    )
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    assert "化验单.pdf" in response.text
+
+
+def test_family_dossier_combines_named_and_unassigned_lab(
+    client_and_store,
+):
+    client, _store = client_and_store
+    today = datetime.now().strftime("%Y-%m-%d")
+    client.post("/api/profiles", json={
+        "name": "妈妈", "context": {"age": "60"},
+    })
+    client.post("/api/lab-results", json={
+        "item": "血红蛋白", "value": 120, "unit": "g/L",
+        "tested_at": f"{today}T09:00",
+    })
+
+    response = client.get("/api/health/dossier-family.md")
+
+    assert response.status_code == 200
+    text = response.text
+    assert "# 健康档案：妈妈" in text
+    assert text.count("# 健康档案：") == 2
+    assert "血红蛋白" in text
+
+
 def test_health_dossier_requires_profile(client_and_store):
     client, _store = client_and_store
 

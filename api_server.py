@@ -8151,6 +8151,10 @@ def _health_search_prefilter(type_key: str, key: str) -> str:
     """
     if not key:
         return ""
+    if " " in key:
+        # 多词查询需要跨字段匹配，单列 LIKE 会把“症状 + 备注”这类
+        # 命中整串丢掉，因此不下推，交给 Python 侧合并文本匹配
+        return ""
     if type_key == "metric":
         # 中文指标名/情境名由调用方翻译成存储代码后并入 SQL；
         # 此处仍返回原始查询用于匹配备注、单位等存储文本
@@ -13145,15 +13149,7 @@ async def export_family_dossier(days: int = 30):
 
     store = get_session_store()
     names = await asyncio.to_thread(store.list_used_profile_names)
-    unassigned = any([
-        await asyncio.to_thread(store.list_metrics, "", None, 1),
-        await asyncio.to_thread(store.list_symptoms, "", 1),
-        await asyncio.to_thread(store.list_medications, "", False, 1),
-        await asyncio.to_thread(
-            store.list_sessions_for_timeline, "", "", "", 1
-        ),
-        await asyncio.to_thread(store.list_reminders, False, ""),
-    ])
+    unassigned = await asyncio.to_thread(store.has_unassigned_records)
     if not names and not unassigned:
         raise HTTPException(status_code=400, detail="暂无患者档案")
     parts = []
