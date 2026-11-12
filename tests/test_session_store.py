@@ -826,6 +826,19 @@ def test_archive_filters_and_counts(store):
     assert store.count_sessions(archived=True) == 0
 
 
+def test_resuming_archived_session_unarchives_it(store):
+    store.save_exchange("s1", "归档问题", "答复")
+    assert store.set_archived("s1", True) is True
+    assert store.list_sessions(archived=False) == []
+
+    store.save_exchange("s1", "继续追问", "继续答复")
+
+    assert [item["id"] for item in store.list_sessions(archived=False)] == [
+        "s1"
+    ]
+    assert store.list_sessions(archived=True) == []
+
+
 def test_feedback_totals_respects_archive(store):
     archived_id = store.save_exchange("s1", "归档问题", "答复一")
     active_id = store.save_exchange("s2", "普通问题", "答复二")

@@ -2248,11 +2248,12 @@ class SessionStore:
                 """,
                 (session_id, title, now, now),
             )
-            # 第一轮补上标题；后续轮次只更新时间
+            # 第一轮补上标题；后续轮次只更新时间；继续旧会话时自动移出归档
             self._conn.execute(
                 """
                 UPDATE sessions
                    SET updated_at = ?,
+                       archived = 0,
                        title = CASE WHEN title = '' THEN ? ELSE title END
                  WHERE id = ?
                 """,
