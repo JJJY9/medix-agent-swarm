@@ -3190,6 +3190,36 @@ class SessionStore:
         # 在单个锁内一次取快照：分页导出时若有会话被更新，
         # 会因 updated_at 排序漂移而被漏导或重复导出
         with self._lock:
+            # 导出与导入共用同一上限：超限时明确报错，避免备份静默丢行
+            session_count = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM sessions"
+            ).fetchone()["n"]
+            if session_count > 100000:
+                raise ValueError("一次最多备份 100000 个会话。")
+            for table, key, label in (
+                ("patient_profiles", "profiles", "档案"),
+                ("health_metrics", "health_metrics", "健康指标"),
+                ("metric_targets", "metric_targets", "指标目标"),
+                ("symptoms", "symptoms", "症状记录"),
+                ("medications", "medications", "用药"),
+                ("medication_logs", "medication_logs", "用药打卡"),
+                ("medication_history", "medication_history", "用药变更"),
+                ("vaccinations", "vaccinations", "疫苗接种"),
+                ("appointments", "appointments", "就诊预约"),
+                ("lab_results", "lab_results", "化验结果"),
+                ("allergies", "allergies", "过敏史"),
+                ("care_items", "care_items", "复查计划"),
+                ("visit_records", "visit_records", "就诊记录"),
+                ("conditions", "conditions", "慢病清单"),
+                ("reminders", "reminders", "提醒"),
+                ("audit_log", "audit_log", "审计记录"),
+            ):
+                count = self._conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table}"
+                ).fetchone()["n"]
+                cap = IMPORT_LIST_LIMITS[key]
+                if count > cap:
+                    raise ValueError(f"一次最多备份 {cap} 条{label}。")
             session_rows = self._conn.execute(
                 """
                 SELECT s.id, s.title, s.created_at, s.updated_at, s.favorite,
