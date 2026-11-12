@@ -588,3 +588,33 @@ def test_timeline_excludes_far_future_appointments(client_and_store):
 
     assert "今日复诊" in appointment_titles
     assert "远期复诊" not in appointment_titles
+
+
+def test_timeline_search_scans_beyond_newest_source_page(client_and_store):
+    client, store = client_and_store
+    now = datetime.now()
+    recent_at = now.isoformat(timespec="minutes")
+    old_at = (now - timedelta(days=300)).isoformat(timespec="minutes")
+    created_at = now.isoformat(timespec="seconds")
+
+    with store._lock, store._conn:
+        store._conn.executemany(
+            "INSERT INTO health_metrics("
+            "profile, metric, value1, value2, unit, measured_at, context, "
+            "note, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "妈妈", "weight", 60, None, "kg", recent_at, "",
+                    f"新记录{index}", created_at,
+                )
+                for index in range(1001)
+            ] + [
+                ("妈妈", "weight", 55, None, "kg", old_at, "", "稀有记录", created_at),
+            ],
+        )
+
+    data = client.get("/api/timeline", params={
+        "profile": "妈妈", "days": 365, "q": "稀有记录",
+    }).json()
+
+    assert [event["note"] for event in data["events"]] == ["稀有记录"]
