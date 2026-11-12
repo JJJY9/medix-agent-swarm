@@ -20,12 +20,15 @@ const items = [
   { item: '血小板平均体积', value: 10.5, unit: 'fL' },
   { item: '血小板压积', value: 0.21, unit: '%' },
   { item: 'AST/ALT', value: 1.2, unit: '' },
+  { item: '大型血小板比率', value: 32, unit: '%' },
   { item: '谷草转氨酶', value: 35, unit: 'U/L' },
   { item: '血小板计数', value: 156, unit: '×10⁹/L' },
   { item: '前白蛋白(PA)', value: 250, unit: 'mg/L' },
   { item: '白蛋白', value: 32, unit: 'g/L' },
   { item: '直接胆红素', value: 12, unit: 'μmol/L' },
   { item: '总胆红素', value: 45, unit: 'μmol/L' },
+  { item: '24小时尿肌酐', value: 9800, unit: 'μmol/24h' },
+  { item: '肌酐', value: 88.4, unit: 'μmol/L' },
   { item: '尿素', value: 8.2, unit: 'mmol/L' },
   { item: '尿酸', value: 420, unit: 'μmol/L' },
   { item: '糖化血红蛋白', value: 7.1, unit: '%' },
@@ -39,11 +42,22 @@ assert.strictEqual(core.findLabItem(items, 'albumin').item, '白蛋白');
 assert.strictEqual(core.findLabItem(items, 'bilirubin').item, '总胆红素');
 assert.strictEqual(core.findLabItem(items, 'urea').item, '尿素');
 assert.strictEqual(core.findLabItem(items, 'ast').item, '谷草转氨酶');
+assert.strictEqual(core.findLabItem(items, 'alt'), null);
+assert.strictEqual(core.findLabItem(items, 'creatinine').item, '肌酐');
 assert.strictEqual(
   core.findLabItem(items, 'platelets').item, '血小板计数'
 );
 assert.strictEqual(
   core.findLabItem(items, 'hba1c').item, '糖化血红蛋白'
+);
+// 单位缺失/无法识别时不猜测换算
+assert.strictEqual(core.labCreatinineMgDl({ value: 1.1, unit: '' }), null);
+assert.strictEqual(core.labBilirubinMgDl({ value: 2, unit: '' }), null);
+assert.strictEqual(core.labAlbuminGL({ value: 3.8, unit: '' }), null);
+assert.strictEqual(core.labUreaMmolL({ value: 8.2, unit: '' }), null);
+assert.strictEqual(
+  core.labCreatinineMgDl({ value: 88.4, unit: 'μmol/L' }).value.toFixed(1),
+  '1.0'
 );
 assert.strictEqual(core.labAlbuminGL({ value: 3.2, unit: 'g/dL' }).value, 32);
 assert.strictEqual(

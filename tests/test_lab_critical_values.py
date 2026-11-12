@@ -308,3 +308,39 @@ def test_analyte_cache_distinguishes_unknown_items():
     assert _analyte_index(_lab_item_text("未知项目")) == -1
     assert _analyte_index(_lab_item_text("")) == -1
 
+
+def test_urine_panel_items_do_not_trigger_blood_critical_alerts():
+    assert lab_critical_alerts(
+        "钾", 40, "mmol/L", panel="尿电解质"
+    ) == []
+    assert lab_critical_alerts(
+        "钠", 40, "mmol/L", panel="尿电解质"
+    ) == []
+    assert lab_critical_alerts(
+        "葡萄糖", 0, "mmol/L", panel="尿常规"
+    ) == []
+    assert lab_critical_alerts(
+        "白细胞", 500, "/μL", panel="尿常规"
+    ) == []
+    # 白细胞酯酶是尿常规干化学项目，不是血白细胞计数
+    assert lab_critical_alerts("白细胞酯酶", 500, "") == []
+    # 血液标本仍按原阈值提示
+    assert lab_critical_alerts("钾", 7.0, "mmol/L", panel="电解质")
+    assert lab_critical_alerts("钾", 7.0, "mmol/L")
+
+
+def test_api_urine_lab_is_not_critical(client_and_store):
+    client, _store = client_and_store
+    urine = client.post("/api/lab-results", json={
+        "profile": "妈妈", "panel": "尿电解质", "item": "钾",
+        "value": 40, "unit": "mmol/L", "tested_at": _at(0),
+    }).json()["lab_result"]
+    assert urine["critical"] is False
+    assert urine["critical_alerts"] == []
+
+    blood = client.post("/api/lab-results", json={
+        "profile": "妈妈", "panel": "电解质", "item": "钾",
+        "value": 7.0, "unit": "mmol/L", "tested_at": _at(0),
+    }).json()["lab_result"]
+    assert blood["critical"] is True
+

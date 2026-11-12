@@ -21,6 +21,10 @@
   };
 
   const LAB_PREFILL_EXCLUDES = {
+    creatinine: [
+      '尿', 'urine', '清除', 'clearance', '内生', '24小时',
+      '比值', 'ratio', '胱抑素', 'cystatin',
+    ],
     bilirubin: [
       '直接胆红素', '间接胆红素', '结合胆红素', '尿胆红素',
       'direct', 'indirect', 'conjugated', 'urine',
@@ -33,11 +37,33 @@
     urea: ['尿酸', 'uric'],
     platelets: [
       '平均血小板体积', '血小板平均体积', '血小板压积',
-      '血小板分布宽度', '未成熟血小板',
+      '血小板分布宽度', '未成熟血小板', '大型血小板', '大血小板',
+      '血小板比积', '网织血小板',
       'mpv', 'pdw', 'pct', 'plateletcrit', 'plateletdistribution',
+      'plcr',
     ],
-    ast: ['ast/alt', 'astalt', '谷草/谷丙', '谷草谷丙', '转氨酶比'],
+    ast: [
+      'ast/alt', 'alt/ast', 'astalt', 'altast',
+      '谷草/谷丙', '谷丙/谷草', '转氨酶比', 'ratio',
+    ],
+    alt: [
+      'ast/alt', 'alt/ast', 'astalt', 'altast',
+      '谷草/谷丙', '谷丙/谷草', '转氨酶比', 'ratio',
+    ],
   };
+
+  const UNIT_MG_DL = /mg\/dl/;
+  const UNIT_UMOL_L = /[uμµ]mol\/l/;
+  const UNIT_G_L = /g\/l/;
+  const UNIT_G_DL = /g\/dl/;
+  const UNIT_MG_L = /mg\/l/;
+  const UNIT_MMOL_L = /mmol\/l/;
+
+  function labUnit(item) {
+    return String((item && item.unit) || '')
+      .toLowerCase()
+      .replace(/\s+/g, '');
+  }
 
   function normalizeLabName(value) {
     return String(value || '')
@@ -73,64 +99,74 @@
   function labCreatinineMgDl(item) {
     const value = labNumber(item);
     if (value === null) return null;
-    const unit = String((item && item.unit) || '').toLowerCase();
-    if (unit.includes('mg')) return { value, converted: false };
-    return { value: value / 88.4, converted: true };
+    const unit = labUnit(item);
+    if (UNIT_MG_DL.test(unit)) return { value, converted: false };
+    if (UNIT_UMOL_L.test(unit)) {
+      return { value: value / 88.4, converted: true };
+    }
+    // 单位缺失或无法识别时不猜测，避免把 mg/dL 再缩小 88 倍
+    return null;
   }
 
   function labBilirubinMgDl(item) {
     const value = labNumber(item);
     if (value === null) return null;
-    const unit = String((item && item.unit) || '').toLowerCase();
-    if (unit.includes('mg')) return { value, converted: false };
-    return { value: value / 17.1, converted: true };
+    const unit = labUnit(item);
+    if (UNIT_MG_DL.test(unit)) return { value, converted: false };
+    if (UNIT_UMOL_L.test(unit)) {
+      return { value: value / 17.1, converted: true };
+    }
+    return null;
   }
 
   function labBilirubinUmolL(item) {
     const value = labNumber(item);
     if (value === null) return null;
-    const unit = String((item && item.unit) || '').toLowerCase();
-    if (unit.includes('mg')) {
+    const unit = labUnit(item);
+    if (UNIT_MG_DL.test(unit)) {
       return { value: value * 17.1, converted: true };
     }
-    return { value, converted: false };
+    if (UNIT_UMOL_L.test(unit)) return { value, converted: false };
+    return null;
   }
 
   function labAlbuminGL(item) {
     const value = labNumber(item);
     if (value === null) return null;
-    const unit = String((item && item.unit) || '').toLowerCase();
-    if (unit.includes('mg')) {
-      return unit.includes('dl')
-        ? { value: value / 100, converted: true }
-        : { value: value / 1000, converted: true };
+    const unit = labUnit(item);
+    // 先判断 mg 开头的单位，避免被 g/dL、g/L 子串误匹配
+    if (UNIT_MG_DL.test(unit)) {
+      return { value: value / 100, converted: true };
     }
-    if (unit.includes('dl')) return { value: value * 10, converted: true };
-    return { value, converted: false };
+    if (UNIT_MG_L.test(unit)) {
+      return { value: value / 1000, converted: true };
+    }
+    if (UNIT_G_DL.test(unit)) {
+      return { value: value * 10, converted: true };
+    }
+    if (UNIT_G_L.test(unit)) return { value, converted: false };
+    return null;
   }
 
   function labUreaMmolL(item) {
     const value = labNumber(item);
     if (value === null) return null;
-    const unit = String((item && item.unit) || '').toLowerCase();
+    const unit = labUnit(item);
     const name = normalizeLabName(item && item.item);
     const isNitrogen = name.includes('尿素氮')
       || name.includes('bun')
       || name.includes('bloodureanitrogen');
-    if (unit.includes('mg')) {
+    if (UNIT_MG_DL.test(unit)) {
       return {
         value: value / (isNitrogen ? 2.8 : 6.0),
         converted: true,
       };
     }
-    if (
-      unit.includes('μmol')
-      || unit.includes('umol')
-      || unit.includes('µmol')
-    ) {
+    if (UNIT_UMOL_L.test(unit)) {
       return { value: value / 1000, converted: true };
     }
-    return { value, converted: false };
+    if (UNIT_MMOL_L.test(unit)) return { value, converted: false };
+    return null;
   }
 
   function childPughBilirubinScore(valueUmolL) {

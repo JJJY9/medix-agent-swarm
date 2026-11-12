@@ -18187,7 +18187,12 @@ async function prefillEgfrFromLab() {
     const creatinine = findLabItem(items, 'creatinine');
     const converted = labCreatinineMgDl(creatinine);
     if (!converted) {
-      setCalcStatus('未找到最近的肌酐化验结果，请先在化验结果中登记。', true);
+      setCalcStatus(
+        creatinine
+          ? '肌酐化验缺少可识别的单位，请先在化验结果中补充单位。'
+          : '未找到最近的肌酐化验结果，请先在化验结果中登记。',
+        true
+      );
       return;
     }
     els.calcEgfrCreatinine.value = String(
@@ -18247,9 +18252,13 @@ async function prefillMeldFromLab() {
     const bilirubinValue = labBilirubinMgDl(bilirubin);
     const creatinineValue = labCreatinineMgDl(creatinine);
     const missing = [];
-    if (!bilirubinValue) missing.push('总胆红素');
+    if (!bilirubinValue) {
+      missing.push(bilirubin ? '总胆红素（单位缺失）' : '总胆红素');
+    }
     if (labNumber(inr) === null) missing.push('INR');
-    if (!creatinineValue) missing.push('肌酐');
+    if (!creatinineValue) {
+      missing.push(creatinine ? '肌酐（单位缺失）' : '肌酐');
+    }
     if (missing.length) {
       setCalcStatus(
         `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
@@ -18372,8 +18381,12 @@ async function prefillChildPughFromLab() {
     const bilirubinValue = labBilirubinUmolL(bilirubin);
     const albuminValue = labAlbuminGL(albumin);
     const missing = [];
-    if (!bilirubinValue) missing.push('总胆红素');
-    if (!albuminValue) missing.push('白蛋白');
+    if (!bilirubinValue) {
+      missing.push(bilirubin ? '总胆红素（单位缺失）' : '总胆红素');
+    }
+    if (!albuminValue) {
+      missing.push(albumin ? '白蛋白（单位缺失）' : '白蛋白');
+    }
     if (labNumber(inr) === null) missing.push('INR');
     if (missing.length) {
       setCalcStatus(
@@ -18411,7 +18424,9 @@ async function prefillCurb65FromLab() {
     const ureaValue = labUreaMmolL(urea);
     if (!ureaValue) {
       setCalcStatus(
-        '未找到最近的尿素氮化验结果，请先在化验结果中登记。',
+        urea
+          ? '尿素化验缺少可识别的单位，请先在化验结果中补充单位。'
+          : '未找到最近的尿素氮化验结果，请先在化验结果中登记。',
         true
       );
       return;

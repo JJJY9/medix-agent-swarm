@@ -1121,7 +1121,8 @@ def _lab_result_view_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     else:
         ref_text = ""
     critical_alerts = lab_critical_alerts(
-        row.get("item"), value, row.get("unit"), row.get("tested_at")
+        row.get("item"), value, row.get("unit"), row.get("tested_at"),
+        row.get("panel"),
     )
     return {
         "ref_low": low_value,
