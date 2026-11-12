@@ -4968,12 +4968,37 @@ async function toggleFavorite(item) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
 
-    await loadHistory(els.historySearch.value.trim());
-    await loadUsageTrend();
+    item.favorite = favorite;
+    historyItemMap.set(item.id, item);
     els.historyActionStatus.textContent = favorite
       ? '已收藏会诊'
       : '已取消收藏';
-    if (historyOpen) els.historySearch.focus();
+
+    if (favoritesOnly && !favorite) {
+      // 「只看收藏」筛选下取消收藏需要移除条目：重载但保留滚动位置
+      const scrollTop = els.historyList.scrollTop;
+      await loadHistory(historyQuery);
+      els.historyList.scrollTop = scrollTop;
+      if (historyOpen) els.historySearch.focus();
+      return;
+    }
+
+    // 原地更新星标，保留已加载的更多页、滚动位置与键盘焦点
+    const row = Array.from(els.historyList.children).find(
+      (element) => element.dataset.sessionId === item.id
+    );
+    const star = row && row.querySelector('.history-star');
+    if (star) {
+      star.classList.toggle('active', favorite);
+      star.textContent = favorite ? '★' : '☆';
+      star.title = favorite ? '取消收藏' : '收藏这次会诊';
+      star.setAttribute(
+        'aria-label',
+        `${favorite ? '取消收藏' : '收藏'}：${item.title || '未命名会诊'}`
+      );
+      star.focus();
+    }
+    await loadUsageTrend();
   } catch (err) {
     window.alert(`更新收藏失败：${err.message || err}`);
   }
