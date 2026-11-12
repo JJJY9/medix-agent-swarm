@@ -1050,3 +1050,51 @@ def test_sessions_risk_parses_answer_beyond_1000_chars(
 
     by_id = {item["id"]: item for item in data["sessions"]}
     assert by_id["risk-long"]["risk"] == "high"
+
+
+def test_bulk_sessions_use_batched_store_calls(tmp_path, monkeypatch):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    for session_id in ("s1", "s2", "s3"):
+        store.save_exchange(session_id, "问题", "答复")
+
+    calls = []
+    original_archive = store.set_archived_many
+    original_delete = store.delete_sessions_many
+
+    def archive_many(ids, archived):
+        calls.append("archive")
+        return original_archive(ids, archived)
+
+    def delete_many(ids):
+        calls.append("delete")
+        return original_delete(ids)
+
+    monkeypatch.setattr(store, "set_archived_many", archive_many)
+    monkeypatch.setattr(store, "delete_sessions_many", delete_many)
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+    try:
+        client = TestClient(api_server.app)
+        archived = client.patch(
+            "/api/bulk/sessions/archive",
+            json={"ids": ["s1", "s2", "missing"], "archived": True},
+        )
+        deleted = client.post(
+            "/api/bulk/sessions/delete",
+            json={"ids": ["s1", "s3", "missing"]},
+        )
+        remaining = client.get("/api/sessions")
+        archived_rows = client.get(
+            "/api/sessions", params={"archived": "true"}
+        )
+    finally:
+        store.close()
+
+    # 两次批量操作各只调用一次存储层，而不是每个 id 一次
+    assert calls == ["archive", "delete"]
+    assert archived.json()["updated"] == 2
+    assert archived.json()["missing"] == ["missing"]
+    assert deleted.json()["deleted"] == 2
+    assert deleted.json()["missing"] == ["missing"]
+    assert remaining.json()["sessions"] == []
+    assert [item["id"] for item in archived_rows.json()["sessions"]] == ["s2"]
