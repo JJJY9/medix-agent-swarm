@@ -80,6 +80,7 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
             "evidence_level": report.evidence_level,
             "status": "error" if failed else "completed",
             "data_sources": data_sources,
+            "sources": _report_sources(report),
             "usage": usage,
             "llm_calls": 2,
         }
@@ -112,6 +113,39 @@ def _describe_data_sources(sources) -> str:
         parts.append("医学知识库（Milvus RAG）")
     parts.append("证据综合")
     return " + ".join(parts)
+
+
+def _report_sources(report) -> list:
+    """把研究报告的来源映射为前端参考来源卡片可用的结构。"""
+    sources = []
+    try:
+        confidence = round(float(getattr(report, "confidence", 0) or 0), 4)
+    except (TypeError, ValueError, OverflowError):
+        confidence = 0.0
+    for item in getattr(report, "sources", []) or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "医学知识")
+        if item.get("type") == "web":
+            url = str(item.get("url") or "")
+            sources.append({
+                "title": title,
+                "source": "网络搜索",
+                "filename": title,
+                "url": url,
+                "snippet": url,
+                "score": confidence,
+            })
+        else:
+            doc_id = str(item.get("id") or "")
+            sources.append({
+                "title": title,
+                "source": "医学知识库",
+                "filename": title,
+                "snippet": f"知识库文档 {doc_id}" if doc_id else "",
+                "score": confidence,
+            })
+    return sources
 
 
 def format_research_report(query: str, report, data_sources: str = "") -> str:
