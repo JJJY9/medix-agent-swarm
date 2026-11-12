@@ -1,7 +1,9 @@
 """本地自动备份的离线测试。"""
 import asyncio
 import json
+import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -186,3 +188,48 @@ def test_auto_backup_once_disabled(monkeypatch):
     monkeypatch.delenv("MEDIX_AUTO_BACKUP_HOURS", raising=False)
 
     assert asyncio.run(api_server.auto_backup_once()) is None
+
+
+def test_auto_backup_wait_seconds_respects_existing_backup(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MEDIX_BACKUP_DIR", str(tmp_path))
+    assert api_server.auto_backup_wait_seconds(6) == 0.0
+
+    path = create_backup({"n": 1}, directory=tmp_path, keep=5)
+    wait = api_server.auto_backup_wait_seconds(6)
+    assert 0 < wait <= 6 * 3600
+
+    old = time.time() - 7 * 3600
+    os.utime(path, (old, old))
+    assert api_server.auto_backup_wait_seconds(6) == 0.0
+
+
+def test_auto_backup_loop_skips_recent_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIX_AUTO_BACKUP_HOURS", "6")
+    monkeypatch.setenv("MEDIX_BACKUP_DIR", str(tmp_path))
+    create_backup({"n": 1}, directory=tmp_path, keep=5)
+
+    calls = []
+
+    async def fake_backup():
+        calls.append(1)
+        return None
+
+    class StopLoop(Exception):
+        pass
+
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        raise StopLoop()
+
+    monkeypatch.setattr(api_server, "auto_backup_once", fake_backup)
+    monkeypatch.setattr(api_server.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(StopLoop):
+        asyncio.run(api_server.auto_backup_loop())
+
+    assert calls == []
+    assert sleeps and 0 < sleeps[0] <= 6 * 3600

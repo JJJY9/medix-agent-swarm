@@ -1281,7 +1281,7 @@ def test_update_reminder(store):
     with pytest.raises(ValueError):
         store.update_reminder(reminder["id"], title="  ")
     with pytest.raises(ValueError):
-        store.update_reminder(reminder["id"], due_at="2026/11/20")
+        store.update_reminder(reminder["id"], due_at="2026/2/30")
 
 
 def test_purge_sessions_before(store, monkeypatch):

@@ -134,7 +134,12 @@ def normalize_subtasks(raw_subtasks: Any, max_subtasks: int = MAX_SUBTASKS) -> L
 
         description = item.get("description") or item.get("task") or item.get("desc")
         if not isinstance(description, str) or not description.strip():
-            logger.warning(f"丢弃缺少 description 的子任务: {item!r}")
+            # 子任务描述常复述患者主诉，日志只保留结构信息
+            logger.warning(
+                "丢弃缺少 description 的子任务: type=%s keys=%s",
+                type(item).__name__,
+                sorted(str(key) for key in item)[:5],
+            )
             continue
 
         raw_agent = (
@@ -144,7 +149,11 @@ def normalize_subtasks(raw_subtasks: Any, max_subtasks: int = MAX_SUBTASKS) -> L
         )
         agent_id = normalize_agent_id(raw_agent)
         if agent_id is None:
-            logger.warning(f"未知 Agent {raw_agent!r}，子任务改派给 consultation_agent")
+            logger.warning(
+                "未知 Agent 标识（type=%s length=%s），子任务改派给 consultation_agent",
+                type(raw_agent).__name__,
+                len(str(raw_agent or "")),
+            )
             agent_id = "consultation_agent"
 
         normalized.append({
@@ -423,7 +432,9 @@ class LeadAgent:
 
         for data in subtasks_data:
             if not isinstance(data, dict):
-                logger.warning(f"跳过非字典子任务: {data!r}")
+                logger.warning(
+                    "跳过非字典子任务: type=%s", type(data).__name__
+                )
                 continue
 
             description = data.get("description") or data.get("task") or "回答用户问题"
@@ -432,7 +443,11 @@ class LeadAgent:
             raw_agent = data.get("assigned_agent") or data.get("agent")
             assigned_agent = normalize_agent_id(raw_agent)
             if assigned_agent is None:
-                logger.warning(f"未知 Agent {raw_agent!r}，改派给 consultation_agent")
+                logger.warning(
+                    "未知 Agent 标识（type=%s length=%s），改派给 consultation_agent",
+                    type(raw_agent).__name__,
+                    len(str(raw_agent or "")),
+                )
                 assigned_agent = "consultation_agent"
 
             # 自动推断 type（基于 assigned_agent，向后兼容）

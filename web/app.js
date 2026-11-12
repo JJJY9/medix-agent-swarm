@@ -8632,7 +8632,12 @@ async function maybeNotifyDueReminders(items) {
     if (registration && typeof registration.showNotification === 'function') {
       await registration.showNotification('MediX 随访提醒', options);
     } else {
-      new Notification('MediX 随访提醒', options);
+      const fallback = new Notification('MediX 随访提醒', options);
+      fallback.onclick = () => {
+        window.focus();
+        fallback.close();
+        openReminders();
+      };
     }
     safeStorageSet(REMINDER_NOTIFIED_KEY, today);
   } catch {
@@ -9915,8 +9920,8 @@ async function importRemindersCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或日期无效`);
-    if (data.invalid) parts.push(`缺少内容或日期 ${data.invalid} 行`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setRemindersStatus(parts.join('，') + '。', data.imported === 0);
     await refreshReminderProfileOptions();
     await loadReminders();
@@ -10413,7 +10418,7 @@ async function importSymptomsCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复或时间无效`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setSymptomStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
@@ -10528,7 +10533,7 @@ async function importMedicationsCsv(file) {
 
     const parts = [`已导入 ${data.imported || 0} 条`];
     if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
-    if (data.invalid) parts.push(`缺少药物名称 ${data.invalid} 行`);
+    if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
     setMedicationStatus(parts.join('，') + '。', data.imported === 0);
     await refreshMetricProfileOptions();
     await loadMedications();
@@ -13330,6 +13335,7 @@ async function deleteCondition(item) {
 }
 
 let editingMedicationId = null;
+let medicationEditSnapshot = null;
 let editingMedicationProfile = '';
 let medicationSaving = false;
 let medicationRequestSeq = 0;
@@ -13363,6 +13369,7 @@ function setMedicationStatus(text, isError = false) {
 function resetMedicationForm() {
   editingMedicationId = null;
   editingMedicationProfile = '';
+  medicationEditSnapshot = null;
   els.medicationName.value = '';
   els.medicationDose.value = '';
   els.medicationFrequency.value = '';
@@ -17475,6 +17482,12 @@ function editMedication(item) {
     ? ''
     : String(item.stock);
   els.medicationStockUnit.value = item.stock_unit || '';
+  // 记录打开表单时的库存快照：保存时只有用户真正改过才回传库存，
+  // 否则会把期间打卡扣减的库存写回去并触发“盘点”清零历史扣减
+  medicationEditSnapshot = {
+    stock: els.medicationStock.value.trim(),
+    stockUnit: els.medicationStockUnit.value.trim(),
+  };
   els.medicationLowStock.value = String(
     item.low_stock_threshold === null
       || item.low_stock_threshold === undefined
@@ -17517,6 +17530,7 @@ async function saveMedication() {
     els.medicationLowStock.focus();
     return;
   }
+  const stockUnit = (els.medicationStockUnit.value || '').trim();
   const payload = {
     profile: editingId
       ? editingMedicationProfile
@@ -17527,13 +17541,24 @@ async function saveMedication() {
     note: (els.medicationNote.value || '').trim(),
     active: els.medicationActive.checked,
     stock,
-    stock_unit: (els.medicationStockUnit.value || '').trim(),
+    stock_unit: stockUnit,
     low_stock_threshold: threshold,
     expiry_date: els.medicationExpiry.value || '',
     started_at: els.medicationStartedAt.value || '',
     stopped_at: els.medicationStoppedAt.value || '',
     stop_reason: (els.medicationStopReason.value || '').trim(),
   };
+  if (
+    editingId
+    && medicationEditSnapshot
+    && stockText === medicationEditSnapshot.stock
+    && stockUnit === medicationEditSnapshot.stockUnit
+  ) {
+    // 库存未改动：不发送旧快照，服务端沿用锁内当前值，
+    // 避免覆盖期间打卡产生的扣减
+    delete payload.stock;
+    delete payload.stock_unit;
+  }
 
   medicationSaving = true;
   els.medicationSave.disabled = true;
@@ -17841,8 +17866,11 @@ async function importMetricsCsv(file) {
     }
 
     const parts = [`已导入 ${data.imported || 0} 条`];
-    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复/无效`);
+    if (data.skipped) parts.push(`跳过 ${data.skipped} 条重复`);
     if (data.invalid) parts.push(`格式错误 ${data.invalid} 行`);
+    if (data.context_ignored) {
+      parts.push(`忽略 ${data.context_ignored} 条不适用的情境标签`);
+    }
     if (targetProfile) {
       parts.push(`空档案行归入「${targetProfile}」`);
     }
@@ -19634,7 +19662,26 @@ const OFFLINE_BANNER =
 let swRegistration = null;
 let swHadController = false;
 let swUpdateReady = false;
+let swUpdateCheckStarted = false;
 let loadedWebBuild = null;
+let statusWasDown = false;
+let reconnectRetryRunning = false;
+
+async function retryAfterReconnect() {
+  if (reconnectRetryRunning) return;
+  reconnectRetryRunning = true;
+  try {
+    await initProfiles();
+    await refreshReminderBadge();
+    if (els.empty && !els.empty.hidden) {
+      await restoreCurrentSession();
+    }
+  } catch {
+    // 单个恢复步骤失败不影响其他数据加载
+  } finally {
+    reconnectRetryRunning = false;
+  }
+}
 
 function checkStatus() {
   if (!checkStatusPromise) {
@@ -19650,11 +19697,28 @@ async function checkStatusOnce() {
     const res = await fetch('/api/status');
     const data = await res.json();
 
+    if (res.ok && statusWasDown) {
+      // 启动时后端不可用会让档案/提醒/首页数据保持空白；
+      // 恢复连接后主动重试一次，而不是要求用户手动刷新
+      statusWasDown = false;
+      void retryAfterReconnect();
+    }
+
     // 资产更新不会改变 service worker（旧实现），轮询状态里的构建号
     // 能覆盖只改 HTML/JS/CSS 的发布
     if (data.web_build) {
       if (!loadedWebBuild) loadedWebBuild = data.web_build;
-      else if (loadedWebBuild !== data.web_build) showUpdateBanner();
+      else if (loadedWebBuild !== data.web_build) {
+        // 旧 worker 激活时导航会从旧缓存返回 index/app.js；
+        // 先触发新 worker 安装，用户点一次刷新就能拿到新外壳
+        if (swRegistration && !swUpdateCheckStarted) {
+          swUpdateCheckStarted = true;
+          swRegistration.update().catch(() => {
+            swUpdateCheckStarted = false;
+          });
+        }
+        showUpdateBanner();
+      }
     }
 
     pricing = data.pricing || null;
@@ -19718,6 +19782,7 @@ async function checkStatusOnce() {
       els.readout.session.textContent = shortSession(sessionId);
     }
   } catch (err) {
+    statusWasDown = true;
     if (navigator.onLine === false) {
       // 离线时保留专用提示，避免通用错误覆盖并丢失「离线」状态
       setVitals('warn', '离线');
@@ -22094,7 +22159,12 @@ function describeServiceWorker() {
     return { text: '已就绪，可离线打开静态页面', ok: true };
   }
   if (swRegistration) {
-    return { text: '已注册，等待激活', ok: true };
+    const worker = swRegistration.active
+      || swRegistration.installing
+      || swRegistration.waiting;
+    if (worker) {
+      return { text: '已注册，等待激活', ok: true };
+    }
   }
   return { text: '未注册或注册失败', ok: false };
 }
@@ -22125,19 +22195,42 @@ if ('serviceWorker' in navigator) {
   });
 
   let swRegisterAttempts = 0;
+  const scheduleServiceWorkerRetry = () => {
+    swRegistration = null;
+    swRegisterAttempts += 1;
+    if (swRegisterAttempts <= 3) {
+      setTimeout(registerServiceWorker, 10000 * swRegisterAttempts);
+    }
+  };
+  const trackServiceWorkerInstall = (registration) => {
+    const worker = registration.installing || registration.waiting;
+    if (!worker) return;
+    worker.addEventListener('statechange', () => {
+      // 首次安装失败时 register() 早已 resolve，此后不会再自动重试；
+      // 没有 active worker 且安装进入 redundant 说明外壳安装失败
+      if (
+        worker.state === 'redundant'
+        && !registration.active
+      ) {
+        scheduleServiceWorkerRetry();
+      }
+    });
+  };
   const registerServiceWorker = () => {
     if (!window.isSecureContext) return;
     navigator.serviceWorker.register('/sw.js')
       .then((registration) => {
         swRegistration = registration;
         swRegisterAttempts = 0;
+        if (!registration.active) {
+          trackServiceWorkerInstall(registration);
+        }
+        registration.addEventListener('updatefound', () => {
+          trackServiceWorkerInstall(registration);
+        });
       })
       .catch(() => {
-        swRegistration = null;
-        swRegisterAttempts += 1;
-        if (swRegisterAttempts <= 3) {
-          setTimeout(registerServiceWorker, 10000 * swRegisterAttempts);
-        }
+        scheduleServiceWorkerRetry();
       });
   };
 

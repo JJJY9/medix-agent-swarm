@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import hashlib
 import ipaddress
 import uuid
@@ -69,6 +70,7 @@ from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
+from core.fs_permissions import restrict_permissions
 from core.pricing import get_pricing
 from core.budget import get_token_budget
 from core.serialization import (
@@ -151,7 +153,9 @@ def _bounded_offset(offset: Any) -> int:
 
 
 class ChatRequest(StrictRequestModel):
-    question: str = Field(..., min_length=1, description="用户健康问题")
+    question: str = Field(
+        ..., min_length=1, max_length=2000, description="用户健康问题"
+    )
     session_id: Optional[str] = Field(None, description="会话ID，不传则自动生成")
     context: Optional[Dict[str, Any]] = Field(None, description="额外上下文（年龄、既往史等）")
     enable_swarm: bool = Field(True, description="是否允许群体智能协作")
@@ -174,6 +178,23 @@ class ChatRequest(StrictRequestModel):
         ):
             raise ValueError("会话 ID 不合法")
         return text
+
+    @model_validator(mode="after")
+    def _validate_context_size(self):
+        """限制追问上下文体积，避免同一段文本被多次拼进提示词。"""
+        if self.context is None:
+            return self
+        if len(self.context) > 50:
+            raise ValueError("上下文项过多")
+        try:
+            serialized = json.dumps(
+                self.context, ensure_ascii=False, default=str
+            )
+        except (TypeError, ValueError):
+            raise ValueError("上下文包含无法序列化的内容")
+        if len(serialized) > 8000:
+            raise ValueError("上下文内容过长")
+        return self
 
 
 class SessionResponse(BaseModel):
@@ -908,6 +929,20 @@ async def auto_backup_once():
     return await asyncio.to_thread(create_backup, payload)
 
 
+def auto_backup_wait_seconds(hours: int) -> float:
+    """距下一份自动备份还需等待的秒数；没有备份或已到期返回 0。"""
+    from core.backup import latest_backup
+
+    latest = latest_backup()
+    if latest is None:
+        return 0.0
+    try:
+        age = time.time() - latest.stat().st_mtime
+    except OSError:
+        return 0.0
+    return max(0.0, hours * 3600 - age)
+
+
 async def auto_backup_loop() -> None:
     """按 MEDIX_AUTO_BACKUP_HOURS 定期备份；关闭时每小时检查一次配置。"""
     from core.backup import get_auto_backup_hours
@@ -917,13 +952,20 @@ async def auto_backup_loop() -> None:
         if hours <= 0:
             await asyncio.sleep(3600)
             continue
+        interval = hours * 3600
+        wait = await asyncio.to_thread(auto_backup_wait_seconds, hours)
+        if wait > 0:
+            # 进程重启不应额外生成备份，否则连续重启会把历史快照
+            # 按份数挤出保留窗口，只剩同一天的重复文件
+            await asyncio.sleep(wait)
+            continue
         try:
             path = await auto_backup_once()
             if path:
                 logger.info(f"本地自动备份完成: {path}")
         except Exception as e:
             logger.warning(f"本地自动备份失败: {e}")
-        await asyncio.sleep(hours * 3600)
+        await asyncio.sleep(interval)
 
 
 async def record_audit(action: str, target: str = "", detail: str = "") -> None:
@@ -975,6 +1017,22 @@ def csv_restore_cell(value: Any) -> str:
     ):
         return text[1:]
     return text
+
+
+#: CSV 状态列中明确表示"停用"的写法；空值与其他未知值按在用处理，
+#: 避免把用户手写的变体（已停药/暂停等）误导入为在用药物
+_CSV_INACTIVE_STATUS = {
+    "停用", "已停用", "停用中", "已停药", "停药", "暂停", "已暂停",
+    "停服", "已停服", "0", "false", "no", "否",
+}
+
+
+def csv_active_status(value: Any) -> bool:
+    """解析 CSV 状态列：只有明确的停用值才视为停用，空值默认为在用。"""
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return True
+    return text not in _CSV_INACTIVE_STATUS
 
 
 #: CSV 导入模板：列名与导出文件保持一致，示例行帮助用户直接开始录入
@@ -1381,6 +1439,33 @@ def _warn_if_short_access_token() -> None:
             "建议更换更长的随机令牌。"
         )
 
+
+INSECURE_LAN_ENV = "MEDIX_ALLOW_INSECURE_LAN"
+
+
+def _is_loopback_host(host: str) -> bool:
+    text = str(host or "").strip().lower()
+    if text in ("localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def check_bind_security(
+    host: str, token: str, allow_insecure_lan: bool = False
+) -> Optional[str]:
+    """绑定非本机地址且未设置访问令牌时返回错误消息；可启动时返回 None。"""
+    if token or allow_insecure_lan or _is_loopback_host(host):
+        return None
+    return (
+        f"拒绝启动：绑定到 {host} 会向局域网暴露服务，但未设置 "
+        "MEDIX_ACCESS_TOKEN。请设置访问令牌；仅在完全可信的内网使用时，"
+        "可用 --allow-insecure-lan 或 MEDIX_ALLOW_INSECURE_LAN=1 显式放行。"
+    )
+
+
 # 自检端点会真实调用一次付费模型，单独限制频率
 diagnose_limiter = SlidingWindowLimiter(5)
 # 重建/上传会触发全量索引，限制频率避免放大资源消耗
@@ -1432,6 +1517,9 @@ def _body_limit_for_path(path: str) -> int:
         return MAX_UPLOAD_BYTES + 1024 * 1024
     if path.endswith("/import"):
         return MAX_UPLOAD_BYTES + 1024 * 1024
+    if path in ("/api/chat", "/api/chat/stream"):
+        # 问题上限 2000 字、上下文上限 8000 字，64KB 足够且能挡住灌入
+        return 64 * 1024
     return 2 * 1024 * 1024
 
 
@@ -3125,7 +3213,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             "dose": mapped.get("dose", ""),
             "frequency": mapped.get("frequency", ""),
             "note": mapped.get("note", ""),
-            "active": active not in ("停用", "0", "false", "False", "否"),
+            "active": csv_active_status(active),
             "stock": mapped.get("stock") or None,
             "stock_unit": mapped.get("stock_unit", ""),
             "low_stock_threshold": mapped.get("low_stock_threshold") or 0,
@@ -3148,6 +3236,8 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("medications", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "medication.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -3155,7 +3245,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -4226,13 +4316,15 @@ async def import_lab_results_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("lab_results", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "lab.import", detail=f"imported={imported} invalid={invalid}"
     )
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -4462,7 +4554,7 @@ async def import_allergies_csv(
             "reaction": mapped.get("reaction", ""),
             "severity": severity_map.get(severity, severity or "moderate"),
             "kind": kind_map.get(kind, kind or "drug"),
-            "active": active not in ("已停用", "停用", "0", "false", "False", "否"),
+            "active": csv_active_status(active),
             "noted_at": mapped.get("noted_at", ""),
             "note": mapped.get("note", ""),
         })
@@ -4478,13 +4570,15 @@ async def import_allergies_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("allergies", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "allergy.import", detail=f"imported={imported} invalid={invalid}"
     )
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -5462,6 +5556,8 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("symptoms", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "symptom.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -5469,7 +5565,7 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -7271,19 +7367,10 @@ async def _list_attachments_paged(
     start: str = "",
     end: str = "",
 ) -> List[Dict[str, Any]]:
-    """分页读取附件登记，避免单页上限导致较旧附件被静默丢弃。"""
-    items: List[Dict[str, Any]] = []
-    offset = 0
-    while offset < 100000:
-        page = await asyncio.to_thread(
-            store.list_attachments,
-            profile, None, None, 1000, offset, "", None, start, end,
-        )
-        items.extend(page)
-        if len(page) < 1000:
-            break
-        offset += 1000
-    return items
+    """一次读取附件登记（时间线与健康搜索只需轻量字段）。"""
+    return await asyncio.to_thread(
+        store.list_all_attachments, profile, start, end
+    )
 
 
 @app.get("/api/timeline")
@@ -7801,6 +7888,73 @@ def _health_search_number(value: Any) -> str:
     return str(value)
 
 
+def _health_search_prefilter(type_key: str, key: str) -> str:
+    """返回可安全下推到 SQL 的预过滤词；空串表示不能下推。
+
+    只有查询不可能命中 Python 侧拼出的派生文本（指标中文名、状态标签、
+    化验参考范围等）时才下推，确保 SQL 结果是最终结果的超集。
+    """
+    if not key:
+        return ""
+    if type_key == "metric":
+        # 中文指标名/情境名由调用方翻译成存储代码后并入 SQL；
+        # 此处仍返回原始查询用于匹配备注、单位等存储文本
+        return key
+    if type_key == "medication":
+        return "" if key in "在用" or key in "停用" else key
+    if type_key == "lab":
+        if "–" in key or "≥" in key or "≤" in key:
+            return ""
+        if any(character.isdigit() for character in key):
+            return ""
+        return "" if any(
+            key in label for label in ("偏高", "偏低", "危急值")
+        ) else key
+    if type_key == "vaccination":
+        if any(character.isdigit() for character in key):
+            return ""
+        return "" if "第" in key or "剂" in key else key
+    if type_key == "appointment":
+        return "" if any(
+            key in label for label in ("待就诊", "已完成", "已取消")
+        ) else key
+    if type_key == "care":
+        return "" if key in "已停用" else key
+    if type_key == "allergy":
+        return "" if any(
+            key in label
+            for label in ("轻度", "中度", "重度", "药物", "食物",
+                          "环境", "其他", "已停用")
+        ) else key
+    if type_key == "condition":
+        return "" if any(
+            key in label
+            for label in ("管理中", "已控制", "已痊愈", "轻度", "中度",
+                          "重度")
+        ) else key
+    if type_key == "reminder":
+        return "" if key in "已完成" or key in "待处理" else key
+    if type_key == "symptom" or type_key == "visit":
+        return key
+    # 附件与其余类型的匹配依赖关联记录或派生文本，不做 SQL 预过滤
+    return ""
+
+
+def _health_search_metric_filters(key: str):
+    """把中文指标名/情境名翻译为存储代码，供 SQL 预过滤使用。"""
+    from memory.session_store import METRIC_CONTEXT_LABELS, METRIC_TYPES
+
+    codes = [
+        code for code, (label, _unit, _range) in METRIC_TYPES.items()
+        if key in str(label or "").lower()
+    ]
+    contexts = [
+        code for code, label in METRIC_CONTEXT_LABELS.items()
+        if key in str(label or "").lower()
+    ]
+    return codes, contexts
+
+
 @app.get("/api/health/search")
 async def health_search(
     q: str = "",
@@ -7829,36 +7983,63 @@ async def health_search(
     limit = max(1, min(int(limit or 50), 200))
     store = get_session_store()
 
+    sql_queries = {
+        type_key: _health_search_prefilter(type_key, key)
+        for type_key in HEALTH_SEARCH_TYPE_ORDER
+    }
+    metric_codes, metric_contexts = _health_search_metric_filters(key)
+
     (
         metrics, symptoms, medications, labs, vaccinations,
         appointments, care_items, visits, allergies, conditions,
         reminders, attachments,
     ) = await asyncio.gather(
         asyncio.to_thread(
-            store.list_metrics, profile, None, 100000, 0, 0, ""
-        ),
-        asyncio.to_thread(store.list_symptoms, profile, 100000, 0, 0),
-        asyncio.to_thread(
-            store.list_medications, profile, False, 100000, 0, 7
-        ),
-        asyncio.to_thread(
-            store.list_lab_results, profile, None, None, 0, 100000, 0
-        ),
-        asyncio.to_thread(store.list_vaccinations, profile, 100000),
-        asyncio.to_thread(
-            store.list_appointments, profile, None, False, 100000, 0
+            store.list_metrics, profile, None, 100000, 0, 0, "",
+            search_q=sql_queries["metric"],
+            search_metric_codes=metric_codes,
+            search_contexts=metric_contexts,
         ),
         asyncio.to_thread(
-            store.list_care_items, profile, False, False, 100000
-        ),
-        asyncio.to_thread(store.list_visit_records, profile, 0, "", 100000),
-        asyncio.to_thread(
-            store.list_allergies, profile, False, None, "", 100000
+            store.list_symptoms, profile, 100000, 0, 0,
+            search_q=sql_queries["symptom"],
         ),
         asyncio.to_thread(
-            store.list_conditions, profile, False, None, 100000
+            store.list_medications, profile, False, 100000, 0, 7,
+            search_q=sql_queries["medication"],
         ),
-        asyncio.to_thread(store.list_reminders, True, profile),
+        asyncio.to_thread(
+            store.list_lab_results, profile, None, None, 0, 100000, 0,
+            search_q=sql_queries["lab"],
+        ),
+        asyncio.to_thread(
+            store.list_vaccinations, profile, 100000,
+            search_q=sql_queries["vaccination"],
+        ),
+        asyncio.to_thread(
+            store.list_appointments, profile, None, False, 100000, 0,
+            q=sql_queries["appointment"],
+        ),
+        asyncio.to_thread(
+            store.list_care_items, profile, False, False, 100000,
+            q=sql_queries["care"],
+        ),
+        asyncio.to_thread(
+            store.list_visit_records, profile, 0, "", 100000,
+            search_q=sql_queries["visit"],
+        ),
+        asyncio.to_thread(
+            store.list_allergies, profile, False, None,
+            sql_queries["allergy"], 100000,
+        ),
+        asyncio.to_thread(
+            store.list_conditions, profile, False, None, 100000,
+            sql_queries["condition"],
+        ),
+        asyncio.to_thread(
+            store.list_reminders, True, profile,
+            search_q=sql_queries["reminder"],
+        ),
         _list_attachments_paged(store, profile),
     )
 
@@ -8925,8 +9106,11 @@ async def import_metrics_csv(
         "auditc", "mmrc"
     }
 
+    from memory.session_store import METRIC_CONTEXTS
+
     records = []
     invalid = 0
+    context_ignored = 0
     try:
         csv_rows = list(reader)
     except csv.Error as e:
@@ -8983,6 +9167,11 @@ async def import_metrics_csv(
             context = "evening"
         elif metric == "glucose" and context == "evening":
             context = "bedtime"
+        allowed_contexts = METRIC_CONTEXTS.get(metric, ())
+        if context and allowed_contexts and context not in allowed_contexts:
+            # 情境只是可选标签；不适用于该指标时忽略标签而不是丢弃整条读数
+            context = ""
+            context_ignored += 1
 
         records.append({
             "profile": mapped.get("profile", "") or profile,
@@ -9007,15 +9196,21 @@ async def import_metrics_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("metrics", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "metric.import",
-        detail=f"imported={imported} invalid={invalid}",
+        detail=(
+            f"imported={imported} invalid={invalid} "
+            f"context_ignored={context_ignored}"
+        ),
     )
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
+        "context_ignored": context_ignored,
     }
 
 
@@ -10451,12 +10646,14 @@ async def upload_attachment(
 
     attachment_dir = ATTACHMENT_DIR.resolve()
     attachment_dir.mkdir(parents=True, exist_ok=True)
+    restrict_permissions(attachment_dir, 0o700)
     stored_name = f"{uuid.uuid4().hex}{suffix}"
     target = (attachment_dir / stored_name).resolve()
     if target.parent != attachment_dir:
         raise HTTPException(status_code=400, detail="附件名称不正确")
     try:
         target.write_bytes(content)
+        restrict_permissions(target, 0o600)
     except OSError:
         logger.warning("附件写入失败")
         raise HTTPException(status_code=500, detail="附件保存失败")
@@ -12200,7 +12397,7 @@ async def export_health_dossier(
         store.list_appointments, profile_key, None, False, 100000, 0
     )
     lab_results = await asyncio.to_thread(
-        store.list_lab_results, profile_key, None, None, 0, 100000, 0
+        store.list_lab_results, profile_key, None, None, days, 300, 0
     )
     allergies = await asyncio.to_thread(
         store.list_allergies, profile_key, False, None, "", 1000
@@ -12466,6 +12663,10 @@ async def export_health_dossier(
 
     lines.append("## 最近化验")
     if lab_results:
+        if len(lab_results) >= 300:
+            lines.append(
+                f"- 化验记录较多，仅显示近 {days} 天内最近 300 条"
+            )
         for item in lab_results:
             value = f"{float(item.get('value') or 0):g}"
             unit = str(item.get("unit") or "")
@@ -13144,6 +13345,8 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     imported = int(result.get("reminders", 0))
+    store_invalid = int(result.get("invalid", 0))
+    invalid += store_invalid
     await record_audit(
         "reminder.import",
         detail=f"imported={imported} invalid={invalid}",
@@ -13151,7 +13354,7 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
     return {
         "ok": True,
         "imported": imported,
-        "skipped": len(records) - imported,
+        "skipped": max(0, len(records) - imported - store_invalid),
         "invalid": invalid,
     }
 
@@ -13779,12 +13982,19 @@ async def set_session_tags(session_id: str, request: TagsRequest):
     """覆盖会话标签（最多 5 个，每个最长 20 字）。"""
     from memory import get_session_store
 
-    tags = await asyncio.to_thread(
-        get_session_store().set_tags, session_id, request.tags
-    )
+    store = get_session_store()
+    tags = await asyncio.to_thread(store.set_tags, session_id, request.tags)
     if tags is None:
         raise HTTPException(status_code=404, detail="会话不存在")
-    await record_audit("session.tags", session_id, "、".join(tags))
+    try:
+        # 标签可能含“抑郁”“化疗”等健康信息：清理该会话历史审计中的原文
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.tags"], session_id, session_id, "tags=redacted",
+        )
+    except Exception as e:
+        logger.warning(f"清理历史标签审计失败: {e}")
+    await record_audit("session.tags", session_id, f"count={len(tags)}")
     return {"ok": True, "session_id": session_id, "tags": tags}
 
 
@@ -13897,11 +14107,20 @@ async def bulk_tag_sessions(request: BulkTagsRequest):
             updated += 1
             normalized = tags
 
+    try:
+        # 批量审计没有单条 target，按 action 清理全部历史标签原文
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.bulk_tags"], "", "", "tags=redacted",
+            match_all=True,
+        )
+    except Exception as e:
+        logger.warning(f"清理批量标签审计失败: {e}")
     await record_audit(
         "session.bulk_tags",
         detail=(
             f"updated={updated} missing={len(missing)} "
-            f"tags={'、'.join(normalized)}"
+            f"count={len(normalized)}"
         ),
     )
     return {
@@ -14886,7 +15105,32 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true", help="开发模式，代码变更自动重载")
+    parser.add_argument(
+        "--allow-insecure-lan",
+        action="store_true",
+        help="未设置访问令牌时仍允许绑定非本机地址（仅限完全可信的内网）",
+    )
     args = parser.parse_args()
+
+    allow_insecure = args.allow_insecure_lan or (
+        (os.getenv(INSECURE_LAN_ENV) or "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    bind_error = check_bind_security(
+        args.host, get_access_token(), allow_insecure
+    )
+    if bind_error:
+        logger.error(bind_error)
+        raise SystemExit(2)
+    if (
+        allow_insecure
+        and not get_access_token()
+        and not _is_loopback_host(args.host)
+    ):
+        logger.warning(
+            "已按显式配置在没有访问令牌的情况下绑定 "
+            f"{args.host}：局域网内任何设备都可读写健康数据，请确认网络可信。"
+        )
 
     import uvicorn
 

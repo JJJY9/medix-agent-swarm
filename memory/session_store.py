@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,7 @@ from loguru import logger
 
 from core.serialization import sanitize_json
 from core.lab_values import lab_critical_alerts
+from core.fs_permissions import restrict_permissions
 from core.backup import (
     MAX_BACKUP_MESSAGE_CHARS,
     MAX_BACKUP_SESSION_MESSAGES,
@@ -388,9 +390,41 @@ def adherence_rate(taken: Any, expected: Any) -> Optional[int]:
     return min(100, round(taken_value / expected_value * 100 + 1e-9))
 
 
+def _normalize_datetime_text(value: Any, limit: int = 40) -> str:
+    """把 Excel/WPS 常见的日期写法规整为 ISO 风格文本。
+
+    只做格式规整，不判断日期是否真实存在；后续 fromisoformat 负责校验，
+    因此 2026/2/30 之类仍会被拒绝。
+    """
+    text = str(value or "").strip()[:limit]
+    match = re.match(
+        r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?(.*)$", text
+    )
+    if not match:
+        return text
+    year, month, day, rest = match.groups()
+    rest = rest.strip()
+    if rest[:1] in ("T", "t"):
+        rest = rest[1:].strip()
+    if rest:
+        clock = re.match(
+            r"^(\d{1,2}):(\d{1,2})(?::(\d{1,2})(\.\d+)?)?(.*)$", rest
+        )
+        if clock:
+            hour, minute, second, fraction, suffix = clock.groups()
+            rest = f"T{int(hour):02d}:{int(minute):02d}"
+            if second is not None:
+                rest += f":{int(second):02d}{fraction or ''}"
+            rest += suffix
+        else:
+            # 允许空格分隔日期与时间（Excel 另存 CSV 的常见格式）
+            rest = "T" + rest
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}{rest}"
+
+
 def _canonical_local_time(value: Any) -> Optional[str]:
     """把合法 ISO 时间规范化为本地 T 分隔格式；无效返回 None。"""
-    text = str(value or "").strip()[:40]
+    text = _normalize_datetime_text(value)
     if not text:
         return None
     try:
@@ -1320,7 +1354,7 @@ def _normalize_condition(
 
 
 def _normalize_reminder_due(value: Any) -> str:
-    due = str(value or "").strip()[:32]
+    due = _normalize_datetime_text(value, limit=32)
     if not due or not REMINDER_DATE_PATTERN.match(due):
         raise ValueError("提醒日期格式应为 YYYY-MM-DD 或 ISO 时间")
     try:
@@ -1360,7 +1394,7 @@ def _normalize_reminder_repeat_days(value: Any) -> int:
 
 
 def _normalize_reminder_repeat_until(value: Any) -> str:
-    text = str(value or "").strip()[:32]
+    text = _normalize_datetime_text(value, limit=32)
     if not text:
         return ""
     try:
@@ -1486,6 +1520,24 @@ def _like_pattern(query: str) -> str:
         .replace("_", "\\_")
     )
     return f"%{escaped}%"
+
+
+def _like_any_condition(
+    columns: Tuple[str, ...], query: Any
+) -> Tuple[Optional[str], List[Any]]:
+    """生成多列 LIKE 预过滤条件；空查询返回 (None, [])。
+
+    调用方必须确保 columns 覆盖 Python 侧匹配的全部已存字段，
+    否则预过滤会漏掉本来应命中的记录。
+    """
+    text = str(query or "").strip()
+    if not text:
+        return None, []
+    like = _like_pattern(text)
+    clause = "(" + " OR ".join(
+        f"{column} LIKE ? ESCAPE '\\'" for column in columns
+    ) + ")"
+    return clause, [like] * len(columns)
 
 
 def _days_cutoff(days: int) -> Optional[str]:
@@ -1625,6 +1677,22 @@ class SessionStore:
         self._deleted_sessions: Dict[str, None] = {}
         self._max_deleted_sessions = 4096
         self._init_schema()
+        self._harden_permissions()
+
+    def _harden_permissions(self) -> None:
+        """把数据库与应用数据目录限制为仅当前用户可访问。
+
+        自定义 MEDIX_SESSION_DB 只收紧数据库文件本身，不改变用户目录
+        的权限；Windows 上的 chmod 不生效但会被忽略。
+        """
+        data_root = DEFAULT_DB_PATH.parent
+        try:
+            if self.db_path.resolve().parent == data_root.resolve():
+                restrict_permissions(data_root, 0o700)
+        except OSError:
+            pass
+        for suffix in ("", "-wal", "-shm"):
+            restrict_permissions(Path(str(self.db_path) + suffix), 0o600)
 
     def _init_schema(self) -> None:
         with self._lock, self._conn:
@@ -3575,6 +3643,7 @@ class SessionStore:
                         raw.get("context", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     exists = self._conn.execute(
                         """
@@ -3684,6 +3753,7 @@ class SessionStore:
                         raw.get("note", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     exists = self._conn.execute(
                         """
@@ -3741,6 +3811,7 @@ class SessionStore:
                         raw.get("stop_reason", ""),
                     )
                     if normalized is None:
+                        invalid += 1
                         continue
                     created_key = str(raw.get("created_at") or "").strip()[:40]
                     if created_key:
@@ -4207,17 +4278,47 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM allergies
-                         WHERE profile = ? AND substance = ? AND kind = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["substance"],
-                            normalized["kind"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    # 同一过敏原可能有多次不同反应（如先皮疹后休克），
+                    # 判重必须带上反应/程度/发现时间，不能只按物质+类型
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM allergies
+                             WHERE profile = ? AND substance = ?
+                               AND kind = ? AND reaction = ?
+                               AND severity = ? AND noted_at = ?
+                               AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["substance"],
+                                normalized["kind"],
+                                normalized["reaction"],
+                                normalized["severity"],
+                                normalized["noted_at"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM allergies
+                             WHERE profile = ? AND substance = ?
+                               AND kind = ? AND reaction = ?
+                               AND severity = ? AND noted_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["substance"],
+                                normalized["kind"],
+                                normalized["reaction"],
+                                normalized["severity"],
+                                normalized["noted_at"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4232,7 +4333,7 @@ class SessionStore:
                             normalized["reaction"], normalized["severity"],
                             normalized["kind"], normalized["active"],
                             normalized["noted_at"], normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
@@ -4405,16 +4506,44 @@ class SessionStore:
                     except ValueError:
                         invalid += 1
                         continue
-                    duplicate = self._conn.execute(
-                        """
-                        SELECT id FROM conditions
-                         WHERE profile = ? AND name = ?
-                        """,
-                        (
-                            normalized["profile"],
-                            normalized["name"],
-                        ),
-                    ).fetchone()
+                    created_key = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    # 同名慢病可能是不同次诊断/不同状态，判重需带上
+                    # 诊断时间、状态与严重程度，避免复发记录被吞掉
+                    if created_key:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM conditions
+                             WHERE profile = ? AND name = ?
+                               AND diagnosed_at = ? AND status = ?
+                               AND severity = ? AND created_at = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["name"],
+                                normalized["diagnosed_at"],
+                                normalized["status"],
+                                normalized["severity"],
+                                created_key,
+                            ),
+                        ).fetchone()
+                    else:
+                        duplicate = self._conn.execute(
+                            """
+                            SELECT id FROM conditions
+                             WHERE profile = ? AND name = ?
+                               AND diagnosed_at = ? AND status = ?
+                               AND severity = ?
+                            """,
+                            (
+                                normalized["profile"],
+                                normalized["name"],
+                                normalized["diagnosed_at"],
+                                normalized["status"],
+                                normalized["severity"],
+                            ),
+                        ).fetchone()
                     if duplicate is not None:
                         continue
                     self._conn.execute(
@@ -4430,7 +4559,7 @@ class SessionStore:
                             normalized["diagnosed_at"],
                             normalized["status"],
                             normalized["severity"], normalized["note"],
-                            str(raw.get("created_at") or now)[:40],
+                            created_key or now,
                             str(raw.get("updated_at") or now)[:40],
                         ),
                     )
@@ -4453,10 +4582,12 @@ class SessionStore:
                         str(raw.get("title") or "").split()
                     )[:MAX_REMINDER_TITLE_LENGTH]
                     if not title:
+                        invalid += 1
                         continue
                     try:
                         due_at = _normalize_reminder_due(raw.get("due_at"))
                     except ValueError:
+                        invalid += 1
                         continue
                     note = " ".join(
                         str(raw.get("note") or "").split()
@@ -4834,11 +4965,23 @@ class SessionStore:
             # 有长读事务时 checkpoint 会 busy；下次删除/关闭时会再尝试
             logger.warning(f"WAL checkpoint 失败（忽略）: {e}")
 
+    @contextmanager
+    def _write_and_checkpoint(self):
+        """在锁内提交写事务后立即 checkpoint。
+
+        删除健康数据后旧页帧仍可能留在 -wal；checkpoint 必须在持有
+        连接锁时执行，否则并发事务会让 TRUNCATE 静默失败。
+        """
+        with self._lock:
+            with self._conn:
+                yield
+            self._checkpoint_wal()
+
     def delete_session(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
         if not session_id:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM sessions WHERE id = ?", (session_id,)
             )
@@ -4852,8 +4995,6 @@ class SessionStore:
                     next(iter(self._deleted_sessions))
                 )
             deleted = cursor.rowcount > 0
-        # 事务提交后再 checkpoint，把 WAL 中已删除的页面清出
-        self._checkpoint_wal()
         return deleted
 
     def list_profiles(self) -> List[Dict[str, Any]]:
@@ -4928,7 +5069,7 @@ class SessionStore:
         name = " ".join(str(name or "").split())[:MAX_PROFILE_NAME_LENGTH]
         if not name:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM patient_profiles WHERE name = ?", (name,)
             )
@@ -5090,6 +5231,9 @@ class SessionStore:
         q: str = "",
         start: str = "",
         end: str = "",
+        search_q: str = "",
+        search_metric_codes: Optional[List[str]] = None,
+        search_contexts: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """按测量时间倒序返回健康指标记录，可按最近天数筛选与分页。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -5120,6 +5264,35 @@ class SessionStore:
                 "(note LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')"
             )
             params.extend([like, like])
+        search_parts: List[str] = []
+        search_part_params: List[Any] = []
+        metric_codes = [
+            code for code in (search_metric_codes or ())
+            if code in METRIC_TYPES
+        ]
+        if metric_codes:
+            search_parts.append(
+                "metric IN (" + ",".join("?" for _ in metric_codes) + ")"
+            )
+            search_part_params.extend(metric_codes)
+        context_codes = [
+            code for code in (search_contexts or ())
+            if code in METRIC_CONTEXT_LABELS
+        ]
+        if context_codes:
+            search_parts.append(
+                "context IN (" + ",".join("?" for _ in context_codes) + ")"
+            )
+            search_part_params.extend(context_codes)
+        search_clause, search_params = _like_any_condition(
+            ("metric", "unit", "context", "note"), search_q
+        )
+        if search_clause:
+            search_parts.append(search_clause)
+            search_part_params.extend(search_params)
+        if search_parts:
+            conditions.append("(" + " OR ".join(search_parts) + ")")
+            params.extend(search_part_params)
         cutoff = _days_cutoff(days)
         if cutoff:
             conditions.append("measured_at >= ?")
@@ -5162,43 +5335,56 @@ class SessionStore:
         conditions.append("measured_at <= ?")
         params.append(end_of_today)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        alias_where = (
+            " WHERE " + " AND ".join(f"h.{item}" for item in conditions)
+            if conditions else ""
+        )
         sql = f"""
-            WITH ranked AS (
-                SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, context, note, created_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY metric
-                           ORDER BY measured_at DESC, id DESC
-                       ) AS rn
+            WITH latest AS (
+                SELECT metric, MAX(measured_at) AS max_at
                   FROM health_metrics{where}
+                 GROUP BY metric
+            ),
+            picked AS (
+                SELECT h.metric, MAX(h.id) AS max_id
+                  FROM health_metrics h
+                  JOIN latest l
+                    ON h.metric = l.metric
+                   AND h.measured_at = l.max_at
+                 {alias_where}
+                 GROUP BY h.metric
             )
-            SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, context, note, created_at
-              FROM ranked
-             WHERE rn = 1
-             ORDER BY measured_at DESC
+            SELECT h.id, h.profile, h.metric, h.value1, h.value2, h.unit,
+                   h.measured_at, h.context, h.note, h.created_at
+              FROM health_metrics h
+              JOIN picked p ON h.id = p.max_id
+             ORDER BY h.measured_at DESC
         """
         with self._lock:
-            rows = self._conn.execute(sql, params).fetchall()
+            rows = self._conn.execute(sql, [*params, *params]).fetchall()
         return [dict(row) for row in rows]
 
     def latest_metrics_by_profile(self) -> List[Dict[str, Any]]:
         """返回每个档案下每种指标最新的一条记录（家庭总览用）。"""
         sql = """
-            WITH ranked AS (
-                SELECT id, profile, metric, value1, value2, unit,
-                       measured_at, context, note, created_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY profile, metric
-                           ORDER BY measured_at DESC, id DESC
-                       ) AS rn
+            WITH latest AS (
+                SELECT profile, metric, MAX(measured_at) AS max_at
                   FROM health_metrics
+                 GROUP BY profile, metric
+            ),
+            picked AS (
+                SELECT h.profile, h.metric, MAX(h.id) AS max_id
+                  FROM health_metrics h
+                  JOIN latest l
+                    ON h.profile = l.profile AND h.metric = l.metric
+                   AND h.measured_at = l.max_at
+                 GROUP BY h.profile, h.metric
             )
-            SELECT id, profile, metric, value1, value2, unit,
-                   measured_at, context, note, created_at
-              FROM ranked
-             WHERE rn = 1
-             ORDER BY profile, metric
+            SELECT h.id, h.profile, h.metric, h.value1, h.value2, h.unit,
+                   h.measured_at, h.context, h.note, h.created_at
+              FROM health_metrics h
+              JOIN picked p ON h.id = p.max_id
+             ORDER BY h.profile, h.metric
         """
         with self._lock:
             rows = self._conn.execute(sql).fetchall()
@@ -5495,6 +5681,7 @@ class SessionStore:
         limit: int = 1000,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions = []
@@ -5507,6 +5694,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("vaccine_name", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5523,7 +5716,7 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def delete_vaccination(self, vaccination_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM vaccinations WHERE id = ?",
                 (int(vaccination_id),),
@@ -5738,7 +5931,7 @@ class SessionStore:
         ]
 
     def delete_appointment(self, appointment_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM appointments WHERE id = ?",
                 (int(appointment_id),),
@@ -5870,6 +6063,7 @@ class SessionStore:
         offset: int = 0,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         try:
@@ -5898,6 +6092,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("item", "panel", "lab_name", "unit", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -5956,7 +6156,7 @@ class SessionStore:
         ]
 
     def delete_lab_result(self, lab_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM lab_results WHERE id = ?",
                 (int(lab_id),),
@@ -6102,7 +6302,7 @@ class SessionStore:
         ]
 
     def delete_allergy(self, allergy_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM allergies WHERE id = ?",
                 (int(allergy_id),),
@@ -6306,7 +6506,7 @@ class SessionStore:
         return self.get_care_item(care_id)
 
     def delete_care_item(self, care_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             row = self._conn.execute(
                 "SELECT profile, title FROM care_items WHERE id = ?",
                 (int(care_id),),
@@ -6508,6 +6708,7 @@ class SessionStore:
         limit: int = 1000,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         limit = max(1, min(int(limit or 1000), 100000))
         conditions: List[str] = []
@@ -6532,6 +6733,16 @@ class SessionStore:
                 " OR department LIKE ? OR facility LIKE ? OR note LIKE ?)"
             )
             params.extend([like] * 6)
+        search_clause, search_params = _like_any_condition(
+            (
+                "diagnosis", "advice", "prescription", "doctor",
+                "department", "facility", "note",
+            ),
+            search_q,
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
@@ -6554,7 +6765,7 @@ class SessionStore:
         ]
 
     def delete_visit_record(self, visit_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM visit_records WHERE id = ?",
                 (int(visit_id),),
@@ -6700,7 +6911,7 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def delete_condition(self, condition_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM conditions WHERE id = ?",
                 (int(condition_id),),
@@ -6749,6 +6960,7 @@ class SessionStore:
         offset: int = 0,
         start: str = "",
         end: str = "",
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按记录时间倒序返回症状，可按档案与最近天数筛选。"""
         limit = max(1, min(int(limit or 100), 100000))
@@ -6776,6 +6988,12 @@ class SessionStore:
         )
         conditions.extend(range_conditions)
         params.extend(range_params)
+        search_clause, search_params = _like_any_condition(
+            ("symptom", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         sql = f"""
             SELECT id, profile, symptom, severity, note, recorded_at, created_at
@@ -6857,7 +7075,7 @@ class SessionStore:
             symptom_id = int(symptom_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM symptoms WHERE id = ?", (symptom_id,)
             )
@@ -6993,6 +7211,7 @@ class SessionStore:
         limit: int = 1000,
         offset: int = 0,
         days: int = 7,
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按名称返回用药清单，可按档案、在用状态与最近天数筛选。"""
         limit = max(1, min(int(limit or 1000), 100000))
@@ -7011,6 +7230,12 @@ class SessionStore:
             params.append(_normalize_profile_name(profile))
         if active_only:
             conditions.append("active = 1")
+        search_clause, search_params = _like_any_condition(
+            ("name", "dose", "frequency", "note"), search_q
+        )
+        if search_clause:
+            conditions.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
@@ -7369,7 +7594,7 @@ class SessionStore:
             medication_id = int(medication_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             medication = self._conn.execute(
                 "SELECT name, profile FROM medications WHERE id = ?",
                 (medication_id,),
@@ -7575,7 +7800,7 @@ class SessionStore:
             log_id = int(log_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             row = self._conn.execute(
                 """
                 SELECT medication_id, stock_delta
@@ -7781,16 +8006,40 @@ class SessionStore:
             for row in rows
         ]
 
-    def list_all_attachments(self) -> List[Dict[str, Any]]:
-        """返回全部附件登记（不做分页上限截断），供完整性检查使用。"""
+    def list_all_attachments(
+        self,
+        profile: Optional[str] = None,
+        start: str = "",
+        end: str = "",
+    ) -> List[Dict[str, Any]]:
+        """返回附件登记（可按档案与日期筛选，不做分页上限截断）。
+
+        供完整性检查、时间线与健康搜索使用：一次扫描取全量，
+        避免逐页 OFFSET + 窗口聚合的重复开销。
+        """
+        conditions: List[str] = []
+        params: List[Any] = []
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        start_day = str(start or "").strip()[:10]
+        if start_day:
+            conditions.append("substr(created_at, 1, 10) >= ?")
+            params.append(start_day)
+        end_day = str(end or "").strip()[:10]
+        if end_day:
+            conditions.append("substr(created_at, 1, 10) <= ?")
+            params.append(end_day)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT id, profile, kind, ref_id, original_name,
                        stored_name, mime, size, note, created_at
-                  FROM attachments
+                  FROM attachments{where}
                  ORDER BY created_at DESC, id DESC
-                """
+                """,
+                params,
             ).fetchall()
         return [
             {
@@ -8342,14 +8591,17 @@ class SessionStore:
         prefix: str,
         replacement: str,
         detail: Optional[str] = None,
+        match_all: bool = False,
     ) -> int:
         """把以 prefix 开头的审计 target 替换为不可识别内容。
 
         用于删除健康记录/档案时清理历史审计中残留的症状、药名或档案名。
+        match_all=True 时忽略 target 前缀，清理该 action 的全部历史行
+        （批量操作没有单条 target，无法按前缀定位）。
         """
         actions = [str(action) for action in actions if str(action)]
         prefix = str(prefix or "")
-        if not actions or not prefix:
+        if not actions or (not prefix and not match_all):
             return 0
         placeholders = ",".join("?" for _ in actions)
         sets = ["target = ?"]
@@ -8358,14 +8610,17 @@ class SessionStore:
             sets.append("detail = ?")
             params.append(str(detail)[:500])
         params.extend(actions)
-        params.extend([prefix, len(prefix), prefix])
+        target_filter = ""
+        if not match_all:
+            target_filter = "AND (target = ? OR substr(target, 1, ?) = ?)"
+            params.extend([prefix, len(prefix), prefix])
         with self._lock, self._conn:
             cursor = self._conn.execute(
                 f"""
                 UPDATE audit_log
                    SET {", ".join(sets)}
                  WHERE action IN ({placeholders})
-                   AND (target = ? OR substr(target, 1, ?) = ?)
+                   {target_filter}
                 """,
                 params,
             )
@@ -8453,6 +8708,7 @@ class SessionStore:
         self,
         include_done: bool = False,
         profile: Optional[str] = None,
+        search_q: str = "",
     ) -> List[Dict[str, Any]]:
         """按到期时间升序返回随访提醒，默认只返回未完成的，可按档案筛选。"""
         clauses: List[str] = []
@@ -8463,6 +8719,12 @@ class SessionStore:
             profile = _normalize_profile_name(profile)
             clauses.append("profile = ?")
             params.append(profile)
+        search_clause, search_params = _like_any_condition(
+            ("title", "note"), search_q
+        )
+        if search_clause:
+            clauses.append(search_clause)
+            params.extend(search_params)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             rows = self._conn.execute(

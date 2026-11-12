@@ -1,7 +1,7 @@
 """健康指标测量情境的离线测试。"""
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -137,3 +137,40 @@ def test_metric_context_in_timeline_and_dossier(client_and_store):
         "/api/health/dossier.md", params={"profile": "奶奶"}
     )
     assert "晨起" in dossier.text
+
+
+def test_metric_import_ignores_mismatched_context(client_and_store):
+    """情境不适配指标时只丢弃标签，不能连整条读数一起丢。"""
+    client, _store = client_and_store
+    now = datetime.now().replace(second=0, microsecond=0)
+
+    def stamp(days, hour):
+        return (now - timedelta(days=days)).replace(
+            hour=hour
+        ).isoformat(timespec="minutes")
+
+    csv_text = "\n".join([
+        "测量时间,患者档案,指标,数值1,数值2,单位,情境,备注",
+        f"{stamp(4, 8)},妈妈,血糖,5.6,,mmol/L,晨起,晨起测量",
+        f"{stamp(3, 8)},妈妈,血压,130,85,mmHg,空腹,空腹测量",
+        f"{stamp(2, 9)},妈妈,血糖,7.2,,mmol/L,餐后,餐后测量",
+        f"{stamp(1, 21)},妈妈,血压,125,80,mmHg,睡前,睡前测量",
+    ]).encode("utf-8")
+
+    imported = client.post(
+        "/api/metrics/import",
+        files={"file": ("metrics.csv", csv_text, "text/csv")},
+    )
+    assert imported.status_code == 200
+    body = imported.json()
+    assert body["imported"] == 4
+    assert body["invalid"] == 0
+    assert body["context_ignored"] == 2
+
+    rows = client.get("/api/metrics").json()["metrics"]
+    by_metric = {}
+    for row in rows:
+        by_metric.setdefault(row["metric"], set()).add(row["context"])
+    assert by_metric["glucose"] == {"", "postprandial"}
+    assert by_metric["bp"] == {"", "evening"}
+

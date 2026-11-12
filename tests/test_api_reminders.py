@@ -150,7 +150,7 @@ def test_reminders_api_update(client_and_store):
         json={"title": "复查肝功", "note": "空腹"},
     )
     invalid = client.patch(
-        f"/api/reminders/{created['id']}", json={"due_at": "2026/11/10"}
+        f"/api/reminders/{created['id']}", json={"due_at": "2026/2/30"}
     )
     empty = client.patch(f"/api/reminders/{created['id']}", json={})
     missing = client.patch("/api/reminders/99999", json={"title": "x"})
@@ -386,8 +386,8 @@ def test_reminders_csv_import(client_and_store):
 
     assert first.status_code == 200
     assert first.json()["imported"] == 2
-    assert first.json()["skipped"] == 2
-    assert first.json()["invalid"] == 1
+    assert first.json()["skipped"] == 1
+    assert first.json()["invalid"] == 2
     titles = sorted(item["title"] for item in listed.json()["reminders"])
     assert titles == ["复查血常规", "接种疫苗"]
     advance = {
@@ -409,7 +409,7 @@ def test_reminders_csv_import(client_and_store):
     assert done == ["接种疫苗"]
     assert again.status_code == 200
     assert again.json()["imported"] == 0
-    assert again.json()["skipped"] == 4
+    assert again.json()["skipped"] == 3
     assert empty.status_code == 400
     actions = [item["action"] for item in audit.json()["actions"]]
     assert "reminder.import" in actions
