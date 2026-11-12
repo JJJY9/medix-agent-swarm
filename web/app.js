@@ -4558,7 +4558,7 @@ async function restoreBackup() {
     if (!listRes.ok) {
       throw new Error(list.detail || `服务返回 ${listRes.status}`);
     }
-    const candidates = (list.backups || []).slice(0, 10);
+    const candidates = list.backups || [];
     let target = candidates[0];
     if (!target) {
       btn.textContent = '暂无备份';
@@ -4705,7 +4705,7 @@ async function manageLocalBackups() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
 
-    const candidates = (data.backups || []).slice(0, 10);
+    const candidates = data.backups || [];
     if (!candidates.length) {
       window.alert('暂无本地备份。');
       return;
