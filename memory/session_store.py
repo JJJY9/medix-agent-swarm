@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -4834,11 +4835,23 @@ class SessionStore:
             # 有长读事务时 checkpoint 会 busy；下次删除/关闭时会再尝试
             logger.warning(f"WAL checkpoint 失败（忽略）: {e}")
 
+    @contextmanager
+    def _write_and_checkpoint(self):
+        """在锁内提交写事务后立即 checkpoint。
+
+        删除健康数据后旧页帧仍可能留在 -wal；checkpoint 必须在持有
+        连接锁时执行，否则并发事务会让 TRUNCATE 静默失败。
+        """
+        with self._lock:
+            with self._conn:
+                yield
+            self._checkpoint_wal()
+
     def delete_session(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
         if not session_id:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM sessions WHERE id = ?", (session_id,)
             )
@@ -4852,8 +4865,6 @@ class SessionStore:
                     next(iter(self._deleted_sessions))
                 )
             deleted = cursor.rowcount > 0
-        # 事务提交后再 checkpoint，把 WAL 中已删除的页面清出
-        self._checkpoint_wal()
         return deleted
 
     def list_profiles(self) -> List[Dict[str, Any]]:
@@ -4928,7 +4939,7 @@ class SessionStore:
         name = " ".join(str(name or "").split())[:MAX_PROFILE_NAME_LENGTH]
         if not name:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM patient_profiles WHERE name = ?", (name,)
             )
@@ -5523,7 +5534,7 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def delete_vaccination(self, vaccination_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM vaccinations WHERE id = ?",
                 (int(vaccination_id),),
@@ -5738,7 +5749,7 @@ class SessionStore:
         ]
 
     def delete_appointment(self, appointment_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM appointments WHERE id = ?",
                 (int(appointment_id),),
@@ -5956,7 +5967,7 @@ class SessionStore:
         ]
 
     def delete_lab_result(self, lab_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM lab_results WHERE id = ?",
                 (int(lab_id),),
@@ -6102,7 +6113,7 @@ class SessionStore:
         ]
 
     def delete_allergy(self, allergy_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM allergies WHERE id = ?",
                 (int(allergy_id),),
@@ -6306,7 +6317,7 @@ class SessionStore:
         return self.get_care_item(care_id)
 
     def delete_care_item(self, care_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             row = self._conn.execute(
                 "SELECT profile, title FROM care_items WHERE id = ?",
                 (int(care_id),),
@@ -6554,7 +6565,7 @@ class SessionStore:
         ]
 
     def delete_visit_record(self, visit_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM visit_records WHERE id = ?",
                 (int(visit_id),),
@@ -6700,7 +6711,7 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def delete_condition(self, condition_id: int) -> bool:
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM conditions WHERE id = ?",
                 (int(condition_id),),
@@ -6857,7 +6868,7 @@ class SessionStore:
             symptom_id = int(symptom_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "DELETE FROM symptoms WHERE id = ?", (symptom_id,)
             )
@@ -7369,7 +7380,7 @@ class SessionStore:
             medication_id = int(medication_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             medication = self._conn.execute(
                 "SELECT name, profile FROM medications WHERE id = ?",
                 (medication_id,),
@@ -7575,7 +7586,7 @@ class SessionStore:
             log_id = int(log_id)
         except (TypeError, ValueError, OverflowError):
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             row = self._conn.execute(
                 """
                 SELECT medication_id, stock_delta
