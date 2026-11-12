@@ -23,6 +23,14 @@ from typing import Any, Dict
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 预检可能在任何 core 导入之前就退出；先把标准输出切到 UTF-8，
+# 避免中文 Windows 下重定向到 GBK 文件时 emoji 打印抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 #: 不导入 core 也能检查的必需依赖（core/__init__ 会连锁导入整个 agent 栈）
 _REQUIRED_MODULES = (
     ("openai", "openai"),
