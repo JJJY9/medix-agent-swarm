@@ -3,6 +3,7 @@ Search Similar Cases Skill
 搜索相似历史案例（长期记忆/Mem0）
 """
 from typing import Dict, Any
+import asyncio
 import math
 from loguru import logger
 
@@ -56,9 +57,13 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
                 "query": query
             }
 
-        # 只搜索当前患者/会话作用域，避免跨患者泄漏
-        results = memory.search_similar_sessions(
-            query=query, limit=max_results, user_id=scope
+        # 只搜索当前患者/会话作用域，避免跨患者泄漏；
+        # Mem0 是同步 HTTP 调用，放到线程池避免阻塞事件循环
+        results = await asyncio.to_thread(
+            memory.search_similar_sessions,
+            query=query,
+            limit=max_results,
+            user_id=scope,
         )
 
         if not results:

@@ -88,7 +88,7 @@ async def deep_research(query: str, max_results_scale: int = 2) -> Dict[str, Any
     except Exception as e:
         logger.error(f"Deep research failed: {e}")
         return {
-            "answer": f"深度研究失败：{str(e)}",
+            "answer": "深度研究失败，请稍后重试；如持续失败请检查网络与知识库状态。",
             "findings": [],
             "confidence": "low",
             "source_count": 0,
