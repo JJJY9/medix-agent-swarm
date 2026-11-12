@@ -186,14 +186,14 @@ class AgentLoop:
                         # 添加 assistant 消息（包含 tool_calls）
                         messages.append(self._create_assistant_message_with_tools(llm_response))
 
-                        # 记录 assistant 消息到短期记忆
+                        # 记录 assistant 消息到短期记忆；先缓冲，成功收尾时
+                        # 再与提问/回答一起写入，取消时不会留下孤立片段
                         if self.short_term_memory and session_id and persist_memory:
                             tool_names = [tc.name for tc in llm_response.tool_calls]
-                            self.short_term_memory.add_message(
-                                session_id=session_id,
-                                role="assistant",
-                                content=f"调用工具：{', '.join(tool_names)}"
-                            )
+                            state.pending_memory.append((
+                                "assistant",
+                                f"调用工具：{', '.join(tool_names)}",
+                            ))
 
                         # 执行每个 Skill 调用（超出预算的调用返回错误结果，
                         # 保证每条 tool_call 都有配对的 tool 消息）
@@ -266,14 +266,13 @@ class AgentLoop:
                                 }
                             messages.append(tool_message)
 
-                            # 记录结果到短期记忆
+                            # 记录结果到短期记忆（同样先缓冲）
                             if self.short_term_memory and session_id and persist_memory:
                                 result_summary = str(tool_result)[:200]
-                                self.short_term_memory.add_message(
-                                    session_id=session_id,
-                                    role="tool",
-                                    content=f"{tool_call.name}: {result_summary}"
-                                )
+                                state.pending_memory.append((
+                                    "tool",
+                                    f"{tool_call.name}: {result_summary}",
+                                ))
 
                         # 超出预算的 tool_call 也要补一条结果，避免历史里
                         # 留下没有 tool 响应的调用导致下一轮请求 400
@@ -689,6 +688,16 @@ class AgentLoop:
                         role="user",
                         content=user_input
                     )
+                # 工具轮次缓冲在成功收尾时按时间顺序补齐
+                for role, content in (
+                    getattr(state, "pending_memory", None) or []
+                ):
+                    self.short_term_memory.add_message(
+                        session_id=session_id,
+                        role=role,
+                        content=content,
+                    )
+                state.pending_memory = []
                 self.short_term_memory.add_message(
                     session_id=session_id,
                     role="assistant",

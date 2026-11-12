@@ -236,6 +236,62 @@ def test_cancelled_run_does_not_leave_user_message_in_memory():
     assert memory.added == []
 
 
+class ToolThenCancelLLM:
+    def __init__(self):
+        self.calls = 0
+
+    async def chat_with_tools(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(id="c1", name="fake_skill", arguments={})
+                ],
+                finish_reason="tool_calls",
+            )
+        raise asyncio.CancelledError
+
+    def create_tool_message(self, tool_call_id, tool_name, result):
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": "{}",
+        }
+
+
+def test_cancelled_after_tool_round_leaves_no_fragments():
+    memory = FakeMemory()
+    loop = AgentLoop(short_term_memory=memory)
+
+    async def execute_tool(tool_name, arguments):
+        return {"ok": True}
+
+    agent = SimpleNamespace(
+        agent_id="cancel_tool_agent",
+        config={},
+        llm_client=ToolThenCancelLLM(),
+        get_system_prompt=lambda: "系统提示",
+        format_user_input=lambda data: data["question"],
+        get_tools_for_llm=lambda: [{
+            "type": "function",
+            "function": {
+                "name": "fake_skill",
+                "description": "fake",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        execute_tool=execute_tool,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(loop.run(agent, {"question": "先调用工具"}, session_id="s2"))
+
+    # 工具轮次只进缓冲；取消后不能在记忆里留下无提问的片段
+    assert memory.added == []
+
+
 def test_finalize_failure_keeps_answer_and_memory():
     memory = FakeMemory()
     loop = AgentLoop(short_term_memory=memory)

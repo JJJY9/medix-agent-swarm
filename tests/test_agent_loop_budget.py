@@ -264,9 +264,12 @@ def test_max_iterations_fallback_records_user_question():
 
         assert result["warning"] == "max_iterations_reached"
         history = memory.get_session(session_id).messages
-        # 强制收尾前已有工具轮次；关键是最终回答前必须补上用户问题
-        assert history[-2]["role"] == "user"
-        assert history[-2]["content"] == "需要记录的原始问题"
+        # 工具轮次与最终回答按时间顺序写入，提问必须在最前面
+        assert history[0]["role"] == "user"
+        assert history[0]["content"] == "需要记录的原始问题"
+        assert any(
+            row["role"] == "tool" for row in history
+        )
         assert history[-1]["role"] == "assistant"
         assert history[-1]["content"] == result["answer"]
     finally:
