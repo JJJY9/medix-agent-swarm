@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 #: 附件目录的所有者标记文件：自定义库认领共享目录后写入库文件名
-OWNER_MARKER = ".medix-owner"
+OWNER_MARKER = ".medix-attachments-owner"
 
 
 def attachment_dir_for_db(db_path: Path) -> Path:
@@ -22,6 +22,24 @@ def attachment_dir_for_db(db_path: Path) -> Path:
     parent = db_path.parent
     legacy = parent / "attachments"
     if db_path.name == "sessions.db":
+        if legacy.exists():
+            try:
+                owner = (parent / OWNER_MARKER).read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                owner = ""
+            if owner and owner != db_path.name:
+                # 目录已被自定义库认领：默认库改用专属目录，
+                # 否则默认库的孤儿清理会删掉对方的附件文件
+                return parent / f"{db_path.stem}-attachments"
+        if legacy.exists():
+            try:
+                marker = parent / OWNER_MARKER
+                if not marker.exists():
+                    marker.write_text(db_path.name, encoding="utf-8")
+            except OSError:
+                pass
         return legacy
 
     dedicated = parent / f"{db_path.stem}-attachments"
@@ -30,7 +48,7 @@ def attachment_dir_for_db(db_path: Path) -> Path:
     if not legacy.exists():
         return dedicated
 
-    marker = legacy / OWNER_MARKER
+    marker = parent / OWNER_MARKER
     try:
         owner = marker.read_text(encoding="utf-8").strip()
     except OSError:

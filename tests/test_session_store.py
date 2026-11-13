@@ -1286,7 +1286,10 @@ def test_update_reminder(store):
 
 
 def test_purge_sessions_before(store, monkeypatch):
-    times = iter(["2026-01-01T09:00:00", "2026-01-02T09:00:00"])
+    times = iter([
+        "2026-01-01T09:00:00", "2026-01-02T09:00:00",
+        "2026-01-02T09:00:00",
+    ])
     monkeypatch.setattr(SessionStore, "_now", staticmethod(lambda: next(times)))
     store.save_exchange("s1", "旧问题", "旧答复")
     store.save_exchange("s2", "新问题", "新答复")

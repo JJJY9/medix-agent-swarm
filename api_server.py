@@ -1044,6 +1044,16 @@ async def _link_patient_profile(
             # 已删除档案，并重新绑定
             _release_profile_claim(session_id, profile)
             return
+        # 删除之后才到达的请求：档案留有墓碑且未重建时同样不能绑定，
+        # 否则会把历史会话重新挂到已删除档案
+        tombstone = await asyncio.to_thread(
+            store.profile_tombstone_exists, profile
+        )
+        if tombstone and not await asyncio.to_thread(
+            store.profile_name_exists, profile
+        ):
+            _release_profile_claim(session_id, profile)
+            return
         await asyncio.to_thread(
             store.set_session_profile, session_id, profile
         )
@@ -2960,6 +2970,12 @@ async def inspect_local_backup(name: str):
             f"本备份不包含附件文件；本机现有 {attachment_count} 份附件"
             f"（{size_text}）不会随备份恢复，请另行导出附件包。"
         )
+    else:
+        # 换机灾备时本机没有附件，但备份同样不含附件，必须提示
+        warnings.append(
+            "本备份不包含附件文件；换机恢复时请另行备份 "
+            "data/attachments 目录。"
+        )
     if total_records == 0:
         warnings.append("备份中没有可恢复记录。")
     has_backup_arrays = isinstance(sessions_value, list) or any(
@@ -3030,7 +3046,8 @@ async def restore_local_backup(name: str, request: ConfirmRequest):
                 status_code=413, detail="备份文件过大，无法直接恢复。"
             )
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-        payload = json.loads(text)
+        # 超大备份的 JSON 解析不能占住事件循环（会冻结流式会诊）
+        payload = await asyncio.to_thread(json.loads, text)
     except HTTPException:
         raise
     except (OSError, ValueError, UnicodeError):
@@ -4956,7 +4973,9 @@ async def _complete_care_item_old_reminders(
             continue
         if keep_id and reminder_id == keep_id:
             continue
-        await asyncio.to_thread(store.complete_reminder, reminder_id)
+        # 用 finish_reminder：该旧提醒若被用户编辑过 repeat_days，
+        # 普通完成会额外生成一条与复查计划脱节的重复提醒
+        await asyncio.to_thread(store.finish_reminder, reminder_id)
 
 
 async def _care_title_shared(store, item) -> bool:
@@ -6409,6 +6428,7 @@ async def _weekly_report_impl(
             item.get("started_at") or item.get("created_at", ""),
             now,
             days,
+            item.get("stopped_at") or "",
         )
         if expected:
             adherence_expected += expected
@@ -6469,6 +6489,7 @@ async def _weekly_report_impl(
                 or medication.get("created_at", ""),
                 now,
                 days,
+                medication.get("stopped_at") or "",
             )
         row["expected"] = expected
         row["rate"] = (
@@ -13279,6 +13300,7 @@ async def export_health_dossier(
     """导出单个患者的健康档案 Markdown（指标、症状、用药、提醒与会诊）。"""
     from memory import get_session_store
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
         adherence_rate,
@@ -13554,6 +13576,20 @@ async def export_health_dossier(
     lines.append("")
 
     lines.append("## 最近指标")
+    # 步数/饮水按自然日累计判定：单条记录只是当日的一部分
+    dossier_daily_totals: Dict[tuple, float] = {}
+    for item in latest_metrics or []:
+        metric = str(item.get("metric") or "")
+        if metric not in DAILY_ACCUMULATING_METRICS:
+            continue
+        day_key = str(item.get("measured_at") or "")[:10]
+        if not day_key:
+            continue
+        day_totals = await asyncio.to_thread(
+            store.metric_daily_totals, day_key
+        )
+        for key, value in day_totals.items():
+            dossier_daily_totals[key] = value["total"]
     if latest_metrics:
         for item in sorted(
             latest_metrics,
@@ -13575,9 +13611,21 @@ async def export_health_dossier(
             )
             if context_label:
                 details.append(context_label)
-            if target is not None and metric_over_target(
-                metric, item["value1"], item.get("value2"), target
-            ):
+            day_total = dossier_daily_totals.get(
+                (item.get("profile") or "", metric)
+            )
+            over_target = False
+            if target is not None:
+                if metric in DAILY_ACCUMULATING_METRICS:
+                    if day_total is not None:
+                        over_target = (
+                            day_total < float(target["value1"])
+                        )
+                else:
+                    over_target = metric_over_target(
+                        metric, item["value1"], item.get("value2"), target
+                    )
+            if over_target:
                 details.append(
                     "低于目标"
                     if metric in LOWER_BOUND_TARGET_METRICS
@@ -14861,6 +14909,11 @@ async def get_session_messages(session_id: str, limit: int = 50):
     from memory import ShortTermMemory, get_session_store
 
     store = get_session_store()
+    if await asyncio.to_thread(store.is_session_deleted, session_id):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "session_deleted", "message": "会话已删除。"},
+        )
     # limit<=0 是导出/对比用的“全部”语义，使用不受 500 条限制的读取，
     # 但仍设 10000 条硬上限防止超大响应
     if limit <= 0:

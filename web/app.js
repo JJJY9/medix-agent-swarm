@@ -6319,6 +6319,13 @@ function safeSessionSet(key, value) {
   }
 }
 
+function detachSessionForProfileChange() {
+  // 档案切换/清空后必须换新会话：旧会话在服务端仍绑定原档案，
+  // 继续提问会按旧档案回答并把结果落库
+  if (busy) return;
+  void startNewSession();
+}
+
 function persistSessionId(id) {
   if (!id) return;
   // 标签页内优先使用 sessionStorage：localStorage 被所有标签页共享，
@@ -12959,7 +12966,19 @@ async function openAttachmentUploadForRecord(kind, item) {
   }
   await loadAttachmentRefOptions();
   if (els.attachmentRef) {
-    els.attachmentRef.value = String(item.id);
+    const targetValue = String(item.id);
+    const exists = Array.from(els.attachmentRef.options || []).some(
+      (option) => option.value === targetValue
+    );
+    if (!exists) {
+      // 记录早于下拉框加载的最新 1000 条：临时补一个选项，
+      // 否则赋值失败会把 ref_id 静默回退为 0（未关联）
+      const option = document.createElement('option');
+      option.value = targetValue;
+      option.textContent = attachmentRefLabel(kind, item).slice(0, 60);
+      els.attachmentRef.appendChild(option);
+    }
+    els.attachmentRef.value = targetValue;
   }
   if (els.attachmentFile) els.attachmentFile.focus();
 }
@@ -20757,6 +20776,8 @@ async function savePatientProfile() {
     }
     if (data.profile) profilesCache[data.profile.name] = data.profile;
     refreshProfileOptions(name);
+    // 「保存当前」会切换当前档案：旧会话仍绑定原档案，必须换新会话
+    detachSessionForProfileChange();
     loadFamilyOverview();
     loadHomeGlance();
   } catch (err) {
@@ -22274,6 +22295,8 @@ els.contextClear.addEventListener('click', () => {
   applyPatientContext({});
   // 同时清除 activeProfileName 与 sessionStorage，避免刷新后旧档案被重新选中
   setActiveProfile('');
+  // 清空档案后继续沿用已绑定旧档案的会话，后续提问会被记到旧档案名下
+  detachSessionForProfileChange();
   els.ctxAge.focus();
 });
 

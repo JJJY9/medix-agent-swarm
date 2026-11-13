@@ -40,7 +40,7 @@ def test_home_glance_refreshes_after_profile_changes():
         in SCRIPT
     )
     assert (
-        "refreshProfileOptions(name);\n    loadFamilyOverview();\n"
+        "detachSessionForProfileChange();\n    loadFamilyOverview();\n"
         "    loadHomeGlance();"
         in SCRIPT
     )

@@ -75,8 +75,8 @@ def test_messages_api_does_not_fall_back_to_short_term_after_delete(
     assert store.delete_session(session_id) is True
     response = client.get(f"/api/sessions/{session_id}/messages")
 
-    assert response.status_code == 200
-    assert response.json()["messages"] == []
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "session_deleted"
 
 
 def test_import_after_delete_clears_short_term_tombstone(client_and_store):

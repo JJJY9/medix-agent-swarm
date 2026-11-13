@@ -47,10 +47,12 @@
     ],
     ast: [
       'ast/alt', 'alt/ast', 'astalt', 'altast',
+      'gptgot', 'gotgpt',
       '谷草/谷丙', '谷丙/谷草', '转氨酶比', 'ratio',
     ],
     alt: [
       'ast/alt', 'alt/ast', 'astalt', 'altast',
+      'gptgot', 'gotgpt',
       '谷草/谷丙', '谷丙/谷草', '转氨酶比', 'ratio',
     ],
   };
@@ -79,7 +81,7 @@
   function normalizeLabName(value) {
     return String(value || '')
       .toLowerCase()
-      .replace(/[\s\-_()（）]/g, '');
+      .replace(/[\s\-_()（）／:：]/g, '');
   }
 
   const ASCII_ALIAS_PATTERNS = new Map();
@@ -255,11 +257,20 @@
       // 1 万/µL = 10 ×10⁹/L
       return { value: value * 10, converted: true };
     }
-    if (/^(?:k|10\^3|x10\^3)\/(?:u?l|微升)$/.test(unit)) {
-      // K/µL、×10³/µL 与 ×10⁹/L 同量级
+    if (/^千\/(?:u?l|微升)$/.test(unit)) {
+      // 1 千/µL = 1 ×10⁹/L
       return { value, converted: false };
     }
-    if (/^(?:x?109|10\^9|x10\^9)\/l$/.test(unit)) {
+    if (
+      /^(?:k|103|x103|10\^3|x10\^3|10e3|x10e3)\/(?:u?l|微升)$/
+        .test(unit)
+    ) {
+      // K/µL、×10³/µL、10E3/µL 与 ×10⁹/L 同量级
+      return { value, converted: false };
+    }
+    if (
+      /^(?:109|x109|10\^9|x10\^9|10e9|x10e9)\/l$/.test(unit)
+    ) {
       return { value, converted: false };
     }
     if (/(?:^|\/)(?:u?l|微升)$/.test(unit)) {

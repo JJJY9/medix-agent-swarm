@@ -238,7 +238,10 @@ def test_store_usage_totals_derives_missing_total(tmp_path):
 
 def test_purge_uses_datetime_comparison_for_space_timestamps(tmp_path, monkeypatch):
     store = SessionStore(str(tmp_path / "purge.db"))
-    times = iter(["2026-10-06T20:00:00", "2026-10-07 20:00:00"])
+    times = iter([
+        "2026-10-06T20:00:00", "2026-10-07 20:00:00",
+        "2026-10-07T20:00:00",
+    ])
     monkeypatch.setattr(
         SessionStore, "_now", staticmethod(lambda: next(times))
     )
