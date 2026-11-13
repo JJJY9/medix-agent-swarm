@@ -13,7 +13,10 @@ Windows 上导入 `milvus_lite` 会直接 ModuleNotFoundError。
 import json
 import os
 import re
+import tempfile
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -120,7 +123,69 @@ class LocalVectorStore:
             logger.info("Local vector index changed on disk, reloading")
             self._load()
 
+    @contextmanager
+    def _cross_process_lock(self):
+        """跨进程串行化「读盘 → 修改 → 落盘」。
+
+        独立导入脚本与服务进程可能同时重建同一个索引文件；固定的
+        .tmp 名字会让两个写入者互相覆盖，甚至把半截 JSON 换入。
+        """
+        lock_path = self.store_path.with_name(
+            self.store_path.name + ".lock"
+        )
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(lock_path, "a+b")
+        except OSError:
+            yield
+            return
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                deadline = time.monotonic() + 30
+                while True:
+                    try:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                        locked = True
+                        break
+                    except OSError:
+                        if time.monotonic() > deadline:
+                            break
+                        time.sleep(0.05)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(
+                            handle.fileno(), msvcrt.LK_UNLCK, 1
+                        )
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
     def _save(self):
+        with self._cross_process_lock():
+            self._save_locked()
+
+    def _save_locked(self):
+        """原子落盘：唯一临时文件 + os.replace，避免并发写坏索引。"""
+        temp_name = None
         try:
             self.store_path.parent.mkdir(parents=True, exist_ok=True)
             data = {}
@@ -134,23 +199,33 @@ class LocalVectorStore:
                     "metadata": coll["metadata"],
                 }
             payload = json.dumps(data, ensure_ascii=False)
-            temp_path = self.store_path.with_name(
-                f"{self.store_path.name}.tmp"
+            fd, temp_name = tempfile.mkstemp(
+                prefix=self.store_path.name + ".",
+                suffix=".tmp",
+                dir=str(self.store_path.parent),
             )
-            temp_path.write_text(payload, encoding="utf-8")
+            os.close(fd)
+            Path(temp_name).write_text(payload, encoding="utf-8")
             try:
                 from core.fs_permissions import restrict_permissions
 
-                restrict_permissions(temp_path, 0o600)
+                restrict_permissions(Path(temp_name), 0o600)
             except Exception:
                 pass
-            os.replace(temp_path, self.store_path)
+            os.replace(temp_name, self.store_path)
+            temp_name = None
             # 成功落盘后之前“文件损坏”的状态已解除（重建可恢复）
             self.load_error = ""
             self._store_signature = self._file_signature()
         except Exception as e:
             logger.error(f"Failed to save local vector store: {e}")
             raise
+        finally:
+            if temp_name is not None:
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass
 
     # ===== MilvusClient 兼容接口 =====
 
@@ -167,38 +242,47 @@ class LocalVectorStore:
         auto_id: bool = True,
         **kwargs,
     ):
-        with self._lock:
+        with self._lock, self._cross_process_lock():
             self._reload_if_changed_locked()
             if collection_name in self.collections:
                 return
-        self.collections[collection_name] = {
-            "dimension": dimension,
-            "metric_type": metric_type,
-            "next_id": 1,
-            "vectors": np.zeros((0, dimension), dtype=np.float32),
-            "contents": [],
-            "metadata": [],
-        }
+            self.collections[collection_name] = {
+                "dimension": dimension,
+                "metric_type": metric_type,
+                "next_id": 1,
+                "vectors": np.zeros((0, dimension), dtype=np.float32),
+                "contents": [],
+                "metadata": [],
+            }
+            self._save_locked()
         logger.info(f"Created local collection: {collection_name} (dim={dimension})")
 
     def insert(self, collection_name: str, data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        with self._lock:
+        # 读盘→修改→落盘放在同一把跨进程锁里：其它进程刚写入的
+        # 更新不能被本进程的旧内存副本覆盖
+        with self._lock, self._cross_process_lock():
             self._reload_if_changed_locked()
-        coll = self.collections.get(collection_name)
-        if coll is None:
-            raise ValueError(f"Collection not found: {collection_name}")
-        if not data:
-            return {"insert_count": 0, "ids": []}
+            coll = self.collections.get(collection_name)
+            if coll is None:
+                raise ValueError(
+                    f"Collection not found: {collection_name}"
+                )
+            if not data:
+                return {"insert_count": 0, "ids": []}
 
-        vectors = np.array([row["vector"] for row in data], dtype=np.float32)
-        ids = list(range(coll["next_id"], coll["next_id"] + len(data)))
+            vectors = np.array(
+                [row["vector"] for row in data], dtype=np.float32
+            )
+            ids = list(
+                range(coll["next_id"], coll["next_id"] + len(data))
+            )
 
-        coll["vectors"] = np.vstack([coll["vectors"], vectors])
-        coll["contents"].extend(row["content"] for row in data)
-        coll["metadata"].extend(row["metadata"] for row in data)
-        coll["next_id"] += len(data)
+            coll["vectors"] = np.vstack([coll["vectors"], vectors])
+            coll["contents"].extend(row["content"] for row in data)
+            coll["metadata"].extend(row["metadata"] for row in data)
+            coll["next_id"] += len(data)
 
-        self._save()
+            self._save_locked()
         return {"insert_count": len(data), "ids": ids}
 
     def search(
@@ -267,17 +351,24 @@ class LocalVectorStore:
         return results
 
     def drop_collection(self, collection_name: str):
-        self.collections.pop(collection_name, None)
-        self._save()
+        with self._lock, self._cross_process_lock():
+            self._reload_if_changed_locked()
+            if self.collections.pop(collection_name, None) is None:
+                return
+            self._save_locked()
 
     def rename_collection(self, old_name: str, new_name: str):
         """原子改名：仅移动内存中的引用后一次性落盘。"""
-        if old_name not in self.collections:
-            raise ValueError(f"Collection not found: {old_name}")
-        if new_name in self.collections:
-            raise ValueError(f"Collection already exists: {new_name}")
-        self.collections[new_name] = self.collections.pop(old_name)
-        self._save()
+        with self._lock, self._cross_process_lock():
+            self._reload_if_changed_locked()
+            if old_name not in self.collections:
+                raise ValueError(f"Collection not found: {old_name}")
+            if new_name in self.collections:
+                raise ValueError(
+                    f"Collection already exists: {new_name}"
+                )
+            self.collections[new_name] = self.collections.pop(old_name)
+            self._save_locked()
 
     def describe_collection(self, collection_name: str) -> Dict[str, Any]:
         with self._lock:

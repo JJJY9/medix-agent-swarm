@@ -95,13 +95,15 @@ def test_repeat_until_time_is_respected(store):
 
 def test_repeat_until_date_allows_same_day(store):
     today = datetime.now().date()
+    tomorrow = (today + timedelta(days=1)).isoformat()
     yesterday = (today - timedelta(days=1)).isoformat()
     reminder = store.add_reminder(
         "服药", f"{yesterday}T09:00",
-        repeat_days=1, repeat_until=today.isoformat(),
+        repeat_days=1, repeat_until=tomorrow,
     )
 
     result = store.complete_reminder_with_repeat(reminder["id"])
 
     assert result["next"] is not None
-    assert result["next"]["due_at"].startswith(today.isoformat())
+    # 今天 09:00 已经过去：顺延到明天，而不是生成一条立即逾期的提醒
+    assert result["next"]["due_at"].startswith(tomorrow)

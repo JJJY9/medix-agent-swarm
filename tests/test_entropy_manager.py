@@ -28,7 +28,7 @@ def test_deduplicate_sessions_falls_back_to_question_summary():
     assert [item["session_id"] for item in unique] == ["a", "c"]
 
 
-def test_deduplicate_messages_keeps_latest_duplicate():
+def test_deduplicate_messages_keeps_repeated_questions():
     manager = MemoryEntropyManager()
     messages = [
         {"role": "user", "content": "高血压怎么办？", "timestamp": "2026-01-01"},
@@ -38,10 +38,12 @@ def test_deduplicate_messages_keeps_latest_duplicate():
 
     unique = manager.deduplicate_messages(messages)
 
-    assert len(unique) == 2
-    # 保留最新一条重复消息的原位置，而不是把它挪到最早位置
+    # 不同时间重复提问是真实的新轮次：删掉较早的用户消息会让
+    # 它对应的回答变成没有提问的孤儿
+    assert [item["role"] for item in unique] == [
+        "user", "assistant", "user",
+    ]
     assert unique[-1]["timestamp"] == "2026-02-01"
-    assert unique[0]["content"] == "建议低盐饮食。"
 
 
 def test_compress_session_history_respects_max_messages():

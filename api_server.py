@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import (
     FastAPI, File, Form, HTTPException, Query, Request, UploadFile,
@@ -1030,6 +1030,13 @@ async def _link_patient_profile(
         from memory import get_session_store
 
         store = get_session_store()
+        try:
+            resolved = await asyncio.to_thread(
+                store.resolve_profile_alias, profile
+            )
+            profile = resolved or profile
+        except Exception:
+            pass
         if since and await asyncio.to_thread(
             store.profile_deleted_since, profile, since
         ):
@@ -1066,6 +1073,17 @@ def csv_restore_cell(value: Any) -> str:
     ):
         return text[1:]
     return text
+
+
+def _markdown_safe_line(value: Any) -> str:
+    """把用户文本压成单行并转义 HTML，防止伪造章节或注入原始标签。"""
+    line = str(value if value is not None else "")
+    line = line.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return (
+        line.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def csv_number(value: Any) -> str:
@@ -1668,19 +1686,43 @@ class BodySizeLimitMiddleware:
                 return await response(scope, receive, send)
 
         received = 0
+        too_large = False
 
         async def limited_receive():
-            nonlocal received
+            nonlocal received, too_large
             message = await receive()
             if message.get("type") == "http.request":
                 received += len(message.get("body") or b"")
                 if received > limit:
+                    too_large = True
                     raise _BodyTooLarge()
             return message
 
+        response_sent = False
+
+        async def guarded_send(message):
+            nonlocal response_sent
+            if too_large:
+                # FastAPI 会把 receive 里的异常转成 400「解析请求体失败」，
+                # 客户端无法区分超限与坏请求；这里统一改写为 413
+                if response_sent:
+                    return
+                response_sent = True
+                response = JSONResponse(
+                    status_code=413, content={"detail": "请求体过大"}
+                )
+                await response(scope, receive, send)
+                return
+            if message.get("type") == "http.response.start":
+                response_sent = True
+            await send(message)
+
         try:
-            return await self.app(scope, limited_receive, send)
+            return await self.app(scope, limited_receive, guarded_send)
         except _BodyTooLarge:
+            if response_sent:
+                return
+            response_sent = True
             response = JSONResponse(
                 status_code=413, content={"detail": "请求体过大"}
             )
@@ -2714,6 +2756,7 @@ async def inspect_local_backup(name: str):
     from core.backup import resolve_backup
     from memory.session_store import (
         _backup_checksum,
+        _import_payload_problems,
         _legacy_backup_checksum,
     )
 
@@ -2809,11 +2852,27 @@ async def inspect_local_backup(name: str):
         message_count += valid_messages
     counts["sessions"] = valid_sessions
     counts["messages"] = message_count
+    # 与导入共用同一份上限规则：预检通过却恢复失败会让用户空等一次。
+    # 已存在的会话整段跳过，其消息条数不受导入上限约束
+    from memory import get_session_store
+
+    existing_session_ids = await asyncio.to_thread(
+        get_session_store().filter_existing_session_ids,
+        [
+            item.get("id") for item in sessions
+            if isinstance(item, dict)
+        ],
+    )
+    limit_problems = await asyncio.to_thread(
+        _import_payload_problems,
+        payload,
+        100000,
+        existing_session_ids,
+    )
     total_records = sum(
         value for key, value in counts.items() if key != "messages"
     )
 
-    from memory import get_session_store
     attachment_kinds = await asyncio.to_thread(
         get_session_store().attachment_kind_stats
     )
@@ -2839,6 +2898,7 @@ async def inspect_local_backup(name: str):
         )
     if not isinstance(payload.get("version"), int):
         warnings.append("备份缺少版本号。")
+    warnings.extend(limit_problems)
     if attachment_count:
         if attachment_size >= 1024 * 1024:
             size_text = f"{attachment_size / (1024 * 1024):.1f} MB"
@@ -2858,6 +2918,7 @@ async def inspect_local_backup(name: str):
     restore_ready = (
         checksum_ok is not False
         and not sessions_type_error
+        and not limit_problems
         and has_backup_arrays
         and total_records > 0
     )
@@ -3897,7 +3958,10 @@ async def create_medication_alert_reminder(
         except ValueError:
             raise HTTPException(status_code=400, detail="有效期格式不正确")
         title = f"药物到期：{item.get('name') or '药物'}"[:120]
-        reminder_date = expiry_date - timedelta(days=30)
+        try:
+            reminder_date = expiry_date - timedelta(days=30)
+        except OverflowError:
+            reminder_date = today
         due_at = max(reminder_date, today).strftime("%Y-%m-%d")
         note = f"有效期至 {expiry}，请检查并更换"
 
@@ -4273,7 +4337,10 @@ async def create_appointment_reminder(appointment_id: SafeIntPath):
     except ValueError:
         raise HTTPException(status_code=400, detail="就诊时间格式不正确")
     today = datetime.now().date()
-    reminder_date = scheduled_dt.date() - timedelta(days=1)
+    try:
+        reminder_date = scheduled_dt.date() - timedelta(days=1)
+    except OverflowError:
+        reminder_date = today
     due_at = max(reminder_date, today).strftime("%Y-%m-%d")
     title = f"就诊：{item.get('title') or '就诊'}"[:120]
     detail_parts = [
@@ -4877,7 +4944,11 @@ async def _ensure_care_item_reminder(store, item):
     except ValueError:
         return None, False
     today = datetime.now().date()
-    reminder_due = max(due_date - timedelta(days=7), today)
+    try:
+        lead_date = due_date - timedelta(days=7)
+    except OverflowError:
+        lead_date = today
+    reminder_due = max(lead_date, today)
     title = f"复查：{item.get('title') or '复查'}"[:120]
     note = f"下次复查 {due}"
     reminder, created = await asyncio.to_thread(
@@ -5176,6 +5247,12 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         except ValueError:
             raise HTTPException(
                 status_code=400, detail="下次复诊日期格式不正确"
+            )
+        if followup_day.year < 1900 or followup_day.year > 9998:
+            # 边界年份会让“提前一天”的减法溢出，也会在创建预约后
+            # 才在提醒环节 500，留下无关联的孤儿预约
+            raise HTTPException(
+                status_code=400, detail="下次复诊日期超出支持范围"
             )
 
         appointment = None
@@ -6153,6 +6230,24 @@ async def _weekly_report_impl(
         for metric, entry in previous_grouped.items()
     }
 
+    # 步数/饮水按自然日累计：给出今日累计与每日目标判定，
+    # 单条记录不再直接与每日目标比较（家庭范围跨成员累计无意义）
+    from memory.session_store import DAILY_ACCUMULATING_METRICS
+
+    daily_metric_today: dict = {}
+    if profile is not None:
+        today_key = now.strftime("%Y-%m-%d")
+        for item in metrics:
+            metric = item.get("metric") or ""
+            if metric not in DAILY_ACCUMULATING_METRICS:
+                continue
+            daily = daily_metric_today.setdefault(
+                metric, {"total": 0.0, "count": 0}
+            )
+            if str(item.get("measured_at") or "")[:10] == today_key:
+                daily["total"] += float(item.get("value1") or 0)
+                daily["count"] += 1
+
     metric_rows = [
         {
             "metric": entry["metric"],
@@ -6172,6 +6267,24 @@ async def _weekly_report_impl(
             "target": entry["target"],
             "within_target": (
                 entry["within"] if entry["target"] is not None else None
+            ),
+            "daily_total": (
+                round(daily_metric_today[entry["metric"]]["total"], 1)
+                if entry["metric"] in daily_metric_today
+                and daily_metric_today[entry["metric"]]["count"]
+                else None
+            ),
+            "daily_count": (
+                daily_metric_today[entry["metric"]]["count"]
+                if entry["metric"] in daily_metric_today else 0
+            ),
+            "daily_within_target": (
+                daily_metric_today[entry["metric"]]["total"]
+                >= float(entry["target"]["value1"])
+                if entry["metric"] in daily_metric_today
+                and daily_metric_today[entry["metric"]]["count"]
+                and entry["target"] is not None
+                else None
             ),
             "prev_avg_value1": previous_rows.get(
                 entry["metric"], {}
@@ -6199,6 +6312,23 @@ async def _weekly_report_impl(
             symptom_counts.items(), key=lambda pair: (-pair[1], pair[0])
         )[:5]
     ]
+    severe_items = []
+    seen_severe = set()
+    for item in sorted(
+        symptoms,
+        key=lambda row: (
+            -int(row.get("severity") or 0),
+            str(row.get("recorded_at") or ""),
+        ),
+    ):
+        severity = int(item.get("severity") or 0)
+        name = str(item.get("symptom") or "")
+        if severity < 7 or not name or name in seen_severe:
+            continue
+        seen_severe.add(name)
+        severe_items.append({"symptom": name, "severity": severity})
+        if len(severe_items) >= 3:
+            break
 
     active_meds = [item for item in medications if item.get("active")]
     meds_by_id = {item["id"]: item for item in medications}
@@ -6502,7 +6632,9 @@ async def _weekly_report_impl(
 
     critical_count = 0
     critical_items = []
-    family_scope = not str(profile or "").strip()
+    # 只有不指定档案（None）才是家庭范围；profile="" 是「未指定档案」
+    # 这一独立视图，不能套用家庭成员文案与家庭专属逻辑
+    family_scope = profile is None
     for item in metrics:
         alerts = critical_metric_alerts(
             item.get("metric"), item.get("value1"), item.get("value2")
@@ -6542,6 +6674,7 @@ async def _weekly_report_impl(
             ),
             "max_severity": max_severity,
             "top": symptom_top,
+            "severe_items": severe_items,
             "prev_count": len(previous_symptoms),
             "prev_avg_severity": (
                 round(
@@ -6748,16 +6881,19 @@ def _build_health_insights(
     report: Dict[str, Any],
     safety: Optional[Dict[str, Any]] = None,
     allow_trends: bool = True,
+    family_scope: Optional[bool] = None,
 ) -> List[Dict[str, str]]:
     """把近 N 天健康汇总转成按优先级排序的可执行提示。"""
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
     )
 
     days = int(report.get("days") or 7)
     insights: List[Dict[str, str]] = []
-    family_scope = not str(report.get("profile") or "").strip()
+    if family_scope is None:
+        family_scope = not str(report.get("profile") or "").strip()
 
     critical = report.get("critical_alerts") or {}
     if critical.get("count"):
@@ -6814,6 +6950,46 @@ def _build_health_insights(
         within = row.get("within_target")
         avg1 = float(row.get("avg_value1") or 0)
         avg2 = float(row.get("avg_value2") or 0)
+        if (
+            target
+            and metric in DAILY_ACCUMULATING_METRICS
+            and int(row.get("daily_count") or 0) > 0
+        ):
+            # 步数/饮水的目标是每日累计：单条记录不参与达标判定
+            daily_total = float(row.get("daily_total") or 0)
+            daily_count = int(row.get("daily_count") or 0)
+            unit_text = f" {unit}" if unit else ""
+            target_text = f"{float(target['value1']):g}"
+            gap = float(target["value1"]) - daily_total
+            if row.get("daily_within_target"):
+                insights.append(_health_insight(
+                    f"metric_{metric}",
+                    "ok",
+                    f"{label} 今日累计 {daily_total:g}{unit_text}",
+                    (
+                        f"目标 ≥ {target_text}{unit_text}，今日累计 "
+                        f"{daily_total:g}{unit_text}"
+                        f"（{daily_count} 次记录）"
+                    ).strip(),
+                    "",
+                    "metric",
+                    metric=metric,
+                ))
+            else:
+                insights.append(_health_insight(
+                    f"metric_{metric}",
+                    "warning",
+                    f"{label} 今日累计 {daily_total:g}{unit_text}",
+                    (
+                        f"目标 ≥ {target_text}{unit_text}，今日累计 "
+                        f"{daily_total:g}{unit_text}，还差 "
+                        f"{max(gap, 0):g}{unit_text}"
+                    ).strip(),
+                    "继续记录到今日累计达标；单条记录不与每日目标比较。",
+                    "metric",
+                    metric=metric,
+                ))
+            continue
         if target and within is not None:
             over = count - int(within)
             if over > 0:
@@ -7043,6 +7219,9 @@ def _build_health_insights(
             "warning",
             f"近 {days} 天出现重度症状（最高 {max_severity}/10）",
             "、".join(
+                f"{item.get('symptom')} {int(item.get('severity') or 0)}/10"
+                for item in (symptoms.get("severe_items") or [])[:3]
+            ) or "、".join(
                 str(item.get("symptom") or "")
                 for item in (symptoms.get("top") or [])[:3]
             ),
@@ -7363,8 +7542,10 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
     insights = _build_health_insights(
         report,
         safety=safety,
-        # 家庭范围下记录来自不同成员，跨成员的趋势没有意义
-        allow_trends=profile is not None,
+        # 家庭范围下记录来自不同成员，跨成员的趋势没有意义；
+        # 「未指定档案」是独立视图，可以看趋势
+        allow_trends=bool(str(profile or "").strip()),
+        family_scope=profile is None,
     )
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
     for item in insights:
@@ -7730,6 +7911,7 @@ async def health_timeline(
     """健康时间线：指标、症状、用药打卡与会诊按时间倒序合并。"""
     from memory import get_session_store
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         LOWER_BOUND_TARGET_METRICS, METRIC_TYPES,
         metric_context_label, metric_over_target,
     )
@@ -7866,6 +8048,21 @@ async def health_timeline(
             return str(int(number))
         return f"{number:g}"
 
+    # 步数/饮水按自然日累计判定，单条记录只用于展示
+    metric_day_totals: Dict[tuple, float] = {}
+    for item in raw_metrics:
+        metric = str(item.get("metric") or "")
+        if metric not in DAILY_ACCUMULATING_METRICS:
+            continue
+        day_key = str(item.get("measured_at") or "")[:10]
+        if not day_key:
+            continue
+        key = (str(item.get("profile") or ""), metric, day_key)
+        metric_day_totals[key] = (
+            metric_day_totals.get(key, 0.0)
+            + float(item.get("value1") or 0)
+        )
+
     for item in raw_metrics:
         at = str(item.get("measured_at") or "")
         if not in_window(at):
@@ -7893,12 +8090,21 @@ async def health_timeline(
         target = target_map.get(
             (item.get("profile") or "", item["metric"])
         )
-        alert = bool(
-            target is not None
-            and metric_over_target(
-                item["metric"], item["value1"], item.get("value2"), target
+        if target is not None and item["metric"] in DAILY_ACCUMULATING_METRICS:
+            day_total = metric_day_totals.get(
+                (item.get("profile") or "", item["metric"], at[:10])
             )
-        )
+            alert = bool(
+                day_total is not None
+                and metric_over_target(item["metric"], day_total, None, target)
+            )
+        else:
+            alert = bool(
+                target is not None
+                and metric_over_target(
+                    item["metric"], item["value1"], item.get("value2"), target
+                )
+            )
         from memory.session_store import critical_metric_alerts
 
         critical_alerts = critical_metric_alerts(
@@ -8985,7 +9191,9 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
     import calendar as calendar_module
 
     from memory import get_session_store
-    from memory.session_store import metric_over_target
+    from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS, metric_over_target,
+    )
 
     now = datetime.now()
     month_key = str(month or "").strip()
@@ -9071,6 +9279,21 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         key = str(value or "")[:10]
         return start <= key <= end
 
+    # 步数/饮水先按天合计，再与每日目标比较
+    metric_day_totals: Dict[tuple, float] = {}
+    for item in raw_metrics:
+        metric = str(item.get("metric") or "")
+        if metric not in DAILY_ACCUMULATING_METRICS:
+            continue
+        day_key = str(item.get("measured_at") or "")[:10]
+        if not in_month(day_key):
+            continue
+        key = (str(item.get("profile") or ""), metric, day_key)
+        metric_day_totals[key] = (
+            metric_day_totals.get(key, 0.0)
+            + float(item.get("value1") or 0)
+        )
+
     for item in raw_metrics:
         at = str(item.get("measured_at") or "")
         if in_month(at):
@@ -9079,6 +9302,12 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
             target = target_map.get(
                 (item.get("profile") or "", item.get("metric"))
             )
+            if (
+                target is not None
+                and item["metric"] in DAILY_ACCUMULATING_METRICS
+            ):
+                # 日累计指标在下面的按天循环中统一判定
+                continue
             if target is not None and metric_over_target(
                 item["metric"],
                 item.get("value1"),
@@ -9095,6 +9324,17 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
                     item.get("value2"),
                 ):
                     entry["alerts"] += 1
+
+    for (member, metric, day_key), total in metric_day_totals.items():
+        target = target_map.get((member, metric))
+        if target is None:
+            continue
+        try:
+            over = metric_over_target(metric, total, None, target)
+        except (TypeError, ValueError, OverflowError):
+            over = False
+        if over:
+            bucket(day_key)["alerts"] += 1
     for item in raw_symptoms:
         at = str(item.get("recorded_at") or "")
         if in_month(at):
@@ -9805,6 +10045,7 @@ def _family_attention(
     vaccinations: Dict[str, Any],
     appointments: Dict[str, Any],
     metrics: List[Dict[str, Any]],
+    stale_critical: Optional[List[str]] = None,
 ) -> Dict[str, str]:
     """从家庭总览已聚合的数据中提取最需要关注的一条提示。"""
     if critical.get("count"):
@@ -9835,6 +10076,15 @@ def _family_attention(
             "label": "最近会诊提示高风险",
             "detail": "",
         }
+    max_severity = int(symptoms.get("max_severity") or 0)
+    if max_severity >= 7:
+        # 重度症状比一条逾期提醒更需要关注：前端每张卡片只显示一条
+        return {
+            "level": "warning",
+            "label": "近期重度症状",
+            "detail": f"{symptoms.get('severe_symptom') or ''} "
+            f"{max_severity}/10".strip(),
+        }
     if reminders.get("overdue"):
         return {
             "level": "warning",
@@ -9849,14 +10099,6 @@ def _family_attention(
                 care.get("overdue_items")
                 or care.get("items") or []
             )[:120],
-        }
-    max_severity = int(symptoms.get("max_severity") or 0)
-    if max_severity >= 7:
-        return {
-            "level": "warning",
-            "label": "近期重度症状",
-            "detail": f"{symptoms.get('severe_symptom') or ''} "
-            f"{max_severity}/10".strip(),
         }
     if labs.get("abnormal"):
         return {
@@ -9938,6 +10180,15 @@ def _family_attention(
             "level": "info",
             "label": f"药物即将过期 {medications['expiring']} 种",
             "detail": "",
+        }
+    if stale_critical:
+        return {
+            "level": "info",
+            "label": f"陈旧危急读数 {len(stale_critical)} 项",
+            "detail": (
+                "、".join(stale_critical)[:120]
+                + "；超过 180 天，请复测确认"
+            ),
         }
     return {"level": "ok", "label": "暂无需要关注", "detail": ""}
 
@@ -10023,6 +10274,7 @@ async def family_overview(days: int = 7):
         for item in targets
         if item.get("metric")
     }
+    daily_totals = await asyncio.to_thread(store.metric_daily_totals)
 
     def format_metric_value(item: Dict[str, Any]) -> str:
         text = f"{float(item.get('value1') or 0):g}"
@@ -10032,7 +10284,12 @@ async def family_overview(days: int = 7):
 
     metrics_by_profile: Dict[str, List[Dict[str, Any]]] = {}
     critical_by_profile: Dict[str, Dict[str, Any]] = {}
-    from memory.session_store import critical_metric_alerts
+    stale_critical_by_profile: Dict[str, List[str]] = {}
+    from core.lab_values import STALE_AFTER_DAYS as METRIC_STALE_DAYS
+    from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
+        critical_metric_alerts,
+    )
 
     for item in latest_metrics:
         profile = item.get("profile") or ""
@@ -10041,15 +10298,40 @@ async def family_overview(days: int = 7):
         metric = item.get("metric") or ""
         label, default_unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
         target = target_map.get((profile, metric))
+        daily = daily_totals.get((profile, metric))
+        daily_total = daily["total"] if daily else None
         over_target: Optional[bool] = None
         if target is not None:
-            over_target = metric_over_target(
-                metric, item.get("value1"), item.get("value2"), target
-            )
+            if (
+                metric in DAILY_ACCUMULATING_METRICS
+                and daily_total is not None
+            ):
+                # 步数/饮水的目标是每日累计，不能拿最新一条记录比较
+                over_target = daily_total < float(target["value1"])
+            else:
+                over_target = metric_over_target(
+                    metric, item.get("value1"), item.get("value2"), target
+                )
         alerts = critical_metric_alerts(
             metric, item.get("value1"), item.get("value2")
         )
-        if alerts:
+        measured_day = str(item.get("measured_at") or "")[:10]
+        stale = False
+        if measured_day:
+            try:
+                stale = (
+                    datetime.now().date()
+                    - datetime.strptime(measured_day, "%Y-%m-%d").date()
+                ).days > METRIC_STALE_DAYS
+            except ValueError:
+                stale = False
+        if alerts and stale:
+            # 几百天前的单次危急读数不能永久置顶为 danger
+            stale_critical_by_profile.setdefault(profile, []).append(
+                f"{label} {format_metric_value(item)}"
+            )
+            alerts = []
+        elif alerts:
             entry = critical_by_profile.setdefault(profile, {
                 "count": 0, "items": [],
             })
@@ -10068,6 +10350,8 @@ async def family_overview(days: int = 7):
             "target_direction": (
                 "low" if metric in LOWER_BOUND_TARGET_METRICS else "high"
             ),
+            "daily_total": daily_total,
+            "stale": stale,
             "critical_alerts": alerts,
         })
 
@@ -10211,9 +10495,12 @@ async def family_overview(days: int = 7):
             continue
         entry = labs_by_profile.setdefault(profile, {
             "count": 0, "abnormal": 0, "critical": 0,
-            "items": [], "critical_items": [],
+            "items": [], "critical_items": [], "latest_at": "",
         })
         entry["count"] += 1
+        tested_at = str(item.get("tested_at") or "")
+        if tested_at > str(entry["latest_at"] or ""):
+            entry["latest_at"] = tested_at
         if item.get("critical"):
             entry["critical"] += 1
             if len(entry["critical_items"]) < 3:
@@ -10430,14 +10717,20 @@ async def family_overview(days: int = 7):
             consultation.get("latest_at") or "",
             medication.get("last_taken_at") or "",
             medication.get("last_skip_at") or "",
+            (labs.get("latest_at") or ""),
+            (visits.get("latest") or {}).get("visit_date") or "",
         ]
         last_activity = max(activity_candidates)
         # 停药后当天的打卡日志仍属于健康记录，统一按 store 的
-        # recorded_days 判断；接种记录不在该查询里，单独补充。
+        # recorded_days 判断；接种/化验/就诊记录需单独补充。
         recorded_today = (
             today in recorded_day_sets.get(name, set())
             or str(
                 (vaccination.get("latest") or {}).get("vaccinated_at") or ""
+            )[:10] == today
+            or str(labs.get("latest_at") or "")[:10] == today
+            or str(
+                (visits.get("latest") or {}).get("visit_date") or ""
             )[:10] == today
         )
         attention = _family_attention(
@@ -10455,6 +10748,7 @@ async def family_overview(days: int = 7):
             vaccinations=vaccination,
             appointments=appointment,
             metrics=metrics,
+            stale_critical=stale_critical_by_profile.get(name, []),
         )
         profiles.append({
             "name": name,
@@ -10512,17 +10806,21 @@ async def export_family_overview_csv(days: int = 7):
     ]]
     for item in data["profiles"]:
         context = item.get("context") or {}
-        metric_text = "；".join(
-            (
-                f"{metric['label']} {metric['value']} {metric['unit']}".strip()
-                + (
+        metric_parts = []
+        for metric in (item.get("metrics") or [])[:3]:
+            text = f"{metric['label']} {metric['value']} ".strip()
+            text = (text + f"{metric['unit']}").strip()
+            if metric.get("daily_total") is not None:
+                # 步数/饮水显示今日累计，不按单条记录判“超标”
+                text += f"（今日累计 {metric['daily_total']:g}）"
+            elif metric.get("over_target"):
+                text += (
                     "（低于目标）"
                     if metric.get("target_direction") == "low"
                     else "（超标）"
-                ) if metric.get("over_target") else ""
-            )
-            for metric in (item.get("metrics") or [])[:3]
-        )
+                )
+            metric_parts.append(text)
+        metric_text = "；".join(metric_parts)
         medications = item.get("medications") or {}
         medication_text = ""
         adherence_text = ""
@@ -10754,6 +11052,9 @@ async def family_compare(metric: str = "weight", days: int = 30):
             "within_target": summary.get("within_target"),
             "target_lower_bound": summary.get("target_lower_bound"),
             "target": summary.get("target"),
+            "daily_total": summary.get("daily_total"),
+            "daily_count": summary.get("daily_count"),
+            "daily_within_target": summary.get("daily_within_target"),
         })
     rows.sort(
         key=lambda row: (
@@ -10764,6 +11065,7 @@ async def family_compare(metric: str = "weight", days: int = 30):
     )
     label, unit, _ = METRIC_TYPES[metric]
     return {
+        "metric": metric,
         "metric": metric,
         "label": label,
         "unit": unit,
@@ -10791,7 +11093,7 @@ async def export_family_compare_csv(metric: str = "weight", days: int = 30):
 
     rows = [[
         "档案", "指标", "单位", "天数", "平均", "最低", "最高",
-        "次数", "达标次数", "最近日期", "最近值",
+        "次数", "达标次数", "最近日期", "最近值", "今日累计",
     ]]
     for item in data["profiles"]:
         avg = fmt(item.get("avg_value1"))
@@ -10813,6 +11115,7 @@ async def export_family_compare_csv(metric: str = "weight", days: int = 30):
             csv_safe_cell(fmt(item.get("within_target"))),
             csv_safe_cell(latest.get("measured_at", "")),
             csv_safe_cell(latest_value),
+            csv_safe_cell(fmt(item.get("daily_total"))),
         ])
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\r\n").writerows(rows)
@@ -11474,12 +11777,36 @@ async def download_attachment(attachment_id: SafeIntPath):
     target = (attachment_dir / str(item.get("stored_name") or "")).resolve()
     if target.parent != attachment_dir or not target.is_file():
         raise HTTPException(status_code=404, detail="附件文件不存在")
-    return FileResponse(
-        target,
+    try:
+        handle = open(target, "rb")
+    except OSError:
+        raise HTTPException(status_code=404, detail="附件文件不存在")
+    try:
+        size = os.fstat(handle.fileno()).st_size
+    except OSError:
+        handle.close()
+        raise HTTPException(status_code=404, detail="附件文件不存在")
+    filename = str(item.get("original_name") or "附件")
+
+    def chunks():
+        try:
+            while True:
+                data = handle.read(64 * 1024)
+                if not data:
+                    break
+                yield data
+        finally:
+            handle.close()
+
+    return StreamingResponse(
+        chunks(),
         media_type=item.get("mime") or "application/octet-stream",
-        filename=str(item.get("original_name") or "附件"),
-        content_disposition_type="inline",
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Content-Disposition":
+                f"inline; filename*=utf-8''{quote(filename)}",
+            "Content-Length": str(size),
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -12120,6 +12447,7 @@ async def health_visit_prep(
 
     from memory import get_session_store
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
         critical_metric_alerts,
@@ -12243,6 +12571,51 @@ async def health_visit_prep(
             metric, item.get("value1"), item.get("value2")
         ):
             critical_metrics[metric] = item
+
+    # 步数/饮水按自然日累计：用最近一天的合计与每日目标比较，
+    # 单条记录只用于展示
+    day_totals: Dict[tuple, Dict[str, Any]] = {}
+    for item in raw_metrics:
+        metric = str(item.get("metric") or "")
+        if metric not in DAILY_ACCUMULATING_METRICS:
+            continue
+        day_key = str(item.get("measured_at") or "")[:10]
+        if not day_key or day_key > end:
+            continue
+        entry = day_totals.setdefault((metric, day_key), {
+            "total": 0.0, "count": 0, "item": item,
+        })
+        entry["total"] += float(item.get("value1") or 0)
+        entry["count"] += 1
+        if str(item.get("measured_at") or "") > str(
+            entry["item"].get("measured_at") or ""
+        ):
+            entry["item"] = item
+    for metric in DAILY_ACCUMULATING_METRICS:
+        if metric not in latest_metrics:
+            continue
+        candidate = max(
+            (
+                (day_key, entry)
+                for (name, day_key), entry in day_totals.items()
+                if name == metric
+            ),
+            key=lambda pair: pair[0],
+            default=None,
+        )
+        if candidate is None:
+            continue
+        day_key, entry = candidate
+        merged = dict(entry["item"])
+        merged.update({
+            "value1": round(entry["total"], 1),
+            "value2": None,
+            "measured_at": f"{day_key}T00:00",
+            "context": "",
+            "note": f"当日累计（{entry['count']} 次记录）",
+        })
+        latest_metrics[metric] = merged
+        critical_metrics.pop(metric, None)
     abnormal_metrics = []
     for metric, latest in latest_metrics.items():
         # 最新一次恢复正常也不能漏掉窗口内更早的危急值
@@ -12948,7 +13321,9 @@ async def export_health_dossier(
     )
     safety = await _medication_safety_for_profile(store, profile_key)
     insights = [
-        item for item in _build_health_insights(report, safety=safety)
+        item for item in _build_health_insights(
+            report, safety=safety, family_scope=False
+        )
         if item["level"] != "ok"
     ]
     lines.append("## 健康提示")
@@ -13315,6 +13690,11 @@ async def export_health_dossier(
                 f"{item.get('original_name') or '附件'}"
                 f"（{item.get('kind_label') or '其他'}，{linked}{note_text}）"
             )
+        if len(attachments) > 100:
+            lines.append(
+                f"- 另有 {len(attachments) - 100} 份附件未列出，"
+                "请在「就医资料」中查看。"
+            )
     else:
         lines.append("- 暂无就医资料")
     lines.append("")
@@ -13343,7 +13723,7 @@ async def export_health_dossier(
         "本档案由 MediX 生成，仅供个人健康记录参考，不构成医疗建议。"
     )
 
-    content = "\n".join(lines) + "\n"
+    content = "\n".join(_markdown_safe_line(line) for line in lines) + "\n"
     filename = f"medix-dossier-{now.strftime('%Y%m%d')}.md"
     return Response(
         content=content,
@@ -14985,14 +15365,12 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
     不能出现在命名空间里；同一档案仍共享作用域，不同档案不会碰撞。
     旧版本以可读姓名写入的历史记忆不会自动迁移到新命名空间。
     """
+    from core.session_context import profile_memory_scope
     from memory.session_store import _normalize_profile_name
 
     raw_profile = _normalize_profile_name(patient_profile)
     if raw_profile:
-        digest = hashlib.sha256(
-            raw_profile.encode("utf-8")
-        ).hexdigest()[:24]
-        return f"medix_profile_{digest}"
+        return profile_memory_scope(raw_profile)
     return session_memory_scope(session_id)
 
 
@@ -15013,6 +15391,17 @@ def _get_long_term_memory():
     if coordinator is not None:
         memory = getattr(coordinator, "long_term_memory", None)
         if memory is not None:
+            # 协调器常驻且不会重建：启动时 Mem0 初始化失败会让长期记忆
+            # 永久禁用、清理队列一直排不空。这里按冷却时间原地重连
+            ensure = getattr(memory, "ensure_available", None)
+            if callable(ensure):
+                try:
+                    ensure()
+                except Exception as e:
+                    logger.warning(
+                        "长期记忆重连失败（忽略）: "
+                        f"{redact_secrets(str(e))}"
+                    )
             return memory
     now = time.monotonic()
     should_build = _standalone_long_term_memory is None
@@ -15334,14 +15723,29 @@ async def _resolve_memory_profile(session_id: str, requested: str) -> str:
     from memory import get_session_store
 
     requested = " ".join(str(requested or "").split())
+    store = get_session_store()
+    if requested:
+        # 客户端可能还在用改名前的档案名：解析到当前名称
+        try:
+            resolved = await asyncio.to_thread(
+                store.resolve_profile_alias, requested
+            )
+            requested = resolved or requested
+        except Exception:
+            pass
     try:
-        session = await asyncio.to_thread(
-            get_session_store().get_session, session_id
-        )
+        session = await asyncio.to_thread(store.get_session, session_id)
     except Exception:
         session = None
     bound = str((session or {}).get("profile") or "").strip()
     if bound:
+        try:
+            resolved = await asyncio.to_thread(
+                store.resolve_profile_alias, bound
+            )
+            bound = resolved or bound
+        except Exception:
+            pass
         with _PROFILE_CLAIMS_LOCK:
             _PROFILE_CLAIMS.pop(session_id, None)
         return bound
@@ -15574,7 +15978,7 @@ async def chat(request: ChatRequest):
             _release_profile_claim(session_id, memory_profile)
             raise HTTPException(
                 status_code=500,
-                detail=f"处理失败：{redact_secrets(str(e))}",
+                detail="处理失败，请稍后重试；若持续出现，请打开系统自检。",
             )
 
     payload = _serialize_result(result, AGENT_LABELS)
@@ -15689,7 +16093,10 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         except Exception as e:
             release_lock()
             _release_profile_claim(session_id, memory_profile)
-            yield sse({"type": "error", "message": f"初始化失败：{redact_secrets(str(e))}"})
+            yield sse({
+                "type": "error",
+                "message": "初始化失败，请稍后重试；若持续出现，请打开系统自检。",
+            })
             return
 
         # 记下请求开始前 worker 上挂着的 SharedContext。
@@ -15875,7 +16282,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 logger.exception("流式处理失败")
                 yield sse({
                     "type": "error",
-                    "message": redact_secrets(str(e)),
+                    "message": "处理失败，请稍后重试；若持续出现，请打开系统自检。",
                 })
                 return
         finally:

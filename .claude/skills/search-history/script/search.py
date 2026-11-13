@@ -11,8 +11,7 @@ async def search_history(session_id: str, limit: int = 10) -> Dict[str, Any]:
     搜索当前会话的历史对话
 
     Args:
-        session_id: 会话ID
-        limit: 最多返回多少轮对话（默认10轮）
+        session_id: 会话ID（Agent 运行时会被当前会话绑定覆盖）
 
     Returns:
         {
@@ -21,6 +20,18 @@ async def search_history(session_id: str, limit: int = 10) -> Dict[str, Any]:
             "session_id": "会话ID"
         }
     """
+    # 工具参数由模型填写，不能用来读取其它会话：AgentLoop 执行工具时
+    # 绑定了当前会话 ID，这里以绑定值为准（CLI 直接调用时没有绑定，
+    # 才使用传入的 session_id）
+    try:
+        from core.session_context import get_current_session_id
+
+        bound_session = get_current_session_id()
+    except Exception:
+        bound_session = ""
+    if bound_session:
+        session_id = bound_session
+
     logger.info(f"Searching conversation history: session={session_id}, limit={limit}")
 
     try:

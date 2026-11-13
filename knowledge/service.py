@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,34 @@ KNOWLEDGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DOCS_DIR = KNOWLEDGE_DIR / "data" / "documents"
 DEFAULT_UPLOAD_DIR = KNOWLEDGE_DIR / "data" / "uploads"
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+#: 多数文件系统 NAME_MAX 为 255 字节；预留同名前缀与临时文件余量
+MAX_FILENAME_BYTES = 200
+
+
+def _trim_filename_bytes(
+    name: str, max_bytes: int = MAX_FILENAME_BYTES
+) -> str:
+    """按 UTF-8 字节长度截断文件名，长中文名在 Linux/macOS 上不超限。"""
+    if len(name.encode("utf-8")) <= max_bytes:
+        return name
+    suffix = Path(name).suffix
+    suffix_bytes = len(suffix.encode("utf-8"))
+    budget = max(1, max_bytes - suffix_bytes)
+    stem = name[: len(name) - len(suffix)] if suffix else name
+    trimmed: List[str] = []
+    used = 0
+    for char in stem:
+        size = len(char.encode("utf-8"))
+        if used + size > budget:
+            break
+        trimmed.append(char)
+        used += size
+    fallback = "".join(trimmed) or "file"
+    return f"{fallback}{suffix}"
+
+
+class KnowledgeIndexError(RuntimeError):
+    """索引与文档不一致且自动重建失败（服务端故障，应映射为 500）。"""
 
 
 class KnowledgeService:
@@ -87,23 +116,27 @@ class KnowledgeService:
                 )
         return digest.hexdigest()
 
-    def _read_manifest(self) -> str:
+    def _read_manifest(self) -> Dict[str, Any]:
         try:
             payload = json.loads(
                 self._manifest_path().read_text(encoding="utf-8")
             )
-            return str(payload.get("fingerprint") or "")
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(payload, dict):
             # 合法 JSON 但不是对象（如 []、1）时没有 .get
-            return ""
+            return {}
+        return payload
 
-    def _write_manifest(self, fingerprint: str) -> None:
+    def _write_manifest(
+        self, fingerprint: str, chunks: Optional[int] = None
+    ) -> None:
+        payload: Dict[str, Any] = {"fingerprint": fingerprint}
+        if chunks is not None:
+            payload["chunks"] = int(chunks)
         try:
             self._manifest_path().write_text(
-                json.dumps(
-                    {"fingerprint": fingerprint},
-                    ensure_ascii=False,
-                ),
+                json.dumps(payload, ensure_ascii=False),
                 encoding="utf-8",
             )
         except OSError as e:
@@ -112,7 +145,10 @@ class KnowledgeService:
     def index_is_stale(self) -> bool:
         """当前文档与上次成功重建时的指纹是否不一致。"""
         with self._lock:
-            return self._read_manifest() != self._document_fingerprint()
+            return (
+                str(self._read_manifest().get("fingerprint") or "")
+                != self._document_fingerprint()
+            )
 
     def ensure_fresh(self) -> None:
         """检索前确保索引与文档一致。
@@ -121,7 +157,7 @@ class KnowledgeService:
         HTTP 检索端点；在它们创建知识库实例前调用本方法，避免删除/
         更新文档后仍检索到旧索引。
         """
-        with self._lock:
+        with _freshness_lock, self._lock:
             self._ensure_index_fresh_locked()
 
     def _document_count(self) -> int:
@@ -146,7 +182,8 @@ class KnowledgeService:
 
     def _ensure_index_fresh_locked(self) -> None:
         fingerprint = self._document_fingerprint()
-        if self._read_manifest() == fingerprint:
+        manifest = self._read_manifest()
+        if str(manifest.get("fingerprint") or "") == fingerprint:
             # 清单匹配但向量库可能被删除或换了工作目录：
             # 有文档却没有索引时必须重建，不能静默返回空检索
             try:
@@ -154,17 +191,30 @@ class KnowledgeService:
             except Exception as e:
                 logger.warning(f"读取知识库索引数量失败: {e}")
                 indexed = 0
-            if indexed > 0 or self._document_count() == 0:
-                return
-            logger.warning("索引清单匹配但向量库为空，触发重建")
+            expected = manifest.get("chunks")
+            document_count = self._document_count()
+            if indexed > 0 or document_count == 0:
+                if (
+                    isinstance(expected, int)
+                    and expected > 0
+                    and document_count > 0
+                    and indexed < expected
+                ):
+                    # 上次重建部分写入（RPC 超时/进程崩溃）：块数少于
+                    # 清单记录，不能当作新鲜索引返回不完整结果
+                    logger.warning("索引块数少于清单记录，触发重建")
+                else:
+                    return
+            else:
+                logger.warning("索引清单匹配但向量库为空，触发重建")
         else:
             logger.info("Knowledge index is stale, rebuilding before search")
         try:
             self._rebuild_locked(True)
         except Exception as e:
-            # 宁可报错也不返回与磁盘文档不一致的旧索引
-            raise ValueError(
-                f"知识库索引与文档不一致，自动重建失败：{e}"
+            # 服务端索引故障：端点映射为 500，不回显内部路径
+            raise KnowledgeIndexError(
+                "知识库索引与文档不一致，自动重建失败。"
             ) from e
 
     def list_documents(self) -> Dict[str, Any]:
@@ -227,13 +277,29 @@ class KnowledgeService:
         if Path(safe_name).suffix.lower() not in SUPPORTED_SUFFIXES:
             raise ValueError("仅支持 .txt / .md / .markdown / .pdf 文件。")
 
-        with self._lock:
+        with _freshness_lock, self._lock:
             target = self._unique_path(safe_name)
+            temp_name = None
             try:
-                target.write_bytes(content)
-                restrict_permissions(target, 0o600)
+                # 先写唯一临时文件再原子替换：并发重建索引时不会
+                # 读到一个半写入的上传文件
+                fd, temp_name = tempfile.mkstemp(
+                    prefix=".upload-",
+                    suffix=target.suffix,
+                    dir=str(target.parent),
+                )
+                os.close(fd)
+                Path(temp_name).write_bytes(content)
+                restrict_permissions(Path(temp_name), 0o600)
+                os.replace(temp_name, target)
+                temp_name = None
             except Exception:
                 # 磁盘满/占用导致半写时清理残留，避免下次重建索引残缺文件
+                if temp_name:
+                    try:
+                        os.unlink(temp_name)
+                    except OSError:
+                        pass
                 target.unlink(missing_ok=True)
                 raise
             try:
@@ -253,7 +319,7 @@ class KnowledgeService:
     def delete_document(self, filename: str) -> bool:
         safe_name = self._safe_filename(filename)
         path = self.upload_dir / safe_name
-        with self._lock:
+        with _freshness_lock, self._lock:
             if not path.exists():
                 if (self.docs_dir / safe_name).exists():
                     raise ValueError("内置文档请通过仓库更新，不能在此删除。")
@@ -309,7 +375,7 @@ class KnowledgeService:
         safe_name = self._safe_filename(filename)
         path = self.upload_dir / safe_name
 
-        with self._lock:
+        with _freshness_lock, self._lock:
             if not path.is_file():
                 if (self.docs_dir / safe_name).exists():
                     raise ValueError("内置文档请通过仓库更新，不能在线编辑。")
@@ -361,14 +427,15 @@ class KnowledgeService:
             raise ValueError("请输入检索关键词。")
 
         top_k = max(1, min(int(top_k or 5), 20))
-        with self._lock:
+        with _freshness_lock, self._lock:
             self._ensure_index_fresh_locked()
             try:
                 results = self.kb.search(
                     query, top_k=top_k, filter_type=filter_type or None
                 )
             except Exception as e:
-                raise ValueError(f"检索失败：{e}") from e
+                logger.error(f"知识库检索失败: {e}")
+                raise ValueError("检索失败，请稍后重试。") from e
 
         return {
             "query": query,
@@ -379,7 +446,7 @@ class KnowledgeService:
 
     def rebuild(self, replace_existing: bool = True) -> Dict[str, Any]:
         """重建索引；整个读取+写入过程持锁，避免读到半写入的上传文件。"""
-        with self._lock:
+        with _freshness_lock, self._lock:
             return self._rebuild_locked(replace_existing)
 
     def _rebuild_locked(self, replace_existing: bool = True) -> Dict[str, Any]:
@@ -431,7 +498,24 @@ class KnowledgeService:
             seen_contents.add(content_key)
             documents.append(document)
         if not documents:
-            raise ValueError("知识库目录中没有可导入的文档。")
+            # 空知识库是合法状态：清空旧索引并写清单，
+            # 检索返回空结果，而不是把每个请求都变成 400
+            try:
+                clear = getattr(self.kb, "clear_index", None)
+                if callable(clear):
+                    clear()
+            except Exception as e:
+                logger.warning(f"清空知识库索引失败: {e}")
+            self._write_manifest(fingerprint, 0)
+            return {
+                "documents": 0,
+                "chunks": 0,
+                "chunk_count": 0,
+                "builtin_documents": len(builtin_documents),
+                "uploaded_documents": len(uploaded_documents),
+                "duplicate_documents": duplicate_count,
+                "shadowed_uploads": shadowed_count,
+            }
 
         with self._lock:
             chunks = self.kb.add_documents(
@@ -441,7 +525,7 @@ class KnowledgeService:
                 chunk_count = self.kb.count_documents()
             except Exception:
                 chunk_count = chunks
-            self._write_manifest(fingerprint)
+            self._write_manifest(fingerprint, chunk_count)
 
         logger.info(
             f"Knowledge rebuilt: {len(documents)} documents, {chunks} chunks"
@@ -468,7 +552,7 @@ class KnowledgeService:
             suffix = Path(name).suffix
             stem_budget = max(1, 120 - len(suffix))
             name = f"{name[:stem_budget]}{suffix}"
-        return name
+        return _trim_filename_bytes(name)
 
     def _unique_path(self, name: str) -> Path:
         suffix = Path(name).suffix
@@ -481,7 +565,7 @@ class KnowledgeService:
         def build(candidate_stem: str) -> str:
             # 预留扩展名与 "-N" 后缀，保证落盘名 ≤120 且再次清洗不变
             budget = max(1, 120 - len(suffix))
-            return f"{candidate_stem[:budget]}{suffix}"
+            return _trim_filename_bytes(f"{candidate_stem[:budget]}{suffix}")
 
         path = self.upload_dir / build(stem)
         if available(path):
@@ -509,7 +593,7 @@ def get_knowledge_service() -> KnowledgeService:
     return _service
 
 
-_freshness_lock = threading.Lock()
+_freshness_lock = threading.RLock()
 
 
 def ensure_knowledge_index_fresh(kb: Any = None) -> None:

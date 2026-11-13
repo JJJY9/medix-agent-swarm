@@ -292,7 +292,8 @@ def test_stale_index_search_fails_instead_of_using_old_vectors(service):
 
     kb.add_documents = broken_add
 
-    with pytest.raises(ValueError, match="自动重建失败"):
+    # 服务端索引故障用专用异常（端点映射为 500），不再是 400
+    with pytest.raises(RuntimeError, match="自动重建失败"):
         svc.search("高血压")
 
 

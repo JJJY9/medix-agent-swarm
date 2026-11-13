@@ -505,7 +505,7 @@ def test_app_js_ships_consult_health_context(client):
     app_js = client.get("/static/app.js").text
 
     assert "async function buildConsultContext" in app_js
-    assert "context: await buildConsultContext()" in app_js
+    assert "context: await buildConsultContext(controller.signal)" in app_js
     assert "pending_reminders" in app_js
 
 

@@ -1152,15 +1152,18 @@ async def test_harness_entropy_manager():
     manager = MemoryEntropyManager()
 
     # 测试 1: 消息去重 (deduplicate_messages)
+    # 只合并相邻的完全相同消息（重试/重复推送）；不同轮次重复提问
+    # 必须成对保留，否则回答会变成没有提问的孤儿
     messages = [
         {"role": "user", "content": "高血压怎么办？"},
         {"role": "assistant", "content": "建议低盐饮食。"},
-        {"role": "user", "content": "高血压怎么办？"},  # 重复
-        {"role": "assistant", "content": "建议低盐饮食。"},  # 重复
+        {"role": "assistant", "content": "建议低盐饮食。"},  # 相邻重复
+        {"role": "user", "content": "那还要吃药吗？"},
+        {"role": "assistant", "content": "请遵医嘱服药。"},
     ]
 
     deduplicated = manager.deduplicate_messages(messages)
-    assert len(deduplicated) == 2, "应该去除2条重复消息"
+    assert len(deduplicated) == 4, "应该去除1条相邻重复消息"
 
     # 测试会话历史压缩
     long_messages = []

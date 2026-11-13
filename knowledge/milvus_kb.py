@@ -363,6 +363,17 @@ class MedicalKnowledgeBase:
         if filter_type:
             filter_expr = f'metadata like "%\\"type\\": \\"{filter_type}\\"%"'
 
+        try:
+            has_collection = self.milvus_client.has_collection(
+                self.collection_name
+            )
+        except Exception as e:
+            logger.warning(f"读取知识库集合状态失败: {e}")
+            has_collection = True
+        if not has_collection:
+            # 空知识库只清理了索引：检索返回空结果而不是报错
+            return []
+
         # 检索
         try:
             # 重建期间 drop→rename 之间没有正式 collection：
@@ -377,7 +388,7 @@ class MedicalKnowledgeBase:
                 )
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            raise ValueError(f"知识库检索失败：{e}") from e
+            raise ValueError("知识库检索失败，请稍后重试。") from e
 
         # 格式化结果
         documents = []
@@ -406,6 +417,16 @@ class MedicalKnowledgeBase:
         if self.milvus_client.has_collection(self.collection_name):
             self.milvus_client.drop_collection(self.collection_name)
             logger.info(f"Deleted collection: {self.collection_name}")
+
+    def clear_index(self) -> None:
+        """清空向量索引集合（空知识库重建时使用）。"""
+        with self._index_lock:
+            try:
+                if self.milvus_client.has_collection(self.collection_name):
+                    self.milvus_client.drop_collection(self.collection_name)
+                logger.info(f"Cleared knowledge index: {self.collection_name}")
+            except Exception as e:
+                logger.warning(f"清空知识库索引失败: {e}")
 
     def count_documents(self) -> int:
         """统计向量块数量。"""

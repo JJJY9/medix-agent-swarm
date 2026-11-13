@@ -573,6 +573,100 @@ def _profile_deletion_key(profile: Any) -> str:
     ).hexdigest()
 
 
+def _import_payload_problems(
+    data: Dict[str, Any],
+    max_sessions: int = 100000,
+    skip_session_ids: Optional[set] = None,
+) -> List[str]:
+    """导入上限预检：返回全部问题，供恢复预检与导入共用。
+
+    预检通过但恢复时才 400 会让用户空等一次完整导入；两边共用同一份
+    规则，预检失败时直接给出可读原因。
+    """
+    problems: List[str] = []
+    raw_sessions = data.get("sessions")
+    if isinstance(raw_sessions, list) and len(raw_sessions) > max_sessions:
+        problems.append(f"一次最多导入 {max_sessions} 个会话。")
+    for key, label in (
+        ("profiles", "档案"),
+        ("health_metrics", "健康指标"),
+        ("metric_targets", "指标目标"),
+        ("symptoms", "症状记录"),
+        ("medications", "用药"),
+        ("medication_logs", "用药打卡"),
+        ("medication_history", "用药变更"),
+        ("vaccinations", "疫苗接种"),
+        ("appointments", "就诊预约"),
+        ("lab_results", "化验结果"),
+        ("allergies", "过敏史"),
+        ("care_items", "复查计划"),
+        ("visit_records", "就诊记录"),
+        ("conditions", "慢病清单"),
+        ("reminders", "提醒"),
+        ("audit_log", "审计记录"),
+        ("usage_events", "用量流水"),
+    ):
+        items = data.get(key)
+        cap = IMPORT_LIST_LIMITS[key]
+        if isinstance(items, list) and len(items) > cap:
+            problems.append(f"一次最多导入 {cap} 条{label}。")
+    if not isinstance(raw_sessions, list):
+        return problems
+    total_message_chars = 0
+    for raw in raw_sessions:
+        if not isinstance(raw, dict):
+            continue
+        messages = raw.get("messages")
+        if not isinstance(messages, list):
+            continue
+        sid = str(raw.get("id") or "").strip()[:120]
+        skip_count = bool(skip_session_ids and sid in skip_session_ids)
+        if (
+            len(messages) > MAX_BACKUP_SESSION_MESSAGES
+            and not skip_count
+        ):
+            # 已存在的会话整段跳过（旧行为），不因条数超限中断导入；
+            # 消息长度/总量仍按全量校验
+            problems.append(
+                f"单个会话最多导入 {MAX_BACKUP_SESSION_MESSAGES} 条消息。"
+            )
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            if len(content) > MAX_IMPORT_MESSAGE_CHARS:
+                problems.append(
+                    f"单条消息最多 {MAX_IMPORT_MESSAGE_CHARS} 个字符。"
+                )
+                continue
+            total_message_chars += len(content)
+            if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
+                problems.append("备份中的消息总量过大。")
+                return problems
+    return problems
+
+
+def _import_probe_spec(raw: Dict[str, Any], columns, extract):
+    """构造「身份 + 内容」精确配对的查询条件；无法判断时返回 None。
+
+    只用于导入排序：让能精确配对的行先处理。任何不一致都退化为旧顺序，
+    不会影响实际的插入/判重逻辑。
+    """
+    created = str(raw.get("created_at") or "").strip()[:40]
+    if not created:
+        return None
+    try:
+        values = extract(raw, created)
+    except Exception:
+        return None
+    if values is None:
+        return None
+    where = " AND ".join(f"{column} = ?" for column in columns)
+    return where, tuple(values)
+
+
 MAX_MEDICATION_NAME_LENGTH = 120
 MAX_MEDICATION_TEXT_LENGTH = 60
 MAX_MEDICATION_STOCK = 1000000.0
@@ -1503,14 +1597,22 @@ def _next_repeat_due(due_at: str, days: int) -> str:
         parsed = datetime.fromisoformat(str(due_at))
     except ValueError:
         parsed = datetime.combine(datetime.now().date(), datetime.min.time())
+    now = datetime.now()
+    today = now.date()
     target = parsed.date() + timedelta(days=days)
-    today = datetime.now().date()
     if target < today:
         # 顺延到第一个不早于今天的周期；恰好是今天的保留今天
         missed = (today - target).days
         steps = (missed + days - 1) // days
         target += timedelta(days=steps * days)
     if "T" in str(due_at):
+        candidate = datetime.combine(target, parsed.time())
+        if candidate.tzinfo is not None:
+            candidate = candidate.replace(tzinfo=None)
+        # 顺延到「今天」但该时刻已经过去：再推一个周期，
+        # 否则完成操作会立刻生成一条已逾期的提醒
+        if candidate <= now:
+            target += timedelta(days=days)
         return datetime.combine(
             target, parsed.time()
         ).isoformat(timespec="seconds")
@@ -1991,6 +2093,15 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_profile_deletions_hash
                     ON profile_deletions(profile_hash, deleted_at DESC);
+                CREATE TABLE IF NOT EXISTS profile_renames (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_hash TEXT NOT NULL,
+                    old_name     TEXT NOT NULL,
+                    new_name     TEXT NOT NULL,
+                    renamed_at   TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_profile_renames_old
+                    ON profile_renames(old_name, renamed_at DESC);
                 CREATE TABLE IF NOT EXISTS usage_events (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id        TEXT NOT NULL DEFAULT '',
@@ -2648,6 +2759,136 @@ class SessionStore:
             ).fetchone()
         return row is not None
 
+    #: 判断档案名是否仍在使用的数据表（与 rename_profile 的检查一致）
+    _PROFILE_NAME_TABLES = (
+        ("patient_profiles", "name"),
+        ("sessions", "profile"),
+        ("reminders", "profile"),
+        ("health_metrics", "profile"),
+        ("symptoms", "profile"),
+        ("medications", "profile"),
+        ("medication_logs", "profile"),
+        ("medication_history", "profile"),
+        ("vaccinations", "profile"),
+        ("appointments", "profile"),
+        ("lab_results", "profile"),
+        ("allergies", "profile"),
+        ("care_items", "profile"),
+        ("visit_records", "profile"),
+        ("conditions", "profile"),
+        ("attachments", "profile"),
+        ("usage_events", "profile"),
+    )
+
+    def profile_name_exists(self, name: str) -> bool:
+        """档案名是否仍被任一数据表使用。"""
+        name = _normalize_profile_name(name)
+        if not name:
+            return False
+        with self._lock:
+            for table, column in self._PROFILE_NAME_TABLES:
+                row = self._conn.execute(
+                    f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
+                    (name,),
+                ).fetchone()
+                if row is not None:
+                    return True
+        return False
+
+    def resolve_profile_alias(self, name: str) -> str:
+        """把已改名档案的旧名称解析到当前名称。
+
+        只跟随本库记录过的改名链；旧名称后来被新档案重新使用时不解析
+        （那是另一位患者）。用于会诊中途改名/恢复改名前的备份。
+        """
+        name = _normalize_profile_name(name)
+        if not name:
+            return ""
+        current = name
+        visited = {name}
+        with self._lock:
+            for _ in range(10):
+                row = self._conn.execute(
+                    """
+                    SELECT new_name FROM profile_renames
+                     WHERE old_name = ?
+                     ORDER BY renamed_at DESC, id DESC
+                     LIMIT 1
+                    """,
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                following = _normalize_profile_name(row["new_name"])
+                if not following or following in visited:
+                    break
+                visited.add(following)
+                current = following
+        if current == name:
+            return name
+        if self.profile_name_exists(name):
+            # 旧名已被新档案占用：备份/请求里的旧名属于新患者
+            return name
+        return current
+
+    def profile_renamed_away(self, name: str) -> bool:
+        """档案名是否已被改名到其它名称（旧名不再存在）。"""
+        resolved = self.resolve_profile_alias(name)
+        return bool(resolved) and resolved != _normalize_profile_name(name)
+
+    def profile_memory_cleanup_pending(self, profile: str) -> bool:
+        """该档案是否存在尚未完成的整档长期记忆清理。
+
+        profile 级清理（session_id 为空）成功前不能读取同名档案的云端
+        记忆：删除的旧患者摘要可能仍在 Mem0 中，重建同名档案会召回。
+        """
+        name = _normalize_profile_name(profile)
+        if not name:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM memory_cleanup_queue
+                 WHERE profile = ? AND session_id = ''
+                 LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
+        return row is not None
+
+    def metric_daily_totals(
+        self, day: str = "", profile: Optional[str] = None
+    ) -> Dict[tuple, Dict[str, Any]]:
+        """按自然日累计步数/饮水，返回 {(档案, 指标): {total, count}}。"""
+        day = str(day or "").strip()[:10] or datetime.now().strftime(
+            "%Y-%m-%d"
+        )
+        from_string = " AND profile = ?" if profile is not None else ""
+        metrics = tuple(DAILY_ACCUMULATING_METRICS)
+        placeholders = ",".join("?" for _ in metrics)
+        params: List[Any] = [day, *metrics]
+        if profile is not None:
+            params.append(_normalize_profile_name(profile))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT profile, metric, COUNT(*) AS count,
+                       SUM(value1) AS total
+                  FROM health_metrics
+                 WHERE substr(measured_at, 1, 10) = ?
+                   AND metric IN ({placeholders}){from_string}
+                 GROUP BY profile, metric
+                """,
+                params,
+            ).fetchall()
+        return {
+            (str(row["profile"]), str(row["metric"])): {
+                "count": int(row["count"] or 0),
+                "total": round(float(row["total"] or 0), 1),
+            }
+            for row in rows
+        }
+
     def profile_created_at(self, name: str) -> str:
         """档案的创建时间；不存在返回空串。"""
         name = _normalize_profile_name(name)
@@ -2993,6 +3234,8 @@ class SessionStore:
             ("health_metrics", "measured_at"),
             ("symptoms", "recorded_at"),
             ("medication_logs", "taken_at"),
+            ("lab_results", "tested_at"),
+            ("visit_records", "visit_date"),
         ):
             conditions = [f"substr({column}, 1, 10) >= ?"]
             values: List[Any] = [cutoff]
@@ -3044,6 +3287,8 @@ class SessionStore:
             ("health_metrics", "measured_at"),
             ("symptoms", "recorded_at"),
             ("medication_logs", "taken_at"),
+            ("lab_results", "tested_at"),
+            ("visit_records", "visit_date"),
         ):
             parts.append(
                 f"SELECT profile, substr({column}, 1, 10) AS day"
@@ -3093,6 +3338,28 @@ class SessionStore:
         with self._lock:
             row = self._conn.execute(sql, params).fetchone()
         return int(row["n"]) if row else 0
+
+    def filter_existing_session_ids(self, session_ids: Any) -> set:
+        """返回给定会话编号中已存在于本库的集合（分批查询）。"""
+        values: List[str] = []
+        seen = set()
+        for value in session_ids or []:
+            sid = str(value or "").strip()[:120]
+            if sid and sid not in seen:
+                seen.add(sid)
+                values.append(sid)
+        found: set = set()
+        for start in range(0, len(values), 500):
+            chunk = values[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            with self._lock:
+                rows = self._conn.execute(
+                    f"SELECT id FROM sessions"
+                    f" WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            found.update(str(row["id"]) for row in rows)
+        return found
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -3997,13 +4264,18 @@ class SessionStore:
         return matched
 
     def _import_rows(
-        self, table: str, raw_items: Any, limit: int
+        self, table: str, raw_items: Any, limit: int, match_probe=None
     ) -> List[Dict[str, Any]]:
-        """整理待导入行：过滤非字典项，主键仍存在的行优先处理。
+        """整理待导入行：能按「身份 + 内容」精确配对的行优先处理。
 
-        备份主键在本地仍存在的行（未被删除）先与本地行配对并认领，
-        避免同身份组里已被删除的行在兜底配对时抢占这些候选；
+        同一身份（档案 + 创建时间）组里，精确内容匹配的行先与本地行配对，
+        避免已被删除的行在兜底配对时抢占存活行的候选（主键漂移时尤其
+        明显：备份主键被其它记录占用，删除一条同秒记录后再恢复会出现
+        「删掉的没还原、存活的被复制」）。其次是主键仍在本地存在的行，
         其余行按主键升序处理，无 id 的 CSV 行保持原顺序。
+
+        match_probe(raw) 返回 (where 子句, 参数) 时用于查询本地是否已有
+        同身份同内容的行；返回 None 表示无法判断（如 CSV 没有创建时间）。
         """
         if not isinstance(raw_items, list):
             return []
@@ -4025,11 +4297,85 @@ class SessionStore:
                     chunk,
                 ).fetchall()
             existing.update(int(row["id"]) for row in found)
-        rows.sort(key=lambda item: (
-            0 if _safe_db_id(item.get("id")) in existing else 1,
-            _safe_db_id(item.get("id")),
+
+        content_matched: Dict[int, bool] = {}
+        if match_probe is not None:
+            for index, item in enumerate(rows):
+                try:
+                    probe = match_probe(item)
+                except Exception:
+                    probe = None
+                if probe is None:
+                    continue
+                where, params = probe
+                try:
+                    with self._lock:
+                        found_row = self._conn.execute(
+                            f"SELECT 1 FROM {table} WHERE {where} LIMIT 1",
+                            params,
+                        ).fetchone()
+                except Exception:
+                    continue
+                if found_row is not None:
+                    content_matched[index] = True
+
+        indexed = list(enumerate(rows))
+        indexed.sort(key=lambda pair: (
+            0 if content_matched.get(pair[0]) else 1,
+            0 if _safe_db_id(pair[1].get("id")) in existing else 1,
+            _safe_db_id(pair[1].get("id")),
         ))
-        return rows
+        return [item for _, item in indexed]
+
+    def _remap_import_aliases(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """恢复备份时把已改名档案的旧名称解析到当前名称。"""
+        profile_fields = (
+            "sessions", "metric_targets", "health_metrics", "symptoms",
+            "medications", "medication_logs", "medication_history",
+            "vaccinations", "appointments", "lab_results", "allergies",
+            "care_items", "visit_records", "conditions", "reminders",
+            "usage_events",
+        )
+        cache: Dict[str, str] = {}
+
+        def mapped(value: Any) -> str:
+            name = str(value or "")
+            if not name:
+                return name
+            if name not in cache:
+                try:
+                    cache[name] = self.resolve_profile_alias(name) or name
+                except Exception:
+                    cache[name] = name
+            return cache[name]
+
+        changed = False
+        result = dict(data)
+        for key in profile_fields:
+            items = data.get(key)
+            if not isinstance(items, list):
+                continue
+            new_items = []
+            for item in items:
+                if isinstance(item, dict) and item.get("profile"):
+                    replacement = mapped(item.get("profile"))
+                    if replacement != item.get("profile"):
+                        item = {**item, "profile": replacement}
+                        changed = True
+                new_items.append(item)
+            result[key] = new_items
+        profiles = data.get("profiles")
+        if isinstance(profiles, list):
+            new_profiles = []
+            for item in profiles:
+                if isinstance(item, dict) and item.get("name"):
+                    replacement = mapped(item.get("name"))
+                    if replacement != item.get("name"):
+                        item = {**item, "name": replacement}
+                        changed = True
+                new_profiles.append(item)
+            result["profiles"] = new_profiles
+        return result if changed else data
 
     def import_data(
         self, data: Any, max_sessions: int = 100000
@@ -4049,6 +4395,10 @@ class SessionStore:
                 raise ValueError(
                     "备份校验失败，文件可能已损坏或被修改。"
                 )
+
+        # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
+        # 作为另一个档案重新插入（校验在改写前完成）
+        data = self._remap_import_aliases(data)
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
@@ -4111,53 +4461,18 @@ class SessionStore:
             and not isinstance(raw_usage_events, list)
         ):
             raise ValueError("备份文件中没有会话。")
-        if len(raw_sessions) > max_sessions:
-            raise ValueError(f"一次最多导入 {max_sessions} 个会话。")
-
-        # 与 export_data 的导出口径一致：超限时明确报错，避免静默丢弃备份数据
-        for key, label, items in (
-            ("profiles", "档案", raw_profiles),
-            ("health_metrics", "健康指标", raw_metrics),
-            ("metric_targets", "指标目标", raw_targets),
-            ("symptoms", "症状记录", raw_symptoms),
-            ("medications", "用药", raw_medications),
-            ("medication_logs", "用药打卡", raw_medication_logs),
-            ("medication_history", "用药变更", raw_medication_history),
-            ("vaccinations", "疫苗接种", raw_vaccinations),
-            ("appointments", "就诊预约", raw_appointments),
-            ("lab_results", "化验结果", raw_lab_results),
-            ("allergies", "过敏史", raw_allergies),
-            ("care_items", "复查计划", raw_care_items),
-            ("visit_records", "就诊记录", raw_visit_records),
-            ("conditions", "慢病清单", raw_conditions),
-            ("reminders", "提醒", raw_reminders),
-            ("audit_log", "审计记录", raw_audit),
-            ("usage_events", "用量流水", raw_usage_events),
-        ):
-            cap = IMPORT_LIST_LIMITS[key]
-            if isinstance(items, list) and len(items) > cap:
-                raise ValueError(f"一次最多导入 {cap} 条{label}。")
-
-        total_message_chars = 0
-        for raw in raw_sessions:
-            if not isinstance(raw, dict):
-                continue
-            messages = raw.get("messages")
-            if not isinstance(messages, list):
-                continue
-            for message in messages:
-                if not isinstance(message, dict):
-                    continue
-                content = message.get("content")
-                if not isinstance(content, str):
-                    continue
-                if len(content) > MAX_IMPORT_MESSAGE_CHARS:
-                    raise ValueError(
-                        f"单条消息最多 {MAX_IMPORT_MESSAGE_CHARS} 个字符。"
-                    )
-                total_message_chars += len(content)
-                if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
-                    raise ValueError("备份中的消息总量过大。")
+        # 与 export_data/恢复预检共用同一份上限规则，超限时明确报错；
+        # 已存在的会话整段跳过，其消息条数不受导入上限约束
+        existing_session_ids = self.filter_existing_session_ids([
+            raw.get("id")
+            for raw in raw_sessions
+            if isinstance(raw, dict)
+        ])
+        problems = _import_payload_problems(
+            data, max_sessions, skip_session_ids=existing_session_ids
+        )
+        if problems:
+            raise ValueError(problems[0])
 
         imported = 0
         skipped = 0
@@ -4314,6 +4629,24 @@ class SessionStore:
                 for raw in self._import_rows(
                     "health_metrics", raw_metrics,
                     IMPORT_LIST_LIMITS["health_metrics"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "metric", "created_at",
+                            "measured_at", "value1", "IFNULL(value2, -1)",
+                            "context", "note",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            str(r.get("metric") or "").strip(),
+                            c,
+                            r.get("measured_at"),
+                            r.get("value1"),
+                            -1 if r.get("value2") is None else r.get("value2"),
+                            str(r.get("context") or ""),
+                            str(r.get("note") or ""),
+                        ),
+                    ),
                 ):
                     if not isinstance(raw, dict):
                         continue
@@ -4480,6 +4813,19 @@ class SessionStore:
                 for raw in self._import_rows(
                     "symptoms", raw_symptoms,
                     IMPORT_LIST_LIMITS["symptoms"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "symptom",
+                            "recorded_at",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("symptom") or ""),
+                            str(r.get("recorded_at") or ""),
+                        ),
+                    ),
                 ):
                     if not str(raw.get("recorded_at") or "").strip():
                         continue
@@ -4557,6 +4903,21 @@ class SessionStore:
                 for raw in self._import_rows(
                     "medications", raw_medications,
                     IMPORT_LIST_LIMITS["medications"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "name", "dose",
+                            "frequency", "COALESCE(started_at, '')",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("name") or ""),
+                            str(r.get("dose") or ""),
+                            str(r.get("frequency") or ""),
+                            str(r.get("started_at") or ""),
+                        ),
+                    ),
                 ):
                     normalized = _normalize_medication(
                         raw.get("profile", ""),
@@ -4839,6 +5200,22 @@ class SessionStore:
                 for raw in self._import_rows(
                     "vaccinations", raw_vaccinations,
                     IMPORT_LIST_LIMITS["vaccinations"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "vaccine_name",
+                            "dose_number", "vaccinated_at",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(
+                                r.get("vaccine_name") or r.get("name") or ""
+                            ),
+                            r.get("dose_number") or 1,
+                            str(r.get("vaccinated_at") or ""),
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_vaccination(
@@ -4931,6 +5308,23 @@ class SessionStore:
                 for raw in self._import_rows(
                     "appointments", raw_appointments,
                     IMPORT_LIST_LIMITS["appointments"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "title",
+                            "scheduled_at", "department", "doctor",
+                            "location",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("title") or ""),
+                            str(r.get("scheduled_at") or ""),
+                            str(r.get("department") or ""),
+                            str(r.get("doctor") or ""),
+                            str(r.get("location") or ""),
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_appointment(
@@ -5026,10 +5420,37 @@ class SessionStore:
             lab_results_imported = 0
             existing_lab_counts: Dict[tuple, int] = {}
             imported_lab_counts: Dict[tuple, int] = {}
+            lab_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_lab_results, list):
-                for raw in raw_lab_results[
-                    :IMPORT_LIST_LIMITS["lab_results"]
-                ]:
+                for raw in self._import_rows(
+                    "lab_results", raw_lab_results,
+                    IMPORT_LIST_LIMITS["lab_results"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "panel", "item",
+                            "tested_at", "value", "unit",
+                            "IFNULL(ref_low, -1e308)",
+                            "IFNULL(ref_high, -1e308)",
+                            "lab_name", "note",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("panel") or ""),
+                            str(r.get("item") or ""),
+                            str(r.get("tested_at") or ""),
+                            r.get("value"),
+                            str(r.get("unit") or ""),
+                            -1e308 if r.get("ref_low") is None
+                            else r.get("ref_low"),
+                            -1e308 if r.get("ref_high") is None
+                            else r.get("ref_high"),
+                            str(r.get("lab_name") or ""),
+                            str(r.get("note") or ""),
+                        ),
+                    ),
+                ):
                     if not isinstance(raw, dict):
                         continue
                     try:
@@ -5051,9 +5472,62 @@ class SessionStore:
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    # 判重键覆盖所有会展示的字段：同一时刻不同分组/机构/
-                    # 参考范围/备注的化验必须各自保留；按数量判重保证
-                    # 同一备份的多条同类记录与跨来源重复导入都正确
+                    if created_key:
+                        # 备份带创建时间：身份用「档案 + 创建时间」、内容锚定。
+                        # 修改化验值后恢复不会把旧值补回；删除的读数仍按
+                        # 原内容还原
+                        ref_low_key = (
+                            -1e308 if normalized["ref_low"] is None
+                            else normalized["ref_low"]
+                        )
+                        ref_high_key = (
+                            -1e308 if normalized["ref_high"] is None
+                            else normalized["ref_high"]
+                        )
+                        existing_lab_id = self._import_identity_match(
+                            "lab_results",
+                            ("profile", "created_at"),
+                            (normalized["profile"], created_key),
+                            (
+                                "panel", "item", "tested_at", "value",
+                                "unit", "IFNULL(ref_low, -1e308)",
+                                "IFNULL(ref_high, -1e308)",
+                                "lab_name", "note",
+                            ),
+                            (
+                                normalized["panel"], normalized["item"],
+                                normalized["tested_at"],
+                                normalized["value"], normalized["unit"],
+                                ref_low_key, ref_high_key,
+                                normalized["lab_name"], normalized["note"],
+                            ),
+                            lab_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
+                        )
+                        if existing_lab_id is not None:
+                            continue
+                        self._conn.execute(
+                            """
+                            INSERT INTO lab_results(
+                                profile, panel, item, value, unit, ref_low,
+                                ref_high, tested_at, lab_name, note,
+                                created_at, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                normalized["profile"], normalized["panel"],
+                                normalized["item"], normalized["value"],
+                                normalized["unit"], normalized["ref_low"],
+                                normalized["ref_high"],
+                                normalized["tested_at"],
+                                normalized["lab_name"], normalized["note"],
+                                created_key,
+                                str(raw.get("updated_at") or now)[:40],
+                            ),
+                        )
+                        lab_results_imported += 1
+                        continue
+                    # CSV 没有创建时间：按完整内容计数判重
                     conditions = [
                         "profile = ?", "panel = ?", "item = ?",
                         "tested_at = ?", "value = ?", "unit = ?",
@@ -5101,8 +5575,7 @@ class SessionStore:
                             normalized["unit"], normalized["ref_low"],
                             normalized["ref_high"], normalized["tested_at"],
                             normalized["lab_name"], normalized["note"],
-                            created_key or now,
-                            str(raw.get("updated_at") or now)[:40],
+                            now, str(raw.get("updated_at") or now)[:40],
                         ),
                     )
                     lab_results_imported += 1
@@ -5113,6 +5586,20 @@ class SessionStore:
                 for raw in self._import_rows(
                     "allergies", raw_allergies,
                     IMPORT_LIST_LIMITS["allergies"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "substance",
+                            "kind", "noted_at",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("substance") or ""),
+                            str(r.get("kind") or "drug"),
+                            str(r.get("noted_at") or ""),
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_allergy(
@@ -5198,6 +5685,19 @@ class SessionStore:
                 for raw in self._import_rows(
                     "care_items", raw_care_items,
                     IMPORT_LIST_LIMITS["care_items"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "title",
+                            "interval_days",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("title") or ""),
+                            r.get("interval_days") or 30,
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_care_item(
@@ -5282,6 +5782,21 @@ class SessionStore:
                 for raw in self._import_rows(
                     "visit_records", raw_visit_records,
                     IMPORT_LIST_LIMITS["visit_records"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "visit_date",
+                            "diagnosis", "department", "doctor",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("visit_date") or ""),
+                            str(r.get("diagnosis") or ""),
+                            str(r.get("department") or ""),
+                            str(r.get("doctor") or ""),
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_visit_record(
@@ -5414,6 +5929,19 @@ class SessionStore:
                 for raw in self._import_rows(
                     "conditions", raw_conditions,
                     IMPORT_LIST_LIMITS["conditions"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "name",
+                            "diagnosed_at",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("name") or ""),
+                            str(r.get("diagnosed_at") or ""),
+                        ),
+                    ),
                 ):
                     try:
                         normalized = _normalize_condition(
@@ -5502,7 +6030,10 @@ class SessionStore:
                 ).fetchall()
             }
             if isinstance(raw_reminders, list):
-                for raw in raw_reminders[:IMPORT_LIST_LIMITS["reminders"]]:
+                for raw in self._import_rows(
+                    "reminders", raw_reminders,
+                    IMPORT_LIST_LIMITS["reminders"],
+                ):
                     if not isinstance(raw, dict):
                         continue
                     title = " ".join(
@@ -5637,6 +6168,14 @@ class SessionStore:
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
 
                     reminder_id = _safe_db_id(raw.get("id"))
+                    raw_created = str(
+                        raw.get("created_at") or ""
+                    ).strip()[:40]
+                    has_created = bool(raw_created)
+                    identity_key = (
+                        title, profile, note, session_id,
+                        created_at if has_created else due_at,
+                    )
 
                     # 备份里的自增 id 只用于重建 repeats_from 关系；
                     # 数据行一律插入新 id，撞号时不能静默丢弃
@@ -5651,33 +6190,48 @@ class SessionStore:
                         if (
                             same_id is not None
                             and int(same_id["id"]) in pre_existing_reminder_ids
-                            and str(same_id["title"]) == title
-                            and _normalize_profile_name(same_id["profile"])
-                            == profile
                         ):
-                            raw_created = str(
-                                raw.get("created_at") or ""
-                            ).strip()[:40]
                             # 撞号不等于同一条提醒：备份带创建时间时按创建
-                            # 时间确认身份，CSV 没有创建时间时按到期日确认
-                            same_identity = (
-                                str(same_id["created_at"] or "")
-                                == raw_created
-                                if raw_created
-                                else str(same_id["due_at"] or "") == due_at
-                            )
+                            # 时间确认身份（标题/档案可被本地编辑），CSV
+                            # 没有创建时间时按标题/档案/到期日确认
+                            if has_created:
+                                # 同秒创建的不同提醒不能因 id 撞号被当成
+                                # 同一条：再要求档案一致，且标题或到期日
+                                # 至少一项一致（标题可被本地编辑）
+                                same_identity = (
+                                    str(same_id["created_at"] or "")
+                                    == raw_created
+                                    and _normalize_profile_name(
+                                        same_id["profile"]
+                                    ) == profile
+                                    and (
+                                        str(same_id["title"]) == title
+                                        or str(same_id["due_at"] or "")
+                                        == due_at
+                                    )
+                                )
+                            else:
+                                same_identity = (
+                                    str(same_id["title"]) == title
+                                    and _normalize_profile_name(
+                                        same_id["profile"]
+                                    ) == profile
+                                    and str(same_id["due_at"] or "")
+                                    == due_at
+                                )
                             if same_identity:
                                 raw_reminder_id_map[reminder_id] = int(
                                     same_id["id"]
                                 )
+                                # 存活的同身份提醒也要计入已处理数量：
+                                # 否则同批创建、被删除的另一条会在数量
+                                # 比较里被当成重复而无法恢复
+                                imported_reminder_counts[identity_key] = (
+                                    imported_reminder_counts.get(
+                                        identity_key, 0
+                                    ) + 1
+                                )
                                 continue
-                    has_created = bool(
-                        str(raw.get("created_at") or "").strip()
-                    )
-                    identity_key = (
-                        title, profile, note, session_id,
-                        created_at if has_created else due_at,
-                    )
                     if identity_key not in existing_reminder_counts:
                         if has_created:
                             count_row = self._conn.execute(
@@ -6366,6 +6920,18 @@ class SessionStore:
                     f"UPDATE {table} SET profile = ? WHERE profile = ?",
                     (new_name, old_name),
                 )
+            # 改名链：会诊中途改名、恢复改名前的备份都按它解析到新名称
+            self._conn.execute(
+                """
+                INSERT INTO profile_renames(
+                    profile_hash, old_name, new_name, renamed_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    _profile_deletion_key(old_name),
+                    old_name, new_name, now,
+                ),
+            )
         return new_name
 
     def add_metric(
@@ -6924,6 +7490,10 @@ class SessionStore:
         )
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                "SELECT next_due FROM vaccinations WHERE id = ?",
+                (int(vaccination_id),),
+            ).fetchone()
             cursor = self._conn.execute(
                 """
                 UPDATE vaccinations
@@ -6941,9 +7511,14 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
-            # 下一剂日期变化时同步接种提醒；清空日期表示系列结束
+            # 只有下一剂日期变化才同步接种提醒；只改备注/剂次不能把
+            # 用户手动推迟的提醒拨回原日期。清空日期表示系列结束
             next_due = str(normalized["next_due"] or "")
-            if next_due:
+            due_changed = (
+                previous is None
+                or str(previous["next_due"] or "") != next_due
+            )
+            if next_due and due_changed:
                 self._conn.execute(
                     """
                     UPDATE reminders SET due_at = ?, updated_at = ?
@@ -6951,7 +7526,7 @@ class SessionStore:
                     """,
                     (next_due, now, int(vaccination_id)),
                 )
-            else:
+            elif not next_due:
                 self._conn.execute(
                     "DELETE FROM reminders "
                     "WHERE done = 0 AND vaccination_id = ?",
@@ -7109,6 +7684,12 @@ class SessionStore:
         )
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                "SELECT scheduled_at, status FROM appointments WHERE id = ?",
+                (int(appointment_id),),
+            ).fetchone()
+            if previous is None:
+                return None
             cursor = self._conn.execute(
                 """
                 UPDATE appointments
@@ -7127,7 +7708,8 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
-            # 改期后同步预约提醒；取消/完成时去掉待办提醒
+            # 取消/完成时去掉待办提醒；只有改期或状态变化才重算提醒时间，
+            # 只改备注/医生不能把用户手动推迟的提醒拨回原日期
             reminder_due = ""
             if (
                 normalized["status"] == "upcoming"
@@ -7140,24 +7722,41 @@ class SessionStore:
                 except ValueError:
                     scheduled_dt = None
                 if scheduled_dt is not None:
+                    try:
+                        reminder_date = (
+                            scheduled_dt.date() - timedelta(days=1)
+                        )
+                    except OverflowError:
+                        reminder_date = datetime.now().date()
                     reminder_due = max(
-                        scheduled_dt.date() - timedelta(days=1),
-                        datetime.now().date(),
+                        reminder_date, datetime.now().date()
                     ).strftime("%Y-%m-%d")
-            if reminder_due:
-                self._conn.execute(
-                    """
-                    UPDATE reminders SET due_at = ?, updated_at = ?
-                     WHERE done = 0 AND appointment_id = ?
-                    """,
-                    (reminder_due, now, int(appointment_id)),
-                )
-            else:
+            schedule_changed = (
+                str(previous["scheduled_at"] or "")
+                != normalized["scheduled_at"]
+                or str(previous["status"] or "") != normalized["status"]
+            )
+            if normalized["status"] != "upcoming":
                 self._conn.execute(
                     "DELETE FROM reminders "
                     "WHERE done = 0 AND appointment_id = ?",
                     (int(appointment_id),),
                 )
+            elif schedule_changed:
+                if reminder_due:
+                    self._conn.execute(
+                        """
+                        UPDATE reminders SET due_at = ?, updated_at = ?
+                         WHERE done = 0 AND appointment_id = ?
+                        """,
+                        (reminder_due, now, int(appointment_id)),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM reminders "
+                        "WHERE done = 0 AND appointment_id = ?",
+                        (int(appointment_id),),
+                    )
         return self.get_appointment(appointment_id)
 
     def get_appointment(
@@ -8121,6 +8720,42 @@ class SessionStore:
                 merged.get("note") or "",
             )
 
+    def _drop_visit_followup_locked(
+        self, visit_id: int, appointment_id: Any, reminder_id: Any
+    ) -> None:
+        """删除就诊记录自动创建的复诊预约与提醒（调用方持有写锁）。"""
+        appointment = _safe_db_id(appointment_id)
+        if appointment:
+            row = self._conn.execute(
+                "SELECT note FROM appointments WHERE id = ?",
+                (appointment,),
+            ).fetchone()
+            auto_created = row is not None and (
+                f"由就诊记录 #{int(visit_id)} 自动创建"
+                in str(row["note"] or "")
+            )
+            if auto_created:
+                self._conn.execute(
+                    "DELETE FROM appointments WHERE id = ?",
+                    (appointment,),
+                )
+                self._conn.execute(
+                    "DELETE FROM reminders"
+                    " WHERE done = 0 AND appointment_id = ?",
+                    (appointment,),
+                )
+            self._conn.execute(
+                "UPDATE visit_records SET followup_appointment_id = 0"
+                " WHERE followup_appointment_id = ?",
+                (appointment,),
+            )
+        reminder = _safe_db_id(reminder_id)
+        if reminder:
+            self._conn.execute(
+                "DELETE FROM reminders WHERE id = ?",
+                (reminder,),
+            )
+
     def update_visit_record(
         self,
         visit_id: int,
@@ -8173,16 +8808,18 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
-            # 复诊日期变化后旧的一键安排失效，回到可重新安排状态
+            # 复诊日期变化后撤销旧的自动预约/提醒：只清关联编号会留下
+            # 幽灵预约和仍会到期的旧提醒，再次安排时两套并存
             if (
                 old_row is not None
                 and str(old_row["next_followup_date"] or "")
                 != normalized["next_followup_date"]
-                and (
-                    int(old_row["followup_appointment_id"] or 0)
-                    or int(old_row["followup_reminder_id"] or 0)
-                )
             ):
+                self._drop_visit_followup_locked(
+                    int(visit_id),
+                    old_row["followup_appointment_id"],
+                    old_row["followup_reminder_id"],
+                )
                 self._conn.execute(
                     """
                     UPDATE visit_records
@@ -8313,6 +8950,18 @@ class SessionStore:
 
     def delete_visit_record(self, visit_id: int) -> bool:
         with self._write_and_checkpoint():
+            row = self._conn.execute(
+                "SELECT followup_appointment_id, followup_reminder_id"
+                "  FROM visit_records WHERE id = ?",
+                (int(visit_id),),
+            ).fetchone()
+            if row is not None:
+                # 删除就诊记录时一并撤销它自动创建的复诊预约与提醒
+                self._drop_visit_followup_locked(
+                    int(visit_id),
+                    row["followup_appointment_id"],
+                    row["followup_reminder_id"],
+                )
             cursor = self._conn.execute(
                 "DELETE FROM visit_records WHERE id = ?",
                 (int(visit_id),),
@@ -10579,6 +11228,25 @@ class SessionStore:
     def complete_reminder(self, reminder_id: int) -> bool:
         """把提醒标记为已完成，不存在时返回 False。"""
         return self.complete_reminder_with_repeat(reminder_id) is not None
+
+    def finish_reminder(self, reminder_id: int) -> bool:
+        """把提醒标记为已完成，但不触发重复顺延。
+
+        供系统清理旧提醒使用：例如复查计划完成时关闭旧的关联提醒，
+        这条提醒的 repeat_days 若被用户编辑过，普通完成会额外生成
+        一条与计划脱节的待办。
+        """
+        try:
+            reminder_id = int(reminder_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        with self._write_and_checkpoint():
+            cursor = self._conn.execute(
+                "UPDATE reminders SET done = 1, updated_at = ?"
+                " WHERE id = ?",
+                (self._now(), reminder_id),
+            )
+            return cursor.rowcount > 0
 
     def complete_reminder_with_repeat(
         self, reminder_id: int
