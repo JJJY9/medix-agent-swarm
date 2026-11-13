@@ -77,6 +77,16 @@ def test_skill_annotation_types_and_varargs():
     assert SkillRegistryMixin._annotation_to_skill_type(
         "Union[int, str]"
     ) == ""
+    # 容器元素里的联合类型不能按顶层联合切分
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "list[int | None]"
+    ) == "array"
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "dict[str, int | None]"
+    ) == "object"
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "tuple[int | None, ...]"
+    ) == "array"
 
     mixin = SkillRegistryMixin()
 

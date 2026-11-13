@@ -1556,7 +1556,12 @@ def _usage_count(value: Any) -> int:
 
 
 def _clamp_usage_metadata(metadata: Any) -> Any:
-    """钳制 metadata 里的用量字段，避免超大整数落库后撑爆统计接口。"""
+    """钳制 metadata 里的用量字段，避免超大整数落库后撑爆统计接口。
+
+    覆盖顶层 usage/llm_calls 与 agent_contributions 里的每份用量：
+    后者会随备份导出，超过 2^53 的整数经浏览器 JSON 往返后会破坏
+    checksum 自洽性。
+    """
     if not isinstance(metadata, dict):
         return metadata
 
@@ -1566,16 +1571,29 @@ def _clamp_usage_metadata(metadata: Any) -> Any:
             return value
         return _usage_count(value)
 
-    cleaned = dict(metadata)
-    usage = cleaned.get("usage")
-    if isinstance(usage, dict):
-        clamped = dict(usage)
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            if key in clamped:
-                clamped[key] = _clamp(clamped[key])
-        cleaned["usage"] = clamped
-    if "llm_calls" in cleaned:
-        cleaned["llm_calls"] = _clamp(cleaned["llm_calls"])
+    def _clamp_entry(entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+        item = dict(entry)
+        usage = item.get("usage")
+        if isinstance(usage, dict):
+            clamped = dict(usage)
+            for key in (
+                "prompt_tokens", "completion_tokens", "total_tokens",
+            ):
+                if key in clamped:
+                    clamped[key] = _clamp(clamped[key])
+            item["usage"] = clamped
+        if "llm_calls" in item:
+            item["llm_calls"] = _clamp(item["llm_calls"])
+        return item
+
+    cleaned = _clamp_entry(metadata)
+    contributions = cleaned.get("agent_contributions")
+    if isinstance(contributions, list):
+        cleaned["agent_contributions"] = [
+            _clamp_entry(item) for item in contributions
+        ]
     return cleaned
 
 
@@ -2474,11 +2492,18 @@ class SessionStore:
             return
         with self._write_and_checkpoint():
             for profile, session_id in pairs:
+                # 重复删除同一档案/会话时刷新删除时间与重试计数：
+                # 时间窗按「最近一次删除」计算，否则中间一代患者的
+                # 长期记忆会永远落在窗外而漏清理
                 self._conn.execute(
                     """
-                    INSERT OR IGNORE INTO memory_cleanup_queue(
+                    INSERT INTO memory_cleanup_queue(
                         profile, session_id, attempts, last_error, created_at
                     ) VALUES (?, ?, 0, '', ?)
+                    ON CONFLICT(profile, session_id) DO UPDATE SET
+                        created_at = excluded.created_at,
+                        attempts = 0,
+                        last_error = ''
                     """,
                     (profile, session_id, now),
                 )

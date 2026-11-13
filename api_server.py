@@ -9699,6 +9699,17 @@ async def delete_profile(name: str):
     ok = await asyncio.to_thread(store.delete_profile, name)
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
+    normalized_name = _normalize_profile_name(name)
+    # 进程内首轮认领立刻失效：Mem0 清理带重试可能耗时数十秒，
+    # 期间到达的下一轮请求不能继续解析到已删除档案并重新绑定
+    with _PROFILE_CLAIMS_LOCK:
+        stale_claims = [
+            session_key
+            for session_key, claimed in _PROFILE_CLAIMS.items()
+            if _normalize_profile_name(claimed) == normalized_name
+        ]
+        for session_key in stale_claims:
+            _PROFILE_CLAIMS.pop(session_key, None)
     # 档案作用域是档案名的哈希；删除档案必须清空对应命名空间，
     # 否则重建同名档案会召回旧患者的病史对话
     cleanup_entries = [(name, "")]
@@ -9711,17 +9722,6 @@ async def delete_profile(name: str):
         await asyncio.to_thread(
             store.complete_memory_cleanup, cleanup_entries
         )
-    normalized_name = _normalize_profile_name(name)
-    # 进程内首轮认领同样要失效，否则同一会话的下一轮会被残留认领
-    # 解析回已删除档案，并再次绑定到它
-    with _PROFILE_CLAIMS_LOCK:
-        stale_claims = [
-            session_key
-            for session_key, claimed in _PROFILE_CLAIMS.items()
-            if _normalize_profile_name(claimed) == normalized_name
-        ]
-        for session_key in stale_claims:
-            _PROFILE_CLAIMS.pop(session_key, None)
     audit_key = _profile_audit_key(name)
     # 清理历史审计中的档案名
     await asyncio.to_thread(

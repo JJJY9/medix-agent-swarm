@@ -85,6 +85,33 @@ def test_huge_usage_in_imported_message_is_clamped(client_and_store):
     assert month["usage"]["total_tokens"] <= MAX_USAGE_COUNT
 
 
+def test_import_clamps_nested_contribution_usage(client_and_store):
+    """备份里 agent_contributions 的用量也要钳制，否则导出后 checksum 自洽性丢失。"""
+    client, store = client_and_store
+
+    response = client.post("/api/sessions/import", json={
+        "sessions": [{
+            "id": "s1", "title": "x",
+            "messages": [{
+                "role": "assistant", "content": "答复",
+                "metadata": {
+                    "agent_contributions": [{
+                        "agent_name": "x",
+                        "usage": {"total_tokens": 10**20},
+                        "llm_calls": 10**20,
+                    }],
+                },
+            }],
+        }],
+    })
+    assert response.status_code == 200, response.text
+
+    messages = store.get_messages("s1")
+    contribution = messages[-1]["metadata"]["agent_contributions"][0]
+    assert contribution["usage"]["total_tokens"] == MAX_USAGE_COUNT
+    assert contribution["llm_calls"] == MAX_USAGE_COUNT
+
+
 def test_metric_summary_failure_clears_previous_profile_values():
     app = (
         Path(__file__).resolve().parents[1] / "web" / "app.js"

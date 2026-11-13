@@ -364,6 +364,27 @@ def test_cleanup_queue_erases_when_target_not_recreated(
         store.close()
 
 
+def test_queue_memory_cleanup_refreshes_deletion_time(tmp_path):
+    """重复删除同一档案时要刷新时间窗，否则中间一代记忆漏清理。"""
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.queue_memory_cleanup([("妈妈", "")])
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE memory_cleanup_queue"
+                " SET created_at = '2000-01-01T00:00:00', attempts = 3"
+            )
+
+        store.queue_memory_cleanup([("妈妈", "")])
+
+        row = store.list_memory_cleanup()[0]
+        assert row["created_at"] > "2000-01-01T00:00:00"
+        assert row["attempts"] == 0
+        assert len(store.list_memory_cleanup()) == 1
+    finally:
+        store.close()
+
+
 def test_link_profile_skips_when_deleted_during_request(
     tmp_path, monkeypatch
 ):
