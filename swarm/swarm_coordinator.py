@@ -9,6 +9,7 @@ SwarmCoordinator：Swarm 入口和智能路由
 类比：交通信号灯，决定车辆走哪条路，但不控制车辆如何行驶
 """
 import asyncio
+import functools
 import uuid
 from datetime import datetime
 from typing import Callable, Dict, Any, Optional, List, Tuple
@@ -256,6 +257,48 @@ class SwarmCoordinator:
         except Exception as e:
             logger.error(f"保存会话记录失败（session={session_id}）: {e}")
             return None
+
+    async def _save_exchange_guarded(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        profile: str = "",
+    ) -> Optional[int]:
+        """落库期间被取消时，等线程完成并清掉用量元数据。
+
+        asyncio.to_thread 的工作线程无法取消：取消恰好命中落库时，
+        答复仍会写入 SQLite，而取消路径也把同一笔用量记入
+        usage_events，造成 token/调用次数双计。
+        """
+        future = asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                self._save_exchange,
+                session_id,
+                question,
+                answer,
+                metadata=metadata,
+                profile=profile,
+            ),
+        )
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            try:
+                message_id = await asyncio.shield(future)
+            except Exception:
+                message_id = None
+            if message_id:
+                try:
+                    await asyncio.to_thread(
+                        self.session_store.clear_message_usage,
+                        message_id,
+                    )
+                except Exception:
+                    pass
+            raise
 
     @staticmethod
     def _history_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -708,13 +751,14 @@ class SwarmCoordinator:
                     f"(session={session_id})"
                 )
             else:
-                result['assistant_message_id'] = await asyncio.to_thread(
-                    self._save_exchange,
-                    session_id,
-                    question,
-                    final_answer,
-                    metadata=self._history_metadata(result),
-                    profile=bound_profile,
+                result['assistant_message_id'] = (
+                    await self._save_exchange_guarded(
+                        session_id,
+                        question,
+                        final_answer,
+                        metadata=self._history_metadata(result),
+                        profile=bound_profile,
+                    )
                 )
             return result
 
@@ -817,13 +861,14 @@ class SwarmCoordinator:
                 f"(session={session_id})"
             )
         else:
-            result['assistant_message_id'] = await asyncio.to_thread(
-                self._save_exchange,
-                session_id,
-                question,
-                final_answer,
-                metadata=self._history_metadata(result),
-                profile=bound_profile,
+            result['assistant_message_id'] = (
+                await self._save_exchange_guarded(
+                    session_id,
+                    question,
+                    final_answer,
+                    metadata=self._history_metadata(result),
+                    profile=bound_profile,
+                )
             )
 
         return result

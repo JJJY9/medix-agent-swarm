@@ -2362,6 +2362,7 @@ async def list_sessions(
         helpful = 0
         unhelpful = 0
         scan_offset = 0
+        seen_ids: set = set()
         # 逐页扫描到结束：固定 2000 条上限会让后面的高危会话被静默忽略
         while True:
             batch = await asyncio.to_thread(
@@ -2380,9 +2381,14 @@ async def list_sessions(
             batch_matched = []
             for item in batch:
                 level = parse_risk_level(item.pop("risk_text", ""))
-                if _risk_at_least(level, risk):
-                    item["risk"] = level
-                    batch_matched.append(item)
+                if not _risk_at_least(level, risk):
+                    continue
+                if item["id"] in seen_ids:
+                    # 上一批之后被更新的会话会漂到下一批，不能重复计数
+                    continue
+                seen_ids.add(item["id"])
+                item["risk"] = level
+                batch_matched.append(item)
             if batch_matched:
                 stats_batch = await asyncio.to_thread(
                     store.usage_by_session,
@@ -2705,6 +2711,10 @@ async def export_sessions_csv(
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\r\n").writerows(rows)
     content = "﻿" + buffer.getvalue()
+    await record_audit(
+        "session.export.csv",
+        detail=f"count={len(items)}",
+    )
     filename = f"medix-sessions-{datetime.now().strftime('%Y%m%d')}.csv"
 
     return Response(
@@ -3199,6 +3209,10 @@ async def export_feedback_csv(
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\r\n").writerows(rows)
     content = "﻿" + buffer.getvalue()
+    await record_audit(
+        "feedback.export.csv",
+        detail=f"count={len(items)} rating={rating}",
+    )
     filename = f"medix-feedback-{datetime.now().strftime('%Y%m%d')}.csv"
 
     return Response(
@@ -10287,6 +10301,9 @@ async def family_overview(days: int = 7):
         item["name"]: item.get("context") or {} for item in saved_profiles
     }
     names = sorted(set(contexts) | set(used_names))
+    # 「未指定档案」的记录也要出现在家庭总览（与家庭档案导出口径一致）
+    if await asyncio.to_thread(store.has_unassigned_records, days):
+        names = sorted(set(names) | {""})
     if not names:
         return {"days": days, "profiles": []}
 
@@ -10380,8 +10397,6 @@ async def family_overview(days: int = 7):
 
     for item in latest_metrics:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         metric = item.get("metric") or ""
         label, default_unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
         target = target_map.get((profile, metric))
@@ -10455,7 +10470,7 @@ async def family_overview(days: int = 7):
     medication_names_by_profile: Dict[str, List[str]] = {}
     for item in medications:
         profile = item.get("profile") or ""
-        if not profile or not item.get("active"):
+        if not item.get("active"):
             continue
         if item.get("name"):
             medication_names_by_profile.setdefault(
@@ -10520,8 +10535,6 @@ async def family_overview(days: int = 7):
     reminders_by_profile: Dict[str, Dict[str, int]] = {}
     for item in reminders:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = reminders_by_profile.setdefault(profile, {
             "pending": 0, "overdue": 0, "due_today": 0,
         })
@@ -10535,8 +10548,6 @@ async def family_overview(days: int = 7):
     symptoms_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in symptoms:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = symptoms_by_profile.setdefault(profile, {
             "count": 0, "latest": None, "max_severity": 0,
             "severe_symptom": "",
@@ -10557,8 +10568,6 @@ async def family_overview(days: int = 7):
     latest_vaccination_ids = _latest_vaccination_ids(vaccinations)
     for item in vaccinations:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = vaccinations_by_profile.setdefault(profile, {
             "count": 0, "latest": None, "next_due": "", "overdue": 0,
             "overdue_items": [],
@@ -10587,8 +10596,6 @@ async def family_overview(days: int = 7):
     labs_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in lab_results:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = labs_by_profile.setdefault(profile, {
             "count": 0, "abnormal": 0, "critical": 0,
             "items": [], "critical_items": [], "latest_at": "",
@@ -10655,8 +10662,6 @@ async def family_overview(days: int = 7):
     conditions_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in condition_items:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = conditions_by_profile.setdefault(profile, {
             "count": 0, "names": [],
         })
@@ -10667,8 +10672,6 @@ async def family_overview(days: int = 7):
     visits_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in visit_records:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = visits_by_profile.setdefault(profile, {
             "count": 0, "latest": None,
         })
@@ -10686,7 +10689,7 @@ async def family_overview(days: int = 7):
     care_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in care_items:
         profile = item.get("profile") or ""
-        if not profile or not item.get("active"):
+        if not item.get("active"):
             continue
         entry = care_by_profile.setdefault(profile, {
             "overdue": 0, "due_soon": 0, "next": None, "items": [],
@@ -10719,8 +10722,6 @@ async def family_overview(days: int = 7):
     appointments_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in appointments:
         profile = item.get("profile") or ""
-        if not profile:
-            continue
         entry = appointments_by_profile.setdefault(profile, {
             "upcoming": 0, "next": None,
         })
@@ -10743,7 +10744,7 @@ async def family_overview(days: int = 7):
     sessions_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in sessions:
         profile = item.get("profile") or ""
-        if not profile or int(item.get("message_count") or 0) <= 0:
+        if int(item.get("message_count") or 0) <= 0:
             continue
         at = str(item.get("created_at") or "")
         if not at or at[:10] < cutoff:
@@ -10848,6 +10849,7 @@ async def family_overview(days: int = 7):
         )
         profiles.append({
             "name": name,
+            "display_name": name or "未指定",
             "context": contexts.get(name) or {},
             "metrics": metrics,
             "medications": medication,
@@ -10894,6 +10896,10 @@ async def export_family_overview_csv(days: int = 7):
 
     data = await family_overview(days=days)
     days = data["days"]
+    await record_audit(
+        "family.overview.export.csv",
+        detail=f"days={days} count={len(data['profiles'])}",
+    )
     rows = [[
         "成员", "年龄", "性别", "最近指标", "用药", "近7天依从率",
         "待办提醒", f"近{days}天症状", f"近{days}天会诊", "最近活动",
@@ -11071,7 +11077,9 @@ async def export_family_overview_csv(days: int = 7):
         if attention_info.get("detail"):
             attention_text += f"（{attention_info['detail']}）"
         rows.append([
-            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(
+                item.get("display_name") or item.get("name", "")
+            ),
             csv_safe_cell(context.get("age", "")),
             csv_safe_cell(context.get("sex", "")),
             csv_safe_cell(metric_text),
@@ -11121,6 +11129,8 @@ async def family_compare(metric: str = "weight", days: int = 30):
         raise HTTPException(status_code=400, detail="不支持的指标类型")
     days = max(1, min(int(days or 30), 365))
     store = get_session_store()
+    from memory.session_store import DAILY_ACCUMULATING_METRICS
+
     names = await asyncio.to_thread(store.list_used_profile_names)
     rows = []
     for name in names:
@@ -11132,6 +11142,52 @@ async def family_compare(metric: str = "weight", days: int = 30):
         latest = summary.get("latest") or {}
         value1 = summary.get("value1") or {}
         value2 = summary.get("value2") or {}
+        if metric in DAILY_ACCUMULATING_METRICS:
+            # 每日累计指标按“天”统计：平均/极值/达标次数都用当日合计
+            series = await asyncio.to_thread(
+                store.metric_daily_series, name, metric, days
+            )
+            if not series:
+                continue
+            totals = [row["total"] for row in series]
+            target = summary.get("target")
+            target_lb = summary.get("target_lower_bound")
+            within = None
+            if target is not None:
+                try:
+                    threshold = float(target["value1"])
+                except (TypeError, ValueError, KeyError):
+                    threshold = None
+                if threshold is not None:
+                    within = sum(
+                        1 for total in totals
+                        if (total >= threshold if target_lb
+                            else total <= threshold)
+                    )
+            latest_day = series[-1]
+            rows.append({
+                "name": name,
+                "count": len(series),
+                "avg_value1": round(sum(totals) / len(totals), 1),
+                "avg_value2": None,
+                "min_value1": min(totals),
+                "max_value1": max(totals),
+                "latest": {
+                    "value1": latest_day["total"],
+                    "value2": None,
+                    "unit": summary.get("latest", {}).get("unit", "")
+                    if summary.get("latest") else "",
+                    "measured_at": latest_day["day"],
+                },
+                "within_target": within,
+                "target_lower_bound": target_lb,
+                "target": target,
+                "daily_total": summary.get("daily_total"),
+                "daily_count": summary.get("daily_count"),
+                "daily_within_target": summary.get("daily_within_target"),
+                "daily_metric": True,
+            })
+            continue
         rows.append({
             "name": name,
             "count": int(summary.get("count") or 0),
@@ -11177,6 +11233,11 @@ async def export_family_compare_csv(metric: str = "weight", days: int = 30):
     import io
 
     data = await family_compare(metric=metric, days=days)
+    await record_audit(
+        "family.compare.export.csv",
+        detail=f"metric={metric} days={data['days']} "
+        f"count={len(data['profiles'])}",
+    )
 
     def fmt(value: Any) -> str:
         if value is None:
@@ -13631,6 +13692,11 @@ async def export_health_dossier(
                     if metric in LOWER_BOUND_TARGET_METRICS
                     else "超标"
                 )
+            if (
+                metric in DAILY_ACCUMULATING_METRICS
+                and day_total is not None
+            ):
+                details.append(f"当日累计 {day_total:g}{unit}")
             from memory.session_store import critical_metric_alerts
 
             if critical_metric_alerts(
@@ -13847,6 +13913,9 @@ async def export_health_dossier(
     )
 
     content = "\n".join(_markdown_safe_line(line) for line in lines) + "\n"
+    await record_audit(
+        "health.export.dossier", detail=f"days={days}"
+    )
     filename = f"medix-dossier-{now.strftime('%Y%m%d')}.md"
     return Response(
         content=content,

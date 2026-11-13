@@ -57,11 +57,11 @@ def attachment_dir_for_db(db_path: Path) -> Path:
                 # 否则默认库的孤儿清理会删掉对方的附件文件。
                 # 旧位置的标记也要迁移出来，避免继续留在附件目录里
                 _write_owner(parent, legacy, owner)
-                return parent / f"{db_path.stem}-attachments"
+                return parent / f"{db_path.name}-attachments"
             _write_owner(parent, legacy, db_path.name)
         return legacy
 
-    dedicated = parent / f"{db_path.stem}-attachments"
+    dedicated = parent / f"{db_path.name}-attachments"
     if dedicated.exists():
         return dedicated
     if not legacy.exists():

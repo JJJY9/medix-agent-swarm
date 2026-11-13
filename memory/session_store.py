@@ -2775,6 +2775,23 @@ class SessionStore:
                 next(iter(self._deleted_sessions))
             )
 
+    def _prune_table_locked(self, table: str, cap: int) -> None:
+        """按主键保留最新 cap 行，避免审计/用量流水无限增长导致导出失败。"""
+        try:
+            row = self._conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table}"
+            ).fetchone()
+        except sqlite3.Error:
+            return
+        count = int(row["n"] or 0) if row else 0
+        if count <= cap:
+            return
+        self._conn.execute(
+            f"DELETE FROM {table} WHERE id NOT IN "
+            f"(SELECT id FROM {table} ORDER BY id DESC LIMIT ?)",
+            (int(cap),),
+        )
+
     def _existing_ids_locked(self, table: str) -> set:
         """表内当前全部主键的快照（导入配对区分“导入前已存在”用）。"""
         return {
@@ -2897,6 +2914,49 @@ class SessionStore:
                 "DELETE FROM deleted_sessions WHERE session_id = ?",
                 (session_id,),
             )
+
+    def clear_message_usage(self, message_id: int) -> bool:
+        """清除某条消息里的 usage/llm_calls 元数据。
+
+        取消恰好落在落库线程时，该答复已写入 SQLite；取消路径还会把
+        同一笔用量写入 usage_events，必须去掉消息上的用量避免双计。
+        """
+        try:
+            message_id = int(message_id)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT metadata FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                return False
+            changed = False
+            for key in ("usage", "llm_calls"):
+                if key in metadata:
+                    metadata.pop(key, None)
+                    changed = True
+            if not changed:
+                return False
+            self._conn.execute(
+                "UPDATE messages SET metadata = ? WHERE id = ?",
+                (
+                    json.dumps(
+                        sanitize_json(metadata),
+                        ensure_ascii=False,
+                        allow_nan=False,
+                    ),
+                    message_id,
+                ),
+            )
+            return True
 
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
@@ -3107,6 +3167,56 @@ class SessionStore:
             }
             for row in rows
         }
+
+    def metric_daily_series(
+        self,
+        profile: Optional[str],
+        metric: str,
+        days: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """按自然日返回某指标在窗口内的合计（日期升序）。
+
+        用于步数/饮水等每日累计指标的家庭对比：平均值、极值与达标
+        次数都必须按“天”统计，不能按单条记录。
+        """
+        metric = str(metric or "").strip()
+        if metric not in METRIC_TYPES:
+            return []
+        try:
+            days = max(1, min(int(days or 30), 365))
+        except (TypeError, ValueError, OverflowError):
+            days = 30
+        now = datetime.now()
+        cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        end_of_today = now.replace(
+            hour=23, minute=59, second=59
+        ).isoformat(timespec="seconds")
+        conditions = ["metric = ?", "measured_at >= ?", "measured_at <= ?"]
+        params: List[Any] = [metric, cutoff, end_of_today]
+        if profile is not None:
+            conditions.append("profile = ?")
+            params.append(_normalize_profile_name(profile))
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT substr(measured_at, 1, 10) AS day,
+                       COUNT(*) AS count, SUM(value1) AS total
+                  FROM health_metrics
+                 WHERE {' AND '.join(conditions)}
+                 GROUP BY day
+                 ORDER BY day
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "day": str(row["day"] or ""),
+                "count": int(row["count"] or 0),
+                "total": round(float(row["total"] or 0), 1),
+            }
+            for row in rows
+            if row["day"]
+        ]
 
     def profile_created_at(self, name: str) -> str:
         """档案的创建时间；不存在返回空串。"""
@@ -3323,7 +3433,7 @@ class SessionStore:
         )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY s.updated_at DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         with self._lock:
@@ -3701,6 +3811,33 @@ class SessionStore:
                         row["session_id"], _new_usage_entry()
                     )
                     _accumulate_usage(entry, metadata)
+            # 失败/取消调用的用量记在 usage_events，历史列表不能漏算
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                events = self._conn.execute(
+                    f"""
+                    SELECT session_id, prompt_tokens, completion_tokens,
+                           total_tokens, llm_calls
+                      FROM usage_events
+                     WHERE session_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+                for event in events:
+                    entry = stats.setdefault(
+                        event["session_id"], _new_usage_entry()
+                    )
+                    for key in (
+                        "prompt_tokens", "completion_tokens",
+                        "total_tokens",
+                    ):
+                        entry["usage"][key] += max(
+                            0, int(event[key] or 0)
+                        )
+                    entry["llm_calls"] += max(
+                        0, int(event["llm_calls"] or 0)
+                    )
 
         return stats
 
@@ -3740,6 +3877,22 @@ class SessionStore:
             except (TypeError, json.JSONDecodeError):
                 metadata = {}
             _accumulate_usage(totals, metadata)
+
+        with self._lock:
+            event_sql = """
+                SELECT e.prompt_tokens, e.completion_tokens,
+                       e.total_tokens, e.llm_calls
+                  FROM usage_events e
+                  JOIN sessions s ON s.id = e.session_id
+                 WHERE 1 = 1
+            """
+            if conditions:
+                event_sql += " AND " + " AND ".join(conditions)
+            event_rows = self._conn.execute(event_sql, params).fetchall()
+        for event in event_rows:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                totals["usage"][key] += max(0, int(event[key] or 0))
+            totals["llm_calls"] += max(0, int(event["llm_calls"] or 0))
 
         return totals
 
@@ -3821,10 +3974,24 @@ class SessionStore:
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
+            event_sql = """
+                SELECT e.prompt_tokens, e.completion_tokens,
+                       e.total_tokens, e.llm_calls
+                  FROM usage_events e
+                  JOIN sessions s ON s.id = e.session_id
+                 WHERE 1 = 1
+            """
+            if conditions:
+                event_sql += " AND " + " AND ".join(conditions)
+            event_rows = self._conn.execute(event_sql, params).fetchall()
 
         totals = _new_usage_entry()
         helpful = 0
         unhelpful = 0
+        for event in event_rows:
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                totals["usage"][key] += max(0, int(event[key] or 0))
+            totals["llm_calls"] += max(0, int(event["llm_calls"] or 0))
         for row in rows:
             try:
                 metadata = json.loads(row["metadata"] or "{}")
@@ -4156,6 +4323,7 @@ class SessionStore:
                     prompt, completion, total, calls, self._now(),
                 ),
             )
+            self._prune_table_locked("usage_events", 100000)
 
     def _usage_events_between(
         self, start: str, end: str
@@ -4163,8 +4331,9 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT profile, prompt_tokens, completion_tokens,
-                       total_tokens, llm_calls, created_at
+                SELECT session_id, profile, prompt_tokens,
+                       completion_tokens, total_tokens, llm_calls,
+                       created_at
                   FROM usage_events
                  WHERE created_at >= ? AND created_at < ?
                 """,
@@ -4232,24 +4401,39 @@ class SessionStore:
                 metadata = {}
             _accumulate_usage(bucket, metadata)
 
-        # 失败/中止会诊没有 assistant 消息，用量来自单独的 usage_events
-        if not favorites_only:
-            end_text = (today + timedelta(days=1)).isoformat()
-            for event in self._usage_events_between(start_text, end_text):
-                if profile and event.get("profile") != profile:
-                    continue
-                bucket = buckets.get(str(event["created_at"])[:10])
-                if bucket is None:
-                    continue
-                for key in (
-                    "prompt_tokens", "completion_tokens", "total_tokens"
-                ):
-                    bucket["usage"][key] += max(
-                        0, int(event.get(key) or 0)
+        # 失败/中止会诊没有 assistant 消息，用量来自单独的 usage_events；
+        # 收藏筛选只限制到收藏会话的失败调用，不能整段跳过
+        end_text = (today + timedelta(days=1)).isoformat()
+        favorite_ids: Optional[set] = None
+        if favorites_only:
+            with self._lock:
+                favorite_ids = {
+                    str(row["id"])
+                    for row in self._conn.execute(
+                        "SELECT id FROM sessions WHERE favorite = 1"
                     )
-                bucket["llm_calls"] += max(
-                    0, int(event.get("llm_calls") or 0)
+                }
+        for event in self._usage_events_between(start_text, end_text):
+            if (
+                favorites_only
+                and str(event.get("session_id") or "")
+                not in (favorite_ids or set())
+            ):
+                continue
+            if profile and event.get("profile") != profile:
+                continue
+            bucket = buckets.get(str(event["created_at"])[:10])
+            if bucket is None:
+                continue
+            for key in (
+                "prompt_tokens", "completion_tokens", "total_tokens"
+            ):
+                bucket["usage"][key] += max(
+                    0, int(event.get(key) or 0)
                 )
+            bucket["llm_calls"] += max(
+                0, int(event.get("llm_calls") or 0)
+            )
 
         totals = _new_usage_entry()
         for bucket in buckets.values():
@@ -4332,6 +4516,10 @@ class SessionStore:
         # 在单个锁内一次取快照：分页导出时若有会话被更新，
         # 会因 updated_at 排序漂移而被漏导或重复导出
         with self._lock:
+            # 历史库可能已积累超过导出口径的审计/用量流水：先按上限
+            # 裁剪最旧记录，避免备份与导出永久失败
+            self._prune_table_locked("audit_log", 100000)
+            self._prune_table_locked("usage_events", 100000)
             # 导出与导入共用同一上限：超限时明确报错，避免备份静默丢行
             session_count = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM sessions"
@@ -4441,6 +4629,7 @@ class SessionStore:
         created_at_value: Any = None,
         fallback_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
         pre_existing_ids: Optional[set] = None,
+        match_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -4502,10 +4691,17 @@ class SessionStore:
                     state[identity] = claimed
                 return candidate
         if content_where:
+            match_clause = ""
+            match_params: Tuple[Any, ...] = ()
+            if match_where is not None:
+                # 提醒的身份只有创建时间：内容配对再要求同档案，
+                # 避免跨档案认领同秒同到期日的提醒
+                match_clause = " AND " + match_where[0]
+                match_params = tuple(match_where[1])
             rows = self._conn.execute(
                 f"SELECT id FROM {table} WHERE {where}"
-                f" AND {content_where} ORDER BY id",
-                (*values, *content_values),
+                f" AND {content_where}{match_clause} ORDER BY id",
+                (*values, *content_values, *match_params),
             ).fetchall()
             for row in rows:
                 candidate = int(row["id"])
@@ -4845,6 +5041,12 @@ class SessionStore:
                     "DELETE FROM deleted_sessions WHERE session_id = ?",
                     (session_id,),
                 )
+                # 恢复的会话不再需要长期记忆清理（否则队列循环会把它
+                # 当作已删除旧数据整段清空）
+                self._conn.execute(
+                    "DELETE FROM memory_cleanup_queue WHERE session_id = ?",
+                    (session_id,),
+                )
                 self._conn.executemany(
                     """
                     INSERT INTO messages(session_id, role, content, metadata, created_at)
@@ -4894,6 +5096,11 @@ class SessionStore:
                         ),
                     )
                     profiles_imported += 1
+                    # 恢复档案后不能继续按“已删除档案”清理其记忆命名空间
+                    self._conn.execute(
+                        "DELETE FROM memory_cleanup_queue WHERE profile = ?",
+                        (name,),
+                    )
 
             metrics_imported = 0
             # 备份行带 created_at 时按「档案 + 指标 + 创建时间」配对，
@@ -6383,20 +6590,20 @@ class SessionStore:
                         advance_days = _normalize_reminder_advance(
                             raw.get("advance_days")
                         )
-                    except ValueError:
-                        advance_days = 0
-                    try:
                         repeat_days = _normalize_reminder_repeat_days(
                             raw.get("repeat_days")
                         )
-                    except ValueError:
-                        repeat_days = 0
-                    try:
                         repeat_until = _normalize_reminder_repeat_until(
                             raw.get("repeat_until")
                         )
+                        # 重复截止早于到期日会让规则永不生效：
+                        # 导入时按无效行跳过，而不是静默变成无限重复
+                        _validate_repeat_window(
+                            due_at, repeat_days, repeat_until
+                        )
                     except ValueError:
-                        repeat_until = ""
+                        invalid += 1
+                        continue
                     repeats_from = _safe_db_id(raw.get("repeats_from"))
                     raw_medication_id = _safe_db_id(
                         raw.get("medication_id")
@@ -6514,6 +6721,7 @@ class SessionStore:
                             created_at_value=raw_created,
                             fallback_where=("profile = ?", (profile,)),
                             pre_existing_ids=pre_existing_reminder_ids,
+                            match_where=("profile = ?", (profile,)),
                         )
                         if existing_reminder_id is not None:
                             if reminder_id > 0:
@@ -11210,6 +11418,7 @@ class SessionStore:
                 """,
                 (action, target, detail, now),
             )
+            self._prune_table_locked("audit_log", 100000)
             return int(cursor.lastrowid)
 
     def list_audit_log(
