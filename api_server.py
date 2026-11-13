@@ -15322,6 +15322,15 @@ async def chat(request: ChatRequest):
 
     payload = _serialize_result(result, AGENT_LABELS)
     if not (payload["answer"] or "").strip():
+        from memory import get_session_store
+
+        await _record_failed_usage(
+            get_session_store(),
+            session_id,
+            memory_profile,
+            usage=payload.get("usage"),
+            llm_calls=payload.get("llm_calls", 0),
+        )
         _release_profile_claim(session_id, memory_profile)
         raise HTTPException(status_code=502, detail=_empty_answer_reason())
 
