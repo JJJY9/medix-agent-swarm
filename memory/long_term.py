@@ -69,6 +69,8 @@ class LongTermMemory:
             return
 
         self.enabled = True
+        #: 最近一次删除操作的错误；供上层判断是否需要重试
+        self.last_error = ""
 
         # Harness Engineering: 熵管理器
         self.entropy_manager = MemoryEntropyManager() if ENTROPY_ENABLED else None
@@ -323,6 +325,7 @@ class LongTermMemory:
         该命名空间下的全部记忆（含 metadata 缺失/非对象的条目）。
         """
         matching_ids: List[str] = []
+        self.last_error = ""
         try:
             for item in self._iter_memories(user_id):
                 if predicate is not None:
@@ -336,6 +339,7 @@ class LongTermMemory:
                     continue
                 matching_ids.append(str(memory_id))
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Failed to list Mem0 memories for deletion: {e}")
 
         deleted = 0
@@ -344,6 +348,7 @@ class LongTermMemory:
                 if self._delete_memory(memory_id):
                     deleted += 1
             except Exception as e:
+                self.last_error = str(e)
                 logger.warning(
                     f"Failed to delete Mem0 memory {memory_id}: {e}"
                 )
@@ -374,6 +379,7 @@ class LongTermMemory:
         """删除一个命名空间下的全部记忆（删除患者档案时使用）。"""
         if not self.enabled:
             return 0
+        self.last_error = ""
         scope = str(user_id or "medix_local")[:120]
         try:
             result = self.mem0.delete_all(user_id=scope)
