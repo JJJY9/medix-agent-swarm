@@ -16,7 +16,7 @@ import time as _time
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from loguru import logger
 
@@ -434,6 +434,32 @@ def _normalize_datetime_text(value: Any, limit: int = 40) -> str:
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}{rest}"
 
 
+def _to_local_naive(parsed: datetime) -> Optional[datetime]:
+    """带时区时间转本地 naive；平台限制或年份越界时返回 None。
+
+    Windows 的 C localtime 不支持 1970 年前的负时间戳（astimezone
+    抛 OSError），正时区把 9999 年换算到 10000 年则抛 OverflowError。
+    这类输入应作为无效时间返回 400，而不是穿透成 500。
+    """
+    if parsed.year > 9998:
+        # 与提醒路径的 year>9998 守卫一致：9999 年换算可能越界
+        return None
+    try:
+        return parsed.astimezone().replace(tzinfo=None)
+    except (OSError, OverflowError, ValueError):
+        pass
+    # 回退为纯 Python 偏移换算：保留历史日期可用性，不依赖平台 localtime
+    try:
+        own_offset = parsed.utcoffset() or timedelta(0)
+        local_offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+        local = parsed.replace(tzinfo=None) - own_offset + local_offset
+    except (OverflowError, ValueError):
+        return None
+    if not 1 <= local.year <= 9999:
+        return None
+    return local
+
+
 def _canonical_local_time(value: Any) -> Optional[str]:
     """把合法 ISO 时间规范化为本地 T 分隔格式；无效返回 None。"""
     text = _normalize_datetime_text(value)
@@ -444,10 +470,10 @@ def _canonical_local_time(value: Any) -> Optional[str]:
     except ValueError:
         return None
     if parsed.tzinfo is not None:
-        return (
-            parsed.astimezone().replace(tzinfo=None)
-            .isoformat(timespec="seconds")
-        )
+        local = _to_local_naive(parsed)
+        if local is None:
+            return None
+        return local.isoformat(timespec="seconds")
     if len(text) == 10 or (
         parsed.second == 0 and parsed.microsecond == 0
     ):
@@ -1980,6 +2006,43 @@ def _canonical_json_value(value: Any) -> Any:
     return value
 
 
+def _iter_canonical_json(value: Any) -> Iterator[str]:
+    """流式产出与 ``json.dumps(_canonical_json_value(...))`` 相同的内容。
+
+    备份校验和只需要摘要：逐块编码避免在内存里同时保留规范化深拷贝、
+    完整 JSON 字符串与 UTF-8 字节串（大库可达数百 MB）。
+    """
+    if isinstance(value, float):
+        sanitized = sanitize_json(value)
+        if not isinstance(sanitized, float):
+            yield "null"
+        elif sanitized.is_integer():
+            yield str(int(sanitized))
+        else:
+            yield json.dumps(sanitized, allow_nan=False)
+        return
+    if isinstance(value, dict):
+        items = {str(key): item for key, item in value.items()}
+        yield "{"
+        for index, key in enumerate(sorted(items)):
+            if index:
+                yield ","
+            yield json.dumps(key, ensure_ascii=False)
+            yield ":"
+            yield from _iter_canonical_json(items[key])
+        yield "}"
+        return
+    if isinstance(value, (list, tuple, set)):
+        yield "["
+        for index, item in enumerate(value):
+            if index:
+                yield ","
+            yield from _iter_canonical_json(item)
+        yield "]"
+        return
+    yield json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
 def _backup_checksum(payload: Dict[str, Any]) -> str:
     """计算备份内容的 SHA-256；只覆盖可往返的业务字段。
 
@@ -1991,15 +2054,10 @@ def _backup_checksum(payload: Dict[str, Any]) -> str:
         for key in _BACKUP_CHECKSUM_FIELDS
         if key in payload
     }
-    canonical = json.dumps(
-        _canonical_json_value(body),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return "sha256:" + hashlib.sha256(
-        canonical.encode("utf-8")
-    ).hexdigest()
+    hasher = hashlib.sha256()
+    for chunk in _iter_canonical_json(body):
+        hasher.update(chunk.encode("utf-8"))
+    return "sha256:" + hasher.hexdigest()
 
 
 def _legacy_backup_checksum(payload: Dict[str, Any]) -> str:
@@ -4507,8 +4565,9 @@ class SessionStore:
         """
         with self._lock:
             payload = self._export_data()
-        payload["checksum"] = _backup_checksum(payload)
+        # 先做体积/可恢复性校验：超限备份不应先付出校验和的内存与时间
         _validate_export_payload(payload)
+        payload["checksum"] = _backup_checksum(payload)
         return payload
 
     def _export_data(self) -> Dict[str, Any]:
@@ -11821,7 +11880,7 @@ class SessionStore:
                             )
                         if next_dt > until_dt:
                             in_range = False
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OSError, OverflowError):
                         # 无法解析时退回按日期比较
                         if next_due[:10] > repeat_until[:10]:
                             in_range = False
@@ -11911,8 +11970,14 @@ class SessionStore:
             )
             return cursor.rowcount > 0
 
-    def delete_reminders_bulk(self, reminder_ids: Any) -> int:
-        """批量删除提醒，只提交并 checkpoint 一次。"""
+    def delete_reminders_bulk(
+        self, reminder_ids: Any, only_done: bool = False
+    ) -> int:
+        """批量删除提醒，只提交并 checkpoint 一次。
+
+        only_done=True 供「清理已完成」使用：在 SQL 层只删除已完成
+        行，其它标签页/设备期间恢复（reopen）的提醒不会被误删。
+        """
         values = sorted({
             parsed for parsed in (
                 _safe_db_id(value) for value in (reminder_ids or [])
@@ -11921,9 +11986,11 @@ class SessionStore:
         if not values:
             return 0
         placeholders = ",".join("?" for _ in values)
+        condition = " AND done = 1" if only_done else ""
         with self._write_and_checkpoint():
             cursor = self._conn.execute(
-                f"DELETE FROM reminders WHERE id IN ({placeholders})",
+                f"DELETE FROM reminders"
+                f" WHERE id IN ({placeholders}){condition}",
                 values,
             )
             return int(cursor.rowcount or 0)

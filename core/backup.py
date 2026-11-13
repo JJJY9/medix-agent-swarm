@@ -65,23 +65,125 @@ def get_backup_keep() -> int:
     )
 
 
+#: mtime 比当前时间晚超过该容差：视为时钟回拨/快时钟机器的异常文件
+FUTURE_MTIME_TOLERANCE_SECONDS = 300
+
+
+def _session_db_path() -> Path:
+    """当前会话库路径：与 SessionStore 的解析规则保持一致。"""
+    raw = (os.getenv("MEDIX_SESSION_DB") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return PROJECT_ROOT / "data" / "sessions.db"
+
+
+def backup_dir_for_db(db_path: Path) -> Path:
+    """为会话库返回默认备份目录，避免多个库共用一个备份目录。
+
+    默认库沿用 ``data/backups``（兼容既有备份与恢复入口）；其它库
+    使用 ``<完整文件名>-backups``（与附件目录同一规则，X.db 与
+    X.sqlite 必须区分）。否则两个实例会互相推迟自动备份、按同一
+    保留窗口轮转对方的快照，恢复入口还会混入另一库的数据。
+    """
+    db_path = Path(db_path)
+    try:
+        resolved = db_path.resolve()
+    except OSError:
+        resolved = db_path
+    default_db = PROJECT_ROOT / "data" / "sessions.db"
+    try:
+        is_default = resolved == default_db.resolve()
+    except OSError:
+        is_default = resolved == default_db
+    if is_default:
+        return DEFAULT_BACKUP_DIR
+    return resolved.parent / f"{resolved.name}-backups"
+
+
 def get_backup_dir() -> Path:
     raw = (os.getenv("MEDIX_BACKUP_DIR") or "").strip()
-    return Path(raw).expanduser() if raw else DEFAULT_BACKUP_DIR
+    if raw:
+        return Path(raw).expanduser()
+    return backup_dir_for_db(_session_db_path())
+
+
+def ensure_backup_target_ready(
+    directory: Optional[Path] = None,
+) -> Path:
+    """在导出整库之前确认备份目录可创建、可写。
+
+    备份目录指向已断开的移动盘、只读目录或磁盘满时，先做全量导出
+    再失败会长时间占用数据库全局锁；这里用临时文件提前探查。
+    """
+    target_dir = Path(directory) if directory else get_backup_dir()
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise OSError(
+            f"备份目录不可创建：{e.strerror or e}"
+        ) from e
+    try:
+        fd, probe = tempfile.mkstemp(
+            prefix=f"{BACKUP_PREFIX}probe.", suffix=".tmp",
+            dir=str(target_dir),
+        )
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as e:
+        raise OSError(f"备份目录不可写：{e.strerror or e}") from e
+    return target_dir
+
+
+def _is_future_mtime(path: Path, now: Optional[float] = None) -> bool:
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    reference = time.time() if now is None else now
+    return mtime - reference > FUTURE_MTIME_TOLERANCE_SECONDS
+
+
+def _collect_backups(directory: Path) -> list[Path]:
+    """按名称倒序收集备份；时间戳在未来的异常文件排到最后。
+
+    时钟回拨后新备份的文件名小于回拨前的旧快照：如果仍按名称把
+    未来文件排在最前，轮转会把真正的新备份挤出保留窗口，恢复
+    入口也会默认选中未来时间的旧快照。
+    """
+    backups = [
+        path for path in directory.glob(f"{BACKUP_PREFIX}*.json")
+        if _BACKUP_NAME.match(path.name) and path.is_file()
+    ]
+    backups.sort(key=_backup_sort_key, reverse=True)
+    now = time.time()
+    normal: list[Path] = []
+    future: list[Path] = []
+    for path in backups:
+        (future if _is_future_mtime(path, now) else normal).append(path)
+    return normal + future
+
+
+class _ByteCappedWriter:
+    """把 JSON 迭代块编码为 UTF-8 写入，并限制总字节数。"""
+
+    def __init__(self, fileobj, limit: int):
+        self._fileobj = fileobj
+        self._limit = limit
+        self.written = 0
+
+    def write(self, chunk: str) -> int:
+        data = chunk.encode("utf-8")
+        self.written += len(data)
+        if self.written > self._limit:
+            raise ValueError("备份数据超过单个文件上限，未写入备份。")
+        self._fileobj.write(data)
+        return len(chunk)
 
 
 def _prune_backups(
     directory: Path, keep: int, protect: Optional[Path] = None
 ) -> None:
-    backups = sorted(
-        (
-            path
-            for path in directory.glob(f"{BACKUP_PREFIX}*.json")
-            if _BACKUP_NAME.match(path.name)
-        ),
-        key=_backup_sort_key,
-        reverse=True,
-    )
+    backups = _collect_backups(directory)
     # 刚创建的备份必须保留：即使系统时钟回拨导致文件名排在旧备份之后
     candidates = [
         path for path in backups
@@ -162,14 +264,15 @@ def create_backup(
         os.close(fd)
         temp_path = Path(temp_name)
         try:
-            text = json.dumps(
-                payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
+            # 流式写入：大库不再把整份 JSON 字符串与 UTF-8 字节串同时
+            # 放进内存；超过文件上限时立即中止并删除临时文件
+            encoder = json.JSONEncoder(
+                ensure_ascii=False, separators=(",", ":")
             )
-            if len(text.encode("utf-8")) > MAX_BACKUP_FILE_BYTES:
-                raise ValueError("备份数据超过单个文件上限，未写入备份。")
-            temp_path.write_text(text, encoding="utf-8")
+            with open(temp_path, "wb") as fp:
+                writer = _ByteCappedWriter(fp, MAX_BACKUP_FILE_BYTES)
+                for chunk in encoder.iterencode(payload):
+                    writer.write(chunk)
             temp_path.replace(path)
             try:
                 # 备份含健康数据，尽量只允许当前用户读取（Windows 上忽略权限位）
@@ -198,11 +301,7 @@ def list_backups(directory: Optional[Path] = None) -> list[Path]:
     target_dir = Path(directory) if directory else get_backup_dir()
     if not target_dir.exists():
         return []
-    backups = [
-        path for path in target_dir.glob(f"{BACKUP_PREFIX}*.json")
-        if _BACKUP_NAME.match(path.name) and path.is_file()
-    ]
-    return sorted(backups, key=_backup_sort_key, reverse=True)
+    return _collect_backups(target_dir)
 
 
 def resolve_backup(

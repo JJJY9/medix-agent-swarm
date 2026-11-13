@@ -119,12 +119,13 @@ def _describe_data_sources(sources) -> str:
 
 
 def _report_sources(report) -> list:
-    """把研究报告的来源映射为前端参考来源卡片可用的结构。"""
+    """把研究报告的来源映射为前端参考来源卡片可用的结构。
+
+    score 只使用来源自带的真实相关度（知识库 COSINE 分数）；网页
+    来源没有可比的分数时不写 score，不能把报告级 confidence 冒充
+    为每条来源的相关度（还会让同分来源挤掉真实命中的知识库来源）。
+    """
     sources = []
-    try:
-        confidence = round(float(getattr(report, "confidence", 0) or 0), 4)
-    except (TypeError, ValueError, OverflowError):
-        confidence = 0.0
     for item in getattr(report, "sources", []) or []:
         if not isinstance(item, dict):
             continue
@@ -136,18 +137,24 @@ def _report_sources(report) -> list:
                 "source": "网络搜索",
                 "filename": title,
                 "url": url,
-                "snippet": url,
-                "score": confidence,
+                "snippet": str(item.get("snippet") or url),
             })
         else:
-            doc_id = str(item.get("id") or "")
-            sources.append({
+            filename = str(item.get("filename") or "") or title
+            snippet = str(item.get("snippet") or "")
+            source = {
                 "title": title,
                 "source": "医学知识库",
-                "filename": title,
-                "snippet": f"知识库文档 {doc_id}" if doc_id else "",
-                "score": confidence,
-            })
+                "filename": filename,
+                "snippet": snippet,
+            }
+            try:
+                score = float(item.get("score"))
+            except (TypeError, ValueError, OverflowError):
+                score = None
+            if score is not None:
+                source["score"] = round(score, 4)
+            sources.append(source)
     return sources
 
 

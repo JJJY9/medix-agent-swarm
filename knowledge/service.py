@@ -430,8 +430,11 @@ class KnowledgeService:
         with _freshness_lock, self._lock:
             self._ensure_index_fresh_locked()
             try:
+                # 同一文档可能有多个命中块：多取一些再按文档去重，
+                # 才能返回 top_k 篇不同文档而不是两三个块的合集
+                fetch_k = min(max(top_k * 4, top_k), 100)
                 results = self.kb.search(
-                    query, top_k=top_k, filter_type=filter_type or None
+                    query, top_k=fetch_k, filter_type=filter_type or None
                 )
             except Exception as e:
                 logger.error(f"知识库检索失败: {e}")

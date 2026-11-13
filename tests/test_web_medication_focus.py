@@ -8,9 +8,10 @@ SCRIPT = (
 
 def test_medication_focus_helpers_exist():
     assert "function captureMedicationFocusLabel()" in SCRIPT
-    assert "function restoreMedicationFocusLabel(label)" in SCRIPT
-    assert "els.medicationList.contains(active)" in SCRIPT
-    assert "els.todayMedsList.contains(active)" in SCRIPT
+    assert "function restoreMedicationFocusLabel(state)" in SCRIPT
+    assert "root.contains(active)" in SCRIPT
+    # 条目被删除时按原位置聚焦下一条，焦点不掉到 body
+    assert "Math.max(Number(state.index) || 0, 0)" in SCRIPT
 
 
 def test_load_medications_restores_focus():

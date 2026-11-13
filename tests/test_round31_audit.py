@@ -280,7 +280,13 @@ def test_open_session_clears_deleted_persisted_id():
     start = app_js.index("async function openSession(id)")
     body = app_js[start:start + 2600]
     assert "error.sessionDeleted = true" in body
-    assert "clearPersistedSessionId()" in body
+    # 清理逻辑抽到 clearDeletedSession，与启动/深链恢复路径共用
+    assert "clearDeletedSession(" in body
+    helper = app_js[
+        app_js.index("function clearDeletedSession("):
+        app_js.index("function clearDeletedSession(") + 900
+    ]
+    assert "clearPersistedSessionId()" in helper
 
 
 def test_bulk_requests_are_chunked():

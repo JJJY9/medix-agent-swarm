@@ -16,7 +16,6 @@ from datetime import datetime
 from loguru import logger
 import math
 import os
-import sys
 import threading
 import time
 
@@ -33,12 +32,11 @@ except ImportError:
     logger.warning("EntropyManager not found, running without entropy management")
     ENTROPY_ENABLED = False
 
-# 加载上层目录的config.py
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-try:
-    from config import MEM0_CONFIG
-except ImportError:
-    MEM0_CONFIG = None
+# config.py 统一按显式路径加载：仓库根目录优先，其次兼容项目上层目录；
+# 不再把父目录插到 sys.path（会被无关 config.py 遮蔽或误执行）
+from core.config_loader import load_config_value
+
+MEM0_CONFIG = load_config_value("MEM0_CONFIG")
 
 try:
     from mem0 import MemoryClient
