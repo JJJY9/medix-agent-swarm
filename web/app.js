@@ -784,7 +784,8 @@ if (initialSessionFromUrl) {
   // 切换会话并写入 localStorage 时，本标签页刷新才不会跟随过去
   safeSessionSet('medix.session.tab', sessionId);
 }
-// 恢复未完成的「下一轮换新会话」标记：刷新/重开 PWA 后仍然有效
+// 恢复未完成的「下一轮换新会话」标记：localStorage 持久化，
+// 关闭标签页/重开 PWA 后仍然有效
 try {
   const pendingFor = safeSessionGet(PENDING_RESET_KEY);
   if (pendingFor) {
@@ -793,6 +794,13 @@ try {
     } else {
       safeSessionRemove(PENDING_RESET_KEY);
     }
+  }
+  if (
+    !pendingSessionReset
+    && sessionId
+    && safeStorageGet(pendingResetStorageKey(sessionId))
+  ) {
+    pendingSessionReset = true;
   }
 } catch {
   // 隐私模式下忽略
@@ -5095,11 +5103,12 @@ async function openSession(id) {
     // 否则会把流式输出清空并把 sessionId 改回旧会话
     if (seq !== openSessionSeq || busy) return false;
 
-    sessionId = id;
-    persistSessionId(id);
-    setSessionUrl(id);
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
     setPendingSessionReset(false);
+    sessionId = id;
+    safeStorageRemove(pendingResetStorageKey(id));
+    persistSessionId(id);
+    setSessionUrl(id);
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
@@ -6475,13 +6484,23 @@ function clearPersistedSessionId() {
   safeStorageRemove('medix.session');
 }
 
+function pendingResetStorageKey(id) {
+  return `medix.pendingReset.${id}`;
+}
+
 function setPendingSessionReset(active) {
   pendingSessionReset = Boolean(active);
   try {
     if (pendingSessionReset && sessionId) {
       safeSessionSet(PENDING_RESET_KEY, sessionId);
+      // 关闭标签页/结束 PWA 后 sessionStorage 会清空：用 localStorage
+      // 按会话记录，重开时仍能拒绝旧快照与旧档案
+      safeStorageSet(pendingResetStorageKey(sessionId), '1');
     } else {
       safeSessionRemove(PENDING_RESET_KEY);
+      if (sessionId) {
+        safeStorageRemove(pendingResetStorageKey(sessionId));
+      }
     }
   } catch {
     // 隐私模式下忽略存储失败
@@ -21313,6 +21332,11 @@ async function applySelectedProfile() {
       els.profileSelect.value = activeProfileName || '';
       return;
     }
+  } else if (sessionId) {
+    // 线程为空但 sessionId 仍绑定服务端旧档案（恢复失败/尚未完成）：
+    // 换档前必须断开旧会话，否则下一问会被服务端按旧档案回答并落库
+    profileSelectionSeq += 1;
+    await detachSessionForProfileChange();
   } else {
     // 没有既有会话/正在等待恢复：同样作废晚到的会话恢复
     profileSelectionSeq += 1;

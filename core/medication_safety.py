@@ -560,6 +560,51 @@ _STOPPED_USE_PREFIX = re.compile(
     r"(?:已经|已|刚刚|刚|最近|早就|现已|目前)?\s*"
     r"(?:停用|停药|停服|停止服用|不再服用|停了)\s*$"
 )
+#: 药名之后的停药表述：「华法林已经停用两个月了」
+_STOPPED_USE_SUFFIX = re.compile(
+    r"^[^，。；,.!?！？\n]{0,6}?(?:已经|已|刚刚|刚|早就)?\s*"
+    r"(?:停用|停药|停服|停止服用|不再服用|停了|停掉)"
+)
+#: 药名之前带时长的停药表述：「我已经停用两个月的华法林」
+_STOPPED_USE_PREFIX_LONG = re.compile(
+    r"(?:已经|已|早就|刚刚|刚)?\s*(?:停用|停药|停服|停止服用|不再服用|停了)"
+    r"[^，。；,.!?！？]{0,6}?(?:月|天|周|年)(?:了|多)?\s*的?\s*$"
+)
+#: 药名之后的「不能停药/未停药」= 仍在服用
+_NEGATED_STOP_SUFFIX = re.compile(
+    r"^[^，。；,.!?！？\n]{0,4}(?:不能|不可|不宜|不让|不应|不要|别|"
+    r"未|没有|没)\s*(?:停用|停药|停服|停止服用)"
+)
+#: 既往用药：「我以前吃阿司匹林」
+_PAST_USE_PREFIX = re.compile(
+    r"(?:以前|之前|曾经|既往|过去|曾)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)\s*$"
+)
+_STOPPED_USE_SUFFIX_EN = re.compile(
+    r"^\s*(?:has been |had been |was |is |been )?"
+    r"(?:stopped|discontinued|no longer taking)",
+    re.IGNORECASE,
+)
+_PAST_USE_PREFIX_EN = re.compile(
+    r"(?:used to|previously|formerly)\s+(?:take|taking|use|using)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clause_bounds(text: str, start: int, end: int) -> tuple:
+    """药名所在分句的起止位置。"""
+    left = 0
+    for index in range(start - 1, -1, -1):
+        if text[index] in "，。；,.!?！？\n":
+            left = index + 1
+            break
+    right = len(text)
+    for index in range(end, len(text)):
+        if text[index] in "，。；,.!?！？\n":
+            right = index
+            break
+    return left, right
 
 
 def _alias_matches(text: str, alias: str) -> bool:
@@ -573,13 +618,18 @@ def _alias_matches(text: str, alias: str) -> bool:
             rf"(?<![a-z0-9_]){re.escape(alias_lower)}s?(?![a-z0-9_])",
             text,
         ):
-            prefix = text[max(0, match.start() - 6):match.start()]
+            left, right = _clause_bounds(text, match.start(), match.end())
+            prefix = text[left:match.start()]
+            suffix = text[match.end():right]
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
             if (
                 _STOPPED_USE_PREFIX.search(prefix)
+                or _STOPPED_USE_PREFIX_LONG.search(prefix)
+                or _STOPPED_USE_SUFFIX_EN.search(suffix)
                 or _NEGATED_USE_PREFIX.search(prefix)
+                or _PAST_USE_PREFIX_EN.search(prefix)
             ):
                 continue
             return True
@@ -588,12 +638,20 @@ def _alias_matches(text: str, alias: str) -> bool:
     start = text.find(alias_lower)
     while start != -1:
         end = start + len(alias_lower)
-        prefix = text[max(0, start - 6):start]
-        if _NEGATED_STOP_PREFIX.search(prefix):
+        left, right = _clause_bounds(text, start, end)
+        prefix = text[left:start]
+        suffix = text[end:right]
+        if (
+            _NEGATED_STOP_PREFIX.search(prefix)
+            or _NEGATED_STOP_SUFFIX.search(suffix)
+        ):
             return True
         if (
             _STOPPED_USE_PREFIX.search(prefix)
+            or _STOPPED_USE_PREFIX_LONG.search(prefix)
+            or _STOPPED_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
+            or _PAST_USE_PREFIX.search(prefix)
         ):
             start = text.find(alias_lower, end)
             continue

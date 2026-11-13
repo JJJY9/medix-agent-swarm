@@ -135,7 +135,15 @@ _RULED_OUT_TAIL = re.compile(
 )
 
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
-PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
+PREGNANCY_TERMS = (
+    "怀孕", "孕期", "妊娠", "产妇", "产后", "孕妇", "孕产妇",
+    "早孕", "中孕", "晚孕", "孕早期", "孕中期", "孕晚期",
+    "产前", "待产", "临产",
+)
+#: 「孕12周」「孕 28 周」「孕4个月」等写法
+PREGNANCY_WEEK_PATTERN = re.compile(
+    r"孕\s*\d+\s*(?:周|个月|月)"
+)
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
 PREGNANCY_UNCERTAIN_PATTERN = re.compile(
@@ -150,7 +158,8 @@ PREGNANCY_UNCERTAIN_TERMS = (
 #: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
 PREGNANCY_BLEEDING_TERMS = (
     "阴道出血", "阴道流血", "阴道大量出血", "产道出血",
-    "下体出血", "见红",
+    "下体出血", "见红", "早孕出血", "孕早期出血", "孕中期出血",
+    "孕晚期出血", "产前出血", "孕妇出血",
 )
 
 
@@ -368,6 +377,7 @@ _PATIENT_CONTEXT_MARKERS = (
     "孙子", "孙女",
     "最近", "这两天", "今天", "昨天", "前天", "持续", "伴有",
     "突然", "出现", "发作", "测得", "体温", "吃了", "服了", "正在吃",
+    "现在", "目前", "这几天",
 )
 
 #: 纯定义引导词开头的分句：整句丢弃（什么是X / 请解释X）
@@ -380,11 +390,14 @@ _FEATURE_QUESTION_RE = re.compile(
 )
 #: 「X是什么原因/怎么回事」只去掉疑问尾巴，保留症状描述
 _CAUSE_TAIL_RE = re.compile(
-    r"(?:是什么原因|什么原因|怎么回事|咋回事)\s*[？?]?$"
+    r"是?(?:什么原因|怎么回事|咋回事)"
+    r"(?:造成的|引起的|导致的)?\s*[？?]?$"
 )
-#: 「X是什么」纯定义问句
+#: 「X是什么」纯定义问句（含「是什么病/是指什么/是啥」等变体）
 _DEFINITION_SUFFIX_RE = re.compile(
-    r"^[^，,；;。！？!?\n]*(?:是什么|啥是|是什么意思|什么意思)\s*[？?]?$"
+    r"^[^，,；;。！？!?\n]*(?:是什么|啥是|是什么意思|什么意思|"
+    r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
+    r"\s*[？?]?$"
 )
 
 
@@ -399,6 +412,15 @@ def _clean_complaint_clause(clause: str) -> str:
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         return clause
     if any(marker in clause for marker in EDUCATIONAL_MARKERS):
+        # 「表现为/症状包括」既可能是科普也可能是真实主诉：含红旗
+        # 且不是定义问句时必须保留，否则 ACS/呼吸困难会静默漏报
+        if (
+            _is_red_flag_text(clause)
+            and not _DEFINITION_PREFIX_RE.match(clause)
+            and not _DEFINITION_SUFFIX_RE.match(clause)
+            and not _FEATURE_QUESTION_RE.search(clause)
+        ):
+            return clause
         return ""
     if _DEFINITION_PREFIX_RE.match(clause):
         return ""
@@ -408,7 +430,7 @@ def _clean_complaint_clause(clause: str) -> str:
         return prefix if _is_red_flag_text(prefix) else ""
     cause = _CAUSE_TAIL_RE.search(clause)
     if cause:
-        return clause[: cause.start()].strip(" ，,、")
+        return clause[: cause.start()].strip(" ，,、").rstrip("是").strip()
     if _DEFINITION_SUFFIX_RE.match(clause):
         return ""
     return clause
@@ -426,7 +448,9 @@ def patient_complaint_text(text: str) -> str:
     text = str(text or "").strip()
     if not text:
         return ""
-    clauses = re.split(r"[。；;！!？?\n，,、]", text)
+    # 顿号不是分句边界：detect_red_flags 的枚举否定（「无发热、
+    # 咳嗽、胸痛」）依赖整组顿号在同一分句内，不能在此拆开重拼
+    clauses = re.split(r"[。；;！!？?\n，,]", text)
     kept = []
     for clause in clauses:
         cleaned = _clean_complaint_clause(clause.strip())
@@ -543,6 +567,12 @@ HEAD_TRAUMA_TERMS = (
     "摔到头", "后脑勺着地", "后脑着地", "后脑勺撞", "后脑勺磕",
     "后脑勺碰", "磕破头", "磕破了头", "撞破头", "撞破了头",
     "脑袋磕", "脑袋撞", "脑袋碰", "头磕破", "头撞破",
+    # 反向语序：磕了头 / 头上撞了个包 / 头被撞了一下
+    "磕了头", "撞了头", "碰了头", "磕了脑袋", "撞了脑袋", "碰了脑袋",
+    "磕到脑袋", "撞到脑袋", "碰到脑袋", "磕了一下头", "头磕了一下",
+    "头撞了一下", "头碰了一下", "头被撞", "头被磕", "头被碰",
+    "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
+    "头上磕了个包",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -783,6 +813,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
 
     pregnancy_mentioned = (
         PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
+        or PREGNANCY_WEEK_PATTERN.search(text) is not None
         or any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
         or any(
             _positive_mention(text, term)

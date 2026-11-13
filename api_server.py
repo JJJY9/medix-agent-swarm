@@ -1863,9 +1863,19 @@ _PROXY_FORWARDED_FOR_RE = re.compile(
 
 
 def _has_proxy_headers(request: Request) -> bool:
-    for name in _PROXY_HEADER_NAMES:
-        if (request.headers.get(name) or "").strip():
-            return True
+    try:
+        names = list(request.headers.keys())
+    except Exception:
+        names = []
+    for name in names:
+        lower = str(name).lower()
+        if (
+            lower == "forwarded"
+            or lower == "x-real-ip"
+            or lower.startswith("x-forwarded-")
+        ):
+            if (request.headers.get(name) or "").strip():
+                return True
     return False
 
 
@@ -1873,31 +1883,93 @@ def _trust_proxy_headers() -> bool:
     return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
 
 
-def _forwarded_client_address(request: Request) -> str:
-    """从代理头解析原始客户端地址（XFF / X-Real-IP / RFC 7239）。"""
-    forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
-    if forwarded_for:
-        parts = [part.strip() for part in forwarded_for.split(",")]
-        # 取最右侧：由最近的可信代理追加，客户端无法伪造
-        for part in reversed(parts):
-            if part:
-                return part
-    real_ip = (request.headers.get("x-real-ip") or "").strip()
-    if real_ip:
-        return real_ip
-    forwarded = (request.headers.get("forwarded") or "").strip()
-    if forwarded:
-        match = _PROXY_FORWARDED_FOR_RE.search(forwarded)
-        if match:
-            value = match.group(1).strip().strip('"')
-            if value.startswith("["):
-                end = value.find("]")
-                if end != -1:
-                    return value[1:end]
-            if value.count(":") == 1:
-                return value.rsplit(":", 1)[0]
-            return value
+def _normalize_forwarded_address(value: str) -> str:
+    """归一化代理头里的地址：去引号/端口，`[v6]:port` 取方括号内容。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        text = text[1:-1].strip()
+    if not text or text.lower() == "unknown":
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        if end != -1:
+            return text[1:end].strip()
+    if text.count(":") == 1:
+        host, _sep, port = text.partition(":")
+        if port.strip().isdigit():
+            return host.strip()
+    return text
+
+
+def _parse_forwarded_header(header: str) -> str:
+    """按 RFC 7239 解析 Forwarded，取最后一个元素的 for=（最近代理追加）。"""
+    elements: List[str] = []
+    current: List[str] = []
+    in_quotes = False
+    for char in str(header or ""):
+        if char == '"':
+            in_quotes = not in_quotes
+        if char == "," and not in_quotes:
+            elements.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        elements.append("".join(current))
+    for element in reversed(elements):
+        for part in str(element).split(";"):
+            key, _sep, value = part.strip().partition("=")
+            if key.strip().lower() == "for" and value.strip():
+                normalized = _normalize_forwarded_address(value)
+                if normalized:
+                    return normalized
     return ""
+
+
+def _same_forwarded_address(first: str, second: str) -> bool:
+    try:
+        return ipaddress.ip_address(first) == ipaddress.ip_address(second)
+    except ValueError:
+        return first == second
+
+
+def _forwarded_client_address(request: Request) -> str:
+    """从代理头解析原始客户端地址（XFF / X-Real-IP / RFC 7239）。
+
+    多个转发头同时存在且互相矛盾时返回空串（fail closed）：说明代理
+    配置不一致，客户端可能自带了一个头，不能据此判定本机或分配限流桶。
+    """
+    forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
+    xff_value = ""
+    if forwarded_for:
+        for part in reversed(forwarded_for.split(",")):
+            normalized = _normalize_forwarded_address(part)
+            if normalized:
+                xff_value = normalized
+                break
+    real_value = _normalize_forwarded_address(
+        request.headers.get("x-real-ip") or ""
+    )
+    forwarded_header = ""
+    try:
+        forwarded_header = ", ".join(
+            request.headers.getlist("forwarded")
+        )
+    except AttributeError:
+        forwarded_header = request.headers.get("forwarded") or ""
+    forwarded_value = _parse_forwarded_header(forwarded_header)
+    values = [value for value in (
+        xff_value, real_value, forwarded_value
+    ) if value]
+    if not values:
+        return ""
+    first = values[0]
+    for other in values[1:]:
+        if not _same_forwarded_address(first, other):
+            return ""
+    return first
 
 
 def _is_loopback_address(host: str) -> bool:
@@ -1931,15 +2003,15 @@ def _is_loopback_client(request: Request) -> bool:
 def _client_ip_key(request: Request) -> str:
     """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
 
-    显式信任代理头时按头里的真实客户端地址计数，避免经本机代理的
-    所有用户坍缩到同一个 127.0.0.1 计数桶（一个人即可锁死全家）。
+    只有显式信任代理头、且 TCP 对端确实是本机代理时才采用头里的
+    客户端地址；直连客户端伪造转发头无法更换计数桶。
     """
-    if _trust_proxy_headers():
+    peer = request.client.host if request.client else ""
+    if _trust_proxy_headers() and _is_loopback_address(peer):
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{forwarded}"
-    host = request.client.host if request.client else "unknown"
-    return f"ip:{host}"
+    return f"ip:{peer or 'unknown'}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -2080,6 +2152,9 @@ def _is_cross_site_request(request: Request) -> bool:
     site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if site == "cross-site":
         return True
+    if site == "same-origin":
+        # 浏览器生成、页面脚本无法伪造；反向代理改写 Host/端口时仍准确
+        return False
     origin = request.headers.get("origin")
     if origin:
         return not _same_origin(request, origin)
@@ -6541,18 +6616,38 @@ async def _weekly_report_impl(
     from memory.session_store import DAILY_ACCUMULATING_METRICS
 
     daily_metric_today: dict = {}
+    daily_metric_days: dict = {}
     if profile is not None:
         today_key = now.strftime("%Y-%m-%d")
         for item in metrics:
             metric = item.get("metric") or ""
             if metric not in DAILY_ACCUMULATING_METRICS:
                 continue
-            daily = daily_metric_today.setdefault(
-                metric, {"total": 0.0, "count": 0}
-            )
-            if str(item.get("measured_at") or "")[:10] == today_key:
-                daily["total"] += float(item.get("value1") or 0)
+            day = str(item.get("measured_at") or "")[:10]
+            amount = float(item.get("value1") or 0)
+            if day:
+                day_entry = daily_metric_days.setdefault(
+                    metric, {}
+                ).setdefault(day, {"total": 0.0, "count": 0})
+                day_entry["total"] += amount
+                day_entry["count"] += 1
+            if day == today_key:
+                daily = daily_metric_today.setdefault(
+                    metric, {"total": 0.0, "count": 0}
+                )
+                daily["total"] += amount
                 daily["count"] += 1
+
+    latest_daily: dict = {}
+    for metric, days_map in daily_metric_days.items():
+        if not days_map:
+            continue
+        latest_day = max(days_map)
+        latest_daily[metric] = {
+            "day": latest_day,
+            "total": round(days_map[latest_day]["total"], 1),
+            "count": days_map[latest_day]["count"],
+        }
 
     metric_rows = [
         {
@@ -6591,6 +6686,18 @@ async def _weekly_report_impl(
                 and daily_metric_today[entry["metric"]]["count"]
                 and entry["target"] is not None
                 else None
+            ),
+            "latest_daily_total": (
+                latest_daily[entry["metric"]]["total"]
+                if entry["metric"] in latest_daily else None
+            ),
+            "latest_daily_day": (
+                latest_daily[entry["metric"]]["day"]
+                if entry["metric"] in latest_daily else ""
+            ),
+            "latest_daily_count": (
+                latest_daily[entry["metric"]]["count"]
+                if entry["metric"] in latest_daily else 0
             ),
             "prev_avg_value1": previous_rows.get(
                 entry["metric"], {}
@@ -7259,11 +7366,50 @@ def _build_health_insights(
         within = row.get("within_target")
         avg1 = float(row.get("avg_value1") or 0)
         avg2 = float(row.get("avg_value2") or 0)
-        if (
-            target
-            and metric in DAILY_ACCUMULATING_METRICS
-            and int(row.get("daily_count") or 0) > 0
-        ):
+        if target and metric in DAILY_ACCUMULATING_METRICS:
+            if int(row.get("daily_count") or 0) <= 0:
+                # 今天尚未记录：回退到最近一个记录日的自然日合计，
+                # 不能拿单条记录与每日目标比较（会误报“N 次低于目标”）
+                latest_total = row.get("latest_daily_total")
+                if latest_total is not None:
+                    latest_day = str(row.get("latest_daily_day") or "")
+                    latest_count = int(row.get("latest_daily_count") or 0)
+                    unit_text = f" {unit}" if unit else ""
+                    target_text = f"{float(target['value1']):g}"
+                    total_value = float(latest_total)
+                    gap = float(target["value1"]) - total_value
+                    within_latest = total_value >= float(target["value1"])
+                    day_text = (
+                        f"最近一日（{latest_day[5:]}）" if latest_day
+                        else "最近一日"
+                    )
+                    insights.append(_health_insight(
+                        f"metric_{metric}",
+                        "ok" if within_latest else "warning",
+                        f"{label} {day_text}累计 {total_value:g}{unit_text}",
+                        (
+                            f"目标 ≥ {target_text}{unit_text}，"
+                            f"{day_text}累计 {total_value:g}{unit_text}"
+                            + (
+                                f"（{latest_count} 次记录）"
+                                if latest_count else ""
+                            )
+                            + (
+                                ""
+                                if within_latest
+                                else f"，还差 {max(gap, 0):g}{unit_text}"
+                            )
+                        ).strip(),
+                        (
+                            ""
+                            if within_latest
+                            else "继续记录到每日累计达标；"
+                                 "单条记录不与每日目标比较。"
+                        ),
+                        "metric",
+                        metric=metric,
+                    ))
+                continue
             # 步数/饮水的目标是每日累计：单条记录不参与达标判定
             daily_total = float(row.get("daily_total") or 0)
             daily_count = int(row.get("daily_count") or 0)
@@ -7299,7 +7445,11 @@ def _build_health_insights(
                     metric=metric,
                 ))
             continue
-        if target and within is not None:
+        if (
+            target
+            and within is not None
+            and metric not in DAILY_ACCUMULATING_METRICS
+        ):
             over = count - int(within)
             if over > 0:
                 target_text = f"{float(target['value1']):g}"
@@ -10578,7 +10728,7 @@ async def family_overview(days: int = 7):
         None, cutoff, f"{today}T23:59:59", 100000,
     )
     latest_answers = await asyncio.to_thread(
-        store.latest_session_answers_by_profile
+        store.latest_session_answers_by_profile, True
     )
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
@@ -10590,7 +10740,8 @@ async def family_overview(days: int = 7):
     for item in latest_answers:
         profile_name = item.get("profile") or ""
         risk = parse_risk_level(item.get("last_answer"))
-        if profile_name and risk:
+        # 「未指定档案」的会诊同样要参与家庭风险提示
+        if risk:
             risk_by_profile[profile_name] = risk
 
     target_map = {

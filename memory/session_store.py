@@ -2562,6 +2562,26 @@ class SessionStore:
                     ON reminders(created_at);
                 CREATE INDEX IF NOT EXISTS idx_lab_results_identity
                     ON lab_results(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_health_metrics_created
+                    ON health_metrics(created_at);
+                CREATE INDEX IF NOT EXISTS idx_symptoms_created
+                    ON symptoms(created_at);
+                CREATE INDEX IF NOT EXISTS idx_medications_created
+                    ON medications(created_at);
+                CREATE INDEX IF NOT EXISTS idx_vaccinations_created
+                    ON vaccinations(created_at);
+                CREATE INDEX IF NOT EXISTS idx_appointments_created
+                    ON appointments(created_at);
+                CREATE INDEX IF NOT EXISTS idx_lab_results_created
+                    ON lab_results(created_at);
+                CREATE INDEX IF NOT EXISTS idx_allergies_created
+                    ON allergies(created_at);
+                CREATE INDEX IF NOT EXISTS idx_care_items_created
+                    ON care_items(created_at);
+                CREATE INDEX IF NOT EXISTS idx_visit_records_created
+                    ON visit_records(created_at);
+                CREATE INDEX IF NOT EXISTS idx_conditions_created
+                    ON conditions(created_at);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -3111,6 +3131,19 @@ class SessionStore:
             return False
         return not self.profile_created_at(name)
 
+    def profile_deleted_at(self, profile: str) -> str:
+        """档案最近一次删除的时间；没有墓碑返回空串。"""
+        key = _profile_deletion_key(profile)
+        if not key:
+            return ""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(deleted_at) AS deleted_at"
+                " FROM profile_deletions WHERE profile_hash = ?",
+                (key,),
+            ).fetchone()
+        return str((row["deleted_at"] if row else "") or "")
+
     def profile_deleted_since(self, profile: str, since: str) -> bool:
         """档案是否在 since（ISO 时间）之后被删除。
 
@@ -3207,11 +3240,25 @@ class SessionStore:
                         # 旧链在此中断：不能返回被他人占用的名字
                         return name
                     chosen = older[-1]
-                elif len(rows) > 1:
-                    # 无档案行且同名历史多次改名：无法判定归属，保守停止
-                    return name
                 else:
-                    chosen = rows[0]
+                    latest_deleted = self.profile_deleted_at(current)
+                    if latest_deleted:
+                        # 名字被删除后又复用过：只跟随删除之后产生的
+                        # 改名记录（属于最近一次重建的档案）；更早的
+                        # 记录属于已删除患者，不能把旧名解析到无关档案
+                        fresh = [
+                            row for row in rows
+                            if str(row["renamed_at"] or "")
+                            > latest_deleted
+                        ]
+                        if not fresh:
+                            return name
+                        chosen = fresh[-1]
+                    elif len(rows) > 1:
+                        # 无档案行且同名历史多次改名：无法判定归属，保守停止
+                        return name
+                    else:
+                        chosen = rows[0]
                 following = _normalize_profile_name(chosen["new_name"])
                 if not following or following in visited:
                     break
@@ -4789,6 +4836,7 @@ class SessionStore:
         identity = (table,) + tuple(values)
         moved_key = (table, "__moved__")
         moved = state.setdefault(moved_key, set())
+        matched = state.setdefault((table, "__matched__"), set())
         where = " AND ".join(f"{column} = ?" for column in columns)
         claimed = state.get(identity)
         if claimed is None:
@@ -4810,10 +4858,13 @@ class SessionStore:
                 row is not None
                 and int(row["id"]) in claimed
                 and int(row["id"]) not in moved
+                and int(row["id"]) not in matched
             ):
-                claimed.discard(int(row["id"]))
+                candidate = int(row["id"])
+                claimed.discard(candidate)
+                matched.add(candidate)
                 state[identity] = claimed
-                return int(row["id"])
+                return candidate
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
             # 是同一条，恢复旧备份时不能在原档案名下重新插入
@@ -4830,9 +4881,10 @@ class SessionStore:
                     candidate not in pre_existing_ids
                 ):
                     return None
-                if candidate in moved:
+                if candidate in moved or candidate in matched:
                     return None
                 moved.add(candidate)
+                matched.add(candidate)
                 # 同一候选行不能再被任何身份组（目标档案的内容配对与
                 # 兜底）重复认领，否则被删的同秒记录会被当成“已存在”
                 for cached in state.values():
@@ -4842,7 +4894,8 @@ class SessionStore:
                 return candidate
             # 跨库/合并恢复导致主键漂移后，改挂不能只靠主键相等识别：
             # 按「创建时间 + 内容」在导入前已存在的行中找唯一候选
-            if pre_existing_ids is not None:
+            if pre_existing_ids:
+                # 空集合时候选必然为空，跳过可让空库/换机恢复保持线性
                 # 与内容配对同样要遵守档案等额外约束：提醒只有
                 # 创建时间+到期日，不能跨档案认领同一行
                 drift_clause = ""
@@ -4860,10 +4913,12 @@ class SessionStore:
                     int(row["id"]) for row in rows
                     if int(row["id"]) in pre_existing_ids
                     and int(row["id"]) not in moved
+                    and int(row["id"]) not in matched
                 ]
                 if len(candidates) == 1:
                     candidate = candidates[0]
                     moved.add(candidate)
+                    matched.add(candidate)
                     for cached in state.values():
                         if isinstance(cached, set) and cached is not moved:
                             cached.discard(candidate)
@@ -4884,13 +4939,16 @@ class SessionStore:
             ).fetchall()
             for row in rows:
                 candidate = int(row["id"])
-                if candidate in moved:
+                if candidate in moved or candidate in matched:
                     continue
                 if candidate in claimed:
                     claimed.discard(candidate)
+                    matched.add(candidate)
                     state[identity] = claimed
                     return candidate
-        candidates = {c for c in claimed if c not in moved}
+        candidates = {
+            c for c in claimed if c not in moved and c not in matched
+        }
         if not candidates:
             state[identity] = claimed
             return None
@@ -4908,10 +4966,11 @@ class SessionStore:
             candidates = {int(row["id"]) for row in rows}
             if not candidates:
                 return None
-        matched = min(candidates)
-        claimed.discard(matched)
+        chosen = min(candidates)
+        claimed.discard(chosen)
+        matched.add(chosen)
         state[identity] = claimed
-        return matched
+        return chosen
 
     def _import_rows(
         self, table: str, raw_items: Any, limit: int, match_probe=None
@@ -8446,6 +8505,19 @@ class SessionStore:
                     "WHERE done = 0 AND appointment_id = ?",
                     (int(appointment_id),),
                 )
+                if normalized["status"] == "cancelled":
+                    # 取消后已无预约/提醒：清空就诊记录的复诊链接，
+                    # 否则逾期复诊提示会被永久抑制
+                    self._conn.execute(
+                        """
+                        UPDATE visit_records
+                           SET followup_appointment_id = 0,
+                               followup_reminder_id = 0,
+                               updated_at = ?
+                         WHERE followup_appointment_id = ?
+                        """,
+                        (now, int(appointment_id)),
+                    )
             elif schedule_changed:
                 if reminder_due:
                     self._conn.execute(
