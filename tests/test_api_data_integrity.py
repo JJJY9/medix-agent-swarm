@@ -242,3 +242,55 @@ def test_surrogate_in_nested_import_payload_is_rejected(client_and_store):
 
     assert response.status_code == 422
     assert response.json()["detail"]
+
+
+def test_non_finite_numbers_in_payload_never_crash_validation(
+    client_and_store,
+):
+    """原始 JSON 里的 NaN/Infinity 会让 422 回显再次编码失败变成 500。"""
+    client, _store = client_and_store
+
+    payloads = (
+        ("/api/tools/bmi", {"height_cm": 170, "weight_kg": float("nan")}),
+        ("/api/tools/bmi", {"height_cm": 170, "weight_kg": float("inf")}),
+        (
+            "/api/tools/phq9",
+            {"answers": [1, 2, 3, 4, 5, 6, 7, 8, float("nan")]},
+        ),
+        (
+            "/api/tools/egfr",
+            {"age": 40, "sex": "male", "creatinine": float("inf")},
+        ),
+        ("/api/lab-results", {"item": "血钾", "value": float("nan")}),
+        ("/api/symptoms", {"symptom": "头痛", "severity": float("nan")}),
+    )
+    for url, payload in payloads:
+        response = _post_raw_json(client, url, payload)
+        assert response.status_code == 422, (url, response.text)
+        assert response.json()["detail"]
+        assert "NaN" not in response.text, (url, response.text)
+        assert "Infinity" not in response.text, (url, response.text)
+        # 回显内容必须是标准 JSON，可以被严格模式重新编码
+        json.dumps(response.json(), allow_nan=False)
+
+
+def test_deeply_nested_payload_returns_422(client_and_store):
+    """近千层嵌套曾让校验递归爆栈，把请求变成 500。
+
+    Python 3.10 的 json 解析器可能在校验前就抛 RecursionError，
+    FastAPI 会将其转为 400；两种拒绝方式都可接受，重点是不能再 500。
+    """
+    client, _store = client_and_store
+
+    for depth in (100, 990, 1500, 2000):
+        body = '{"name":"x","context":' + "[" * depth + "]" * depth + "}"
+        response = client.post(
+            "/api/profiles",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code in (400, 422), (
+            depth, response.text[:200]
+        )
+        assert response.json()["detail"], depth
+        json.dumps(response.json(), allow_nan=False)

@@ -121,23 +121,34 @@ MAX_SQLITE_INT = 2**63 - 1
 SafeIntPath = Annotated[int, ApiPath(ge=1, le=MAX_SQLITE_INT)]
 
 
+#: 请求体允许的最大嵌套深度；正常表单与备份远低于此值
+MAX_REQUEST_JSON_DEPTH = 64
+
+
 def _reject_lone_surrogates(value: Any, path: str = "输入") -> None:
-    """递归拒绝含孤立 UTF-16 代理码位的字符串。
+    """迭代拒绝含孤立 UTF-16 代理码位的字符串，并限制嵌套深度。
 
     JSON 允许 ``\\ud800`` 这样的转义，但孤立代理码位无法编码成 UTF-8，
     会在哈希命名空间或写入 SQLite 时抛 UnicodeEncodeError（HTTP 500）。
+    递归遍历在近千层嵌套时会触发 RecursionError，同样变成 500，因此
+    改为显式栈并限制深度。
     """
-    if isinstance(value, str):
-        if contains_lone_surrogate(value):
-            raise ValueError(f"{path}包含无效的 Unicode 字符")
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str) and contains_lone_surrogate(key):
+    stack = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_REQUEST_JSON_DEPTH:
+            raise ValueError(f"{path}嵌套过深")
+        if isinstance(item, str):
+            if contains_lone_surrogate(item):
                 raise ValueError(f"{path}包含无效的 Unicode 字符")
-            _reject_lone_surrogates(item, path)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _reject_lone_surrogates(item, path)
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance(key, str) and contains_lone_surrogate(key):
+                    raise ValueError(f"{path}包含无效的 Unicode 字符")
+                stack.append((child, depth + 1))
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                stack.append((child, depth + 1))
 
 
 class StrictRequestModel(BaseModel):
@@ -1711,13 +1722,48 @@ async def redacting_http_exception_handler(
 async def sanitized_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> Response:
-    """422 详情会回显原始输入，先替换孤立代理码位再渲染。
+    """422 详情会回显原始输入，先清洗再渲染。
 
-    否则 Starlette 用 ensure_ascii=False 编码响应体时会再次抛
-    UnicodeEncodeError，把本应 422 的请求变成 500。
+    孤立代理码位会让 UTF-8 编码失败；NaN/Infinity 会让 JSON 编码
+    失败（Python 的 json.loads 接受这两个字面量）。两者都会把本应
+    422 的请求变成 500，因此这里统一替换掉。
     """
-    detail = strip_lone_surrogates(jsonable_encoder(exc.errors()))
+    try:
+        detail = sanitize_json(
+            strip_lone_surrogates(jsonable_encoder(exc.errors()))
+        )
+    except RecursionError:
+        # 原始输入嵌套极深时错误回显本身也会爆栈，降级为通用提示
+        detail = [{
+            "type": "value_error",
+            "loc": [],
+            "msg": "请求体嵌套过深",
+            "input": None,
+        }]
     return JSONResponse(status_code=422, content={"detail": detail})
+
+
+@app.exception_handler(RecursionError)
+async def recursion_error_handler(
+    request: Request, exc: RecursionError
+) -> Response:
+    """请求体嵌套极深时，json 解析本身就可能爆栈，统一回 422。
+
+    Python 3.10 的 json 解码器在约千层嵌套即抛 RecursionError，早于
+    Pydantic 校验，必须在这里兜底，否则表现为 500。
+    """
+    logger.warning(
+        f"请求处理递归过深: {request.method} {request.url.path}"
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": [{
+            "type": "value_error",
+            "loc": [],
+            "msg": "请求体嵌套过深",
+            "input": None,
+        }]},
+    )
 
 
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
