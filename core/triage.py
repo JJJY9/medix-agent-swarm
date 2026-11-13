@@ -106,6 +106,15 @@ _NEGATION_PATTERN = re.compile(
     rf"(?:{_NEGATION_FILLERS})*"
     r"(?:的)?\s*$"
 )
+#: A 不 A 疑问（是不是/有没有/是否…）表示不确定，按阳性处理：
+#: 「不知道是不是胸痛」不是否认胸痛，不能静默漏报
+_UNCERTAIN_QUESTION_RE = re.compile(
+    r"(?:是不是|有没有|要不要|会不会|能不能|可不可以|是否|有无)"
+)
+#: 「不是没有/并非没有」是双重否定，实际为阳性
+_DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
+    r"(?:不是|并非|并非说|不能说|不代表|又不是)\s*(?:没有|没|无)\s*$"
+)
 #: 「差点没昏倒」是“几乎发生”，不是否定
 _ALMOST_PATTERN = re.compile(
     r"(?:差点|险些|几乎|差一点|差些)\s*(?:没有|没)?\s*$"
@@ -135,7 +144,15 @@ _RULED_OUT_TAIL = re.compile(
 )
 
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
-PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
+PREGNANCY_TERMS = (
+    "怀孕", "孕期", "妊娠", "产妇", "产后", "孕妇", "孕产妇",
+    "早孕", "中孕", "晚孕", "孕早期", "孕中期", "孕晚期",
+    "产前", "待产", "临产",
+)
+#: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
+PREGNANCY_WEEK_PATTERN = re.compile(
+    r"(?<![避备不待])(?:怀)?孕\s*\d+\s*(?:周|个月|月)"
+)
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
 PREGNANCY_UNCERTAIN_PATTERN = re.compile(
@@ -150,7 +167,8 @@ PREGNANCY_UNCERTAIN_TERMS = (
 #: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
 PREGNANCY_BLEEDING_TERMS = (
     "阴道出血", "阴道流血", "阴道大量出血", "产道出血",
-    "下体出血", "见红",
+    "下体出血", "见红", "早孕出血", "孕早期出血", "孕中期出血",
+    "孕晚期出血", "产前出血", "孕妇出血",
 )
 
 
@@ -159,6 +177,13 @@ def _is_negated(prefix: str) -> bool:
     if _ALMOST_PATTERN.search(prefix):
         return False
     stripped = prefix.rstrip()
+    if _UNCERTAIN_QUESTION_RE.search(stripped):
+        # 「不知道是不是胸痛」「有没有胸痛」「是否呼吸困难」是疑似，
+        # 与妊娠不确定的既有口径一致：按阳性处理，不能漏报
+        return False
+    if _DOUBLE_NEGATION_SUFFIX_PATTERN.search(stripped):
+        # 「不是没有胸痛」「并非没有呼吸困难」实际是阳性
+        return False
     if any(
         stripped.endswith(term) for term in _DOUBLE_NEGATION_SUFFIXES
     ):
@@ -357,6 +382,135 @@ def clinical_statement_text(text: str) -> str:
     return "。".join(kept)
 
 
+#: 出现这些词说明在描述本人/家人当前情况，不能当科普问句过滤
+_PATIENT_CONTEXT_MARKERS = (
+    "我", "本人", "孩子", "儿子", "女儿", "父亲", "母亲", "爸", "妈",
+    "爷爷", "奶奶", "外公", "外婆", "姥姥", "姥爷", "家人", "老人",
+    "宝宝", "大宝", "二宝", "小孩", "患儿", "患者", "病患",
+    "老婆", "老公", "爱人", "对象", "丈夫", "妻子", "配偶", "老伴",
+    "哥哥", "姐姐", "弟弟", "妹妹", "兄弟", "姐妹",
+    "阿姨", "叔叔", "舅舅", "姑姑", "婶婶", "侄子", "外甥",
+    "孙子", "孙女",
+    "最近", "这两天", "今天", "昨天", "前天", "持续", "伴有",
+    "突然", "出现", "发作", "测得", "体温", "吃了", "服了", "正在吃",
+    "现在", "目前", "这几天",
+)
+
+#: 纯定义引导词开头的分句：整句丢弃（什么是X / 请解释X）
+_DEFINITION_PREFIX_RE = re.compile(
+    r"^(?:什么是|啥是|何谓|何为|请解释|解释一下|介绍一下|讲讲)"
+)
+#: 特征/信息型问句：X有哪些症状（前缀是症状时保留）
+_FEATURE_QUESTION_RE = re.compile(
+    r"(?:有哪些(?:症状|表现|原因|危害)|有什么(?:症状|表现|危害))"
+)
+#: 「X是什么原因/怎么回事」只去掉疑问尾巴，保留症状描述
+_CAUSE_TAIL_RE = re.compile(
+    r"是?(?:什么原因|怎么回事|咋回事)"
+    r"(?:造成的|引起的|导致的)?\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
+)
+#: 「X是什么」纯定义问句（含「是什么病/是指什么/是啥」等变体）
+#: 第一组是定义尾巴之前的描述，用于保留「发烧、咳嗽三天了是什么病」
+_DEFINITION_SUFFIX_RE = re.compile(
+    r"^([^，,；;。！？!?\n]*)(?:是什么|啥是|是什么意思|什么意思|"
+    r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
+    r"\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
+)
+#: 口语化「提问前缀」：去掉后按剩余内容重新判断，避免「我想知道什么是
+#: 咯血」因含「我」被当成患者主诉而触发急症横幅
+_EDUCATIONAL_PREFIX_RE = re.compile(
+    r"^(?:请问(?:一下)?|我想知道|我想问(?:一下)?|想问(?:一下)?|"
+    r"想了解(?:一下)?|了解一下|听说|我听说|据说)"
+)
+#: 传闻式语句整句按科普处理，不构成患者本人当前主诉
+_HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
+#: 病程/数量线索：定义问句前缀含这些词时按真实主诉保留
+_COURSE_MARKER_RE = re.compile(
+    r"[0-9一二两三四五六七八九十半几]+\s*(?:天|日|周|个月|月|小时|年)"
+)
+_COURSE_MARKERS = (
+    "持续", "反复", "最近", "今天", "昨天", "前天", "这几天", "刚才",
+)
+
+
+def _is_red_flag_text(text: str) -> bool:
+    if any(term in text for term, _ in RED_FLAG_PHRASES):
+        return True
+    return any(term in text for term in HEAD_TRAUMA_TERMS)
+
+
+def _clean_complaint_clause(clause: str) -> str:
+    """清洗单个分句：有患者语境的保留；纯定义问句丢弃。"""
+    educational = _EDUCATIONAL_PREFIX_RE.match(clause)
+    if educational:
+        if _HEARSAY_PREFIX_RE.match(clause):
+            return ""
+        rest = clause[educational.end():].strip(" ，,、")
+        if not rest:
+            return ""
+        # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
+        # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
+        return _clean_complaint_clause(rest)
+    if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
+        return clause
+    if any(marker in clause for marker in EDUCATIONAL_MARKERS):
+        # 「表现为/症状包括」既可能是科普也可能是真实主诉：含红旗
+        # 且不是定义问句时必须保留，否则 ACS/呼吸困难会静默漏报
+        if (
+            _is_red_flag_text(clause)
+            and not _DEFINITION_PREFIX_RE.match(clause)
+            and not _DEFINITION_SUFFIX_RE.match(clause)
+            and not _FEATURE_QUESTION_RE.search(clause)
+        ):
+            return clause
+        return ""
+    if _DEFINITION_PREFIX_RE.match(clause):
+        return ""
+    feature = _FEATURE_QUESTION_RE.search(clause)
+    if feature:
+        prefix = clause[: feature.start()].strip(" ，,、")
+        return prefix if _is_red_flag_text(prefix) else ""
+    cause = _CAUSE_TAIL_RE.search(clause)
+    if cause:
+        return clause[: cause.start()].strip(" ，,、").rstrip("是").strip()
+    definition = _DEFINITION_SUFFIX_RE.match(clause)
+    if definition:
+        prefix = definition.group(1).strip(" ，,、")
+        # 「X是什么病」：X 是带病程的症状描述时按真实主诉保留，
+        # 只有单一术语的纯定义问句才整句丢弃
+        if prefix and (
+            _COURSE_MARKER_RE.search(prefix) is not None
+            or any(marker in prefix for marker in _COURSE_MARKERS)
+        ):
+            # 带病程/时间线索的定义问句通常是在描述当前症状
+            return prefix
+        return ""
+    return clause
+
+
+def patient_complaint_text(text: str) -> str:
+    """提取「患者主诉」部分：去掉定义/科普型问句，保留症状描述。
+
+    “什么是咯血？”没有患者语境，不能当作急症主诉；“咯血是什么？”
+    同理；而“我父亲最近咯血是什么原因？”含患者语境，必须保留并触发
+    红旗。按分句处理（含逗号/顿号）：含患者语境或症状描述的分句保留，
+    只有纯定义问句才整句丢弃，避免“孩子发烧了，医生说是一种病毒感染”
+    这类真实主诉被整段删除。
+    """
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    # 顿号不是分句边界：detect_red_flags 的枚举否定（「无发热、
+    # 咳嗽、胸痛」）依赖整组顿号在同一分句内，不能在此拆开重拼
+    clauses = re.split(r"[。；;！!？?\n，,]", text)
+    kept = []
+    for clause in clauses:
+        cleaned = _clean_complaint_clause(clause.strip())
+        if cleaned:
+            kept.append(cleaned)
+    return "，".join(kept)
+
+
 def has_visit_recommendation(text: str) -> bool:
     """输出中是否包含非否定的就医/急诊建议。
 
@@ -465,6 +619,15 @@ HEAD_TRAUMA_TERMS = (
     "摔到头", "后脑勺着地", "后脑着地", "后脑勺撞", "后脑勺磕",
     "后脑勺碰", "磕破头", "磕破了头", "撞破头", "撞破了头",
     "脑袋磕", "脑袋撞", "脑袋碰", "头磕破", "头撞破",
+    # 反向语序：磕了头 / 头上撞了个包 / 头被撞了一下
+    "磕了头", "撞了头", "碰了头", "磕了脑袋", "撞了脑袋", "碰了脑袋",
+    "磕到脑袋", "撞到脑袋", "碰到脑袋", "磕了一下头", "头磕了一下",
+    "头撞了一下", "头碰了一下", "头被撞", "头被磕", "头被碰",
+    "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
+    "头上磕了个包",
+    "撞了一下头", "撞了下头", "撞到了头", "磕到了头", "碰了一下头",
+    "磕了下头", "头部撞了一下", "头部被撞", "撞了一下脑袋",
+    "脑袋被撞", "脑袋被磕", "脑袋被碰",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -653,9 +816,15 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             "请尽快联系主诊医生或前往急诊，不要自行服用退烧药掩盖病情。",
         ))
 
+    # 用户可能只在本次主诉里自述正在抗凝（档案/用药清单未录入）：
+    # 抗凝判断必须同时扫描主诉文本，否定/停药/家族史过滤沿用同一套
+    anticoag_text = medical_text
+    complaint_medical = _active_medical_text({"history": text})
+    if complaint_medical:
+        anticoag_text = f"{anticoag_text}；{complaint_medical}"
     if (
         any(
-            _active_term_mention(medical_text, term)
+            _active_term_mention(anticoag_text, term)
             for term in ANTICOAGULANT_TERMS
         )
         and any(_positive_mention(text, term) for term in HEAD_TRAUMA_TERMS)
@@ -703,8 +872,14 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 break
             start = text.find(phrase, start + len(phrase))
 
+    pregnancy_weeks = False
+    for match in PREGNANCY_WEEK_PATTERN.finditer(text):
+        if not _is_negated(_clause_prefix(text, match.start())):
+            pregnancy_weeks = True
+            break
     pregnancy_mentioned = (
         PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
+        or pregnancy_weeks
         or any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
         or any(
             _positive_mention(text, term)

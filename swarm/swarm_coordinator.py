@@ -506,7 +506,12 @@ class SwarmCoordinator:
         )
 
         # 确定性急症预检：命中红旗时立即随结果返回，不依赖模型输出
-        triage = detect_red_flags(question, context)
+        from core.triage import patient_complaint_text
+
+        # 科普/定义型提问（“什么是咯血？”）不是患者主诉，不能触发急症
+        triage = detect_red_flags(
+            patient_complaint_text(question), context
+        )
 
         # 确定性用药安全预检：过敏史、重复用药与常见相互作用
         medication_safety = check_medication_safety(question, context)
@@ -549,17 +554,13 @@ class SwarmCoordinator:
                     resolved, started_text,
                 )
                 if not deleted:
-                    # 删除之后才到达的请求也要识别：档案留有墓碑且未重建
-                    tombstone = await asyncio.to_thread(
-                        self.session_store.profile_tombstone_exists,
+                    # 删除之后才到达的请求也要识别：档案留有墓碑且未
+                    # 真正重建（patient_profiles 无同名行；删除时按约定
+                    # 保留的健康数据不算重建）
+                    deleted = await asyncio.to_thread(
+                        self.session_store.profile_rebinding_blocked,
                         resolved,
                     )
-                    if tombstone:
-                        exists = await asyncio.to_thread(
-                            self.session_store.profile_name_exists,
-                            resolved,
-                        )
-                        deleted = not exists
             except Exception:
                 deleted = False
             if deleted:
@@ -567,12 +568,18 @@ class SwarmCoordinator:
             return resolved
 
         async def _write_scope() -> str:
-            """长期记忆写入作用域：改名后改用新档案的命名空间。"""
-            resolved = await _bound_profile()
-            if not resolved:
-                return ""
-            if resolved != patient_profile:
-                return profile_memory_scope(resolved)
+            """长期记忆写入作用域：改名后改用新档案的命名空间。
+
+            没有患者档案的会话（patient_profile 为空）必须回退到会话
+            作用域；否则 add_session_summary 会落进共享 medix_local，
+            既检索不到、删除会话时也清不掉。
+            """
+            if patient_profile:
+                resolved = await _bound_profile()
+                if not resolved:
+                    return ""
+                if resolved != patient_profile:
+                    return profile_memory_scope(resolved)
             return memory_scope or session_memory_scope(session_id)
 
         # 服务重启后从 SQLite 恢复本会话的最近问答
@@ -588,14 +595,18 @@ class SwarmCoordinator:
         # 2. 检索长期记忆（相似历史会话）；删除档案的云端清理尚未
         # 完成时不检索同名命名空间，避免召回已删除患者的病史
         skip_long_term = False
-        if patient_profile:
-            try:
-                skip_long_term = await asyncio.to_thread(
-                    self.session_store.profile_memory_cleanup_pending,
-                    patient_profile,
-                )
-            except Exception:
-                skip_long_term = False
+        scope_to_check = (
+            str(memory_scope or "").strip()
+            or session_memory_scope(session_id)
+        )
+        try:
+            # 作用域级门禁同时覆盖整档删除与单个会话删除的待清理项
+            skip_long_term = await asyncio.to_thread(
+                self.session_store.memory_scope_cleanup_pending,
+                scope_to_check,
+            )
+        except Exception:
+            skip_long_term = False
         if skip_long_term:
             similar_memories = []
         else:
@@ -1155,6 +1166,17 @@ class SwarmCoordinator:
                         return True
                 except Exception:
                     continue
+            try:
+                # 只对解析后的当前名做墓碑判定：改名前的旧名在重建后
+                # 改名时也会“有墓碑且无档案行”，会误判为已删除
+                resolved = names[-1]
+                if await asyncio.to_thread(
+                    self.session_store.profile_rebinding_blocked,
+                    resolved,
+                ):
+                    return True
+            except Exception:
+                pass
             return False
 
         # Step 4: 生成 SessionSummary

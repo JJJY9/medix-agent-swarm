@@ -136,11 +136,12 @@ class AutoFixer:
             clinical_statement_text,
             detect_red_flags,
             has_visit_recommendation,
+            patient_complaint_text,
         )
 
         risk_text = "\n".join(
             part for part in (
-                user_input.strip(),
+                patient_complaint_text(user_input),
                 clinical_statement_text(output),
             ) if part
         )

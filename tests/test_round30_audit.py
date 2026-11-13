@@ -177,6 +177,9 @@ def test_storage_owner_marker_protects_custom_attachments(tmp_path):
     assert (tmp_path / ".medix-attachments-owner").read_text(
         encoding="utf-8"
     ) == "family.db"
+    # 真实使用中 SessionStore 会先创建数据库文件；标记指向的文件
+    # 不存在会被视为过期标记（数据库被改名/移走）
+    custom_db.write_bytes(b"db")
 
     # 默认库后来出现：不能接管已认领的目录
     default_dir = attachment_dir_for_db(tmp_path / "sessions.db")
@@ -321,6 +324,7 @@ def test_legacy_owner_marker_is_migrated(tmp_path):
         "family.db", encoding="utf-8"
     )
     (legacy / "abc123.pdf").write_bytes(b"x")
+    (tmp_path / "family.db").write_bytes(b"db")
 
     # 先打开默认库：不能接管已被自定义库认领的目录
     default_dir = attachment_dir_for_db(tmp_path / "sessions.db")

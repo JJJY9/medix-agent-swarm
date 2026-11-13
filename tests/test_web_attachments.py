@@ -136,7 +136,7 @@ def test_attachment_export_selected_wiring():
     assert 'id="attachment-export-selected"' in HTML
     assert "导出选中" in HTML
     assert "导出选中（${attachmentSelectedIds.size}）" in SCRIPT
-    assert "attachmentExporting || attachmentSelectedIds.size === 0" in SCRIPT
+    assert "attachmentSelectedIds.size > ATTACHMENT_EXPORT_MAX_SELECTED" in SCRIPT
     assert "exportSelectedAttachments" in SCRIPT
     assert "exportAttachmentArchive([...attachmentSelectedIds]);" in SCRIPT
     assert "els.attachmentExportSelected.addEventListener(" in SCRIPT

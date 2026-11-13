@@ -560,6 +560,71 @@ _STOPPED_USE_PREFIX = re.compile(
     r"(?:已经|已|刚刚|刚|最近|早就|现已|目前)?\s*"
     r"(?:停用|停药|停服|停止服用|不再服用|停了)\s*$"
 )
+#: 药名之后的停药表述：「华法林已经停用两个月了」
+#: 只允许时间表达式出现在药名与停药动词之间，避免「准备停药/头痛停了」
+_STOPPED_USE_SUFFIX = re.compile(
+    r"^(?:前段时间|前阵子|前一阵|上个月|上周|上上个月|昨天|前天|"
+    r"前几天|前几周|前几个月|前几年|最近|目前|现在|"
+    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|天|周|年)"
+    r"(?:多)?(?:前|以来)?)?"
+    r"\s*(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
+    r"(?:停用|停药|停服|停止服用|不再服用|停了|停掉)"
+)
+#: 「准备停药/能停药吗」是意向或疑问，不能当作已停药
+_INTENT_STOP_SUFFIX = re.compile(
+    r"^[^，。；,.!?！？\n]{0,4}"
+    r"(?:准备|打算|计划|想要|想|考虑|能|能否|能不能|可以|可否|"
+    r"是否|要不要|该不该|何时|什么时候)\s*"
+    r"(?:停用|停药|停服|停了|停掉)"
+)
+#: 药名之前带时长的停药表述：「我已经停用两个月的华法林」
+_STOPPED_USE_PREFIX_LONG = re.compile(
+    r"(?:已经|已|早就|刚刚|刚)?\s*(?:停用|停药|停服|停止服用|不再服用|停了)"
+    r"[^，。；,.!?！？]{0,6}?(?:月|天|周|年)(?:了|多)?\s*的?\s*$"
+)
+#: 药名之后的「不能停药/未停药」= 仍在服用
+_NEGATED_STOP_SUFFIX = re.compile(
+    r"^[^，。；,.!?！？\n]{0,4}(?:不能|不可|不宜|不让|不应|不要|别|"
+    r"未|没有|没)\s*(?:停用|停药|停服|停止服用)"
+)
+#: 既往用药：「我以前吃阿司匹林」
+_PAST_USE_PREFIX = re.compile(
+    r"(?:以前|之前|曾经|既往|过去|曾)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)\s*$"
+)
+#: 持续用药：「过去半年每天吃」「既往长期服用」不是既往用药
+_CONTINUOUS_USE_PREFIX = re.compile(
+    r"(?:过去|近|最近|这|既往|曾经?)"
+    r"[^，。；,.!?！？\n]{0,6}"
+    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|半年)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:服用|口服|吃|用|注射|打|喝|饮)\s*$"
+)
+_STOPPED_USE_SUFFIX_EN = re.compile(
+    r"^\s*(?:has been |had been |was |is |been )?"
+    r"(?:stopped(?!\s*working)|discontinued|no longer taking)",
+    re.IGNORECASE,
+)
+_PAST_USE_PREFIX_EN = re.compile(
+    r"(?:used to|previously|formerly)\s+(?:take|taking|use|using)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clause_bounds(text: str, start: int, end: int) -> tuple:
+    """药名所在分句的起止位置。"""
+    left = 0
+    for index in range(start - 1, -1, -1):
+        if text[index] in "，。；,.!?！？\n":
+            left = index + 1
+            break
+    right = len(text)
+    for index in range(end, len(text)):
+        if text[index] in "，。；,.!?！？\n":
+            right = index
+            break
+    return left, right
 
 
 def _alias_matches(text: str, alias: str) -> bool:
@@ -573,13 +638,20 @@ def _alias_matches(text: str, alias: str) -> bool:
             rf"(?<![a-z0-9_]){re.escape(alias_lower)}s?(?![a-z0-9_])",
             text,
         ):
-            prefix = text[max(0, match.start() - 6):match.start()]
+            left, right = _clause_bounds(text, match.start(), match.end())
+            prefix = text[left:match.start()]
+            suffix = text[match.end():right]
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
+            if _CONTINUOUS_USE_PREFIX.search(prefix):
+                return True
             if (
                 _STOPPED_USE_PREFIX.search(prefix)
+                or _STOPPED_USE_PREFIX_LONG.search(prefix)
+                or _STOPPED_USE_SUFFIX_EN.search(suffix)
                 or _NEGATED_USE_PREFIX.search(prefix)
+                or _PAST_USE_PREFIX_EN.search(prefix)
             ):
                 continue
             return True
@@ -588,12 +660,22 @@ def _alias_matches(text: str, alias: str) -> bool:
     start = text.find(alias_lower)
     while start != -1:
         end = start + len(alias_lower)
-        prefix = text[max(0, start - 6):start]
-        if _NEGATED_STOP_PREFIX.search(prefix):
+        left, right = _clause_bounds(text, start, end)
+        prefix = text[left:start]
+        suffix = text[end:right]
+        if (
+            _NEGATED_STOP_PREFIX.search(prefix)
+            or _NEGATED_STOP_SUFFIX.search(suffix)
+            or _INTENT_STOP_SUFFIX.search(suffix)
+            or _CONTINUOUS_USE_PREFIX.search(prefix)
+        ):
             return True
         if (
             _STOPPED_USE_PREFIX.search(prefix)
+            or _STOPPED_USE_PREFIX_LONG.search(prefix)
+            or _STOPPED_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
+            or _PAST_USE_PREFIX.search(prefix)
         ):
             start = text.find(alias_lower, end)
             continue

@@ -1126,13 +1126,10 @@ async def _link_patient_profile(
             # 已删除档案，并重新绑定
             _release_profile_claim(session_id, profile)
             return
-        # 删除之后才到达的请求：档案留有墓碑且未重建时同样不能绑定，
-        # 否则会把历史会话重新挂到已删除档案
-        tombstone = await asyncio.to_thread(
-            store.profile_tombstone_exists, profile
-        )
-        if tombstone and not await asyncio.to_thread(
-            store.profile_name_exists, profile
+        # 删除之后才到达的请求：档案留有墓碑且未被真正重建时同样
+        # 不能绑定（删除时按约定保留的健康数据不算重建）
+        if await asyncio.to_thread(
+            store.profile_rebinding_blocked, profile
         ):
             _release_profile_claim(session_id, profile)
             return
@@ -1859,19 +1856,177 @@ def _rate_limit_key(request: Request) -> str:
     return f"ip:{host}"
 
 
-def _client_ip_key(request: Request) -> str:
-    """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。"""
-    host = request.client.host if request.client else "unknown"
-    return f"ip:{host}"
+_PROXY_HEADER_NAMES = ("x-forwarded-for", "forwarded", "x-real-ip")
+_PROXY_FORWARDED_FOR_RE = re.compile(
+    r"(?:^|;)\s*for\s*=\s*([^;]+)", re.IGNORECASE
+)
 
 
-def _is_loopback_client(request: Request) -> bool:
-    """本机请求不参与令牌错误限流（本机进程本身已可信）。"""
-    host = request.client.host if request.client else ""
+def _has_proxy_headers(request: Request) -> bool:
+    try:
+        names = list(request.headers.keys())
+    except Exception:
+        names = []
+    for name in names:
+        lower = str(name).lower()
+        if (
+            lower == "forwarded"
+            or lower == "x-real-ip"
+            or lower.startswith("x-forwarded-")
+        ):
+            if (request.headers.get(name) or "").strip():
+                return True
+    return False
+
+
+def _trust_proxy_headers() -> bool:
+    return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
+
+
+def _normalize_forwarded_address(value: str) -> str:
+    """归一化代理头里的地址：去引号/端口，`[v6]:port` 取方括号内容。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        text = text[1:-1].strip()
+    if not text or text.lower() == "unknown":
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        if end != -1:
+            return text[1:end].strip()
+    if text.count(":") == 1:
+        host, _sep, port = text.partition(":")
+        if port.strip().isdigit():
+            return host.strip()
+    return text
+
+
+def _parse_forwarded_header(header: str) -> str:
+    """按 RFC 7239 解析 Forwarded，取最后一个元素的 for=（最近代理追加）。"""
+    elements: List[str] = []
+    current: List[str] = []
+    in_quotes = False
+    for char in str(header or ""):
+        if char == '"':
+            in_quotes = not in_quotes
+        if char == "," and not in_quotes:
+            elements.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        elements.append("".join(current))
+    if not elements:
+        return ""
+    # 只看最右侧元素（最近可信代理追加）：它存在但没有可解析的 for
+    # 时必须 fail closed，不能回退到客户端自带的更早元素
+    for part in str(elements[-1]).split(";"):
+        key, _sep, value = part.strip().partition("=")
+        if key.strip().lower() == "for" and value.strip():
+            return _normalize_forwarded_address(value)
+    return ""
+
+
+def _same_forwarded_address(first: str, second: str) -> bool:
+    try:
+        return ipaddress.ip_address(first) == ipaddress.ip_address(second)
+    except ValueError:
+        return first == second
+
+
+def _forwarded_client_address(request: Request) -> str:
+    """从代理头解析原始客户端地址（XFF / X-Real-IP / RFC 7239）。
+
+    多个转发头同时存在且互相矛盾时返回空串（fail closed）：说明代理
+    配置不一致，客户端可能自带了一个头，不能据此判定本机或分配限流桶。
+    """
+    forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
+    xff_value = ""
+    if forwarded_for:
+        parts = [
+            part.strip() for part in forwarded_for.split(",")
+            if part.strip()
+        ]
+        if parts:
+            # 最右项存在但无法解析（unknown/空）时必须 fail closed
+            rightmost = _normalize_forwarded_address(parts[-1])
+            if not rightmost:
+                return ""
+            xff_value = rightmost
+            # 只有最右项是本机信任跳时才继续向左找真实客户端；
+            # append 型代理追加的真实非本机地址不能被客户端自带的
+            # 更左项覆盖，否则伪造前缀即可轮换限流桶
+            if _is_loopback_address(rightmost):
+                for part in reversed(parts[:-1]):
+                    candidate = _normalize_forwarded_address(part)
+                    if candidate and not _is_loopback_address(candidate):
+                        xff_value = candidate
+                        break
+    real_value = _normalize_forwarded_address(
+        request.headers.get("x-real-ip") or ""
+    )
+    forwarded_header = ""
+    try:
+        forwarded_header = ", ".join(
+            request.headers.getlist("forwarded")
+        )
+    except AttributeError:
+        forwarded_header = request.headers.get("forwarded") or ""
+    forwarded_value = _parse_forwarded_header(forwarded_header)
+    values = [value for value in (
+        xff_value, real_value, forwarded_value
+    ) if value]
+    if not values:
+        return ""
+    first = values[0]
+    for other in values[1:]:
+        if not _same_forwarded_address(first, other):
+            return ""
+    return first
+
+
+def _is_loopback_address(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return host in {"testclient", "localhost"}
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """本机请求不参与令牌错误限流（本机进程本身已可信）。
+
+    携带 Forwarded / X-Forwarded-For / X-Real-IP 的请求默认不信任
+    （视为远端）；只有显式设置 MEDIX_TRUST_PROXY_HEADERS=1 且 TCP
+    对端确实是本机代理时，才采信头里的原始客户端地址判定是否本机。
+
+    注意：ssh -R/socat/frp 等透明 TCP 隧道不会添加任何代理头，服务端
+    无法与真正的本机请求区分；隧道外露前必须设置 MEDIX_ACCESS_TOKEN。
+    """
+    peer = request.client.host if request.client else ""
+    if _has_proxy_headers(request):
+        if not (_trust_proxy_headers() and _is_loopback_address(peer)):
+            return False
+        forwarded = _forwarded_client_address(request)
+        if not forwarded:
+            return False
+        return _is_loopback_address(forwarded)
+    return _is_loopback_address(peer)
+
+
+def _client_ip_key(request: Request) -> str:
+    """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
+
+    只有显式信任代理头、且 TCP 对端确实是本机代理时才采用头里的
+    客户端地址；直连客户端伪造转发头无法更换计数桶。
+    """
+    peer = request.client.host if request.client else ""
+    if _trust_proxy_headers() and _is_loopback_address(peer):
+        forwarded = _forwarded_client_address(request)
+        if forwarded:
+            return f"ip:{forwarded}"
+    return f"ip:{peer or 'unknown'}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -1941,33 +2096,70 @@ async def recursion_error_handler(
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def _default_http_port(scheme: str) -> Optional[int]:
-    scheme = str(scheme or "").lower()
-    if scheme == "http":
-        return 80
-    if scheme == "https":
-        return 443
-    return None
+def _host_header_parts(value: str) -> tuple:
+    """拆分 Host 头（含 IPv6 方括号）为 (hostname, 显式端口)。"""
+    text = str(value or "").strip()
+    if not text:
+        return "", None
+    if text.startswith("["):
+        end = text.find("]")
+        if end == -1:
+            return "", None
+        hostname = text[1:end].lower()
+        rest = text[end + 1:]
+        if rest.startswith(":"):
+            try:
+                return hostname, int(rest[1:])
+            except (TypeError, ValueError):
+                return hostname, None
+        return hostname, None
+    hostname, sep, port_text = text.rpartition(":")
+    if not sep:
+        return text.lower(), None
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError):
+        # 多冒号是未加括号的 IPv6，按整段主机处理
+        return text.lower(), None
+    return hostname.lower(), port
 
 
 def _same_origin(request: Request, value: str) -> bool:
-    """判断 Origin/Referer 是否与当前请求同源。"""
+    """判断 Origin/Referer 是否与当前请求同源。
+
+    只比较主机与端口，不比较 scheme：HTTPS 由反向代理终止时 uvicorn
+    看到的仍是 http，按 scheme 比较会把所有写请求误判为跨站。攻击者
+    无法通过浏览器伪造 Origin 的主机名，安全性仍由 Host 白名单保证。
+    """
     try:
         parsed = urlsplit(str(value or ""))
-        request_scheme = request.url.scheme.lower()
         if not parsed.scheme or parsed.hostname is None:
             return False
-        if request.url.hostname is None:
-            return False
-        parsed_port = parsed.port or _default_http_port(parsed.scheme)
-        request_port = request.url.port or _default_http_port(request_scheme)
+        origin_host = parsed.hostname.lower().rstrip(".")
+        origin_port = parsed.port
     except (TypeError, ValueError):
         return False
-    return (
-        parsed.scheme.lower() == request_scheme
-        and parsed.hostname == request.url.hostname
-        and parsed_port == request_port
+    request_host, request_port = _host_header_parts(
+        request.headers.get("host") or ""
     )
+    if not request_host:
+        request_host = str(request.url.hostname or "").lower()
+        request_port = request.url.port
+    if origin_host != request_host.rstrip("."):
+        return False
+    if request_port is not None:
+        origin_effective = origin_port
+        if origin_effective is None:
+            origin_effective = {
+                "http": 80, "https": 443,
+            }.get(str(parsed.scheme or "").lower())
+        return (
+            origin_effective is not None
+            and origin_effective == request_port
+        )
+    # Host 未带端口：只有 Origin 也未显式带端口时才按同源放行，
+    # 避免同主机其它端口的页面跨源写操作被误判为同源
+    return origin_port is None
 
 
 def _is_cross_site_request(request: Request) -> bool:
@@ -1975,6 +2167,9 @@ def _is_cross_site_request(request: Request) -> bool:
     site = (request.headers.get("sec-fetch-site") or "").strip().lower()
     if site == "cross-site":
         return True
+    if site == "same-origin":
+        # 浏览器生成、页面脚本无法伪造；反向代理改写 Host/端口时仍准确
+        return False
     origin = request.headers.get("origin")
     if origin:
         return not _same_origin(request, origin)
@@ -2058,9 +2253,15 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
-        if not _is_loopback_client(request):
+        shared_bucket = _has_proxy_headers(request) and (
+            not _trust_proxy_headers()
+            or not _forwarded_client_address(request)
+        )
+        if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
-            # 降低猜测速率（而不是只把 401 改成 429）
+            # 降低猜测速率（而不是只把 401 改成 429）。
+            # 拿不到真实客户端地址（只有 X-Forwarded-Proto 等）时所有
+            # 用户共用一个键，不能因某个人的错误尝试把全家 429
             blocked, retry_after = auth_failure_limiter.is_blocked(
                 _client_ip_key(request)
             )
@@ -5446,14 +5647,24 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
         if linked_appointment_id:
             appointment = store.get_appointment(linked_appointment_id)
-            if appointment and appointment.get("status") == "cancelled":
+            if appointment and (
+                appointment.get("status") != "upcoming"
+                or str(appointment.get("scheduled_at") or "")[:10]
+                != followup_date
+            ):
+                # completed/cancelled 的预约不能复用（否则会给已完成预约
+                # 新建待办提醒）；复诊日期已改时旧日期预约也不算已安排
                 appointment = None
         profile = visit.get("profile") or ""
         title = (
             f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
         )[:120]
         if appointment is None:
-            # 并发重试时复用同一就诊已创建的同名预约
+            # 并发重试时复用同一就诊已创建的同名预约：必须校验归属
+            # 标记，避免另一条同诊断同日期的就诊共享并连带删除预约
+            ownership = (
+                f"由就诊记录 #{int(visit.get('id') or 0)} 自动创建"
+            )
             for candidate in store.list_appointments(
                 profile, None, False, 100000, 0
             ):
@@ -5461,7 +5672,8 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     candidate.get("title") == title
                     and str(candidate.get("scheduled_at") or "")[:10]
                     == followup_date
-                    and candidate.get("status") != "cancelled"
+                    and candidate.get("status") == "upcoming"
+                    and ownership in str(candidate.get("note") or "")
                 ):
                     appointment = candidate
                     break
@@ -6298,6 +6510,7 @@ async def _weekly_report_impl(
         and prev_start <= str(item.get("created_at") or "")[:10] < start
     ]
     risk_level = ""
+    risk_profiles: List[Dict[str, str]] = []
     if profile is not None and sessions:
         profile_key = _normalized_profile_key(profile)
         latest_answers = await asyncio.to_thread(
@@ -6308,6 +6521,25 @@ async def _weekly_report_impl(
             if (item.get("profile") or "") == profile_key:
                 risk_level = parse_risk_level(item.get("last_answer"))
                 break
+    elif profile is None:
+        # 家庭范围：汇总每位成员最近一次会诊的风险，健康提示不能漏报
+        latest_answers = await asyncio.to_thread(
+            store.latest_session_answers_by_profile, True
+        )
+        risk_order = {"low": 1, "medium": 2, "high": 3, "emergency": 4}
+        for item in latest_answers:
+            level = parse_risk_level(item.get("last_answer"))
+            if not level:
+                continue
+            # 与单档案视图/家庭总览一致：窗口外的旧会诊不能触发
+            # 「最近会诊风险」提示
+            answered_day = str(item.get("created_at") or "")[:10]
+            if not answered_day or not (start <= answered_day <= end):
+                continue
+            member = item.get("profile") or "未指定"
+            risk_profiles.append({"profile": member, "risk": level})
+            if risk_order.get(level, 0) > risk_order.get(risk_level, 0):
+                risk_level = level
     pending_reminders = await asyncio.to_thread(
         store.list_reminders, False, None
     )
@@ -6333,6 +6565,7 @@ async def _weekly_report_impl(
         }
 
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         METRIC_TYPES,
         adherence_rate,
         critical_metric_alerts,
@@ -6340,6 +6573,103 @@ async def _weekly_report_impl(
         metric_context_label,
         metric_over_target,
     )
+
+    # 家庭范围不能因“跨成员不可合并”就整体丢弃目标/血糖判断：
+    # 按成员分别与各自目标比较，避免家庭首页显示虚假的 all_clear
+    member_metric_alerts: List[Dict[str, Any]] = []
+    member_glucose_alerts: List[Dict[str, Any]] = []
+    if profile is None:
+        family_target_map = {
+            (item.get("profile") or "", item["metric"]): item
+            for item in raw_targets
+            if isinstance(item, dict) and item.get("metric")
+        }
+        member_groups: Dict[tuple, Dict[str, Any]] = {}
+        glucose_groups: Dict[str, Dict[str, Any]] = {}
+        for item in metrics:
+            member = str(item.get("profile") or "")
+            metric = str(item.get("metric") or "")
+            target = family_target_map.get((member, metric))
+            if (
+                target is not None
+                and metric not in DAILY_ACCUMULATING_METRICS
+            ):
+                entry = member_groups.setdefault(
+                    (member, metric),
+                    {
+                        "count": 0, "over": 0,
+                        "target": target, "latest": item,
+                    },
+                )
+                entry["count"] += 1
+                try:
+                    over_target = metric_over_target(
+                        metric, item.get("value1"),
+                        item.get("value2"), target,
+                    )
+                except (TypeError, ValueError):
+                    over_target = False
+                if over_target:
+                    entry["over"] += 1
+                    entry["latest"] = item
+            if metric == "glucose":
+                group = glucose_groups.setdefault(
+                    member, {
+                        "fasting": [0.0, 0],
+                        "postprandial": [0.0, 0],
+                    },
+                )
+                try:
+                    value = float(item.get("value1") or 0)
+                except (TypeError, ValueError):
+                    value = 0.0
+                context = str(item.get("context") or "unspecified")
+                if context in ("fasting", "unspecified"):
+                    group["fasting"][0] += value
+                    group["fasting"][1] += 1
+                elif context == "postprandial":
+                    group["postprandial"][0] += value
+                    group["postprandial"][1] += 1
+        for (member, metric), entry in sorted(member_groups.items()):
+            if not entry["over"]:
+                continue
+            target = entry["target"]
+            latest = entry["latest"]
+            label, default_unit, _ = METRIC_TYPES.get(
+                metric, (metric, "", (0, 0))
+            )
+            member_metric_alerts.append({
+                "profile": member,
+                "metric": metric,
+                "over": entry["over"],
+                "count": entry["count"],
+                "unit": latest.get("unit") or default_unit,
+                "latest1": latest.get("value1"),
+                "latest2": latest.get("value2"),
+                "target1": target.get("value1"),
+                "target2": target.get("value2"),
+            })
+        for member, group in sorted(glucose_groups.items()):
+            fasting = group["fasting"]
+            postprandial = group["postprandial"]
+            if fasting[1] and fasting[0] / fasting[1] >= 7:
+                member_glucose_alerts.append({
+                    "profile": member,
+                    "kind": "fasting",
+                    "avg": round(fasting[0] / fasting[1], 2),
+                    "count": fasting[1],
+                })
+            elif postprandial[1] and (
+                postprandial[0] / postprandial[1] >= 11.1
+            ):
+                member_glucose_alerts.append({
+                    "profile": member,
+                    "kind": "postprandial",
+                    "avg": round(
+                        postprandial[0] / postprandial[1], 2
+                    ),
+                    "count": postprandial[1],
+                })
 
     grouped: dict = {}
     for item in metrics:
@@ -6421,18 +6751,38 @@ async def _weekly_report_impl(
     from memory.session_store import DAILY_ACCUMULATING_METRICS
 
     daily_metric_today: dict = {}
+    daily_metric_days: dict = {}
     if profile is not None:
         today_key = now.strftime("%Y-%m-%d")
         for item in metrics:
             metric = item.get("metric") or ""
             if metric not in DAILY_ACCUMULATING_METRICS:
                 continue
-            daily = daily_metric_today.setdefault(
-                metric, {"total": 0.0, "count": 0}
-            )
-            if str(item.get("measured_at") or "")[:10] == today_key:
-                daily["total"] += float(item.get("value1") or 0)
+            day = str(item.get("measured_at") or "")[:10]
+            amount = float(item.get("value1") or 0)
+            if day:
+                day_entry = daily_metric_days.setdefault(
+                    metric, {}
+                ).setdefault(day, {"total": 0.0, "count": 0})
+                day_entry["total"] += amount
+                day_entry["count"] += 1
+            if day == today_key:
+                daily = daily_metric_today.setdefault(
+                    metric, {"total": 0.0, "count": 0}
+                )
+                daily["total"] += amount
                 daily["count"] += 1
+
+    latest_daily: dict = {}
+    for metric, days_map in daily_metric_days.items():
+        if not days_map:
+            continue
+        latest_day = max(days_map)
+        latest_daily[metric] = {
+            "day": latest_day,
+            "total": round(days_map[latest_day]["total"], 1),
+            "count": days_map[latest_day]["count"],
+        }
 
     metric_rows = [
         {
@@ -6471,6 +6821,18 @@ async def _weekly_report_impl(
                 and daily_metric_today[entry["metric"]]["count"]
                 and entry["target"] is not None
                 else None
+            ),
+            "latest_daily_total": (
+                latest_daily[entry["metric"]]["total"]
+                if entry["metric"] in latest_daily else None
+            ),
+            "latest_daily_day": (
+                latest_daily[entry["metric"]]["day"]
+                if entry["metric"] in latest_daily else ""
+            ),
+            "latest_daily_count": (
+                latest_daily[entry["metric"]]["count"]
+                if entry["metric"] in latest_daily else 0
             ),
             "prev_avg_value1": previous_rows.get(
                 entry["metric"], {}
@@ -6854,6 +7216,8 @@ async def _weekly_report_impl(
         "start": start,
         "end": end,
         "metrics": {"count": len(metrics), "by_metric": metric_rows},
+        "member_metric_alerts": member_metric_alerts,
+        "member_glucose_alerts": member_glucose_alerts,
         "symptoms": {
             "count": len(symptoms),
             "avg_severity": (
@@ -6901,6 +7265,7 @@ async def _weekly_report_impl(
             "count": len(sessions),
             "prev_count": len(previous_sessions),
             "risk": risk_level,
+            "risk_profiles": risk_profiles,
         },
         "labs": {
             "count": len(lab_results),
@@ -7138,11 +7503,50 @@ def _build_health_insights(
         within = row.get("within_target")
         avg1 = float(row.get("avg_value1") or 0)
         avg2 = float(row.get("avg_value2") or 0)
-        if (
-            target
-            and metric in DAILY_ACCUMULATING_METRICS
-            and int(row.get("daily_count") or 0) > 0
-        ):
+        if target and metric in DAILY_ACCUMULATING_METRICS:
+            if int(row.get("daily_count") or 0) <= 0:
+                # 今天尚未记录：回退到最近一个记录日的自然日合计，
+                # 不能拿单条记录与每日目标比较（会误报“N 次低于目标”）
+                latest_total = row.get("latest_daily_total")
+                if latest_total is not None:
+                    latest_day = str(row.get("latest_daily_day") or "")
+                    latest_count = int(row.get("latest_daily_count") or 0)
+                    unit_text = f" {unit}" if unit else ""
+                    target_text = f"{float(target['value1']):g}"
+                    total_value = float(latest_total)
+                    gap = float(target["value1"]) - total_value
+                    within_latest = total_value >= float(target["value1"])
+                    day_text = (
+                        f"最近一日（{latest_day[5:]}）" if latest_day
+                        else "最近一日"
+                    )
+                    insights.append(_health_insight(
+                        f"metric_{metric}",
+                        "ok" if within_latest else "warning",
+                        f"{label} {day_text}累计 {total_value:g}{unit_text}",
+                        (
+                            f"目标 ≥ {target_text}{unit_text}，"
+                            f"{day_text}累计 {total_value:g}{unit_text}"
+                            + (
+                                f"（{latest_count} 次记录）"
+                                if latest_count else ""
+                            )
+                            + (
+                                ""
+                                if within_latest
+                                else f"，还差 {max(gap, 0):g}{unit_text}"
+                            )
+                        ).strip(),
+                        (
+                            ""
+                            if within_latest
+                            else "继续记录到每日累计达标；"
+                                 "单条记录不与每日目标比较。"
+                        ),
+                        "metric",
+                        metric=metric,
+                    ))
+                continue
             # 步数/饮水的目标是每日累计：单条记录不参与达标判定
             daily_total = float(row.get("daily_total") or 0)
             daily_count = int(row.get("daily_count") or 0)
@@ -7178,7 +7582,11 @@ def _build_health_insights(
                     metric=metric,
                 ))
             continue
-        if target and within is not None:
+        if (
+            target
+            and within is not None
+            and metric not in DAILY_ACCUMULATING_METRICS
+        ):
             over = count - int(within)
             if over > 0:
                 target_text = f"{float(target['value1']):g}"
@@ -7419,11 +7827,22 @@ def _build_health_insights(
 
     consultations = report.get("consultations") or {}
     if consultations.get("risk") in {"high", "emergency"}:
+        risky_members = [
+            str(item.get("profile") or "未指定")
+            for item in (consultations.get("risk_profiles") or [])
+            if item.get("risk") in {"high", "emergency"}
+        ]
+        if family_scope and risky_members:
+            title = "家庭成员最近会诊提示较高风险"
+            detail = "、".join(risky_members[:3])
+        else:
+            title = "最近一次会诊提示较高风险"
+            detail = f"近 {days} 天会诊 {consultations.get('count', 0)} 次。"
         insights.append(_health_insight(
             "consultation_risk",
             "warning",
-            "最近一次会诊提示较高风险",
-            f"近 {days} 天会诊 {consultations.get('count', 0)} 次。",
+            title,
+            detail,
             "请按会诊建议尽快线下就医或复诊。",
             "",
         ))
@@ -7675,6 +8094,72 @@ def _build_health_insights(
             "reminder",
         ))
 
+    for alert in report.get("member_metric_alerts") or []:
+        metric = str(alert.get("metric") or "")
+        label, default_unit, _ = METRIC_TYPES.get(
+            metric, (metric, "", (0, 0))
+        )
+        unit = str(alert.get("unit") or default_unit)
+        unit_text = f" {unit}" if unit else ""
+        target_text = f"{float(alert.get('target1') or 0):g}"
+        if alert.get("target2") is not None:
+            target_text += f"/{float(alert['target2']):g}"
+        latest_text = ""
+        if alert.get("latest1") is not None:
+            latest_text = "，最近 " + _health_search_number(
+                alert.get("latest1")
+            )
+            if alert.get("latest2") is not None:
+                latest_text += "/" + _health_search_number(
+                    alert.get("latest2")
+                )
+        member = str(alert.get("profile") or "") or "未指定档案"
+        over = int(alert.get("over") or 0)
+        lower = metric in LOWER_BOUND_TARGET_METRICS
+        insights.append(_health_insight(
+            f"metric_{metric}",
+            "warning" if over >= 2 else "info",
+            f"{member}的{label} {over} 次"
+            + ("低于目标" if lower else "超出目标")
+            + f"（共 {int(alert.get('count') or 0)} 次）",
+            (
+                ("目标≥" if lower else "目标≤")
+                + f" {target_text}{unit_text}{latest_text}"
+            ).strip(),
+            (
+                "复测后仍低于目标时，与医生确认是否需要调整方案。"
+                if lower else
+                "复测后仍超标时，与医生确认是否需要调整方案。"
+            ),
+            "metric",
+            metric=metric,
+        ))
+
+    for alert in report.get("member_glucose_alerts") or []:
+        member = str(alert.get("profile") or "") or "未指定档案"
+        avg = float(alert.get("avg") or 0)
+        count = int(alert.get("count") or 0)
+        if alert.get("kind") == "postprandial":
+            insights.append(_health_insight(
+                "metric_glucose_postprandial",
+                "info",
+                f"{member}的餐后血糖平均 {avg:g} mmol/L 明显偏高",
+                f"共 {count} 次。",
+                "如多次偏高，请咨询医生。",
+                "metric",
+                metric="glucose",
+            ))
+        else:
+            insights.append(_health_insight(
+                "metric_glucose_fasting",
+                "info",
+                f"{member}的空腹/未分情境血糖平均 {avg:g} mmol/L 偏高",
+                f"共 {count} 次；建议按空腹与餐后分别记录。",
+                "如多次偏高，请咨询医生。",
+                "metric",
+                metric="glucose",
+            ))
+
     if not insights:
         record_count = (
             int((report.get("metrics") or {}).get("count") or 0)
@@ -7686,6 +8171,7 @@ def _build_health_insights(
             + int((report.get("vaccinations") or {}).get("count") or 0)
             + int((report.get("medications") or {}).get("active") or 0)
             + int((report.get("reminders") or {}).get("pending") or 0)
+            + int((report.get("consultations") or {}).get("count") or 0)
         )
         if record_count == 0:
             insights.append(_health_insight(
@@ -7731,8 +8217,8 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
         report,
         safety=safety,
         # 家庭范围下记录来自不同成员，跨成员的趋势没有意义；
-        # 「未指定档案」是独立视图，可以看趋势
-        allow_trends=bool(str(profile or "").strip()),
+        # 「未指定档案」（profile=""）是独立视图，可以看趋势
+        allow_trends=profile is not None,
         family_scope=profile is None,
     )
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
@@ -10445,11 +10931,18 @@ async def family_overview(days: int = 7):
         None, cutoff, f"{today}T23:59:59", 100000,
     )
     latest_answers = await asyncio.to_thread(
-        store.latest_session_answers_by_profile
+        store.latest_session_answers_by_profile, True
     )
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
     )
+    if "" in names and "" not in recorded_days:
+        # recorded_days_by_profile 只统计已命名档案：未指定行单独查询，
+        # 否则 recorded_today/连续天数恒为 false/0
+        recorded_days = dict(recorded_days)
+        recorded_days[""] = await asyncio.to_thread(
+            store.recorded_days, "", 3650
+        )
     recorded_day_sets = {
         name: set(days) for name, days in recorded_days.items()
     }
@@ -10457,7 +10950,8 @@ async def family_overview(days: int = 7):
     for item in latest_answers:
         profile_name = item.get("profile") or ""
         risk = parse_risk_level(item.get("last_answer"))
-        if profile_name and risk:
+        # 「未指定档案」的会诊同样要参与家庭风险提示
+        if risk:
             risk_by_profile[profile_name] = risk
 
     target_map = {
@@ -10568,6 +11062,50 @@ async def family_overview(days: int = 7):
             "stale": stale,
             "critical_alerts": alerts,
         })
+
+    # 最新一条恢复正常不能掩盖窗口内更早的危急读数：与周报/复诊准备
+    # 单同口径，扫描窗口内指标并把未被最新值覆盖的危急读数并入
+    window_metrics = await asyncio.to_thread(
+        store.list_metrics, None, None, 100000, days
+    )
+    latest_metric_keys = {
+        (
+            item.get("profile") or "",
+            item.get("metric") or "",
+            str(item.get("measured_at") or ""),
+            item.get("value1"),
+            item.get("value2"),
+        )
+        for item in latest_metrics
+    }
+    seen_window_critical: set = set()
+    for item in window_metrics:
+        profile = item.get("profile") or ""
+        metric = item.get("metric") or ""
+        key = (
+            profile, metric,
+            str(item.get("measured_at") or ""),
+            item.get("value1"), item.get("value2"),
+        )
+        if key in latest_metric_keys or key in seen_window_critical:
+            continue
+        alerts = critical_metric_alerts(
+            metric, item.get("value1"), item.get("value2")
+        )
+        if not alerts:
+            continue
+        seen_window_critical.add(key)
+        label, _default_unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+        day = str(item.get("measured_at") or "")[:10]
+        entry = critical_by_profile.setdefault(profile, {
+            "count": 0, "items": [],
+        })
+        entry["count"] += 1
+        if len(entry["items"]) < 3:
+            suffix = f"（{day[5:]}）" if day else ""
+            entry["items"].append(
+                f"{label} {format_metric_value(item)}{suffix}"
+            )
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
     medication_names_by_profile: Dict[str, List[str]] = {}
@@ -10731,14 +11269,16 @@ async def family_overview(days: int = 7):
     labs_history_by_profile: Dict[str, List[Dict[str, Any]]] = {}
     for item in lab_history:
         profile = item.get("profile") or ""
-        if profile:
-            labs_history_by_profile.setdefault(profile, []).append(item)
+        # 「未指定档案」的化验/慢病同样参与用药安全核对（与 insights 一致）
+        labs_history_by_profile.setdefault(profile, []).append(item)
     condition_names_by_profile: Dict[str, List[str]] = {}
     for item in condition_items:
         profile = item.get("profile") or ""
         name = str(item.get("name") or "").strip()
-        if profile and name:
-            condition_names_by_profile.setdefault(profile, []).append(name)
+        if name:
+            condition_names_by_profile.setdefault(
+                profile, []
+            ).append(name)
     from core.medication_lab_safety import check_medication_lab_safety
     from core.condition_drug_safety import check_condition_drug_safety
 
@@ -11051,12 +11591,16 @@ async def export_family_overview_csv(days: int = 7):
                 f"（最近 {latest['symptom']} {latest['severity']}/10）"
             )
         consultations = item.get("consultations") or {}
-        risk_label = {
-            "emergency": "紧急",
-            "high": "高危",
-            "medium": "中危",
-            "low": "低危",
-        }.get(consultations.get("risk") or "", "")
+        # 风险等级来自不限窗口的最近一次会诊：窗口内 0 次会诊时
+        # 不能写成「近 N 天 0 次（高危）」
+        risk_label = ""
+        if int(consultations.get("count") or 0) > 0:
+            risk_label = {
+                "emergency": "紧急",
+                "high": "高危",
+                "medium": "中危",
+                "low": "低危",
+            }.get(consultations.get("risk") or "", "")
         vaccinations_info = item.get("vaccinations") or {}
         vaccination_text = ""
         if vaccinations_info.get("count"):
@@ -15799,6 +16343,14 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
                 session_id, user_id=_memory_scope(profile, session_id)
             )):
                 all_ok = False
+            if not profile and not _retry(
+                lambda: memory.delete_session_summary(
+                    session_id, user_id="medix_local"
+                )
+            ):
+                # 旧版本单科会诊可能把摘要写入共享的 medix_local：
+                # 按 metadata.session_id 精确删除该会话残留
+                all_ok = False
         elif profile:
             if not _retry(lambda: memory.delete_scope(
                 _memory_scope(profile, "")
@@ -15881,11 +16433,16 @@ def _cleanup_target_recreated(
             created = str((session or {}).get("created_at") or "")
         elif profile:
             created = store.profile_created_at(profile)
+            if not created:
+                # data-only 档案：任一名下数据仍在即视为在使用
+                created = profile if store.profile_name_exists(profile) else ""
         else:
             return False
     except Exception:
         return False
-    return bool(created and created >= since)
+    # 只要目标当前仍在（包括改名后改回原名：created_at 早于删除时间），
+    # 就不能整段清空其命名空间，必须按删除时间窗清理旧记忆
+    return bool(created)
 
 
 def _process_memory_cleanup_queue() -> None:
@@ -15906,7 +16463,9 @@ def _process_memory_cleanup_queue() -> None:
             # 直接作废会泄漏已删除患者的旧摘要（同名档案共享哈希）
             logger.info(
                 "记忆清理目标已重建，按时间窗清理旧记忆"
-                f"（profile={profile} session={session_id}）"
+                "（profile_hash={} session_length={}）",
+                _profile_audit_key(profile),
+                len(session_id),
             )
             if _erase_long_term_before(profile, session_id, deleted_at):
                 store.complete_memory_cleanup(entries)
@@ -16393,7 +16952,12 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     memory_context = await _attach_structured_conditions(
         memory_context, memory_profile
     )
-    triage = detect_red_flags(request.question, memory_context)
+    from core.triage import patient_complaint_text
+
+    # 科普/定义型提问（“什么是咯血？”）不是患者主诉，不能触发急症横幅
+    triage = detect_red_flags(
+        patient_complaint_text(request.question), memory_context
+    )
     medication_safety = check_medication_safety(
         request.question, memory_context
     )
@@ -16802,6 +17366,10 @@ def main():
             port=args.port,
             reload=args.reload,
             log_level="info",
+            # 代理头信任必须由 MEDIX_TRUST_PROXY_HEADERS 统一控制：
+            # uvicorn 默认会把本机对端的 X-Forwarded-For 写进
+            # request.client，使应用层的限流桶被客户端自选值替换
+            proxy_headers=False,
         )
     except OSError as e:
         # 无效端口/主机名或端口被占用时给可读提示，而不是裸 traceback

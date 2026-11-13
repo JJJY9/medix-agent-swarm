@@ -24,7 +24,7 @@ def test_new_session_invalidates_pending_history_loads(client):
 
     start = app_js.index("async function startNewSession()")
     body = app_js[start:start + 400]
-    assert "openSessionSeq += 1" in body
+    assert "++openSessionSeq" in body
     assert "function clearCurrentSession()" in app_js
     assert app_js.count("clearCurrentSession();") >= 3
 

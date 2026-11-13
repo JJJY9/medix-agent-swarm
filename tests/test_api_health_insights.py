@@ -890,15 +890,27 @@ def test_family_adherence_insight_uses_worst_member(client_and_store):
 def test_family_insights_skip_glucose_context_merge(client_and_store):
     """家庭范围不能把不同成员的血糖情境混在一起做空腹均值提示。"""
     client, _store = client_and_store
-    for name in ("妈妈", "爸爸"):
-        client.post("/api/metrics", json={
-            "profile": name, "metric": "glucose", "value1": 8.0,
-            "context": "fasting",
-            "measured_at": f"{_date(0)}T08:00",
-        })
+    client.post("/api/metrics", json={
+        "profile": "妈妈", "metric": "glucose", "value1": 6.0,
+        "context": "fasting",
+        "measured_at": f"{_date(0)}T08:00",
+    })
+    client.post("/api/metrics", json={
+        "profile": "爸爸", "metric": "glucose", "value1": 8.0,
+        "context": "fasting",
+        "measured_at": f"{_date(0)}T08:00",
+    })
 
     data = client.get("/api/health/insights", params={"days": 30}).json()
-    keys = [item["key"] for item in data["insights"]]
+    glucose = [
+        item for item in data["insights"]
+        if item["key"] == "metric_glucose_fasting"
+    ]
 
-    assert "metric_glucose_fasting" not in keys
-    assert "metric_glucose_postprandial" not in keys
+    # 按成员分别评估：只有爸爸空腹偏高，不能合并成“共 2 次”的均值提示
+    assert len(glucose) == 1
+    assert "爸爸" in glucose[0]["title"]
+    assert "共 1 次" in glucose[0]["detail"]
+    assert "metric_glucose_postprandial" not in [
+        item["key"] for item in data["insights"]
+    ]

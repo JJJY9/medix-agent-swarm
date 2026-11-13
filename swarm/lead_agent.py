@@ -703,8 +703,23 @@ class LeadAgent:
 
             return str(response or "").strip() or fallback_answer()
 
-        except LLMError:
-            raise
+        except LLMError as e:
+            # 汇总失败不应丢弃已完成的科室意见（科室分析已计费）：
+            # 用各科室原始意见兜底，避免整轮 502 让用户重跑
+            usage = getattr(e, "usage", None)
+            if usage_out is not None and isinstance(usage, dict):
+                for key, value in usage.items():
+                    try:
+                        usage_out[key] = usage_out.get(key, 0) + int(
+                            value or 0
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+            logger.warning(
+                "Swarm 汇总失败，改用各科室原始意见兜底: "
+                f"{getattr(e, 'code', '')} {e.user_message}"
+            )
+            return fallback_answer()
         except Exception as e:
             logger.error(f"Synthesis error: {e}")
             # 不要把内部异常文本当作会诊意见持久化/展示
