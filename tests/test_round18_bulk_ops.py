@@ -76,3 +76,27 @@ def test_bulk_delete_attachments_skips_missing_ids(client_and_store):
     assert response.status_code == 200
     assert response.json()["deleted"] == 0
     assert response.json()["skipped"] == [999]
+
+
+def test_bulk_delete_attachments_rejects_out_of_range_ids(
+    client_and_store,
+):
+    client, store = client_and_store
+    attachment_dir = store.db_path.parent / "attachments"
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    stored = "valid.pdf"
+    (attachment_dir / stored).write_bytes(b"%PDF-1.4")
+    item = store.add_attachment(
+        "妈妈", "lab", 0, "化验单.pdf", stored,
+        "application/pdf", 10, "",
+    )
+
+    response = client.post(
+        "/api/attachments/bulk_delete",
+        json={"ids": [item["id"], 2**63]},
+    )
+
+    # 超出 SQLite 整数范围的编号必须整体拒绝，且不能先删掉文件
+    assert response.status_code == 400
+    assert (attachment_dir / stored).exists()
+    assert store.get_attachment(item["id"]) is not None

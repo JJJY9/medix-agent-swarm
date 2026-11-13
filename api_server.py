@@ -11487,9 +11487,14 @@ async def bulk_delete_attachments(request: BulkIdsRequest):
 
     store = get_session_store()
     attachment_dir = _attachment_dir().resolve()
+    ids = sorted(set(request.ids))
+    # 先在删除任何文件前校验编号范围，超出 SQLite 整数范围会导致
+    # 查询抛 OverflowError，还会留下「文件已删、登记还在」的孤儿记录
+    if any(value <= 0 or value > MAX_SQLITE_INT for value in ids):
+        raise HTTPException(status_code=400, detail="附件编号不正确")
     removable = []
     skipped = []
-    for attachment_id in sorted(set(request.ids)):
+    for attachment_id in ids:
         item = await asyncio.to_thread(
             store.get_attachment, attachment_id
         )

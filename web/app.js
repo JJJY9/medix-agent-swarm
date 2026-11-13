@@ -7252,12 +7252,14 @@ async function loadMetricSummary() {
       + `&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== metricSummaryRequestSeq) return;
     renderMetricSummary(data);
   } catch {
     if (requestSeq === metricSummaryRequestSeq) {
+      // 不能保留上一位患者的统计数值
+      els.metricStatGrid.replaceChildren();
       els.metricStatGrid.hidden = true;
     }
   }
@@ -7365,7 +7367,7 @@ async function loadMetricWeekly() {
     const res = await fetch(
       `/api/metrics/latest?${params.toString()}`
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const items = (await res.json()).metrics || [];
     if (requestSeq !== metricWeeklyRequestSeq) return;
     const summaries = await fetchMetricSummaries(profile, items, 7);
@@ -7373,6 +7375,8 @@ async function loadMetricWeekly() {
     renderMetricWeekly(summaries);
   } catch {
     if (requestSeq === metricWeeklyRequestSeq) {
+      // 不能保留上一位患者的周度卡片
+      els.metricWeeklyList.replaceChildren();
       els.metricWeekly.hidden = true;
     }
   }

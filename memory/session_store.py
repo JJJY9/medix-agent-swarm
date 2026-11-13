@@ -3489,13 +3489,22 @@ class SessionStore:
         """记录一次未落库调用（失败/中止）的已消耗用量。"""
         if not isinstance(usage, dict):
             usage = {}
-        prompt = max(0, _usage_int(usage.get("prompt_tokens")))
-        completion = max(0, _usage_int(usage.get("completion_tokens")))
-        total = max(0, _usage_int(usage.get("total_tokens")))
+        prompt = min(
+            max(0, _usage_int(usage.get("prompt_tokens"))),
+            MAX_SQLITE_INT,
+        )
+        completion = min(
+            max(0, _usage_int(usage.get("completion_tokens"))),
+            MAX_SQLITE_INT,
+        )
+        total = min(
+            max(0, _usage_int(usage.get("total_tokens"))),
+            MAX_SQLITE_INT,
+        )
         if not total and (prompt or completion):
-            total = prompt + completion
+            total = min(prompt + completion, MAX_SQLITE_INT)
         try:
-            calls = max(0, int(llm_calls or 0))
+            calls = min(max(0, int(llm_calls or 0)), MAX_SQLITE_INT)
         except (TypeError, ValueError, OverflowError):
             calls = 0
         if not (prompt or completion or total or calls):
@@ -5555,16 +5564,24 @@ class SessionStore:
                     profile = _normalize_profile_name(
                         raw.get("profile")
                     )
-                    prompt = max(
-                        0, _usage_int(raw.get("prompt_tokens"))
+                    prompt = min(
+                        max(0, _usage_int(raw.get("prompt_tokens"))),
+                        MAX_SQLITE_INT,
                     )
-                    completion = max(
-                        0, _usage_int(raw.get("completion_tokens"))
+                    completion = min(
+                        max(0, _usage_int(raw.get("completion_tokens"))),
+                        MAX_SQLITE_INT,
                     )
-                    total = max(0, _usage_int(raw.get("total_tokens")))
+                    total = min(
+                        max(0, _usage_int(raw.get("total_tokens"))),
+                        MAX_SQLITE_INT,
+                    )
                     if not total and (prompt or completion):
-                        total = prompt + completion
-                    calls = max(0, _usage_int(raw.get("llm_calls")))
+                        total = min(prompt + completion, MAX_SQLITE_INT)
+                    calls = min(
+                        max(0, _usage_int(raw.get("llm_calls"))),
+                        MAX_SQLITE_INT,
+                    )
                     created_at = str(
                         raw.get("created_at") or now
                     )[:40]
@@ -9553,6 +9570,8 @@ class SessionStore:
         try:
             attachment_id = int(attachment_id)
         except (TypeError, ValueError, OverflowError):
+            return None
+        if attachment_id <= 0 or attachment_id > MAX_SQLITE_INT:
             return None
         with self._lock:
             row = self._conn.execute(
