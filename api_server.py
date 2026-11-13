@@ -1584,10 +1584,23 @@ class _BodyTooLarge(Exception):
 
 
 def _scope_route_path(scope: Dict[str, Any]) -> str:
-    """去掉 root_path 后的路由路径（子路径部署时鉴权与限流仍能匹配）。"""
+    """去掉 root_path 后的路由路径（子路径部署时鉴权与限流仍能匹配）。
+
+    与 Starlette 的 get_route_path 保持同样的边界语义：只有恰好等于
+    root 或以 root + "/" 开头才截断。root "/" 归一为空串，否则
+    "/api/sessions" 会被截成 "api/sessions"，导致鉴权/CSRF/限流全部跳过。
+    """
     path = str(scope.get("path") or "")
     root = str(scope.get("root_path") or "")
-    if root and path.startswith(root):
+    if len(root) > 1:
+        # 子路径部署允许尾斜杠；根路径 "/" 必须保留，uvicorn 会把它
+        # 与 path 拼成 "//api/..."，去掉一层后仍是 "/api/..."
+        root = root.rstrip("/")
+    if (
+        root
+        and path.startswith(root)
+        and (path == root or path[len(root)] == "/")
+    ):
         path = path[len(root):]
     return path or "/"
 

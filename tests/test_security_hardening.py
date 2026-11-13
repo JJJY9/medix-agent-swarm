@@ -21,6 +21,28 @@ def test_scope_route_path_strips_root_path():
     }) == "/api/chat"
 
 
+def test_scope_route_path_root_slash_boundary():
+    # root "/" 不能把 /api/... 截成 api/...，否则鉴权/CSRF/限流被跳过
+    assert api_server._scope_route_path({
+        "path": "/api/sessions", "root_path": "/",
+    }) == "/api/sessions"
+    # uvicorn 的 root_path="/" 会与前导斜杠拼接成 "//api/..."
+    assert api_server._scope_route_path({
+        "path": "//api/sessions", "root_path": "/",
+    }) == "/api/sessions"
+    # 带尾斜杠的部署前缀
+    assert api_server._scope_route_path({
+        "path": "/medix/api/sessions", "root_path": "/medix/",
+    }) == "/api/sessions"
+    # 前缀相同但并非子路径时不能截断
+    assert api_server._scope_route_path({
+        "path": "/medix2/api/sessions", "root_path": "/medix",
+    }) == "/medix2/api/sessions"
+    assert api_server._body_limit_for_path(api_server._scope_route_path({
+        "path": "/api/sessions/import", "root_path": "/",
+    })) == api_server.MAX_BACKUP_FILE_BYTES
+
+
 def test_root_path_requests_still_require_token(monkeypatch):
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "secret-token")
     client = TestClient(api_server.app, root_path="/medix")
@@ -32,6 +54,20 @@ def test_root_path_requests_still_require_token(monkeypatch):
     )
 
     assert response.status_code == 401
+
+
+def test_root_slash_requests_still_require_token(monkeypatch):
+    """root_path="/" 的部署同样要过令牌与跨站校验。"""
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "secret-token")
+    client = TestClient(api_server.app, root_path="/")
+
+    assert client.get("/api/sessions").status_code == 401
+    assert client.get(
+        "/api/sessions", headers={"X-Medix-Token": "secret-token"}
+    ).status_code == 200
+    assert client.post(
+        "/api/sessions", headers={"Origin": "http://evil.example"}
+    ).status_code == 403
 
 
 def test_oversized_json_body_is_rejected():
