@@ -569,6 +569,13 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?:多)?(?:前|以来)?)?"
     r"\s*(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
     r"(?:停用|停药|停服|停止服用|不再服用|停了|停掉)"
+    r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗))"
+)
+#: 「想/打算/准备停用华法林」是意图，当前仍在用药
+_INTENT_STOP_PREFIX = re.compile(
+    r"(?:想|打算|准备|计划|考虑|要不要|是否)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:停用|停药|停服|停了|停掉)\s*$"
 )
 #: 「准备停药/能停药吗」是意向或疑问，不能当作已停药
 _INTENT_STOP_SUFFIX = re.compile(
@@ -667,6 +674,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
+            or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
         ):
             return True

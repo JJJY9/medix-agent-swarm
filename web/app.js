@@ -5072,7 +5072,10 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
     ? false
     : (
       options.restoreContext !== false
-      || !safeSessionGet('medix.context')
+      || (
+        !safeSessionGet('medix.context')
+        && safeSessionGet(CONTEXT_CLEARED_KEY) !== '1'
+      )
     );
   if (snapshotAllowed) {
     applyPatientContext(
@@ -5326,6 +5329,10 @@ function clearDeletedSession(id, notice = '') {
   lastServerMessageId = 0;
   clearPersistedSessionId();
   setSessionUrl(null);
+  // 已删除会话的历史与悬空提问不能留在界面上，否则会与新会话混排
+  els.thread.replaceChildren(els.empty);
+  els.empty.hidden = false;
+  resetRail();
   if (els.readout && els.readout.session) {
     els.readout.session.textContent = '新会话';
   }
@@ -11897,6 +11904,7 @@ async function saveAppointment() {
       editingId ? '已保存修改。' : '已保存就诊预约。'
     );
     await loadAppointments();
+    await loadVisits();
     refreshOverview();
   } catch (err) {
     setAppointmentStatusText(`保存失败：${err.message || err}`, true);
@@ -11924,6 +11932,7 @@ async function updateAppointmentStatus(item, status) {
       `已标记为${APPOINTMENT_STATUS_LABELS[status] || status}。`
     );
     await loadAppointments();
+    await loadVisits();
     refreshOverview();
     refreshReminderBadge();
   } catch (err) {
@@ -11941,6 +11950,7 @@ async function deleteAppointment(item) {
     if (editingAppointmentId === item.id) resetAppointmentForm();
     setAppointmentStatusText('已删除就诊预约。');
     await loadAppointments();
+    await loadVisits();
     refreshOverview();
     refreshReminderBadge();
   } catch (err) {
@@ -20263,7 +20273,17 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     if (restoreOpenSeq !== openSessionSeq) return false;
 
     const messages = data.messages || [];
-    if (!messages.length) return false;
+    if (!messages.length) {
+      if (deepLinkedSession) {
+        // 深链指向空会话：清掉本标签页上一患者的草稿/档案，避免把
+        // 旧上下文带进这个会话，然后允许正常发送
+        applyPatientContext({});
+        setActiveProfile(data.profile || '');
+        deepLinkedSession = false;
+        contextUserEdited = false;
+      }
+      return false;
+    }
 
     const newestAssistantId = messages.reduce(
       (max, message) => message.role === 'assistant'
@@ -20358,6 +20378,15 @@ async function send(question) {
     return;
   }
   if (!question.trim()) return;
+  // 深链尚未恢复成功时先补一次恢复：否则会把本标签页上一患者的
+  // 补充信息发进深链患者的会话（服务端按会话绑定档案落库）
+  if (deepLinkedSession) {
+    await restoreCurrentSession();
+    if (deepLinkedSession) {
+      setVitals('warn', '会诊记录尚未打开，请稍后重试');
+      return;
+    }
+  }
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
   deepLinkedSession = false;
   if (pendingSessionReset) {
@@ -20872,6 +20901,9 @@ function hideBanner() {
 /* ---------- 结构化补充信息 ---------- */
 
 const CONTEXT_STORAGE_KEY = 'medix.context';
+// 用户显式清空/删除档案后置位：与“本标签页从未填写草稿”区分，
+// 防止刷新恢复时把已删除患者的旧快照填回来
+const CONTEXT_CLEARED_KEY = 'medix.contextCleared';
 const SINGLE_MODE_KEY = 'medix.singleMode';
 const PROFILES_STORAGE_KEY = 'medix.profiles';
 const PROFILE_STORAGE_KEY = 'medix.activeProfile';
@@ -21008,12 +21040,19 @@ function updateContextSummary() {
   try {
     if (parts.length) {
       safeSessionSet(CONTEXT_STORAGE_KEY, JSON.stringify(context));
+      safeSessionRemove(CONTEXT_CLEARED_KEY);
     } else {
       safeSessionRemove(CONTEXT_STORAGE_KEY);
     }
   } catch {
     // 隐私模式下 sessionStorage 不可用时忽略
   }
+}
+
+function markContextCleared() {
+  // 显式清空：保留“已清空”标记，刷新时不能再用旧回答快照回填
+  safeSessionRemove(CONTEXT_STORAGE_KEY);
+  safeSessionSet(CONTEXT_CLEARED_KEY, '1');
 }
 
 function applyPatientContext(context) {
@@ -21324,7 +21363,12 @@ async function deletePatientProfile() {
     refreshProfileOptions('');
     loadFamilyOverview();
     loadHomeGlance();
-    if (wasSelected) applyPatientContext({});
+    if (wasSelected) {
+      applyPatientContext({});
+      markContextCleared();
+      // 与“清空补充信息”一致：避免下一问继续写进已删除患者的会话
+      void detachSessionForProfileChange();
+    }
   } catch (err) {
     window.alert(`删除档案失败：${err.message || err}`);
   }
@@ -22795,6 +22839,7 @@ els.contextPanel.addEventListener('change', () => {
 
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});
+  markContextCleared();
   // 同时清除 activeProfileName 与 sessionStorage，避免刷新后旧档案被重新选中
   setActiveProfile('');
   // 清空档案后继续沿用已绑定旧档案的会话，后续提问会被记到旧档案名下

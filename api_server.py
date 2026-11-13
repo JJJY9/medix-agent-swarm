@@ -1847,19 +1847,30 @@ def add_security_headers(
 
 
 def _rate_limit_key(request: Request) -> str:
-    """优先按访问令牌限流；匿名请求退回源 IP。"""
+    """优先按访问令牌限流；匿名请求按可信客户端地址限流。"""
     token = request_token(request) if get_access_token() else None
     if token:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
         return f"token:{digest}"
-    host = request.client.host if request.client else "unknown"
-    return f"ip:{host}"
+    # 与令牌失败限流同源：只有显式信任代理头且对端是本机代理时
+    # 才按转发地址分桶，避免代理后全家共用 127.0.0.1 的桶
+    return _client_ip_key(request)
 
 
 _PROXY_HEADER_NAMES = ("x-forwarded-for", "forwarded", "x-real-ip")
 _PROXY_FORWARDED_FOR_RE = re.compile(
     r"(?:^|;)\s*for\s*=\s*([^;]+)", re.IGNORECASE
 )
+
+
+def _proxy_header_values(request: Request, name: str) -> List[str]:
+    """返回同名代理头的所有非空字段（重复字段必须全部看到）。"""
+    try:
+        values = list(request.headers.getlist(name))
+    except AttributeError:
+        value = request.headers.get(name)
+        values = [value] if value is not None else []
+    return [str(value) for value in values if str(value).strip()]
 
 
 def _has_proxy_headers(request: Request) -> bool:
@@ -1874,7 +1885,7 @@ def _has_proxy_headers(request: Request) -> bool:
             or lower == "x-real-ip"
             or lower.startswith("x-forwarded-")
         ):
-            if (request.headers.get(name) or "").strip():
+            if _proxy_header_values(request, name):
                 return True
     return False
 
@@ -1942,7 +1953,9 @@ def _forwarded_client_address(request: Request) -> str:
     多个转发头同时存在且互相矛盾时返回空串（fail closed）：说明代理
     配置不一致，客户端可能自带了一个头，不能据此判定本机或分配限流桶。
     """
-    forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
+    forwarded_for = ",".join(
+        _proxy_header_values(request, "x-forwarded-for")
+    ).strip()
     xff_value = ""
     if forwarded_for:
         parts = [
@@ -1964,9 +1977,16 @@ def _forwarded_client_address(request: Request) -> str:
                     if candidate and not _is_loopback_address(candidate):
                         xff_value = candidate
                         break
-    real_value = _normalize_forwarded_address(
-        request.headers.get("x-real-ip") or ""
-    )
+    real_values = [
+        value for value in (
+            _normalize_forwarded_address(item)
+            for item in _proxy_header_values(request, "x-real-ip")
+        ) if value
+    ]
+    if len(set(real_values)) > 1:
+        # 重复的 X-Real-IP 给出互相矛盾的地址：fail closed
+        return ""
+    real_value = real_values[0] if real_values else ""
     forwarded_header = ""
     try:
         forwarded_header = ", ".join(
@@ -2253,9 +2273,15 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
-        shared_bucket = _has_proxy_headers(request) and (
-            not _trust_proxy_headers()
-            or not _forwarded_client_address(request)
+        shared_bucket = (
+            _is_loopback_address(
+                request.client.host if request.client else ""
+            )
+            and _has_proxy_headers(request)
+            and (
+                not _trust_proxy_headers()
+                or not _forwarded_client_address(request)
+            )
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -6586,10 +6612,25 @@ async def _weekly_report_impl(
         }
         member_groups: Dict[tuple, Dict[str, Any]] = {}
         glucose_groups: Dict[str, Dict[str, Any]] = {}
+        family_daily: Dict[tuple, Dict[str, list]] = {}
         for item in metrics:
             member = str(item.get("profile") or "")
             metric = str(item.get("metric") or "")
             target = family_target_map.get((member, metric))
+            if (
+                target is not None
+                and metric in DAILY_ACCUMULATING_METRICS
+            ):
+                day = str(item.get("measured_at") or "")[:10]
+                if day:
+                    day_entry = family_daily.setdefault(
+                        (member, metric), {}
+                    ).setdefault(day, [0.0, 0])
+                    try:
+                        day_entry[0] += float(item.get("value1") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    day_entry[1] += 1
             if (
                 target is not None
                 and metric not in DAILY_ACCUMULATING_METRICS
@@ -6611,7 +6652,6 @@ async def _weekly_report_impl(
                     over_target = False
                 if over_target:
                     entry["over"] += 1
-                    entry["latest"] = item
             if metric == "glucose":
                 group = glucose_groups.setdefault(
                     member, {
@@ -6648,6 +6688,38 @@ async def _weekly_report_impl(
                 "latest2": latest.get("value2"),
                 "target1": target.get("value1"),
                 "target2": target.get("value2"),
+            })
+        today_key = now.strftime("%Y-%m-%d")
+        for (member, metric), days_map in sorted(family_daily.items()):
+            target = family_target_map.get((member, metric))
+            if target is None or not days_map:
+                continue
+            day_key = (
+                today_key if today_key in days_map else max(days_map)
+            )
+            total, day_count = days_map[day_key]
+            try:
+                target_value = float(target.get("value1") or 0)
+            except (TypeError, ValueError):
+                continue
+            if total >= target_value:
+                continue
+            label, default_unit, _ = METRIC_TYPES.get(
+                metric, (metric, "", (0, 0))
+            )
+            member_metric_alerts.append({
+                "profile": member,
+                "metric": metric,
+                "over": 1,
+                "count": day_count,
+                "unit": default_unit,
+                "daily": True,
+                "day": day_key,
+                "total": round(total, 1),
+                "target1": target.get("value1"),
+                "target2": None,
+                "latest1": None,
+                "latest2": None,
             })
         for member, group in sorted(glucose_groups.items()):
             fasting = group["fasting"]
@@ -8101,6 +8173,29 @@ def _build_health_insights(
         )
         unit = str(alert.get("unit") or default_unit)
         unit_text = f" {unit}" if unit else ""
+        member = str(alert.get("profile") or "") or "未指定档案"
+        if alert.get("daily"):
+            day = str(alert.get("day") or "")
+            day_text = (
+                "今日" if day == datetime.now().strftime("%Y-%m-%d")
+                else (f"最近一日（{day[5:]}）" if day else "最近一日")
+            )
+            total = float(alert.get("total") or 0)
+            target_text = f"{float(alert.get('target1') or 0):g}"
+            insights.append(_health_insight(
+                f"metric_{metric}",
+                "warning",
+                f"{member}的{label} {day_text}累计 {total:g}{unit_text}",
+                (
+                    f"目标 ≥ {target_text}{unit_text}，{day_text}累计 "
+                    f"{total:g}{unit_text}"
+                    f"（{int(alert.get('count') or 0)} 次记录）"
+                ).strip(),
+                "继续记录到今日累计达标；单条记录不与每日目标比较。",
+                "metric",
+                metric=metric,
+            ))
+            continue
         target_text = f"{float(alert.get('target1') or 0):g}"
         if alert.get("target2") is not None:
             target_text += f"/{float(alert['target2']):g}"
@@ -10784,12 +10879,26 @@ def _family_attention(
         item for item in (metrics or []) if item.get("over_target")
     ]
     if over_target:
+        def _metric_attention_text(item: Dict[str, Any]) -> str:
+            value_text = str(item.get("value", ""))
+            judged_total = item.get("daily_judged_total")
+            if judged_total is not None:
+                day = str(item.get("daily_judged_day") or "")
+                prefix = (
+                    "今日" if day == datetime.now().strftime("%Y-%m-%d")
+                    else (f"{day[5:]}" if day else "当日")
+                )
+                value_text = f"{prefix}累计 {float(judged_total):g}"
+            return (
+                f"{item.get('label', '')} {value_text}"
+                f"{item.get('unit') or ''}"
+            )
+
         return {
             "level": "warning",
             "label": f"指标未达标 {len(over_target)} 项",
             "detail": "、".join(
-                f"{item.get('label', '')} {item.get('value', '')}"
-                f"{item.get('unit') or ''}"
+                _metric_attention_text(item)
                 for item in over_target[:3]
             )[:120],
         }
@@ -10978,7 +11087,7 @@ async def family_overview(days: int = 7):
             store.metric_daily_totals, day_key
         )
         for key, value in day_map.items():
-            extra_daily[key] = value
+            extra_daily[key] = {**value, "day": day_key}
 
     def format_metric_value(item: Dict[str, Any]) -> str:
         text = f"{float(item.get('value1') or 0):g}"
@@ -11008,6 +11117,16 @@ async def family_overview(days: int = 7):
             extra = extra_daily.get((profile, metric))
             if extra is not None:
                 day_total = extra["total"]
+        judged_day = ""
+        if metric in DAILY_ACCUMULATING_METRICS and day_total is not None:
+            judged_day = (
+                today_key if daily_total is not None
+                else str(
+                    (extra_daily.get((profile, metric)) or {}).get(
+                        "day", ""
+                    )
+                )
+            )
         over_target: Optional[bool] = None
         if target is not None:
             if (
@@ -11059,6 +11178,12 @@ async def family_overview(days: int = 7):
                 "low" if metric in LOWER_BOUND_TARGET_METRICS else "high"
             ),
             "daily_total": daily_total,
+            "daily_judged_total": (
+                day_total
+                if metric in DAILY_ACCUMULATING_METRICS
+                and day_total is not None else None
+            ),
+            "daily_judged_day": judged_day,
             "stale": stale,
             "critical_alerts": alerts,
         })
