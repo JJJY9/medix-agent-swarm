@@ -1897,6 +1897,18 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     UNIQUE(profile, session_id)
                 );
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id        TEXT NOT NULL DEFAULT '',
+                    profile           TEXT NOT NULL DEFAULT '',
+                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens      INTEGER NOT NULL DEFAULT 0,
+                    llm_calls         INTEGER NOT NULL DEFAULT 0,
+                    created_at        TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_usage_events_created
+                    ON usage_events(created_at DESC);
                 CREATE TABLE IF NOT EXISTS reminders (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     title      TEXT NOT NULL,
@@ -3453,6 +3465,57 @@ class SessionStore:
             ],
         }
 
+    def record_usage_event(
+        self,
+        session_id: str,
+        profile: str,
+        usage: Any,
+        llm_calls: Any = 0,
+    ) -> None:
+        """记录一次未落库调用（失败/中止）的已消耗用量。"""
+        if not isinstance(usage, dict):
+            usage = {}
+        prompt = max(0, _usage_int(usage.get("prompt_tokens")))
+        completion = max(0, _usage_int(usage.get("completion_tokens")))
+        total = max(0, _usage_int(usage.get("total_tokens")))
+        if not total and (prompt or completion):
+            total = prompt + completion
+        try:
+            calls = max(0, int(llm_calls or 0))
+        except (TypeError, ValueError, OverflowError):
+            calls = 0
+        if not (prompt or completion or total or calls):
+            return
+        with self._write_and_checkpoint():
+            self._conn.execute(
+                """
+                INSERT INTO usage_events(
+                    session_id, profile, prompt_tokens, completion_tokens,
+                    total_tokens, llm_calls, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(session_id or "").strip()[:64],
+                    _normalize_profile_name(profile),
+                    prompt, completion, total, calls, self._now(),
+                ),
+            )
+
+    def _usage_events_between(
+        self, start: str, end: str
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT prompt_tokens, completion_tokens, total_tokens,
+                       llm_calls, created_at
+                  FROM usage_events
+                 WHERE created_at >= ? AND created_at < ?
+                """,
+                (start, end),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def daily_usage(
         self,
         days: int = 7,
@@ -3498,6 +3561,25 @@ class SessionStore:
                 metadata = {}
             _accumulate_usage(bucket, metadata)
 
+        # 失败/中止会诊没有 assistant 消息，用量来自单独的 usage_events
+        if not favorites_only:
+            end_text = (today + timedelta(days=1)).isoformat()
+            for event in self._usage_events_between(start_text, end_text):
+                if profile and event.get("profile") != profile:
+                    continue
+                bucket = buckets.get(str(event["created_at"])[:10])
+                if bucket is None:
+                    continue
+                for key in (
+                    "prompt_tokens", "completion_tokens", "total_tokens"
+                ):
+                    bucket["usage"][key] += max(
+                        0, int(event.get(key) or 0)
+                    )
+                bucket["llm_calls"] += max(
+                    0, int(event.get("llm_calls") or 0)
+                )
+
         totals = _new_usage_entry()
         for bucket in buckets.values():
             totals["turns"] += bucket["turns"]
@@ -3542,6 +3624,17 @@ class SessionStore:
             except (TypeError, json.JSONDecodeError):
                 metadata = {}
             _accumulate_usage(totals, metadata)
+
+        for event in self._usage_events_between(start, next_month):
+            for key in (
+                "prompt_tokens", "completion_tokens", "total_tokens"
+            ):
+                totals["usage"][key] += max(
+                    0, int(event.get(key) or 0)
+                )
+            totals["llm_calls"] += max(
+                0, int(event.get("llm_calls") or 0)
+            )
 
         return {
             "month": today.strftime("%Y-%m"),

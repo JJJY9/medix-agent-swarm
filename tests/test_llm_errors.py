@@ -87,6 +87,28 @@ def test_default_timeout_and_env_override(monkeypatch):
     assert LLMClient().request_timeout == 12.5
 
 
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_invalid_timeout_falls_back(monkeypatch, value):
+    monkeypatch.setitem(llm_client.LLM_CONFIG, "api_key", "test-key")
+    monkeypatch.setenv("MEDIX_TIMEOUT", value)
+
+    assert LLMClient().request_timeout == 60.0
+
+
+def test_bare_api_error_is_retryable():
+    import httpx
+    from openai import APIError
+
+    error = classify_llm_error(APIError(
+        "An error occurred during streaming",
+        request=httpx.Request("POST", "https://example.com/v1"),
+        body=None,
+    ))
+
+    assert error.code == "llm_server"
+    assert error.retryable is True
+
+
 class FatalLLM:
     def __init__(self):
         self.calls = 0

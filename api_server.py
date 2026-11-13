@@ -2343,12 +2343,16 @@ async def usage_month():
     budget = get_token_budget()
     total = int(data["usage"].get("total_tokens") or 0)
     percent = round(total / budget * 100, 1) if budget > 0 else None
+    exceeded = bool(budget > 0 and total >= budget)
+    if percent is not None and not exceeded and percent >= 100:
+        # 99.95% 不应显示成 100.0%，与 exceeded 字段保持一致
+        percent = 99.9
 
     return {
         **data,
         "budget": budget,
         "percent": percent,
-        "exceeded": bool(budget > 0 and total >= budget),
+        "exceeded": exceeded,
     }
 
 
@@ -15048,6 +15052,32 @@ def _release_profile_claim(session_id: str, profile: str) -> None:
             _PROFILE_CLAIMS.pop(session_id, None)
 
 
+async def _record_failed_usage(
+    store: Any,
+    session_id: str,
+    profile: str,
+    error: Any = None,
+    usage: Optional[Dict[str, Any]] = None,
+    llm_calls: Any = 0,
+) -> None:
+    """记录失败/中止会诊已消耗的 token，避免月预算漏记。"""
+    if error is not None:
+        usage = getattr(error, "usage", None) or usage
+        llm_calls = getattr(error, "llm_calls", None) or llm_calls
+    if not usage and not llm_calls:
+        return
+    try:
+        await asyncio.to_thread(
+            store.record_usage_event,
+            session_id,
+            profile,
+            usage or {},
+            llm_calls,
+        )
+    except Exception as e:
+        logger.warning(f"记录失败用量出错（忽略）: {redact_secrets(str(e))}")
+
+
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:
     """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。
 
@@ -15271,6 +15301,11 @@ async def chat(request: ChatRequest):
             result = await coordinator.process(**process_kwargs)
         except LLMError as e:
             logger.error(f"模型调用失败: {e.code} - {e.user_message}")
+            from memory import get_session_store
+
+            await _record_failed_usage(
+                get_session_store(), session_id, memory_profile, e
+            )
             _release_profile_claim(session_id, memory_profile)
             raise HTTPException(
                 status_code=502,
@@ -15324,7 +15359,10 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         request.question, memory_context
     )
 
-    async def event_stream() -> AsyncIterator[str]:
+    # 任务创建后由 done 回调负责关联/释放认领；在此之前断开则在外层释放
+    claim_state = {"handled": False}
+
+    async def event_stream_inner() -> AsyncIterator[str]:
         def sse(payload: Dict[str, Any]) -> str:
             # 模型输出可能包含孤立代理码位，直接 encode 会让流中断
             safe_payload = strip_lone_surrogates(payload)
@@ -15428,6 +15466,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             )
 
         task.add_done_callback(link_profile_when_done)
+        claim_state["handled"] = True
 
         def finish_task(done_task):
             # 锁必须等子任务真正结束才释放：仅 cancel() 后立刻 release
@@ -15510,6 +15549,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                             "type": "agent_done",
                             "agent_id": agent_id,
                             "name": AGENT_LABELS.get(agent_id, agent_id),
+                            "failed": any(
+                                status == "failed" for status in statuses
+                            ),
                         })
 
                 # 进展事件之后再推送汇总阶段已经产生的增量文本
@@ -15532,6 +15574,11 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 result = await task
             except LLMError as e:
                 logger.error(f"流式模型调用失败: {e.code} - {e.user_message}")
+                from memory import get_session_store
+
+                await _record_failed_usage(
+                    get_session_store(), session_id, memory_profile, e
+                )
                 yield sse({
                     "type": "error",
                     "code": e.code,
@@ -15553,6 +15600,15 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
         payload = _serialize_result(result, AGENT_LABELS)
         if not (payload["answer"] or "").strip():
+            from memory import get_session_store
+
+            await _record_failed_usage(
+                get_session_store(),
+                session_id,
+                memory_profile,
+                usage=payload.get("usage"),
+                llm_calls=payload.get("llm_calls", 0),
+            )
             _release_profile_claim(session_id, memory_profile)
             yield sse({
                 "type": "error",
@@ -15564,6 +15620,15 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         await _link_patient_profile(session_id, memory_profile)
 
         yield sse({"type": "result", **payload})
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for chunk in event_stream_inner():
+                yield chunk
+        finally:
+            # 客户端在任务创建前断开时，GeneratorExit 也要释放首轮认领
+            if not claim_state["handled"]:
+                _release_profile_claim(session_id, memory_profile)
 
     return StreamingResponse(
         event_stream(),
