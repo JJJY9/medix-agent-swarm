@@ -284,3 +284,34 @@ def test_active_medications_trigger_anticoagulant_head_injury():
     )
 
     assert "抗凝治疗期间头部外伤" in result["matches"]
+
+
+def test_enumeration_negation_covers_all_items():
+    # 「没有发烧和胸痛」「无发热、咳嗽、胸痛」整组都是否定
+    assert detect_red_flags("我没有发烧和胸痛，只是有点乏力")["level"] == "none"
+    assert detect_red_flags("无发热、咳嗽、胸痛")["level"] == "none"
+    assert detect_red_flags("没有胸痛和呼吸困难")["level"] == "none"
+    assert detect_red_flags("否认胸痛及咯血")["level"] == "none"
+    # 阳性修饰与转折不能被枚举否定吞掉
+    assert detect_red_flags("无诱因、突发胸痛")["level"] == "emergency"
+    assert detect_red_flags("没有缓解、胸痛加重")["level"] == "emergency"
+    assert detect_red_flags("说话不清、嘴歪、一侧肢体无力")[
+        "matches"
+    ] == ["言语不清", "口角歪斜", "单侧肢体无力"]
+
+
+def test_visit_recommendation_post_negation():
+    from core.triage import has_visit_recommendation
+
+    assert has_visit_recommendation("医院就别去了，先在家观察。") is False
+    assert has_visit_recommendation("医院不用去了。") is False
+    assert has_visit_recommendation("去医院也没用") is False
+    assert has_visit_recommendation("急诊别去了，等等再说") is False
+    assert has_visit_recommendation("医院没必要去") is False
+    # 后置劝阻之后又给出建议时仍算建议
+    assert has_visit_recommendation(
+        "医院别去了，建议尽快拨打 120。"
+    ) is True
+    # 正常建议不受影响
+    assert has_visit_recommendation("建议尽快去医院") is True
+    assert has_visit_recommendation("请立即前往急诊") is True

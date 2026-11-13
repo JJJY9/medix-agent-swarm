@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import threading
+import time as _time
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -651,11 +652,65 @@ def _import_payload_problems(
             if meta_length > MAX_IMPORT_MESSAGE_CHARS:
                 problems.append("单条消息的元数据过大。")
                 continue
-            total_message_chars += len(content) + meta_length
+            total_message_chars += len(content)
             if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
                 problems.append("备份中的消息总量过大。")
                 return problems
     return problems
+
+
+@contextmanager
+def _db_init_lock(db_path: Path):
+    """跨进程串行化建表/迁移。
+
+    多进程同时首次打开同一库时，PRAGMA journal_mode=WAL 会抛
+    database is locked，check-then-ALTER 迁移会抛 duplicate column name。
+    """
+    lock_path = Path(db_path).with_name(Path(db_path).name + ".init.lock")
+    handle = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")
+    except OSError:
+        yield
+        return
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            deadline = _time.monotonic() + 30
+            while True:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    if _time.monotonic() > deadline:
+                        break
+                    _time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            locked = True
+        yield
+    finally:
+        if locked:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
 
 
 def _import_probe_spec(raw: Dict[str, Any], columns, extract):
@@ -1981,7 +2036,9 @@ def _validate_export_payload(payload: Dict[str, Any]) -> None:
                     f"存在超过 {MAX_BACKUP_MESSAGE_CHARS} 字符的消息元数据，"
                     "无法导出为可恢复备份。"
                 )
-            total_chars += length + meta_length
+            # 元数据只做单条上限，不计入总量：真实会诊元数据可达正文
+            # 数倍，计入后长期用户的库会既无法导出也无法恢复
+            total_chars += length
     if total_chars > MAX_BACKUP_TOTAL_CHARS:
         raise ValueError(
             "会话消息总量超过可导入上限，无法导出为可恢复备份。"
@@ -2000,8 +2057,25 @@ class SessionStore:
         # 已删除会话的墓碑：阻止进行中的会诊在删除后把会话写回来
         self._deleted_sessions: Dict[str, None] = {}
         self._max_deleted_sessions = 4096
-        self._init_schema()
+        with _db_init_lock(self.db_path):
+            self._init_schema()
+        self._vacuum_if_needed(
+            getattr(self, "_pending_vacuum", False)
+        )
         self._harden_permissions()
+
+    def _vacuum_if_needed(self, needed: bool) -> None:
+        """旧库升级的一次性 VACUUM：清理 secure_delete 之前的空闲页。"""
+        if not needed:
+            return
+        try:
+            with self._lock:
+                self._conn.execute("VACUUM")
+            logger.info(
+                "已完成旧库一次性 VACUUM（清理 secure_delete 之前的空闲页）"
+            )
+        except sqlite3.Error as e:
+            logger.warning(f"旧库 VACUUM 失败（忽略）: {e}")
 
     def _harden_permissions(self) -> None:
         """把数据库与应用数据目录限制为仅当前用户可访问。
@@ -2022,7 +2096,14 @@ class SessionStore:
         with self._lock, self._conn:
             # 删除时立即清零释放的页面，避免问诊明文留在空闲页
             self._conn.execute("PRAGMA secure_delete=ON")
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            for attempt in range(5):
+                try:
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError:
+                    if attempt == 4:
+                        raise
+                    _time.sleep(0.2 * (attempt + 1))
             # 早期开发版本的墓碑表存明文档案名且列名不同；不兼容时
             # 直接重建（墓碑只用于近期删除判定，可安全丢弃）
             columns = {
@@ -2108,6 +2189,12 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     UNIQUE(profile, session_id)
                 );
+                CREATE TABLE IF NOT EXISTS deleted_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_deleted_sessions_at
+                    ON deleted_sessions(deleted_at DESC);
                 CREATE TABLE IF NOT EXISTS profile_deletions (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_hash TEXT NOT NULL,
@@ -2587,6 +2674,27 @@ class SessionStore:
                         updates,
                     )
 
+            schema_version = int(
+                self._conn.execute("PRAGMA user_version").fetchone()[0] or 0
+            )
+            needs_vacuum = False
+            if schema_version < 1:
+                # 旧库升级前 secure_delete 未开启，已删问诊明文可能仍留在
+                # 空闲页；用 user_version 标记只做一次性 VACUUM
+                self._conn.execute("PRAGMA user_version=1")
+                row = self._conn.execute(
+                    "SELECT COUNT(*) AS total FROM sessions"
+                ).fetchone()
+                needs_vacuum = bool(int(row["total"] or 0) if row else 0)
+            self._pending_vacuum = needs_vacuum
+            cutoff = (
+                datetime.now() - timedelta(days=90)
+            ).isoformat(timespec="seconds")
+            self._conn.execute(
+                "DELETE FROM deleted_sessions WHERE deleted_at < ?",
+                (cutoff,),
+            )
+
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
@@ -2604,8 +2712,12 @@ class SessionStore:
         profile = _normalize_profile_name(profile)
         session_id = str(session_id or "").strip()
         with self._lock, self._conn:
-            # 显式重新创建同一编号时解除墓碑
+            # 显式重新创建同一编号时解除墓碑（内存 + 持久化）
             self._deleted_sessions.pop(session_id, None)
+            self._conn.execute(
+                "DELETE FROM deleted_sessions WHERE session_id = ?",
+                (session_id,),
+            )
             self._conn.execute(
                 """
                 INSERT OR IGNORE INTO sessions(id, title, profile, created_at, updated_at)
@@ -2635,8 +2747,17 @@ class SessionStore:
                 )
 
     def is_session_deleted(self, session_id: str) -> bool:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return False
         with self._lock:
-            return str(session_id or "").strip() in self._deleted_sessions
+            if session_id in self._deleted_sessions:
+                return True
+            row = self._conn.execute(
+                "SELECT 1 FROM deleted_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return row is not None
 
     def queue_memory_cleanup(self, entries: Any) -> None:
         """登记待清理的长期记忆作用域，供启动/后台任务重试。"""
@@ -2723,8 +2844,12 @@ class SessionStore:
         session_id = str(session_id or "").strip()
         if not session_id:
             return
-        with self._lock:
+        with self._lock, self._conn:
             self._deleted_sessions.pop(session_id, None)
+            self._conn.execute(
+                "DELETE FROM deleted_sessions WHERE session_id = ?",
+                (session_id,),
+            )
 
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
@@ -2844,13 +2969,25 @@ class SessionStore:
                 following = _normalize_profile_name(row["new_name"])
                 if not following or following in visited:
                     break
+                if self.profile_name_exists(current):
+                    # 当前名称已被数据使用：原始旧名被复用、或某中间名
+                    # 被复用后又改名时，都不继续跟随，避免把旧患者的
+                    # 备份并进另一位患者；正常改名的最终目标没有后续
+                    # 改名记录，直接返回它
+                    if current == name:
+                        return name
+                    further = self._conn.execute(
+                        """
+                        SELECT 1 FROM profile_renames
+                         WHERE old_name = ? LIMIT 1
+                        """,
+                        (following,),
+                    ).fetchone()
+                    if further is not None:
+                        return name
+                    return current
                 visited.add(following)
                 current = following
-        if current == name:
-            return name
-        if self.profile_name_exists(name):
-            # 旧名已被新档案占用：备份/请求里的旧名属于新患者
-            return name
         return current
 
     def profile_renamed_away(self, name: str) -> bool:
@@ -3040,8 +3177,15 @@ class SessionStore:
         assistant_id: Optional[int] = None
 
         with self._lock, self._conn:
-            # 删除与保存共用同一把锁：若会话已删除，禁止进行中的会诊写回
+            # 删除与保存共用同一把锁：若会话已删除，禁止进行中的会诊写回；
+            # 持久化墓碑覆盖多进程/多 worker 场景
             if session_id in self._deleted_sessions:
+                return None
+            tombstone = self._conn.execute(
+                "SELECT 1 FROM deleted_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if tombstone is not None:
                 return None
             self._conn.execute(
                 """
@@ -4234,6 +4378,8 @@ class SessionStore:
         content_values: Tuple[Any, ...],
         state: Dict[tuple, set],
         raw_id: int = 0,
+        created_at_value: Any = None,
+        fallback_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -4268,6 +4414,22 @@ class SessionStore:
                 claimed.discard(int(row["id"]))
                 state[identity] = claimed
                 return int(row["id"])
+        if raw_id > 0 and content_where and created_at_value:
+            # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
+            # 是同一条，恢复旧备份时不能在原档案名下重新插入
+            moved_key = (table, "__moved__")
+            moved = state.setdefault(moved_key, set())
+            row = self._conn.execute(
+                f"SELECT id FROM {table}"
+                f" WHERE id = ? AND created_at = ? AND {content_where}",
+                (raw_id, created_at_value, *content_values),
+            ).fetchone()
+            if row is not None:
+                candidate = int(row["id"])
+                if candidate in moved:
+                    return None
+                moved.add(candidate)
+                return candidate
         if content_where:
             rows = self._conn.execute(
                 f"SELECT id FROM {table} WHERE {where}"
@@ -4283,7 +4445,22 @@ class SessionStore:
         if not claimed:
             state[identity] = claimed
             return None
-        matched = min(claimed)
+        candidates = claimed
+        if fallback_where is not None:
+            # 兜底配对只允许落在同一档案的候选行：同秒创建的另一位
+            # 成员的提醒/记录不能被当成“本地编辑过的那一条”
+            fragment, extra = fallback_where
+            ordered = sorted(claimed)
+            placeholders = ",".join("?" for _ in ordered)
+            rows = self._conn.execute(
+                f"SELECT id FROM {table} WHERE id IN ({placeholders})"
+                f" AND {fragment}",
+                (*ordered, *extra),
+            ).fetchall()
+            candidates = {int(row["id"]) for row in rows}
+            if not candidates:
+                return None
+        matched = min(candidates)
         claimed.discard(matched)
         state[identity] = claimed
         return matched
@@ -4593,6 +4770,10 @@ class SessionStore:
                 # 显式恢复备份即重新启用该会话；等事务提交后再解除墓碑，
                 # 避免中途校验失败回滚时把删除状态也一起丢掉
                 revived_sessions.append(session_id)
+                self._conn.execute(
+                    "DELETE FROM deleted_sessions WHERE session_id = ?",
+                    (session_id,),
+                )
                 self._conn.executemany(
                     """
                     INSERT INTO messages(session_id, role, content, metadata, created_at)
@@ -4722,6 +4903,7 @@ class SessionStore:
                             ),
                             metric_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         if existing_metric_id is not None:
                             # 配对成功的行也要计入内容计数：
@@ -4884,6 +5066,7 @@ class SessionStore:
                             ),
                             symptom_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                     else:
                         exists = self._conn.execute(
@@ -4983,6 +5166,7 @@ class SessionStore:
                             ),
                             medication_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         existing = (
                             {"id": existing_id}
@@ -5277,6 +5461,7 @@ class SessionStore:
                             ),
                             vaccination_identity_claims,
                             raw_id=raw_id,
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": vaccination_id}
@@ -5390,6 +5575,7 @@ class SessionStore:
                             ),
                             appointment_identity_claims,
                             raw_id=raw_id,
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": appointment_id}
@@ -5528,6 +5714,7 @@ class SessionStore:
                             ),
                             lab_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         if existing_lab_id is not None:
                             continue
@@ -5662,6 +5849,7 @@ class SessionStore:
                             ),
                             allergy_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5755,6 +5943,7 @@ class SessionStore:
                             ),
                             care_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5881,6 +6070,7 @@ class SessionStore:
                             ),
                             visit_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": duplicate_id}
@@ -6001,6 +6191,7 @@ class SessionStore:
                             ),
                             condition_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            created_at_value=created_key,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -6048,6 +6239,7 @@ class SessionStore:
             raw_reminder_id_map: Dict[int, int] = {}
             existing_reminder_counts: Dict[tuple, int] = {}
             imported_reminder_counts: Dict[tuple, int] = {}
+            reminder_identity_claims: Dict[tuple, set] = {}
             pre_existing_reminder_ids = {
                 int(row["id"])
                 for row in self._conn.execute(
@@ -6197,81 +6389,33 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     has_created = bool(raw_created)
-                    identity_key = (
-                        title, profile, note, session_id,
-                        created_at if has_created else due_at,
-                    )
-
-                    # 备份里的自增 id 只用于重建 repeats_from 关系；
-                    # 数据行一律插入新 id，撞号时不能静默丢弃
-                    if reminder_id > 0:
-                        same_id = self._conn.execute(
-                            """
-                            SELECT id, title, profile, due_at, created_at
-                              FROM reminders WHERE id = ?
-                            """,
-                            (reminder_id,),
-                        ).fetchone()
-                        if (
-                            same_id is not None
-                            and int(same_id["id"]) in pre_existing_reminder_ids
-                        ):
-                            # 撞号不等于同一条提醒：备份带创建时间时按创建
-                            # 时间确认身份（标题/档案可被本地编辑），CSV
-                            # 没有创建时间时按标题/档案/到期日确认
-                            if has_created:
-                                # 同秒创建的不同提醒不能因 id 撞号被当成
-                                # 同一条：再要求档案一致，且标题或到期日
-                                # 至少一项一致（标题可被本地编辑）
-                                same_identity = (
-                                    str(same_id["created_at"] or "")
-                                    == raw_created
-                                    and _normalize_profile_name(
-                                        same_id["profile"]
-                                    ) == profile
-                                    and (
-                                        str(same_id["title"]) == title
-                                        or str(same_id["due_at"] or "")
-                                        == due_at
-                                    )
+                    if has_created:
+                        # 提醒带创建时间：身份用创建时间、内容用到期日锚定。
+                        # 标题/备注/档案可被本地编辑，恢复旧备份不能复制
+                        # 出改前的旧版本
+                        existing_reminder_id = self._import_identity_match(
+                            "reminders",
+                            ("created_at",),
+                            (raw_created,),
+                            ("due_at",),
+                            (due_at,),
+                            reminder_identity_claims,
+                            raw_id=reminder_id,
+                            created_at_value=raw_created,
+                            fallback_where=("profile = ?", (profile,)),
+                        )
+                        if existing_reminder_id is not None:
+                            if reminder_id > 0:
+                                raw_reminder_id_map.setdefault(
+                                    reminder_id, existing_reminder_id
                                 )
-                            else:
-                                same_identity = (
-                                    str(same_id["title"]) == title
-                                    and _normalize_profile_name(
-                                        same_id["profile"]
-                                    ) == profile
-                                    and str(same_id["due_at"] or "")
-                                    == due_at
-                                )
-                            if same_identity:
-                                raw_reminder_id_map[reminder_id] = int(
-                                    same_id["id"]
-                                )
-                                # 存活的同身份提醒也要计入已处理数量：
-                                # 否则同批创建、被删除的另一条会在数量
-                                # 比较里被当成重复而无法恢复
-                                imported_reminder_counts[identity_key] = (
-                                    imported_reminder_counts.get(
-                                        identity_key, 0
-                                    ) + 1
-                                )
-                                continue
-                    if identity_key not in existing_reminder_counts:
-                        if has_created:
-                            count_row = self._conn.execute(
-                                """
-                                SELECT COUNT(*) AS total FROM reminders
-                                 WHERE title = ? AND profile = ?
-                                   AND note = ? AND session_id = ?
-                                   AND created_at = ?
-                                """,
-                                (
-                                    title, profile, note, session_id,
-                                    created_at,
-                                ),
-                            ).fetchone()
-                        else:
+                            continue
+                    else:
+                        # CSV 没有创建时间：退回标题/档案/备注/到期日计数判重
+                        identity_key = (
+                            title, profile, note, session_id, due_at,
+                        )
+                        if identity_key not in existing_reminder_counts:
                             count_row = self._conn.execute(
                                 """
                                 SELECT COUNT(*) AS total FROM reminders
@@ -6284,47 +6428,37 @@ class SessionStore:
                                     due_at,
                                 ),
                             ).fetchone()
-                        existing_reminder_counts[identity_key] = int(
-                            count_row["total"] if count_row else 0
-                        )
-                    seen = imported_reminder_counts.get(identity_key, 0)
-                    imported_reminder_counts[identity_key] = seen + 1
-                    if has_created:
-                        # 按数量判重：同批创建的多条提醒（created_at 相同）
-                        # 删除后仍能恢复；重复导入整份备份仍然幂等
-                        skip_existing = (
-                            seen < existing_reminder_counts[identity_key]
-                        )
-                    else:
-                        # CSV 没有创建时间：同一文件内的完全重复行只导入
-                        # 一次；重复导入同一文件时按库中已有数量跳过
+                            existing_reminder_counts[identity_key] = int(
+                                count_row["total"] if count_row else 0
+                            )
+                        seen = imported_reminder_counts.get(identity_key, 0)
+                        imported_reminder_counts[identity_key] = seen + 1
+                        # 同一文件内的完全重复行只导入一次；重复导入
+                        # 同一文件时按库中已有数量跳过
                         skip_existing = (
                             seen >= 1
                             or existing_reminder_counts[identity_key] > 0
                         )
-                    if skip_existing:
-                        if reminder_id > 0:
-                            existing_row = self._conn.execute(
-                                """
-                                SELECT id FROM reminders
-                                 WHERE title = ? AND profile = ?
-                                   AND note = ? AND session_id = ?
-                                """
-                                + (
-                                    " AND created_at = ?"
-                                    if has_created else " AND due_at = ?"
-                                )
-                                + " ORDER BY id LIMIT 1",
-                                (
-                                    title, profile, note, session_id,
-                                    created_at if has_created else due_at,
-                                ),
-                            ).fetchone()
-                            if existing_row is not None:
-                                raw_reminder_id_map[reminder_id] = int(
-                                    existing_row["id"]
-                                )
-                        continue
+                        if skip_existing:
+                            if reminder_id > 0:
+                                existing_row = self._conn.execute(
+                                    """
+                                    SELECT id FROM reminders
+                                     WHERE title = ? AND profile = ?
+                                       AND note = ? AND session_id = ?
+                                       AND due_at = ?
+                                     ORDER BY id LIMIT 1
+                                    """,
+                                    (
+                                        title, profile, note, session_id,
+                                        due_at,
+                                    ),
+                                ).fetchone()
+                                if existing_row is not None:
+                                    raw_reminder_id_map[reminder_id] = int(
+                                        existing_row["id"]
+                                    )
+                            continue
                     cursor = self._conn.execute(
                         """
                         INSERT INTO reminders(
@@ -6765,8 +6899,14 @@ class SessionStore:
             self._conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
-            # 与 save_exchange 共用锁：先登记墓碑，进行中的会诊无法再写回
+            # 与 save_exchange 共用锁：先登记墓碑，进行中的会诊无法再写回；
+            # 持久化表让多进程/重启后同样能识别已删会话
             self._deleted_sessions[session_id] = None
+            self._conn.execute(
+                "INSERT OR REPLACE INTO deleted_sessions(session_id, deleted_at)"
+                " VALUES (?, ?)",
+                (session_id, self._now()),
+            )
             while len(self._deleted_sessions) > self._max_deleted_sessions:
                 self._deleted_sessions.pop(
                     next(iter(self._deleted_sessions))

@@ -40,7 +40,7 @@
     urea: ['尿酸', 'uric'],
     platelets: [
       '平均血小板体积', '血小板平均体积', '血小板压积',
-      '血小板分布宽度', '未成熟血小板', '大型血小板', '大血小板',
+      '分布宽度', '未成熟血小板', '大型血小板', '大血小板',
       '血小板比积', '网织血小板', '比值', '淋巴细胞', '中性粒',
       'mpv', 'pdw', 'pct', 'plateletcrit', 'plateletdistribution',
       'plcr', 'ratio', 'neutrophil', 'nlr',
@@ -224,6 +224,54 @@
     return null;
   }
 
+  const UNIT_UKAT_L = /[uμµ]kat\/l/;
+  const UNIT_U_L = /^(?:u|iu)\/l$/;
+
+  function labAstAltUL(item) {
+    const value = labNumber(item);
+    if (value === null) return null;
+    const unit = labUnit(item);
+    if (UNIT_U_L.test(unit)) return { value, converted: false };
+    if (UNIT_UKAT_L.test(unit)) {
+      return { value: value * 60, converted: true };
+    }
+    // 大量化验单只写数字：单位缺失时保留原值，超出合理区间则拒绝
+    if (!unit && value >= 0 && value <= 10000) {
+      return { value, converted: false };
+    }
+    return null;
+  }
+
+  function labPlateletCount(item) {
+    const value = labNumber(item);
+    if (value === null) return null;
+    const unit = labUnit(item)
+      .replace(/×/g, 'x')
+      .replace(/\*/g, '^')
+      .replace(/⁹/g, '9')
+      .replace(/³/g, '3')
+      .replace(/[μµ]/g, 'u');
+    if (/万\/(?:u?l|微升)$/.test(unit)) {
+      // 1 万/µL = 10 ×10⁹/L
+      return { value: value * 10, converted: true };
+    }
+    if (/^(?:k|10\^3|x10\^3)\/(?:u?l|微升)$/.test(unit)) {
+      // K/µL、×10³/µL 与 ×10⁹/L 同量级
+      return { value, converted: false };
+    }
+    if (/^(?:x?109|10\^9|x10\^9)\/l$/.test(unit)) {
+      return { value, converted: false };
+    }
+    if (/(?:^|\/)(?:u?l|微升)$/.test(unit)) {
+      // 单个/µL 换算成 ×10⁹/L 需除以 1000
+      return { value: value / 1000, converted: true };
+    }
+    if (!unit && value >= 1 && value <= 2000) {
+      return { value, converted: false };
+    }
+    return null;
+  }
+
   function childPughBilirubinScore(valueUmolL) {
     if (!Number.isFinite(valueUmolL)) return null;
     return valueUmolL < 34 ? 1 : valueUmolL <= 51 ? 2 : 3;
@@ -245,6 +293,8 @@
     normalizeLabName,
     findLabItem,
     labNumber,
+    labAstAltUL,
+    labPlateletCount,
     labCreatinineMgDl,
     labBilirubinMgDl,
     labBilirubinUmolL,

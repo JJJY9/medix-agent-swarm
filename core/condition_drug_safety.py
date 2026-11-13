@@ -182,6 +182,15 @@ def _negated_mention(normalized: str, keyword: str) -> bool:
     )
     if any(marker in target_clause for marker in _ACTIVE_MARKERS):
         return False
+    # 「不排除肝硬化」「无法排除」是仍有可能，不能按已排除处理
+    token_pos = normalized.find(token)
+    if token_pos > 0:
+        prefix = normalized[max(0, token_pos - 12):token_pos]
+        if re.search(
+            r"(?:不|无|未|难以|暂不)[^，。；,;:：]{0,4}(?:排除|除外)\s*$",
+            prefix,
+        ):
+            return False
     if re.search(
         rf"(?:无|没有|否认|排除|非|未)[^，。；,;:：]{{0,6}}"
         rf"{re.escape(token)}",

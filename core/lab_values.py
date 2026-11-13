@@ -86,8 +86,8 @@ ANALYTES: Tuple[Dict[str, Any], ...] = (
         "cjk": ("血红蛋白", "血色素"),
         "ascii": ("hgb", "hb", "hemoglobin", "haemoglobin"),
         "exclude": (
-            "糖化", "hba1c", "a1c", "平均红细胞", "mch", "mchc",
-            "尿", "urine", "胎儿", "hbf",
+            "糖化", "hba1c", "a1c", "平均红细胞", "平均血红蛋白",
+            "mch", "mchc", "尿", "urine", "胎儿", "hbf",
         ),
         "units": {"g/l": 1.0, "g/dl": 10.0},
         "unit_label": "g/L",

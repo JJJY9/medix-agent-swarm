@@ -120,18 +120,28 @@ self.addEventListener('notificationclick', (event) => {
       type: 'window',
       includeUncontrolled: true,
     });
-    for (const client of windows) {
-      if ('focus' in client) {
-        await client.focus();
-        if ('navigate' in client) {
-          try {
-            await client.navigate(target);
-          } catch {
-            // 导航失败时至少已聚焦窗口
-          }
-        }
-        return;
+    // 优先处理正在前台显示的窗口：整页导航会中断正在进行的
+    // 流式会诊（服务端取消任务、已消耗 token 丢失）；
+    // 通过消息让页面自己切换视图，由页面决定是否导航
+    const focused = windows.find((client) => client.focused);
+    if (focused && 'focus' in focused) {
+      await focused.focus();
+      if ('postMessage' in focused) {
+        focused.postMessage({ type: 'medix-open-reminders' });
       }
+      return;
+    }
+    const anyWindow = windows.find((client) => 'focus' in client);
+    if (anyWindow) {
+      await anyWindow.focus();
+      if ('navigate' in anyWindow) {
+        try {
+          await anyWindow.navigate(target);
+        } catch {
+          // 导航失败时至少已聚焦窗口
+        }
+      }
+      return;
     }
     await self.clients.openWindow(target);
   })());

@@ -172,21 +172,60 @@ def _is_negated(prefix: str) -> bool:
             return False
         # 「医生排除了酮症酸中毒」是已完成排除，按否定处理
         return True
-    return bool(_NEGATION_PATTERN.search(prefix))
+    if _NEGATION_PATTERN.search(prefix):
+        return True
+    return _enum_negated(prefix)
 
 #: 分句标点：否定判断只在同一分句内进行，避免上一句的「不」误伤下一句
 CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
+#: 前缀回溯允许跨过顿号：否定常以枚举形式覆盖整组症状
+#: （「无发热、咳嗽、胸痛」），顿号不应截断否定范围
+_PREFIX_DELIMITERS = CLAUSE_DELIMITERS.replace("、", "")
+
+#: 枚举否定：「没有发烧和胸痛」「无发热、咳嗽及胸痛」「否认胸痛和呼吸困难」。
+#: 只允许否定词 + 短症状项 + 枚举连接词，最后一项可以以连接词收尾
+#: （短语本身就是最后一项）。含谓词/转折词（突发、加重、但…）时不匹配，
+#: 避免把「无诱因、突发胸痛」误判为否定。
+#: 只用完整否定词：裸「不」常出现在「说话不清/不适」等形容词里
+_ENUM_NEGATION_PATTERN = re.compile(
+    r"(?:没有|没|无|未|否认)"
+    r"(?:出现|伴有|伴随|感|有|见|见到|任何|明显|明确|特殊|显著)?"
+    r"[^，。；！？,.!?;\n但|]{1,8}?"
+    r"(?:(?:、|和|及|与|以及)"
+    r"[^，。；！？,.!?;\n但|]{0,8}?)*"
+    r"(?:、|和|及|与|以及)?\s*$"
+)
+#: 枚举项里出现这些词时按阳性处理（症状修饰/转折/加重）
+_ENUM_POSITIVE_CUES = (
+    "突发", "剧烈", "加重", "持续", "缓解", "出现", "但", "却",
+    "越来越", "不能", "无法", "伴有", "伴随", "放射", "撕裂",
+    "压榨", "难忍", "明显", "反复",
+)
 
 
 def _clause_prefix(text: str, start: int, lookback: int = 12) -> str:
     """返回短语之前、同一分句内的有限长度前缀。
 
-    窗口需容纳「尚未能完全排除」这类较长的双重否定结构。
+    窗口需容纳「尚未能完全排除」这类较长的双重否定结构；顿号不截断
+    前缀，让枚举否定（「无发热、咳嗽、胸痛」）能看到整组症状。
     """
     boundary = start
-    while boundary > 0 and text[boundary - 1] not in CLAUSE_DELIMITERS:
+    while boundary > 0 and text[boundary - 1] not in _PREFIX_DELIMITERS:
         boundary -= 1
     return text[max(boundary, start - lookback):start]
+
+
+def _enum_negated(prefix: str) -> bool:
+    """否定词是否以枚举形式覆盖到前缀末尾（含「和/、/及」连接）。"""
+    match = _ENUM_NEGATION_PATTERN.search(prefix)
+    if not match:
+        return False
+    span = match.group(0)
+    # 必须存在显式枚举连接词，否则交给 _NEGATION_PATTERN 判断，
+    # 避免把「无明显诱因的」这类普通修饰当成枚举否定
+    if not any(sep in span for sep in ('、', '和', '及', '与', '以及')):
+        return False
+    return not any(cue in span for cue in _ENUM_POSITIVE_CUES)
 
 
 def _positive_mention(text: str, phrase: str) -> bool:
@@ -237,6 +276,33 @@ _VISIT_CUE_IN_TAIL = re.compile(
     r"|前往|应(?:该|当)?|尽早|必要时|赶快)"
 )
 
+#: 就医词之后的后置否定：「医院就别去了」「医院不用去了」「急诊别去了」。
+#: 句首就是「医院/急诊」时前缀为空，只有检查后缀才能识别劝阻。
+_VISIT_POST_NEGATION = re.compile(
+    r"^\s*(?:就|还是|也|都|最好|先|暂时|以后再)?\s*"
+    r"(?:别|不用|不必|不需要|没必要|无需|用不着|不要|不能|不可以)"
+    r"\s*(?:再|先|急着|着急)?\s*(?:去|到|跑|折腾)?\s*(?:了)?"
+)
+#: 「去医院也没用/医院去了也白去」式劝阻
+_VISIT_USELESS_NEGATION = re.compile(
+    r"^\s*(?:去|到|再)?\s*(?:了)?\s*(?:也|都)?\s*"
+    r"(?:没用|没有用|没意义|没有意义|白去|白搭|来不及)"
+)
+
+
+def _visit_suffix_negated(sentence: str, end: int) -> bool:
+    """就医词之后是否紧跟劝阻语（且其后没有再给出建议）。"""
+    tail = sentence[end:end + 16]
+    match = None
+    for pattern in (_VISIT_POST_NEGATION, _VISIT_USELESS_NEGATION):
+        found = pattern.search(tail)
+        if found and (match is None or found.end() > match.end()):
+            match = found
+    if match is None:
+        return False
+    rest = sentence[end + match.end():end + match.end() + 12]
+    return not _VISIT_CUE_IN_TAIL.search(rest)
+
 
 def _visit_prefix_negated(prefix: str) -> bool:
     """就医短语前的分句是否是否定描述（就医建议与 120 呼救共用）。"""
@@ -272,6 +338,9 @@ _CALL_120_PATTERN = re.compile(
 EDUCATIONAL_MARKERS = (
     "可导致", "可能导致", "可引起", "多见于", "多发生于", "好发于",
     "常见于", "属于常见", "属常见", "典型表现", "临床表现",
+    # 定义/科普句式：解释疾病是什么，不等于患者当前处于该状态
+    "是指", "是一种", "称为", "也叫", "定义为", "表现为",
+    "典型症状", "主要表现", "常见症状", "症状包括",
 )
 
 
@@ -337,6 +406,10 @@ def has_visit_recommendation(text: str) -> bool:
                     or any(cue in prefix for cue in _VISIT_ADVICE_CUES)
                     or prefix.rstrip().endswith(_VISIT_ENDING_CUES)
                 )
+                if _visit_suffix_negated(sentence, start + len(term)):
+                    # 「医院就别去了」：后缀是否定，不能算已建议就医
+                    start = sentence.find(term, start + len(term))
+                    continue
                 if (
                     not negated
                     and not questioning
