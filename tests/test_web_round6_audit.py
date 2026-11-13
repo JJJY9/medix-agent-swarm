@@ -26,7 +26,7 @@ def test_interactions_use_main_profile_and_reset_allergies(client):
     assert "els.metricProfile.value || els.profileSelect.value" not in body
 
     open_start = app_js.index("function openCalc()")
-    open_body = app_js[open_start:open_start + 800]
+    open_body = app_js[open_start:open_start + 1400]
     assert "els.calcInteractionsAllergies.value" in open_body
     assert "context.allergies" in open_body
 

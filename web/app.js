@@ -3291,6 +3291,10 @@ function renderHistoryItems(sessions, summary, append = false) {
   els.historyEmpty.hidden = true;
 
   for (const item of sessions) {
+    if (append && historyItemMap.has(item.id)) {
+      // 翻页间隙被更新的会话会漂到下一页，不能渲染成重复条目
+      continue;
+    }
     historyItemMap.set(item.id, item);
     const li = document.createElement('li');
     li.className = 'history-item';
@@ -3785,18 +3789,42 @@ function toggleBulkSelectAll() {
   updateBulkBar();
 }
 
+async function postBulkSessions(path, method, payload, chunkSize = 100) {
+  // 服务端单次最多 200 个 id：全选可能超出，分批提交并合并结果
+  const ids = payload.ids || [];
+  const summary = {
+    updated: 0, deleted: 0, missing: [], tags: payload.tags || [],
+  };
+  for (let start = 0; start < ids.length; start += chunkSize) {
+    const chunk = ids.slice(start, start + chunkSize);
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, ids: chunk }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const detail = typeof data.detail === 'string'
+        ? data.detail
+        : `服务返回 ${res.status}`;
+      throw new Error(`${detail}（已处理 ${start} 项）`);
+    }
+    summary.updated += Number(data.updated) || 0;
+    summary.deleted += Number(data.deleted) || 0;
+    if (Array.isArray(data.missing)) summary.missing.push(...data.missing);
+    if (Array.isArray(data.tags)) summary.tags = data.tags;
+  }
+  return summary;
+}
+
 async function bulkArchive(archived) {
   const ids = Array.from(selectedSessions);
   if (!ids.length) return;
 
   try {
-    const res = await fetch('/api/bulk/sessions/archive', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, archived }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    const data = await postBulkSessions(
+      '/api/bulk/sessions/archive', 'PATCH', { ids, archived }
+    );
 
     const missing = (data.missing || []).length;
     selectedSessions.clear();
@@ -3822,13 +3850,9 @@ async function bulkTagSessions() {
   const tags = input.split(/[,，、\s]+/).filter(Boolean);
 
   try {
-    const res = await fetch('/api/bulk/sessions/tags', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, tags }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    const data = await postBulkSessions(
+      '/api/bulk/sessions/tags', 'PATCH', { ids, tags }
+    );
 
     selectedSessions.clear();
     await loadHistory(els.historySearch.value.trim());
@@ -3853,13 +3877,9 @@ async function bulkDelete() {
   }
 
   try {
-    const res = await fetch('/api/bulk/sessions/delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
+    const data = await postBulkSessions(
+      '/api/bulk/sessions/delete', 'POST', { ids }
+    );
 
     if (ids.includes(sessionId)) {
       clearCurrentSession();
@@ -4998,7 +5018,20 @@ async function openSession(id) {
 
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`);
-    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const error = new Error(
+        (data.detail && data.detail.message) || `服务返回 ${res.status}`
+      );
+      if (
+        res.status === 404
+        && data.detail
+        && data.detail.code === 'session_deleted'
+      ) {
+        error.sessionDeleted = true;
+      }
+      throw error;
+    }
     const data = await res.json();
     // 拉取期间用户可能已经发起了新会诊：此时不能再渲染历史，
     // 否则会把流式输出清空并把 sessionId 改回旧会话
@@ -5017,6 +5050,20 @@ async function openSession(id) {
   } catch (err) {
     if (seq !== openSessionSeq || busy) return false;
     closeHistory();
+    if (err && err.sessionDeleted) {
+      // 深链/旧标签页指向已删会话：清除持久化会话，否则后续提问
+      // 会被删除墓碑静默丢弃（界面却正常显示答案）
+      if (sessionId === id) {
+        sessionId = null;
+        lastServerMessageId = 0;
+        clearPersistedSessionId();
+        setSessionUrl(null);
+        els.readout.session.textContent = '新会话';
+      }
+      renderError('该会诊已删除，已为你开启新会话。');
+      els.input.focus();
+      return false;
+    }
     renderError(`读取会诊记录失败：${err.message || err}`);
     els.input.focus();
     return false;
@@ -9294,18 +9341,21 @@ function renderFamilyOverview(data) {
     card.type = 'button';
     card.className = 'family-card';
     card.dataset.profile = profile.name;
-    const saved = Boolean(profilesCache[profile.name]);
+    const displayName = profile.display_name || profile.name;
+    const saved = Boolean(profile.name && profilesCache[profile.name]);
     if (saved) {
-      card.title = `切换到档案「${profile.name}」`;
+      card.title = `切换到档案「${displayName}」`;
     } else {
       card.disabled = true;
-      card.title = '该档案已删除，仅保留历史记录';
+      card.title = profile.name
+        ? '该档案已删除，仅保留历史记录'
+        : '未指定档案的记录，仅可在健康记录中查看';
     }
 
     const head = document.createElement('span');
     head.className = 'family-card-head';
     const name = document.createElement('strong');
-    name.textContent = profile.name;
+    name.textContent = displayName;
     head.appendChild(name);
     const attention = profile.attention || {};
     if (attention.level && attention.level !== 'ok') {
@@ -9336,8 +9386,13 @@ function renderFamilyOverview(data) {
       const unit = item.unit ? ` ${item.unit}` : '';
       const critical = Array.isArray(item.critical_alerts)
         && item.critical_alerts.length > 0;
+      const hasDaily = item.daily_total !== null
+        && item.daily_total !== undefined;
+      const shownValue = hasDaily
+        ? formatStatNumber(item.daily_total)
+        : item.value;
       chips.appendChild(familyChip(
-        `${item.label} ${item.value}${unit}`
+        `${item.label} ${hasDaily ? '今日 ' : ''}${shownValue}${unit}`
         + (
           critical ? ' 危急'
             : item.over_target
@@ -9530,7 +9585,13 @@ function familyOverviewText(data) {
     const metrics = (profile.metrics || []).slice(0, 3);
     if (metrics.length) {
       parts.push(metrics.map((item) => (
-        `${item.label} ${item.value}${item.unit ? ` ${item.unit}` : ''}`
+        `${item.label} `
+        + (
+          item.daily_total !== null && item.daily_total !== undefined
+            ? `今日 ${formatStatNumber(item.daily_total)}`
+            : item.value
+        )
+        + `${item.unit ? ` ${item.unit}` : ''}`
         + (
           Array.isArray(item.critical_alerts)
           && item.critical_alerts.length
@@ -15613,15 +15674,21 @@ async function postAttachmentLink(ids, refId) {
   attachmentLinking = true;
   updateAttachmentSelection();
   setAttachmentStatus(refId ? '正在关联附件…' : '正在取消关联…');
+  let updated = 0;
   try {
-    const res = await fetch('/api/attachments/link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids, ref_id: refId }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.detail || `服务返回 ${res.status}`);
+    // 后端单次最多 2000 个 id：全选关联/取消关联要分批提交
+    for (let start = 0; start < ids.length; start += 500) {
+      const chunk = ids.slice(start, start + 500);
+      const res = await fetch('/api/attachments/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: chunk, ref_id: refId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || `服务返回 ${res.status}`);
+      }
+      updated += Number(data.updated) || chunk.length;
     }
     attachmentSelectedIds.clear();
     if (els.attachmentLinkBar) els.attachmentLinkBar.hidden = true;
@@ -15629,8 +15696,8 @@ async function postAttachmentLink(ids, refId) {
     loadAttachmentRefCounts();
     setAttachmentStatus(
       refId
-        ? `已关联 ${data.updated || ids.length} 份附件。`
-        : `已取消 ${data.updated || ids.length} 份附件的关联。`
+        ? `已关联 ${updated || ids.length} 份附件。`
+        : `已取消 ${updated || ids.length} 份附件的关联。`
     );
     return true;
   } catch (err) {
@@ -15746,20 +15813,24 @@ async function deleteSelectedAttachments() {
   let failed = 0;
   setAttachmentStatus(`正在删除 ${ids.length} 份附件…`);
   try {
-    const res = await fetch('/api/attachments/bulk_delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      removed = Number(data.deleted) || 0;
-      failed = ids.length - removed;
-    } else {
-      failed = ids.length;
+    // 后端单次最多 2000 个 id：附件较多时全选要分批提交
+    for (let start = 0; start < ids.length; start += 500) {
+      const chunk = ids.slice(start, start + 500);
+      const res = await fetch('/api/attachments/bulk_delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: chunk }),
+      });
+      if (!res.ok) {
+        failed += ids.length - start;
+        break;
+      }
+      const data = await res.json().catch(() => ({}));
+      removed += Number(data.deleted) || 0;
     }
+    failed = Math.max(failed, ids.length - removed);
   } catch {
-    failed = ids.length;
+    failed = ids.length - removed;
   }
   attachmentSelectedIds.clear();
   attachmentDeleting = false;
@@ -18386,6 +18457,8 @@ async function exportMetricsCsv() {
 
 let calcFocused = null;
 let currentCalcAction = null;
+//: 上次打开计算器时的档案：换患者后必须清空量表答案与勾选
+let calcProfileName = null;
 
 const {
   findLabItem,
@@ -18580,9 +18653,14 @@ async function prefillApriFromLab() {
       Math.round(plateletValue.value)
     );
     const refHigh = Number(ast && ast.ref_high);
+    // 参考上限与 AST 使用同一单位：µkat/L 也必须换算成 U/L，
+    // 否则 ULN 被低估 60 倍、APRI 被放大约 60 倍
+    const refHighValue = Number.isFinite(refHigh) && refHigh > 0
+      ? labAstAltUL({ value: refHigh, unit: ast && ast.unit })
+      : null;
     let ulnText = '';
-    if (Number.isFinite(refHigh) && refHigh > 0) {
-      const uln = Math.round(refHigh * 10) / 10;
+    if (refHighValue) {
+      const uln = Math.round(refHighValue.value * 10) / 10;
       els.calcApriUln.value = String(uln);
       ulnText = `，AST 正常上限按化验单带入 ${uln} U/L`;
     } else {
@@ -18653,6 +18731,9 @@ async function loadLatestBpMetric() {
 async function prefillChildPughFromLab() {
   try {
     const items = await loadLatestLabItems();
+    // 腹水/肝性脑病无法从化验推断：缺化验提前返回时也要回到默认“无”
+    els.calcChildAscites.value = '1';
+    els.calcChildEncephalopathy.value = '1';
     const bilirubin = findLabItem(items, 'bilirubin');
     const albumin = findLabItem(items, 'albumin');
     const inr = findLabItem(items, 'inr');
@@ -18680,10 +18761,6 @@ async function prefillChildPughFromLab() {
     els.calcChildBilirubin.value = String(bilirubinScore);
     els.calcChildAlbumin.value = String(albuminScore);
     els.calcChildInr.value = String(inrScore);
-    // 腹水/肝性脑病无法从化验推断，必须回到默认“无”，
-    // 不能让上一位患者的选择参与本次分级
-    els.calcChildAscites.value = '1';
-    els.calcChildEncephalopathy.value = '1';
     setCalcStatus(
       `已带入总胆红素 ${Math.round(bilirubinValue.value * 10) / 10} `
       + `μmol/L（${bilirubinScore} 分）、白蛋白 `
@@ -18704,6 +18781,11 @@ async function prefillCurb65FromLab() {
     const items = await loadLatestLabItems();
     const urea = findLabItem(items, 'urea');
     const ureaValue = labUreaMmolL(urea);
+    // 手工项先重置，缺化验提前返回时也不能沿用上一位患者的状态
+    els.calcCurbSbp.value = '';
+    els.calcCurbDbp.value = '';
+    els.calcCurbRr.value = '';
+    els.calcCurbConfusion.checked = false;
     if (!ureaValue) {
       setCalcStatus(
         urea
@@ -18716,11 +18798,6 @@ async function prefillCurb65FromLab() {
     els.calcCurbUrea.value = String(
       Math.round(ureaValue.value * 10) / 10
     );
-    // 手工项也先重置，避免沿用上一位患者的血压/呼吸/意识状态
-    els.calcCurbSbp.value = '';
-    els.calcCurbDbp.value = '';
-    els.calcCurbRr.value = '';
-    els.calcCurbConfusion.checked = false;
     let bp = null;
     let bpFailed = false;
     try {
@@ -18805,6 +18882,29 @@ function setCalcTool(tool) {
   setCalcStatus('');
 }
 
+function resetCalcForms() {
+  // 量表答案与危险因素勾选默认保留在表单里：换患者后必须先清空，
+  // 否则会用上一位患者的作答计算并保存到新档案
+  for (const form of [
+    els.calcFormBmi, els.calcFormEgfr, els.calcFormChads,
+    els.calcFormCurb65, els.calcFormChildPugh, els.calcFormPhq9,
+    els.calcFormGad7, els.calcFormAuditc, els.calcFormMmrc,
+    els.calcFormCat, els.calcFormEss, els.calcFormHasBled,
+    els.calcFormGcs, els.calcFormWells, els.calcFormWellsPe,
+    els.calcFormInteractions, els.calcFormQsofa, els.calcFormFib4,
+    els.calcFormApri, els.calcFormEag, els.calcFormMeld,
+    els.calcFormStopBang, els.calcFormPadua, els.calcFormAbcd2,
+    els.calcFormMorse,
+  ]) {
+    if (!form || typeof form.reset !== 'function') continue;
+    try {
+      form.reset();
+    } catch {
+      // 已卸载的表单忽略
+    }
+  }
+}
+
 function openCalc() {
   closeHistory();
   if (!closeKb()) return;
@@ -18819,6 +18919,13 @@ function openCalc() {
   syncPageInert();
   els.calcOpen.setAttribute('aria-expanded', 'true');
 
+  const currentCalcProfile = els.profileSelect
+    ? els.profileSelect.value : '';
+  if (calcProfileName !== null && calcProfileName !== currentCalcProfile) {
+    // 同一患者反复开关保留作答；换患者才清空量表答案与勾选
+    resetCalcForms();
+  }
+  calcProfileName = currentCalcProfile;
   const context = readPatientContext();
   // 每次打开都按当前患者重置过敏史，避免沿用上一患者/上次带入的内容
   if (els.calcInteractionsAllergies) {

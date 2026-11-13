@@ -32,12 +32,12 @@ def test_attachment_bulk_link_wiring():
     assert "attachmentLinkRefRequestSeq" in SCRIPT
     assert "attachmentLinking" in SCRIPT
     assert "fetch('/api/attachments/link'" in SCRIPT
-    assert "JSON.stringify({ ids, ref_id: refId })" in SCRIPT
+    assert "JSON.stringify({ ids: chunk, ref_id: refId })" in SCRIPT
     assert "关联选中（${selectedItems.length}）" in SCRIPT
     assert "只有同类型的就诊资料或化验单可以批量关联。" in SCRIPT
     assert "请选择要关联的就诊或化验记录。" in SCRIPT
-    assert "已关联 ${data.updated || ids.length} 份附件。" in SCRIPT
-    assert "已取消 ${data.updated || ids.length} 份附件的关联。" in SCRIPT
+    assert "已关联 ${updated || ids.length} 份附件。" in SCRIPT
+    assert "已取消 ${updated || ids.length} 份附件的关联。" in SCRIPT
     assert "取消选中的 ${ids.length} 份附件的关联？" in SCRIPT
     assert "els.attachmentLinkSelected.addEventListener(" in SCRIPT
     assert "els.attachmentLinkApply.addEventListener(" in SCRIPT
