@@ -26,7 +26,8 @@ _PRESCRIPTION_ACTIONS = {
     "recommend_treatment",
 }
 _DEFINITIVE_DIAGNOSIS_PATTERN = re.compile(
-    r"(?:您患有|您得了|您得的是|确诊为|可以确诊为|明确诊断为|诊断为|肯定是)"
+    r"(?:您患有|您得了|您得的是|您患的是|确诊为|可以确诊为|"
+    r"明确诊断为|诊断为|医生诊断(?:您)?为|诊断结果\s*[：:]|肯定是)"
 )
 _DIAGNOSIS_NEGATION_PATTERN = re.compile(
     r"(?:(?:不能|无法|不可|尚未|未曾|没有|否认|并非|不是|不建议|不应)"
@@ -50,6 +51,11 @@ _PRESCRIPTION_PATTERNS = (
     re.compile(
         rf"(?:建议|推荐|可以|可|应|请)\s*"
         rf"(?:服用|使用|吃|口服|注射).{{0,15}}{_NUMERAL}\s*{_DOSE_UNIT}"
+    ),
+    # 「推荐依折麦布 10mg」「首选布洛芬 200mg」：没有用药动词也要识别
+    re.compile(
+        rf"(?:建议|推荐|首选|可以|可|应|请)"
+        rf"[^，。；！？\n]{{0,12}}?{_NUMERAL}\s*{_DOSE_UNIT}"
     ),
     re.compile(
         rf"(?:服用|使用|口服|注射).{{0,15}}{_NUMERAL}\s*{_DOSE_UNIT}"
@@ -194,6 +200,13 @@ def _clause_prefix(text: str, start: int) -> str:
     return text[boundary:start]
 
 
+#: 「勿超量/不要超过/避免过量」是安全提示，不是误服描述
+_OVERDOSE_NEGATIONS = re.compile(
+    r"(?:勿|不要|不得|避免|不能|不可|防止|切勿|严禁|别|不|"
+    r"没有|未|无)\s*$"
+)
+
+
 def _match_is_overdose(text: str, match: "re.Match[str]") -> bool:
     """匹配所在分句是否在描述误服/过量，而不是给出处方。"""
     boundary = match.start()
@@ -202,7 +215,14 @@ def _match_is_overdose(text: str, match: "re.Match[str]") -> bool:
     tail = match.end()
     while tail < len(text) and text[tail] not in _DIAGNOSIS_CLAUSE_DELIMITERS:
         tail += 1
-    return bool(_OVERDOSE_PATTERN.search(text[boundary:tail]))
+    clause = text[boundary:tail]
+    for marker in _OVERDOSE_PATTERN.finditer(clause):
+        prefix = clause[max(0, marker.start() - 4):marker.start()]
+        if _OVERDOSE_NEGATIONS.search(prefix):
+            # 「请勿超量」「不要超过」是安全提示，不能豁免同句处方
+            continue
+        return True
+    return False
 
 
 def _contains_definitive_diagnosis(output: str) -> bool:

@@ -193,8 +193,9 @@ class AutoFixer:
         body = output
         suffix = ""
         marker_index = output.rfind("【免责声明】")
-        # 只有位于末尾的声明块才作为后缀整体保留；正文中段的声明按普通正文处理
-        if marker_index >= 0 and marker_index >= max(0, len(output) - 200):
+        # 末尾声明块整体保留；声明本身很长时起点会离末尾超过 200 字，
+        # 因此按“位于文本后半段”判断，避免把长声明切碎后重复补模板
+        if marker_index >= 0 and marker_index >= len(output) // 2:
             start = output.rfind("\n\n", 0, marker_index)
             start = start if start >= 0 else marker_index
             body = output[:start]
