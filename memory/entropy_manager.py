@@ -29,8 +29,10 @@ class MemoryEntropyManager:
         """
         去重消息列表
 
-        使用内容哈希检测完全重复的消息
-        保留最新的一条
+        只合并相邻的完全相同消息（重试/重复推送产生的副本），以及
+        任意位置的重复系统摘要。用户在不同时间重复同一个问题、助手
+        两次给出同样建议，都是真实的对话轮次：删掉较早的一条会把
+        它的回答变成没有提问的孤儿，破坏问答配对。
 
         Args:
             messages: 消息列表
@@ -41,26 +43,32 @@ class MemoryEntropyManager:
         if not messages:
             return []
 
-        # 从后往前保留每条内容最后一次出现的位置：先正序去重会把
-        # 最新一条重复消息挪到最早位置，压缩后最新一轮可能被当成旧历史
-        unique_reversed = []
-        seen_hashes = set()
-        for msg in reversed(messages):
+        unique_messages = []
+        seen_system_hashes = set()
+        prev_key = None
+        for msg in messages:
             content = msg.get("content", "")
             role = msg.get("role", "")
             content_hash = hashlib.md5(
                 f"{role}:{content}".encode()
             ).hexdigest()
-            if content_hash in seen_hashes:
+            if role == "system":
+                if content_hash in seen_system_hashes:
+                    logger.debug(
+                        "🗑️ Deduplicated system summary "
+                        f"(length={len(content)})"
+                    )
+                    continue
+                seen_system_hashes.add(content_hash)
+            elif content_hash == prev_key:
                 logger.debug(
-                    "🗑️ Deduplicated message "
+                    "🗑️ Deduplicated adjacent message "
                     f"(role={role}, length={len(content)})"
                 )
                 continue
-            seen_hashes.add(content_hash)
-            unique_reversed.append(msg)
+            prev_key = content_hash
+            unique_messages.append(msg)
 
-        unique_messages = list(reversed(unique_reversed))
         removed_count = len(messages) - len(unique_messages)
         if removed_count > 0:
             logger.info(f"🗑️ Removed {removed_count} duplicate messages")

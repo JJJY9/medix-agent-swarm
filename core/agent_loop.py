@@ -13,7 +13,7 @@ from loguru import logger
 from .state_manager import StateManager, TaskStatus
 from .llm_client import LLMResponse, LLMError
 from .citations import merge_sources
-from .session_context import session_memory_scope, use_memory_scope
+from .session_context import session_memory_scope, use_session_context
 from .usage import merge_usage
 
 
@@ -252,7 +252,9 @@ class AgentLoop:
                                     )
 
                             try:
-                                with use_memory_scope(memory_scope):
+                                with use_session_context(
+                                    session_id or "", memory_scope
+                                ):
                                     tool_result = await agent.execute_tool(
                                         tool_name=tool_call.name,
                                         arguments=tool_call.arguments

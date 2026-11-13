@@ -17,8 +17,13 @@ from loguru import logger
 import math
 import os
 import sys
+import threading
+import time
 
 from core.session_context import session_memory_scope
+
+#: 初始化失败后的重试冷却时间（秒），避免每次读写都重建客户端
+REINIT_COOLDOWN_SECONDS = 300.0
 
 # Harness Engineering: 熵管理
 try:
@@ -63,6 +68,11 @@ class LongTermMemory:
         Args:
             config: Mem0 配置字典，包含 api_key 等配置
         """
+        #: 重连锁与冷却时间：网络抖动导致的初始化失败可以自动恢复，
+        #: 但不能每次请求都重建客户端
+        self._init_lock = threading.Lock()
+        self._reinit_at = 0.0
+        self._api_key = ""
         if not MEM0_AVAILABLE:
             self.enabled = False
             #: 是否配置了 API key；用于区分「未启用云记忆」和「初始化失败」
@@ -93,6 +103,7 @@ class LongTermMemory:
                 or (MEM0_CONFIG or {}).get("api_key")
             )
             self.api_key_configured = bool(mem0_api_key)
+            self._api_key = str(mem0_api_key or "")
 
             if not mem0_api_key:
                 raise ValueError("MEM0_API_KEY not found. Set it in ../config.py or .env")
@@ -107,6 +118,44 @@ class LongTermMemory:
             logger.warning("Long-term memory disabled. System will work without Mem0.")
             logger.info("To enable Mem0: set MEM0_API_KEY in ../config.py or .env")
             self.enabled = False
+
+    def ensure_available(self, force: bool = False) -> bool:
+        """已配置但初始化失败时，按冷却时间重试建立 Mem0 客户端。
+
+        MemoryClient 初始化会同步校验 API key，启动时的网络抖动会把
+        长期记忆永久禁用；这里让实例可以自愈，删除清理队列也才能在
+        不重启进程的情况下继续排空。
+        """
+        if getattr(self, "enabled", False):
+            return True
+        if not getattr(self, "api_key_configured", False):
+            return False
+        if not MEM0_AVAILABLE:
+            return False
+        now = time.monotonic()
+        with self._init_lock:
+            if getattr(self, "enabled", False):
+                return True
+            if not force and now < self._reinit_at:
+                return False
+            self._reinit_at = now + REINIT_COOLDOWN_SECONDS
+            try:
+                api_key = self._api_key or os.getenv("MEM0_API_KEY") or (
+                    MEM0_CONFIG or {}
+                ).get("api_key")
+                if not api_key:
+                    return False
+                self.mem0 = MemoryClient(api_key=api_key)
+                self.enabled = True
+                self.init_error = ""
+                logger.info(
+                    "LongTermMemory re-initialized after transient failure"
+                )
+                return True
+            except Exception as e:
+                self.init_error = f"{type(e).__name__}: {e}"[:200]
+                logger.warning(f"Retrying Mem0 initialization failed: {e}")
+                return False
 
     def add_session_summary(
         self,
@@ -128,7 +177,7 @@ class LongTermMemory:
         Returns:
             记忆ID，失败返回 None
         """
-        if not self.enabled:
+        if not self.ensure_available():
             return None
 
         try:
@@ -185,7 +234,7 @@ class LongTermMemory:
         Returns:
             相似会话列表，每个包含 memory_id、content、score、metadata
         """
-        if not self.enabled:
+        if not self.ensure_available():
             return []
 
         try:
@@ -375,7 +424,7 @@ class LongTermMemory:
         精确删除，不能清空整个 user_id 命名空间。before 非空时只删除
         该时间点之前写入的记忆（目标已重建时保留新数据）。
         """
-        if not self.enabled:
+        if not self.ensure_available():
             return 0
         scope = session_memory_scope(session_id)
 
@@ -404,7 +453,7 @@ class LongTermMemory:
         的长期记忆；这里按 metadata.timestamp 过滤，保留新数据。
         """
         cutoff = str(cutoff or "").strip()
-        if not self.enabled or not cutoff:
+        if not self.ensure_available() or not cutoff:
             return 0
         self.last_error = ""
 
@@ -416,7 +465,7 @@ class LongTermMemory:
 
     def delete_scope(self, user_id: str) -> int:
         """删除一个命名空间下的全部记忆（删除患者档案时使用）。"""
-        if not self.enabled:
+        if not self.ensure_available():
             return 0
         self.last_error = ""
         scope = str(user_id or "medix_local")[:120]

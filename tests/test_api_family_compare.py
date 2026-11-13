@@ -161,7 +161,7 @@ def test_family_compare_export_csv(client_and_store):
     )))
     assert rows[0] == [
         "档案", "指标", "单位", "天数", "平均", "最低", "最高",
-        "次数", "达标次数", "最近日期", "最近值",
+        "次数", "达标次数", "最近日期", "最近值", "今日累计",
     ]
     by_name = {row[0]: row for row in rows[1:]}
     assert by_name["妈妈"][4] == "61"

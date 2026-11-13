@@ -45,7 +45,8 @@ def test_skip_waiting_only_after_user_refresh():
     # install 不主动跳过等待，但页面可在用户点刷新后发消息激活
     assert "SKIP_WAITING" in SW
     assert "self.skipWaiting()" in SW
-    assert "waiting.postMessage" in APP
+    assert "function triggerServiceWorkerActivation" in APP
+    assert "worker.postMessage({ type: 'SKIP_WAITING' })" in APP
     assert "activateServiceWorkerUpdate" in APP
 
 

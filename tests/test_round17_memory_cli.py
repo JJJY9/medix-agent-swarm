@@ -9,7 +9,7 @@ from memory.short_term import ConversationHistory
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_deduplicate_keeps_latest_occurrence_position():
+def test_deduplicate_keeps_repeated_turn_pairs():
     manager = MemoryEntropyManager()
     messages = [
         {"role": "user", "content": "重复问题"},
@@ -20,9 +20,9 @@ def test_deduplicate_keeps_latest_occurrence_position():
 
     cleaned = manager.deduplicate_messages(messages)
 
-    # 保留最新一条重复消息的原位置，不能把它挪到最早位置
+    # 重复提问是真实轮次：问答必须成对保留，不能只删用户消息
     assert [item["content"] for item in cleaned] == [
-        "第一次回答", "重复问题", "第二次回答",
+        "重复问题", "第一次回答", "重复问题", "第二次回答",
     ]
 
 

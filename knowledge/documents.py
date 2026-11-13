@@ -66,19 +66,28 @@ def extract_pdf_text(path: Path) -> str:
     except ImportError as e:
         raise RuntimeError("解析 PDF 需要安装 pypdf：pip install pypdf") from e
 
-    reader = PdfReader(str(path))
-    if len(reader.pages) > MAX_PDF_PAGES:
-        raise ValueError(f"PDF 页数不能超过 {MAX_PDF_PAGES} 页。")
-    pages = []
-    total_chars = 0
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        total_chars += len(text)
-        if total_chars > MAX_DOCUMENT_CHARS:
-            raise ValueError(
-                f"文档提取文本不能超过 {MAX_DOCUMENT_CHARS} 个字符。"
-            )
-        pages.append(text)
+    try:
+        reader = PdfReader(str(path))
+        page_count = len(reader.pages)
+        if page_count > MAX_PDF_PAGES:
+            raise ValueError(f"PDF 页数不能超过 {MAX_PDF_PAGES} 页。")
+        pages = []
+        total_chars = 0
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            total_chars += len(text)
+            if total_chars > MAX_DOCUMENT_CHARS:
+                raise ValueError(
+                    f"文档提取文本不能超过 {MAX_DOCUMENT_CHARS} 个字符。"
+                )
+            pages.append(text)
+    except ValueError:
+        raise
+    except Exception as e:
+        # 损坏/截断的 PDF 是普通坏输入：转成 400，而不是 500
+        raise ValueError(
+            "无法解析该 PDF 文件，请确认文件未损坏后重试。"
+        ) from e
     return "\n".join(pages)
 
 

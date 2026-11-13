@@ -12,6 +12,10 @@ _current_memory_scope: ContextVar[str] = ContextVar(
     "medix_memory_scope", default=""
 )
 
+_current_session_id: ContextVar[str] = ContextVar(
+    "medix_session_id", default=""
+)
+
 
 def session_memory_scope(session_id: str) -> str:
     """没有患者档案时的会话作用域：只发送不可逆哈希。
@@ -22,6 +26,15 @@ def session_memory_scope(session_id: str) -> str:
         str(session_id or "").encode("utf-8")
     ).hexdigest()[:24]
     return f"medix_session_{digest}"
+
+
+def profile_memory_scope(profile: str) -> str:
+    """患者档案的长期记忆命名空间（哈希），空档案返回空串。"""
+    name = " ".join(str(profile or "").split())
+    if not name:
+        return ""
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+    return f"medix_profile_{digest}"
 
 
 def get_memory_scope() -> str:
@@ -43,3 +56,25 @@ def use_memory_scope(scope: str) -> Iterator[None]:
         yield
     finally:
         reset_memory_scope(token)
+
+
+def get_current_session_id() -> str:
+    return _current_session_id.get()
+
+
+@contextmanager
+def use_session_context(session_id: str, scope: str = "") -> Iterator[None]:
+    """同时绑定当前会话 ID 与记忆作用域。
+
+    短期记忆类 Skill（如 search-history）只能读取当前会话，模型传入的
+    session_id 不能越过这个边界。
+    """
+    session_token = _current_session_id.set(
+        str(session_id or "").strip()[:120]
+    )
+    scope_token = set_memory_scope(scope)
+    try:
+        yield
+    finally:
+        reset_memory_scope(scope_token)
+        _current_session_id.reset(session_token)

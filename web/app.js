@@ -2219,6 +2219,7 @@ function buildVisitSummaryHtml({
 
   const isOverTarget = (item, target) => {
     if (!target) return false;
+    if (DAILY_ACCUMULATING_METRICS.has(item.metric)) return false;
     if (targetIsLowerBound(item.metric)) {
       return Number(item.value1) < target.value1;
     }
@@ -2257,9 +2258,18 @@ function buildVisitSummaryHtml({
       ? `收缩压 ${formatStatNumber(v1.min)}–${formatStatNumber(v1.max)}；`
         + `舒张压 ${formatStatNumber(v2.min)}–${formatStatNumber(v2.max)}`
       : `${formatStatNumber(v1.min)}–${formatStatNumber(v1.max)}`;
-    const targetText = summary.target
-      ? `${summary.within_target}/${summary.count}`
-      : '—';
+    let targetText = '—';
+    if (DAILY_ACCUMULATING_METRICS.has(metric)) {
+      if (
+        Number(summary.daily_count) > 0
+        && summary.daily_total !== null
+        && summary.daily_total !== undefined
+      ) {
+        targetText = `今日 ${formatStatNumber(summary.daily_total)}${unit}`;
+      }
+    } else if (summary.target) {
+      targetText = `${summary.within_target}/${summary.count}`;
+    }
     return '<tr>'
       + `<td>${escapeHtml(METRIC_NAMES[metric] || metric)}</td>`
       + `<td>${Number(summary.count) || 0}</td>`
@@ -2524,6 +2534,11 @@ async function fetchMetricSummaries(
   return results.filter(Boolean);
 }
 
+/** 单个端点网络错误只记入失败列表，不放弃整份导出 */
+function safeFetch(url) {
+  return fetch(url).catch(() => null);
+}
+
 async function exportVisitSummary() {
   const profile = els.profileSelect.value || '';
   const context = readPatientContext();
@@ -2550,19 +2565,19 @@ async function exportVisitSummary() {
       metricsRes, remindersRes, sessionsRes, targetsRes, symptomsRes,
       medicationsRes, weeklyRes, attachmentsRes,
     ] = await Promise.all([
-      fetch(`/api/metrics?${metricParams.toString()}`),
-      fetch(`/api/reminders?${reminderParams.toString()}`),
-      fetch(`/api/sessions?${sessionParams.toString()}`),
-      fetch(`/api/metric-targets?${targetParams.toString()}`),
-      fetch(`/api/symptoms?${symptomParams.toString()}`),
-      fetch(`/api/medications?${medicationParams.toString()}`),
-      fetch(`/api/reports/weekly?${weeklyParams.toString()}`),
-      fetch(`/api/attachments?${attachmentParams.toString()}`),
+      safeFetch(`/api/metrics?${metricParams.toString()}`),
+      safeFetch(`/api/reminders?${reminderParams.toString()}`),
+      safeFetch(`/api/sessions?${sessionParams.toString()}`),
+      safeFetch(`/api/metric-targets?${targetParams.toString()}`),
+      safeFetch(`/api/symptoms?${symptomParams.toString()}`),
+      safeFetch(`/api/medications?${medicationParams.toString()}`),
+      safeFetch(`/api/reports/weekly?${weeklyParams.toString()}`),
+      safeFetch(`/api/attachments?${attachmentParams.toString()}`),
     ]);
     const failures = [];
     const track = (res, label) => {
-      if (!res.ok) failures.push(label);
-      return res.ok;
+      if (!res || !res.ok) failures.push(label);
+      return Boolean(res && res.ok);
     };
     const metrics = track(metricsRes, '健康指标')
       ? (await metricsRes.json()).metrics || []
@@ -2594,7 +2609,7 @@ async function exportVisitSummary() {
     const weekly = weeklyRes && weeklyRes.ok
       ? await weeklyRes.json().catch(() => null)
       : null;
-    if (weeklyRes && !weeklyRes.ok) failures.push('近 7 天小结');
+    if (!weeklyRes || !weeklyRes.ok) failures.push('近 7 天小结');
     const summaries = await fetchMetricSummaries(
       profile, metrics, 0, false
     );
@@ -3150,9 +3165,9 @@ function setSessionUrl(id) {
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
-async function ensureSession() {
+async function ensureSession(signal) {
   if (sessionId) return sessionId;
-  const res = await fetch('/api/sessions', { method: 'POST' });
+  const res = await fetch('/api/sessions', { method: 'POST', signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.session_id) {
     throw new Error(data.detail || `新建会话失败（${res.status}）`);
@@ -6553,6 +6568,9 @@ function targetIsLowerBound(metric) {
     || metric === 'steps' || metric === 'water';
 }
 
+/** 目标为每日累计的指标：单条记录不与每日目标比较 */
+const DAILY_ACCUMULATING_METRICS = new Set(['steps', 'water']);
+
 const METRIC_TARGET_DEFAULTS = {
   bp: { value1: 135, value2: 85 },
   spo2: { value1: 95 },
@@ -6875,7 +6893,8 @@ function renderMetrics(items, days = 0, metric = els.metricType.value) {
 
     const target = findMetricTarget(item.profile || '', item.metric);
     let overTarget = false;
-    if (target) {
+    // 步数/饮水的目标是每日累计：单条记录只代表当日一部分
+    if (target && !DAILY_ACCUMULATING_METRICS.has(item.metric)) {
       overTarget = targetIsLowerBound(item.metric)
         ? Number(item.value1) < target.value1
         : item.metric === 'bp'
@@ -7359,7 +7378,35 @@ function renderMetricWeekly(summaries) {
       button.appendChild(delta);
     }
 
-    if (summary.target && Number.isFinite(Number(summary.within_target))) {
+    if (DAILY_ACCUMULATING_METRICS.has(metric)) {
+      const daily = document.createElement('span');
+      daily.className = 'metric-weekly-target';
+      if (
+        Number(summary.daily_count) > 0
+        && summary.daily_total !== null
+        && summary.daily_total !== undefined
+      ) {
+        const total = formatStatNumber(summary.daily_total);
+        if (
+          summary.target
+          && Number.isFinite(Number(summary.target.value1))
+        ) {
+          const gap = Number(summary.target.value1)
+            - Number(summary.daily_total);
+          daily.textContent = `今日累计 ${total}${unit}`
+            + (gap <= 0
+              ? '，已达成'
+              : `，还差 ${formatStatNumber(gap)}${unit}`);
+        } else {
+          daily.textContent = `今日累计 ${total}${unit}`;
+        }
+      } else {
+        daily.textContent = '今日暂无记录';
+      }
+      button.appendChild(daily);
+    } else if (
+      summary.target && Number.isFinite(Number(summary.within_target))
+    ) {
       const target = document.createElement('span');
       target.className = 'metric-weekly-target';
       target.textContent = `达标 ${summary.within_target}/${summary.count}`;
@@ -9685,20 +9732,34 @@ async function clearDoneReminders() {
   }
   if (!window.confirm(`删除 ${done.length} 条已完成的提醒？`)) return;
   let deleted = 0;
-  try {
-    const res = await fetch('/api/reminders/bulk_delete', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: done.map((item) => item.id) }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      deleted = Number(data.deleted) || 0;
+  let failed = false;
+  // 单个请求最多接受 2000 个 id：长期使用后已完成提醒可能更多，
+  // 分批提交且任一批失败时如实提示，不能显示“已清理 0 条”
+  const chunkSize = 500;
+  for (let index = 0; index < done.length; index += chunkSize) {
+    const chunk = done.slice(index, index + chunkSize);
+    try {
+      const res = await fetch('/api/reminders/bulk_delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: chunk.map((item) => item.id) }),
+      });
+      if (!res.ok) {
+        failed = true;
+        break;
+      }
+      const data = await res.json().catch(() => ({}));
+      deleted += Number(data.deleted) || 0;
+    } catch {
+      failed = true;
+      break;
     }
-  } catch {
-    // 批量删除失败时下方仍会重新加载列表
   }
-  setRemindersStatus(`已清理 ${deleted} 条已完成提醒。`);
+  setRemindersStatus(
+    failed
+      ? `已清理 ${deleted} 条已完成提醒，部分未清理成功，请重试。`
+      : `已清理 ${deleted} 条已完成提醒。`
+  );
   await loadReminders();
   refreshReminderBadge();
   refreshOverview();
@@ -14155,9 +14216,16 @@ function weeklyMetricText(row) {
       }
     }
   }
-  const targetText = row.target && row.within_target !== null
-    ? `，达标 ${row.within_target}/${row.count}`
-    : '';
+  let targetText = '';
+  if (row.target) {
+    if (DAILY_ACCUMULATING_METRICS.has(row.metric)) {
+      if (Number(row.daily_count) > 0) {
+        targetText = `，今日累计 ${formatStatNumber(row.daily_total)}${unit}`;
+      }
+    } else if (row.within_target !== null && row.within_target !== undefined) {
+      targetText = `，达标 ${row.within_target}/${row.count}`;
+    }
+  }
   return `${name} ${row.count} 次，平均 ${average}${change}${targetText}`;
 }
 
@@ -17063,10 +17131,17 @@ function renderFamilyCompare(data) {
       const rangeText = hasRange
         ? `（${row.min_value1}–${row.max_value1}${data.unit ? ` ${data.unit}` : ''}）`
         : '';
-      const targetText = row.target
-        && Number.isFinite(Number(row.within_target))
-        ? ` · 达标 ${row.within_target}/${row.count}`
-        : '';
+      let targetText = '';
+      if (row.target) {
+        if (DAILY_ACCUMULATING_METRICS.has(data.metric)) {
+          if (Number(row.daily_count) > 0) {
+            targetText = ` · 今日累计 ${formatStatNumber(row.daily_total)}`
+              + `${data.unit ? ` ${data.unit}` : ''}`;
+          }
+        } else if (Number.isFinite(Number(row.within_target))) {
+          targetText = ` · 达标 ${row.within_target}/${row.count}`;
+        }
+      }
       meta.textContent = `平均 ${formatCompareValue(row, data.unit)}`
         + `${rangeText} · ${row.count} 次${targetText}`;
       if (row.target) {
@@ -19824,7 +19899,7 @@ async function send(question) {
   logStep('已提交主诉，正在分诊并路由');
 
   try {
-    const sid = await ensureSession();
+    const sid = await ensureSession(controller.signal);
 
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
@@ -19833,7 +19908,7 @@ async function send(question) {
         question,
         session_id: sid,
         enable_swarm: !els.ctxSingle.checked,
-        context: await buildConsultContext(),
+        context: await buildConsultContext(controller.signal),
         patient_profile: els.profileSelect.value || '',
       }),
       signal: controller.signal,
@@ -20048,6 +20123,7 @@ let swRegistration = null;
 let swHadController = false;
 let swUpdateReady = false;
 let swUpdateCheckStarted = false;
+let swPendingUpdate = false;
 let loadedWebBuild = null;
 let statusWasDown = false;
 let reconnectRetryRunning = false;
@@ -20101,17 +20177,17 @@ async function checkStatusOnce() {
     // 资产更新不会改变 service worker（旧实现），轮询状态里的构建号
     // 能覆盖只改 HTML/JS/CSS 的发布
     if (data.web_build) {
-      if (!loadedWebBuild) loadedWebBuild = data.web_build;
-      else if (loadedWebBuild !== data.web_build) {
-        // 旧 worker 激活时导航会从旧缓存返回 index/app.js；
-        // 先触发新 worker 安装，用户点一次刷新就能拿到新外壳
-        if (swRegistration && !swUpdateCheckStarted) {
-          swUpdateCheckStarted = true;
-          swRegistration.update().catch(() => {
-            swUpdateCheckStarted = false;
-          });
+      if (!loadedWebBuild) {
+        loadedWebBuild = data.web_build;
+        // 同一标签页上一次看到的是旧构建号：外壳可能还是旧缓存，
+        // 继续走更新流程，而不是把新构建号当成基准吞掉提示
+        const seenBuild = safeSessionGet('medix.seenBuild');
+        if (seenBuild && seenBuild !== data.web_build) {
+          requestServiceWorkerUpdate();
         }
-        showUpdateBanner();
+        safeSessionSet('medix.seenBuild', data.web_build);
+      } else if (loadedWebBuild !== data.web_build) {
+        requestServiceWorkerUpdate();
       }
     }
 
@@ -20288,7 +20364,7 @@ function readPatientContext() {
   return context;
 }
 
-async function buildConsultContext() {
+async function buildConsultContext(signal) {
   const context = readPatientContext();
   // 紧急联系人只用于本机急救卡，不随会诊发送给模型
   delete context.emergency_contacts;
@@ -20297,14 +20373,19 @@ async function buildConsultContext() {
     const [
       metricsRes, remindersRes, symptomsRes, medicationsRes,
     ] = await Promise.all([
-      fetch(`/api/metrics/latest?profile=${encodeURIComponent(profile)}`),
-      fetch('/api/reminders'),
       fetch(
-        `/api/symptoms?limit=3&days=7&profile=${encodeURIComponent(profile)}`
+        `/api/metrics/latest?profile=${encodeURIComponent(profile)}`,
+        { signal }
+      ),
+      fetch('/api/reminders', { signal }),
+      fetch(
+        `/api/symptoms?limit=3&days=7&profile=${encodeURIComponent(profile)}`,
+        { signal }
       ),
       fetch(
         `/api/medications?active_only=true&limit=20`
-        + `&profile=${encodeURIComponent(profile)}`
+        + `&profile=${encodeURIComponent(profile)}`,
+        { signal }
       ),
     ]);
     if (metricsRes.ok) {
@@ -22359,7 +22440,11 @@ document.addEventListener('keydown', (e) => {
   if (!drawer) return;
 
   const focusable = Array.from(drawer.querySelectorAll(FOCUSABLE_SELECTOR))
-    .filter((el) => el.getClientRects().length > 0);
+    .filter((el) => (
+      el.getClientRects().length > 0
+      // 闭合 <details> 的后代在 Chromium 仍有 client rects，但无法聚焦
+      && !el.closest('details:not([open])')
+    ));
   if (!focusable.length) return;
 
   const first = focusable[0];
@@ -22611,9 +22696,8 @@ function describeServiceWorker() {
   return { text: '未注册或注册失败', ok: false };
 }
 
-function activateServiceWorkerUpdate() {
-  const waiting = swRegistration && swRegistration.waiting;
-  if (!waiting || typeof waiting.postMessage !== 'function') {
+function triggerServiceWorkerActivation(worker) {
+  if (!worker || typeof worker.postMessage !== 'function') {
     window.location.reload();
     return;
   }
@@ -22623,7 +22707,7 @@ function activateServiceWorkerUpdate() {
     reloading = true;
     window.location.reload();
   });
-  waiting.postMessage({ type: 'SKIP_WAITING' });
+  worker.postMessage({ type: 'SKIP_WAITING' });
   // 旧版 Worker 可能还没有 SKIP_WAITING 监听：兜底做一次普通刷新
   setTimeout(() => {
     if (!reloading) {
@@ -22633,14 +22717,99 @@ function activateServiceWorkerUpdate() {
   }, 2000);
 }
 
-function showUpdateBanner() {
+function activateServiceWorkerUpdate() {
+  const registration = swRegistration;
+  if (!registration) {
+    window.location.reload();
+    return;
+  }
+  if (registration.waiting) {
+    triggerServiceWorkerActivation(registration.waiting);
+    return;
+  }
+  const waitForInstalled = () => {
+    const worker = registration.installing;
+    if (!worker) {
+      // 浏览器没有再安装新 worker：普通刷新只会拿回旧缓存外壳
+      showUpdateBanner(
+        '新版本尚未准备好。请稍后重试，或关闭本站所有标签页后重新打开。'
+      );
+      return;
+    }
+    worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed' && registration.waiting) {
+        triggerServiceWorkerActivation(registration.waiting);
+      } else if (worker.state === 'redundant') {
+        showUpdateBanner('新版本安装失败，请稍后重新刷新页面。');
+      }
+    });
+  };
+  if (registration.installing) {
+    // 新 worker 仍在安装：等它进入 waiting 再激活；
+    // 立刻 reload 会从旧缓存拿回旧外壳，提示也就随之丢失
+    waitForInstalled();
+    return;
+  }
+  swPendingUpdate = true;
+  registration.update()
+    .then(() => {
+      if (registration.waiting) {
+        triggerServiceWorkerActivation(registration.waiting);
+      } else {
+        waitForInstalled();
+      }
+    })
+    .catch(() => {
+      showUpdateBanner('检查新版本失败，请稍后刷新重试。');
+    });
+}
+
+function requestServiceWorkerUpdate() {
+  if (!swRegistration) {
+    // 没有 Service Worker 时刷新会直接取服务端资源，提示是安全的
+    showUpdateBanner();
+    return;
+  }
+  if (swUpdateCheckStarted) return;
+  swUpdateCheckStarted = true;
+  swPendingUpdate = true;
+  swRegistration.update()
+    .then(() => {
+      if (swRegistration.waiting) {
+        showUpdateBanner();
+        return;
+      }
+      if (swRegistration.installing) {
+        // 安装完成后由 trackServiceWorkerInstall 提示，避免用户提前刷新
+        return;
+      }
+      // 浏览器没有可安装的新 worker：普通刷新只会回到旧缓存外壳
+      showUpdateBanner(
+        '服务端已发布新版本，但浏览器暂未准备好新外壳。'
+        + '请关闭本站所有标签页后重新打开；若仍提示，请清除本站缓存。'
+      );
+    })
+    .catch(() => {
+      swUpdateCheckStarted = false;
+    });
+}
+
+function showUpdateBanner(message) {
   swUpdateReady = true;
+  const text = message
+    || '新版本已就绪。为避免影响正在编辑的内容，请在合适时刷新页面。';
+  const existingText = document.getElementById('sw-refresh-text');
+  if (existingText) {
+    existingText.textContent = text;
+    els.banner.hidden = false;
+    return;
+  }
   if (document.getElementById('sw-refresh')) {
     els.banner.hidden = false;
     return;
   }
   showBanner(
-    '新版本已就绪。为避免影响正在编辑的内容，请在合适时刷新页面。'
+    `<span id="sw-refresh-text">${escapeHtml(text)}</span>`
     + ' <button type="button" class="btn-quiet" id="sw-refresh">刷新页面</button>'
   );
   const button = document.getElementById('sw-refresh');
@@ -22670,6 +22839,11 @@ if ('serviceWorker' in navigator) {
     const worker = registration.installing || registration.waiting;
     if (!worker) return;
     worker.addEventListener('statechange', () => {
+      if (worker.state === 'installed' && registration.waiting) {
+        // 新外壳已完整下载：此时提示刷新，点击后一定能切到新版本
+        if (swHadController || swPendingUpdate) showUpdateBanner();
+        return;
+      }
       // 首次安装失败时 register() 早已 resolve，此后不会再自动重试；
       // 没有 active worker 且安装进入 redundant 说明外壳安装失败
       if (
@@ -22677,6 +22851,10 @@ if ('serviceWorker' in navigator) {
         && !registration.active
       ) {
         scheduleServiceWorkerRetry();
+      } else if (worker.state === 'redundant' && swPendingUpdate) {
+        showUpdateBanner(
+          '新版本外壳下载失败（可能是网络波动），请稍后刷新重试。'
+        );
       }
     });
   };
