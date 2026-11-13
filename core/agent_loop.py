@@ -20,8 +20,9 @@ from .usage import merge_usage
 def _tool_result_for_model(result: Any) -> Any:
     """返回给模型看的工具结果副本。
 
-    来源卡片里的原文片段可能来自用户上传文档：发给模型时套上不可信
-    资料边界，但前端展示仍使用原始 snippet，避免界面出现边界标签。
+    来源卡片里的原文片段与元数据（标题/文件名/来源）都可能来自用户
+    上传文档：发给模型时套上不可信资料边界，但前端展示仍使用原始
+    内容，避免界面出现边界标签。
     """
     if not isinstance(result, dict):
         return result
@@ -31,11 +32,18 @@ def _tool_result_for_model(result: Any) -> Any:
     from knowledge.sources import wrap_untrusted_source
 
     wrapped = []
-    for source in sources:
+    for index, source in enumerate(sources, start=1):
         if isinstance(source, dict):
             item = dict(source)
             if item.get("snippet"):
-                item["snippet"] = wrap_untrusted_source(item["snippet"])
+                item["snippet"] = wrap_untrusted_source(
+                    item["snippet"], index=index
+                )
+            for key in ("title", "filename", "source"):
+                if isinstance(item.get(key), str) and item[key]:
+                    item[key] = wrap_untrusted_source(
+                        item[key], index=index, max_chars=160
+                    )
             wrapped.append(item)
         else:
             wrapped.append(source)

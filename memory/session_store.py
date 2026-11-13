@@ -560,6 +560,16 @@ def _normalize_profile_name(value: Any) -> str:
     return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
 
 
+def _profile_deletion_key(profile: Any) -> str:
+    """删除墓碑只保存档案名的哈希，已删除姓名不能残留在数据库里。"""
+    name = _normalize_profile_name(profile)
+    if not name:
+        return ""
+    return hashlib.sha256(
+        ("medix-profile-deletion:" + name).encode("utf-8")
+    ).hexdigest()
+
+
 MAX_MEDICATION_NAME_LENGTH = 120
 MAX_MEDICATION_TEXT_LENGTH = 60
 MAX_MEDICATION_STOCK = 1000000.0
@@ -1834,6 +1844,15 @@ class SessionStore:
             # 删除时立即清零释放的页面，避免问诊明文留在空闲页
             self._conn.execute("PRAGMA secure_delete=ON")
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # 早期开发版本的墓碑表存明文档案名且列名不同；不兼容时
+            # 直接重建（墓碑只用于近期删除判定，可安全丢弃）
+            columns = {
+                row[1] for row in self._conn.execute(
+                    "PRAGMA table_info(profile_deletions)"
+                ).fetchall()
+            }
+            if columns and "profile_hash" not in columns:
+                self._conn.execute("DROP TABLE profile_deletions")
             self._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -1910,6 +1929,13 @@ class SessionStore:
                     created_at TEXT NOT NULL,
                     UNIQUE(profile, session_id)
                 );
+                CREATE TABLE IF NOT EXISTS profile_deletions (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_hash TEXT NOT NULL,
+                    deleted_at   TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_profile_deletions_hash
+                    ON profile_deletions(profile_hash, deleted_at DESC);
                 CREATE TABLE IF NOT EXISTS usage_events (
                     id                INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id        TEXT NOT NULL DEFAULT '',
@@ -2514,6 +2540,40 @@ class SessionStore:
             {"name": row["profile"], "count": int(row["count"])}
             for row in rows
         ]
+
+    def profile_deleted_since(self, profile: str, since: str) -> bool:
+        """档案是否在 since（ISO 时间）之后被删除。
+
+        用于中止删除进行中的会诊把结果写回已删除档案：长期记忆不能
+        再写入旧命名空间，SQLite 也不能重新绑定已删除的档案名。
+        """
+        name = _normalize_profile_name(profile)
+        since = str(since or "").strip()[:40]
+        key = _profile_deletion_key(name)
+        if not key or not since:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM profile_deletions
+                 WHERE profile_hash = ? AND deleted_at >= ?
+                 LIMIT 1
+                """,
+                (key, since),
+            ).fetchone()
+        return row is not None
+
+    def profile_created_at(self, name: str) -> str:
+        """档案的创建时间；不存在返回空串。"""
+        name = _normalize_profile_name(name)
+        if not name:
+            return ""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT created_at FROM patient_profiles WHERE name = ?",
+                (name,),
+            ).fetchone()
+        return str(row["created_at"] or "") if row else ""
 
     def list_used_profile_names(self) -> List[str]:
         """返回所有数据表中出现过的档案名（含已删除档案留下的历史名字）。"""
@@ -5971,6 +6031,14 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return False
+            # 墓碑用于中止删除进行中的会诊写回，并让清理队列识别
+            # 「同名档案已重建」，避免误删新档案刚写入的长期记忆；
+            # 只存哈希，已删除的姓名不会残留
+            self._conn.execute(
+                "INSERT INTO profile_deletions(profile_hash, deleted_at)"
+                " VALUES (?, ?)",
+                (_profile_deletion_key(name), self._now()),
+            )
             # 指标目标属于档案配置，删除档案时一并清理，避免重建同名档案继承旧目标
             self._conn.execute(
                 "DELETE FROM metric_targets WHERE profile = ?", (name,)

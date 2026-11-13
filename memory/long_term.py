@@ -65,10 +65,17 @@ class LongTermMemory:
         """
         if not MEM0_AVAILABLE:
             self.enabled = False
+            #: 是否配置了 API key；用于区分「未启用云记忆」和「初始化失败」
+            self.api_key_configured = False
+            self.init_error = ""
             logger.warning("Mem0 not available. Long-term memory disabled.")
             return
 
         self.enabled = True
+        #: 是否配置了 API key；用于区分「未启用云记忆」和「初始化失败」
+        self.api_key_configured = False
+        #: 最近一次初始化错误；非空表示云记忆已配置但暂时不可用
+        self.init_error = ""
         #: 最近一次删除操作的错误；供上层判断是否需要重试
         self.last_error = ""
 
@@ -85,6 +92,7 @@ class LongTermMemory:
                 or os.getenv("MEM0_API_KEY")
                 or (MEM0_CONFIG or {}).get("api_key")
             )
+            self.api_key_configured = bool(mem0_api_key)
 
             if not mem0_api_key:
                 raise ValueError("MEM0_API_KEY not found. Set it in ../config.py or .env")
@@ -94,6 +102,7 @@ class LongTermMemory:
             logger.info("LongTermMemory initialized with Mem0 cloud service")
 
         except Exception as e:
+            self.init_error = f"{type(e).__name__}: {e}"[:200]
             logger.warning(f"Failed to initialize Mem0: {e}")
             logger.warning("Long-term memory disabled. System will work without Mem0.")
             logger.info("To enable Mem0: set MEM0_API_KEY in ../config.py or .env")
