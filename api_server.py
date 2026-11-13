@@ -1033,6 +1033,9 @@ async def _link_patient_profile(
         if since and await asyncio.to_thread(
             store.profile_deleted_since, profile, since
         ):
+            # 认领也要释放：否则同一会话的下一轮会被残留认领解析回
+            # 已删除档案，并重新绑定
+            _release_profile_claim(session_id, profile)
             return
         await asyncio.to_thread(
             store.set_session_profile, session_id, profile
@@ -1597,16 +1600,16 @@ class _BodyTooLarge(Exception):
 def _scope_route_path(scope: Dict[str, Any]) -> str:
     """去掉 root_path 后的路由路径（子路径部署时鉴权与限流仍能匹配）。
 
-    与 Starlette 的 get_route_path 保持同样的边界语义：只有恰好等于
-    root 或以 root + "/" 开头才截断。root "/" 归一为空串，否则
-    "/api/sessions" 会被截成 "api/sessions"，导致鉴权/CSRF/限流全部跳过。
+    必须与 Starlette 的 get_route_path 逐字一致：只有恰好等于 root
+    或下一个字符是 "/" 时才截断，且不对 root 做任何归一化——
+    uvicorn --root-path /medix/ 会把 path 拼成 "/medix//api/..."，
+    若先把 root 裁成 "/medix"，截断后得到 "//api/..."，鉴权、CSRF
+    与全部限流都会被跳过，而路由层仍按 Starlette 语义命中接口。
+    root "/" 时 "/api/sessions" 不截断（Starlette 相同），
+    "//api/sessions"（uvicorn 拼接产物）截一层后恢复为 "/api/..."。
     """
     path = str(scope.get("path") or "")
     root = str(scope.get("root_path") or "")
-    if len(root) > 1:
-        # 子路径部署允许尾斜杠；根路径 "/" 必须保留，uvicorn 会把它
-        # 与 path 拼成 "//api/..."，去掉一层后仍是 "/api/..."
-        root = root.rstrip("/")
     if (
         root
         and path.startswith(root)
@@ -9696,6 +9699,17 @@ async def delete_profile(name: str):
     ok = await asyncio.to_thread(store.delete_profile, name)
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
+    normalized_name = _normalize_profile_name(name)
+    # 进程内首轮认领立刻失效：Mem0 清理带重试可能耗时数十秒，
+    # 期间到达的下一轮请求不能继续解析到已删除档案并重新绑定
+    with _PROFILE_CLAIMS_LOCK:
+        stale_claims = [
+            session_key
+            for session_key, claimed in _PROFILE_CLAIMS.items()
+            if _normalize_profile_name(claimed) == normalized_name
+        ]
+        for session_key in stale_claims:
+            _PROFILE_CLAIMS.pop(session_key, None)
     # 档案作用域是档案名的哈希；删除档案必须清空对应命名空间，
     # 否则重建同名档案会召回旧患者的病史对话
     cleanup_entries = [(name, "")]
@@ -9708,7 +9722,6 @@ async def delete_profile(name: str):
         await asyncio.to_thread(
             store.complete_memory_cleanup, cleanup_entries
         )
-    normalized_name = _normalize_profile_name(name)
     audit_key = _profile_audit_key(name)
     # 清理历史审计中的档案名
     await asyncio.to_thread(
@@ -15090,14 +15103,72 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
     return all_ok
 
 
+def _erase_long_term_before(
+    profile: str, session_id: str, cutoff: str
+) -> bool:
+    """目标已重建时，只删除删除动作之前写入的旧记忆。
+
+    同名档案/同号会话重建后，按整段命名空间清空会误删新写入的长期
+    记忆；按 metadata.timestamp 过滤，旧患者的摘要仍会被删除，
+    重建后新写入的记忆保留。
+    """
+    try:
+        memory = _get_long_term_memory()
+    except Exception as e:
+        logger.warning(
+            f"初始化长期记忆失败（跳过清理）: {redact_secrets(str(e))}"
+        )
+        return False
+    if not getattr(memory, "enabled", False):
+        return not getattr(memory, "api_key_configured", False)
+    from memory.session_store import _normalize_profile_name
+
+    def _retry(action) -> bool:
+        for attempt in range(3):
+            try:
+                action()
+                last_error = getattr(memory, "last_error", "")
+                if last_error:
+                    raise RuntimeError(last_error)
+                return True
+            except Exception as e:
+                if attempt == 2:
+                    logger.warning(
+                        "按时间清理长期记忆失败（已重试）: "
+                        f"{redact_secrets(str(e))}"
+                    )
+                    return False
+                time.sleep(0.5 * (attempt + 1))
+        return False
+
+    profile = _normalize_profile_name(profile)
+    session_id = str(session_id or "").strip()
+    all_ok = True
+    if session_id:
+        if not _retry(lambda: memory.delete_scope_before(
+            session_memory_scope(session_id), cutoff
+        )):
+            all_ok = False
+        if profile and not _retry(
+            lambda: memory.delete_session_summary(
+                session_id,
+                user_id=_memory_scope(profile, session_id),
+                before=cutoff,
+            )
+        ):
+            all_ok = False
+    elif profile:
+        if not _retry(lambda: memory.delete_scope_before(
+            _memory_scope(profile, ""), cutoff
+        )):
+            all_ok = False
+    return all_ok
+
+
 def _cleanup_target_recreated(
     store: Any, profile: str, session_id: str, since: str
 ) -> bool:
-    """删除后同名档案/同号会话是否已重建。
-
-    重建后继续按旧命名空间清理会误删新写入的长期记忆，
-    这类条目应直接作废而不是重试。
-    """
+    """删除后同名档案/同号会话是否已重建。"""
     if not since:
         return False
     try:
@@ -15122,19 +15193,25 @@ def _process_memory_cleanup_queue() -> None:
     for row in rows:
         profile = str(row.get("profile") or "")
         session_id = str(row.get("session_id") or "")
+        deleted_at = str(row.get("created_at") or "")
+        entries = [(profile, session_id)]
         if _cleanup_target_recreated(
-            store,
-            profile,
-            session_id,
-            str(row.get("created_at") or ""),
+            store, profile, session_id, deleted_at
         ):
+            # 目标已重建：按删除时间窗清理旧记忆，新写入的保留；
+            # 直接作废会泄漏已删除患者的旧摘要（同名档案共享哈希）
             logger.info(
-                "记忆清理目标已重建，作废队列条目"
+                "记忆清理目标已重建，按时间窗清理旧记忆"
                 f"（profile={profile} session={session_id}）"
             )
-            store.complete_memory_cleanup([(profile, session_id)])
+            if _erase_long_term_before(profile, session_id, deleted_at):
+                store.complete_memory_cleanup(entries)
+            else:
+                store.fail_memory_cleanup(
+                    int(row.get("id") or 0),
+                    "cleanup before recreation failed",
+                )
             continue
-        entries = [(profile, session_id)]
         if _erase_long_term_entries(entries):
             store.complete_memory_cleanup(entries)
         else:

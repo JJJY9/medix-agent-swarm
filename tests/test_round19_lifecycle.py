@@ -300,7 +300,7 @@ def test_delete_profile_records_deletion_tombstone(tmp_path):
         store.close()
 
 
-def test_cleanup_queue_drops_entry_when_profile_recreated(
+def test_cleanup_queue_prunes_old_memories_when_profile_recreated(
     tmp_path, monkeypatch
 ):
     store = SessionStore(str(tmp_path / "sessions.db"))
@@ -308,20 +308,32 @@ def test_cleanup_queue_drops_entry_when_profile_recreated(
         store.save_profile("妈妈", {"age": 50})
         store.delete_profile("妈妈")
         store.queue_memory_cleanup([("妈妈", "")])
-        # 同名档案重建：继续按旧命名空间清理会误删新写入的记忆
+        # 同名档案重建：不能整段清空旧命名空间，只能按删除时间窗清理
         store.save_profile("妈妈", {"age": 50})
         monkeypatch.setattr(memory, "get_session_store", lambda: store)
 
-        calls = []
+        prune_calls = []
+        monkeypatch.setattr(
+            api_server,
+            "_erase_long_term_before",
+            lambda profile, session_id, cutoff: (
+                prune_calls.append((profile, session_id, cutoff)) or True
+            ),
+        )
+        erase_calls = []
         monkeypatch.setattr(
             api_server,
             "_erase_long_term_entries",
-            lambda entries: calls.append(entries) or True,
+            lambda entries: erase_calls.append(entries) or True,
         )
 
         api_server._process_memory_cleanup_queue()
 
-        assert calls == []
+        assert erase_calls == []
+        assert len(prune_calls) == 1
+        assert prune_calls[0][0] == "妈妈"
+        assert prune_calls[0][1] == ""
+        assert prune_calls[0][2], "必须带删除时间窗"
         assert store.list_memory_cleanup() == []
     finally:
         store.close()
@@ -352,6 +364,27 @@ def test_cleanup_queue_erases_when_target_not_recreated(
         store.close()
 
 
+def test_queue_memory_cleanup_refreshes_deletion_time(tmp_path):
+    """重复删除同一档案时要刷新时间窗，否则中间一代记忆漏清理。"""
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.queue_memory_cleanup([("妈妈", "")])
+        with store._lock, store._conn:
+            store._conn.execute(
+                "UPDATE memory_cleanup_queue"
+                " SET created_at = '2000-01-01T00:00:00', attempts = 3"
+            )
+
+        store.queue_memory_cleanup([("妈妈", "")])
+
+        row = store.list_memory_cleanup()[0]
+        assert row["created_at"] > "2000-01-01T00:00:00"
+        assert row["attempts"] == 0
+        assert len(store.list_memory_cleanup()) == 1
+    finally:
+        store.close()
+
+
 def test_link_profile_skips_when_deleted_during_request(
     tmp_path, monkeypatch
 ):
@@ -361,14 +394,31 @@ def test_link_profile_skips_when_deleted_during_request(
         store.save_profile("妈妈", {"age": 50})
         store.delete_profile("妈妈")
         monkeypatch.setattr(memory, "get_session_store", lambda: store)
+        api_server._PROFILE_CLAIMS["s1"] = "妈妈"
 
         asyncio.run(api_server._link_patient_profile(
             "s1", "妈妈", since="2000-01-01T00:00:00"
         ))
 
         assert (store.get_session("s1")["profile"] or "") == ""
+        # 认领必须释放，否则下一轮会被残留认领解析回已删除档案
+        assert "s1" not in api_server._PROFILE_CLAIMS
     finally:
+        api_server._PROFILE_CLAIMS.pop("s1", None)
         store.close()
+
+
+def test_delete_profile_clears_inflight_profile_claims(client_and_store):
+    client, store = client_and_store
+    store.save_profile("妈妈", {"age": 50})
+    api_server._PROFILE_CLAIMS["claim-session"] = "妈妈"
+    try:
+        response = client.delete("/api/profiles/妈妈")
+
+        assert response.status_code == 200
+        assert "claim-session" not in api_server._PROFILE_CLAIMS
+    finally:
+        api_server._PROFILE_CLAIMS.pop("claim-session", None)
 
 
 def test_coordinator_checks_profile_deletion_tombstone():

@@ -73,6 +73,19 @@ _MEDICATION_TERMS = (
 )
 #: 片/粒/支既可能是药也可能是食物，需有明确药名或“药”语境
 _COUNT_UNIT_SUFFIX = re.compile(r"(?:片|粒|支)\s*$")
+#: 毫升/克同样可能是饮水/食物建议；mg/μg 不能算 g（前面还有字母/微符号）
+_VOLUME_MASS_UNIT_SUFFIX = re.compile(
+    r"(?<![a-zA-Zµμ])(?:ml|毫升|g|克)\s*$", re.I
+)
+#: 饮水/食物语境词（勿含单字糖/盐，避免误豁免乳果糖等药物剂量）
+_FOOD_WATER_CONTEXT = re.compile(
+    r"(?:饮水|喝水|饮用|喝|摄入|饮食|食物|进食|蛋白质|营养|牛奶|豆浆|"
+    r"粥|汤|米饭|水果|蔬菜|纤维|水分)"
+)
+#: 直接支配剂量的用药动词：出现即视为给药方案而非饮食建议
+_DOSE_USE_VERB = re.compile(
+    r"(?:服用|使用|口服|注射|滴注|静滴|静推|外用|含服)"
+)
 #: “误服 20 片”是中毒描述，不是处方
 _OVERDOSE_PATTERN = re.compile(r"(?:误服|过量|超量|超过|中毒|自杀|自伤|服毒)")
 #: 复述患者现有用药、说明书剂量或明确否定性建议，不是开处方
@@ -267,11 +280,21 @@ def _contains_prescription(output: str) -> bool:
                 continue
             if _match_in_safe_medication_context(output, match):
                 continue
-            # 片/粒/支也可能是食物（“每天吃一片面包”），
-            # 没有明确药名或“药”语境时不算处方
+            # 片/粒/支或毫升/克也可能是食物/饮水建议（“每天吃一片面包”
+            # “建议每天饮水 2000ml”）。毫升/克仅在确有饮食语境且没有
+            # 用药动词时豁免：“服用蒙脱石散 3g”“使用开塞露 20ml”
+            # 仍按处方识别，μg/mg 也不受克单位影响
+            matched = match.group(0)
             if (
-                _COUNT_UNIT_SUFFIX.search(match.group(0))
+                _COUNT_UNIT_SUFFIX.search(matched)
                 and not medication_context
+            ):
+                continue
+            if (
+                _VOLUME_MASS_UNIT_SUFFIX.search(matched)
+                and not medication_context
+                and _FOOD_WATER_CONTEXT.search(matched)
+                and not _DOSE_USE_VERB.search(matched)
             ):
                 continue
             return True

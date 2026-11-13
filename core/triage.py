@@ -121,8 +121,12 @@ _RULED_OUT_SUFFIX_PATTERN = re.compile(
     r"|难以|不容易|不好"
     r")$"
 )
-#: 「排除了/排除掉」是已完成的排除，属否定描述
-_RULED_OUT_DONE_PATTERN = re.compile(r"(?:排除|除外)(?:了|掉|啦)$")
+#: 「排除/除外」及其后常见完成态/系词/动词；双重否定判断需先定位这段。
+#: 「不排除出现/发生/有/伴有 X」是最常见的临床表述，必须一起覆盖
+_RULED_OUT_TAIL = re.compile(
+    r"(?:排除|除外)(?:了|掉|啦)?\s*"
+    r"(?:(?:是|为|存在|得了|出现|发生|有|伴有|伴随|伴|会)\s*)*$"
+)
 
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
@@ -154,13 +158,12 @@ def _is_negated(prefix: str) -> bool:
     ):
         # 「不排除酮症酸中毒」是阳性警示，不是否定
         return False
-    for ruled_out in ("排除", "除外"):
-        if stripped.endswith(ruled_out):
-            stem = stripped[:-len(ruled_out)].rstrip()
-            if _RULED_OUT_SUFFIX_PATTERN.search(stem):
-                # 「尚未完全排除/暂不除外/难以排除」同样表示仍有可能
-                return False
-    if _RULED_OUT_DONE_PATTERN.search(stripped):
+    ruled_out = _RULED_OUT_TAIL.search(stripped)
+    if ruled_out:
+        stem = stripped[:ruled_out.start()].rstrip()
+        if _RULED_OUT_SUFFIX_PATTERN.search(stem):
+            # 「尚未完全排除是…」「暂时不除外为…」同样表示仍有可能
+            return False
         # 「医生排除了酮症酸中毒」是已完成排除，按否定处理
         return True
     return bool(_NEGATION_PATTERN.search(prefix))
@@ -208,10 +211,16 @@ _VISIT_NEGATIONS = (
     "可以不去", "没必要", "用不着", "无需去", "不必去", "不用去",
     "不去", "先不去", "暂时不去", "目前不去", "不打算去",
 )
-#: 紧贴就医建议的普通否定（"还没有去医院"），远距离出现时可能否定的是
-#: 别的成分（"没有明显诱因也应去医院"），因此只在短语附近生效
-_VISIT_CLOSE_NEGATIONS = (
-    "没有", "没", "未", "尚未", "还没", "并未", "未曾", "从未", "并无", "无",
+#: 紧贴就医建议的普通否定（"还没有去医院"）。必须锚定在短语之前：
+#: 窗口内出现裸「未/没/无」会把「无明显诱因也应去医院」误判成否定。
+#: 允许插入成分（及时/人/车/钱/法）与连续位移动词（送到/赶到），
+#: 覆盖「没法去医院」「没人送医院」「没送到医院」「来不及去医院」
+_VISIT_CLOSE_NEGATION_PATTERN = re.compile(
+    r"(?:没有|没|未|尚未|还没|并未|未曾|从未|并无|无|无法|不能|没法"
+    r"|来不及)"
+    r"\s*(?:及时|马上|立刻|立即|尽快|来得及|能|可以|法|人|车|钱|亲自)?"
+    r"\s*(?:去|到|送|再|赶|带)?"
+    r"\s*(?:去|到|送|再|赶|带)?\s*$"
 )
 _VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
 _QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
@@ -270,15 +279,13 @@ def has_visit_recommendation(text: str) -> bool:
             start = sentence.find(term)
             while start != -1:
                 prefix = sentence[:start]
-                tail = prefix.rstrip()[-8:]
                 negated = (
                     any(
                         negation in prefix for negation in _VISIT_NEGATIONS
                     )
-                    or any(
-                        negation in tail
-                        for negation in _VISIT_CLOSE_NEGATIONS
-                    )
+                    or bool(_VISIT_CLOSE_NEGATION_PATTERN.search(
+                        prefix.rstrip()
+                    ))
                 )
                 questioning = any(
                     marker in prefix for marker in _QUESTION_MARKERS
@@ -319,10 +326,9 @@ def has_visit_recommendation(text: str) -> bool:
             tail = prefix.rstrip()[-10:]
             negated = (
                 any(negation in tail for negation in _VISIT_NEGATIONS)
-                or any(
-                    negation in tail
-                    for negation in _VISIT_CLOSE_NEGATIONS
-                )
+                or bool(_VISIT_CLOSE_NEGATION_PATTERN.search(
+                    prefix.rstrip()
+                ))
             )
             questioning = any(
                 marker in prefix for marker in _QUESTION_MARKERS
@@ -498,7 +504,7 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
     按分句过滤家族史、他人病史、否定表述、过敏史以及已结束/已停用的
     治疗，避免把「父亲化疗」「未使用抗凝药」当作患者本人的高危状态。
     """
-    raw = " ".join(
+    raw = "；".join(
         part for part in (
             _flatten(context.get("history")).lower(),
             medication_context_text(context).lower(),
@@ -519,7 +525,9 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
             continue
         kept.append(clause)
-    return " ".join(kept)
+    # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，
+    # 否则上一个分句结尾的「无」会否定下一段的真实病史
+    return "；".join(kept)
 
 
 def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:

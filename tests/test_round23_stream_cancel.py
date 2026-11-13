@@ -96,6 +96,61 @@ def test_coordinator_cancelled_usage_snapshot():
     )
     assert (usage2, calls2) == ({}, 0)
 
+    # 汇总调用的用量也要计入（每次汇总算一次调用）
+    usage3, calls3 = coordinator._cancelled_usage_snapshot(
+        {"prompt_tokens": 5, "total_tokens": 5}, {id(shared)},
+        {"prompt_tokens": 40, "total_tokens": 40},
+    )
+    assert calls3 == 2
+    assert usage3["total_tokens"] == 45
+
+
+def test_process_attaches_lead_usage_on_llm_error():
+    """Lead 任务分解后模型失败：异常必须带上已消耗的用量。"""
+    from core.llm_client import LLMError
+    from swarm.swarm_coordinator import SwarmCoordinator
+
+    coordinator = object.__new__(SwarmCoordinator)
+
+    async def fake_inner(**kwargs):
+        state = kwargs["usage_state"]
+        state["lead_usage"] = {
+            "prompt_tokens": 50, "completion_tokens": 0, "total_tokens": 50,
+        }
+        raise LLMError("llm_rate_limit", "请求过于频繁", retryable=True)
+
+    coordinator._process_inner = fake_inner
+
+    with pytest.raises(LLMError) as info:
+        asyncio.run(coordinator.process("高血压怎么用药"))
+
+    assert info.value.usage["total_tokens"] == 50
+    assert info.value.llm_calls == 1
+
+
+def test_process_prefers_existing_usage_snapshot():
+    """子流程已挂快照时不能重复合并 Lead 用量。"""
+    from core.llm_client import LLMError
+    from swarm.swarm_coordinator import SwarmCoordinator
+
+    coordinator = object.__new__(SwarmCoordinator)
+
+    async def fake_inner(**kwargs):
+        state = kwargs["usage_state"]
+        state["lead_usage"] = {"total_tokens": 50}
+        error = LLMError("llm_server", "失败", retryable=True)
+        error.usage = {"total_tokens": 100}
+        error.llm_calls = 3
+        raise error
+
+    coordinator._process_inner = fake_inner
+
+    with pytest.raises(LLMError) as info:
+        asyncio.run(coordinator.process("问题"))
+
+    assert info.value.usage["total_tokens"] == 100
+    assert info.value.llm_calls == 3
+
 
 def test_coordinator_save_exchange_passes_profile():
     from swarm.swarm_coordinator import SwarmCoordinator

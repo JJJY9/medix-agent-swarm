@@ -7,6 +7,7 @@ from core.skill_registry import SkillParameter
 from pathlib import Path
 from loguru import logger
 import inspect
+import re
 import types
 import typing
 
@@ -113,6 +114,38 @@ class SkillRegistryMixin:
             return ""
         if isinstance(annotation, str):
             text = annotation.strip().lower()
+            # 容器类型先判断：list[int | None]、dict[str, int | None] 里的
+            # 竖线属于元素类型，不能按顶层联合类型切分
+            if text.startswith(("list", "tuple", "sequence", "set")):
+                return "array"
+            if text.startswith(("dict", "mapping")):
+                return "object"
+            # PEP 563 下的组合写法：Optional[int] / Union[int, None] /
+            # int | None 都要还原成基础类型
+            optional = re.fullmatch(r"optional\[(.+)\]", text)
+            if optional:
+                return SkillRegistryMixin._annotation_to_skill_type(
+                    optional.group(1)
+                )
+            union = re.fullmatch(r"union\[(.+)\]", text)
+            if union:
+                parts = [
+                    part.strip() for part in union.group(1).split(",")
+                    if part.strip() not in ("none", "nonetype")
+                ]
+                return (
+                    SkillRegistryMixin._annotation_to_skill_type(parts[0])
+                    if len(parts) == 1 else ""
+                )
+            if "|" in text:
+                parts = [
+                    part.strip() for part in text.split("|")
+                    if part.strip() not in ("none", "nonetype")
+                ]
+                return (
+                    SkillRegistryMixin._annotation_to_skill_type(parts[0])
+                    if len(parts) == 1 else ""
+                )
             if text in {"int", "integer"}:
                 return "integer"
             if text in {"float", "number"}:

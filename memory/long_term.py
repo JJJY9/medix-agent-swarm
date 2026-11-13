@@ -364,25 +364,55 @@ class LongTermMemory:
         return deleted
 
     def delete_session_summary(
-        self, session_id: str, user_id: str = "medix_local"
+        self,
+        session_id: str,
+        user_id: str = "medix_local",
+        before: str = "",
     ) -> int:
         """删除某个会话写入指定命名空间的记忆。
 
         档案作用域由多个会话共享，因此只能按 metadata.session_id
-        精确删除，不能清空整个 user_id 命名空间。
+        精确删除，不能清空整个 user_id 命名空间。before 非空时只删除
+        该时间点之前写入的记忆（目标已重建时保留新数据）。
         """
         if not self.enabled:
             return 0
         scope = session_memory_scope(session_id)
+
+        def _match(meta: Dict[str, Any]) -> bool:
+            if str(meta.get("session_id") or "") != scope:
+                return False
+            if before:
+                stamp = str(meta.get("timestamp") or "")
+                # 缺少时间戳的旧条目按更早处理
+                return not stamp or stamp < before
+            return True
+
         deleted = self._delete_matching(
-            str(user_id or "medix_local")[:120],
-            lambda meta: str(meta.get("session_id") or "") == scope,
+            str(user_id or "medix_local")[:120], _match
         )
         if deleted:
             logger.info(
                 f"Deleted {deleted} Mem0 memories for session {scope[:12]}…"
             )
         return deleted
+
+    def delete_scope_before(self, user_id: str, cutoff: str) -> int:
+        """只删除命名空间中早于 cutoff 写入的记忆。
+
+        同名档案/同号会话已被重建时，按整段命名空间清空会误删新写入
+        的长期记忆；这里按 metadata.timestamp 过滤，保留新数据。
+        """
+        cutoff = str(cutoff or "").strip()
+        if not self.enabled or not cutoff:
+            return 0
+        self.last_error = ""
+
+        def _older(meta: Dict[str, Any]) -> bool:
+            stamp = str(meta.get("timestamp") or "")
+            return not stamp or stamp < cutoff
+
+        return self._delete_matching(str(user_id or "medix_local")[:120], _older)
 
     def delete_scope(self, user_id: str) -> int:
         """删除一个命名空间下的全部记忆（删除患者档案时使用）。"""

@@ -13,6 +13,23 @@ def test_prescription_recognizes_recommended_drug_without_use_verb():
     assert not _contains_prescription("建议每天吃一片面包。")
 
 
+def test_volume_advice_is_not_prescription():
+    assert not _contains_prescription("建议每天饮水 2000ml。")
+    assert not _contains_prescription("每天建议摄入 50 克蛋白质。")
+    assert not _contains_prescription("服用期间每天吃一片全麦面包。")
+    # 真正的液体/散剂药物仍算处方（含用药动词或剂量标签）
+    assert _contains_prescription("建议服用布洛芬混悬液 10ml。")
+    assert _contains_prescription("推荐对乙酰氨基酚 500mg。")
+    assert _contains_prescription("建议服用蒙脱石散 3g，每日三次。")
+    assert _contains_prescription("推荐蒙脱石散 3g，一日三次。")
+    assert _contains_prescription("建议使用开塞露 20ml。")
+    assert _contains_prescription("每天服用乳果糖 15ml。")
+    assert _contains_prescription("建议口服蒙脱石散 3 克。")
+    # 微克不是克
+    assert _contains_prescription("建议补充维生素D 10μg。")
+    assert _contains_prescription("用法：每次 0.5g，一日三次。")
+
+
 def test_safety_warning_does_not_hide_real_prescription():
     assert _contains_prescription(
         "建议服用布洛芬 200mg，请勿超量。"
