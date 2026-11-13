@@ -3803,6 +3803,31 @@ class SessionStore:
         _validate_export_payload(payload)
         return payload
 
+    def _import_identity_match(
+        self,
+        table: str,
+        columns: Tuple[str, ...],
+        values: Tuple[Any, ...],
+        counts: Dict[tuple, int],
+    ) -> Optional[int]:
+        """计数式判重：返回该稳定身份下第 N 条已存在记录的 id。
+
+        身份只含不可编辑字段；counts 记录本批已处理的同身份行数，
+        配合 ORDER BY id 的偏移量：重复导入保持幂等，同一身份的多次
+        真实记录也能全部保留，备份后的本地编辑（停药/完成/改状态）
+        不会让旧记录重新插入。
+        """
+        identity = (table,) + tuple(values)
+        seen = counts.get(identity, 0)
+        counts[identity] = seen + 1
+        where = " AND ".join(f"{column} = ?" for column in columns)
+        row = self._conn.execute(
+            f"SELECT id FROM {table} WHERE {where}"
+            " ORDER BY id LIMIT 1 OFFSET ?",
+            (*values, seen),
+        ).fetchone()
+        return int(row["id"]) if row is not None else None
+
     def import_data(
         self, data: Any, max_sessions: int = 100000
     ) -> Dict[str, int]:
@@ -4283,6 +4308,7 @@ class SessionStore:
 
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
+            medication_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_medications, list):
                 for raw in raw_medications[:IMPORT_LIST_LIMITS["medications"]]:
                     if not isinstance(raw, dict):
@@ -4307,23 +4333,25 @@ class SessionStore:
                         continue
                     created_key = str(raw.get("created_at") or "").strip()[:40]
                     if created_key:
-                        # 备份带创建时间：同一创建时间且停药日期相同视为同一条
-                        # 记录（本地改在用状态后重复导入不新增）；停药日期不同
-                        # 则是停用后重开的新疗程，必须各自保留。
-                        existing = self._conn.execute(
-                            """
-                            SELECT id FROM medications
-                             WHERE profile = ? AND name = ? AND dose = ?
-                               AND frequency = ? AND created_at = ?
-                               AND COALESCE(stopped_at, '') = ?
-                            """,
+                        # 备份带创建时间：按稳定身份判重，停药/改剂量等
+                        # 本地编辑不会让旧记录在恢复时复活
+                        existing_id = self._import_identity_match(
+                            "medications",
+                            (
+                                "profile", "name", "dose", "frequency",
+                                "started_at", "created_at",
+                            ),
                             (
                                 normalized["profile"], normalized["name"],
                                 normalized["dose"], normalized["frequency"],
-                                created_key,
-                                normalized["stopped_at"],
+                                normalized["started_at"], created_key,
                             ),
-                        ).fetchone()
+                            medication_identity_counts,
+                        )
+                        existing = (
+                            {"id": existing_id}
+                            if existing_id is not None else None
+                        )
                     else:
                         # CSV 导入没有创建时间：按完整疗程字段判重，
                         # 同一药物的不同开始/停药日期必须各自保留
@@ -4556,6 +4584,7 @@ class SessionStore:
 
             vaccinations_imported = 0
             raw_vaccination_id_map: Dict[int, int] = {}
+            vaccination_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_vaccinations, list):
                 for raw in raw_vaccinations[
                     :IMPORT_LIST_LIMITS["vaccinations"]
@@ -4579,24 +4608,25 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM vaccinations
-                             WHERE profile = ? AND vaccine_name = ?
-                               AND dose_number = ? AND vaccinated_at = ?
-                               AND next_due = ? AND note = ?
-                               AND created_at = ?
-                            """,
+                        vaccination_id = self._import_identity_match(
+                            "vaccinations",
+                            (
+                                "profile", "vaccine_name", "dose_number",
+                                "vaccinated_at", "created_at",
+                            ),
                             (
                                 normalized["profile"],
                                 normalized["vaccine_name"],
                                 normalized["dose_number"],
                                 normalized["vaccinated_at"],
-                                normalized["next_due"],
-                                normalized["note"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            vaccination_identity_counts,
+                        )
+                        duplicate = (
+                            {"id": vaccination_id}
+                            if vaccination_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """
@@ -4643,6 +4673,7 @@ class SessionStore:
 
             appointments_imported = 0
             raw_appointment_id_map: Dict[int, int] = {}
+            appointment_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_appointments, list):
                 for raw in raw_appointments[
                     :IMPORT_LIST_LIMITS["appointments"]
@@ -4668,15 +4699,13 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM appointments
-                             WHERE profile = ? AND title = ?
-                               AND scheduled_at = ? AND department = ?
-                               AND doctor = ? AND location = ?
-                               AND status = ? AND note = ?
-                               AND created_at = ?
-                            """,
+                        appointment_id = self._import_identity_match(
+                            "appointments",
+                            (
+                                "profile", "title", "scheduled_at",
+                                "department", "doctor", "location",
+                                "created_at",
+                            ),
                             (
                                 normalized["profile"],
                                 normalized["title"],
@@ -4684,11 +4713,14 @@ class SessionStore:
                                 normalized["department"],
                                 normalized["doctor"],
                                 normalized["location"],
-                                normalized["status"],
-                                normalized["note"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            appointment_identity_counts,
+                        )
+                        duplicate = (
+                            {"id": appointment_id}
+                            if appointment_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """
@@ -4821,6 +4853,7 @@ class SessionStore:
                     lab_results_imported += 1
 
             allergies_imported = 0
+            allergy_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_allergies, list):
                 for raw in raw_allergies[
                     :IMPORT_LIST_LIMITS["allergies"]
@@ -4845,26 +4878,28 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     # 同一过敏原可能有多次不同反应（如先皮疹后休克），
-                    # 判重必须带上反应/程度/发现时间，不能只按物质+类型
+                    # 判重带上记录创建时间区分多次记录；反应/程度是
+                    # 可编辑字段，本地修改后恢复备份不能重复插入
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM allergies
-                             WHERE profile = ? AND substance = ?
-                               AND kind = ? AND reaction = ?
-                               AND severity = ? AND noted_at = ?
-                               AND created_at = ?
-                            """,
+                        existing_id = self._import_identity_match(
+                            "allergies",
+                            (
+                                "profile", "substance", "kind",
+                                "noted_at", "created_at",
+                            ),
                             (
                                 normalized["profile"],
                                 normalized["substance"],
                                 normalized["kind"],
-                                normalized["reaction"],
-                                normalized["severity"],
                                 normalized["noted_at"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            allergy_identity_counts,
+                        )
+                        duplicate = (
+                            {"id": existing_id}
+                            if existing_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """
@@ -4903,6 +4938,7 @@ class SessionStore:
                     allergies_imported += 1
 
             care_items_imported = 0
+            care_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_care_items, list):
                 for raw in raw_care_items[
                     :IMPORT_LIST_LIMITS["care_items"]
@@ -4926,25 +4962,22 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM care_items
-                             WHERE profile = ? AND title = ?
-                               AND interval_days = ? AND last_done_at = ?
-                               AND next_due_at = ? AND note = ?
-                               AND active = ? AND created_at = ?
-                            """,
+                        existing_id = self._import_identity_match(
+                            "care_items",
+                            ("profile", "title", "interval_days",
+                             "created_at"),
                             (
                                 normalized["profile"],
                                 normalized["title"],
                                 normalized["interval_days"],
-                                normalized["last_done_at"],
-                                normalized["next_due_at"],
-                                normalized["note"],
-                                normalized["active"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            care_identity_counts,
+                        )
+                        duplicate = (
+                            {"id": existing_id}
+                            if existing_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """
@@ -5118,6 +5151,7 @@ class SessionStore:
                     visit_records_imported += 1
 
             conditions_imported = 0
+            condition_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_conditions, list):
                 for raw in raw_conditions[
                     :IMPORT_LIST_LIMITS["conditions"]
@@ -5140,25 +5174,25 @@ class SessionStore:
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    # 同名慢病可能是不同次诊断/不同状态，判重需带上
-                    # 诊断时间、状态与严重程度，避免复发记录被吞掉
+                    # 同名慢病可能是不同次诊断；按诊断时间与创建时间
+                    # 区分多次记录，状态/严重程度可编辑，不参与判重
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM conditions
-                             WHERE profile = ? AND name = ?
-                               AND diagnosed_at = ? AND status = ?
-                               AND severity = ? AND created_at = ?
-                            """,
+                        existing_id = self._import_identity_match(
+                            "conditions",
+                            ("profile", "name", "diagnosed_at",
+                             "created_at"),
                             (
                                 normalized["profile"],
                                 normalized["name"],
                                 normalized["diagnosed_at"],
-                                normalized["status"],
-                                normalized["severity"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            condition_identity_counts,
+                        )
+                        duplicate = (
+                            {"id": existing_id}
+                            if existing_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """
