@@ -173,12 +173,15 @@ def test_import_same_second_reminder_twin_restores_deleted(store):
 
     result = store.import_data(backup)
 
-    titles = {
+    titles = [
         item["title"] for item in store.list_reminders(False, "妈妈")
-    }
-    assert result["reminders"] == 2
+    ]
+    assert result["reminders"] == 1
     assert "吃药A" in titles
     assert "吃药B（改）" in titles
+    # 旧标题/旧到期日的版本不能再插入一份
+    assert "吃药B" not in titles
+    assert len(titles) == 2
 
 
 def test_import_metrics_shared_anchor_restores_deleted(tmp_path):

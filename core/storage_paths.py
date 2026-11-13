@@ -76,6 +76,12 @@ def attachment_dir_for_db(db_path: Path) -> Path:
     parent = db_path.parent
     legacy = parent / "attachments"
     if _name_key(db_path.name) == "sessions.db":
+        dedicated = parent / f"{db_path.name}-attachments"
+        if dedicated.exists():
+            # 默认库曾因目录被自定义库认领而改用专属目录：即使所有者
+            # 标记随后失效（自定义库被删除/改名），也要继续使用专属
+            # 目录，否则已登记的附件会全部失联
+            return dedicated
         if legacy.exists():
             owner = _read_owner(parent, legacy)
             if (

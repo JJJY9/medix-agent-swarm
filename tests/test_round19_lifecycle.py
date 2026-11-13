@@ -192,8 +192,13 @@ def test_memory_cleanup_retries_on_reported_error(monkeypatch):
     assert len(calls) == 2
 
 
-def test_erase_treats_unconfigured_mem0_as_success(monkeypatch):
-    """没配置 Mem0 时没有云端数据可清，直接视为成功。"""
+def test_erase_treats_unconfigured_mem0_as_success(monkeypatch, tmp_path):
+    """从未启用 Mem0 时没有云端数据可清，直接视为成功。"""
+    import memory
+    from memory.session_store import SessionStore
+
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: store)
 
     class DisabledMemory:
         enabled = False
@@ -203,7 +208,10 @@ def test_erase_treats_unconfigured_mem0_as_success(monkeypatch):
         api_server, "_get_long_term_memory", lambda: DisabledMemory()
     )
 
-    assert api_server._erase_long_term_entries([("妈妈", "s1")]) is True
+    try:
+        assert api_server._erase_long_term_entries([("妈妈", "s1")]) is True
+    finally:
+        store.close()
 
 
 def test_erase_retries_when_mem0_init_failed(monkeypatch):

@@ -44,7 +44,12 @@ def test_attention_ignores_stale_consultation_risk(client_and_store):
     )
     with store._lock, store._conn:
         store._conn.execute(
-            "UPDATE sessions SET created_at = ? WHERE id = ?",
+            "UPDATE sessions SET created_at = ?, updated_at = ?"
+            " WHERE id = ?",
+            (old, old, "stale-risk"),
+        )
+        store._conn.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = ?",
             (old, "stale-risk"),
         )
 

@@ -1873,6 +1873,14 @@ def _proxy_header_values(request: Request, name: str) -> List[str]:
     return [str(value) for value in values if str(value).strip()]
 
 
+def _has_forwarded_address_header(request: Request) -> bool:
+    """请求是否带了客户端地址类代理头（XFF/Forwarded/X-Real-IP）。"""
+    return any(
+        _proxy_header_values(request, name)
+        for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+    )
+
+
 def _has_proxy_headers(request: Request) -> bool:
     try:
         names = list(request.headers.keys())
@@ -1919,7 +1927,17 @@ def _parse_forwarded_header(header: str) -> str:
     elements: List[str] = []
     current: List[str] = []
     in_quotes = False
+    escaped = False
     for char in str(header or ""):
+        if escaped:
+            escaped = False
+            current.append(char)
+            continue
+        if char == "\\" and in_quotes:
+            # RFC 7239 quoted-pair：反斜杠后的引号不改变引号状态
+            escaped = True
+            current.append(char)
+            continue
         if char == '"':
             in_quotes = not in_quotes
         if char == "," and not in_quotes:
@@ -1927,6 +1945,10 @@ def _parse_forwarded_header(header: str) -> str:
             current = []
         else:
             current.append(char)
+    if in_quotes:
+        # 引号未闭合：字段被客户端截断，代理追加的元素无法区分，
+        # 整条 Forwarded 不可信，fail closed
+        return ""
     if current:
         elements.append("".join(current))
     if not elements:
@@ -2278,10 +2300,10 @@ async def require_access_token(request: Request, call_next):
                 request.client.host if request.client else ""
             )
             and _has_proxy_headers(request)
-            and (
-                not _trust_proxy_headers()
-                or not _forwarded_client_address(request)
-            )
+            # 只有完全没有地址头（仅 X-Forwarded-Proto 等）才算共享桶；
+            # 地址头存在但互相矛盾时按普通远程请求继续预锁定，
+            # 不能把“fail closed 解析失败”变成“免限流”
+            and not _has_forwarded_address_header(request)
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -5699,7 +5721,11 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     and str(candidate.get("scheduled_at") or "")[:10]
                     == followup_date
                     and candidate.get("status") == "upcoming"
-                    and ownership in str(candidate.get("note") or "")
+                    and (
+                        ownership in str(candidate.get("note") or "")
+                        or int(candidate.get("owner_visit_id") or 0)
+                        == int(visit.get("id") or 0)
+                    )
                 ):
                     appointment = candidate
                     break
@@ -5713,6 +5739,7 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 f"{followup_date}T09:00",
                 "upcoming",
                 f"由就诊记录 #{visit_id} 自动创建",
+                owner_visit_id=visit_id,
             )
             appointment_created = True
 
@@ -6524,16 +6551,21 @@ async def _weekly_report_impl(
     raw_sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
         profile, session_window_start, f"{end}T23:59:59", 100000,
+        by_updated=True,
     )
     sessions = [
         item for item in raw_sessions
         if int(item.get("message_count") or 0) > 0
-        and start <= str(item.get("created_at") or "")[:10] <= end
+        and start <= str(
+            item.get("updated_at") or item.get("created_at") or ""
+        )[:10] <= end
     ]
     previous_sessions = [
         item for item in raw_sessions
         if int(item.get("message_count") or 0) > 0
-        and prev_start <= str(item.get("created_at") or "")[:10] < start
+        and prev_start <= str(
+            item.get("updated_at") or item.get("created_at") or ""
+        )[:10] < start
     ]
     risk_level = ""
     risk_profiles: List[Dict[str, str]] = []
@@ -6559,7 +6591,12 @@ async def _weekly_report_impl(
                 continue
             # 与单档案视图/家庭总览一致：窗口外的旧会诊不能触发
             # 「最近会诊风险」提示
-            answered_day = str(item.get("created_at") or "")[:10]
+            answered_day = str(
+                item.get("answered_at")
+                or item.get("last_active_at")
+                or item.get("created_at")
+                or ""
+            )[:10]
             if not answered_day or not (start <= answered_day <= end):
                 continue
             member = item.get("profile") or "未指定"
@@ -10876,7 +10913,8 @@ def _family_attention(
             "detail": "、".join(labs.get("items") or [])[:120],
         }
     over_target = [
-        item for item in (metrics or []) if item.get("over_target")
+        item for item in (metrics or [])
+        if item.get("over_target") and not item.get("stale")
     ]
     if over_target:
         def _metric_attention_text(item: Dict[str, Any]) -> str:
@@ -11038,6 +11076,7 @@ async def family_overview(days: int = 7):
     sessions = await asyncio.to_thread(
         store.list_sessions_for_timeline,
         None, cutoff, f"{today}T23:59:59", 100000,
+        by_updated=True,
     )
     latest_answers = await asyncio.to_thread(
         store.latest_session_answers_by_profile, True
@@ -11404,11 +11443,43 @@ async def family_overview(days: int = 7):
             condition_names_by_profile.setdefault(
                 profile, []
             ).append(name)
+    allergy_items = await asyncio.to_thread(
+        store.list_allergies, None, True, None, "", 100000
+    )
+    allergy_parts_by_profile: Dict[str, List[str]] = {}
+    for item in allergy_items:
+        profile = item.get("profile") or ""
+        substance = str(item.get("substance") or "").strip()
+        if substance:
+            allergy_parts_by_profile.setdefault(
+                profile, []
+            ).append(substance)
+    for profile, context in contexts.items():
+        context_allergies = str(
+            (context or {}).get("allergies") or ""
+        ).strip()
+        if context_allergies:
+            allergy_parts_by_profile.setdefault(
+                profile, []
+            ).append(context_allergies)
     from core.medication_lab_safety import check_medication_lab_safety
     from core.condition_drug_safety import check_condition_drug_safety
+    from core.medication_safety import check_medication_safety
 
     medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
     for profile, med_names in medication_names_by_profile.items():
+        base_safety = check_medication_safety(
+            "、".join(med_names),
+            {
+                "medications": "、".join(med_names),
+                "allergies": "、".join(
+                    allergy_parts_by_profile.get(profile, [])
+                ),
+                "age": str((contexts.get(profile) or {}).get("age") or ""),
+                "sex": str((contexts.get(profile) or {}).get("sex") or ""),
+            },
+        )
+        base_alerts = base_safety.get("alerts") or []
         lab_safety_alerts = check_medication_lab_safety(
             med_names,
             labs_history_by_profile.get(profile, []),
@@ -11418,13 +11489,14 @@ async def family_overview(days: int = 7):
             med_names,
             condition_names_by_profile.get(profile, []),
         ).get("alerts") or []
-        combined = lab_safety_alerts + condition_safety_alerts
+        combined = base_alerts + lab_safety_alerts + condition_safety_alerts
         if combined:
             medication_lab_by_profile[profile] = {
                 "count": len(combined),
                 "alerts": combined[:3],
                 "lab_count": len(lab_safety_alerts),
                 "condition_count": len(condition_safety_alerts),
+                "base_count": len(base_alerts),
             }
 
     conditions_by_profile: Dict[str, Dict[str, Any]] = {}
@@ -11514,7 +11586,9 @@ async def family_overview(days: int = 7):
         profile = item.get("profile") or ""
         if int(item.get("message_count") or 0) <= 0:
             continue
-        at = str(item.get("created_at") or "")
+        at = str(
+            item.get("updated_at") or item.get("created_at") or ""
+        )
         if not at or at[:10] < cutoff:
             continue
         entry = sessions_by_profile.setdefault(profile, {
@@ -16362,6 +16436,23 @@ _standalone_long_term_memory = None
 #: 初始化失败后的重试冷却时间（秒），避免每次请求都重建客户端
 _LONG_TERM_RETRY_INTERVAL = 300.0
 _standalone_long_term_retry_at = 0.0
+_memory_configured_marked = False
+
+
+def _mark_memory_configured(memory) -> None:
+    """持久化「本安装曾启用 Mem0」：移除 key 后删除档案仍需保留清理队列。"""
+    global _memory_configured_marked
+    try:
+        if _memory_configured_marked:
+            return
+        if getattr(memory, "api_key_configured", False):
+            from memory import get_session_store
+
+            get_session_store().set_app_state("mem0_configured", "1")
+            _memory_configured_marked = True
+    except Exception:
+        # 标记失败不影响主流程；清理侧会保守保留队列
+        return
 
 
 def _get_long_term_memory():
@@ -16386,6 +16477,7 @@ def _get_long_term_memory():
                         "长期记忆重连失败（忽略）: "
                         f"{redact_secrets(str(e))}"
                     )
+            _mark_memory_configured(memory)
             return memory
     now = time.monotonic()
     should_build = _standalone_long_term_memory is None
@@ -16402,6 +16494,7 @@ def _get_long_term_memory():
         from memory.long_term import LongTermMemory
 
         _standalone_long_term_memory = LongTermMemory()
+    _mark_memory_configured(_standalone_long_term_memory)
     return _standalone_long_term_memory
 
 
@@ -16414,6 +16507,22 @@ def _get_session_summary_manager():
     from memory import SessionSummaryManager
 
     return SessionSummaryManager()
+
+
+def _memory_cleanup_possible(memory) -> bool:
+    """当前禁用 Mem0 时，能否确认云端没有需要清理的数据。
+
+    只有本安装从未启用过 Mem0（无 app_state 标记）才能当作无云端
+    数据；曾启用过则保留队列，等重新配置后按时间窗清理。
+    """
+    if getattr(memory, "api_key_configured", False):
+        return False
+    try:
+        from memory import get_session_store
+
+        return get_session_store().get_app_state("mem0_configured") != "1"
+    except Exception:
+        return False
 
 
 def _erase_long_term_entries(entries: List[Any]) -> bool:
@@ -16431,9 +16540,9 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
         )
         return False
     if not getattr(memory, "enabled", False):
-        # 未配置 Mem0 时没有云端数据需要清理；已配置但初始化失败
-        # （网络/鉴权瞬时问题）必须保留队列稍后重试，不能当作删除成功
-        return not getattr(memory, "api_key_configured", False)
+        # 未配置 Mem0 时，只有从未启用过才能认为没有云端数据；曾启用
+        # 过（或已配置但初始化失败）必须保留队列稍后重试
+        return _memory_cleanup_possible(memory)
     from memory.session_store import _normalize_profile_name
 
     def _retry(action) -> bool:
@@ -16501,7 +16610,7 @@ def _erase_long_term_before(
         )
         return False
     if not getattr(memory, "enabled", False):
-        return not getattr(memory, "api_key_configured", False)
+        return _memory_cleanup_possible(memory)
     from memory.session_store import _normalize_profile_name
 
     def _retry(action) -> bool:
