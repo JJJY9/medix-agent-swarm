@@ -242,3 +242,33 @@ def test_surrogate_in_nested_import_payload_is_rejected(client_and_store):
 
     assert response.status_code == 422
     assert response.json()["detail"]
+
+
+def test_non_finite_numbers_in_payload_never_crash_validation(
+    client_and_store,
+):
+    """原始 JSON 里的 NaN/Infinity 会让 422 回显再次编码失败变成 500。"""
+    client, _store = client_and_store
+
+    payloads = (
+        ("/api/tools/bmi", {"height_cm": 170, "weight_kg": float("nan")}),
+        ("/api/tools/bmi", {"height_cm": 170, "weight_kg": float("inf")}),
+        (
+            "/api/tools/phq9",
+            {"answers": [1, 2, 3, 4, 5, 6, 7, 8, float("nan")]},
+        ),
+        (
+            "/api/tools/egfr",
+            {"age": 40, "sex": "male", "creatinine": float("inf")},
+        ),
+        ("/api/lab-results", {"item": "血钾", "value": float("nan")}),
+        ("/api/symptoms", {"symptom": "头痛", "severity": float("nan")}),
+    )
+    for url, payload in payloads:
+        response = _post_raw_json(client, url, payload)
+        assert response.status_code == 422, (url, response.text)
+        assert response.json()["detail"]
+        assert "NaN" not in response.text, (url, response.text)
+        assert "Infinity" not in response.text, (url, response.text)
+        # 回显内容必须是标准 JSON，可以被严格模式重新编码
+        json.dumps(response.json(), allow_nan=False)

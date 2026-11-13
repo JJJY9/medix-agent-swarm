@@ -1710,12 +1710,15 @@ async def redacting_http_exception_handler(
 async def sanitized_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> Response:
-    """422 详情会回显原始输入，先替换孤立代理码位再渲染。
+    """422 详情会回显原始输入，先清洗再渲染。
 
-    否则 Starlette 用 ensure_ascii=False 编码响应体时会再次抛
-    UnicodeEncodeError，把本应 422 的请求变成 500。
+    孤立代理码位会让 UTF-8 编码失败；NaN/Infinity 会让 JSON 编码
+    失败（Python 的 json.loads 接受这两个字面量）。两者都会把本应
+    422 的请求变成 500，因此这里统一替换掉。
     """
-    detail = strip_lone_surrogates(jsonable_encoder(exc.errors()))
+    detail = sanitize_json(
+        strip_lone_surrogates(jsonable_encoder(exc.errors()))
+    )
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
