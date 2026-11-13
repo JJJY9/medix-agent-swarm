@@ -173,6 +173,7 @@ IMPORT_LIST_LIMITS = {
     "conditions": 100000,
     "reminders": 100000,
     "audit_log": 100000,
+    "usage_events": 100000,
 }
 
 #: 单条消息与整次导入的文本上限，兼顾超大备份可恢复与内存/锁占用。
@@ -1693,6 +1694,15 @@ _BACKUP_CHECKSUM_FIELDS = (
     "visit_records",
     "conditions",
     "audit_log",
+    "usage_events",
+)
+
+#: 首个校验版本的字段集，升级新增字段时不能改变旧摘要
+_LEGACY_BACKUP_CHECKSUM_FIELDS = (
+    "version", "sessions", "profiles", "health_metrics", "metric_targets",
+    "reminders", "symptoms", "medications", "medication_logs",
+    "medication_history", "vaccinations", "appointments", "lab_results",
+    "allergies", "care_items", "visit_records", "conditions", "audit_log",
 )
 
 
@@ -1742,7 +1752,10 @@ def _backup_checksum(payload: Dict[str, Any]) -> str:
 
 def _legacy_backup_checksum(payload: Dict[str, Any]) -> str:
     """首个校验版本的算法：缺失字段也计入 JSON（值为 null）。"""
-    body = {key: payload.get(key) for key in _BACKUP_CHECKSUM_FIELDS}
+    body = {
+        key: payload.get(key)
+        for key in _LEGACY_BACKUP_CHECKSUM_FIELDS
+    }
     canonical = json.dumps(
         sanitize_json(body),
         ensure_ascii=False,
@@ -3516,6 +3529,21 @@ class SessionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_usage_events(self, limit: int = 100000) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 100000), 100000))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_id, profile, prompt_tokens,
+                       completion_tokens, total_tokens, llm_calls, created_at
+                  FROM usage_events
+                 ORDER BY id
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def daily_usage(
         self,
         days: int = 7,
@@ -3679,6 +3707,7 @@ class SessionStore:
                 ("conditions", "conditions", "慢病清单"),
                 ("reminders", "reminders", "提醒"),
                 ("audit_log", "audit_log", "审计记录"),
+                ("usage_events", "usage_events", "用量流水"),
             ):
                 count = self._conn.execute(
                     f"SELECT COUNT(*) AS n FROM {table}"
@@ -3748,6 +3777,7 @@ class SessionStore:
             "care_items": self.list_care_items(limit=100000),
             "visit_records": self.list_visit_records(limit=100000),
             "conditions": self.list_conditions(limit=100000),
+            "usage_events": self.list_usage_events(limit=100000),
         }
         payload["checksum"] = _backup_checksum(payload)
         _validate_export_payload(payload)
@@ -3789,6 +3819,7 @@ class SessionStore:
         raw_visit_records = data.get("visit_records")
         raw_conditions = data.get("conditions")
         raw_audit = data.get("audit_log")
+        raw_usage_events = data.get("usage_events")
         if raw_sessions is None and (
             isinstance(raw_profiles, list)
             or isinstance(raw_metrics, list)
@@ -3806,6 +3837,7 @@ class SessionStore:
             or isinstance(raw_visit_records, list)
             or isinstance(raw_conditions, list)
             or isinstance(raw_audit, list)
+            or isinstance(raw_usage_events, list)
         ):
             raw_sessions = []
         if not isinstance(raw_sessions, list):
@@ -3828,6 +3860,7 @@ class SessionStore:
             and not isinstance(raw_visit_records, list)
             and not isinstance(raw_conditions, list)
             and not isinstance(raw_audit, list)
+            and not isinstance(raw_usage_events, list)
         ):
             raise ValueError("备份文件中没有会话。")
         if len(raw_sessions) > max_sessions:
@@ -5506,6 +5539,72 @@ class SessionStore:
                     )
                     audit_imported += 1
 
+            usage_events_imported = 0
+            if isinstance(raw_usage_events, list):
+                existing_usage_counts: Dict[tuple, int] = {}
+                imported_usage_counts: Dict[tuple, int] = {}
+                for raw in raw_usage_events[
+                    :IMPORT_LIST_LIMITS["usage_events"]
+                ]:
+                    if not isinstance(raw, dict):
+                        continue
+                    session_id = str(
+                        raw.get("session_id") or ""
+                    ).strip()[:64]
+                    profile = _normalize_profile_name(
+                        raw.get("profile")
+                    )
+                    prompt = max(
+                        0, _usage_int(raw.get("prompt_tokens"))
+                    )
+                    completion = max(
+                        0, _usage_int(raw.get("completion_tokens"))
+                    )
+                    total = max(0, _usage_int(raw.get("total_tokens")))
+                    if not total and (prompt or completion):
+                        total = prompt + completion
+                    calls = max(0, _usage_int(raw.get("llm_calls")))
+                    created_at = str(
+                        raw.get("created_at") or now
+                    )[:40]
+                    usage_key = (
+                        session_id, profile, prompt, completion,
+                        total, calls, created_at,
+                    )
+                    if usage_key not in existing_usage_counts:
+                        count_row = self._conn.execute(
+                            """
+                            SELECT COUNT(*) AS total FROM usage_events
+                             WHERE session_id = ? AND profile = ?
+                               AND prompt_tokens = ?
+                               AND completion_tokens = ?
+                               AND total_tokens = ? AND llm_calls = ?
+                               AND created_at = ?
+                            """,
+                            usage_key,
+                        ).fetchone()
+                        existing_usage_counts[usage_key] = int(
+                            count_row["total"] if count_row else 0
+                        )
+                    seen = imported_usage_counts.get(usage_key, 0)
+                    imported_usage_counts[usage_key] = seen + 1
+                    if seen < existing_usage_counts[usage_key]:
+                        continue
+                    self._conn.execute(
+                        """
+                        INSERT INTO usage_events(
+                            session_id, profile, prompt_tokens,
+                            completion_tokens, total_tokens, llm_calls,
+                            created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            session_id, profile, prompt, completion,
+                            total, calls, created_at,
+                        ),
+                    )
+                    usage_events_imported += 1
+
         if revived_sessions:
             with self._lock:
                 for session_id in revived_sessions:
@@ -5532,6 +5631,7 @@ class SessionStore:
             "visit_records": visit_records_imported,
             "conditions": conditions_imported,
             "audit_log": audit_imported,
+            "usage_events": usage_events_imported,
         }
 
     def set_favorite(self, session_id: str, favorite: bool) -> bool:

@@ -501,6 +501,7 @@ def test_import_data_roundtrip(tmp_path):
             "visit_records": 0,
             "conditions": 0,
             "audit_log": 0,
+            "usage_events": 0,
         }
         messages = target.get_messages("s1")
         assert messages[0]["content"] == "导入问题"

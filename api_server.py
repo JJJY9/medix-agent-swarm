@@ -227,6 +227,7 @@ class ImportSessionsRequest(StrictRequestModel):
     visit_records: Optional[List[Dict[str, Any]]] = None
     conditions: Optional[List[Dict[str, Any]]] = None
     audit_log: Optional[List[Dict[str, Any]]] = None
+    usage_events: Optional[List[Dict[str, Any]]] = None
     checksum: Optional[str] = None
 
 
@@ -2573,7 +2574,7 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
         "reminders", "symptoms", "medications", "medication_logs",
         "medication_history", "vaccinations", "appointments",
         "lab_results", "allergies", "care_items", "visit_records",
-        "conditions", "audit_log",
+        "conditions", "audit_log", "usage_events",
     )
     return " ".join(f"{key}={result.get(key, 0)}" for key in keys)
 
@@ -2692,7 +2693,7 @@ async def inspect_local_backup(name: str):
         "symptoms", "medications", "medication_logs",
         "medication_history", "vaccinations", "appointments",
         "lab_results", "allergies", "care_items", "visit_records",
-        "conditions", "audit_log",
+        "conditions", "audit_log", "usage_events",
     )
     counts = {}
     for key in count_keys:

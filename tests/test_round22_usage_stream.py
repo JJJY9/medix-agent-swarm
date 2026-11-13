@@ -84,6 +84,29 @@ def test_usage_month_percent_not_rounded_to_full(
     assert data["percent"] == 99.9
 
 
+def test_usage_events_export_and_import_roundtrip(tmp_path):
+    source = SessionStore(str(tmp_path / "source.db"))
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        source.record_usage_event(
+            "s1", "妈妈",
+            {"prompt_tokens": 60, "completion_tokens": 40}, 2,
+        )
+        payload = source.export_data()
+        assert len(payload["usage_events"]) == 1
+
+        first = target.import_data(payload)
+        assert first["usage_events"] == 1
+        assert target.month_usage()["usage"]["total_tokens"] == 100
+
+        again = target.import_data(payload)
+        assert again["usage_events"] == 0
+        assert target.month_usage()["usage"]["total_tokens"] == 100
+    finally:
+        source.close()
+        target.close()
+
+
 def test_stream_claim_released_when_closed_before_task():
     source = (
         Path(__file__).resolve().parents[1] / "api_server.py"
