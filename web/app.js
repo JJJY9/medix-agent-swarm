@@ -771,6 +771,9 @@ const PENDING_RESET_KEY = 'medix.pendingSessionReset';
 let pendingSessionReset = false;
 //: ?session= 深链且与本标签页上次会话不同：按“打开历史会话”处理
 let deepLinkedSession = false;
+// 深链恢复失败重试期间，用户是否手动编辑过补充信息：
+// 编辑过就不能再用深链快照覆盖草稿
+let contextUserEdited = false;
 //: 用户最近一次手动切换档案的序号：恢复会话的晚到响应据此放弃
 let profileSelectionSeq = 0;
 //: 当前是否正在恢复会话（用于切换档案时按“已有会话”处理）
@@ -795,7 +798,13 @@ try {
       safeSessionRemove(PENDING_RESET_KEY);
     }
   }
-  if (
+  if (deepLinkedSession && sessionId) {
+    // 显式 ?session= 深链等同打开历史会话：服务端绑定档案与快照
+    // 优先，旧会话残留的待重置标记失效
+    pendingSessionReset = false;
+    safeSessionRemove(PENDING_RESET_KEY);
+    safeStorageRemove(pendingResetStorageKey(sessionId));
+  } else if (
     !pendingSessionReset
     && sessionId
     && safeStorageGet(pendingResetStorageKey(sessionId))
@@ -20214,10 +20223,12 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
   if (!sessionId) return false;
   const expectedSession = sessionId;
   const restoreProfileSeq = profileSelectionSeq;
-  // 深链语义是一次性的：无论本次恢复成功与否都消费掉，避免失败后
-  // 的任意一次对账恢复按深链语义覆盖用户编辑中的草稿
-  const useDeepLinkContext = deepLinkedSession;
-  deepLinkedSession = false;
+  const restoreOpenSeq = openSessionSeq;
+  // 深链上下文在成功渲染后才消费：首次恢复失败（后端未启动）时保留，
+  // 重连重试仍能回填快照；用户已手动编辑补充信息时跳过快照，
+  // 改走「下一轮新建会话」，避免跨患者上下文混用
+  const useDeepLinkContext = deepLinkedSession && !contextUserEdited;
+  const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;
   sessionRestoreInFlight = true;
 
   try {
@@ -20247,6 +20258,9 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     if (sessionId !== expectedSession || busy) return false;
     // 拉取期间用户切换了档案：晚到的会话恢复不能覆盖新选择
     if (restoreProfileSeq !== profileSelectionSeq) return false;
+    // 拉取期间用户新建/清空/打开了其它会话：晚到的快照不能把
+    // 旧患者档案和上下文填回表单
+    if (restoreOpenSeq !== openSessionSeq) return false;
 
     const messages = data.messages || [];
     if (!messages.length) return false;
@@ -20294,7 +20308,12 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 深链按「打开历史会话」回填快照；刷新/对账只渲染历史，不用旧
     // 快照覆盖用户编辑中的补充信息。用户已清空档案时（pending）既不
     // 回填快照也不改档案，等下一轮提问新建会话。
-    const pendingReset = pendingSessionReset;
+    const pendingReset = pendingSessionReset || deepLinkDraftConflict;
+    if (deepLinkDraftConflict) {
+      // 深链快照与用户草稿冲突：不覆盖草稿，也不把深链档案塞进
+      // 当前表单；下一轮提问新建会话，避免把旧患者上下文发进深链会话
+      setPendingSessionReset(true);
+    }
     renderStoredMessages(
       messages, expectedSession, data.profile || '',
       {
@@ -20303,6 +20322,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         skipProfile: pendingReset,
       }
     );
+    if (deepLinkedSession) deepLinkedSession = false;
+    contextUserEdited = false;
     if (pendingReset) {
       setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
     } else {
@@ -22763,8 +22784,14 @@ els.contextToggle.addEventListener('click', () => {
   if (opening) els.ctxAge.focus();
 });
 
-els.contextPanel.addEventListener('input', updateContextSummary);
-els.contextPanel.addEventListener('change', updateContextSummary);
+els.contextPanel.addEventListener('input', () => {
+  contextUserEdited = true;
+  updateContextSummary();
+});
+els.contextPanel.addEventListener('change', () => {
+  contextUserEdited = true;
+  updateContextSummary();
+});
 
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});

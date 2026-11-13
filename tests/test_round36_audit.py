@@ -651,8 +651,11 @@ def test_app_deep_link_context_consumed_once():
         app_js.index("function scheduleAbortReconcile")
     ]
 
-    assert "const useDeepLinkContext = deepLinkedSession;" in restore
-    assert "deepLinkedSession = false;" in restore
+    # 深链上下文只在成功渲染后消费：首次失败保留，重连重试仍能回填；
+    # 用户已编辑补充信息时跳过快照，避免覆盖草稿（round37 调整）
+    assert "const useDeepLinkContext = deepLinkedSession && !contextUserEdited;" in restore
+    assert "const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;" in restore
+    assert "if (deepLinkedSession) deepLinkedSession = false;" in restore
     assert "restoreContext: useDeepLinkContext ? true : false" in restore
     # 深链语义不能在每次对账恢复时重复生效
     assert "restoreContext: deepLinkedSession" not in restore

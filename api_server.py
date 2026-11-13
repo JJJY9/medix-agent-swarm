@@ -1955,12 +1955,15 @@ def _forwarded_client_address(request: Request) -> str:
             if not rightmost:
                 return ""
             xff_value = rightmost
-            # 多级本机代理：从右向左跳过 loopback 信任跳，取真实客户端
-            for part in reversed(parts[:-1]):
-                candidate = _normalize_forwarded_address(part)
-                if candidate and not _is_loopback_address(candidate):
-                    xff_value = candidate
-                    break
+            # 只有最右项是本机信任跳时才继续向左找真实客户端；
+            # append 型代理追加的真实非本机地址不能被客户端自带的
+            # 更左项覆盖，否则伪造前缀即可轮换限流桶
+            if _is_loopback_address(rightmost):
+                for part in reversed(parts[:-1]):
+                    candidate = _normalize_forwarded_address(part)
+                    if candidate and not _is_loopback_address(candidate):
+                        xff_value = candidate
+                        break
     real_value = _normalize_forwarded_address(
         request.headers.get("x-real-ip") or ""
     )
@@ -2250,9 +2253,9 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
-        shared_bucket = (
-            _has_proxy_headers(request)
-            and not _forwarded_client_address(request)
+        shared_bucket = _has_proxy_headers(request) and (
+            not _trust_proxy_headers()
+            or not _forwarded_client_address(request)
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -5644,7 +5647,13 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
         if linked_appointment_id:
             appointment = store.get_appointment(linked_appointment_id)
-            if appointment and appointment.get("status") == "cancelled":
+            if appointment and (
+                appointment.get("status") != "upcoming"
+                or str(appointment.get("scheduled_at") or "")[:10]
+                != followup_date
+            ):
+                # completed/cancelled 的预约不能复用（否则会给已完成预约
+                # 新建待办提醒）；复诊日期已改时旧日期预约也不算已安排
                 appointment = None
         profile = visit.get("profile") or ""
         title = (
@@ -6522,6 +6531,11 @@ async def _weekly_report_impl(
             level = parse_risk_level(item.get("last_answer"))
             if not level:
                 continue
+            # 与单档案视图/家庭总览一致：窗口外的旧会诊不能触发
+            # 「最近会诊风险」提示
+            answered_day = str(item.get("created_at") or "")[:10]
+            if not answered_day or not (start <= answered_day <= end):
+                continue
             member = item.get("profile") or "未指定"
             risk_profiles.append({"profile": member, "risk": level})
             if risk_order.get(level, 0) > risk_order.get(risk_level, 0):
@@ -6551,6 +6565,7 @@ async def _weekly_report_impl(
         }
 
     from memory.session_store import (
+        DAILY_ACCUMULATING_METRICS,
         METRIC_TYPES,
         adherence_rate,
         critical_metric_alerts,
@@ -6558,6 +6573,103 @@ async def _weekly_report_impl(
         metric_context_label,
         metric_over_target,
     )
+
+    # 家庭范围不能因“跨成员不可合并”就整体丢弃目标/血糖判断：
+    # 按成员分别与各自目标比较，避免家庭首页显示虚假的 all_clear
+    member_metric_alerts: List[Dict[str, Any]] = []
+    member_glucose_alerts: List[Dict[str, Any]] = []
+    if profile is None:
+        family_target_map = {
+            (item.get("profile") or "", item["metric"]): item
+            for item in raw_targets
+            if isinstance(item, dict) and item.get("metric")
+        }
+        member_groups: Dict[tuple, Dict[str, Any]] = {}
+        glucose_groups: Dict[str, Dict[str, Any]] = {}
+        for item in metrics:
+            member = str(item.get("profile") or "")
+            metric = str(item.get("metric") or "")
+            target = family_target_map.get((member, metric))
+            if (
+                target is not None
+                and metric not in DAILY_ACCUMULATING_METRICS
+            ):
+                entry = member_groups.setdefault(
+                    (member, metric),
+                    {
+                        "count": 0, "over": 0,
+                        "target": target, "latest": item,
+                    },
+                )
+                entry["count"] += 1
+                try:
+                    over_target = metric_over_target(
+                        metric, item.get("value1"),
+                        item.get("value2"), target,
+                    )
+                except (TypeError, ValueError):
+                    over_target = False
+                if over_target:
+                    entry["over"] += 1
+                    entry["latest"] = item
+            if metric == "glucose":
+                group = glucose_groups.setdefault(
+                    member, {
+                        "fasting": [0.0, 0],
+                        "postprandial": [0.0, 0],
+                    },
+                )
+                try:
+                    value = float(item.get("value1") or 0)
+                except (TypeError, ValueError):
+                    value = 0.0
+                context = str(item.get("context") or "unspecified")
+                if context in ("fasting", "unspecified"):
+                    group["fasting"][0] += value
+                    group["fasting"][1] += 1
+                elif context == "postprandial":
+                    group["postprandial"][0] += value
+                    group["postprandial"][1] += 1
+        for (member, metric), entry in sorted(member_groups.items()):
+            if not entry["over"]:
+                continue
+            target = entry["target"]
+            latest = entry["latest"]
+            label, default_unit, _ = METRIC_TYPES.get(
+                metric, (metric, "", (0, 0))
+            )
+            member_metric_alerts.append({
+                "profile": member,
+                "metric": metric,
+                "over": entry["over"],
+                "count": entry["count"],
+                "unit": latest.get("unit") or default_unit,
+                "latest1": latest.get("value1"),
+                "latest2": latest.get("value2"),
+                "target1": target.get("value1"),
+                "target2": target.get("value2"),
+            })
+        for member, group in sorted(glucose_groups.items()):
+            fasting = group["fasting"]
+            postprandial = group["postprandial"]
+            if fasting[1] and fasting[0] / fasting[1] >= 7:
+                member_glucose_alerts.append({
+                    "profile": member,
+                    "kind": "fasting",
+                    "avg": round(fasting[0] / fasting[1], 2),
+                    "count": fasting[1],
+                })
+            elif postprandial[1] and (
+                postprandial[0] / postprandial[1] >= 11.1
+            ):
+                member_glucose_alerts.append({
+                    "profile": member,
+                    "kind": "postprandial",
+                    "avg": round(
+                        postprandial[0] / postprandial[1], 2
+                    ),
+                    "count": postprandial[1],
+                })
 
     grouped: dict = {}
     for item in metrics:
@@ -7104,6 +7216,8 @@ async def _weekly_report_impl(
         "start": start,
         "end": end,
         "metrics": {"count": len(metrics), "by_metric": metric_rows},
+        "member_metric_alerts": member_metric_alerts,
+        "member_glucose_alerts": member_glucose_alerts,
         "symptoms": {
             "count": len(symptoms),
             "avg_severity": (
@@ -7979,6 +8093,72 @@ def _build_health_insights(
             "",
             "reminder",
         ))
+
+    for alert in report.get("member_metric_alerts") or []:
+        metric = str(alert.get("metric") or "")
+        label, default_unit, _ = METRIC_TYPES.get(
+            metric, (metric, "", (0, 0))
+        )
+        unit = str(alert.get("unit") or default_unit)
+        unit_text = f" {unit}" if unit else ""
+        target_text = f"{float(alert.get('target1') or 0):g}"
+        if alert.get("target2") is not None:
+            target_text += f"/{float(alert['target2']):g}"
+        latest_text = ""
+        if alert.get("latest1") is not None:
+            latest_text = "，最近 " + _health_search_number(
+                alert.get("latest1")
+            )
+            if alert.get("latest2") is not None:
+                latest_text += "/" + _health_search_number(
+                    alert.get("latest2")
+                )
+        member = str(alert.get("profile") or "") or "未指定档案"
+        over = int(alert.get("over") or 0)
+        lower = metric in LOWER_BOUND_TARGET_METRICS
+        insights.append(_health_insight(
+            f"metric_{metric}",
+            "warning" if over >= 2 else "info",
+            f"{member}的{label} {over} 次"
+            + ("低于目标" if lower else "超出目标")
+            + f"（共 {int(alert.get('count') or 0)} 次）",
+            (
+                ("目标≥" if lower else "目标≤")
+                + f" {target_text}{unit_text}{latest_text}"
+            ).strip(),
+            (
+                "复测后仍低于目标时，与医生确认是否需要调整方案。"
+                if lower else
+                "复测后仍超标时，与医生确认是否需要调整方案。"
+            ),
+            "metric",
+            metric=metric,
+        ))
+
+    for alert in report.get("member_glucose_alerts") or []:
+        member = str(alert.get("profile") or "") or "未指定档案"
+        avg = float(alert.get("avg") or 0)
+        count = int(alert.get("count") or 0)
+        if alert.get("kind") == "postprandial":
+            insights.append(_health_insight(
+                "metric_glucose_postprandial",
+                "info",
+                f"{member}的餐后血糖平均 {avg:g} mmol/L 明显偏高",
+                f"共 {count} 次。",
+                "如多次偏高，请咨询医生。",
+                "metric",
+                metric="glucose",
+            ))
+        else:
+            insights.append(_health_insight(
+                "metric_glucose_fasting",
+                "info",
+                f"{member}的空腹/未分情境血糖平均 {avg:g} mmol/L 偏高",
+                f"共 {count} 次；建议按空腹与餐后分别记录。",
+                "如多次偏高，请咨询医生。",
+                "metric",
+                metric="glucose",
+            ))
 
     if not insights:
         record_count = (
@@ -11411,12 +11591,16 @@ async def export_family_overview_csv(days: int = 7):
                 f"（最近 {latest['symptom']} {latest['severity']}/10）"
             )
         consultations = item.get("consultations") or {}
-        risk_label = {
-            "emergency": "紧急",
-            "high": "高危",
-            "medium": "中危",
-            "low": "低危",
-        }.get(consultations.get("risk") or "", "")
+        # 风险等级来自不限窗口的最近一次会诊：窗口内 0 次会诊时
+        # 不能写成「近 N 天 0 次（高危）」
+        risk_label = ""
+        if int(consultations.get("count") or 0) > 0:
+            risk_label = {
+                "emergency": "紧急",
+                "high": "高危",
+                "medium": "中危",
+                "low": "低危",
+            }.get(consultations.get("risk") or "", "")
         vaccinations_info = item.get("vaccinations") or {}
         vaccination_text = ""
         if vaccinations_info.get("count"):
@@ -16279,7 +16463,9 @@ def _process_memory_cleanup_queue() -> None:
             # 直接作废会泄漏已删除患者的旧摘要（同名档案共享哈希）
             logger.info(
                 "记忆清理目标已重建，按时间窗清理旧记忆"
-                f"（profile={profile} session={session_id}）"
+                "（profile_hash={} session_length={}）",
+                _profile_audit_key(profile),
+                len(session_id),
             )
             if _erase_long_term_before(profile, session_id, deleted_at):
                 store.complete_memory_cleanup(entries)
@@ -17180,6 +17366,10 @@ def main():
             port=args.port,
             reload=args.reload,
             log_level="info",
+            # 代理头信任必须由 MEDIX_TRUST_PROXY_HEADERS 统一控制：
+            # uvicorn 默认会把本机对端的 X-Forwarded-For 写进
+            # request.client，使应用层的限流桶被客户端自选值替换
+            proxy_headers=False,
         )
     except OSError as e:
         # 无效端口/主机名或端口被占用时给可读提示，而不是裸 traceback

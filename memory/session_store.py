@@ -4822,6 +4822,7 @@ class SessionStore:
         pre_existing_ids: Optional[set] = None,
         match_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
         soft_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
+        backup_group_size: int = 0,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -4935,15 +4936,22 @@ class SessionStore:
                         # 跨档案只认「本地确实改挂/编辑过」的行：
                         # 另一位成员同秒同内容的未编辑记录不能被
                         # 当成已改挂吞掉，否则删除的记录无法恢复
+                        missing_column = False
                         try:
                             meta = self._conn.execute(
                                 f"SELECT created_at, updated_at FROM {table}"
                                 " WHERE id = ?",
                                 (candidate,),
                             ).fetchone()
+                        except sqlite3.OperationalError as exc:
+                            # health_metrics / symptoms 没有 updated_at
+                            # 列：无法判断是否改挂，沿用旧行为接受唯一
+                            # 漂移候选，否则合法的改挂会被当成新记录复制
+                            meta = None
+                            missing_column = "updated_at" in str(exc)
                         except sqlite3.Error:
                             meta = None
-                        if (
+                        if not missing_column and (
                             meta is None
                             or not str(meta["updated_at"] or "")
                             or str(meta["updated_at"])
@@ -4982,6 +4990,7 @@ class SessionStore:
             # 兜底配对只允许落在同一档案的候选行：同秒创建的另一位
             # 成员的提醒/记录不能被当成“本地编辑过的那一条”
             fragment, extra = fallback_where
+            fallback_pool = set(candidates)
             ordered = sorted(candidates)
             placeholders = ",".join("?" for _ in ordered)
             rows = self._conn.execute(
@@ -4991,10 +5000,15 @@ class SessionStore:
             ).fetchall()
             candidates = {int(row["id"]) for row in rows}
             if not candidates:
-                # 缓存身份组，防止下一条同身份行重新查库时把本次导入
-                # 刚插入的同秒记录当成“已存在”
-                state[identity] = claimed
-                return None
+                if backup_group_size == 1 and len(fallback_pool) == 1:
+                    # 备份该身份组只有一行：唯一候选即使锚点字段被本地
+                    # 编辑过也仍是它的存活版本，不能插入旧版本
+                    candidates = fallback_pool
+                else:
+                    # 缓存身份组，防止下一条同身份行重新查库时把本次导入
+                    # 刚插入的同秒记录当成“已存在”
+                    state[identity] = claimed
+                    return None
         if soft_where is not None and candidates:
             # 按不可编辑的软字段（标题/药名等）锚定本地编辑过的那条；
             # 没有软字段匹配时只允许认领未编辑过的行，避免把被删
@@ -5021,11 +5035,36 @@ class SessionStore:
                     fresh = {int(row["id"]) for row in fresh_rows}
                 except sqlite3.Error:
                     fresh = set()
-                if not fresh:
+                if fresh:
+                    candidates = fresh
+                elif len(candidates) > 1:
+                    # 组内多条都无法用软字段区分：可能是同秒双胞胎，
+                    # 不能猜
                     state[identity] = claimed
                     return None
-                candidates = fresh
+                # 组内只剩唯一候选：软字段已被本地编辑（改名/改标题），
+                # 它仍是这条备份行的存活版本，不能把旧版本再插一份
         return _claim(min(candidates))
+
+    @staticmethod
+    def _identity_group_sizes(
+        raw_items: Any, limit: int, key_func
+    ) -> Dict[tuple, int]:
+        """统计备份中每个身份组的行数，供兜底认领判断是否有歧义。"""
+        counts: Dict[tuple, int] = {}
+        if not isinstance(raw_items, list):
+            return counts
+        for item in raw_items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                key = key_func(item)
+            except Exception:
+                key = None
+            if key is None:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def _import_rows(
         self, table: str, raw_items: Any, limit: int, match_probe=None
@@ -5439,6 +5478,15 @@ class SessionStore:
                 metric_pre_ids = self._existing_ids_locked(
                     "health_metrics"
                 )
+                metric_group_sizes = self._identity_group_sizes(
+                    raw_metrics,
+                    IMPORT_LIST_LIMITS["health_metrics"],
+                    lambda item: (
+                        _normalize_profile_name(item.get("profile")),
+                        str(item.get("metric") or "").strip(),
+                        str(item.get("created_at") or "").strip()[:40],
+                    ) if str(item.get("created_at") or "").strip() else None,
+                )
                 for raw in self._import_rows(
                     "health_metrics", raw_metrics,
                     IMPORT_LIST_LIMITS["health_metrics"],
@@ -5512,6 +5560,20 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=metric_pre_ids,
+                            backup_group_size=metric_group_sizes.get(
+                                (
+                                    normalized["profile"],
+                                    normalized["metric"],
+                                    created_key,
+                                ),
+                                1,
+                            ),
+                            # 读数数值可被编辑：兜底配对用测量时间锚定，
+                            # 避免被删的同秒读数抢走已编辑的存活读数
+                            fallback_where=(
+                                "measured_at = ?",
+                                (normalized["measured_at"],),
+                            ),
                         )
                         if existing_metric_id is not None:
                             # 配对成功的行也要计入内容计数：
@@ -5626,6 +5688,14 @@ class SessionStore:
             symptom_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_symptoms, list):
                 symptom_pre_ids = self._existing_ids_locked("symptoms")
+                symptom_group_sizes = self._identity_group_sizes(
+                    raw_symptoms,
+                    IMPORT_LIST_LIMITS["symptoms"],
+                    lambda item: (
+                        _normalize_profile_name(item.get("profile")),
+                        str(item.get("created_at") or "").strip()[:40],
+                    ) if str(item.get("created_at") or "").strip() else None,
+                )
                 for raw in self._import_rows(
                     "symptoms", raw_symptoms,
                     IMPORT_LIST_LIMITS["symptoms"],
@@ -5677,6 +5747,18 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=symptom_pre_ids,
+                            backup_group_size=symptom_group_sizes.get(
+                                (
+                                    normalized["profile"],
+                                    created_key,
+                                ),
+                                1,
+                            ),
+                            # 严重程度/备注可编辑：兜底用记录时间锚定
+                            fallback_where=(
+                                "recorded_at = ?",
+                                (normalized["recorded_at"],),
+                            ),
                         )
                     else:
                         exists = self._conn.execute(
@@ -5720,6 +5802,14 @@ class SessionStore:
             if isinstance(raw_medications, list):
                 medication_pre_ids = self._existing_ids_locked(
                     "medications"
+                )
+                medication_group_sizes = self._identity_group_sizes(
+                    raw_medications,
+                    IMPORT_LIST_LIMITS["medications"],
+                    lambda item: (
+                        _normalize_profile_name(item.get("profile")),
+                        str(item.get("created_at") or "").strip()[:40],
+                    ) if str(item.get("created_at") or "").strip() else None,
                 )
                 for raw in self._import_rows(
                     "medications", raw_medications,
@@ -5781,6 +5871,25 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=medication_pre_ids,
+                            backup_group_size=(
+                                medication_group_sizes.get(
+                                    (
+                                        normalized["profile"],
+                                        created_key,
+                                    ),
+                                    1,
+                                )
+                            ),
+                            fallback_where=(
+                                "name = ? AND dose = ? AND frequency = ?"
+                                " AND started_at = ?",
+                                (
+                                    normalized["name"],
+                                    normalized["dose"],
+                                    normalized["frequency"],
+                                    normalized["started_at"],
+                                ),
+                            ),
                             soft_where=(
                                 "name = ?", (normalized["name"],)
                             ),
@@ -7226,7 +7335,9 @@ class SessionStore:
                             )
 
             # 备份恢复不能把提醒/复诊链接重新挂到已取消/已完成的预约：
-            # 取消时它们本应被删除，重新挂回会抑制逾期复诊并复活提醒
+            # 已取消/已完成预约都不应再有待办提醒（与 update_appointment
+            # 的运行时行为一致）；复诊链接只在预约已取消或悬空时清空，
+            # 已完成的预约是就诊历史，清链接会让已按时复诊重新报逾期
             self._conn.execute(
                 "DELETE FROM reminders WHERE done = 0"
                 " AND appointment_id != 0 AND appointment_id NOT IN ("
@@ -7236,9 +7347,11 @@ class SessionStore:
                 "UPDATE visit_records"
                 " SET followup_appointment_id = 0,"
                 " followup_reminder_id = 0"
-                " WHERE followup_appointment_id != 0"
-                " AND followup_appointment_id NOT IN ("
-                "SELECT id FROM appointments WHERE status = 'upcoming')"
+                " WHERE followup_appointment_id != 0 AND ("
+                "followup_appointment_id NOT IN ("
+                "SELECT id FROM appointments)"
+                " OR followup_appointment_id IN ("
+                "SELECT id FROM appointments WHERE status = 'cancelled'))"
             )
 
             audit_imported = 0
@@ -8731,16 +8844,22 @@ class SessionStore:
                         str(previous["note"] or ""),
                     )
                     if marker is not None:
+                        # 复诊日期在取消期间被改过时不能把链接挂回旧日期
+                        # 的预约，否则后续“安排复诊”会误报已安排
                         self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_appointment_id = ?,"
                             " followup_reminder_id = ?, updated_at = ?"
-                            " WHERE id = ? AND followup_appointment_id = 0",
+                            " WHERE id = ? AND followup_appointment_id = 0"
+                            " AND next_followup_date != ''"
+                            " AND substr(next_followup_date, 1, 10)"
+                            " = substr(?, 1, 10)",
                             (
                                 int(appointment_id),
                                 restored_reminder_id,
                                 now,
                                 int(marker.group(1)),
+                                normalized["scheduled_at"],
                             ),
                         )
             # 提醒的标题/备注是创建时按预约字段生成的快照：改期或改名
@@ -9781,13 +9900,23 @@ class SessionStore:
             )
 
     def _drop_visit_followup_locked(
-        self, visit_id: int, appointment_id: Any, reminder_id: Any
-    ) -> None:
-        """删除就诊记录自动创建的复诊预约与提醒（调用方持有写锁）。"""
+        self,
+        visit_id: int,
+        appointment_id: Any,
+        reminder_id: Any,
+        keep_date: str = "",
+    ) -> bool:
+        """删除就诊记录自动创建的复诊预约与提醒（调用方持有写锁）。
+
+        keep_date 对应的自动预约已经改到该日期时保留，返回 True：
+        用户先手工改期、再把就诊记录的复诊日期改成同一天，不应把刚
+        改好的预约静默删除。
+        """
         appointment = _safe_db_id(appointment_id)
         if appointment:
             row = self._conn.execute(
-                "SELECT note, status FROM appointments WHERE id = ?",
+                "SELECT note, status, scheduled_at"
+                " FROM appointments WHERE id = ?",
                 (appointment,),
             ).fetchone()
             auto_created = row is not None and (
@@ -9797,6 +9926,10 @@ class SessionStore:
             # 只有仍未就诊的自动复诊预约才删除；已完成/已取消的是就诊
             # 历史，不能因为修改上一次就诊而复诊日期就消失
             if auto_created and str(row["status"] or "") == "upcoming":
+                if keep_date and (
+                    str(row["scheduled_at"] or "")[:10] == keep_date
+                ):
+                    return True
                 self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?",
                     (appointment,),
@@ -9824,6 +9957,7 @@ class SessionStore:
                 "DELETE FROM reminders WHERE id = ? AND done = 0",
                 (reminder,),
             )
+        return False
 
     def update_visit_record(
         self,
@@ -9896,20 +10030,22 @@ class SessionStore:
                 and str(old_row["next_followup_date"] or "")
                 != normalized["next_followup_date"]
             ):
-                self._drop_visit_followup_locked(
+                kept = self._drop_visit_followup_locked(
                     int(visit_id),
                     old_row["followup_appointment_id"],
                     old_row["followup_reminder_id"],
+                    keep_date=normalized["next_followup_date"],
                 )
-                self._conn.execute(
-                    """
-                    UPDATE visit_records
-                       SET followup_appointment_id = 0,
-                           followup_reminder_id = 0
-                     WHERE id = ?
-                    """,
-                    (int(visit_id),),
-                )
+                if not kept:
+                    self._conn.execute(
+                        """
+                        UPDATE visit_records
+                           SET followup_appointment_id = 0,
+                               followup_reminder_id = 0
+                         WHERE id = ?
+                        """,
+                        (int(visit_id),),
+                    )
         return self.get_visit_record(visit_id)
 
     def set_visit_followup_links(

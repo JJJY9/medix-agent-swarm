@@ -106,6 +106,15 @@ _NEGATION_PATTERN = re.compile(
     rf"(?:{_NEGATION_FILLERS})*"
     r"(?:的)?\s*$"
 )
+#: A 不 A 疑问（是不是/有没有/是否…）表示不确定，按阳性处理：
+#: 「不知道是不是胸痛」不是否认胸痛，不能静默漏报
+_UNCERTAIN_QUESTION_RE = re.compile(
+    r"(?:是不是|有没有|要不要|会不会|能不能|可不可以|是否|有无)"
+)
+#: 「不是没有/并非没有」是双重否定，实际为阳性
+_DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
+    r"(?:不是|并非|并非说|不能说|不代表|又不是)\s*(?:没有|没|无)\s*$"
+)
 #: 「差点没昏倒」是“几乎发生”，不是否定
 _ALMOST_PATTERN = re.compile(
     r"(?:差点|险些|几乎|差一点|差些)\s*(?:没有|没)?\s*$"
@@ -168,6 +177,13 @@ def _is_negated(prefix: str) -> bool:
     if _ALMOST_PATTERN.search(prefix):
         return False
     stripped = prefix.rstrip()
+    if _UNCERTAIN_QUESTION_RE.search(stripped):
+        # 「不知道是不是胸痛」「有没有胸痛」「是否呼吸困难」是疑似，
+        # 与妊娠不确定的既有口径一致：按阳性处理，不能漏报
+        return False
+    if _DOUBLE_NEGATION_SUFFIX_PATTERN.search(stripped):
+        # 「不是没有胸痛」「并非没有呼吸困难」实际是阳性
+        return False
     if any(
         stripped.endswith(term) for term in _DOUBLE_NEGATION_SUFFIXES
     ):
@@ -391,15 +407,23 @@ _FEATURE_QUESTION_RE = re.compile(
 #: 「X是什么原因/怎么回事」只去掉疑问尾巴，保留症状描述
 _CAUSE_TAIL_RE = re.compile(
     r"是?(?:什么原因|怎么回事|咋回事)"
-    r"(?:造成的|引起的|导致的)?\s*[？?]?$"
+    r"(?:造成的|引起的|导致的)?\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
 )
 #: 「X是什么」纯定义问句（含「是什么病/是指什么/是啥」等变体）
 #: 第一组是定义尾巴之前的描述，用于保留「发烧、咳嗽三天了是什么病」
 _DEFINITION_SUFFIX_RE = re.compile(
     r"^([^，,；;。！？!?\n]*)(?:是什么|啥是|是什么意思|什么意思|"
     r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
-    r"\s*[？?]?$"
+    r"\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
 )
+#: 口语化「提问前缀」：去掉后按剩余内容重新判断，避免「我想知道什么是
+#: 咯血」因含「我」被当成患者主诉而触发急症横幅
+_EDUCATIONAL_PREFIX_RE = re.compile(
+    r"^(?:请问(?:一下)?|我想知道|我想问(?:一下)?|想问(?:一下)?|"
+    r"想了解(?:一下)?|了解一下|听说|我听说|据说)"
+)
+#: 传闻式语句整句按科普处理，不构成患者本人当前主诉
+_HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
 #: 病程/数量线索：定义问句前缀含这些词时按真实主诉保留
 _COURSE_MARKER_RE = re.compile(
     r"[0-9一二两三四五六七八九十半几]+\s*(?:天|日|周|个月|月|小时|年)"
@@ -417,6 +441,16 @@ def _is_red_flag_text(text: str) -> bool:
 
 def _clean_complaint_clause(clause: str) -> str:
     """清洗单个分句：有患者语境的保留；纯定义问句丢弃。"""
+    educational = _EDUCATIONAL_PREFIX_RE.match(clause)
+    if educational:
+        if _HEARSAY_PREFIX_RE.match(clause):
+            return ""
+        rest = clause[educational.end():].strip(" ，,、")
+        if not rest:
+            return ""
+        # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
+        # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
+        return _clean_complaint_clause(rest)
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         return clause
     if any(marker in clause for marker in EDUCATIONAL_MARKERS):
@@ -782,9 +816,15 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             "请尽快联系主诊医生或前往急诊，不要自行服用退烧药掩盖病情。",
         ))
 
+    # 用户可能只在本次主诉里自述正在抗凝（档案/用药清单未录入）：
+    # 抗凝判断必须同时扫描主诉文本，否定/停药/家族史过滤沿用同一套
+    anticoag_text = medical_text
+    complaint_medical = _active_medical_text({"history": text})
+    if complaint_medical:
+        anticoag_text = f"{anticoag_text}；{complaint_medical}"
     if (
         any(
-            _active_term_mention(medical_text, term)
+            _active_term_mention(anticoag_text, term)
             for term in ANTICOAGULANT_TERMS
         )
         and any(_positive_mention(text, term) for term in HEAD_TRAUMA_TERMS)
