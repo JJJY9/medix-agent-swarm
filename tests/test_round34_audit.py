@@ -362,3 +362,27 @@ def test_cross_origin_port_is_rejected(client_and_store):
         headers={"Origin": "https://testserver"},
     )
     assert allowed.status_code != 403
+
+# ---------------------------------------------------------------- 清理目标与索引
+def test_cleanup_target_active_profile_uses_window(store):
+    import api_server
+
+    store.save_profile("A", {"sex": "女"})
+    # 改名后改回原名：created_at 早于删除时间，但档案仍活跃，
+    # 必须按时间窗清理而不是整段清空命名空间
+    assert api_server._cleanup_target_recreated(
+        store, "A", "", "9999-01-01T00:00:00"
+    ) is True
+    assert api_server._cleanup_target_recreated(
+        store, "B", "", "9999-01-01T00:00:00"
+    ) is False
+
+
+def test_import_identity_indexes_exist(store):
+    rows = store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'"
+    ).fetchall()
+    names = {row["name"] for row in rows}
+    assert "idx_reminders_identity" in names
+    assert "idx_lab_results_identity" in names
+
