@@ -112,6 +112,81 @@ def test_web_search_runs_backend_in_thread(monkeypatch):
     assert results and results[0].title == "标题"
 
 
+def test_knowledge_base_filters_and_result_copies():
+    import numpy as np
+
+    class FakeEmbedding:
+        def encode(self, text, convert_to_numpy=True):
+            return np.array(
+                [1.0, 0.0] if "A" in text else [0.0, 1.0],
+                dtype=np.float32,
+            )
+
+    kb = object.__new__(KnowledgeBase)
+    kb.embedding_model = FakeEmbedding()
+    kb.vector_size = 2
+    kb.qdrant_client = None
+    kb.memory_storage = {}
+    kb.backend_error = ""
+    kb.collection_name = "c"
+
+    asyncio.run(kb.add_document("doc A", {"type": "guideline"}))
+    asyncio.run(kb.add_document("doc B", {"type": "lifestyle"}))
+
+    filtered = asyncio.run(kb.search(
+        "doc A", top_k=5, filters={"type": "guideline"}
+    ))
+    assert [item.content for item in filtered] == ["doc A"]
+    assert filtered[0] is not kb.memory_storage[filtered[0].id]
+
+    first = asyncio.run(kb.search("doc A", top_k=5))
+    first_scores = [item.score for item in first]
+    asyncio.run(kb.search("doc B", top_k=5))
+    assert [item.score for item in first] == first_scores
+
+
+def test_knowledge_base_qdrant_failures_raise():
+    import numpy as np
+
+    class FakeEmbedding:
+        def encode(self, text, convert_to_numpy=True):
+            return np.ones(2, dtype=np.float32)
+
+    class FailingQdrant:
+        def upsert(self, **kwargs):
+            raise RuntimeError("qdrant down")
+
+        def search(self, **kwargs):
+            raise RuntimeError("qdrant down")
+
+    kb = object.__new__(KnowledgeBase)
+    kb.embedding_model = FakeEmbedding()
+    kb.vector_size = 2
+    kb.qdrant_client = FailingQdrant()
+    kb.memory_storage = {}
+    kb.collection_name = "c"
+    kb.backend_error = ""
+
+    with pytest.raises(RuntimeError, match="Qdrant 写入失败"):
+        asyncio.run(kb.add_document("doc"))
+    with pytest.raises(RuntimeError, match="Qdrant 检索失败"):
+        asyncio.run(kb.search("doc"))
+
+
+def test_knowledge_base_collection_init_failure_raises():
+    class FailingClient:
+        def get_collections(self):
+            raise RuntimeError("qdrant down")
+
+    kb = object.__new__(KnowledgeBase)
+    kb.qdrant_client = FailingClient()
+    kb.collection_name = "c"
+    kb.vector_size = 2
+
+    with pytest.raises(RuntimeError, match="集合初始化失败"):
+        kb._init_collection()
+
+
 def test_web_search_no_results_does_not_retry(monkeypatch):
     calls = []
 
