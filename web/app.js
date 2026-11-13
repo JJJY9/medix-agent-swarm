@@ -4472,6 +4472,9 @@ async function importHistoryBackup() {
     const auditCount = Array.isArray(data.audit_log)
       ? data.audit_log.length
       : 0;
+    const usageCount = Array.isArray(data.usage_events)
+      ? data.usage_events.length
+      : 0;
     const extraCounts = [
       ["lab_results", "条化验结果"],
       ["allergies", "条过敏史"],
@@ -4490,6 +4493,7 @@ async function importHistoryBackup() {
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
       && !medicationCount && !medicationLogCount && !auditCount
+      && !usageCount
       && !extraCounts.some(([, , value]) => value > 0)
     ) {
       window.alert('备份文件中没有可导入的数据。');
@@ -4508,6 +4512,7 @@ async function importHistoryBackup() {
         .filter(([, , value]) => value > 0)
         .map(([, label, value]) => `${value} ${label}`),
       auditCount ? `${auditCount} 条操作记录` : '',
+      usageCount ? `${usageCount} 条用量流水` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
@@ -7252,12 +7257,14 @@ async function loadMetricSummary() {
       + `&profile=${encodeURIComponent(profile)}`
       + (days > 0 ? `&days=${days}` : '')
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const data = await res.json();
     if (requestSeq !== metricSummaryRequestSeq) return;
     renderMetricSummary(data);
   } catch {
     if (requestSeq === metricSummaryRequestSeq) {
+      // 不能保留上一位患者的统计数值
+      els.metricStatGrid.replaceChildren();
       els.metricStatGrid.hidden = true;
     }
   }
@@ -7365,7 +7372,7 @@ async function loadMetricWeekly() {
     const res = await fetch(
       `/api/metrics/latest?${params.toString()}`
     );
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     const items = (await res.json()).metrics || [];
     if (requestSeq !== metricWeeklyRequestSeq) return;
     const summaries = await fetchMetricSummaries(profile, items, 7);
@@ -7373,6 +7380,8 @@ async function loadMetricWeekly() {
     renderMetricWeekly(summaries);
   } catch {
     if (requestSeq === metricWeeklyRequestSeq) {
+      // 不能保留上一位患者的周度卡片
+      els.metricWeeklyList.replaceChildren();
       els.metricWeekly.hidden = true;
     }
   }
