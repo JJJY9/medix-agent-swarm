@@ -4234,6 +4234,7 @@ class SessionStore:
                     targets_imported += 1
 
             symptoms_imported = 0
+            symptom_identity_counts: Dict[tuple, int] = {}
             if isinstance(raw_symptoms, list):
                 for raw in raw_symptoms[:IMPORT_LIST_LIMITS["symptoms"]]:
                     if not isinstance(raw, dict):
@@ -4254,22 +4255,19 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        exists = self._conn.execute(
-                            """
-                            SELECT 1 FROM symptoms
-                             WHERE profile = ? AND symptom = ?
-                               AND severity = ? AND recorded_at = ?
-                               AND note = ? AND created_at = ?
-                            """,
+                        # 严重程度/备注可编辑：身份只含症状、时间与创建时间
+                        exists = self._import_identity_match(
+                            "symptoms",
+                            ("profile", "symptom", "recorded_at",
+                             "created_at"),
                             (
                                 normalized["profile"],
                                 normalized["symptom"],
-                                normalized["severity"],
                                 normalized["recorded_at"],
-                                normalized["note"],
                                 created_key,
                             ),
-                        ).fetchone()
+                            symptom_identity_counts,
+                        )
                     else:
                         exists = self._conn.execute(
                             """

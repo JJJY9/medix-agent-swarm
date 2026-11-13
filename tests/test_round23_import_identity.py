@@ -23,6 +23,9 @@ def test_restore_after_local_edits_does_not_duplicate(store):
         "妈妈", "高血压", diagnosed_at="2026-01-01"
     )
     allergy = store.add_allergy("妈妈", "青霉素", reaction="皮疹")
+    symptom = store.add_symptom(
+        "妈妈", "头痛", 3, recorded_at="2026-11-12"
+    )
 
     backup = store.export_data()
 
@@ -40,6 +43,7 @@ def test_restore_after_local_edits_does_not_duplicate(store):
     store.update_allergy(
         allergy["id"], reaction="过敏性休克", severity="severe"
     )
+    store.update_symptom_partial(symptom["id"], severity=8, note="加重")
 
     result = store.import_data(backup)
 
@@ -48,6 +52,7 @@ def test_restore_after_local_edits_does_not_duplicate(store):
     assert result["care_items"] == 0
     assert result["conditions"] == 0
     assert result["allergies"] == 0
+    assert result["symptoms"] == 0
 
     # 本地编辑后的状态保留，且没有出现重复记录
     meds = store.list_medications("妈妈")
@@ -69,6 +74,10 @@ def test_restore_after_local_edits_does_not_duplicate(store):
     allergies = store.list_allergies("妈妈")
     assert len(allergies) == 1
     assert allergies[0]["reaction"] == "过敏性休克"
+
+    symptoms = store.list_symptoms("妈妈")
+    assert len(symptoms) == 1
+    assert symptoms[0]["severity"] == 8
 
 
 def test_import_preserves_same_second_duplicates(store, tmp_path):
