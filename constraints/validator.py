@@ -73,6 +73,10 @@ _MEDICATION_TERMS = (
 )
 #: 片/粒/支既可能是药也可能是食物，需有明确药名或“药”语境
 _COUNT_UNIT_SUFFIX = re.compile(r"(?:片|粒|支)\s*$")
+#: 毫升/克同样可能是饮水/食物建议；mg 不能算 g（前面还有字母）
+_VOLUME_MASS_UNIT_SUFFIX = re.compile(
+    r"(?<![a-zA-Z])(?:ml|毫升|g|克)\s*$", re.I
+)
 #: “误服 20 片”是中毒描述，不是处方
 _OVERDOSE_PATTERN = re.compile(r"(?:误服|过量|超量|超过|中毒|自杀|自伤|服毒)")
 #: 复述患者现有用药、说明书剂量或明确否定性建议，不是开处方
@@ -267,10 +271,13 @@ def _contains_prescription(output: str) -> bool:
                 continue
             if _match_in_safe_medication_context(output, match):
                 continue
-            # 片/粒/支也可能是食物（“每天吃一片面包”），
-            # 没有明确药名或“药”语境时不算处方
+            # 片/粒/支或毫升/克也可能是食物/饮水建议（“每天吃一片面包”
+            # “建议每天饮水 2000ml”），没有明确药名或“药”语境时不算处方
             if (
-                _COUNT_UNIT_SUFFIX.search(match.group(0))
+                (
+                    _COUNT_UNIT_SUFFIX.search(match.group(0))
+                    or _VOLUME_MASS_UNIT_SUFFIX.search(match.group(0))
+                )
                 and not medication_context
             ):
                 continue

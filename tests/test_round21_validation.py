@@ -13,6 +13,14 @@ def test_prescription_recognizes_recommended_drug_without_use_verb():
     assert not _contains_prescription("建议每天吃一片面包。")
 
 
+def test_volume_advice_is_not_prescription():
+    assert not _contains_prescription("建议每天饮水 2000ml。")
+    assert not _contains_prescription("每天建议摄入 50 克蛋白质。")
+    # 真正的液体药物仍算处方
+    assert _contains_prescription("建议服用布洛芬混悬液 10ml。")
+    assert _contains_prescription("推荐对乙酰氨基酚 500mg。")
+
+
 def test_safety_warning_does_not_hide_real_prescription():
     assert _contains_prescription(
         "建议服用布洛芬 200mg，请勿超量。"
