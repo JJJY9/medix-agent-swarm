@@ -5129,12 +5129,13 @@ class SessionStore:
 
             visit_records_imported = 0
             visit_link_updates: List[Tuple[int, int, int]] = []
+            visit_identity_claims: Dict[tuple, set] = {}
+            visit_raw_ids = self._import_raw_ids(raw_visit_records)
             if isinstance(raw_visit_records, list):
-                for raw in raw_visit_records[
-                    :IMPORT_LIST_LIMITS["visit_records"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_visit_records,
+                    IMPORT_LIST_LIMITS["visit_records"],
+                ):
                     try:
                         normalized = _normalize_visit_record(
                             raw.get("profile") or "",
@@ -5175,28 +5176,20 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        duplicate = self._conn.execute(
-                            """
-                            SELECT id FROM visit_records
-                             WHERE profile = ? AND visit_date = ?
-                               AND diagnosis = ? AND department = ?
-                               AND doctor = ? AND facility = ?
-                               AND advice = ? AND prescription = ?
-                               AND note = ? AND created_at = ?
-                            """,
-                            (
-                                normalized["profile"],
-                                normalized["visit_date"],
-                                normalized["diagnosis"],
-                                normalized["department"],
-                                normalized["doctor"],
-                                normalized["facility"],
-                                normalized["advice"],
-                                normalized["prescription"],
-                                normalized["note"],
-                                created_key,
-                            ),
-                        ).fetchone()
+                        # 就诊记录的内容可编辑：身份只用档案 + 创建时间，
+                        # 改诊断/医嘱后恢复不会复制旧记录
+                        duplicate_id = self._import_identity_match(
+                            "visit_records",
+                            ("profile", "created_at"),
+                            (normalized["profile"], created_key),
+                            visit_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=visit_raw_ids,
+                        )
+                        duplicate = (
+                            {"id": duplicate_id}
+                            if duplicate_id is not None else None
+                        )
                     else:
                         duplicate = self._conn.execute(
                             """

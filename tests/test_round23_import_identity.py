@@ -202,3 +202,21 @@ def test_restore_recreates_deleted_twin_without_duplicating(store):
     again = store.import_data(backup)
     assert again["medications"] == 0
     assert len(store.list_medications("妈妈")) == 2
+
+
+def test_restore_after_visit_edit_does_not_duplicate(store):
+    visit = store.add_visit_record(
+        "妈妈", visit_date="2026-11-01", diagnosis="高血压复诊",
+    )
+    backup = store.export_data()
+
+    store.update_visit_record_partial(
+        visit["id"], diagnosis="原发性高血压"
+    )
+
+    result = store.import_data(backup)
+
+    assert result["visit_records"] == 0
+    records = store.list_visit_records("妈妈")
+    assert len(records) == 1
+    assert records[0]["diagnosis"] == "原发性高血压"
