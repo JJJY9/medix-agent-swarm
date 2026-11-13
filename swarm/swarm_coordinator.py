@@ -11,7 +11,7 @@ SwarmCoordinator：Swarm 入口和智能路由
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Callable, Dict, Any, Optional, List
+from typing import Callable, Dict, Any, Optional, List, Tuple
 from loguru import logger
 
 from core import LLMClient
@@ -234,7 +234,8 @@ class SwarmCoordinator:
         session_id: str,
         question: str,
         answer: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        profile: str = "",
     ) -> Optional[int]:
         """把一轮问答写入 SQLite，供历史列表和重启恢复使用。
 
@@ -245,7 +246,8 @@ class SwarmCoordinator:
             return None
         try:
             return self.session_store.save_exchange(
-                session_id, question, answer, metadata=metadata
+                session_id, question, answer,
+                metadata=metadata, profile=profile,
             )
         except Exception as e:
             logger.error(f"保存会话记录失败（session={session_id}）: {e}")
@@ -338,7 +340,8 @@ class SwarmCoordinator:
         context: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
         on_token: Optional[Callable[[str], None]] = None,
-        enable_swarm: Optional[bool] = None
+        enable_swarm: Optional[bool] = None,
+        patient_profile: str = "",
     ) -> Dict[str, Any]:
         """
         处理用户问题
@@ -523,6 +526,7 @@ class SwarmCoordinator:
                 question,
                 final_answer,
                 metadata=self._history_metadata(result),
+                profile=patient_profile,
             )
             return result
 
@@ -601,6 +605,7 @@ class SwarmCoordinator:
             question,
             final_answer,
             metadata=self._history_metadata(result),
+            profile=patient_profile,
         )
 
         return result
@@ -616,6 +621,84 @@ class SwarmCoordinator:
         return question
 
     async def _process_with_swarm(
+        self,
+        question: str,
+        context: Optional[Dict[str, Any]],
+        assessment: Dict[str, Any],
+        session_id: str,
+        start_time: datetime,
+        on_token: Optional[Callable[[str], None]] = None,
+        lead_usage: Optional[Dict[str, int]] = None,
+        patient_context: Optional[Dict[str, Any]] = None,
+        memory_scope: str = "",
+    ) -> Dict[str, Any]:
+        """包装 Swarm 流程：被取消时把已消耗的用量挂到异常上。
+
+        客户端中途停止/断线会 cancel 整个任务，此时各家 LLM 的 token
+        已被服务商计费，但 SQLite 里没有 assistant 消息可承载用量；
+        由 api_server 从 CancelledError 上读取后写入 usage_events。
+        """
+        stale_ids = {
+            id(getattr(worker, "shared_context", None))
+            for worker in self.worker_pool
+        }
+        try:
+            return await self._process_with_swarm_inner(
+                question=question,
+                context=context,
+                assessment=assessment,
+                session_id=session_id,
+                start_time=start_time,
+                on_token=on_token,
+                lead_usage=lead_usage,
+                patient_context=patient_context,
+                memory_scope=memory_scope,
+            )
+        except asyncio.CancelledError as exc:
+            usage, calls = self._cancelled_usage_snapshot(
+                lead_usage, stale_ids
+            )
+            if usage or calls:
+                try:
+                    exc.usage = usage
+                    exc.llm_calls = calls
+                except (AttributeError, TypeError):
+                    pass
+            raise
+
+    def _cancelled_usage_snapshot(
+        self,
+        lead_usage: Optional[Dict[str, int]] = None,
+        stale_ids: Optional[set] = None,
+    ) -> Tuple[Dict[str, Any], int]:
+        """收集本次 Swarm 已消耗的用量：Lead、已完成科室与失败子任务。"""
+        skip = stale_ids or set()
+        usage: Dict[str, Any] = dict(lead_usage or {})
+        calls = 1 if lead_usage else 0
+        seen = set(skip)
+        for worker in self.worker_pool:
+            shared = getattr(worker, "shared_context", None)
+            if shared is None or id(shared) in seen:
+                continue
+            seen.add(id(shared))
+            for entry in shared.data.get("failed_usage", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                usage = merge_usages(usage, entry.get("usage"))
+                try:
+                    calls += max(0, int(entry.get("llm_calls") or 0))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            for contribution in shared.get_contributions():
+                result = getattr(contribution, "result", None) or {}
+                usage = merge_usages(usage, result.get("usage"))
+                try:
+                    calls += max(0, int(result.get("llm_calls") or 0))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return usage, calls
+
+    async def _process_with_swarm_inner(
         self,
         question: str,
         context: Optional[Dict[str, Any]],

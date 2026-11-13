@@ -15138,6 +15138,46 @@ async def _record_failed_usage(
         logger.warning(f"记录失败用量出错（忽略）: {redact_secrets(str(e))}")
 
 
+_CANCEL_USAGE_KEY = "usage"
+_CANCEL_CALLS_KEY = "llm_calls"
+
+
+def _cancelled_usage_payload(exc: BaseException) -> Dict[str, Any]:
+    """从 CancelledError 上取出已消耗的用量（没有则为空）。"""
+    usage = getattr(exc, "usage", None)
+    try:
+        calls = int(getattr(exc, "llm_calls", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        calls = 0
+    if not usage and not calls:
+        return {}
+    return {"usage": usage or {}, "llm_calls": calls}
+
+
+def _record_cancelled_usage(
+    session_id: str, profile: str, payload: Dict[str, Any]
+) -> None:
+    """把取消时已消耗的用量写入流水。
+
+    当前任务已经被取消，不能在其内部再 await 落库，改派独立任务完成。
+    """
+    if not payload:
+        return
+    from memory import get_session_store
+
+    try:
+        asyncio.create_task(_record_failed_usage(
+            get_session_store(),
+            session_id,
+            profile,
+            usage=payload.get(_CANCEL_USAGE_KEY),
+            llm_calls=payload.get(_CANCEL_CALLS_KEY, 0),
+        ))
+    except RuntimeError:
+        # 事件循环已关闭（进程退出中），放弃记录
+        pass
+
+
 async def _resolve_memory_profile(session_id: str, requested: str) -> str:
     """会话已绑定的档案优先，避免客户端用请求字段切换到其他患者。
 
@@ -15355,10 +15395,20 @@ async def chat(request: ChatRequest):
                 "question": request.question,
                 "context": memory_context,
                 "session_id": session_id,
+                "patient_profile": memory_profile,
             }
             if not request.enable_swarm:
                 process_kwargs["enable_swarm"] = False
-            result = await coordinator.process(**process_kwargs)
+            try:
+                result = await coordinator.process(**process_kwargs)
+            except asyncio.CancelledError as exc:
+                # 客户端断开时任务被取消，但已消耗的 token 仍要计费
+                _record_cancelled_usage(
+                    session_id,
+                    memory_profile,
+                    _cancelled_usage_payload(exc),
+                )
+                raise
         except LLMError as e:
             logger.error(f"模型调用失败: {e.code} - {e.user_message}")
             from memory import get_session_store
@@ -15509,20 +15559,34 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             "context": memory_context,
             "session_id": session_id,
             "on_token": on_token,
+            "patient_profile": memory_profile,
         }
         if not request.enable_swarm:
             stream_kwargs["enable_swarm"] = False
+
+        cancelled_usage: Dict[str, Any] = {}
+
+        async def run_process():
+            try:
+                return await coordinator.process(**stream_kwargs)
+            except asyncio.CancelledError as exc:
+                # 取消后无法再从任务上取用量，先拷到可变字典里
+                cancelled_usage.update(_cancelled_usage_payload(exc))
+                raise
+
         try:
-            task = asyncio.create_task(
-                coordinator.process(**stream_kwargs)
-            )
+            task = asyncio.create_task(run_process())
         except Exception:
             release_lock()
             raise
 
         def link_profile_when_done(done_task):
-            # 客户端在 result 事件前断开时，已保存的会诊仍要关联患者档案
+            # 客户端在 result 事件前断开时，已消耗用量仍要记账；
+            # 档案已由 save_exchange 在落库时一并绑定，这里只需释放认领
             if done_task.cancelled():
+                _record_cancelled_usage(
+                    session_id, memory_profile, dict(cancelled_usage)
+                )
                 _release_profile_claim(session_id, memory_profile)
                 return
             try:

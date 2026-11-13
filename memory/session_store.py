@@ -2602,12 +2602,15 @@ class SessionStore:
         session_id: str,
         question: str,
         answer: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        profile: str = "",
     ) -> Optional[int]:
         """保存一轮问答。标题取第一轮主诉。
 
         Args:
             metadata: 附加到 assistant 消息上的元数据（来源、科室意见等）
+            profile: 会话关联的患者档案；首轮写入时一并绑定，避免客户端
+                在落库后、绑定前断开导致会话没有档案归属
 
         Returns:
             assistant 消息的数据库 id；没有答复时返回 None。
@@ -2620,6 +2623,7 @@ class SessionStore:
 
         now = self._now()
         title = self._make_title(question)
+        profile_value = _normalize_profile_name(profile)
         metadata_json = json.dumps(
             sanitize_json(metadata or {}),
             ensure_ascii=False,
@@ -2633,21 +2637,27 @@ class SessionStore:
                 return None
             self._conn.execute(
                 """
-                INSERT OR IGNORE INTO sessions(id, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO sessions(
+                    id, title, created_at, updated_at, profile
+                )
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, title, now, now),
+                (session_id, title, now, now, profile_value),
             )
-            # 第一轮补上标题；后续轮次只更新时间；继续旧会话时自动移出归档
+            # 第一轮补上标题；后续轮次只更新时间；继续旧会话时自动移出归档。
+            # 档案只在会话尚未绑定时补齐，避免把已绑定的会话改到别的患者。
             self._conn.execute(
                 """
                 UPDATE sessions
                    SET updated_at = ?,
                        archived = 0,
-                       title = CASE WHEN title = '' THEN ? ELSE title END
+                       title = CASE WHEN title = '' THEN ? ELSE title END,
+                       profile = CASE
+                           WHEN profile = '' THEN ? ELSE profile
+                       END
                  WHERE id = ?
                 """,
-                (now, title, session_id),
+                (now, title, profile_value, session_id),
             )
             self._conn.execute(
                 """
