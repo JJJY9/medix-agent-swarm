@@ -96,7 +96,8 @@ NEGATIONS = ("没有", "没", "无", "不", "未", "否认")
 #: 否定词与短语之间允许的填充词；普通否定与「排除/除外」双重否定共用
 _NEGATION_FILLERS = (
     "出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
-    "诉说|诉|特殊|显著|疑似|表现|是|过|曾经|曾|为|存在|得了|会"
+    "诉说|诉|特殊|显著|疑似|表现|是|过|曾经|曾|为|存在|得了|会|"
+    "可能|一定|肯定|真的|确实"
 )
 
 #: 否定结构必须紧贴短语，且排除「无诱因」「不能缓解」「不舒服」这类
@@ -249,6 +250,19 @@ def _enum_negated(prefix: str) -> bool:
     # 必须存在显式枚举连接词，否则交给 _NEGATION_PATTERN 判断，
     # 避免把「无明显诱因的」这类普通修饰当成枚举否定
     if not any(sep in span for sep in ('、', '和', '及', '与', '以及')):
+        return False
+    # 否定词后的第一项必须是常见症状/体征词：「全身无力、」「没有
+    # 力气、」「无诱因、」「未婚、」里的无/没/未是词的一部分，不能
+    # 让它否定后面的真实症状
+    neg_word = re.match(r"(?:没有|没|无|未|否认)", span)
+    tail = span[neg_word.end():] if neg_word else span
+    first_item = re.split(r"、|和|及|与|以及", tail, maxsplit=1)[0]
+    first_item = re.sub(
+        r"^(?:出现|伴有|伴随|感|有|见|见到|任何|明显|明确|特殊|显著)",
+        "",
+        first_item,
+    )
+    if not any(term in first_item for term in _NEGATED_SYMPTOM_TERMS):
         return False
     return not any(cue in span for cue in _ENUM_POSITIVE_CUES)
 
@@ -602,6 +616,22 @@ TEMPERATURE_PATTERN = re.compile(
     # 明确摄氏单位时可直接出现（仍需排除气温/水温等）
     r"|(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*(?:°\s*c|℃)"
 )
+#: 枚举否定的首个症状项词表：否定词后必须先出现常见症状，避免把
+#: 「全身无力、胸痛」「没有力气、胸痛」「无诱因、胸痛」「未婚、胸痛」
+#: 里的词内「无/没/未」当成否定词覆盖真实症状（见 _enum_negated）
+_NEGATED_SYMPTOM_TERMS = tuple(
+    {phrase for phrase, _label in RED_FLAG_PHRASES}
+    | set(FEVER_TERMS)
+    | {
+        "咳嗽", "咳痰", "胸闷", "气喘", "气促", "呼吸困难", "头痛",
+        "头晕", "恶心", "呕吐", "腹痛", "腹泻", "便秘", "乏力",
+        "食欲", "出汗", "盗汗", "心悸", "心慌", "水肿", "皮疹",
+        "瘙痒", "尿频", "尿急", "尿痛", "血尿", "便血", "黑便",
+        "失眠", "麻木", "抽搐", "晕厥", "咽痛", "鼻塞", "流涕",
+        "关节痛", "腰痛", "背痛", "胸痛", "咯血", "呕血", "出血",
+        "视物模糊", "言语不清", "意识不清",
+    }
+)
 IMMUNOSUPPRESSION_TERMS = (
     "化疗", "放疗", "免疫抑制", "器官移植", "骨髓移植", "造血干细胞移植",
     "艾滋病", "hiv", "长期激素", "长期使用激素", "甲氨蝶呤", "环孢素",
@@ -645,8 +675,27 @@ _CONTEXT_INACTIVE_MARKERS = (
 
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
 _NEGATED_STOP_PATTERN = re.compile(
-    r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|并非)"
+    r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|"
+    r"并非|不想|不打算|不准备)"
     r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用)"
+)
+#: 「打算/准备停用华法林」是意图，当前仍在用药
+_STOP_INTENT_PATTERN = re.compile(
+    r"(?:想|打算|准备|计划|考虑|要不要|是否)"
+    r"[^，。；]{0,6}(?:停用|停药|停服|停了|停止服用)"
+)
+#: 「华法林停用可以吗」是询问，不能按已停药处理
+_STOP_QUESTION_PATTERN = re.compile(
+    r"(?:停用|停药|停服|停了)[^，。；]{0,4}"
+    r"(?:可以吗|行吗|好吗|行不行|可以么|是否|吗)"
+)
+#: 既往用药（不含每天/长期等持续线索时）不是当前用药
+_PAST_MEDICATION_PATTERN = re.compile(
+    r"(?:以前|之前|曾经|曾|既往|过去)"
+    r"[^，。；]{0,8}(?:服用|口服|吃|用|注射|打)"
+)
+_CONTINUOUS_MEDICATION_PATTERN = re.compile(
+    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|这半年|近半年)"
 )
 
 #: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
@@ -776,11 +825,22 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
             continue
-        if _NEGATED_STOP_PATTERN.search(clause):
-            # 「未停用华法林」是仍在用药，不能被“停用”关键字过滤掉
+        if (
+            _NEGATED_STOP_PATTERN.search(clause)
+            or _STOP_INTENT_PATTERN.search(clause)
+            or _STOP_QUESTION_PATTERN.search(clause)
+        ):
+            # 「未停用华法林」「打算停用华法林」「华法林停用可以吗」
+            # 都表示当前仍在用药，不能被“停用”关键字过滤掉
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
+            continue
+        if (
+            _PAST_MEDICATION_PATTERN.search(clause)
+            and not _CONTINUOUS_MEDICATION_PATTERN.search(clause)
+        ):
+            # 「以前吃华法林」是既往用药；「过去半年每天吃」仍属当前
             continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，
@@ -803,9 +863,15 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
         ))
 
     medical_text = _active_medical_text(context)
+    # 用户可能只在本次主诉里自述化疗/抗凝（档案/用药清单未录入）：
+    # 免疫抑制与抗凝判断都并入主诉文本，过滤规则与结构化文本一致
+    complaint_medical = _active_medical_text({"history": text})
+    active_text = medical_text
+    if complaint_medical:
+        active_text = f"{medical_text}；{complaint_medical}"
     if (
         any(
-            _active_term_mention(medical_text, term)
+            _active_term_mention(active_text, term)
             for term in IMMUNOSUPPRESSION_TERMS
         )
         and _has_fever(text)
@@ -816,12 +882,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             "请尽快联系主诊医生或前往急诊，不要自行服用退烧药掩盖病情。",
         ))
 
-    # 用户可能只在本次主诉里自述正在抗凝（档案/用药清单未录入）：
-    # 抗凝判断必须同时扫描主诉文本，否定/停药/家族史过滤沿用同一套
-    anticoag_text = medical_text
-    complaint_medical = _active_medical_text({"history": text})
-    if complaint_medical:
-        anticoag_text = f"{anticoag_text}；{complaint_medical}"
+    anticoag_text = active_text
     if (
         any(
             _active_term_mention(anticoag_text, term)
@@ -880,7 +941,10 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
     pregnancy_mentioned = (
         PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
         or pregnancy_weeks
-        or any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
+        or any(
+            _positive_mention(text, term)
+            for term in PREGNANCY_UNCERTAIN_TERMS
+        )
         or any(
             _positive_mention(text, term)
             for term in PREGNANCY_TERMS
