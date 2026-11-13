@@ -561,9 +561,19 @@ _STOPPED_USE_PREFIX = re.compile(
     r"(?:停用|停药|停服|停止服用|不再服用|停了)\s*$"
 )
 #: 药名之后的停药表述：「华法林已经停用两个月了」
+#: 只允许时间表达式出现在药名与停药动词之间，避免「准备停药/头痛停了」
 _STOPPED_USE_SUFFIX = re.compile(
-    r"^[^，。；,.!?！？\n]{0,6}?(?:已经|已|刚刚|刚|早就)?\s*"
+    r"^(?:前段时间|前阵子|上个月|上周|上上个月|昨天|前天|最近|目前|"
+    r"现在|[0-9一二两三四五六七八九十]+(?:个)?(?:月|天|周|年)(?:前|以来)?)?"
+    r"\s*(?:已经|已|刚刚|刚|早就)?\s*"
     r"(?:停用|停药|停服|停止服用|不再服用|停了|停掉)"
+)
+#: 「准备停药/能停药吗」是意向或疑问，不能当作已停药
+_INTENT_STOP_SUFFIX = re.compile(
+    r"^[^，。；,.!?！？\n]{0,4}"
+    r"(?:准备|打算|计划|想要|想|考虑|能|能否|能不能|可以|可否|"
+    r"是否|要不要|该不该|何时|什么时候)\s*"
+    r"(?:停用|停药|停服|停了|停掉)"
 )
 #: 药名之前带时长的停药表述：「我已经停用两个月的华法林」
 _STOPPED_USE_PREFIX_LONG = re.compile(
@@ -581,9 +591,17 @@ _PAST_USE_PREFIX = re.compile(
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)\s*$"
 )
+#: 持续用药：「过去半年每天吃」「既往长期服用」不是既往用药
+_CONTINUOUS_USE_PREFIX = re.compile(
+    r"(?:过去|近|最近|这|既往|曾经?)"
+    r"[^，。；,.!?！？\n]{0,6}"
+    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|半年)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:服用|口服|吃|用|注射|打|喝|饮)\s*$"
+)
 _STOPPED_USE_SUFFIX_EN = re.compile(
     r"^\s*(?:has been |had been |was |is |been )?"
-    r"(?:stopped|discontinued|no longer taking)",
+    r"(?:stopped(?!\s*working)|discontinued|no longer taking)",
     re.IGNORECASE,
 )
 _PAST_USE_PREFIX_EN = re.compile(
@@ -624,6 +642,8 @@ def _alias_matches(text: str, alias: str) -> bool:
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
+            if _CONTINUOUS_USE_PREFIX.search(prefix):
+                return True
             if (
                 _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
@@ -644,6 +664,8 @@ def _alias_matches(text: str, alias: str) -> bool:
         if (
             _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
+            or _INTENT_STOP_SUFFIX.search(suffix)
+            or _CONTINUOUS_USE_PREFIX.search(prefix)
         ):
             return True
         if (

@@ -140,9 +140,9 @@ PREGNANCY_TERMS = (
     "早孕", "中孕", "晚孕", "孕早期", "孕中期", "孕晚期",
     "产前", "待产", "临产",
 )
-#: 「孕12周」「孕 28 周」「孕4个月」等写法
+#: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
-    r"孕\s*\d+\s*(?:周|个月|月)"
+    r"(?<![避备不待])(?:怀)?孕\s*\d+\s*(?:周|个月|月)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -394,10 +394,18 @@ _CAUSE_TAIL_RE = re.compile(
     r"(?:造成的|引起的|导致的)?\s*[？?]?$"
 )
 #: 「X是什么」纯定义问句（含「是什么病/是指什么/是啥」等变体）
+#: 第一组是定义尾巴之前的描述，用于保留「发烧、咳嗽三天了是什么病」
 _DEFINITION_SUFFIX_RE = re.compile(
-    r"^[^，,；;。！？!?\n]*(?:是什么|啥是|是什么意思|什么意思|"
+    r"^([^，,；;。！？!?\n]*)(?:是什么|啥是|是什么意思|什么意思|"
     r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
     r"\s*[？?]?$"
+)
+#: 病程/数量线索：定义问句前缀含这些词时按真实主诉保留
+_COURSE_MARKER_RE = re.compile(
+    r"[0-9一二两三四五六七八九十半几]+\s*(?:天|日|周|个月|月|小时|年)"
+)
+_COURSE_MARKERS = (
+    "持续", "反复", "最近", "今天", "昨天", "前天", "这几天", "刚才",
 )
 
 
@@ -431,7 +439,17 @@ def _clean_complaint_clause(clause: str) -> str:
     cause = _CAUSE_TAIL_RE.search(clause)
     if cause:
         return clause[: cause.start()].strip(" ，,、").rstrip("是").strip()
-    if _DEFINITION_SUFFIX_RE.match(clause):
+    definition = _DEFINITION_SUFFIX_RE.match(clause)
+    if definition:
+        prefix = definition.group(1).strip(" ，,、")
+        # 「X是什么病」：X 是带病程的症状描述时按真实主诉保留，
+        # 只有单一术语的纯定义问句才整句丢弃
+        if prefix and (
+            _COURSE_MARKER_RE.search(prefix) is not None
+            or any(marker in prefix for marker in _COURSE_MARKERS)
+        ):
+            # 带病程/时间线索的定义问句通常是在描述当前症状
+            return prefix
         return ""
     return clause
 
@@ -573,6 +591,9 @@ HEAD_TRAUMA_TERMS = (
     "头撞了一下", "头碰了一下", "头被撞", "头被磕", "头被碰",
     "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
     "头上磕了个包",
+    "撞了一下头", "撞了下头", "撞到了头", "磕到了头", "碰了一下头",
+    "磕了下头", "头部撞了一下", "头部被撞", "撞了一下脑袋",
+    "脑袋被撞", "脑袋被磕", "脑袋被碰",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -811,9 +832,14 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 break
             start = text.find(phrase, start + len(phrase))
 
+    pregnancy_weeks = False
+    for match in PREGNANCY_WEEK_PATTERN.finditer(text):
+        if not _is_negated(_clause_prefix(text, match.start())):
+            pregnancy_weeks = True
+            break
     pregnancy_mentioned = (
         PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
-        or PREGNANCY_WEEK_PATTERN.search(text) is not None
+        or pregnancy_weeks
         or any(term in text for term in PREGNANCY_UNCERTAIN_TERMS)
         or any(
             _positive_mention(text, term)

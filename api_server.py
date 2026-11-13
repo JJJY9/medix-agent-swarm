@@ -1918,13 +1918,14 @@ def _parse_forwarded_header(header: str) -> str:
             current.append(char)
     if current:
         elements.append("".join(current))
-    for element in reversed(elements):
-        for part in str(element).split(";"):
-            key, _sep, value = part.strip().partition("=")
-            if key.strip().lower() == "for" and value.strip():
-                normalized = _normalize_forwarded_address(value)
-                if normalized:
-                    return normalized
+    if not elements:
+        return ""
+    # 只看最右侧元素（最近可信代理追加）：它存在但没有可解析的 for
+    # 时必须 fail closed，不能回退到客户端自带的更早元素
+    for part in str(elements[-1]).split(";"):
+        key, _sep, value = part.strip().partition("=")
+        if key.strip().lower() == "for" and value.strip():
+            return _normalize_forwarded_address(value)
     return ""
 
 
@@ -1944,11 +1945,22 @@ def _forwarded_client_address(request: Request) -> str:
     forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
     xff_value = ""
     if forwarded_for:
-        for part in reversed(forwarded_for.split(",")):
-            normalized = _normalize_forwarded_address(part)
-            if normalized:
-                xff_value = normalized
-                break
+        parts = [
+            part.strip() for part in forwarded_for.split(",")
+            if part.strip()
+        ]
+        if parts:
+            # 最右项存在但无法解析（unknown/空）时必须 fail closed
+            rightmost = _normalize_forwarded_address(parts[-1])
+            if not rightmost:
+                return ""
+            xff_value = rightmost
+            # 多级本机代理：从右向左跳过 loopback 信任跳，取真实客户端
+            for part in reversed(parts[:-1]):
+                candidate = _normalize_forwarded_address(part)
+                if candidate and not _is_loopback_address(candidate):
+                    xff_value = candidate
+                    break
     real_value = _normalize_forwarded_address(
         request.headers.get("x-real-ip") or ""
     )
@@ -2238,9 +2250,15 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
-        if not _is_loopback_client(request):
+        shared_bucket = (
+            _has_proxy_headers(request)
+            and not _forwarded_client_address(request)
+        )
+        if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
-            # 降低猜测速率（而不是只把 401 改成 429）
+            # 降低猜测速率（而不是只把 401 改成 429）。
+            # 拿不到真实客户端地址（只有 X-Forwarded-Proto 等）时所有
+            # 用户共用一个键，不能因某个人的错误尝试把全家 429
             blocked, retry_after = auth_failure_limiter.is_blocked(
                 _client_ip_key(request)
             )
@@ -5633,7 +5651,11 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
         )[:120]
         if appointment is None:
-            # 并发重试时复用同一就诊已创建的同名预约
+            # 并发重试时复用同一就诊已创建的同名预约：必须校验归属
+            # 标记，避免另一条同诊断同日期的就诊共享并连带删除预约
+            ownership = (
+                f"由就诊记录 #{int(visit.get('id') or 0)} 自动创建"
+            )
             for candidate in store.list_appointments(
                 profile, None, False, 100000, 0
             ):
@@ -5641,7 +5663,8 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     candidate.get("title") == title
                     and str(candidate.get("scheduled_at") or "")[:10]
                     == followup_date
-                    and candidate.get("status") != "cancelled"
+                    and candidate.get("status") == "upcoming"
+                    and ownership in str(candidate.get("note") or "")
                 ):
                     appointment = candidate
                     break
@@ -8014,8 +8037,8 @@ async def health_insights(profile: Optional[str] = None, days: int = 30):
         report,
         safety=safety,
         # 家庭范围下记录来自不同成员，跨成员的趋势没有意义；
-        # 「未指定档案」是独立视图，可以看趋势
-        allow_trends=bool(str(profile or "").strip()),
+        # 「未指定档案」（profile=""）是独立视图，可以看趋势
+        allow_trends=profile is not None,
         family_scope=profile is None,
     )
     counts = {"danger": 0, "warning": 0, "info": 0, "ok": 0}
@@ -10733,6 +10756,13 @@ async def family_overview(days: int = 7):
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
     )
+    if "" in names and "" not in recorded_days:
+        # recorded_days_by_profile 只统计已命名档案：未指定行单独查询，
+        # 否则 recorded_today/连续天数恒为 false/0
+        recorded_days = dict(recorded_days)
+        recorded_days[""] = await asyncio.to_thread(
+            store.recorded_days, "", 3650
+        )
     recorded_day_sets = {
         name: set(days) for name, days in recorded_days.items()
     }
@@ -11059,14 +11089,16 @@ async def family_overview(days: int = 7):
     labs_history_by_profile: Dict[str, List[Dict[str, Any]]] = {}
     for item in lab_history:
         profile = item.get("profile") or ""
-        if profile:
-            labs_history_by_profile.setdefault(profile, []).append(item)
+        # 「未指定档案」的化验/慢病同样参与用药安全核对（与 insights 一致）
+        labs_history_by_profile.setdefault(profile, []).append(item)
     condition_names_by_profile: Dict[str, List[str]] = {}
     for item in condition_items:
         profile = item.get("profile") or ""
         name = str(item.get("name") or "").strip()
-        if profile and name:
-            condition_names_by_profile.setdefault(profile, []).append(name)
+        if name:
+            condition_names_by_profile.setdefault(
+                profile, []
+            ).append(name)
     from core.medication_lab_safety import check_medication_lab_safety
     from core.condition_drug_safety import check_condition_drug_safety
 

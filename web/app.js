@@ -3239,11 +3239,15 @@ async function startNewSession() {
     // 期间用户可能打开了历史会话/提交了问题：晚到的响应不能顶掉
     // 用户刚打开的会话，也不能清空正在流式输出的会诊
     if (seq !== openSessionSeq || busy) return false;
+    // 先按旧会话清理待重置标记，再切换到新会话；否则旧会话的
+    // medix.pendingReset.<id> 会永久残留，深链打开时误触发重置
+    setPendingSessionReset(false);
     sessionId = data.session_id;
     persistSessionId(sessionId);
     setSessionUrl(sessionId);
     lastServerMessageId = 0;
-    setPendingSessionReset(false);
+    safeStorageRemove(pendingResetStorageKey(sessionId));
+    deepLinkedSession = false;
 
     els.thread.replaceChildren(els.empty);
     els.empty.hidden = false;
@@ -5105,6 +5109,7 @@ async function openSession(id) {
 
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
     setPendingSessionReset(false);
+    deepLinkedSession = false;
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
     persistSessionId(id);
@@ -5289,6 +5294,7 @@ function clearCurrentSession() {
   // 同时作废在途的历史读取，防止被删会话的旧响应重新渲染
   openSessionSeq += 1;
   setPendingSessionReset(false);
+  deepLinkedSession = false;
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -5306,6 +5312,7 @@ function clearDeletedSession(id, notice = '') {
   if (!id || sessionId !== id) return false;
   openSessionSeq += 1;
   setPendingSessionReset(false);
+  deepLinkedSession = false;
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -20207,6 +20214,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
   if (!sessionId) return false;
   const expectedSession = sessionId;
   const restoreProfileSeq = profileSelectionSeq;
+  // 深链语义是一次性的：无论本次恢复成功与否都消费掉，避免失败后
+  // 的任意一次对账恢复按深链语义覆盖用户编辑中的草稿
+  const useDeepLinkContext = deepLinkedSession;
+  deepLinkedSession = false;
   sessionRestoreInFlight = true;
 
   try {
@@ -20287,12 +20298,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     renderStoredMessages(
       messages, expectedSession, data.profile || '',
       {
-        restoreContext: deepLinkedSession ? true : false,
+        restoreContext: useDeepLinkContext ? true : false,
         skipContext: pendingReset,
         skipProfile: pendingReset,
       }
     );
-    deepLinkedSession = false;
     if (pendingReset) {
       setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
     } else {
@@ -20327,6 +20337,8 @@ async function send(question) {
     return;
   }
   if (!question.trim()) return;
+  // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
+  deepLinkedSession = false;
   if (pendingSessionReset) {
     // 会诊中切换/清空档案后的首次提问：服务端会话已绑定原档案，
     // 不能复用；这里丢弃本地绑定，由 ensureSession 新建会话

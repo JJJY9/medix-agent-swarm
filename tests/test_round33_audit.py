@@ -424,7 +424,11 @@ def test_restore_context_does_not_overwrite_draft():
     ]
     assert "skipContext: pendingReset" in restore
     assert "skipProfile: pendingReset" in restore
-    assert "restoreContext: deepLinkedSession ? true : false" in restore
+    # 深链语义是一次性的：进入恢复时即消费标记（round36），
+    # 失败后的对账恢复不会再按深链语义覆盖草稿
+    assert "const useDeepLinkContext = deepLinkedSession;" in restore
+    assert "deepLinkedSession = false;" in restore
+    assert "restoreContext: useDeepLinkContext ? true : false" in restore
 
 
 def test_attachment_limits_match_server():
