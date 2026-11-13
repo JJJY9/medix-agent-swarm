@@ -16,7 +16,10 @@ class FakeCoordinator:
     def __init__(self, answer="流式答案"):
         self.answer = answer
 
-    async def process(self, question, context=None, session_id=None, on_token=None):
+    async def process(
+        self, question, context=None, session_id=None, on_token=None,
+        **kwargs,
+    ):
         if on_token:
             on_token("流式")
             on_token("答案")
@@ -97,7 +100,10 @@ class LiveProgressCoordinator(FakeCoordinator):
         self.worker = SimpleNamespace(shared_context=None)
         self.worker_pool = [self.worker]
 
-    async def process(self, question, context=None, session_id=None, on_token=None):
+    async def process(
+        self, question, context=None, session_id=None, on_token=None,
+        **kwargs,
+    ):
         self.worker.shared_context = SimpleNamespace(
             agent_contributions={},
             task_decomposition={
@@ -241,7 +247,7 @@ class SwarmAwareCoordinator(FakeCoordinator):
 
     async def process(
         self, question, context=None, session_id=None, on_token=None,
-        enable_swarm=True
+        enable_swarm=True, **kwargs,
     ):
         self.received = enable_swarm
         return await super().process(question, context, session_id, on_token)
@@ -288,7 +294,10 @@ class ContextCaptureCoordinator(FakeCoordinator):
         super().__init__()
         self.context = None
 
-    async def process(self, question, context=None, session_id=None, on_token=None):
+    async def process(
+        self, question, context=None, session_id=None, on_token=None,
+        **kwargs,
+    ):
         self.context = context
         return await super().process(question, context, session_id, on_token)
 
@@ -326,7 +335,10 @@ def test_chat_memory_scope_prefers_bound_session_profile(tmp_path, monkeypatch):
 class FailingCoordinator:
     worker_pool = []
 
-    async def process(self, question, context=None, session_id=None, on_token=None):
+    async def process(
+        self, question, context=None, session_id=None, on_token=None,
+        **kwargs,
+    ):
         raise LLMError("llm_balance", "模型账户余额不足，请充值。")
 
 
@@ -432,7 +444,8 @@ def test_claim_links_resolved_profile_not_request(tmp_path, monkeypatch):
         worker_pool = []
 
         async def process(
-            self, question, context=None, session_id=None, on_token=None
+            self, question, context=None, session_id=None, on_token=None,
+            **kwargs,
         ):
             captured.update(context or {})
             return {"answer": "答复", "session_id": session_id}
@@ -475,7 +488,8 @@ def test_failed_request_releases_profile_claim(tmp_path, monkeypatch):
         worker_pool = []
 
         async def process(
-            self, question, context=None, session_id=None, on_token=None
+            self, question, context=None, session_id=None, on_token=None,
+            **kwargs,
         ):
             captured.update(context or {})
             return {"answer": "答复", "session_id": session_id}
