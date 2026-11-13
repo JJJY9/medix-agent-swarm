@@ -174,6 +174,39 @@ def test_uncertain_double_negation_still_flags():
     assert detect_red_flags("医生排除了酮症酸中毒")["level"] == "none"
 
 
+def test_double_negation_with_fillers_still_flags():
+    from core.triage import has_positive_mention
+
+    for text in (
+        "不排除有明显胸痛，需要做什么检查",
+        "不能排除有过晕厥",
+        "不排除曾经有抽搐",
+        "不排除出现过晕厥",
+        "尚未完全排除有明显胸痛",
+        "不排除有任何胸痛",
+        "不能排除有明确的胸痛",
+    ):
+        assert detect_red_flags(text)["level"] == "emergency", text
+
+    assert has_positive_mention("不排除有明显胸痛", "胸痛") is True
+    # 真实否定不能被重新误报
+    assert detect_red_flags("没有明显胸痛")["level"] == "none"
+    assert detect_red_flags("医生排除了明显胸痛")["level"] == "none"
+
+
+def test_120_discouraging_phrases_are_not_advice():
+    from core.triage import has_visit_recommendation
+
+    assert has_visit_recommendation(
+        "目前还没到需要拨打120的程度，先观察一下再说。"
+    ) is False
+    assert has_visit_recommendation(
+        "还没到需要叫救护车的地步，先在家休息。"
+    ) is False
+    assert has_visit_recommendation("没敢拨打120") is False
+    assert has_visit_recommendation("没顾上拨打120") is False
+
+
 def test_visit_recommendation_negation_and_distance():
     from core.triage import has_visit_recommendation
 
