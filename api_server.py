@@ -1409,13 +1409,17 @@ def _attachment_dir() -> Path:
     使用 MEDIX_SESSION_DB 切换数据库时，附件也必须跟随，否则孤儿清理
     会把另一数据库仍在引用的文件当成无主文件删除。
     """
+    from core.storage_paths import attachment_dir_for_db
     from memory import get_session_store
 
     try:
         db_path = get_session_store().db_path
     except Exception:
         return ATTACHMENT_DIR
-    return Path(db_path).parent / "attachments"
+    try:
+        return attachment_dir_for_db(Path(db_path))
+    except Exception:
+        return Path(db_path).parent / "attachments"
 
 
 #: 复查模板与复诊安排都需要“检查后插入”，用进程内锁把整段串行化，
@@ -1563,6 +1567,13 @@ def _warn_if_short_access_token() -> None:
 
 
 INSECURE_LAN_ENV = "MEDIX_ALLOW_INSECURE_LAN"
+
+
+def _insecure_lan_allowed() -> bool:
+    """是否显式允许在无访问令牌时暴露给非本机客户端。"""
+    return (os.getenv(INSECURE_LAN_ENV) or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -1929,6 +1940,25 @@ async def require_access_token(request: Request, call_next):
             status_code=403,
             content={"detail": "跨站请求被拒绝", "code": "csrf_rejected"},
         ))
+    if (
+        path.startswith("/api/")
+        and not get_access_token()
+        and not _insecure_lan_allowed()
+        and not _is_loopback_client(request)
+    ):
+        # main() 里的绑定检查只覆盖 python api_server.py 启动方式；
+        # uvicorn/gunicorn 直接导入 app 时在这里兜底，避免无鉴权裸奔
+        return add_security_headers(JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "未设置 MEDIX_ACCESS_TOKEN 且非本机访问被拒绝。"
+                    "请设置访问令牌，或在可信内网显式设置 "
+                    "MEDIX_ALLOW_INSECURE_LAN=1。"
+                ),
+                "code": "insecure_lan_rejected",
+            },
+        ))
 
     if (
         get_access_token()
@@ -1936,6 +1966,26 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
+        if not _is_loopback_client(request):
+            # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
+            # 降低猜测速率（而不是只把 401 改成 429）
+            blocked, retry_after = auth_failure_limiter.is_blocked(
+                _client_ip_key(request)
+            )
+            if blocked:
+                return add_security_headers(JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "code": "auth_rate_limited",
+                        "retry_after": round(retry_after, 1),
+                    },
+                    headers={
+                        "Retry-After": str(
+                            max(1, math.ceil(retry_after))
+                        )
+                    },
+                ))
         if not is_authorized(request):
             if not _is_loopback_client(request):
                 allowed, retry_after = auth_failure_limiter.check(
@@ -15778,6 +15828,7 @@ def _serialize_result(result: Dict[str, Any], agent_labels: Dict[str, str]) -> D
     raw_agents = result.get("agents_involved") or []
     payload = {
         "answer": result.get("answer", ""),
+        "degraded": bool(result.get("degraded")),
         "disclaimer": result.get("disclaimer", ""),
         "suggestions": result.get("suggestions") or [],
         "mode": "swarm" if result.get("swarm_enabled") else "single",
@@ -15982,6 +16033,27 @@ async def chat(request: ChatRequest):
             )
 
     payload = _serialize_result(result, AGENT_LABELS)
+    if payload.get("degraded"):
+        from memory import get_session_store
+
+        await _record_failed_usage(
+            get_session_store(),
+            session_id,
+            memory_profile,
+            usage=payload.get("usage"),
+            llm_calls=payload.get("llm_calls", 0),
+        )
+        _release_profile_claim(session_id, memory_profile)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "degraded",
+                "message": (
+                    "会诊未能生成有效结论，请稍后重试；"
+                    "若持续出现，请打开系统自检。"
+                ),
+            },
+        )
     if not (payload["answer"] or "").strip():
         from memory import get_session_store
 
@@ -16292,6 +16364,26 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 task.cancel()
 
         payload = _serialize_result(result, AGENT_LABELS)
+        if payload.get("degraded"):
+            from memory import get_session_store
+
+            await _record_failed_usage(
+                get_session_store(),
+                session_id,
+                memory_profile,
+                usage=payload.get("usage"),
+                llm_calls=payload.get("llm_calls", 0),
+            )
+            _release_profile_claim(session_id, memory_profile)
+            yield sse({
+                "type": "error",
+                "code": "degraded",
+                "message": (
+                    "会诊未能生成有效结论，请稍后重试；"
+                    "若持续出现，请打开系统自检。"
+                ),
+            })
+            return
         if not (payload["answer"] or "").strip():
             from memory import get_session_store
 

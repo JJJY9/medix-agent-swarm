@@ -363,22 +363,16 @@ class MedicalKnowledgeBase:
         if filter_type:
             filter_expr = f'metadata like "%\\"type\\": \\"{filter_type}\\"%"'
 
-        try:
-            has_collection = self.milvus_client.has_collection(
-                self.collection_name
-            )
-        except Exception as e:
-            logger.warning(f"读取知识库集合状态失败: {e}")
-            has_collection = True
-        if not has_collection:
-            # 空知识库只清理了索引：检索返回空结果而不是报错
-            return []
-
         # 检索
         try:
             # 重建期间 drop→rename 之间没有正式 collection：
-            # 检索在锁内等待替换完成，而不是静默返回空结果
+            # 状态检查与检索都必须在同一把锁内，锁外检查会静默返回空结果
             with self._index_lock:
+                if not self.milvus_client.has_collection(
+                    self.collection_name
+                ):
+                    # 空知识库只清理了索引：检索返回空结果而不是报错
+                    return []
                 results = self.milvus_client.search(
                     collection_name=self.collection_name,
                     data=[query_vector.tolist()],

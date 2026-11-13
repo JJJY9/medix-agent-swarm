@@ -641,7 +641,17 @@ def _import_payload_problems(
                     f"单条消息最多 {MAX_IMPORT_MESSAGE_CHARS} 个字符。"
                 )
                 continue
-            total_message_chars += len(content)
+            metadata = message.get("metadata")
+            if isinstance(metadata, (dict, list)):
+                meta_length = len(
+                    json.dumps(metadata, ensure_ascii=False)
+                )
+            else:
+                meta_length = len(str(metadata or ""))
+            if meta_length > MAX_IMPORT_MESSAGE_CHARS:
+                problems.append("单条消息的元数据过大。")
+                continue
+            total_message_chars += len(content) + meta_length
             if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
                 problems.append("备份中的消息总量过大。")
                 return problems
@@ -1959,7 +1969,19 @@ def _validate_export_payload(payload: Dict[str, Any]) -> None:
                     f"存在超过 {MAX_BACKUP_MESSAGE_CHARS} 字符的单条消息，"
                     "无法导出为可恢复备份。"
                 )
-            total_chars += length
+            metadata = message.get("metadata")
+            if isinstance(metadata, (dict, list)):
+                meta_length = len(
+                    json.dumps(metadata, ensure_ascii=False)
+                )
+            else:
+                meta_length = len(str(metadata or ""))
+            if meta_length > MAX_BACKUP_MESSAGE_CHARS:
+                raise ValueError(
+                    f"存在超过 {MAX_BACKUP_MESSAGE_CHARS} 字符的消息元数据，"
+                    "无法导出为可恢复备份。"
+                )
+            total_chars += length + meta_length
     if total_chars > MAX_BACKUP_TOTAL_CHARS:
         raise ValueError(
             "会话消息总量超过可导入上限，无法导出为可恢复备份。"
@@ -4091,10 +4113,15 @@ class SessionStore:
     def export_data(self) -> Dict[str, Any]:
         """导出全部会话与全部消息，供本地备份或迁移。
 
-        持锁贯穿所有表的读取，避免备份期间发生写入时产生跨表不一致。
+        持锁贯穿所有表的读取，避免备份期间发生写入时产生跨表不一致；
+        SHA-256 与可恢复性校验在大库上耗时明显，放到释放锁之后执行，
+        不再延长全局 RLock 的持有时间（会冻结会诊等所有 DB 访问）。
         """
         with self._lock:
-            return self._export_data()
+            payload = self._export_data()
+        payload["checksum"] = _backup_checksum(payload)
+        _validate_export_payload(payload)
+        return payload
 
     def _export_data(self) -> Dict[str, Any]:
         """在调用方持有可重入锁时收集各表快照。"""
@@ -4196,8 +4223,6 @@ class SessionStore:
             "conditions": self.list_conditions(limit=100000),
             "usage_events": self.list_usage_events(limit=100000),
         }
-        payload["checksum"] = _backup_checksum(payload)
-        _validate_export_payload(payload)
         return payload
 
     def _import_identity_match(
@@ -6690,12 +6715,32 @@ class SessionStore:
             return cursor.rowcount > 0
 
     def _checkpoint_wal(self) -> None:
-        """把 WAL 合并回主库并截断，避免已删除内容残留在 -wal 文件。"""
+        """把 WAL 合并回主库并截断，避免已删除内容残留在 -wal 文件。
+
+        其它连接（外部只读查看器、备份工具）持有读事务时，TRUNCATE 会
+        等满 busy_timeout（默认 5s），期间进程内所有 DB 访问一起停摆。
+        这里用很短的超时尝试截断，busy 时退化为 PASSIVE 合并，把彻底
+        截断留给下一次。
+        """
         try:
-            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            self._conn.execute("PRAGMA busy_timeout=250")
+        except sqlite3.Error:
+            pass
+        try:
+            result = self._conn.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            busy = int(result[0] or 0) if result else 0
+            if busy:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.Error as e:
             # 有长读事务时 checkpoint 会 busy；下次删除/关闭时会再尝试
             logger.warning(f"WAL checkpoint 失败（忽略）: {e}")
+        finally:
+            try:
+                self._conn.execute("PRAGMA busy_timeout=5000")
+            except sqlite3.Error:
+                pass
 
     @contextmanager
     def _write_and_checkpoint(self):
@@ -7957,6 +8002,10 @@ class SessionStore:
         )
         now = self._now()
         with self._lock, self._conn:
+            previous = self._conn.execute(
+                "SELECT profile FROM lab_results WHERE id = ?",
+                (int(lab_id),),
+            ).fetchone()
             cursor = self._conn.execute(
                 """
                 UPDATE lab_results
@@ -7976,6 +8025,16 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            if (
+                previous is not None
+                and _normalize_profile_name(previous["profile"] or "")
+                != normalized["profile"]
+            ):
+                self._conn.execute(
+                    "UPDATE attachments SET profile = ?"
+                    " WHERE kind = 'lab' AND ref_id = ?",
+                    (normalized["profile"], int(lab_id)),
+                )
         return self.get_lab_result(lab_id)
 
     def get_lab_result(self, lab_id: int) -> Optional[Dict[str, Any]]:
@@ -8781,7 +8840,7 @@ class SessionStore:
         with self._lock, self._conn:
             old_row = self._conn.execute(
                 """
-                SELECT next_followup_date, followup_appointment_id,
+                SELECT profile, next_followup_date, followup_appointment_id,
                        followup_reminder_id
                   FROM visit_records WHERE id = ?
                 """,
@@ -8808,6 +8867,18 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 记录改到其它档案时，已关联的附件必须跟随，保持
+            # 「附件与记录同档案」的不变量
+            if (
+                old_row is not None
+                and _normalize_profile_name(old_row["profile"] or "")
+                != normalized["profile"]
+            ):
+                self._conn.execute(
+                    "UPDATE attachments SET profile = ?"
+                    " WHERE kind = 'visit' AND ref_id = ?",
+                    (normalized["profile"], int(visit_id)),
+                )
             # 复诊日期变化后撤销旧的自动预约/提醒：只清关联编号会留下
             # 幽灵预约和仍会到期的旧提醒，再次安排时两套并存
             if (

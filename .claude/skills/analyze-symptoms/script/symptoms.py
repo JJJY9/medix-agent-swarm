@@ -67,11 +67,16 @@ async def analyze_symptoms(symptoms: str) -> Dict[str, Any]:
         }
     }
 
-    # 检测症状所属类别
+    # 检测症状所属类别（否定感知：「没有咳嗽」「无胸痛」不算阳性）
+    from core.triage import has_positive_mention
+
     detected_categories = []
     for category_id, category_data in symptom_categories.items():
         for symptom in symptom_list:
-            if any(keyword in symptom for keyword in category_data["keywords"]):
+            if any(
+                has_positive_mention(symptom, keyword)
+                for keyword in category_data["keywords"]
+            ):
                 if category_id not in [c["id"] for c in detected_categories]:
                     detected_categories.append({
                         "id": category_id,

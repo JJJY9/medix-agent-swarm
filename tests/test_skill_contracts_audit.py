@@ -39,10 +39,13 @@ def test_disease_code_extracts_section_category():
     details = code_module.extract_icd_details(content, "冠心病")
     missing = code_module.extract_icd_details(content, "火星病")
 
-    assert details == {
-        "icd10_code": "I25",
-        "category": "循环系统疾病",
-    }
+    assert details["icd10_code"] == "I25"
+    assert details["category"] == "循环系统疾病"
+    # 只返回匹配小节，不再把整章 ICD 内容交给模型
+    assert details["section"].startswith("疾病名称：冠心病")
+    assert "心绞痛" not in details["section"] or (
+        details["section"].startswith("疾病名称：冠心病")
+    )
     assert missing is None
 
 
@@ -62,10 +65,9 @@ def test_disease_code_extracts_heading_format():
         content, "脑膜炎球菌性脑膜炎"
     )
 
-    assert flu == {
-        "icd10_code": "J10",
-        "category": "传染病和寄生虫病（A00-B99）",
-    }
+    assert flu["icd10_code"] == "J10"
+    assert flu["category"] == "传染病和寄生虫病（A00-B99）"
+    assert flu["section"].startswith("流行性感冒（J10-J11）")
     assert shingles["icd10_code"] == "B02"
     assert meningitis["icd10_code"] == "A39.0"
     # 分类标题行不能被当成疾病条目

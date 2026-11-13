@@ -62,7 +62,9 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
             continue
         metadata = doc.get("metadata") or {}
         return {
-            "answer": format_code_info(disease_name, content),
+            "answer": format_code_info(
+                disease_name, details.get("section") or content[:800]
+            ),
             "icd10_code": metadata.get("icd10_code")
             or details["icd10_code"],
             "category": sanitize_untrusted_text(
@@ -106,7 +108,8 @@ def _extract_heading_details(
     content: str, target: str
 ) -> Optional[Dict[str, str]]:
     """按「疾病名（编码）」小节标题提取编码与分类。"""
-    for match in _HEADING_PATTERN.finditer(content):
+    headings = list(_HEADING_PATTERN.finditer(content))
+    for position, match in enumerate(headings):
         name = match.group("name").strip()
         if not name:
             continue
@@ -121,12 +124,18 @@ def _extract_heading_details(
         code = match.group("code").strip()
         single = _SINGLE_CODE_PATTERN.match(code)
         category_match = _CATEGORY_PATTERN.search(content)
+        end = (
+            headings[position + 1].start()
+            if position + 1 < len(headings) else len(content)
+        )
         return {
             "icd10_code": single.group(0) if single else code,
             "category": (
                 category_match.group(1).strip()
                 if category_match else ""
             ),
+            # 只返回该疾病的小节，整章内容会让模型引用别的编码
+            "section": content[match.start():end].strip(),
         }
     return None
 
@@ -154,6 +163,7 @@ def extract_icd_details(
                         category_match.group(1).strip()
                         if category_match else ""
                     ),
+                    "section": ("疾病名称" + section).strip(),
                 }
         return None
 
@@ -171,6 +181,7 @@ def extract_icd_details(
         "category": (
             category_match.group(1).strip() if category_match else ""
         ),
+        "section": content[:4000],
     }
 
 

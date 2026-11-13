@@ -26,7 +26,7 @@ from core.session_context import (
     session_memory_scope,
 )
 from .shared_context import SharedContext, TaskStatus
-from .lead_agent import LeadAgent
+from .lead_agent import LeadAgent, is_degraded_answer
 from .events import Event, EventType
 from agents import ConsultationAgent, DiagnosticAgent, ResearchAgent
 from memory import (
@@ -428,8 +428,9 @@ class SwarmCoordinator:
         # 旧命名空间、SQLite 会话重新绑定已经不存在的旧档案
         if patient_profile:
             try:
-                resolved_profile = self.session_store.resolve_profile_alias(
-                    patient_profile
+                resolved_profile = await asyncio.to_thread(
+                    self.session_store.resolve_profile_alias,
+                    patient_profile,
                 )
             except Exception:
                 resolved_profile = patient_profile
@@ -467,43 +468,53 @@ class SwarmCoordinator:
         # 同一会话编号在本进程内被删除后再次发起会诊：先解除墓碑，
         # 否则本轮问答会被 save_exchange / 短期记忆静默丢弃。
         # 会诊由全局锁串行，删除发生在本次开始之后的情况仍会重新登记墓碑。
-        self.session_store.revive_session(session_id)
+        await asyncio.to_thread(
+            self.session_store.revive_session, session_id
+        )
         self.short_term_memory.clear_tombstone(session_id)
 
         started_text = start_time.isoformat(timespec="seconds")
 
-        def _profile_deleted_midflight() -> bool:
+        async def _profile_deleted_midflight() -> bool:
             """档案在本次会诊开始后被删除：不能再写回其命名空间或绑定。"""
             if not patient_profile:
                 return False
-            return self.session_store.profile_deleted_since(
-                patient_profile, started_text
-            )
+            try:
+                return await asyncio.to_thread(
+                    self.session_store.profile_deleted_since,
+                    patient_profile, started_text,
+                )
+            except Exception:
+                return False
 
-        def _bound_profile() -> str:
+        async def _bound_profile() -> str:
             """写回 SQLite 的档案名：已改名时用新名称，已删除时为空。"""
-            if _profile_deleted_midflight():
+            if await _profile_deleted_midflight():
                 return ""
             try:
-                resolved = self.session_store.resolve_profile_alias(
-                    patient_profile
+                resolved = await asyncio.to_thread(
+                    self.session_store.resolve_profile_alias,
+                    patient_profile,
                 )
             except Exception:
                 return patient_profile
             if not resolved:
                 return patient_profile
-            if (
-                resolved != patient_profile
-                and self.session_store.profile_deleted_since(
-                    resolved, started_text
-                )
-            ):
-                return ""
+            if resolved != patient_profile:
+                try:
+                    deleted = await asyncio.to_thread(
+                        self.session_store.profile_deleted_since,
+                        resolved, started_text,
+                    )
+                except Exception:
+                    deleted = False
+                if deleted:
+                    return ""
             return resolved
 
-        def _write_scope() -> str:
+        async def _write_scope() -> str:
             """长期记忆写入作用域：改名后改用新档案的命名空间。"""
-            resolved = _bound_profile()
+            resolved = await _bound_profile()
             if not resolved:
                 return ""
             if resolved != patient_profile:
@@ -525,10 +536,9 @@ class SwarmCoordinator:
         skip_long_term = False
         if patient_profile:
             try:
-                skip_long_term = (
-                    self.session_store.profile_memory_cleanup_pending(
-                        patient_profile
-                    )
+                skip_long_term = await asyncio.to_thread(
+                    self.session_store.profile_memory_cleanup_pending,
+                    patient_profile,
                 )
             except Exception:
                 skip_long_term = False
@@ -678,14 +688,22 @@ class SwarmCoordinator:
             # 再把会诊依据写入 SQLite
             result['triage'] = triage
             result['medication_safety'] = medication_safety
-            result['assistant_message_id'] = await asyncio.to_thread(
-                self._save_exchange,
-                session_id,
-                question,
-                final_answer,
-                metadata=self._history_metadata(result),
-                profile=_bound_profile(),
-            )
+            bound_profile = await _bound_profile()
+            if result.get('degraded'):
+                # 兜底道歉不是医疗结论：不写入 SQLite 会话历史
+                logger.warning(
+                    "Degraded swarm answer, skip SQLite exchange "
+                    f"(session={session_id})"
+                )
+            else:
+                result['assistant_message_id'] = await asyncio.to_thread(
+                    self._save_exchange,
+                    session_id,
+                    question,
+                    final_answer,
+                    metadata=self._history_metadata(result),
+                    profile=bound_profile,
+                )
             return result
 
         else:
@@ -732,15 +750,19 @@ class SwarmCoordinator:
 
         # 注意：短期记忆已经在 Agent Loop 中保存了，这里不需要重复保存
 
-        # 保存到长期记忆
-        if (
-            self.session_store.is_session_deleted(session_id)
-            or _profile_deleted_midflight()
-        ):
+        # 保存到长期记忆；兜底道歉/截断提示不是医疗结论，不写任何持久层
+        degraded_answer = bool(result.get("degraded"))
+        session_deleted = (
+            degraded_answer or await self._is_session_deleted(session_id)
+        )
+        profile_deleted = (
+            degraded_answer or await _profile_deleted_midflight()
+        )
+        if session_deleted or profile_deleted:
             # 会诊进行中用户已删除会话/档案：不能再把总结写回外部记忆
             logger.info(f"Session deleted, skip long-term memory (session={session_id})")
         else:
-            write_scope = _write_scope()
+            write_scope = await _write_scope()
             try:
                 memory_id = await asyncio.to_thread(
                     self.long_term_memory.add_session_summary,
@@ -756,8 +778,8 @@ class SwarmCoordinator:
                 )
                 # 删除可能发生在检查之后：写入后再核对并清理外部记忆
                 if (
-                    self.session_store.is_session_deleted(session_id)
-                    or _profile_deleted_midflight()
+                    await self._is_session_deleted(session_id)
+                    or await _profile_deleted_midflight()
                 ):
                     await asyncio.to_thread(
                         self.long_term_memory.delete_session_summary,
@@ -776,14 +798,21 @@ class SwarmCoordinator:
                 logger.error(f"Failed to save to long-term memory: {e}")
 
         # 持久化到 SQLite，供历史列表与重启恢复使用
-        result['assistant_message_id'] = await asyncio.to_thread(
-            self._save_exchange,
-            session_id,
-            question,
-            final_answer,
-            metadata=self._history_metadata(result),
-            profile=_bound_profile(),
-        )
+        bound_profile = await _bound_profile()
+        if degraded_answer:
+            logger.warning(
+                "Degraded answer, skip SQLite exchange "
+                f"(session={session_id})"
+            )
+        else:
+            result['assistant_message_id'] = await asyncio.to_thread(
+                self._save_exchange,
+                session_id,
+                question,
+                final_answer,
+                metadata=self._history_metadata(result),
+                profile=bound_profile,
+            )
 
         return result
 
@@ -797,21 +826,31 @@ class SwarmCoordinator:
             return f"{question}\n\n本次任务重点：{description}"
         return question
 
-    def _resolved_memory_scope(
+    async def _resolved_memory_scope(
         self, patient_profile: str, memory_scope: str, session_id: str
     ) -> str:
         """长期记忆写入作用域：档案改名后使用新档案的命名空间。"""
         scope = str(memory_scope or "").strip()
         if patient_profile:
             try:
-                resolved = self.session_store.resolve_profile_alias(
-                    patient_profile
+                resolved = await asyncio.to_thread(
+                    self.session_store.resolve_profile_alias,
+                    patient_profile,
                 )
             except Exception:
                 resolved = patient_profile
             if resolved and resolved != patient_profile:
                 return profile_memory_scope(resolved)
         return scope or session_memory_scope(session_id)
+
+    async def _is_session_deleted(self, session_id: str) -> bool:
+        """会话删除检查放到线程池，避免在事件循环上抢 SessionStore 锁。"""
+        try:
+            return await asyncio.to_thread(
+                self.session_store.is_session_deleted, session_id
+            )
+        except Exception:
+            return False
 
     async def _process_with_swarm(
         self,
@@ -1008,6 +1047,12 @@ class SwarmCoordinator:
         final_answer = self._enforce_final_constraints(
             final_answer, question
         )
+        degraded = is_degraded_answer(final_answer)
+        if degraded:
+            logger.warning(
+                "Swarm produced a degraded answer, skip long-term memory "
+                f"(session={session_id})"
+            )
 
         end_time = datetime.now()
 
@@ -1022,24 +1067,31 @@ class SwarmCoordinator:
                 content=final_answer,
             )
 
-        def _profile_gone() -> bool:
+        async def _profile_gone() -> bool:
             """档案在本次会诊开始后被删除：不能再写入其 Mem0 命名空间。"""
             if not patient_profile:
                 return False
             names = [patient_profile]
             try:
-                resolved = self.session_store.resolve_profile_alias(
-                    patient_profile
+                resolved = await asyncio.to_thread(
+                    self.session_store.resolve_profile_alias,
+                    patient_profile,
                 )
             except Exception:
                 resolved = patient_profile
             if resolved and resolved not in names:
                 names.append(resolved)
             started = start_time.isoformat(timespec="seconds")
-            return any(
-                self.session_store.profile_deleted_since(name, started)
-                for name in names
-            )
+            for name in names:
+                try:
+                    if await asyncio.to_thread(
+                        self.session_store.profile_deleted_since,
+                        name, started,
+                    ):
+                        return True
+                except Exception:
+                    continue
+            return False
 
         # Step 4: 生成 SessionSummary
         try:
@@ -1051,7 +1103,7 @@ class SwarmCoordinator:
                 start_time=start_time,
                 end_time=end_time
             )
-            if self.session_store.is_session_deleted(session_id):
+            if await self._is_session_deleted(session_id):
                 # 会话已删除，不再落盘包含主诉的总结文件
                 logger.info(
                     f"Session deleted, skip session summary (session={session_id})"
@@ -1061,7 +1113,7 @@ class SwarmCoordinator:
                     self.session_manager.save_summary, summary
                 )
                 # 删除可能发生在检查之后：落盘后再核对并清理
-                if self.session_store.is_session_deleted(session_id):
+                if await self._is_session_deleted(session_id):
                     await asyncio.to_thread(
                         self.session_manager.delete_summary, session_id
                     )
@@ -1077,8 +1129,9 @@ class SwarmCoordinator:
 
         # 保存到 Mem0 长期记忆
         if (
-            self.session_store.is_session_deleted(session_id)
-            or _profile_gone()
+            degraded
+            or await self._is_session_deleted(session_id)
+            or await _profile_gone()
         ):
             logger.info(
                 f"Session deleted, skip Mem0 summary (session={session_id})"
@@ -1086,7 +1139,7 @@ class SwarmCoordinator:
         else:
             try:
                 # 保存会话总结
-                memory_user_id = self._resolved_memory_scope(
+                memory_user_id = await self._resolved_memory_scope(
                     patient_profile, memory_scope, session_id
                 )
                 memory_id = await asyncio.to_thread(
@@ -1105,8 +1158,8 @@ class SwarmCoordinator:
 
                 # 删除可能发生在检查之后：写入后再核对并清理
                 if (
-                    self.session_store.is_session_deleted(session_id)
-                    or _profile_gone()
+                    await self._is_session_deleted(session_id)
+                    or await _profile_gone()
                 ):
                     await asyncio.to_thread(
                         self.long_term_memory.delete_session_summary,
@@ -1165,6 +1218,7 @@ class SwarmCoordinator:
         result = {
             'answer': final_answer,
             'swarm_enabled': True,
+            'degraded': degraded,
             'session_id': session_id,
             'agents_involved': completed_agents,
             'agent_contributions': agent_contributions,

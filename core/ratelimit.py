@@ -48,6 +48,27 @@ class SlidingWindowLimiter:
             oldest = next(iter(self._hits))
             self._hits.pop(oldest, None)
 
+    def is_blocked(
+        self, key: str, now: Optional[float] = None
+    ) -> Tuple[bool, float]:
+        """只查询该 key 是否已超限，不记账。
+
+        用于在比较密钥前先拒绝已锁定的来源：否则攻击者仍可无限
+        次尝试（只有错误响应的状态码变成 429）。
+        """
+        if self.limit <= 0:
+            return False, 0.0
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            hits = self._hits.get(key)
+            if not hits:
+                return False, 0.0
+            while hits and moment - hits[0] >= self.window:
+                hits.popleft()
+            if len(hits) >= self.limit:
+                return True, max(0.0, self.window - (moment - hits[0]))
+            return False, 0.0
+
     def check(self, key: str, now: Optional[float] = None) -> Tuple[bool, float]:
         """返回 (是否允许, 建议等待秒数)。limit<=0 时始终放行。"""
         if self.limit <= 0:

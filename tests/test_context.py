@@ -105,7 +105,9 @@ def test_format_context_handles_invalid_and_long_input():
     assert format_context({"age": None, "sex": ""}) == ""
 
     text = format_context({"history": "长" * 5000}, max_length=100)
-    assert len(text) == 100
+    # 预算按「标签：文本」精确分配，长度不超过上限
+    assert 90 <= len(text) <= 100
+    assert "…（已截断）" in text
 
 
 def test_public_context_removes_internal_fields():

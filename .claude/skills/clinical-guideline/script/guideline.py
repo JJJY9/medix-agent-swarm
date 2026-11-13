@@ -54,15 +54,34 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
     # 使用知识库单例
     kb = await asyncio.to_thread(get_knowledge_base)
 
-    # 使用 Milvus 检索临床指南
+    # 使用 Milvus 检索临床指南；同一份指南会被切成多个块，
+    # 多取一些再按文档去重，max_results 表示指南条数而不是块数
     results = await asyncio.to_thread(kb.search,
         query=f"{query} 临床指南 诊疗规范",
-        top_k=max_results,  # 使用传入的 max_results 参数
+        top_k=max(max_results * 3, max_results),
         filter_type="clinical_guideline"
     )
 
     if results and results[0]["score"] > 0.1:
-        doc = results[0]
+        selected_docs = []
+        seen_documents = set()
+        for item in results:
+            if not isinstance(item, dict) or not item.get("content"):
+                continue
+            metadata = item.get("metadata") or {}
+            doc_key = (
+                metadata.get("filename")
+                or metadata.get("doc_id")
+                or metadata.get("disease")
+                or item.get("id")
+            )
+            if doc_key in seen_documents:
+                continue
+            seen_documents.add(doc_key)
+            selected_docs.append(item)
+            if len(selected_docs) >= max_results:
+                break
+        doc = selected_docs[0]
         metadata = doc["metadata"]
         # 只有首块包含标题与发布信息；后续块从中间截断，解析出的“标题”
         # 会是正文片段，因此只在 chunk 0 上解析
@@ -75,13 +94,12 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
             if chunk_id == 0
             else {"title": "", "organization": "", "year": ""}
         )
-        # max_results 是调用方要求的条数，全部格式化而不是只返回第一条
+        # max_results 是调用方要求的指南条数，按文档去重后逐条格式化
         answer_parts = [
             format_guideline(
                 item["content"], item["metadata"], index=index
             )
-            for index, item in enumerate(results[:max_results], 1)
-            if isinstance(item, dict) and item.get("content")
+            for index, item in enumerate(selected_docs, 1)
         ]
 
         return {
@@ -98,7 +116,9 @@ async def clinical_guideline(query: str, max_results: int = 1) -> Dict[str, Any]
             ),
             "year": parsed["year"] or metadata.get("year", "N/A"),
             "source": "向量数据库",
-            "sources": build_sources(results, max_items=max_results),
+            "sources": build_sources(
+                selected_docs, max_items=max_results
+            ),
         }
     else:
         # 未找到相关内容
