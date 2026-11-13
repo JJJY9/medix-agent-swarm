@@ -640,15 +640,20 @@ def _find_drugs(text: str, group: str) -> List[str]:
         # 酒类是行为描述而非药名：必须排除「不喝酒」「已戒酒」
         return ["酒精"] if _has_alcohol_use(text) else []
     if group == "corticosteroids":
-        # 逐条药物过滤：氢化可的松乳膏/滴眼液不算全身用药
-        segments = re.split(r"[；;\n]", text)
-        text = "；".join(
-            segment for segment in segments
-            if not any(
-                marker in segment
-                for marker in _TOPICAL_STEROID_MARKERS
-            )
-        )
+        # 逐条药物过滤：氢化可的松乳膏/滴眼液不算全身用药。
+        # 只跳过局部剂型所在的短语，不能把同段里的口服激素一起屏蔽
+        found: List[str] = []
+        for canonical, aliases in DRUG_GROUPS.get(group, ()):
+            for chunk in re.split(r"[；;，,\n、]", text):
+                if any(
+                    marker in chunk
+                    for marker in _TOPICAL_STEROID_MARKERS
+                ):
+                    continue
+                if any(_alias_matches(chunk, alias) for alias in aliases):
+                    found.append(canonical)
+                    break
+        return found
     found: List[str] = []
     for canonical, aliases in DRUG_GROUPS.get(group, ()):
         if any(_alias_matches(text, alias) for alias in aliases):

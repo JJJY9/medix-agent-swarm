@@ -10324,7 +10324,26 @@ async def family_overview(days: int = 7):
         for item in targets
         if item.get("metric")
     }
+    from memory.session_store import DAILY_ACCUMULATING_METRICS
+
     daily_totals = await asyncio.to_thread(store.metric_daily_totals)
+    today_key = now.strftime("%Y-%m-%d")
+    # 今天还没记录步数/饮水时，用最新一天的自然日合计判定达标：
+    # 昨天累计 9000 不能因为最后一条是 3000 就报“低于目标”
+    extra_daily: Dict[tuple, Dict[str, Any]] = {}
+    extra_days = {
+        str(item.get("measured_at") or "")[:10]
+        for item in latest_metrics
+        if str(item.get("metric") or "") in DAILY_ACCUMULATING_METRICS
+        and str(item.get("measured_at") or "")[:10]
+        and str(item.get("measured_at") or "")[:10] != today_key
+    }
+    for day_key in sorted(extra_days):
+        day_map = await asyncio.to_thread(
+            store.metric_daily_totals, day_key
+        )
+        for key, value in day_map.items():
+            extra_daily[key] = value
 
     def format_metric_value(item: Dict[str, Any]) -> str:
         text = f"{float(item.get('value1') or 0):g}"
@@ -10336,10 +10355,7 @@ async def family_overview(days: int = 7):
     critical_by_profile: Dict[str, Dict[str, Any]] = {}
     stale_critical_by_profile: Dict[str, List[str]] = {}
     from core.lab_values import STALE_AFTER_DAYS as METRIC_STALE_DAYS
-    from memory.session_store import (
-        DAILY_ACCUMULATING_METRICS,
-        critical_metric_alerts,
-    )
+    from memory.session_store import critical_metric_alerts
 
     for item in latest_metrics:
         profile = item.get("profile") or ""
@@ -10350,14 +10366,23 @@ async def family_overview(days: int = 7):
         target = target_map.get((profile, metric))
         daily = daily_totals.get((profile, metric))
         daily_total = daily["total"] if daily else None
+        day_total = daily_total
+        if (
+            target is not None
+            and metric in DAILY_ACCUMULATING_METRICS
+            and day_total is None
+        ):
+            extra = extra_daily.get((profile, metric))
+            if extra is not None:
+                day_total = extra["total"]
         over_target: Optional[bool] = None
         if target is not None:
             if (
                 metric in DAILY_ACCUMULATING_METRICS
-                and daily_total is not None
+                and day_total is not None
             ):
                 # 步数/饮水的目标是每日累计，不能拿最新一条记录比较
-                over_target = daily_total < float(target["value1"])
+                over_target = day_total < float(target["value1"])
             else:
                 over_target = metric_over_target(
                     metric, item.get("value1"), item.get("value2"), target
@@ -15999,6 +16024,8 @@ async def chat(request: ChatRequest):
                 "context": memory_context,
                 "session_id": session_id,
                 "patient_profile": memory_profile,
+                # 排队期间被删除的档案/会话也要按请求开始时间识别
+                "request_started": request_started,
             }
             if not request.enable_swarm:
                 process_kwargs["enable_swarm"] = False
@@ -16190,6 +16217,8 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             "session_id": session_id,
             "on_token": on_token,
             "patient_profile": memory_profile,
+            # 排队期间被删除的档案/会话也要按请求开始时间识别
+            "request_started": request_started,
         }
         if not request.enable_swarm:
             stream_kwargs["enable_swarm"] = False

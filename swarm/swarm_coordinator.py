@@ -359,6 +359,7 @@ class SwarmCoordinator:
         on_token: Optional[Callable[[str], None]] = None,
         enable_swarm: Optional[bool] = None,
         patient_profile: str = "",
+        request_started: str = "",
     ) -> Dict[str, Any]:
         """对外入口：异常路径补挂已消耗的用量。
 
@@ -377,6 +378,7 @@ class SwarmCoordinator:
                 enable_swarm=enable_swarm,
                 patient_profile=patient_profile,
                 usage_state=usage_state,
+                request_started=request_started,
             )
         except (asyncio.CancelledError, LLMError) as exc:
             if getattr(exc, "usage", None) or getattr(exc, "llm_calls", 0):
@@ -405,6 +407,7 @@ class SwarmCoordinator:
         enable_swarm: Optional[bool] = None,
         patient_profile: str = "",
         usage_state: Optional[Dict[str, Any]] = None,
+        request_started: str = "",
     ) -> Dict[str, Any]:
         """
         处理用户问题
@@ -465,15 +468,12 @@ class SwarmCoordinator:
         # 确定性用药安全预检：过敏史、重复用药与常见相互作用
         medication_safety = check_medication_safety(question, context)
 
-        # 同一会话编号在本进程内被删除后再次发起会诊：先解除墓碑，
-        # 否则本轮问答会被 save_exchange / 短期记忆静默丢弃。
-        # 会诊由全局锁串行，删除发生在本次开始之后的情况仍会重新登记墓碑。
-        await asyncio.to_thread(
-            self.session_store.revive_session, session_id
+        # 不再每轮无条件解除删除墓碑：排队期间被删除的会话/档案
+        # 必须保持删除状态；显式恢复走导入或重新创建会话的入口。
+        started_text = (
+            str(request_started or "").strip()[:40]
+            or start_time.isoformat(timespec="seconds")
         )
-        self.short_term_memory.clear_tombstone(session_id)
-
-        started_text = start_time.isoformat(timespec="seconds")
 
         async def _profile_deleted_midflight() -> bool:
             """档案在本次会诊开始后被删除：不能再写回其命名空间或绑定。"""
@@ -678,6 +678,7 @@ class SwarmCoordinator:
                 patient_context=patient_context,
                 memory_scope=memory_scope,
                 patient_profile=patient_profile,
+                request_started=started_text,
             )
             final_answer = result.get('answer', '')
             if usage_state is not None:
@@ -864,6 +865,7 @@ class SwarmCoordinator:
         patient_context: Optional[Dict[str, Any]] = None,
         memory_scope: str = "",
         patient_profile: str = "",
+        request_started: str = "",
     ) -> Dict[str, Any]:
         """包装 Swarm 流程：取消或模型失败时把已消耗的用量挂到异常上。
 
@@ -890,6 +892,7 @@ class SwarmCoordinator:
                 memory_scope=memory_scope,
                 patient_profile=patient_profile,
                 synthesis_usage=synthesis_usage,
+                request_started=request_started,
             )
         except (asyncio.CancelledError, LLMError) as exc:
             usage, calls = self._cancelled_usage_snapshot(
@@ -947,6 +950,7 @@ class SwarmCoordinator:
         memory_scope: str = "",
         patient_profile: str = "",
         synthesis_usage: Optional[Dict[str, int]] = None,
+        request_started: str = "",
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -1037,17 +1041,18 @@ class SwarmCoordinator:
         had_contributions = bool(shared_context.get_contributions())
         if synthesis_usage is None:
             synthesis_usage = {}
-        final_answer = await self.lead_agent.synthesize_results(
+        raw_answer = await self.lead_agent.synthesize_results(
             question=question,
             shared_context=shared_context,
             timeout_occurred=timeout_occurred,
             on_token=on_token,
             usage_out=synthesis_usage
         )
+        # 约束兜底会在道歉前插入「⚠️ 重要提醒」，必须在改写前判定降级
+        degraded = is_degraded_answer(raw_answer)
         final_answer = self._enforce_final_constraints(
-            final_answer, question
+            raw_answer, question
         )
-        degraded = is_degraded_answer(final_answer)
         if degraded:
             logger.warning(
                 "Swarm produced a degraded answer, skip long-term memory "
@@ -1081,7 +1086,10 @@ class SwarmCoordinator:
                 resolved = patient_profile
             if resolved and resolved not in names:
                 names.append(resolved)
-            started = start_time.isoformat(timespec="seconds")
+            started = (
+                str(request_started or "").strip()[:40]
+                or start_time.isoformat(timespec="seconds")
+            )
             for name in names:
                 try:
                     if await asyncio.to_thread(

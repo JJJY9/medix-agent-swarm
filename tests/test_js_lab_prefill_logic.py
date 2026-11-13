@@ -44,6 +44,56 @@ assert.strictEqual(core.findLabItem(items, 'albumin').item, '白蛋白');
 assert.strictEqual(core.findLabItem(items, 'bilirubin').item, '总胆红素');
 assert.strictEqual(core.findLabItem(items, 'urea').item, '尿素');
 assert.strictEqual(core.findLabItem(items, 'ast').item, '谷草转氨酶');
+
+// 血小板体积分布宽度（PDW）不能被当成血小板计数
+const pdwItems = [
+  { item: '血小板体积分布宽度', value: 16.8, unit: 'fL',
+    tested_at: '2026-11-01T08:00' },
+  { item: '血小板计数', value: 220, unit: '×10⁹/L',
+    tested_at: '2026-11-01T08:00' },
+  { item: '血小板体积分布宽度(PDW)', value: 16.8, unit: 'fL' },
+];
+assert.strictEqual(
+  core.findLabItem(pdwItems, 'platelets').item, '血小板计数'
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: '血小板体积分布宽度', value: 16.8, unit: 'fL' }],
+    'platelets'
+  ),
+  null
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: '血小板体积分布宽度(PDW)', value: 16.8, unit: 'fL' }],
+    'platelets'
+  ),
+  null
+);
+
+// 单位换算：µkat/L → U/L；/µL、K/µL → ×10⁹/L
+assert.strictEqual(
+  core.labAstAltUL({ value: 0.58, unit: 'µkat/L' }).value.toFixed(2),
+  '34.80'
+);
+assert.strictEqual(
+  core.labAstAltUL({ value: 35, unit: 'U/L' }).value, 35
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 220000, unit: '/µL' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 220, unit: 'K/µL' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 220, unit: '×10⁹/L' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 22, unit: '万/µL' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 16.8, unit: 'fL' }), null
+);
 assert.strictEqual(core.findLabItem(items, 'alt'), null);
 assert.strictEqual(
   core.findLabItem(items, 'creatinine').item, '肌酐'

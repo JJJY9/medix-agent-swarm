@@ -759,12 +759,15 @@ const AGENT_NAMES = {
 };
 
 const initialSessionFromUrl = new URLSearchParams(window.location.search).get('session');
-let sessionId = initialSessionFromUrl || safeStorageGet('medix.session') || null;
+let sessionId = initialSessionFromUrl
+  || safeSessionGet('medix.session.tab')
+  || safeStorageGet('medix.session')
+  || null;
 // 当前会话已从服务端渲染的最大消息 ID；中止对账用它区分“旧问答”和
 // “本轮新落库的问答”，仅靠问题文本会在重复提问时误判
 let lastServerMessageId = 0;
 if (initialSessionFromUrl) {
-  safeStorageSet('medix.session', initialSessionFromUrl);
+  persistSessionId(initialSessionFromUrl);
 }
 let busy = false;
 let activeController = null;
@@ -3173,7 +3176,7 @@ async function ensureSession(signal) {
     throw new Error(data.detail || `新建会话失败（${res.status}）`);
   }
   sessionId = data.session_id;
-  safeStorageSet('medix.session', sessionId);
+  persistSessionId(sessionId);
   setSessionUrl(sessionId);
   els.readout.session.textContent = shortSession(sessionId);
   return sessionId;
@@ -3196,7 +3199,7 @@ async function startNewSession() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     sessionId = data.session_id;
-    safeStorageSet('medix.session', sessionId);
+    persistSessionId(sessionId);
     setSessionUrl(sessionId);
     lastServerMessageId = 0;
 
@@ -5002,7 +5005,7 @@ async function openSession(id) {
     if (seq !== openSessionSeq || busy) return false;
 
     sessionId = id;
-    safeStorageSet('medix.session', id);
+    persistSessionId(id);
     setSessionUrl(id);
     closeHistory();
     resetRail();
@@ -5176,7 +5179,7 @@ function clearCurrentSession() {
   openSessionSeq += 1;
   sessionId = null;
   lastServerMessageId = 0;
-  safeStorageRemove('medix.session');
+  clearPersistedSessionId();
   setSessionUrl(null);
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = false;
@@ -6314,6 +6317,20 @@ function safeSessionSet(key, value) {
   } catch {
     return false;
   }
+}
+
+function persistSessionId(id) {
+  if (!id) return;
+  // 标签页内优先使用 sessionStorage：localStorage 被所有标签页共享，
+  // 一个标签页新建/切换会话后，其它没有 ?session= 的标签页刷新
+  // 会被带去别的会话和患者档案
+  safeSessionSet('medix.session.tab', id);
+  safeStorageSet('medix.session', id);
+}
+
+function clearPersistedSessionId() {
+  safeSessionRemove('medix.session.tab');
+  safeStorageRemove('medix.session');
 }
 
 function safeSessionRemove(key) {
@@ -18354,6 +18371,8 @@ let currentCalcAction = null;
 const {
   findLabItem,
   labNumber,
+  labAstAltUL,
+  labPlateletCount,
   labCreatinineMgDl,
   labBilirubinMgDl,
   labBilirubinUmolL,
@@ -18432,10 +18451,20 @@ async function prefillFib4FromLab() {
     const ast = findLabItem(items, 'ast');
     const alt = findLabItem(items, 'alt');
     const platelets = findLabItem(items, 'platelets');
+    // 按化验单位换算：µkat/L → U/L，/µL、K/µL → ×10⁹/L
+    const astValue = labAstAltUL(ast);
+    const altValue = labAstAltUL(alt);
+    const plateletValue = labPlateletCount(platelets);
     const missing = [];
-    if (labNumber(ast) === null) missing.push('AST');
-    if (labNumber(alt) === null) missing.push('ALT');
-    if (labNumber(platelets) === null) missing.push('血小板');
+    if (astValue === null) {
+      missing.push(ast ? 'AST（单位无法识别）' : 'AST');
+    }
+    if (altValue === null) {
+      missing.push(alt ? 'ALT（单位无法识别）' : 'ALT');
+    }
+    if (plateletValue === null) {
+      missing.push(platelets ? '血小板（单位无法识别）' : '血小板');
+    }
     if (missing.length) {
       setCalcStatus(
         `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
@@ -18444,14 +18473,19 @@ async function prefillFib4FromLab() {
       return;
     }
     document.getElementById('calc-fib4-ast').value =
-      String(Math.round(labNumber(ast)));
+      String(Math.round(astValue.value));
     document.getElementById('calc-fib4-alt').value =
-      String(Math.round(labNumber(alt)));
+      String(Math.round(altValue.value));
     document.getElementById('calc-fib4-platelets').value =
-      String(Math.round(labNumber(platelets)));
+      String(Math.round(plateletValue.value));
+    const converted = [astValue, altValue, plateletValue]
+      .some((item) => item.converted);
     setCalcStatus(
-      `已带入 AST ${labNumber(ast)}、ALT ${labNumber(alt)}、`
-      + `血小板 ${labNumber(platelets)}（最近一次化验）。`
+      `已带入 AST ${Math.round(astValue.value)} U/L、`
+      + `ALT ${Math.round(altValue.value)} U/L、`
+      + `血小板 ${Math.round(plateletValue.value)} ×10⁹/L`
+      + (converted ? '，已按化验单位换算。' : '。')
+      + '（最近一次化验）'
     );
   } catch (err) {
     setCalcStatus(`带入化验失败：${err.message || err}`, true);
@@ -18506,9 +18540,15 @@ async function prefillApriFromLab() {
     const items = await loadLatestLabItems();
     const ast = findLabItem(items, 'ast');
     const platelets = findLabItem(items, 'platelets');
+    const astValue = labAstAltUL(ast);
+    const plateletValue = labPlateletCount(platelets);
     const missing = [];
-    if (labNumber(ast) === null) missing.push('AST');
-    if (labNumber(platelets) === null) missing.push('血小板');
+    if (astValue === null) {
+      missing.push(ast ? 'AST（单位无法识别）' : 'AST');
+    }
+    if (plateletValue === null) {
+      missing.push(platelets ? '血小板（单位无法识别）' : '血小板');
+    }
     if (missing.length) {
       setCalcStatus(
         `缺少化验项目：${missing.join('、')}，请先登记后再带入。`,
@@ -18516,9 +18556,9 @@ async function prefillApriFromLab() {
       );
       return;
     }
-    els.calcApriAst.value = String(Math.round(labNumber(ast)));
+    els.calcApriAst.value = String(Math.round(astValue.value));
     els.calcApriPlatelets.value = String(
-      Math.round(labNumber(platelets))
+      Math.round(plateletValue.value)
     );
     const refHigh = Number(ast && ast.ref_high);
     let ulnText = '';
@@ -18533,8 +18573,10 @@ async function prefillApriFromLab() {
         + '请按化验单调整';
     }
     setCalcStatus(
-      `已带入 AST ${Math.round(labNumber(ast))} U/L、`
-      + `血小板 ${Math.round(labNumber(platelets))} ×10⁹/L`
+      `已带入 AST ${Math.round(astValue.value)} U/L、`
+      + `血小板 ${Math.round(plateletValue.value)} ×10⁹/L`
+      + (astValue.converted || plateletValue.converted
+        ? '，已按化验单位换算' : '')
       + ulnText + '（最近一次化验）。'
     );
   } catch (err) {
@@ -22730,10 +22772,27 @@ function activateServiceWorkerUpdate() {
   const waitForInstalled = () => {
     const worker = registration.installing;
     if (!worker) {
-      // 浏览器没有再安装新 worker：普通刷新只会拿回旧缓存外壳
+      // 浏览器没有再安装新 worker：普通刷新只会拿回旧缓存外壳。
+      // 允许用户关闭横幅（不能让它永久占位），30 秒后再自动检查一次
       showUpdateBanner(
         '新版本尚未准备好。请稍后重试，或关闭本站所有标签页后重新打开。'
       );
+      const dismiss = document.getElementById('sw-refresh');
+      if (dismiss) {
+        const fresh = dismiss.cloneNode(true);
+        fresh.textContent = '知道了';
+        dismiss.replaceWith(fresh);
+        fresh.addEventListener('click', (event) => {
+          event.preventDefault();
+          hideUpdateBanner();
+        });
+      }
+      setTimeout(() => {
+        if (!swRegistration) return;
+        swRegistration.update().then(() => {
+          if (swRegistration.waiting) showUpdateBanner();
+        }).catch(() => {});
+      }, 30000);
       return;
     }
     worker.addEventListener('statechange', () => {
@@ -22794,6 +22853,17 @@ function requestServiceWorkerUpdate() {
     });
 }
 
+function hideUpdateBanner() {
+  swUpdateReady = false;
+  const block = els.banner.querySelector('.banner-update');
+  if (block) block.remove();
+  if (document.getElementById('sw-refresh')) {
+    els.banner.innerHTML = '';
+    bannerMessageHtml = '';
+  }
+  els.banner.hidden = true;
+}
+
 function showUpdateBanner(message) {
   swUpdateReady = true;
   const text = message
@@ -22825,6 +22895,16 @@ if ('serviceWorker' in navigator) {
     // 首次安装也会触发 controllerchange，只有替换旧外壳时才提示刷新
     if (swHadController) showUpdateBanner();
     swHadController = Boolean(navigator.serviceWorker.controller);
+  });
+
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const data = event.data || {};
+    if (data.type === 'medix-open-reminders') {
+      // 通知点击只切换视图，不重新加载页面，避免打断流式会诊
+      if (typeof openReminders === 'function') {
+        void openReminders();
+      }
+    }
   });
 
   let swRegisterAttempts = 0;
