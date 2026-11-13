@@ -272,3 +272,19 @@ def test_non_finite_numbers_in_payload_never_crash_validation(
         assert "Infinity" not in response.text, (url, response.text)
         # 回显内容必须是标准 JSON，可以被严格模式重新编码
         json.dumps(response.json(), allow_nan=False)
+
+
+def test_deeply_nested_payload_returns_422(client_and_store):
+    """近千层嵌套曾让校验递归爆栈，把请求变成 500。"""
+    client, _store = client_and_store
+
+    for depth in (100, 990, 1500, 2000):
+        body = '{"name":"x","context":' + "[" * depth + "]" * depth + "}"
+        response = client.post(
+            "/api/profiles",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 422, (depth, response.text[:200])
+        assert response.json()["detail"], depth
+        json.dumps(response.json(), allow_nan=False)
