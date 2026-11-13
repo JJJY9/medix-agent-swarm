@@ -3887,8 +3887,9 @@ class SessionStore:
         table: str,
         columns: Tuple[str, ...],
         values: Tuple[Any, ...],
-        state: Dict[tuple, List[int]],
+        state: Dict[tuple, set],
         raw_id: int = 0,
+        reserved_ids: Optional[set] = None,
     ) -> Optional[int]:
         """按稳定身份配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -3896,9 +3897,10 @@ class SessionStore:
         本地编辑（改剂量/停用/改期/改状态等）不会让旧记录复活。
 
         配对顺序：先尝试备份行自带主键（同一条记录仍在库里时直接复用，
-        删除某条后恢复能真正还原它）；否则在同一身份尚未被本批认领的
-        候选行里按 id 升序取一条。state 缓存每个身份的候选 id 与已认领
-        集合：重复导入保持幂等，同身份的多条真实记录也能全部保留。
+        删除某条后恢复能真正还原它）；否则在同一身份尚未被本批认领、
+        且不属于本批其他 raw id 的候选行里按 id 升序取一条。
+        reserved_ids 是本批所有 raw id：这类 id 可能属于稍后才处理的
+        备份行（或同号但不同身份的其他记录），提前抢占会让双胞胎错配。
         """
         identity = (table,) + tuple(values)
         where = " AND ".join(f"{column} = ?" for column in columns)
@@ -3918,10 +3920,12 @@ class SessionStore:
                 claimed.discard(int(row["id"]))
                 state[identity] = claimed
                 return int(row["id"])
-        if not claimed:
+        reserved = reserved_ids or set()
+        usable = [item for item in claimed if item not in reserved]
+        if not usable:
             state[identity] = claimed
             return None
-        matched = min(claimed)
+        matched = min(usable)
         claimed.discard(matched)
         state[identity] = claimed
         return matched
@@ -3941,6 +3945,19 @@ class SessionStore:
         ]
         rows.sort(key=lambda item: _safe_db_id(item.get("id")))
         return rows
+
+    @staticmethod
+    def _import_raw_ids(raw_items: Any) -> set:
+        """本批备份行的主键集合；这些位置留给对应的备份行配对。"""
+        if not isinstance(raw_items, list):
+            return set()
+        ids = {
+            _safe_db_id(item.get("id"))
+            for item in raw_items
+            if isinstance(item, dict)
+        }
+        ids.discard(0)
+        return ids
 
     def import_data(
         self, data: Any, max_sessions: int = 100000
@@ -4350,6 +4367,7 @@ class SessionStore:
 
             symptoms_imported = 0
             symptom_identity_claims: Dict[tuple, set] = {}
+            symptom_raw_ids = self._import_raw_ids(raw_symptoms)
             if isinstance(raw_symptoms, list):
                 for raw in self._import_rows(
                     raw_symptoms, IMPORT_LIST_LIMITS["symptoms"]
@@ -4380,6 +4398,7 @@ class SessionStore:
                             ),
                             symptom_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=symptom_raw_ids,
                         )
                     else:
                         exists = self._conn.execute(
@@ -4420,6 +4439,7 @@ class SessionStore:
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
             medication_identity_claims: Dict[tuple, set] = {}
+            medication_raw_ids = self._import_raw_ids(raw_medications)
             if isinstance(raw_medications, list):
                 for raw in self._import_rows(
                     raw_medications, IMPORT_LIST_LIMITS["medications"]
@@ -4455,6 +4475,7 @@ class SessionStore:
                             ),
                             medication_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=medication_raw_ids,
                         )
                         existing = (
                             {"id": existing_id}
@@ -4693,6 +4714,7 @@ class SessionStore:
             vaccinations_imported = 0
             raw_vaccination_id_map: Dict[int, int] = {}
             vaccination_identity_claims: Dict[tuple, set] = {}
+            vaccination_raw_ids = self._import_raw_ids(raw_vaccinations)
             if isinstance(raw_vaccinations, list):
                 for raw in self._import_rows(
                     raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"]
@@ -4723,6 +4745,7 @@ class SessionStore:
                             ),
                             vaccination_identity_claims,
                             raw_id=raw_id,
+                            reserved_ids=vaccination_raw_ids,
                         )
                         duplicate = (
                             {"id": vaccination_id}
@@ -4775,6 +4798,7 @@ class SessionStore:
             appointments_imported = 0
             raw_appointment_id_map: Dict[int, int] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
+            appointment_raw_ids = self._import_raw_ids(raw_appointments)
             if isinstance(raw_appointments, list):
                 for raw in self._import_rows(
                     raw_appointments, IMPORT_LIST_LIMITS["appointments"]
@@ -4807,6 +4831,7 @@ class SessionStore:
                             ),
                             appointment_identity_claims,
                             raw_id=raw_id,
+                            reserved_ids=appointment_raw_ids,
                         )
                         duplicate = (
                             {"id": appointment_id}
@@ -4945,6 +4970,7 @@ class SessionStore:
 
             allergies_imported = 0
             allergy_identity_claims: Dict[tuple, set] = {}
+            allergy_raw_ids = self._import_raw_ids(raw_allergies)
             if isinstance(raw_allergies, list):
                 for raw in self._import_rows(
                     raw_allergies, IMPORT_LIST_LIMITS["allergies"]
@@ -4979,6 +5005,7 @@ class SessionStore:
                             ),
                             allergy_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=allergy_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5023,6 +5050,7 @@ class SessionStore:
 
             care_items_imported = 0
             care_identity_claims: Dict[tuple, set] = {}
+            care_raw_ids = self._import_raw_ids(raw_care_items)
             if isinstance(raw_care_items, list):
                 for raw in self._import_rows(
                     raw_care_items, IMPORT_LIST_LIMITS["care_items"]
@@ -5053,6 +5081,7 @@ class SessionStore:
                             ),
                             care_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=care_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5232,6 +5261,7 @@ class SessionStore:
 
             conditions_imported = 0
             condition_identity_claims: Dict[tuple, set] = {}
+            condition_raw_ids = self._import_raw_ids(raw_conditions)
             if isinstance(raw_conditions, list):
                 for raw in self._import_rows(
                     raw_conditions, IMPORT_LIST_LIMITS["conditions"]
@@ -5264,6 +5294,7 @@ class SessionStore:
                             ),
                             condition_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=condition_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}

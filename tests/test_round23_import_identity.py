@@ -184,17 +184,20 @@ def test_restore_after_all_editable_fields_changed(store):
 
 def test_restore_recreates_deleted_twin_without_duplicating(store):
     """同秒双胞胎删掉一条后恢复：被删的还原，存活的不复制。"""
-    first = store.add_medication("妈妈", "维生素D", "1粒", "每日一次")
-    store.add_medication("妈妈", "维生素D", "1粒", "每日一次")
+    first = store.add_medication("妈妈", "维生素D", "5mg", "每日一次")
+    store.add_medication("妈妈", "维生素D", "10mg", "每日一次")
     backup = store.export_data()
 
     assert store.delete_medication(first["id"]) is True
 
     result = store.import_data(backup)
 
-    # 主键复用让仍存在的那条不重复，缺失的主键行被还原
+    # 主键复用让仍存在的那条不重复，缺失的主键行按原内容还原
     assert result["medications"] == 1
-    assert len(store.list_medications("妈妈")) == 2
+    doses = sorted(
+        item["dose"] for item in store.list_medications("妈妈")
+    )
+    assert doses == ["10mg", "5mg"]
 
     again = store.import_data(backup)
     assert again["medications"] == 0
