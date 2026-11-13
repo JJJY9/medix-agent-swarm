@@ -308,3 +308,28 @@ def test_profile_switch_detaches_session():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "function detachSessionForProfileChange()" in app_js
     assert app_js.count("detachSessionForProfileChange();") >= 2
+
+
+def test_legacy_owner_marker_is_migrated(tmp_path):
+    from core.storage_paths import attachment_dir_for_db
+
+    legacy = tmp_path / "attachments"
+    legacy.mkdir()
+    (legacy / ".pdf").write_bytes(b"x")
+    # #706 及更早版本把标记写在附件目录内部
+    (legacy / ".medix-owner").write_text(
+        "family.db", encoding="utf-8"
+    )
+    (legacy / "abc123.pdf").write_bytes(b"x")
+
+    # 先打开默认库：不能接管已被自定义库认领的目录
+    default_dir = attachment_dir_for_db(tmp_path / "sessions.db")
+    assert default_dir != legacy
+    # 旧标记迁移到父目录，且不会在附件目录内残留
+    assert (tmp_path / ".medix-attachments-owner").read_text(
+        encoding="utf-8"
+    ) == "family.db"
+    assert not (legacy / ".medix-owner").exists()
+
+    # 自定义库仍使用共享目录
+    assert attachment_dir_for_db(tmp_path / "family.db") == legacy
