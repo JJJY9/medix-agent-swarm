@@ -652,7 +652,7 @@ def _import_payload_problems(
             if meta_length > MAX_IMPORT_MESSAGE_CHARS:
                 problems.append("单条消息的元数据过大。")
                 continue
-            total_message_chars += len(content)
+            total_message_chars += len(content) + meta_length // 4
             if total_message_chars > MAX_IMPORT_TOTAL_CHARS:
                 problems.append("备份中的消息总量过大。")
                 return problems
@@ -860,7 +860,8 @@ def medication_dose_units(dose: Any, stock_unit: Any) -> float:
         quantity = float(match.group(1))
     except (TypeError, ValueError, OverflowError):
         return 1.0
-    if not (1 <= quantity <= 100):
+    # 半片/四分之一片也是合法剂量，不能回退成整片扣库存
+    if not (0 < quantity <= 100):
         return 1.0
     dose_unit = match.group(2).lower()
     dose_unit = _DOSE_UNIT_ALIASES.get(dose_unit, dose_unit)
@@ -898,7 +899,9 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
             return 24 / count
     weekday_list = re.search(
         r"每(?:周|星期|礼拜)\s*"
-        r"([一二三四五六日天](?:[\s、，,和及]+[一二三四五六日天])*)",
+        # 「每周三次」是频次不是星期三：星期列表后不能紧跟「次」
+        r"([一二三四五六日天](?:[\s、，,和及]+[一二三四五六日天])*)"
+        r"(?!\s*次)",
         text,
     )
     if weekday_list:
@@ -941,9 +944,13 @@ def parse_frequency_doses_per_day(frequency: Any) -> Optional[float]:
 
 
 def expected_doses_for_period(
-    frequency: str, created_at: str, now: datetime, days: int = 7
+    frequency: str,
+    created_at: str,
+    now: datetime,
+    days: int = 7,
+    stopped_at: str = "",
 ) -> Optional[int]:
-    """按频次、用药开始时间与统计天数估算应服次数。"""
+    """按频次、用药开始与停止时间、统计天数估算应服次数。"""
     per_day = parse_frequency_doses_per_day(frequency)
     if not per_day:
         return None
@@ -953,17 +960,30 @@ def expected_doses_for_period(
     except ValueError:
         created = now.date()
     start = max(created, (now - timedelta(days=days - 1)).date())
-    day_count = (now.date() - start).days + 1
+    end_date = now.date()
+    stop_text = str(stopped_at or "").strip()[:19]
+    if stop_text:
+        try:
+            stop_date = datetime.fromisoformat(stop_text).date()
+        except ValueError:
+            stop_date = None
+        if stop_date is not None and stop_date < end_date:
+            # 停药后不再产生应服次数
+            end_date = stop_date
+    day_count = (end_date - start).days + 1
     if day_count <= 0:
         return None
     return round(per_day * day_count)
 
 
 def _expected_week_doses(
-    frequency: str, created_at: str, now: datetime
+    frequency: str, created_at: str, now: datetime,
+    stopped_at: str = "",
 ) -> Optional[int]:
-    """按频次与用药开始时间估算近 7 天应服次数。"""
-    return expected_doses_for_period(frequency, created_at, now, 7)
+    """按频次、开始与停止时间估算近 7 天应服次数。"""
+    return expected_doses_for_period(
+        frequency, created_at, now, 7, stopped_at
+    )
 
 
 def _normalize_medication_date(value: Any, label: str) -> str:
@@ -2036,9 +2056,9 @@ def _validate_export_payload(payload: Dict[str, Any]) -> None:
                     f"存在超过 {MAX_BACKUP_MESSAGE_CHARS} 字符的消息元数据，"
                     "无法导出为可恢复备份。"
                 )
-            # 元数据只做单条上限，不计入总量：真实会诊元数据可达正文
-            # 数倍，计入后长期用户的库会既无法导出也无法恢复
-            total_chars += length
+            # 元数据可达正文数倍，全量计入会让长期用户无法导出；
+            # 按 1/4 权重计入既保留总量上限，又不误伤正常备份
+            total_chars += length + meta_length // 4
     if total_chars > MAX_BACKUP_TOTAL_CHARS:
         raise ValueError(
             "会话消息总量超过可导入上限，无法导出为可恢复备份。"
@@ -2734,17 +2754,44 @@ class SessionStore:
                     (profile, session_id),
                 )
 
+    def _remember_deleted_locked(self, session_ids: Any) -> None:
+        """登记删除墓碑（内存 + 持久化表）；调用方持有写事务。
+
+        单条删除、批量删除与维护清理共用，避免只有单条路径写持久化表。
+        """
+        now = self._now()
+        for raw in session_ids or []:
+            session_id = str(raw or "").strip()
+            if not session_id:
+                continue
+            self._deleted_sessions[session_id] = None
+            self._conn.execute(
+                "INSERT OR REPLACE INTO deleted_sessions"
+                "(session_id, deleted_at) VALUES (?, ?)",
+                (session_id, now),
+            )
+        while len(self._deleted_sessions) > self._max_deleted_sessions:
+            self._deleted_sessions.pop(
+                next(iter(self._deleted_sessions))
+            )
+
+    def _existing_ids_locked(self, table: str) -> set:
+        """表内当前全部主键的快照（导入配对区分“导入前已存在”用）。"""
+        return {
+            int(row["id"] if "id" in row.keys() else row[0])
+            for row in self._conn.execute(f"SELECT id FROM {table}")
+        }
+
     def mark_session_deleted(self, session_id: str) -> None:
         """登记已删除会话，阻止仍在进行的会诊把数据写回。"""
         session_id = str(session_id or "").strip()
         if not session_id:
             return
-        with self._lock:
-            self._deleted_sessions[session_id] = None
-            while len(self._deleted_sessions) > self._max_deleted_sessions:
-                self._deleted_sessions.pop(
-                    next(iter(self._deleted_sessions))
-                )
+        with self._lock, self._conn:
+            self._remember_deleted_locked([session_id])
+        return
+        with self._lock, self._conn:
+            self._remember_deleted_locked([session_id])
 
     def is_session_deleted(self, session_id: str) -> bool:
         session_id = str(session_id or "").strip()
@@ -2883,6 +2930,19 @@ class SessionStore:
             {"name": row["profile"], "count": int(row["count"])}
             for row in rows
         ]
+
+    def profile_tombstone_exists(self, profile: str) -> bool:
+        """该档案名是否留有删除墓碑（无论删除时间）。"""
+        key = _profile_deletion_key(profile)
+        if not key:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM profile_deletions"
+                " WHERE profile_hash = ? LIMIT 1",
+                (key,),
+            ).fetchone()
+        return row is not None
 
     def profile_deleted_since(self, profile: str, since: str) -> bool:
         """档案是否在 since（ISO 时间）之后被删除。
@@ -4380,6 +4440,7 @@ class SessionStore:
         raw_id: int = 0,
         created_at_value: Any = None,
         fallback_where: Optional[Tuple[str, Tuple[Any, ...]]] = None,
+        pre_existing_ids: Optional[set] = None,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -4426,9 +4487,19 @@ class SessionStore:
             ).fetchone()
             if row is not None:
                 candidate = int(row["id"])
+                # 只接受「本次导入开始前已存在」的行：本次导入刚插入的
+                # 同秒同内容行不能被当成改挂记录吞掉
+                if pre_existing_ids is not None and (
+                    candidate not in pre_existing_ids
+                ):
+                    return None
                 if candidate in moved:
                     return None
                 moved.add(candidate)
+                # 同一候选行不能再被兜底配对消费
+                if candidate in claimed:
+                    claimed.discard(candidate)
+                    state[identity] = claimed
                 return candidate
         if content_where:
             rows = self._conn.execute(
@@ -4832,6 +4903,9 @@ class SessionStore:
             imported_metric_counts: Dict[tuple, int] = {}
             metric_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_metrics, list):
+                metric_pre_ids = self._existing_ids_locked(
+                    "health_metrics"
+                )
                 for raw in self._import_rows(
                     "health_metrics", raw_metrics,
                     IMPORT_LIST_LIMITS["health_metrics"],
@@ -4904,6 +4978,7 @@ class SessionStore:
                             metric_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=metric_pre_ids,
                         )
                         if existing_metric_id is not None:
                             # 配对成功的行也要计入内容计数：
@@ -5017,6 +5092,7 @@ class SessionStore:
             symptoms_imported = 0
             symptom_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_symptoms, list):
+                symptom_pre_ids = self._existing_ids_locked("symptoms")
                 for raw in self._import_rows(
                     "symptoms", raw_symptoms,
                     IMPORT_LIST_LIMITS["symptoms"],
@@ -5067,6 +5143,7 @@ class SessionStore:
                             symptom_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=symptom_pre_ids,
                         )
                     else:
                         exists = self._conn.execute(
@@ -5108,6 +5185,9 @@ class SessionStore:
             medication_id_map: Dict[int, Dict[str, Any]] = {}
             medication_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_medications, list):
+                medication_pre_ids = self._existing_ids_locked(
+                    "medications"
+                )
                 for raw in self._import_rows(
                     "medications", raw_medications,
                     IMPORT_LIST_LIMITS["medications"],
@@ -5167,6 +5247,7 @@ class SessionStore:
                             medication_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=medication_pre_ids,
                         )
                         existing = (
                             {"id": existing_id}
@@ -5406,6 +5487,9 @@ class SessionStore:
             raw_vaccination_id_map: Dict[int, int] = {}
             vaccination_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_vaccinations, list):
+                vaccination_pre_ids = self._existing_ids_locked(
+                    "vaccinations"
+                )
                 for raw in self._import_rows(
                     "vaccinations", raw_vaccinations,
                     IMPORT_LIST_LIMITS["vaccinations"],
@@ -5462,6 +5546,7 @@ class SessionStore:
                             vaccination_identity_claims,
                             raw_id=raw_id,
                             created_at_value=created_key,
+                            pre_existing_ids=vaccination_pre_ids,
                         )
                         duplicate = (
                             {"id": vaccination_id}
@@ -5515,6 +5600,9 @@ class SessionStore:
             raw_appointment_id_map: Dict[int, int] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
+                appointment_pre_ids = self._existing_ids_locked(
+                    "appointments"
+                )
                 for raw in self._import_rows(
                     "appointments", raw_appointments,
                     IMPORT_LIST_LIMITS["appointments"],
@@ -5576,6 +5664,7 @@ class SessionStore:
                             appointment_identity_claims,
                             raw_id=raw_id,
                             created_at_value=created_key,
+                            pre_existing_ids=appointment_pre_ids,
                         )
                         duplicate = (
                             {"id": appointment_id}
@@ -5633,6 +5722,7 @@ class SessionStore:
             imported_lab_counts: Dict[tuple, int] = {}
             lab_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_lab_results, list):
+                lab_pre_ids = self._existing_ids_locked("lab_results")
                 for raw in self._import_rows(
                     "lab_results", raw_lab_results,
                     IMPORT_LIST_LIMITS["lab_results"],
@@ -5715,6 +5805,7 @@ class SessionStore:
                             lab_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=lab_pre_ids,
                         )
                         if existing_lab_id is not None:
                             continue
@@ -5795,6 +5886,7 @@ class SessionStore:
             allergies_imported = 0
             allergy_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_allergies, list):
+                allergy_pre_ids = self._existing_ids_locked("allergies")
                 for raw in self._import_rows(
                     "allergies", raw_allergies,
                     IMPORT_LIST_LIMITS["allergies"],
@@ -5850,6 +5942,7 @@ class SessionStore:
                             allergy_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=allergy_pre_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5895,6 +5988,7 @@ class SessionStore:
             care_items_imported = 0
             care_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_care_items, list):
+                care_pre_ids = self._existing_ids_locked("care_items")
                 for raw in self._import_rows(
                     "care_items", raw_care_items,
                     IMPORT_LIST_LIMITS["care_items"],
@@ -5944,6 +6038,7 @@ class SessionStore:
                             care_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=care_pre_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5993,6 +6088,7 @@ class SessionStore:
             visit_link_updates: List[Tuple[int, int, int]] = []
             visit_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_visit_records, list):
+                visit_pre_ids = self._existing_ids_locked("visit_records")
                 for raw in self._import_rows(
                     "visit_records", raw_visit_records,
                     IMPORT_LIST_LIMITS["visit_records"],
@@ -6071,6 +6167,7 @@ class SessionStore:
                             visit_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=visit_pre_ids,
                         )
                         duplicate = (
                             {"id": duplicate_id}
@@ -6141,6 +6238,7 @@ class SessionStore:
             conditions_imported = 0
             condition_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_conditions, list):
+                condition_pre_ids = self._existing_ids_locked("conditions")
                 for raw in self._import_rows(
                     "conditions", raw_conditions,
                     IMPORT_LIST_LIMITS["conditions"],
@@ -6192,6 +6290,7 @@ class SessionStore:
                             condition_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
+                            pre_existing_ids=condition_pre_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -6250,6 +6349,17 @@ class SessionStore:
                 for raw in self._import_rows(
                     "reminders", raw_reminders,
                     IMPORT_LIST_LIMITS["reminders"],
+                    match_probe=lambda raw: _import_probe_spec(
+                        raw,
+                        (
+                            "profile", "created_at", "due_at",
+                        ),
+                        lambda r, c: (
+                            _normalize_profile_name(r.get("profile")),
+                            c,
+                            str(r.get("due_at") or ""),
+                        ),
+                    ),
                 ):
                     if not isinstance(raw, dict):
                         continue
@@ -6403,6 +6513,7 @@ class SessionStore:
                             raw_id=reminder_id,
                             created_at_value=raw_created,
                             fallback_where=("profile = ?", (profile,)),
+                            pre_existing_ids=pre_existing_reminder_ids,
                         )
                         if existing_reminder_id is not None:
                             if reminder_id > 0:
@@ -6742,13 +6853,9 @@ class SessionStore:
                     found,
                 )
             # 与 delete_session 一致：即使会话行尚未创建（第一轮会诊
-            # 进行中），也登记墓碑，答复完成后不能把已删除的会话写回
-            for session_id in ids:
-                self._deleted_sessions[session_id] = None
-            while len(self._deleted_sessions) > self._max_deleted_sessions:
-                self._deleted_sessions.pop(
-                    next(iter(self._deleted_sessions))
-                )
+            # 进行中），也登记墓碑；批量路径同样要写持久化表，
+            # 否则重启/多 worker 下删除状态失效
+            self._remember_deleted_locked(ids)
         return {
             "deleted": [sid for sid in ids if sid in profiles],
             "missing": [sid for sid in ids if sid not in profiles],
@@ -6901,16 +7008,7 @@ class SessionStore:
             )
             # 与 save_exchange 共用锁：先登记墓碑，进行中的会诊无法再写回；
             # 持久化表让多进程/重启后同样能识别已删会话
-            self._deleted_sessions[session_id] = None
-            self._conn.execute(
-                "INSERT OR REPLACE INTO deleted_sessions(session_id, deleted_at)"
-                " VALUES (?, ?)",
-                (session_id, self._now()),
-            )
-            while len(self._deleted_sessions) > self._max_deleted_sessions:
-                self._deleted_sessions.pop(
-                    next(iter(self._deleted_sessions))
-                )
+            self._remember_deleted_locked([session_id])
             deleted = cursor.rowcount > 0
         return deleted
 
@@ -9786,12 +9884,14 @@ class SessionStore:
                     row["frequency"],
                     row["started_at"] or row["created_at"],
                     now,
+                    row["stopped_at"] or "",
                 ),
                 "expected_range_doses": expected_doses_for_period(
                     row["frequency"],
                     row["started_at"] or row["created_at"],
                     now,
                     days,
+                    row["stopped_at"] or "",
                 ),
             }
             for row in rows
@@ -11805,13 +11905,8 @@ class SessionStore:
                  WHERE session_id NOT IN (SELECT id FROM sessions)
                 """
             ).rowcount
-            # 进行中的会诊不能在清理后把这些会话写回
-            for session_id in session_ids:
-                self._deleted_sessions[session_id] = None
-            while len(self._deleted_sessions) > self._max_deleted_sessions:
-                self._deleted_sessions.pop(
-                    next(iter(self._deleted_sessions))
-                )
+            # 进行中的会诊不能在清理后把这些会话写回（多进程同样有效）
+            self._remember_deleted_locked(session_ids)
         return {
             "sessions": int(sessions_deleted),
             "messages": int(messages_deleted),

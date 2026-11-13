@@ -500,16 +500,27 @@ class SwarmCoordinator:
                 return patient_profile
             if not resolved:
                 return patient_profile
-            if resolved != patient_profile:
-                try:
-                    deleted = await asyncio.to_thread(
-                        self.session_store.profile_deleted_since,
-                        resolved, started_text,
+            try:
+                deleted = await asyncio.to_thread(
+                    self.session_store.profile_deleted_since,
+                    resolved, started_text,
+                )
+                if not deleted:
+                    # 删除之后才到达的请求也要识别：档案留有墓碑且未重建
+                    tombstone = await asyncio.to_thread(
+                        self.session_store.profile_tombstone_exists,
+                        resolved,
                     )
-                except Exception:
-                    deleted = False
-                if deleted:
-                    return ""
+                    if tombstone:
+                        exists = await asyncio.to_thread(
+                            self.session_store.profile_name_exists,
+                            resolved,
+                        )
+                        deleted = not exists
+            except Exception:
+                deleted = False
+            if deleted:
+                return ""
             return resolved
 
         async def _write_scope() -> str:

@@ -48,7 +48,10 @@ def test_inspect_backup_counts_and_checksum(client_and_store):
     assert data["total_records"] == 2
     assert data["invalid_sessions"] == 0
     assert data["restore_ready"] is True
-    assert data["warnings"] == []
+    assert data["warnings"] == [
+        "本备份不包含附件文件；换机恢复时请另行备份 "
+        "data/attachments 目录。"
+    ]
     assert data["exported_at"]
 
 

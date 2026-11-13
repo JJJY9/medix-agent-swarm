@@ -11,7 +11,8 @@ def test_attachment_record_upload_helper():
     assert "els.attachmentKind.value = kind;" in SCRIPT
     assert "els.attachmentKind.dispatchEvent(new Event('change', { bubbles: true }));" in SCRIPT
     assert "await loadAttachmentRefOptions();" in SCRIPT
-    assert "els.attachmentRef.value = String(item.id);" in SCRIPT
+    assert "els.attachmentRef.appendChild(option);" in SCRIPT
+    assert "els.attachmentRef.value = targetValue;" in SCRIPT
     assert "els.attachmentFile.focus();" in SCRIPT
     assert "attachments-section" in SCRIPT
 

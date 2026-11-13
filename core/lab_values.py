@@ -142,7 +142,10 @@ ANALYTES: Tuple[Dict[str, Any], ...] = (
     {
         "key": "inr",
         "label": "INR",
-        "cjk": ("国际标准化比值", "凝血酶原时间国际标准化"),
+        "cjk": (
+            "国际标准化比值", "国际标准化比率",
+            "凝血酶原时间国际标准化",
+        ),
         "ascii": ("inr",),
         "exclude": (),
         "units": {},
@@ -297,8 +300,13 @@ def _count_factor(unit: str) -> Optional[float]:
     if re.search(r"10[\^*e]?3/ul", unit):
         return 1.0
     if unit.endswith("/ul"):
-        # 1 K/µL = 1 ×10⁹/L，1 /µL = 0.001 ×10⁹/L
+        # 1 K/µL = 1 ×10⁹/L，1 /µL = 0.001 ×10⁹/L；
+        # 万/µL = 10 ×10⁹/L，千/µL = 1 ×10⁹/L
         prefix = unit[:-3]
+        if prefix.endswith("万"):
+            return 10.0
+        if prefix.endswith("千"):
+            return 1.0
         return 1.0 if prefix.endswith("k") else 0.001
     return None
 
@@ -308,7 +316,7 @@ def _unit_factor(key: str, spec: Dict[str, Any]) -> Optional[float]:
         return _count_factor(key)
     if spec.get("unitless"):
         return 1.0 if not key or key in {
-            "ratio", "比值", "无", "-", "—",
+            "ratio", "比值", "无", "-", "—", "1",
         } else None
     return (spec.get("units") or {}).get(key)
 
@@ -320,6 +328,30 @@ def _normalized_value(
     if factor is None:
         return None
     return value * factor
+
+
+#: 明确提示非血清标本的分组名
+_PANEL_SPECIMEN_MARKERS = (
+    "尿常规", "尿液", "粪便", "大便", "stool", "urine",
+    "脑脊液", "csf", "胸水", "腹水", "穿刺液",
+)
+#: 混合分组里出现这些词时仍按血液标本处理（如「血常规+尿常规」）
+_PANEL_BLOOD_MARKERS = (
+    "血常规", "全血", "血清", "血浆", "血液", "blood",
+)
+
+
+def _panel_is_non_serum(panel_text: str) -> bool:
+    if not panel_text:
+        return False
+    if any(marker in panel_text for marker in _PANEL_BLOOD_MARKERS):
+        return False
+    if panel_text.startswith("尿"):
+        # 尿电解质/尿生化/尿沉渣等以「尿」开头的分组都是尿液标本
+        return True
+    return any(
+        marker in panel_text for marker in _PANEL_SPECIMEN_MARKERS
+    )
 
 
 @lru_cache(maxsize=2048)
@@ -413,7 +445,9 @@ def lab_critical_alerts(
     """
     text = _lab_item_text(item)
     panel_text = _lab_item_text(panel)
-    if panel_text:
+    # 分组名只有明确是非血清标本（尿常规、粪便…）时才参与识别：
+    # 「尿素」「血常规+尿常规」这类分组不能触发裸「尿」排除
+    if _panel_is_non_serum(panel_text):
         text = f"{text} {panel_text}"
     classification = _analyte_classification(text, _unit_key(unit))
     if classification is None:

@@ -454,7 +454,12 @@ ALLERGY_RULES: Tuple[Tuple[str, Tuple[str, ...], Tuple[str, ...]], ...] = (
     ),
     (
         "非甾体抗炎药",
-        ("阿司匹林", "布洛芬", "双氯芬酸", "萘普生", "nsaid", "aspirin", "ibuprofen", "diclofenac"),
+        (
+            "非甾体抗炎药", "非甾体类抗炎药", "非甾体消炎药",
+            "阿司匹林", "布洛芬", "双氯芬酸", "萘普生",
+            "nsaid", "nsaids",
+            "aspirin", "ibuprofen", "diclofenac",
+        ),
         ("nsaids",),
     ),
 )
@@ -711,6 +716,11 @@ def _allergy_mentions_in_question(question: str) -> str:
             if any(word in captured for word in _ALLERGY_NEGATION_WORDS):
                 continue
             if any(word in captured for word in _ALLERGY_RESULT_WORDS):
+                continue
+            # 结果词可能跟在捕获组之后（「青霉素过敏史阴性」
+            # 「青霉素过敏原阴性」），捕获组里只有药名
+            after = question[match.end():match.end() + 8]
+            if any(word in after for word in _ALLERGY_RESULT_WORDS):
                 continue
             parts.append(match.group(0))
     return " ".join(parts)

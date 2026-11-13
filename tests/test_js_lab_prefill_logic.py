@@ -92,6 +92,28 @@ assert.strictEqual(
   core.labPlateletCount({ value: 22, unit: '万/µL' }).value, 220
 );
 assert.strictEqual(
+  core.labPlateletCount({ value: 220, unit: '10E9/L' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 220, unit: '×10³/µL' }).value, 220
+);
+assert.strictEqual(
+  core.labPlateletCount({ value: 6.5, unit: '千/µL' }).value, 6.5
+);
+// 全角/冒号形式的比值写法必须排除
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'AST／ALT', value: 1.2, unit: '' }], 'ast'
+  ),
+  null
+);
+assert.strictEqual(
+  core.findLabItem(
+    [{ item: 'AST：ALT', value: 1.2, unit: '' }], 'alt'
+  ),
+  null
+);
+assert.strictEqual(
   core.labPlateletCount({ value: 16.8, unit: 'fL' }), null
 );
 assert.strictEqual(core.findLabItem(items, 'alt'), null);
