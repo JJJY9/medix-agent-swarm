@@ -4472,6 +4472,9 @@ async function importHistoryBackup() {
     const auditCount = Array.isArray(data.audit_log)
       ? data.audit_log.length
       : 0;
+    const usageCount = Array.isArray(data.usage_events)
+      ? data.usage_events.length
+      : 0;
     const extraCounts = [
       ["lab_results", "条化验结果"],
       ["allergies", "条过敏史"],
@@ -4490,6 +4493,7 @@ async function importHistoryBackup() {
       !count && !profileCount && !metricCount
       && !reminderCount && !targetCount && !symptomCount
       && !medicationCount && !medicationLogCount && !auditCount
+      && !usageCount
       && !extraCounts.some(([, , value]) => value > 0)
     ) {
       window.alert('备份文件中没有可导入的数据。');
@@ -4508,6 +4512,7 @@ async function importHistoryBackup() {
         .filter(([, , value]) => value > 0)
         .map(([, label, value]) => `${value} ${label}`),
       auditCount ? `${auditCount} 条操作记录` : '',
+      usageCount ? `${usageCount} 条用量流水` : '',
     ].filter(Boolean).join('、');
     if (!window.confirm(`导入 ${summary}？已存在的记录会跳过。`)) {
       return;
