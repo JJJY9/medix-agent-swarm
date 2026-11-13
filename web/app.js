@@ -794,6 +794,8 @@ let bulkMode = false;
 let selectedSessions = new Set();
 let historyItemMap = new Map();
 let compareOpen = false;
+//: 会诊对比请求序号：旧请求的慢响应不能覆盖新选择的对比结果
+let sessionCompareRequestSeq = 0;
 let historyDays = 0;
 let historyRequestSeq = 0;
 let historyTagsRequestSeq = 0;
@@ -4065,6 +4067,7 @@ async function openCompare(ids) {
   closeMetrics();
   closeReminders();
   compareOpen = true;
+  const requestSeq = ++sessionCompareRequestSeq;
   els.compareDrawer.hidden = false;
   els.compareBackdrop.hidden = false;
   syncPageInert();
@@ -4080,10 +4083,12 @@ async function openCompare(ids) {
       const messages = await fetchSessionMessages({ id });
       return { item, messages };
     }));
-    if (!compareOpen) return;
+    // 期间可能重新打开/关闭过对比：旧响应不能覆盖新选择的一对会话
+    if (!compareOpen || requestSeq !== sessionCompareRequestSeq) return;
     renderCompare(results[0], results[1]);
   } catch (err) {
-    if (!compareOpen) return;
+    if (!compareOpen || requestSeq !== sessionCompareRequestSeq) return;
+    if (!status.isConnected) return;
     status.textContent = `加载会诊失败：${err.message || err}`;
     status.classList.add('error');
   }
@@ -4091,6 +4096,8 @@ async function openCompare(ids) {
 
 function closeCompare(restoreFocus = false) {
   compareOpen = false;
+  // 关闭动作让所有在途对比请求失效
+  sessionCompareRequestSeq += 1;
   els.compareDrawer.hidden = true;
   els.compareBackdrop.hidden = true;
   syncPageInert();
@@ -4957,6 +4964,9 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
           agent_contributions: metadata.agent_contributions || [],
           patient_context: metadata.patient_context || {},
           triage: metadata.triage || {},
+          medication_safety: metadata.medication_safety || {},
+          usage: metadata.usage || null,
+          llm_calls: metadata.llm_calls || 0,
           assistant_message_id: message.id,
           feedback: message.feedback || metadata.feedback || null,
           session_id: activeSessionId,
@@ -5053,14 +5063,9 @@ async function openSession(id) {
     if (err && err.sessionDeleted) {
       // 深链/旧标签页指向已删会话：清除持久化会话，否则后续提问
       // 会被删除墓碑静默丢弃（界面却正常显示答案）
-      if (sessionId === id) {
-        sessionId = null;
-        lastServerMessageId = 0;
-        clearPersistedSessionId();
-        setSessionUrl(null);
-        els.readout.session.textContent = '新会话';
+      if (!clearDeletedSession(id, '该会诊已删除，已为你开启新会话。')) {
+        renderError('该会诊已删除。');
       }
-      renderError('该会诊已删除，已为你开启新会话。');
       els.input.focus();
       return false;
     }
@@ -5232,6 +5237,23 @@ function clearCurrentSession() {
   els.empty.hidden = false;
   resetRail();
   els.readout.session.textContent = '—';
+}
+
+function clearDeletedSession(id, notice = '') {
+  // 服务端已删除该会话（墓碑仍有效）：清空本地会话与持久化存储。
+  // 否则后续提问仍复用该编号，save_exchange 会按墓碑静默丢弃，
+  // 界面却照常流式显示答案（token 照常消耗）。
+  if (!id || sessionId !== id) return false;
+  openSessionSeq += 1;
+  sessionId = null;
+  lastServerMessageId = 0;
+  clearPersistedSessionId();
+  setSessionUrl(null);
+  if (els.readout && els.readout.session) {
+    els.readout.session.textContent = '新会话';
+  }
+  if (notice) renderError(notice);
+  return true;
 }
 
 async function deleteHistory(item) {
@@ -6263,6 +6285,9 @@ async function purgeOldSessions() {
         if (check.ok) {
           const info = await check.json().catch(() => ({}));
           purged = Array.isArray(info.messages) && info.messages.length === 0;
+        } else if (check.status === 404) {
+          // 删除墓碑：会话同样已不存在，必须清空当前界面
+          purged = true;
         }
       } catch {
         purged = false;
@@ -6939,6 +6964,7 @@ function formatMetricValue(item) {
 }
 
 function renderMetrics(items, days = 0, metric = els.metricType.value) {
+  preserveListFocus(els.metricsList);
   els.metricsList.replaceChildren();
   els.metricsEmpty.hidden = items.length > 0;
   const metricName = METRIC_NAMES[metric] || '该类';
@@ -8613,6 +8639,68 @@ function restoreReminderFocusState(state) {
   nodes[index].focus();
 }
 
+function listFocusNodes(root) {
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll('button, select, input, a[href]')
+  );
+}
+
+function captureListFocusState(root) {
+  const active = document.activeElement;
+  if (!root || !active || !root.contains(active)) return null;
+  return {
+    label: active.getAttribute('aria-label') || '',
+    index: listFocusNodes(root).indexOf(active),
+  };
+}
+
+function focusFirstInDrawer(root) {
+  const drawer = root && root.closest ? root.closest('.drawer') : null;
+  if (!drawer) return false;
+  const target = Array.from(
+    drawer.querySelectorAll('button, input, select, textarea')
+  ).find((node) => !node.disabled && node.offsetParent !== null);
+  if (target) {
+    target.focus();
+    return true;
+  }
+  return false;
+}
+
+function restoreListFocusState(root, state) {
+  if (!root || !state) return;
+  // 抽屉已关闭时不要抢焦点
+  if (root.offsetParent === null) return;
+  const nodes = listFocusNodes(root);
+  if (!nodes.length) {
+    // 列表被清空：焦点交给抽屉内的稳定入口，而不是掉到 body 后
+    // 被焦点陷阱送回抽屉顶部
+    focusFirstInDrawer(root);
+    return;
+  }
+  if (state.label) {
+    const same = nodes.find(
+      (node) => node.getAttribute('aria-label') === state.label
+    );
+    if (same) {
+      same.focus();
+      return;
+    }
+  }
+  const index = Math.min(
+    Math.max(Number(state.index) || 0, 0), nodes.length - 1
+  );
+  nodes[index].focus();
+}
+
+function preserveListFocus(root) {
+  const state = captureListFocusState(root);
+  if (!state) return;
+  // 列表重建在同步代码中完成；重建后恢复焦点，避免键盘用户掉到 body
+  setTimeout(() => restoreListFocusState(root, state), 0);
+}
+
 function renderFilteredReminders() {
   const query = els.remindersSearch
     ? String(els.remindersSearch.value || '').trim()
@@ -8852,6 +8940,19 @@ async function refreshReminderBadge() {
 }
 
 const REMINDER_NOTIFIED_KEY = 'medix.reminderNotified';
+
+//: 最近一次刷新提醒徽标/首页待办的本地日期
+let lastReminderRefreshDate = '';
+
+async function refreshRemindersOnDayChange() {
+  // 常驻标签页/PWA 跨天时，徽标、首页「今日待办」和到期通知都停留在
+  // 昨日快照；切回页面或状态轮询发现日期变化时补一次刷新
+  const today = todayLocalDate();
+  if (lastReminderRefreshDate === today) return;
+  lastReminderRefreshDate = today;
+  await refreshReminderBadge();
+  loadHomeGlance();
+}
 
 function syncNotifyButton() {
   if (!els.remindersNotify) return;
@@ -9810,7 +9911,27 @@ function updateClearDoneButton(reminders) {
 }
 
 async function clearDoneReminders() {
-  const done = reminderItemsCache.filter((item) => item.done);
+  // 缓存可能已过期：其它标签页/手机端期间恢复（reopen）了某条提醒，
+  // 直接按缓存 id 提交会把已恢复的待办一起删掉。删除前以服务端
+  // 当前状态为准；服务端还会在 SQL 层再次限制 done=1。
+  let done = null;
+  try {
+    const params = new URLSearchParams({ include_done: 'true' });
+    const profile = els.remindersProfile ? els.remindersProfile.value : '';
+    if (profile) params.set('profile', profile);
+    const res = await fetch(`/api/reminders?${params.toString()}`);
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      reminderItemsCache = data.reminders || [];
+      updateClearDoneButton(reminderItemsCache);
+      done = reminderItemsCache.filter((item) => item.done);
+    }
+  } catch {
+    // 网络失败时退回缓存；服务端的 done 条件仍会兜底
+  }
+  if (done === null) {
+    done = reminderItemsCache.filter((item) => item.done);
+  }
   if (!done.length) {
     setRemindersStatus('没有已完成的提醒。');
     return;
@@ -10643,6 +10764,7 @@ function renderSymptomTrend(items) {
 
 function renderSymptoms(items) {
   if (!els.symptomList) return;
+  preserveListFocus(els.symptomList);
   els.symptomList.replaceChildren();
   els.symptomEmpty.hidden = items.length > 0;
   const query = els.symptomSearch
@@ -11044,6 +11166,7 @@ function filterVaccinations(items) {
 
 function renderVaccinations(items) {
   if (!els.vaccinationList) return;
+  preserveListFocus(els.vaccinationList);
   els.vaccinationList.replaceChildren();
   els.vaccinationEmpty.hidden = items.length > 0;
   const query = els.vaccinationSearch
@@ -11399,6 +11522,7 @@ function filterAppointments(items) {
 
 function renderAppointments(items) {
   if (!els.appointmentList) return;
+  preserveListFocus(els.appointmentList);
   els.appointmentList.replaceChildren();
   els.appointmentEmpty.hidden = items.length > 0;
   const query = els.appointmentSearch
@@ -11840,6 +11964,7 @@ function renderLabSparkline(series) {
 
 function renderLabs(items) {
   if (!els.labList) return;
+  preserveListFocus(els.labList);
   els.labList.replaceChildren();
   els.labEmpty.hidden = items.length > 0;
   const query = els.labSearch
@@ -12297,6 +12422,7 @@ function filterAllergies(items) {
 
 function renderAllergies(items) {
   if (!els.allergyList) return;
+  preserveListFocus(els.allergyList);
   els.allergyList.replaceChildren();
   els.allergyEmpty.hidden = items.length > 0;
   const query = els.allergySearch
@@ -12624,6 +12750,7 @@ function filterCareItems(items) {
 
 function renderCareItems(items) {
   if (!els.careList) return;
+  preserveListFocus(els.careList);
   els.careList.replaceChildren();
   els.careEmpty.hidden = items.length > 0;
   const query = els.careSearch
@@ -13046,6 +13173,7 @@ async function openAttachmentUploadForRecord(kind, item) {
 
 function renderVisits(items) {
   if (!els.visitList) return;
+  preserveListFocus(els.visitList);
   els.visitList.replaceChildren();
   els.visitEmpty.hidden = items.length > 0;
   const query = els.visitSearch
@@ -13456,6 +13584,7 @@ function filterConditions(items) {
 
 function renderConditions(items) {
   if (!els.conditionList) return;
+  preserveListFocus(els.conditionList);
   els.conditionList.replaceChildren();
   els.conditionEmpty.hidden = items.length > 0;
   const query = els.conditionSearch
@@ -13808,26 +13937,48 @@ function filterMedications(items) {
 
 function captureMedicationFocusLabel() {
   const active = document.activeElement;
-  if (!active) return '';
-  const inList = (
-    (els.medicationList && els.medicationList.contains(active))
-    || (els.todayMedsList && els.todayMedsList.contains(active))
-  );
-  return inList ? (active.getAttribute('aria-label') || '') : '';
+  if (!active) return null;
+  for (const key of ['medication', 'today']) {
+    const root = key === 'medication'
+      ? els.medicationList : els.todayMedsList;
+    if (!root || !root.contains(active)) continue;
+    const nodes = Array.from(root.querySelectorAll('button'));
+    return {
+      key,
+      label: active.getAttribute('aria-label') || '',
+      index: nodes.indexOf(active),
+    };
+  }
+  return null;
 }
 
-function restoreMedicationFocusLabel(label) {
-  if (!label) return;
-  for (const root of [els.medicationList, els.todayMedsList]) {
+function restoreMedicationFocusLabel(state) {
+  if (!state) return;
+  for (const key of [state.key, state.key === 'today' ? 'medication' : 'today']) {
+    const root = key === 'medication'
+      ? els.medicationList : els.todayMedsList;
     if (!root) continue;
-    const button = Array.from(root.querySelectorAll('button')).find(
-      (candidate) => candidate.getAttribute('aria-label') === label
-    );
-    if (button) {
-      button.focus();
+    const nodes = Array.from(root.querySelectorAll('button'));
+    if (!nodes.length) continue;
+    if (state.label) {
+      const same = nodes.find(
+        (candidate) => candidate.getAttribute('aria-label') === state.label
+      );
+      if (same) {
+        same.focus();
+        return;
+      }
+    }
+    if (key === state.key) {
+      // 条目已删除：聚焦原位置上的下一条，避免焦点掉到 body
+      const index = Math.min(
+        Math.max(Number(state.index) || 0, 0), nodes.length - 1
+      );
+      nodes[index].focus();
       return;
     }
   }
+  if (els.medicationList) focusFirstInDrawer(els.medicationList);
 }
 
 function renderMedications(items) {
@@ -19949,7 +20100,24 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(expectedSession)}/messages?limit=200`
     );
-    if (!res.ok) return false;
+    if (!res.ok) {
+      if (res.status === 404) {
+        const data = await res.json().catch(() => ({}));
+        const detail = data.detail;
+        if (
+          detail && detail.code === 'session_deleted'
+          && sessionId === expectedSession && !busy
+        ) {
+          // ?session= 深链/恢复的标签页不经过 openSession：同样要
+          // 清理持久化会话，否则之后每轮提问都被墓碑静默丢弃
+          clearDeletedSession(
+            expectedSession, '原会诊已删除，已为你开启新会话。'
+          );
+          setVitals('warn', '原会诊已删除');
+        }
+      }
+      return false;
+    }
 
     const data = await res.json();
     if (sessionId !== expectedSession || busy) return false;
@@ -20084,7 +20252,21 @@ async function send(question) {
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || `服务返回 ${res.status}`);
+      const detail = data.detail;
+      const message = (
+        detail && typeof detail === 'object'
+          ? (detail.message || detail.code)
+          : detail
+      ) || `服务返回 ${res.status}`;
+      const error = new Error(message);
+      if (
+        res.status === 404
+        && detail && typeof detail === 'object'
+        && detail.code === 'session_deleted'
+      ) {
+        error.sessionDeleted = true;
+      }
+      throw error;
     }
     if (!res.body) {
       throw new Error('服务未返回流式内容');
@@ -20249,6 +20431,16 @@ async function send(question) {
       els.readout.mode.textContent = '已停止';
       logStep('用户停止了本次会诊', false);
       setVitals('idle', '已停止会诊');
+    } else if (err.sessionDeleted) {
+      // 服务端会话已被删除：清空本地编号，下一次提问自动新建会话
+      const cleared = clearDeletedSession(
+        sessionId, '该会诊已被删除，已为你开启新会话，请重新提问。'
+      );
+      if (!cleared) renderError('该会诊已被删除，请开启新会话后重试。');
+      AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
+      els.readout.mode.textContent = '已失效';
+      logStep('会诊已在其它设备删除', false);
+      setVitals('warn', '原会诊已删除');
     } else {
       // 渲染或解析异常时也要主动断开上游，避免服务端继续占用会诊锁
       try {
@@ -20361,6 +20553,9 @@ async function checkStatusOnce() {
 
     pricing = data.pricing || null;
     updateCostDisplay();
+
+    // 20 秒轮询是常驻页面唯一可靠的定时器：跨天后补刷新提醒与待办
+    void refreshRemindersOnDayChange();
 
     if (data.auth_required) {
       if (authGateOpen) return;
@@ -21170,6 +21365,7 @@ if (els.voiceToggle) {
   els.voiceToggle.addEventListener('click', toggleVoice);
 }
 setupVoiceInput();
+lastReminderRefreshDate = todayLocalDate();
 refreshReminderBadge();
 loadHomeGlance();
 syncNotifyButton();
@@ -23034,6 +23230,12 @@ if ('serviceWorker' in navigator) {
       if (typeof openReminders === 'function') {
         void openReminders();
       }
+      // 告知 Service Worker 消息已收到：未收到 ack 时它才回退整页导航
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'medix-open-reminders-ack',
+        });
+      }
     }
   });
 
@@ -23097,6 +23299,14 @@ if ('serviceWorker' in navigator) {
     }
   });
 }
+
+// 提醒刷新不依赖 Service Worker：浏览器不支持 SW 时同样要在切回
+// 页面后按日期更新徽标/首页待办/到期通知
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    void refreshRemindersOnDayChange();
+  }
+});
 
 // 屏宽变化后重新排布波形（两份波形共用同一段路径，拼接处才能无缝衔接）
 let ecgResizeTimer = null;

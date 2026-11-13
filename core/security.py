@@ -59,6 +59,21 @@ def mask_secret(value: str) -> str:
     return f"{value[:4]}***{value[-4:]}"
 
 
+#: URL 查询串（含 ? 后的全部内容），只保留主机与路径便于排障
+_URL_QUERY_RE = re.compile(r"(\?)[^\s'\"\)>\]]+")
+
+
+def redact_url_queries(text: Optional[str]) -> str:
+    """把文本里 URL 的查询串替换为 ``<redacted>``。
+
+    搜索/抓取失败时，HTTP 客户端异常文本常带完整请求 URL；查询串里
+    可能就是患者的疾病与用药问题，不能原样写进日志。
+    """
+    if not text:
+        return ""
+    return _URL_QUERY_RE.sub(r"\1<redacted>", str(text))
+
+
 def sanitize_base_url(value: Optional[str]) -> str:
     """对外展示的服务地址：去掉账号密码、查询参数与片段并统一脱敏。"""
     text = str(value or "")
@@ -66,10 +81,21 @@ def sanitize_base_url(value: Optional[str]) -> str:
         return ""
     try:
         parsed = urlsplit(text)
-        # .port 是惰性解析，非法端口（如 :8000x）会在这里抛 ValueError
+    except ValueError:
+        # 连 URL 都无法拆分：不能 fail-open 回显原文
+        return "***"
+    # 非法端口（如 :8000x）会拒绝 userinfo：先取出去掉账号密码的 netloc
+    hostless = parsed.netloc.rsplit("@", 1)[-1]
+    try:
+        # .port 是惰性解析，非法端口/占位符会在这里抛 ValueError
         port = parsed.port
     except ValueError:
-        return redact_secrets(text)
+        # 端口笔误时仍展示主机与路径，但必须丢弃 userinfo 与查询串
+        # （可能含网关 Basic Auth 密码或 ?token=），不能原样回显
+        sanitized = urlunsplit(
+            (parsed.scheme, hostless, parsed.path, "", "")
+        )
+        return redact_secrets(sanitized)
     host = parsed.hostname or ""
     if port:
         host = f"{host}:{port}"
@@ -108,7 +134,9 @@ def install_log_redaction() -> None:
 
         def _patcher(record):
             try:
-                record["message"] = redact_secrets(record["message"])
+                record["message"] = redact_url_queries(
+                    redact_secrets(record["message"])
+                )
             except Exception:
                 pass
 

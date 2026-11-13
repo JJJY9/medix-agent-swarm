@@ -169,7 +169,18 @@ def format_assessment(symptoms: str, level: str, reasons: list, recommendation: 
     if level == "high" or level == "emergency":
         output.append("\n⚠️ 请立即就医或拨打 120！")
 
-    output.append("\n💡 数据来源：风险规则引擎 + 医学知识库（Milvus RAG）")
+    # 数据来源必须如实：没有检索到知识库建议时不能宣称使用过
+    if kb_advice:
+        output.append(
+            "\n💡 数据来源：风险规则引擎 + 医学知识库（Milvus RAG）"
+        )
+    elif level == "emergency":
+        output.append(
+            "\n💡 数据来源：风险规则引擎"
+            "（急症判定，未等待知识库检索）"
+        )
+    else:
+        output.append("\n💡 数据来源：风险规则引擎")
 
     return "\n".join(output)
 

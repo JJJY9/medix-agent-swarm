@@ -213,12 +213,15 @@ def test_notification_click_does_not_navigate_focused_window():
     sw_js = (ROOT / "web" / "sw.js").read_text(encoding="utf-8")
 
     assert "medix-open-reminders" in sw_js
+    assert "medix-open-reminders-ack" in sw_js
     focused_pos = sw_js.index("clients.matchAll")
     assert sw_js.index("client.focused", focused_pos) > focused_pos
-    # 前台窗口只发消息，不整页导航
-    message_pos = sw_js.index("focused.postMessage")
-    navigate_pos = sw_js.index("anyWindow.navigate")
-    assert message_pos < navigate_pos
+    # 任何已存在的窗口都先发消息并等待 ack；未收到才回退整页导航。
+    # 点击系统通知时窗口通常是未聚焦状态，只看 focused 分支并不够。
+    message_pos = sw_js.index("targetWindow.postMessage")
+    ack_pos = sw_js.index("await waitForReminderAck(targetWindow.id")
+    navigate_pos = sw_js.index("targetWindow.navigate")
+    assert message_pos < ack_pos < navigate_pos
 
 
 def test_update_banner_can_be_dismissed():

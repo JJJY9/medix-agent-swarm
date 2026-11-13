@@ -4,7 +4,6 @@ LLM客户端
 支持 function calling
 """
 import os
-import sys
 import asyncio
 import json
 import math
@@ -45,34 +44,51 @@ try:
 except ImportError:
     pass
 
-# 加载上层目录的 config.py（config.py 位于项目根目录的上一层）
-_CONFIG_DIR = Path(__file__).resolve().parent.parent.parent
-if str(_CONFIG_DIR) not in sys.path:
-    sys.path.insert(0, str(_CONFIG_DIR))
+# config.py 按显式路径加载：仓库根目录优先，其次兼容项目上层目录；
+# 不再把父目录插到 sys.path 头部（会被无关 config.py 遮蔽或误执行）
+from .config_loader import load_config_value
 
-try:
-    from config import LLM_CONFIG
-except ImportError:
+_DEFAULT_MODEL = "doubao-seed-1-6-flash-250828"
+_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+
+_LLM_CONFIG_FROM_FILE = load_config_value("LLM_CONFIG")
+if not isinstance(_LLM_CONFIG_FROM_FILE, dict):
     # 没有 config.py 时使用环境变量，便于在不同机器上运行
-    LLM_CONFIG = {
-        "api_key": os.getenv("MEDIX_API_KEY", ""),
-        "model_name": os.getenv("MEDIX_MODEL", "doubao-seed-1-6-flash-250828"),
-        "base_url": os.getenv("MEDIX_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
-        "temperature": 0.7,
-        "max_tokens": 8192,
-    }
+    _LLM_CONFIG_FROM_FILE = {}
 
-# 环境变量优先级高于 config.py，且不修改原字典
-LLM_CONFIG = dict(LLM_CONFIG)
-for _env_key, _cfg_key in (
-    ("MEDIX_API_KEY", "api_key"),
-    ("MEDIX_MODEL", "model_name"),
-    ("MEDIX_BASE_URL", "base_url"),
-):
-    if os.getenv(_env_key):
-        LLM_CONFIG[_cfg_key] = os.getenv(_env_key)
+LLM_CONFIG = {
+    "api_key": "",
+    "model_name": _DEFAULT_MODEL,
+    "base_url": _DEFAULT_BASE_URL,
+    "temperature": 0.7,
+    "max_tokens": 8192,
+}
+LLM_CONFIG.update({
+    key: value
+    for key, value in _LLM_CONFIG_FROM_FILE.items()
+    if value is not None
+})
 
-del _env_key, _cfg_key
+
+def _env_or(name: str, default: str) -> str:
+    """环境变量优先；空串/纯空白视为未设置（与其它模块「留空=默认」一致）。"""
+    raw = (os.getenv(name) or "").strip()
+    return raw or default
+
+
+LLM_CONFIG["api_key"] = _env_or(
+    "MEDIX_API_KEY", str(LLM_CONFIG.get("api_key") or "").strip()
+)
+LLM_CONFIG["model_name"] = _env_or(
+    "MEDIX_MODEL",
+    str(LLM_CONFIG.get("model_name") or "").strip() or _DEFAULT_MODEL,
+)
+LLM_CONFIG["base_url"] = _env_or(
+    "MEDIX_BASE_URL",
+    str(LLM_CONFIG.get("base_url") or "").strip() or _DEFAULT_BASE_URL,
+)
+
+del _env_or
 
 # config.py 中的密钥不在环境变量里，登记后再做日志/错误脱敏
 register_secret(LLM_CONFIG.get("api_key"))

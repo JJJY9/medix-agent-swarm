@@ -30,10 +30,14 @@ def test_bulk_delete_reminders_single_transaction(client_and_store):
         for index in range(3)
     ]
 
+    for reminder_id in ids:
+        assert store.complete_reminder(reminder_id)
+
     response = client.post(
         "/api/reminders/bulk_delete", json={"ids": ids}
     )
 
+    # 端点只删除已完成提醒：先标记完成，再验证单事务批量清理
     assert response.status_code == 200
     assert response.json()["deleted"] == 3
     assert store.list_reminders(True) == []

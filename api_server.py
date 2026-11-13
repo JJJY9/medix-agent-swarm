@@ -887,16 +887,25 @@ class AppState:
             self.startup_error = None
         return self.coordinator
 
+    def set_kb_ready(self) -> None:
+        """知识库可用：清除历史错误，/api/status 不再提示失败。"""
+        self.kb_status = "ready"
+        self.kb_error = None
+
+    def set_kb_failed(self, error: Any) -> None:
+        """知识库不可用：记录脱敏后的错误供 /api/status 展示。"""
+        self.kb_status = "failed"
+        self.kb_error = redact_secrets(str(error))[:300]
+
     async def warm_up(self):
         """预加载 embedding 模型和知识库，避免第一条提问等待过久。"""
         self.kb_status = "loading"
         try:
             await asyncio.to_thread(self._load_kb_sync)
-            self.kb_status = "ready"
+            self.set_kb_ready()
             logger.info("知识库预热完成")
         except Exception as e:
-            self.kb_status = "failed"
-            self.kb_error = redact_secrets(str(e))
+            self.set_kb_failed(e)
             logger.error(f"知识库预热失败: {e}")
 
     @staticmethod
@@ -941,31 +950,86 @@ async def auto_archive_loop() -> None:
         await asyncio.sleep(AUTO_ARCHIVE_INTERVAL_SECONDS)
 
 
+#: 备份导出与写文件共用的进程内互斥：两个手动/自动备份并发时，
+#: 各自持有一份完整 payload 与编码缓冲，内存峰值会翻倍
+_backup_job_lock = threading.Lock()
+
+#: 自动备份最近一次运行状态，供 /api/status 展示失败告警
+_auto_backup_state: Dict[str, Any] = {
+    "last_attempt_at": "",
+    "last_success_at": "",
+    "last_error": "",
+    "consecutive_failures": 0,
+}
+
+
+def _run_backup_job():
+    """在备份互斥内完成「目录预检 + 整库导出 + 原子写入」。"""
+    from core.backup import create_backup, ensure_backup_target_ready
+    from memory import get_session_store
+
+    with _backup_job_lock:
+        # 先确认目录可写：不可写时不要先做整库导出（会长时间占住
+        # 数据库全局锁），移动盘断开/只读目录/磁盘满都应快速失败
+        ensure_backup_target_ready()
+        payload = get_session_store().export_data()
+        return create_backup(payload)
+
+
+def _run_export_locked():
+    """导出整库；与备份共用互斥，避免两个大导出同时占满内存。"""
+    from memory import get_session_store
+
+    with _backup_job_lock:
+        return get_session_store().export_data()
+
+
+def _backup_retry_delay(failures: int, interval: float) -> float:
+    """自动备份失败后的重试间隔：指数退避，最长 24 小时。"""
+    delay = 3600.0 * (2 ** min(max(failures - 1, 0), 5))
+    return max(3600.0, min(delay, min(interval, 24 * 3600)))
+
+
 async def auto_backup_once():
     """执行一次本地备份；未配置间隔时返回 None。"""
-    from core.backup import create_backup, get_auto_backup_hours
+    from core.backup import get_auto_backup_hours
 
     if get_auto_backup_hours() <= 0:
         return None
-    from memory import get_session_store
-
-    payload = await asyncio.to_thread(get_session_store().export_data)
-    return await asyncio.to_thread(create_backup, payload)
+    return await asyncio.to_thread(_run_backup_job)
 
 
 def auto_backup_wait_seconds(hours: int) -> float:
     """距下一份自动备份还需等待的秒数；没有备份或已到期返回 0。"""
-    from core.backup import latest_backup
+    from core.backup import (
+        FUTURE_MTIME_TOLERANCE_SECONDS,
+        list_backups,
+    )
 
-    latest = latest_backup()
-    if latest is None:
+    now = time.time()
+    interval = hours * 3600
+    future_count = 0
+    usable_mtimes = []
+    for path in list_backups():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime - now > FUTURE_MTIME_TOLERANCE_SECONDS:
+            # 时钟回拨或备份来自快时钟机器：这类时间戳不能当作
+            # 「刚备份过」，否则循环会一直空转到墙钟追平（可长达数月）
+            future_count += 1
+            continue
+        usable_mtimes.append(mtime)
+    if not usable_mtimes:
+        if future_count:
+            logger.warning(
+                "检测到备份文件时间戳晚于系统时钟，立即执行一次自动备份"
+            )
         return 0.0
-    try:
-        age = time.time() - latest.stat().st_mtime
-    except OSError:
-        return 0.0
+    age = now - max(usable_mtimes)
     # 文件时间戳精度可能让 age 略小于 0，等待时间不应超过一个间隔
-    return min(hours * 3600, max(0.0, hours * 3600 - age))
+    return min(interval, max(0.0, interval - age))
 
 
 async def auto_backup_loop() -> None:
@@ -987,16 +1051,34 @@ async def auto_backup_loop() -> None:
                 # 按份数挤出保留窗口，只剩同一天的重复文件
                 await asyncio.sleep(wait)
                 continue
+            _auto_backup_state["last_attempt_at"] = datetime.now().isoformat(
+                timespec="seconds"
+            )
             failed = False
             try:
                 path = await auto_backup_once()
                 if path:
+                    _auto_backup_state["last_success_at"] = (
+                        datetime.now().isoformat(timespec="seconds")
+                    )
+                    _auto_backup_state["last_error"] = ""
+                    _auto_backup_state["consecutive_failures"] = 0
                     logger.info(f"本地自动备份完成: {path}")
             except Exception as e:
                 failed = True
+                _auto_backup_state["consecutive_failures"] += 1
+                _auto_backup_state["last_error"] = redact_secrets(
+                    str(e)
+                )[:300]
                 logger.warning(f"本地自动备份失败: {e}")
-            # 失败后不要睡满整个间隔（最长 30 天），先按小时重试
-            await asyncio.sleep(min(interval, 3600) if failed else interval)
+            if failed:
+                # 永久性失败（目录不可写、快照超限）若按小时无限重试，
+                # 每次都会重新导出整库；改为指数退避，最长 24 小时
+                await asyncio.sleep(_backup_retry_delay(
+                    _auto_backup_state["consecutive_failures"], interval
+                ))
+            else:
+                await asyncio.sleep(interval)
         except Exception as e:
             # 备份目录不可访问/配置异常不应让任务永久退出
             logger.warning(f"自动备份循环异常，稍后重试: {e}")
@@ -2232,6 +2314,7 @@ async def export_audit_csv(
 @app.get("/api/status")
 async def get_status(request: Request):
     """健康检查 + 配置状态，前端用它决定是否显示警告。"""
+    from core.backup import get_auto_backup_hours
     from core.llm_client import LLM_CONFIG
 
     api_key = (LLM_CONFIG.get("api_key") or "").strip()
@@ -2269,6 +2352,23 @@ async def get_status(request: Request):
         "knowledge_base": {
             "status": state.kb_status,
             "error": kb_error,
+        },
+        "auto_backup": {
+            "enabled": get_auto_backup_hours() > 0,
+            "last_attempt_at": _auto_backup_state["last_attempt_at"],
+            "last_success_at": _auto_backup_state["last_success_at"],
+            "last_error": (
+                _auto_backup_state["last_error"]
+                if privileged
+                else (
+                    "自动备份失败，请查看服务端日志。"
+                    if _auto_backup_state["last_error"]
+                    else ""
+                )
+            ),
+            "consecutive_failures": _auto_backup_state[
+                "consecutive_failures"
+            ],
         },
         "agents": [
             {"id": agent_id, "name": name}
@@ -2614,10 +2714,8 @@ async def usage_export_csv(
 @app.get("/api/sessions/export")
 async def export_sessions():
     """导出全部会话与消息（JSON），用于本地备份或迁移。"""
-    from memory import get_session_store
-
     try:
-        data = await asyncio.to_thread(get_session_store().export_data)
+        data = await asyncio.to_thread(_run_export_locked)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -2767,7 +2865,9 @@ def _import_result_detail(result: Dict[str, Any]) -> str:
 @app.get("/api/backups")
 async def list_local_backups():
     """列出本地自动备份，供恢复入口选择。"""
-    from core.backup import MAX_BACKUP_KEEP, list_backups
+    from core.backup import (
+        FUTURE_MTIME_TOLERANCE_SECONDS, MAX_BACKUP_KEEP, list_backups,
+    )
 
     items = []
     for path in await asyncio.to_thread(list_backups):
@@ -2781,6 +2881,12 @@ async def list_local_backups():
             "modified_at": datetime.fromtimestamp(
                 stat.st_mtime
             ).isoformat(timespec="seconds"),
+            # 时间戳在未来的备份（时钟回拨/快时钟机器）标记出来，
+            # 恢复入口不应默认选中这类快照
+            "clock_anomaly": (
+                stat.st_mtime - time.time()
+                > FUTURE_MTIME_TOLERANCE_SECONDS
+            ),
         })
         if len(items) >= MAX_BACKUP_KEEP:
             break
@@ -2790,17 +2896,14 @@ async def list_local_backups():
 @app.post("/api/backups")
 async def create_local_backup(request: ConfirmRequest):
     """立即创建一份本地备份，不受自动备份间隔限制。"""
-    from core.backup import create_backup
-    from memory import get_session_store
-
     if not request.confirm:
         raise HTTPException(status_code=400, detail="请确认创建本地备份。")
 
     try:
-        payload = await asyncio.to_thread(
-            get_session_store().export_data
-        )
-        path = await asyncio.to_thread(create_backup, payload)
+        path = await asyncio.to_thread(_run_backup_job)
+    except OSError as e:
+        # 目录不可写/移动盘断开：预检已提前失败，不再先导出整库
+        raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
@@ -14154,7 +14257,7 @@ async def export_reminders_ics(
             if len(text) == 10:
                 parsed = datetime.combine(parsed.date(), time(23, 59, 59))
             return parsed
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OSError, OverflowError):
             return None
 
     def escape_ics(value: str) -> str:
@@ -14553,8 +14656,10 @@ async def bulk_delete_reminders(request: BulkIdsRequest):
     """批量删除提醒；一次事务与 checkpoint，供「清理已完成」使用。"""
     from memory import get_session_store
 
+    # 只删除服务端当前仍为已完成的提醒：前端缓存可能过期，其它
+    # 标签页/设备期间恢复（reopen）的提醒不能被「清理已完成」误删
     deleted = await asyncio.to_thread(
-        get_session_store().delete_reminders_bulk, request.ids
+        get_session_store().delete_reminders_bulk, request.ids, True
     )
     await record_audit("reminder.bulk_delete", str(deleted))
     return {"ok": True, "deleted": deleted}
@@ -15306,11 +15411,16 @@ async def knowledge_rebuild():
         try:
             result = await asyncio.to_thread(service.rebuild)
         except ValueError as e:
+            state.set_kb_failed(e)
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
+            state.set_kb_failed(e)
             logger.exception("重建知识库失败")
             raise HTTPException(status_code=500, detail="重建知识库失败，请稍后重试。")
 
+    # 重建成功后状态必须立即恢复：否则启动预热失败的实例会一直
+    # 显示「知识库加载失败」，直到重启进程
+    state.set_kb_ready()
     return {"ok": True, **result}
 
 
@@ -15343,11 +15453,13 @@ async def knowledge_upload(
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
+                state.set_kb_failed(e)
                 logger.exception("上传后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
                     detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
+        state.set_kb_ready()
 
     return {"ok": True, "document": saved, "rebuild": result}
 
@@ -15405,11 +15517,13 @@ async def knowledge_upload_batch(
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
+                state.set_kb_failed(e)
                 logger.exception("批量上传后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
                     detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
+        state.set_kb_ready()
 
     return {
         "ok": True,
@@ -15503,11 +15617,13 @@ async def knowledge_update(
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
+                state.set_kb_failed(e)
                 logger.exception("更新后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
                     detail="文档已保存，但重建索引失败，请稍后重试。",
                 )
+        state.set_kb_ready()
 
     return {"ok": True, "document": saved, "rebuild": result}
 
@@ -15532,11 +15648,13 @@ async def knowledge_delete(filename: str, rebuild: bool = True):
             try:
                 result = await asyncio.to_thread(service.rebuild)
             except Exception as e:
+                state.set_kb_failed(e)
                 logger.exception("删除后重建知识库失败")
                 raise HTTPException(
                     status_code=500,
                     detail="文档已删除，但重建索引失败，请稍后重试。",
                 )
+        state.set_kb_ready()
 
     return {"ok": True, "filename": filename, "rebuild": result}
 
@@ -16117,10 +16235,35 @@ async def _attach_structured_conditions(
     return merged
 
 
+async def _reject_deleted_session(requested_id: Optional[str]) -> None:
+    """请求携带的会话已有删除墓碑时，明确返回 404。
+
+    删除后复用同一编号的问答会被 save_exchange 静默丢弃，前端却
+    正常显示答案；提前报错让客户端清理本地会话，而不是每轮白耗 token。
+    """
+    session_id = str(requested_id or "").strip()
+    if not session_id:
+        return
+    from memory import get_session_store
+
+    deleted = await asyncio.to_thread(
+        get_session_store().is_session_deleted, session_id
+    )
+    if deleted:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "session_deleted",
+                "message": "该会诊已删除，请开启新会话后重试。",
+            },
+        )
+
+
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """同步接口：等 Swarm 全部跑完再返回。"""
     request_started = datetime.now().isoformat(timespec="seconds")
+    await _reject_deleted_session(request.session_id)
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     memory_profile = await _resolve_memory_profile(
         session_id, request.patient_profile
@@ -16233,6 +16376,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
       前端据此渐进渲染会诊意见。
     """
     request_started = datetime.now().isoformat(timespec="seconds")
+    await _reject_deleted_session(request.session_id)
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     memory_profile = await _resolve_memory_profile(
         session_id, request.patient_profile

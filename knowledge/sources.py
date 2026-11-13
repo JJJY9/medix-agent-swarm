@@ -69,11 +69,13 @@ def _score(doc: Dict[str, Any]) -> float:
     return value if math.isfinite(value) else 0.0
 
 
-def build_sources(results: List[Dict[str, Any]], max_items: int = 3) -> List[Dict[str, Any]]:
-    """从 kb.search() 结果中提取来源、相关度与原文片段。
+def select_documents(
+    results: List[Dict[str, Any]], max_items: int = 3
+) -> List[Dict[str, Any]]:
+    """按文档去重（同文档保留最高分块）并按相关度排序。
 
-    同一文档的多个向量块只保留得分最高的一块，避免来源卡片被
-    同一篇长文档占满。
+    skill 的正文编号与来源卡片必须基于同一份列表，否则正文列出
+    【结果 1..N】而卡片只有几篇文档，引用编号无法对应。
     """
     best: Dict[str, Dict[str, Any]] = {}
     for doc in results:
@@ -91,9 +93,17 @@ def build_sources(results: List[Dict[str, Any]], max_items: int = 3) -> List[Dic
             best[key] = doc
 
     ordered = sorted(best.values(), key=_score, reverse=True)
+    return ordered[:max_items]
 
+
+def build_sources(results: List[Dict[str, Any]], max_items: int = 3) -> List[Dict[str, Any]]:
+    """从 kb.search() 结果中提取来源、相关度与原文片段。
+
+    同一文档的多个向量块只保留得分最高的一块，避免来源卡片被
+    同一篇长文档占满。
+    """
     sources: List[Dict[str, Any]] = []
-    for doc in ordered[:max_items]:
+    for doc in select_documents(results, max_items):
         metadata = doc.get("metadata") or {}
         content = (doc.get("content") or "").strip()
         sources.append({

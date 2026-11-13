@@ -5,7 +5,9 @@ Search Knowledge Skill
 from typing import Dict, Any
 import asyncio
 from loguru import logger
-from knowledge.sources import build_sources, sanitize_untrusted_text
+from knowledge.sources import (
+    build_sources, sanitize_untrusted_text, select_documents,
+)
 
 # 全局知识库实例（避免重复加载模型）
 _kb_instance = None
@@ -59,9 +61,11 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
         filter_type=None
     )
 
-    # 格式化结果
+    # 正文与来源卡片使用同一份「按文档去重且按最高分排序」的列表：
+    # 否则正文列出【结果 1..N】而卡片只有几篇文档，引用编号无法对应
+    selected = select_documents(results, max_items=max_results)
     formatted_results = []
-    for doc in results:
+    for doc in selected:
         formatted_results.append({
             "title": f"关于{doc['metadata'].get('disease', query)}的医学信息",
             "content": doc["content"],
@@ -76,7 +80,7 @@ async def search_knowledge(query: str, max_results: int = 5) -> Dict[str, Any]:
             "answer": format_results(formatted_results),
             "total_found": len(formatted_results),
             "query": query,
-            "sources": build_sources(results),
+            "sources": build_sources(selected, max_items=max_results),
         }
     else:
         return {

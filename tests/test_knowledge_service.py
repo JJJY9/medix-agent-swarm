@@ -93,7 +93,8 @@ def test_search_builds_source_cards(service):
     assert result["results"][0]["title"] == "高血压"
     assert result["results"][0]["score"] == 0.8341
     assert len(result["results"][0]["snippet"]) <= 160
-    assert kb.search_calls == [("高血压 饮食", 3, None)]
+    # 多取一些块再按文档去重，才能凑满 top_k 篇不同文档
+    assert kb.search_calls == [("高血压 饮食", 12, None)]
 
     with pytest.raises(ValueError):
         svc.search("   ")

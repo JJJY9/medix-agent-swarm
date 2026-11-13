@@ -110,6 +110,27 @@ self.addEventListener('fetch', (event) => {
   })());
 });
 
+function waitForReminderAck(clientId, timeoutMs) {
+  // 页面收到消息后回 ack；旧缓存页面/未受控页面收不到消息时
+  // 超时返回 false，由调用方回退为整页导航
+  return new Promise((resolve) => {
+    let timer = null;
+    const finish = (acked) => {
+      if (timer !== null) clearTimeout(timer);
+      self.removeEventListener('message', onMessage);
+      resolve(acked);
+    };
+    const onMessage = (event) => {
+      const data = event.data || {};
+      if (data.type !== 'medix-open-reminders-ack') return;
+      if (clientId && event.source && event.source.id !== clientId) return;
+      finish(true);
+    };
+    timer = setTimeout(() => finish(false), timeoutMs);
+    self.addEventListener('message', onMessage);
+  });
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil((async () => {
@@ -120,23 +141,32 @@ self.addEventListener('notificationclick', (event) => {
       type: 'window',
       includeUncontrolled: true,
     });
-    // 优先处理正在前台显示的窗口：整页导航会中断正在进行的
-    // 流式会诊（服务端取消任务、已消耗 token 丢失）；
-    // 通过消息让页面自己切换视图，由页面决定是否导航
-    const focused = windows.find((client) => client.focused);
-    if (focused && 'focus' in focused) {
-      await focused.focus();
-      if ('postMessage' in focused) {
-        focused.postMessage({ type: 'medix-open-reminders' });
+    // 整页导航会中断正在进行的流式会诊（服务端取消任务、已消耗
+    // token 丢失）。点击系统通知时窗口通常处于未聚焦状态，因此
+    // 任何已存在的窗口都先走消息让页面自己切换视图，收到 ack 才
+    // 算完成；收不到（旧缓存页面/未受控）才回退整页导航
+    const focused = windows.find(
+      (client) => client.focused && 'postMessage' in client
+    );
+    const anyWindow = windows.find(
+      (client) => 'focus' in client && 'postMessage' in client
+    );
+    const targetWindow = focused || anyWindow;
+    if (targetWindow) {
+      await targetWindow.focus();
+      let posted = false;
+      try {
+        targetWindow.postMessage({ type: 'medix-open-reminders' });
+        posted = true;
+      } catch {
+        posted = false;
       }
-      return;
-    }
-    const anyWindow = windows.find((client) => 'focus' in client);
-    if (anyWindow) {
-      await anyWindow.focus();
-      if ('navigate' in anyWindow) {
+      if (posted && await waitForReminderAck(targetWindow.id, 800)) {
+        return;
+      }
+      if ('navigate' in targetWindow) {
         try {
-          await anyWindow.navigate(target);
+          await targetWindow.navigate(target);
         } catch {
           // 导航失败时至少已聚焦窗口
         }

@@ -168,7 +168,11 @@ def format_analysis(symptoms: str, patterns: list, diseases: list, kb_insights: 
             output.append(f"{insight['info']}")
 
     output.append("\n⚠️ 以上仅为模式分析，不能作为诊断依据。请咨询专业医生。")
-    output.append("💡 数据来源：症状模式分析 + 医学知识库（Milvus RAG）")
+    # 数据来源必须如实：没有知识库补充信息时不能宣称使用过
+    if kb_insights:
+        output.append("💡 数据来源：症状模式分析 + 医学知识库（Milvus RAG）")
+    else:
+        output.append("💡 数据来源：症状模式分析")
 
     return "\n".join(output)
 

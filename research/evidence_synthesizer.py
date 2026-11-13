@@ -396,20 +396,29 @@ class EvidenceSynthesizer:
                 recommendations_text
             )
 
-        # 收集来源
+        # 收集来源：保留真实的文件名/原文片段/相关度，
+        # 不能把报告级置信度冒充为逐条来源的分数
         for result in web_results[:5]:
             report.sources.append({
                 "type": "web",
                 "title": result.title,
-                "url": result.url
+                "url": result.url,
+                "snippet": str(getattr(result, "snippet", "") or "")[:160],
             })
 
         for doc in kb_results[:5]:
             metadata = doc.get('metadata', {})
+            try:
+                score = round(float(doc.get("score") or 0), 4)
+            except (TypeError, ValueError, OverflowError):
+                score = 0.0
             report.sources.append({
                 "type": "knowledge_base",
                 "title": _kb_source_title(metadata),
-                "id": doc.get('id', 'unknown')
+                "id": doc.get('id', 'unknown'),
+                "filename": str(metadata.get("filename") or ""),
+                "snippet": str(doc.get("content") or "")[:160],
+                "score": score,
             })
 
         return report
