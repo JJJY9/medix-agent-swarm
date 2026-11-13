@@ -427,5 +427,7 @@ def test_coordinator_checks_profile_deletion_tombstone():
     ).read_text(encoding="utf-8")
 
     assert "profile_deleted_since" in source
-    assert "profile=_bound_profile()" in source
-    assert "or _profile_gone()" in source
+    # 档案名在锁外异步解析，避免在事件循环上同步抢 SessionStore 锁
+    assert "await _bound_profile()" in source
+    assert "profile=bound_profile" in source
+    assert "or await _profile_gone()" in source

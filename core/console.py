@@ -12,8 +12,12 @@ _FALLBACK_KWARGS = {"encoding": "utf-8", "errors": "replace"}
 
 
 def ensure_utf8_stdio() -> None:
-    """尽量把 stdout/stderr 切换为 UTF-8，不支持时静默跳过。"""
-    for stream in (sys.stdout, sys.stderr):
+    """尽量把 stdin/stdout/stderr 切换为 UTF-8，不支持时静默跳过。
+
+    管道输入中文时 stdin 默认 GBK+surrogateescape，会解码成乱码和
+    孤立代理字符，后续请求编码直接抛 UnicodeEncodeError。
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             stream.reconfigure(**_FALLBACK_KWARGS)
         except (AttributeError, ValueError):

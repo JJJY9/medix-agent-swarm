@@ -59,6 +59,25 @@ except ImportError:
     CONSTRAINTS_ENABLED = False
 
 
+#: 截断/过滤提示本身不是有效答复：只有提示语时按降级处理
+_INCOMPLETE_NOTICES = (
+    "回答内容达到长度上限，已截断。建议简化问题后重试。",
+    "部分内容因安全策略被过滤，建议换一种表述或咨询医生。",
+)
+
+
+def _is_placeholder_answer(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return True
+    if stripped.startswith("抱歉，未能生成有效答复"):
+        return True
+    remainder = stripped
+    for notice in _INCOMPLETE_NOTICES:
+        remainder = remainder.replace(f"[{notice}]", "")
+    return not remainder.strip(" \u3000\n\t。；;")
+
+
 class AgentLoop:
     """
     Agent循环引擎
@@ -626,6 +645,7 @@ class AgentLoop:
             # 预算耗尽等路径可能拿到空文本；与 max_iterations 兜底保持一致
             final_answer = "抱歉，未能生成有效答复，请稍后重试或简化问题。"
             fallback_used = True
+        placeholder_answer = _is_placeholder_answer(final_answer)
 
         # Harness Engineering: 验证和修复输出
         if self.validator and final_answer:
@@ -691,6 +711,7 @@ class AgentLoop:
                                     f"{recheck.get('violations')}"
                                 )
 
+        degraded_answer = bool(fallback_used or placeholder_answer)
         result = {
             'answer': final_answer,
             'iterations': state.iteration,
@@ -700,10 +721,12 @@ class AgentLoop:
             'usage': dict(usage or {}),
             'llm_calls': llm_calls
         }
-        if fallback_used:
-            # 兜底道歉不是有效医疗意见，上层（Swarm/统计）需要区分
+        if degraded_answer:
+            # 兜底道歉 / 只剩截断提示：上层（Swarm/统计）需要区分
             result['degraded'] = True
-            result['warning'] = 'empty_answer'
+            result['warning'] = (
+                'empty_answer' if fallback_used else 'incomplete_answer'
+            )
 
         # 让 Agent 进行结果后处理（如提取建议等）；
         # 后处理失败不应覆盖已经生成并通过校验的有效回答
@@ -712,10 +735,15 @@ class AgentLoop:
                 result = await agent.post_process_result(result, final_answer)
             except Exception as e:
                 logger.warning(f"结果后处理失败，保留原始答复: {e}")
+            if degraded_answer and isinstance(result, dict):
+                result['degraded'] = True
 
         # 后处理成功后再写入短期记忆，保证记忆与最终持久化的回答一致；
         # 收尾异常时不会留下孤立提问或与 SQLite 不同的旧回答
-        if self.short_term_memory and session_id and remember:
+        if (
+            self.short_term_memory and session_id and remember
+            and not degraded_answer
+        ):
             try:
                 if user_input:
                     self.short_term_memory.add_message(

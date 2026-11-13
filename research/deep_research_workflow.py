@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 import asyncio
 import re
+import time
 
 from core import LLMClient
 from core.usage import merge_usage
@@ -58,11 +59,44 @@ class DeepResearchWorkflow:
 
         # 初始化组件
         self.web_search = WebSearchTool() if use_web_search else None
-        # 使用 Milvus 知识库单例（和其他 Skills 共享，避免重复加载模型）
-        self.knowledge_base = get_knowledge_base() if use_knowledge_base else None
+        # 使用 Milvus 知识库单例（和其他 Skills 共享，避免重复加载模型）；
+        # 知识库初始化/索引重建失败时降级为纯网络搜索，而不是整体报错
+        self.knowledge_base = None
+        if use_knowledge_base:
+            try:
+                self.knowledge_base = get_knowledge_base()
+            except Exception as e:
+                logger.warning(
+                    f"知识库初始化失败，深度研究降级为纯网络搜索: {e}"
+                )
         self.synthesizer = EvidenceSynthesizer(llm_client=self.llm_client)
 
+    #: 总时限（秒）：必须低于 SkillRegistry 默认 60s 超时，
+    #: 否则超时取消会把已检索的证据与已消耗的用量一起丢掉
+    TOTAL_BUDGET_SECONDS = 50.0
+
     async def run(
+        self,
+        question: str,
+        max_web_results: int = 10,
+        max_kb_results: int = 5,
+        usage_out: Optional[Dict[str, int]] = None,
+    ) -> ResearchReport:
+        """执行深度研究；取消时把已消耗的用量挂在异常上供上层记账。"""
+        try:
+            return await self._run_with_budget(
+                question, max_web_results, max_kb_results, usage_out
+            )
+        except asyncio.CancelledError as exc:
+            try:
+                if usage_out:
+                    exc.usage = dict(usage_out)
+                    exc.llm_calls = 2
+            except Exception:
+                pass
+            raise
+
+    async def _run_with_budget(
         self,
         question: str,
         max_web_results: int = 10,
@@ -85,8 +119,20 @@ class DeepResearchWorkflow:
             f"Starting DeepResearch: question_length={len(str(question or ''))}"
         )
 
-        # Step 1: 查询规划
-        sub_queries = await self._plan_queries(question, usage_out=usage_out)
+        deadline = time.monotonic() + self.TOTAL_BUDGET_SECONDS
+
+        def remaining() -> float:
+            return deadline - time.monotonic()
+
+        # Step 1: 查询规划（限时；超时直接用原始问题检索）
+        try:
+            sub_queries = await asyncio.wait_for(
+                self._plan_queries(question, usage_out=usage_out),
+                timeout=max(5.0, remaining() * 0.4),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Query planning timed out, using original question")
+            sub_queries = [question]
         logger.info(f"Planned {len(sub_queries)} sub-queries")
 
         # Step 2: 并行搜索
@@ -109,9 +155,26 @@ class DeepResearchWorkflow:
                     self._search_milvus(query, top_k=max_kb_results // len(sub_queries))
                 )
 
-        # 并行执行
+        # 并行执行（整体限时；到点取消未完成搜索，保留已完成结果）
         if search_tasks:
-            results = await asyncio.gather(*search_tasks, return_exceptions=True)
+            tasks = [asyncio.create_task(task) for task in search_tasks]
+            done, pending = await asyncio.wait(
+                tasks, timeout=max(5.0, remaining() * 0.7)
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                logger.warning(
+                    f"Search budget exhausted, cancelled {len(pending)} tasks"
+                )
+            results = []
+            for task in tasks:
+                if task not in done:
+                    continue
+                try:
+                    results.append(task.result())
+                except Exception as e:
+                    results.append(e)
 
             # 分离结果
             for result in results:
@@ -152,13 +215,28 @@ class DeepResearchWorkflow:
                 failed=True,
             )
 
-        # Step 3: 证据综合
-        report = await self.synthesizer.synthesize(
-            query=question,
-            web_results=web_results,
-            kb_results=kb_results,
-            usage_out=usage_out,
-        )
+        # Step 3: 证据综合（限时；超时标记失败，而不是被外层整体取消）
+        try:
+            report = await asyncio.wait_for(
+                self.synthesizer.synthesize(
+                    query=question,
+                    web_results=web_results,
+                    kb_results=kb_results,
+                    usage_out=usage_out,
+                ),
+                timeout=max(8.0, remaining()),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Evidence synthesis timed out")
+            return ResearchReport(
+                query=question,
+                summary=(
+                    "研究在时限内未能完成综合，已收集的证据可查看来源；"
+                    "请稍后重试或简化问题。"
+                ),
+                evidence_level="",
+                failed=True,
+            )
         if not report.key_findings:
             logger.warning("Report has no key findings")
 

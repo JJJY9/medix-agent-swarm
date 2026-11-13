@@ -102,6 +102,10 @@ def parse_tool_call_arguments(raw_arguments: Optional[str]) -> Dict[str, Any]:
     if not raw_arguments:
         return {}
 
+    if isinstance(raw_arguments, dict):
+        # 个别兼容服务直接把 arguments 作为对象返回，不能当作空参数
+        return dict(raw_arguments)
+
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError) as e:
@@ -124,6 +128,8 @@ def tool_arguments_incomplete(raw_arguments: Optional[str]) -> bool:
     finish_reason=length 时被截断的参数，避免用空参数执行 Skill。
     """
     if not raw_arguments:
+        return False
+    if isinstance(raw_arguments, dict):
         return False
     try:
         parsed = json.loads(raw_arguments)
@@ -384,9 +390,14 @@ class LLMClient:
         messages: List[Dict[str, str]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        finish_reason_out: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> Tuple[str, Optional[Dict[str, int]]]:
-        """异步聊天接口，同时返回 token 用量字典。"""
+        """异步聊天接口，同时返回 token 用量字典。
+
+        finish_reason 为 length/content_filter 时在正文追加明确标注，
+        不能把被截断或过滤的内容当成完整医疗结论返回。
+        """
         try:
             if temperature is None:
                 temperature = self.temperature
@@ -403,9 +414,23 @@ class LLMClient:
                 **kwargs
             )
 
+            choice = response.choices[0]
             content = strip_lone_surrogates(
-                response.choices[0].message.content or ""
+                getattr(choice.message, "content", None) or ""
             )
+            finish_reason = getattr(choice, "finish_reason", None) or ""
+            if finish_reason_out is not None:
+                finish_reason_out["finish_reason"] = finish_reason
+            if finish_reason == "length":
+                content += (
+                    "\n\n[回答内容达到长度上限，已截断。"
+                    "建议简化问题后重试。]"
+                )
+            elif finish_reason == "content_filter":
+                content += (
+                    "\n\n[部分内容因安全策略被过滤，"
+                    "建议换一种表述或咨询医生。]"
+                )
             usage = usage_to_dict(getattr(response, "usage", None))
             logger.debug(f"LLM response length: {len(content)} chars")
             return content, usage
@@ -698,16 +723,28 @@ class LLMClient:
             tool_calls = []
             truncated = False
             if hasattr(message, 'tool_calls') and message.tool_calls:
-                for tc in message.tool_calls:
+                for index, tc in enumerate(message.tool_calls):
+                    function = getattr(tc, "function", None)
+                    name = getattr(function, "name", "") if function else ""
+                    if not name:
+                        # 缺少 function 定义的畸形成员：跳过而不是让整次
+                        # 会诊以非重试错误失败
+                        logger.warning(
+                            "忽略缺少 function 定义的工具调用"
+                        )
+                        continue
+                    raw_arguments = getattr(
+                        function, "arguments", None
+                    )
                     if (
                         finish_reason == "length"
-                        and tool_arguments_incomplete(tc.function.arguments)
+                        and tool_arguments_incomplete(raw_arguments)
                     ):
                         truncated = True
                     tool_calls.append(ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
-                        arguments=parse_tool_call_arguments(tc.function.arguments)
+                        id=getattr(tc, "id", None) or f"call_{index}",
+                        name=name,
+                        arguments=parse_tool_call_arguments(raw_arguments)
                     ))
                 logger.debug(f"LLM requested {len(tool_calls)} tool calls")
 

@@ -138,24 +138,27 @@ class LongTermMemory:
                 return True
             if not force and now < self._reinit_at:
                 return False
+            # 先占位冷却窗口再释放锁：MemoryClient 构造会同步联网校验
+            # API key（httpx 超时可达 60s），不能在持锁期间进行，否则
+            # 所有记忆读写都会排队等它
             self._reinit_at = now + REINIT_COOLDOWN_SECONDS
-            try:
-                api_key = self._api_key or os.getenv("MEM0_API_KEY") or (
-                    MEM0_CONFIG or {}
-                ).get("api_key")
-                if not api_key:
-                    return False
-                self.mem0 = MemoryClient(api_key=api_key)
-                self.enabled = True
-                self.init_error = ""
-                logger.info(
-                    "LongTermMemory re-initialized after transient failure"
-                )
-                return True
-            except Exception as e:
-                self.init_error = f"{type(e).__name__}: {e}"[:200]
-                logger.warning(f"Retrying Mem0 initialization failed: {e}")
-                return False
+        api_key = self._api_key or os.getenv("MEM0_API_KEY") or (
+            MEM0_CONFIG or {}
+        ).get("api_key")
+        if not api_key:
+            return False
+        try:
+            client = MemoryClient(api_key=api_key)
+        except Exception as e:
+            self.init_error = f"{type(e).__name__}: {e}"[:200]
+            logger.warning(f"Retrying Mem0 initialization failed: {e}")
+            return False
+        with self._init_lock:
+            self.mem0 = client
+            self.enabled = True
+            self.init_error = ""
+        logger.info("LongTermMemory re-initialized after transient failure")
+        return True
 
     def add_session_summary(
         self,

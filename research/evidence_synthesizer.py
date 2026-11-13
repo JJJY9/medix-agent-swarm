@@ -373,6 +373,22 @@ class EvidenceSynthesizer:
             # 降级：使用整个响应
             report.summary = response[:500]
 
+        # 拒答/空内容/完全不符合【】格式：不能包装成 C 级/50% 置信度
+        # 的报告交付，必须显式标记失败；只缺个别小节时保持原有降级解析
+        has_any_section = any(
+            _extract_section(response, name) for name in _SECTION_HEADERS
+        )
+        if not has_any_section:
+            report.failed = True
+            report.evidence_level = ""
+            report.confidence = 0.0
+            report.key_findings = []
+            report.summary = (
+                "模型未按要求的【关键发现】格式返回结果，"
+                "无法生成可引用的研究报告。"
+            )
+            return report
+
         # 提取建议
         recommendations_text = _extract_section(response, "建议")
         if recommendations_text:

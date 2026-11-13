@@ -30,6 +30,19 @@ INTERNAL_CONTEXT_LABELS = {
 #: 防止用户输入过长挤占提示词
 MAX_CONTEXT_LENGTH = 2000
 
+#: 安全关键字段：优先渲染并保证预算。既往病史等自由文本再长，
+#: 也不能把过敏史、用药清单、近期指标和待办提醒挤出提示词。
+PRIORITY_CONTEXT_KEYS = (
+    "allergies",
+    "active_medications",
+    "medications",
+    "recent_metrics",
+    "pending_reminders",
+)
+
+#: 单个字段超出预算时的截断标记
+_TRUNCATED_MARKER = "…（已截断）"
+
 
 def _stringify(value: Any) -> str:
     if value is None:
@@ -97,6 +110,17 @@ def _format_historical_cases(value: Any) -> str:
     return "\n".join(lines)
 
 
+def _truncate_field(text: str, cap: int) -> str:
+    """按字段截断并标注，避免单个字段挤占整段提示词。"""
+    if cap <= 0:
+        return ""
+    if len(text) <= cap:
+        return text
+    if cap <= len(_TRUNCATED_MARKER) + 8:
+        return text[:cap]
+    return text[: cap - len(_TRUNCATED_MARKER)].rstrip() + _TRUNCATED_MARKER
+
+
 def format_context(
     context: Any, max_length: int = MAX_CONTEXT_LENGTH,
     include_internal: bool = False,
@@ -106,18 +130,13 @@ def format_context(
     已知字段使用中文标签；未知字段保留原键名，方便 API 调用方
     传入自定义信息。空值会被忽略。include_internal=True 时额外
     渲染短期记忆与相似历史案例（Worker 需要多轮上下文）。
+
+    渲染顺序按安全价值排序：过敏史/用药清单/近期指标/待办提醒先
+    渲染并均分预算，其余字段与既往病史等自由文本使用剩余预算。
+    既往病史很长时会被单独截断，而不是把安全字段整段挤出去。
     """
     if not isinstance(context, dict):
         return ""
-
-    lines = []
-    for key, label in CONTEXT_LABELS.items():
-        value = context.get(key)
-        if value in (None, "", [], {}):
-            continue
-        text = _stringify(value)
-        if text:
-            lines.append(f"{label}：{text}")
 
     history_text = ""
     if include_internal:
@@ -125,30 +144,112 @@ def format_context(
         cases_text = _format_historical_cases(
             context.get("historical_cases")
         )
-        if cases_text:
-            lines.append(
-                f"{INTERNAL_CONTEXT_LABELS['historical_cases']}：\n"
-                f"{cases_text}"
-            )
+    else:
+        cases_text = ""
 
-    for key, value in context.items():
-        if key in CONTEXT_LABELS or key in INTERNAL_CONTEXT_KEYS:
-            continue
-        if value in (None, "", [], {}):
-            continue
-        text = _stringify(value)
-        if text:
-            lines.append(f"{key}：{text}")
-
-    body = "\n".join(lines)
+    header = f"{INTERNAL_CONTEXT_LABELS['recent_history']}：\n"
+    reserve = 0
     if history_text:
         # 最近对话放在最后并预留预算，避免长背景把最新追问整段截掉
-        header = f"{INTERNAL_CONTEXT_LABELS['recent_history']}：\n"
         reserve = min(
             len(header) + len(history_text),
             max(200, max_length // 3),
         )
-        body = body[:max(0, max_length - reserve - 1)]
+    soft_limit = max(0, max_length - reserve - (1 if reserve else 0))
+
+    present_priority = [
+        key for key in PRIORITY_CONTEXT_KEYS
+        if _stringify(context.get(key))
+    ]
+    other_known = [
+        key for key in CONTEXT_LABELS
+        if key not in PRIORITY_CONTEXT_KEYS
+        and _stringify(context.get(key))
+    ]
+    unknown_keys = [
+        key for key, value in context.items()
+        if key not in CONTEXT_LABELS
+        and key not in INTERNAL_CONTEXT_KEYS
+        and _stringify(value)
+    ]
+
+    lines = []
+    used = 0
+
+    def add_line(label: str, text: str, force: bool = False) -> bool:
+        nonlocal used
+        if not text:
+            return False
+        separator = 1 if lines else 0
+        # 行格式固定为「标签：文本」，精确计算本行还能放多少字符
+        allowed = soft_limit - used - separator - len(label) - 1
+        if allowed < 4:
+            return False
+        if len(text) > allowed:
+            if not force:
+                return False
+            text = _truncate_field(text, allowed)
+        lines.append(f"{label}：{text}")
+        used += separator + len(label) + 1 + len(text)
+        return True
+
+    # 1) 安全关键字段：均分预算，保证每个非空字段都出现在提示词里
+    if present_priority:
+        secondary_exist = bool(other_known or unknown_keys or cases_text)
+        share = int(soft_limit * 0.6) if secondary_exist else soft_limit
+        labels_size = sum(
+            len(CONTEXT_LABELS[key]) + 1 for key in present_priority
+        )
+        count = len(present_priority)
+        budget = share - labels_size - (count - 1)
+        per_field = max(20, budget // max(1, count))
+        for key in present_priority:
+            add_line(
+                CONTEXT_LABELS[key],
+                _truncate_field(_stringify(context.get(key)), per_field),
+                force=True,
+            )
+
+    # 2) 其余已知字段（含既往病史）：使用剩余预算，逐个字段截断
+    secondary = list(other_known)
+    if cases_text:
+        secondary.append("historical_cases")
+    remaining = soft_limit - used
+    if secondary and remaining > 60:
+        labels_size = sum(
+            len(CONTEXT_LABELS.get(key)
+                or INTERNAL_CONTEXT_LABELS.get(key, key)) + 1
+            for key in secondary
+        )
+        # 每行一个分隔换行 + 标签与冒号，先扣掉再均分
+        budget = remaining - labels_size - len(secondary)
+        per_field = max(20, budget // len(secondary))
+        for key in other_known:
+            add_line(
+                CONTEXT_LABELS[key],
+                _truncate_field(_stringify(context.get(key)), per_field),
+            )
+        if cases_text:
+            add_line(
+                INTERNAL_CONTEXT_LABELS["historical_cases"],
+                _truncate_field(
+                    cases_text, max(per_field, 80)
+                ),
+            )
+
+    # 3) 未知自定义字段：只在还有余量时渲染
+    remaining = soft_limit - used
+    if unknown_keys and remaining > 100:
+        budget = remaining - len(unknown_keys) - 2 * len(unknown_keys)
+        per_field = max(20, budget // len(unknown_keys))
+        for key in unknown_keys:
+            add_line(
+                str(key),
+                _truncate_field(_stringify(context.get(key)), per_field),
+            )
+
+    body = "\n".join(lines)
+    if history_text:
         available = (
             max_length - len(body) - (1 if body else 0) - len(header)
         )

@@ -22,6 +22,23 @@ from .events import Event, EventType
 #: max_parallel_tasks 保持一致，避免模型把任务拆得过碎）。
 MAX_SUBTASKS = 5
 
+#: 会诊彻底失败时的兜底文案：不是医疗结论，不能当正常回答持久化
+_DEGRADED_ANSWER_PREFIXES = (
+    "抱歉，由于系统响应超时",
+    "抱歉，Swarm 未能提供有效分析结果。",
+    "抱歉，汇总会诊意见时出现系统错误",
+)
+
+
+def is_degraded_answer(answer: Any) -> bool:
+    """是否为会诊失败时的兜底/道歉文案。"""
+    text = str(answer or "").strip()
+    if not text:
+        return False
+    return any(
+        text.startswith(prefix) for prefix in _DEGRADED_ANSWER_PREFIXES
+    )
+
 KNOWN_AGENT_IDS = ("consultation_agent", "diagnostic_agent", "research_agent")
 
 # 模型可能返回类名、短名或中文名，这里统一映射到内部 agent_id。

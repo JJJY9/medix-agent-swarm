@@ -163,7 +163,9 @@ def check_runtime(project_root: Path = PROJECT_ROOT) -> Dict[str, Any]:
         "auto_archive_days": get_auto_archive_days(),
     }
 
-    attachment_dir = db_path.parent / "attachments"
+    from core.storage_paths import attachment_dir_for_db
+
+    attachment_dir = attachment_dir_for_db(db_path)
     attachment_count = 0
     attachment_size = 0
     if attachment_dir.is_dir():
