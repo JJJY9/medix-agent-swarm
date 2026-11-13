@@ -264,7 +264,8 @@ def test_web_search_no_results_exception_not_retried(monkeypatch):
         def text(self, *args, **kwargs):
             raise RuntimeError("No results found.")
 
-    monkeypatch.setattr(ws, "DDGS", FakeDDGS)
+    # 离线 CI 未安装 ddgs：模块里没有 DDGS 属性，需要 raising=False
+    monkeypatch.setattr(ws, "DDGS", FakeDDGS, raising=False)
     monkeypatch.setattr(ws, "DDGS_AVAILABLE", True)
 
     results = asyncio.run(
@@ -299,7 +300,8 @@ def test_web_search_redacts_query_from_error_logs(monkeypatch):
                 "(https://search.example/s?q=%E6%82%A3%E8%80%85%E7%97%85%E5%8F%B2)"
             )
 
-    monkeypatch.setattr(ws, "DDGS", FakeDDGS)
+    # 离线 CI 未安装 ddgs：模块里没有 DDGS 属性，需要 raising=False
+    monkeypatch.setattr(ws, "DDGS", FakeDDGS, raising=False)
     monkeypatch.setattr(ws, "DDGS_AVAILABLE", True)
     monkeypatch.setattr(ws, "logger", fake_logger)
 
