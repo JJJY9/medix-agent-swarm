@@ -176,3 +176,26 @@ def test_negated_visit_recommendation_is_not_advice():
         user_input="我胸痛两天了",
     )
     assert "高危症状未建议就医" in result["violations"]
+
+
+def test_natural_negated_visit_phrases_are_not_advice():
+    """自然语序的否定就医描述不能被当成已建议就医。"""
+    for text in (
+        "疼得没法去医院",
+        "没人送我去医院",
+        "没车送我去医院",
+        "没时间去医院",
+        "没能及时就医",
+        "未到需要去医院的程度",
+        "没严重到必须去医院",
+        "当时没有及时去医院",
+    ):
+        assert has_visit_recommendation(text) is False, text
+
+    validator = ConstraintValidator()
+    result = validator.validate_output(
+        "diagnostic_agent",
+        "您描述的疼得没法去医院，需要重视。",
+        user_input="胸口疼",
+    )
+    assert "高危症状未建议就医" in result["violations"]
