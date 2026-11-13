@@ -1,6 +1,7 @@
 """本地存储路径规划：附件目录跟随会话数据库唯一化。"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 #: 附件目录的所有者标记文件：自定义库认领共享目录后写入库文件名
@@ -21,11 +22,36 @@ def _read_owner(parent: Path, legacy: Path) -> str:
     return ""
 
 
+def _name_key(value: str) -> str:
+    """文件名比较键：Windows 上大小写不敏感。"""
+    return os.path.normcase(str(value or "")).strip()
+
+
+def _file_exists(parent: Path, name: str) -> bool:
+    """目录中是否存在该文件（按平台大小写规则比较）。"""
+    if not str(name or "").strip():
+        return False
+    candidate = parent / name
+    try:
+        if candidate.is_file():
+            return True
+        for entry in parent.iterdir():
+            if _name_key(entry.name) == _name_key(name):
+                return entry.is_file()
+    except OSError:
+        return False
+    return False
+
+
 def _write_owner(parent: Path, legacy: Path, name: str) -> None:
-    """写入新位置标记，并把旧位置标记迁出附件目录。"""
+    """写入新位置标记（可覆盖过期标记），并把旧位置标记迁出附件目录。"""
     try:
         marker = parent / OWNER_MARKER
-        if not marker.exists():
+        try:
+            current = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            current = ""
+        if current != name:
             marker.write_text(name, encoding="utf-8")
     except OSError:
         pass
@@ -49,10 +75,14 @@ def attachment_dir_for_db(db_path: Path) -> Path:
     db_path = Path(db_path).resolve()
     parent = db_path.parent
     legacy = parent / "attachments"
-    if db_path.name == "sessions.db":
+    if _name_key(db_path.name) == "sessions.db":
         if legacy.exists():
             owner = _read_owner(parent, legacy)
-            if owner and owner != db_path.name:
+            if (
+                owner
+                and _name_key(owner) != _name_key(db_path.name)
+                and _file_exists(parent, owner)
+            ):
                 # 目录已被自定义库认领：默认库改用专属目录，
                 # 否则默认库的孤儿清理会删掉对方的附件文件。
                 # 旧位置的标记也要迁移出来，避免继续留在附件目录里
@@ -68,10 +98,15 @@ def attachment_dir_for_db(db_path: Path) -> Path:
         return dedicated
 
     owner = _read_owner(parent, legacy)
-    if owner and owner != db_path.name:
-        return dedicated
+    if owner and _name_key(owner) != _name_key(db_path.name):
+        if _file_exists(parent, owner):
+            return dedicated
+        # 标记的数据库文件已不存在（数据库被改名/移走）：标记过期，
+        # 允许当前库接管旧目录，避免旧附件全部显示“文件缺失”
     # 同目录存在默认库时，共享目录归默认库所有
-    if (parent / "sessions.db").exists():
+    if _file_exists(parent, "sessions.db") and (
+        _name_key(db_path.name) != "sessions.db"
+    ):
         return dedicated
     _write_owner(parent, legacy, db_path.name)
     return legacy

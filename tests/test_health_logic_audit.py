@@ -1,5 +1,5 @@
 """健康统计窗口、重复提醒与档案管理的回归测试。"""
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import pytest
 
@@ -105,5 +105,10 @@ def test_repeat_until_date_allows_same_day(store):
     result = store.complete_reminder_with_repeat(reminder["id"])
 
     assert result["next"] is not None
-    # 今天 09:00 已经过去：顺延到明天，而不是生成一条立即逾期的提醒
-    assert result["next"]["due_at"].startswith(tomorrow)
+    # 今天 09:00 已过则顺延到明天；测试在 09:00 前运行则下一次就是今天，
+    # 不能生成一条立即逾期的提醒
+    expected_day = (
+        today if datetime.now().time() < time(9, 0)
+        else today + timedelta(days=1)
+    )
+    assert result["next"]["due_at"].startswith(expected_day.isoformat())

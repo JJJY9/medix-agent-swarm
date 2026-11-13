@@ -357,6 +357,41 @@ def clinical_statement_text(text: str) -> str:
     return "。".join(kept)
 
 
+#: 定义/科普型问句模式：无患者语境时整段不作为主诉
+_DEFINITIONAL_CLAUSE_RE = re.compile(
+    r"[^，,；;。！？!?\n]*(?:什么是|是什么|啥是|啥意思|什么意思|怎么回事|"
+    r"是指什么|的定义|定义为|请解释|解释一下|介绍一下|"
+    r"有哪些(?:症状|表现|原因|危害)|有什么(?:症状|表现|危害))"
+    r"[^，,；;。！？!?\n]*[？?]?"
+)
+
+#: 出现这些词说明在描述本人/家人当前情况，不能当科普问句过滤
+_PATIENT_CONTEXT_MARKERS = (
+    "我", "本人", "孩子", "儿子", "女儿", "父亲", "母亲", "爸", "妈",
+    "爷爷", "奶奶", "外公", "外婆", "家人", "老人", "宝宝",
+    "最近", "这两天", "今天", "昨天", "前天", "持续", "伴有",
+    "突然", "出现", "发作", "测得", "体温", "吃了", "服了",
+)
+
+
+def patient_complaint_text(text: str) -> str:
+    """提取「患者主诉」部分：去掉定义/科普型问句，保留症状描述。
+
+    “什么是咯血？”没有患者语境，不能当作急症主诉；“咯血是什么？”
+    同理；而“我父亲最近咯血是什么原因？”含患者语境，必须保留并触发
+    红旗。先经 clinical_statement_text 去掉科普性陈述分句。
+    """
+    text = clinical_statement_text(text)
+    if not text:
+        return ""
+    if any(marker in text for marker in _PATIENT_CONTEXT_MARKERS):
+        return text
+    if _DEFINITIONAL_CLAUSE_RE.search(text):
+        stripped = _DEFINITIONAL_CLAUSE_RE.sub("", text)
+        return stripped.strip(" ，,；;。！？!?\n")
+    return text
+
+
 def has_visit_recommendation(text: str) -> bool:
     """输出中是否包含非否定的就医/急诊建议。
 

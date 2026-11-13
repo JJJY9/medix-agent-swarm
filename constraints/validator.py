@@ -485,11 +485,14 @@ class ConstraintValidator:
                 clinical_statement_text,
                 detect_red_flags,
                 has_visit_recommendation,
+                patient_complaint_text,
             )
 
+            # 用户提问里可能是“什么是咯血？”这类科普问句：不能当成
+            # 患者主诉触发“高危症状未建议就医”
             risk_text = "\n".join(
                 part for part in (
-                    user_input.strip(),
+                    patient_complaint_text(user_input),
                     clinical_statement_text(output),
                 ) if part
             )

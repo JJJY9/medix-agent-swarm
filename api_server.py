@@ -1126,13 +1126,10 @@ async def _link_patient_profile(
             # 已删除档案，并重新绑定
             _release_profile_claim(session_id, profile)
             return
-        # 删除之后才到达的请求：档案留有墓碑且未重建时同样不能绑定，
-        # 否则会把历史会话重新挂到已删除档案
-        tombstone = await asyncio.to_thread(
-            store.profile_tombstone_exists, profile
-        )
-        if tombstone and not await asyncio.to_thread(
-            store.profile_name_exists, profile
+        # 删除之后才到达的请求：档案留有墓碑且未被真正重建时同样
+        # 不能绑定（删除时按约定保留的健康数据不算重建）
+        if await asyncio.to_thread(
+            store.profile_rebinding_blocked, profile
         ):
             _release_profile_claim(session_id, profile)
             return
@@ -1865,8 +1862,30 @@ def _client_ip_key(request: Request) -> str:
     return f"ip:{host}"
 
 
+_PROXY_HEADER_NAMES = ("x-forwarded-for", "forwarded", "x-real-ip")
+
+
+def _has_proxy_headers(request: Request) -> bool:
+    for name in _PROXY_HEADER_NAMES:
+        if (request.headers.get(name) or "").strip():
+            return True
+    return False
+
+
+def _trust_proxy_headers() -> bool:
+    return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
+
+
 def _is_loopback_client(request: Request) -> bool:
-    """本机请求不参与令牌错误限流（本机进程本身已可信）。"""
+    """本机请求不参与令牌错误限流（本机进程本身已可信）。
+
+    经本机反向代理/端口转发到达的请求携带 Forwarded/X-Forwarded-For
+    时不能算本机：否则远程浏览器经 nginx/ssh -R 会被当成 loopback，
+    绕过无令牌局域网拦截与令牌错误限流（带令牌时还能无限次猜测）。
+    确需信任代理头时显式设置 MEDIX_TRUST_PROXY_HEADERS=1。
+    """
+    if _has_proxy_headers(request) and not _trust_proxy_headers():
+        return False
     host = request.client.host if request.client else ""
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -1941,33 +1960,61 @@ async def recursion_error_handler(
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def _default_http_port(scheme: str) -> Optional[int]:
-    scheme = str(scheme or "").lower()
-    if scheme == "http":
-        return 80
-    if scheme == "https":
-        return 443
-    return None
+def _host_header_parts(value: str) -> tuple:
+    """拆分 Host 头（含 IPv6 方括号）为 (hostname, 显式端口)。"""
+    text = str(value or "").strip()
+    if not text:
+        return "", None
+    if text.startswith("["):
+        end = text.find("]")
+        if end == -1:
+            return "", None
+        hostname = text[1:end].lower()
+        rest = text[end + 1:]
+        if rest.startswith(":"):
+            try:
+                return hostname, int(rest[1:])
+            except (TypeError, ValueError):
+                return hostname, None
+        return hostname, None
+    hostname, sep, port_text = text.rpartition(":")
+    if not sep:
+        return text.lower(), None
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError):
+        # 多冒号是未加括号的 IPv6，按整段主机处理
+        return text.lower(), None
+    return hostname.lower(), port
 
 
 def _same_origin(request: Request, value: str) -> bool:
-    """判断 Origin/Referer 是否与当前请求同源。"""
+    """判断 Origin/Referer 是否与当前请求同源。
+
+    只比较主机与端口，不比较 scheme：HTTPS 由反向代理终止时 uvicorn
+    看到的仍是 http，按 scheme 比较会把所有写请求误判为跨站。攻击者
+    无法通过浏览器伪造 Origin 的主机名，安全性仍由 Host 白名单保证。
+    """
     try:
         parsed = urlsplit(str(value or ""))
-        request_scheme = request.url.scheme.lower()
         if not parsed.scheme or parsed.hostname is None:
             return False
-        if request.url.hostname is None:
-            return False
-        parsed_port = parsed.port or _default_http_port(parsed.scheme)
-        request_port = request.url.port or _default_http_port(request_scheme)
+        origin_host = parsed.hostname.lower().rstrip(".")
+        origin_port = parsed.port
     except (TypeError, ValueError):
         return False
-    return (
-        parsed.scheme.lower() == request_scheme
-        and parsed.hostname == request.url.hostname
-        and parsed_port == request_port
+    request_host, request_port = _host_header_parts(
+        request.headers.get("host") or ""
     )
+    if not request_host:
+        request_host = str(request.url.hostname or "").lower()
+        request_port = request.url.port
+    if origin_host != request_host.rstrip("."):
+        return False
+    if origin_port is not None and request_port is not None:
+        return origin_port == request_port
+    # 一侧未显式带端口（默认端口/代理未保留端口）：按同源放行
+    return True
 
 
 def _is_cross_site_request(request: Request) -> bool:
@@ -15799,6 +15846,14 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
                 session_id, user_id=_memory_scope(profile, session_id)
             )):
                 all_ok = False
+            if not profile and not _retry(
+                lambda: memory.delete_session_summary(
+                    session_id, user_id="medix_local"
+                )
+            ):
+                # 旧版本单科会诊可能把摘要写入共享的 medix_local：
+                # 按 metadata.session_id 精确删除该会话残留
+                all_ok = False
         elif profile:
             if not _retry(lambda: memory.delete_scope(
                 _memory_scope(profile, "")
@@ -16393,7 +16448,12 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     memory_context = await _attach_structured_conditions(
         memory_context, memory_profile
     )
-    triage = detect_red_flags(request.question, memory_context)
+    from core.triage import patient_complaint_text
+
+    # 科普/定义型提问（“什么是咯血？”）不是患者主诉，不能触发急症横幅
+    triage = detect_red_flags(
+        patient_complaint_text(request.question), memory_context
+    )
     medication_safety = check_medication_safety(
         request.question, memory_context
     )

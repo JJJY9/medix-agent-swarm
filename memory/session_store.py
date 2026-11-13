@@ -24,6 +24,7 @@ from core.serialization import sanitize_json
 from core.lab_values import lab_critical_alerts
 from core.fs_permissions import restrict_permissions
 from core.backup import (
+    MAX_BACKUP_FILE_BYTES,
     MAX_BACKUP_MESSAGE_CHARS,
     MAX_BACKUP_SESSION_MESSAGES,
     MAX_BACKUP_TOTAL_CHARS,
@@ -742,8 +743,10 @@ def _db_init_lock(db_path: Path):
 def _import_probe_spec(raw: Dict[str, Any], columns, extract):
     """构造「身份 + 内容」精确配对的查询条件；无法判断时返回 None。
 
-    只用于导入排序：让能精确配对的行先处理。任何不一致都退化为旧顺序，
-    不会影响实际的插入/判重逻辑。
+    只用于导入排序：让能精确配对的行先处理。第一列是 profile 时同时
+    返回去掉 profile 的「改挂证据」条件（主键 + 创建时间 + 内容），
+    让被 PATCH 改挂到另一档案的存活行先于内容配对的已删除行处理。
+    任何不一致都退化为旧顺序，不会影响实际的插入/判重逻辑。
     """
     created = str(raw.get("created_at") or "").strip()[:40]
     if not created:
@@ -755,7 +758,14 @@ def _import_probe_spec(raw: Dict[str, Any], columns, extract):
     if values is None:
         return None
     where = " AND ".join(f"{column} = ?" for column in columns)
-    return where, tuple(values)
+    moved_where = None
+    moved_params: Tuple[Any, ...] = ()
+    if len(columns) > 1 and columns[0] == "profile" and len(values) > 1:
+        moved_where = " AND ".join(
+            f"{column} = ?" for column in columns[1:]
+        )
+        moved_params = tuple(values[1:])
+    return where, tuple(values), moved_where, moved_params
 
 
 MAX_MEDICATION_NAME_LENGTH = 120
@@ -2060,6 +2070,26 @@ def _backup_checksum(payload: Dict[str, Any]) -> str:
     return "sha256:" + hasher.hexdigest()
 
 
+class _ByteSizeCounter:
+    """只统计 UTF-8 字节数、不保存内容的写入端。"""
+
+    def __init__(self) -> None:
+        self.bytes = 0
+
+    def write(self, chunk: str) -> int:
+        self.bytes += len(chunk.encode("utf-8"))
+        return len(chunk)
+
+
+def _json_payload_bytes(payload: Dict[str, Any]) -> int:
+    """payload 序列化后的 UTF-8 字节数（与备份写盘同一编码参数）。"""
+    counter = _ByteSizeCounter()
+    encoder = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"))
+    for chunk in encoder.iterencode(payload):
+        counter.write(chunk)
+    return counter.bytes
+
+
 def _legacy_backup_checksum(payload: Dict[str, Any]) -> str:
     """首个校验版本的算法：缺失字段也计入 JSON（值为 null）。"""
     body = {
@@ -2887,7 +2917,8 @@ class SessionStore:
         pairs = []
         for profile, session_id in entries or []:
             normalized = _normalize_profile_name(profile)
-            sid = str(session_id or "").strip()[:64]
+            # 会话 ID 允许 120 字符：截断后重试会删错作用域却报告成功
+            sid = str(session_id or "").strip()[:120]
             if normalized or sid:
                 pairs.append((normalized, sid))
         if not pairs:
@@ -2929,7 +2960,7 @@ class SessionStore:
         pairs = [
             (
                 _normalize_profile_name(profile),
-                str(session_id or "").strip()[:64],
+                str(session_id or "").strip()[:120],
             )
             for profile, session_id in entries or []
         ]
@@ -3062,6 +3093,20 @@ class SessionStore:
             ).fetchone()
         return row is not None
 
+    def profile_rebinding_blocked(self, profile: str) -> bool:
+        """档案留有删除墓碑且未被真正重建时，禁止重新绑定会话。
+
+        删除档案按约定保留其余健康数据（指标/提醒等），因此不能用
+        ``profile_name_exists`` 判断“已重建”，否则墓碑保护形同虚设；
+        只认 patient_profiles 中重新出现的同名档案。
+        """
+        name = _normalize_profile_name(profile)
+        if not name:
+            return False
+        if not self.profile_tombstone_exists(name):
+            return False
+        return not self.profile_created_at(name)
+
     def profile_deleted_since(self, profile: str, since: str) -> bool:
         """档案是否在 since（ISO 时间）之后被删除。
 
@@ -3172,6 +3217,34 @@ class SessionStore:
         """档案名是否已被改名到其它名称（旧名不再存在）。"""
         resolved = self.resolve_profile_alias(name)
         return bool(resolved) and resolved != _normalize_profile_name(name)
+
+    def memory_scope_cleanup_pending(self, scope: str) -> bool:
+        """该长期记忆作用域是否仍有未完成的删除清理。
+
+        删除清理重试期间，云端可能还留着已删除档案/会话的旧摘要；
+        按作用域检索（如 search_similar_cases 技能）必须同样跳过。
+        """
+        scope = str(scope or "").strip()
+        if not scope:
+            return False
+        from core.session_context import (
+            profile_memory_scope,
+            session_memory_scope,
+        )
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT profile, session_id FROM memory_cleanup_queue"
+            ).fetchall()
+        for row in rows:
+            profile = _normalize_profile_name(row["profile"])
+            session_id = str(row["session_id"] or "")
+            if profile:
+                if profile_memory_scope(profile) == scope:
+                    return True
+            elif session_id and session_memory_scope(session_id) == scope:
+                return True
+        return False
 
     def profile_memory_cleanup_pending(self, profile: str) -> bool:
         """该档案是否存在尚未完成的整档长期记忆清理。
@@ -4567,6 +4640,12 @@ class SessionStore:
             payload = self._export_data()
         # 先做体积/可恢复性校验：超限备份不应先付出校验和的内存与时间
         _validate_export_payload(payload)
+        # 字符上限把元数据按 1/4 计权，可能放行超过备份文件字节上限的
+        # 负载；这里按真实 UTF-8 字节再校验，保证导出的文件必然可导入
+        if _json_payload_bytes(payload) > MAX_BACKUP_FILE_BYTES - 65536:
+            raise ValueError(
+                "备份体积超过单个文件上限，无法导出为可恢复备份。"
+            )
         payload["checksum"] = _backup_checksum(payload)
         return payload
 
@@ -4702,6 +4781,8 @@ class SessionStore:
         重复导入保持幂等，删除一条后恢复按原内容补回。
         """
         identity = (table,) + tuple(values)
+        moved_key = (table, "__moved__")
+        moved = state.setdefault(moved_key, set())
         where = " AND ".join(f"{column} = ?" for column in columns)
         claimed = state.get(identity)
         if claimed is None:
@@ -4719,15 +4800,17 @@ class SessionStore:
                 f" AND {content_where}",
                 (raw_id, *values, *content_values),
             ).fetchone()
-            if row is not None and int(row["id"]) in claimed:
+            if (
+                row is not None
+                and int(row["id"]) in claimed
+                and int(row["id"]) not in moved
+            ):
                 claimed.discard(int(row["id"]))
                 state[identity] = claimed
                 return int(row["id"])
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
             # 是同一条，恢复旧备份时不能在原档案名下重新插入
-            moved_key = (table, "__moved__")
-            moved = state.setdefault(moved_key, set())
             row = self._conn.execute(
                 f"SELECT id FROM {table}"
                 f" WHERE id = ? AND created_at = ? AND {content_where}",
@@ -4744,10 +4827,12 @@ class SessionStore:
                 if candidate in moved:
                     return None
                 moved.add(candidate)
-                # 同一候选行不能再被兜底配对消费
-                if candidate in claimed:
-                    claimed.discard(candidate)
-                    state[identity] = claimed
+                # 同一候选行不能再被任何身份组（目标档案的内容配对与
+                # 兜底）重复认领，否则被删的同秒记录会被当成“已存在”
+                for cached in state.values():
+                    if isinstance(cached, set) and cached is not moved:
+                        cached.discard(candidate)
+                state[identity] = claimed
                 return candidate
         if content_where:
             match_clause = ""
@@ -4764,14 +4849,16 @@ class SessionStore:
             ).fetchall()
             for row in rows:
                 candidate = int(row["id"])
+                if candidate in moved:
+                    continue
                 if candidate in claimed:
                     claimed.discard(candidate)
                     state[identity] = claimed
                     return candidate
-        if not claimed:
+        candidates = {c for c in claimed if c not in moved}
+        if not candidates:
             state[identity] = claimed
             return None
-        candidates = claimed
         if fallback_where is not None:
             # 兜底配对只允许落在同一档案的候选行：同秒创建的另一位
             # 成员的提醒/记录不能被当成“本地编辑过的那一条”
@@ -4827,6 +4914,7 @@ class SessionStore:
             existing.update(int(row["id"]) for row in found)
 
         content_matched: Dict[int, bool] = {}
+        moved_evidence: Dict[int, bool] = {}
         if match_probe is not None:
             for index, item in enumerate(rows):
                 try:
@@ -4835,7 +4923,14 @@ class SessionStore:
                     probe = None
                 if probe is None:
                     continue
-                where, params = probe
+                moved_where = None
+                moved_params: Tuple[Any, ...] = ()
+                if isinstance(probe, tuple) and len(probe) == 4:
+                    where, params, moved_where, moved_params = probe
+                elif isinstance(probe, tuple) and len(probe) == 2:
+                    where, params = probe
+                else:
+                    continue
                 try:
                     with self._lock:
                         found_row = self._conn.execute(
@@ -4846,10 +4941,33 @@ class SessionStore:
                     continue
                 if found_row is not None:
                     content_matched[index] = True
+                raw_id = _safe_db_id(item.get("id"))
+                if raw_id and moved_where and raw_id in existing:
+                    try:
+                        with self._lock:
+                            moved_row = self._conn.execute(
+                                f"SELECT 1 FROM {table}"
+                                f" WHERE id = ? AND {moved_where} LIMIT 1",
+                                (raw_id, *moved_params),
+                            ).fetchone()
+                    except Exception:
+                        moved_row = None
+                    if moved_row is not None:
+                        moved_evidence[index] = True
+
+        def _sort_tier(pair) -> int:
+            index = pair[0]
+            if moved_evidence.get(index):
+                # 主键 + 创建时间 + 内容能确认同一条：先处理改挂行，
+                # 否则同内容的已删除行会把它当成“已存在”吞掉
+                return 0
+            if content_matched.get(index):
+                return 1
+            return 2
 
         indexed = list(enumerate(rows))
         indexed.sort(key=lambda pair: (
-            0 if content_matched.get(pair[0]) else 1,
+            _sort_tier(pair),
             0 if _safe_db_id(pair[1].get("id")) in existing else 1,
             _safe_db_id(pair[1].get("id")),
         ))
@@ -8235,7 +8353,8 @@ class SessionStore:
         now = self._now()
         with self._lock, self._conn:
             previous = self._conn.execute(
-                "SELECT scheduled_at, status FROM appointments WHERE id = ?",
+                "SELECT scheduled_at, status, title, department, doctor,"
+                " location FROM appointments WHERE id = ?",
                 (int(appointment_id),),
             ).fetchone()
             if previous is None:
@@ -8307,6 +8426,47 @@ class SessionStore:
                         "WHERE done = 0 AND appointment_id = ?",
                         (int(appointment_id),),
                     )
+            # 提醒的标题/备注是创建时按预约字段生成的快照：改期或改名
+            # 后必须同步，否则列表仍显示旧时间/科室/医生。仅在提醒仍是
+            # 自动生成内容时更新，不覆盖用户手动修改的文案
+            def _reminder_text(
+                row_title: str, scheduled: str, department: str,
+                doctor: str, location: str,
+            ) -> Tuple[str, str]:
+                reminder_title = f"就诊：{row_title or '就诊'}"[:120]
+                parts = [
+                    str(scheduled or "").replace("T", " ")[:16],
+                    department or "",
+                    doctor or "",
+                    location or "",
+                ]
+                reminder_note = " ".join(
+                    part for part in parts if part
+                )[:300]
+                return reminder_title, reminder_note
+
+            old_title, old_note = _reminder_text(
+                previous["title"], previous["scheduled_at"],
+                previous["department"], previous["doctor"],
+                previous["location"],
+            )
+            new_title, new_note = _reminder_text(
+                normalized["title"], normalized["scheduled_at"],
+                normalized["department"], normalized["doctor"],
+                normalized["location"],
+            )
+            if new_title != old_title:
+                self._conn.execute(
+                    "UPDATE reminders SET title = ?, updated_at = ?"
+                    " WHERE done = 0 AND appointment_id = ? AND title = ?",
+                    (new_title, now, int(appointment_id), old_title),
+                )
+            if new_note != old_note:
+                self._conn.execute(
+                    "UPDATE reminders SET note = ?, updated_at = ?"
+                    " WHERE done = 0 AND appointment_id = ? AND note = ?",
+                    (new_note, now, int(appointment_id), old_note),
+                )
         return self.get_appointment(appointment_id)
 
     def get_appointment(

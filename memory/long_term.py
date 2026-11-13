@@ -180,6 +180,12 @@ class LongTermMemory:
         """
         if not self.ensure_available():
             return None
+        user_scope = str(user_id or "").strip()
+        if not user_scope:
+            # 空作用域会静默落到共享 medix_local：调用方一定没能确定
+            # 患者/会话命名空间（档案已删除等），不能写入共享记忆
+            logger.warning("Empty memory scope; skip Mem0 summary")
+            return None
 
         try:
             # 构建记忆文本（包含问题和答案摘要），限制长度避免超大 payload
@@ -191,7 +197,7 @@ class LongTermMemory:
             # 添加到 Mem0
             result = self.mem0.add(
                 messages=[{"role": "user", "content": memory_text}],
-                user_id=str(user_id or "medix_local")[:120],
+                user_id=user_scope[:120],
                 metadata={
                     **(metadata or {}),
                     "type": "session_summary",
@@ -237,6 +243,10 @@ class LongTermMemory:
         """
         if not self.ensure_available():
             return []
+        user_scope = str(user_id or "").strip()
+        if not user_scope:
+            logger.warning("Empty memory scope; skip Mem0 search")
+            return []
 
         try:
             result_limit = max(1, min(int(limit or 5), 20))
@@ -246,7 +256,7 @@ class LongTermMemory:
         try:
             results = self.mem0.search(
                 query=query,
-                user_id=str(user_id or "medix_local")[:120],
+                user_id=user_scope[:120],
                 limit=result_limit * 2,
             )
 

@@ -44,6 +44,28 @@ async def search_similar_cases(query: str, max_results: int = 3) -> Dict[str, An
                 "query": query
             }
 
+        # 删除清理尚未完成的作用域不能读取：同名档案重建/清理重试
+        # 窗口内，云端仍可能留着已删除患者的旧摘要（与协调器预检索
+        # 的门禁保持一致）
+        try:
+            from memory import get_session_store
+
+            pending = await asyncio.to_thread(
+                get_session_store().memory_scope_cleanup_pending,
+                scope,
+            )
+        except Exception:
+            pending = False
+        if pending:
+            return {
+                "answer": (
+                    "该档案/会话的长期记忆清理尚未完成，"
+                    "暂不检索历史案例，请稍后再试。"
+                ),
+                "total_found": 0,
+                "query": query,
+            }
+
         # 导入长期记忆系统
         from memory.long_term import LongTermMemory
 

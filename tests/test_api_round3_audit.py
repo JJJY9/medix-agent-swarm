@@ -70,7 +70,10 @@ def test_erase_long_term_clears_session_and_profile_scopes(monkeypatch):
     assert session_memory_scope("s1") in calls["scopes"]
     assert session_memory_scope("s2") in calls["scopes"]
     assert calls["sessions"] == [
-        ("s1", api_server._memory_scope("妈妈", "s1"))
+        ("s1", api_server._memory_scope("妈妈", "s1")),
+        # 旧版本单科会诊可能把无档案会话写进共享 medix_local：
+        # 按 metadata.session_id 精确清理该会话残留
+        ("s2", "medix_local"),
     ]
 
 
