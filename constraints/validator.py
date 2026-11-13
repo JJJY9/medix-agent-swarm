@@ -39,7 +39,7 @@ _DIAGNOSIS_NEGATION_PATTERN = re.compile(
 _DIAGNOSIS_CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
 
 _DOSE_UNIT = (
-    r"(?:mg|g|毫克|克|μg|ug|微克|片|粒|支|ml|毫升|单位|国际单位|iu|u|U)"
+    r"(?:mg|g|毫克|克|μg|µg|ug|微克|片|粒|支|ml|毫升|单位|国际单位|iu|u|U)"
 )
 _NUMERAL = r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十半]+)"
 _DOSE_PATTERN = re.compile(rf"{_NUMERAL}\s*{_DOSE_UNIT}")
@@ -70,17 +70,31 @@ _COUNT_UNIT_PATTERN = re.compile(
 )
 _MEDICATION_TERMS = (
     "药", "口服", "注射", "片剂", "胶囊", "颗粒", "滴剂", "喷雾", "胰岛素",
+    # 常见液体/散剂药物：用「喝/饮用」描述时也需要用药语境
+    "乳果糖", "蒙脱石", "美林", "开塞露", "混悬液", "糖浆", "口服液", "合剂",
 )
 #: 片/粒/支既可能是药也可能是食物，需有明确药名或“药”语境
 _COUNT_UNIT_SUFFIX = re.compile(r"(?:片|粒|支)\s*$")
-#: 毫升/克同样可能是饮水/食物建议；mg/μg 不能算 g（前面还有字母/微符号）
+#: 毫升/克同样可能是饮水/食物建议；mg/μg/毫克/微克不能算 g
 _VOLUME_MASS_UNIT_SUFFIX = re.compile(
-    r"(?<![a-zA-Zµμ])(?:ml|毫升|g|克)\s*$", re.I
+    r"(?<![a-zA-Zµμ毫微])(?:ml|毫升|g|克)\s*$", re.I
 )
 #: 饮水/食物语境词（勿含单字糖/盐，避免误豁免乳果糖等药物剂量）
 _FOOD_WATER_CONTEXT = re.compile(
     r"(?:饮水|喝水|饮用|喝|摄入|饮食|食物|进食|蛋白质|营养|牛奶|豆浆|"
-    r"粥|汤|米饭|水果|蔬菜|纤维|水分)"
+    r"粥|汤|米饭|水果|蔬菜|纤维|水分|面包|馒头|饼干|鸡蛋|面条)"
+)
+#: 剂量单位后紧跟的食物名词（"吃 200 克水果""保证 2000ml 饮水量"）。
+#: 必须是单位后紧邻（允许空白与「的」），"3g 与牛奶同服"不算饮食语境
+_FOOD_AFTER_UNIT = re.compile(
+    r"^\s*(?:的)?(?:全麦|新鲜)?\s*"
+    r"(?:水果|蔬菜|饮水|水分|蛋白质|纤维|牛奶|豆浆|食物|饮食|面包|馒头"
+    r"|饼干|鸡蛋|面条|米饭|粥|汤|果汁)"
+)
+#: 非药物自我护理（生理盐水洗鼻、温水坐浴等），不按处方处理
+_SELF_CARE_CONTEXT = re.compile(
+    r"(?:生理盐水|盐水|温水|清水|热水|漱口|坐浴|洗鼻|鼻腔冲洗|湿敷"
+    r"|泡脚|沐浴)"
 )
 #: 直接支配剂量的用药动词：出现即视为给药方案而非饮食建议
 _DOSE_USE_VERB = re.compile(
@@ -280,23 +294,42 @@ def _contains_prescription(output: str) -> bool:
                 continue
             if _match_in_safe_medication_context(output, match):
                 continue
-            # 片/粒/支或毫升/克也可能是食物/饮水建议（“每天吃一片面包”
-            # “建议每天饮水 2000ml”）。毫升/克仅在确有饮食语境且没有
-            # 用药动词时豁免：“服用蒙脱石散 3g”“使用开塞露 20ml”
-            # 仍按处方识别，μg/mg 也不受克单位影响
+            # 片/粒/支或毫升/克也可能是食物/饮水/自我护理建议
+            # （“每天吃一片面包”“吃 200 克水果”“生理盐水洗鼻”）。
+            # 食物名词可以紧跟在单位之后；毫升/克仍要求无用药动词，
+            # “服用蒙脱石散 3g”“使用开塞露 20ml”按处方识别，
+            # μg/mg/毫克/微克 也不受克单位影响
             matched = match.group(0)
+            tail = output[match.end():match.end() + 8]
+            clause_start = max(
+                output.rfind(delim, 0, match.end())
+                for delim in "，。；;！？!?\n"
+            )
+            clause = output[clause_start + 1:match.end() + 8]
+            food_after = bool(_FOOD_AFTER_UNIT.search(tail))
             if (
-                _COUNT_UNIT_SUFFIX.search(matched)
-                and not medication_context
+                not known_drug
+                and (
+                    _SELF_CARE_CONTEXT.search(matched)
+                    or _SELF_CARE_CONTEXT.search(tail)
+                )
             ):
                 continue
-            if (
-                _VOLUME_MASS_UNIT_SUFFIX.search(matched)
-                and not medication_context
-                and _FOOD_WATER_CONTEXT.search(matched)
-                and not _DOSE_USE_VERB.search(matched)
-            ):
-                continue
+            if _COUNT_UNIT_SUFFIX.search(matched):
+                if food_after:
+                    continue
+                if not medication_context:
+                    continue
+            if _VOLUME_MASS_UNIT_SUFFIX.search(matched):
+                if (
+                    _FOOD_WATER_CONTEXT.search(clause)
+                    and not _DOSE_USE_VERB.search(clause)
+                    and not any(
+                        term in clause for term in _MEDICATION_TERMS
+                    )
+                    and not _mentions_known_drug(clause)
+                ):
+                    continue
             return True
 
     if not medication_context:
@@ -307,6 +340,21 @@ def _contains_prescription(output: str) -> bool:
         if _match_is_overdose(output, match):
             continue
         if _match_in_safe_medication_context(output, match):
+            continue
+        tail = output[match.end():match.end() + 8]
+        if _FOOD_AFTER_UNIT.search(tail):
+            continue
+        clause_start = max(
+            output.rfind(delim, 0, match.end())
+            for delim in "，。；;！？!?\n"
+        )
+        clause = output[clause_start + 1:match.end() + 8]
+        if (
+            _FOOD_WATER_CONTEXT.search(clause)
+            and not _DOSE_USE_VERB.search(clause)
+            and not any(term in clause for term in _MEDICATION_TERMS)
+            and not _mentions_known_drug(clause)
+        ):
             continue
         return True
 
