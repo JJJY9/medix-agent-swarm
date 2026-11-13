@@ -7,11 +7,13 @@ import os
 import sys
 import asyncio
 import json
+import math
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Tuple
 from dataclasses import dataclass
 import httpx
 from openai import (
+    APIError,
     APIStatusError,
     APIConnectionError,
     APITimeoutError,
@@ -273,6 +275,16 @@ def classify_llm_error(exc: Exception) -> LLMError:
             status_code=status,
         )
 
+    # 流式 SSE 的 error 事件会被 SDK 抛成没有 status 的 APIError；
+    # 这类服务端中断应允许重试，不能和普通参数错误一样直接失败
+    if isinstance(exc, APIError) and status is None:
+        return LLMError(
+            "llm_server",
+            "模型服务在流式返回中中断，请稍后重试。",
+            retryable=True,
+            status_code=status,
+        )
+
     return LLMError(
         "llm_error",
         f"模型调用失败：{message[:200]}",
@@ -319,6 +331,15 @@ class LLMClient:
                     or 60
                 )
             except (TypeError, ValueError):
+                self.request_timeout = 60.0
+            if (
+                not math.isfinite(self.request_timeout)
+                or self.request_timeout <= 0
+            ):
+                # 0/负数/NaN 会让 SDK 立即超时或行为异常，回退默认值
+                logger.warning(
+                    "MEDIX_TIMEOUT 必须是正数，已回退为 60 秒"
+                )
                 self.request_timeout = 60.0
 
             # 关闭 SDK 自带重试，统一由 chat_with_retry / AgentLoop 控制，

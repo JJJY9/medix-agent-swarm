@@ -4243,20 +4243,25 @@ function renderUsageBudget(data) {
   const percent = Number(
     data.percent != null ? data.percent : (total / budget) * 100
   );
+  // 99.95% 四舍五入到 100.0 不等于真的超预算
+  const exceeded = data.exceeded === true || total >= budget;
   const width = Math.max(0, Math.min(100, percent));
+  const displayPercent = (
+    !exceeded && percent >= 100 ? 99.9 : percent
+  ).toFixed(1);
 
   els.usageBudget.hidden = false;
   els.usageBudgetText.textContent =
     `${total.toLocaleString()} / ${budget.toLocaleString()} tokens` +
-    `（${percent.toFixed(1)}%）`;
+    `（${displayPercent}%）`;
   els.usageBudgetBar.style.width = `${width}%`;
 
   els.usageBudget.classList.toggle(
-    'warn', percent >= 80 && percent < 100
+    'warn', percent >= 80 && !exceeded
   );
-  els.usageBudget.classList.toggle('critical', percent >= 100);
+  els.usageBudget.classList.toggle('critical', exceeded);
 
-  if (percent >= 100) {
+  if (exceeded) {
     els.usageBudgetHint.textContent = '已超出本月预算，请留意模型费用。';
   } else if (percent >= 80) {
     els.usageBudgetHint.textContent = '已使用 80% 以上，接近本月预算。';
@@ -19837,14 +19842,23 @@ async function send(question) {
           setAgentState(event.agent_id, 'working', '接诊中');
           logStep(`${event.name} 开始接诊`);
         } else if (event.type === 'agent_done') {
-          setAgentState(event.agent_id, 'done', '已出具意见');
+          const failed = event.failed === true;
+          setAgentState(
+            event.agent_id,
+            failed ? 'failed' : 'done',
+            failed ? '未能完成' : '已出具意见'
+          );
           firstAgentSeen = true;
           agentDoneCount += 1;
           workingText.textContent =
             agentDoneCount >= AGENT_IDS.length
               ? '各科室意见已齐，正在汇总会诊意见…'
-              : `${event.name} 已出具意见 · 已完成 ${agentDoneCount} 个科室`;
-          logStep(`${event.name} 已出具会诊意见`);
+              : `${event.name} ${failed ? '未能完成' : '已出具意见'}`
+                + ` · 已处理 ${agentDoneCount} 个科室`;
+          logStep(
+            `${event.name} ${failed ? '未能完成（已跳过）' : '已出具会诊意见'}`,
+            !failed
+          );
         } else if (event.type === 'token') {
           if (!streamTurn) {
             working.remove();

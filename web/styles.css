@@ -1551,6 +1551,13 @@ html[data-theme="dark"] .voice.listening { background: #b53333; }
 .agent[data-state="working"]::before,
 .agent[data-state="done"]::before { background: var(--hue); }
 
+.agent[data-state="failed"]::before { background: var(--triage-1); }
+
+.agent[data-state="failed"] .agent-state {
+  color: var(--triage-1);
+  font-weight: 600;
+}
+
 .agent[data-state="working"] { background: color-mix(in srgb, var(--hue) 7%, transparent); }
 .agent[data-state="done"]    { background: color-mix(in srgb, var(--hue) 4%, transparent); }
 
