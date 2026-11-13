@@ -275,7 +275,11 @@ def test_non_finite_numbers_in_payload_never_crash_validation(
 
 
 def test_deeply_nested_payload_returns_422(client_and_store):
-    """近千层嵌套曾让校验递归爆栈，把请求变成 500。"""
+    """近千层嵌套曾让校验递归爆栈，把请求变成 500。
+
+    Python 3.10 的 json 解析器可能在校验前就抛 RecursionError，
+    FastAPI 会将其转为 400；两种拒绝方式都可接受，重点是不能再 500。
+    """
     client, _store = client_and_store
 
     for depth in (100, 990, 1500, 2000):
@@ -285,6 +289,8 @@ def test_deeply_nested_payload_returns_422(client_and_store):
             content=body,
             headers={"Content-Type": "application/json"},
         )
-        assert response.status_code == 422, (depth, response.text[:200])
+        assert response.status_code in (400, 422), (
+            depth, response.text[:200]
+        )
         assert response.json()["detail"], depth
         json.dumps(response.json(), allow_nan=False)

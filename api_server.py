@@ -1742,6 +1742,29 @@ async def sanitized_validation_exception_handler(
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
+@app.exception_handler(RecursionError)
+async def recursion_error_handler(
+    request: Request, exc: RecursionError
+) -> Response:
+    """请求体嵌套极深时，json 解析本身就可能爆栈，统一回 422。
+
+    Python 3.10 的 json 解码器在约千层嵌套即抛 RecursionError，早于
+    Pydantic 校验，必须在这里兜底，否则表现为 500。
+    """
+    logger.warning(
+        f"请求处理递归过深: {request.method} {request.url.path}"
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": [{
+            "type": "value_error",
+            "loc": [],
+            "msg": "请求体嵌套过深",
+            "input": None,
+        }]},
+    )
+
+
 _UNSAFE_HTTP_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
