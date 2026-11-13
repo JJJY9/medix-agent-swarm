@@ -184,6 +184,12 @@ def test_visit_recommendation_negation_and_distance():
     assert has_visit_recommendation("无法去医院就诊") is False
     assert has_visit_recommendation("没有及时去医院") is False
     assert has_visit_recommendation("没有及时拨打120") is False
+    assert has_visit_recommendation("疼得没法去医院") is False
+    assert has_visit_recommendation("没人送医院") is False
+    assert has_visit_recommendation("没送到医院") is False
+    assert has_visit_recommendation("来不及去医院") is False
+    assert has_visit_recommendation("没车送医院") is False
+    assert has_visit_recommendation("没能送到医院") is False
     assert has_visit_recommendation("建议尽快去医院") is True
     # 否定词离得远时不能把真实建议一并否定
     assert has_visit_recommendation("没有明显诱因也应去医院检查") is True

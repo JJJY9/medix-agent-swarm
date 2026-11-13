@@ -139,3 +139,12 @@ def test_backup_export_keeps_server_bytes():
 
     assert "await res.text()" in chunk
     assert "JSON.stringify(data, null, 2)" not in chunk
+
+
+def test_daily_metrics_do_not_show_per_record_target_chip():
+    """步数/饮水以今日累计为准，不能并排显示按条的达标数。"""
+    app = (
+        Path(__file__).resolve().parents[1] / "web" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "!isDailyMetric" in app

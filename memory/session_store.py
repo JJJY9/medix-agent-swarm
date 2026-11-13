@@ -2206,6 +2206,29 @@ class SessionStore:
                     ON conditions(profile, status, name);
                 """
             )
+            # 备份导入按「档案 + 创建时间」身份配对，复合索引避免全表扫描
+            self._conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_metrics_profile_created
+                    ON health_metrics(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_symptoms_identity
+                    ON symptoms(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_medications_identity
+                    ON medications(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_vaccinations_identity
+                    ON vaccinations(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_appointments_identity
+                    ON appointments(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_allergies_identity
+                    ON allergies(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_care_items_identity
+                    ON care_items(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_visit_records_identity
+                    ON visit_records(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_conditions_identity
+                    ON conditions(profile, created_at);
+                """
+            )
             # 旧版本数据库没有 metadata 列，就地迁移
             columns = {
                 row["name"]
@@ -3936,7 +3959,14 @@ class SessionStore:
                 values,
             ).fetchall()
             claimed = {int(row["id"]) for row in rows}
-        if raw_id > 0:
+            # 本地存在不属于本批主键的候选，说明本地 id 与备份主键已漂移
+            # （跨库恢复/重建后再次导入）：逐行主键复用可能把同秒组里
+            # 的另一条记录当成自己，改用按 id 升序的确定性配对
+            state[("drifted", identity)] = bool(
+                claimed - (reserved_ids or set())
+            )
+        drifted = bool(state.get(("drifted", identity)))
+        if raw_id > 0 and not drifted:
             row = self._conn.execute(
                 f"SELECT id FROM {table} WHERE id = ? AND {where}",
                 (raw_id, *values),
@@ -3945,7 +3975,7 @@ class SessionStore:
                 claimed.discard(int(row["id"]))
                 state[identity] = claimed
                 return int(row["id"])
-        reserved = reserved_ids or set()
+        reserved = set() if drifted else (reserved_ids or set())
         usable = [item for item in claimed if item not in reserved]
         if not usable:
             state[identity] = claimed
@@ -4257,10 +4287,13 @@ class SessionStore:
                     profiles_imported += 1
 
             metrics_imported = 0
-            # 按内容统计库中已有条数：同一备份里同分钟的多条同值读数
-            # 仍会全部恢复，跨来源重复导入则按数量合并跳过
+            # 备份行带 created_at 时先按「档案 + 指标 + 创建时间」身份
+            # 判重（数值/备注可编辑，改完恢复不复制旧读数）；身份未命中
+            # 再按内容与数量合并，保持跨来源去重的既有契约
             existing_metric_counts: Dict[tuple, int] = {}
             imported_metric_counts: Dict[tuple, int] = {}
+            metric_identity_claims: Dict[tuple, set] = {}
+            metric_raw_ids = self._import_raw_ids(raw_metrics)
             if isinstance(raw_metrics, list):
                 for raw in raw_metrics[:IMPORT_LIST_LIMITS["health_metrics"]]:
                     if not isinstance(raw, dict):
@@ -4280,6 +4313,21 @@ class SessionStore:
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
+                    if created_key:
+                        existing_metric_id = self._import_identity_match(
+                            "health_metrics",
+                            ("profile", "metric", "created_at"),
+                            (
+                                normalized["profile"],
+                                normalized["metric"],
+                                created_key,
+                            ),
+                            metric_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
+                            reserved_ids=metric_raw_ids,
+                        )
+                        if existing_metric_id is not None:
+                            continue
                     metric_key = (
                         normalized["profile"],
                         normalized["metric"],

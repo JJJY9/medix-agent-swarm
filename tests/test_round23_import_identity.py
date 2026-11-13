@@ -220,3 +220,63 @@ def test_restore_after_visit_edit_does_not_duplicate(store):
     records = store.list_visit_records("妈妈")
     assert len(records) == 1
     assert records[0]["diagnosis"] == "原发性高血压"
+
+
+def test_restore_after_metric_edit_does_not_duplicate(store):
+    metric = store.add_metric("妈妈", "weight", 62.5)
+    backup = store.export_data()
+
+    store.update_metric(metric["id"], value1=63.0)
+
+    result = store.import_data(backup)
+
+    # 身份命中：不再复制旧读数；跨来源同内容的去重仍由内容计数兜底
+    assert result["metrics"] == 0
+    rows = store.list_metrics("妈妈", "weight")
+    assert len(rows) == 1
+    assert rows[0]["value1"] == 63.0
+
+
+def test_repeated_restore_with_shifted_ids_keeps_log_mapping(
+    store, tmp_path
+):
+    """目标库 id 与备份主键漂移时，重复恢复不能复制或错挂用药打卡。"""
+    for name in ("药A", "药B", "药C", "药D"):
+        med = store.add_medication("妈妈", name, "1粒", "每日一次")
+        store.add_medication_log(med["id"], taken_at="2026-11-13T08:00")
+    # 固定为同一秒，确定性地构造「同秒身份组」（避免跨越秒边界）
+    with store._lock, store._conn:
+        store._conn.execute(
+            "UPDATE medications SET created_at = '2026-11-13T08:00:00'"
+        )
+    backup = store.export_data()
+
+    target = SessionStore(str(tmp_path / "target.db"))
+    try:
+        # 目标库先有一条本地用药，备份行的本地 id 整体后移一位
+        target.add_medication("妈妈", "本地药", "1粒", "每日一次")
+
+        first = target.import_data(backup)
+        assert first["medications"] == 4
+        logs_first = target.list_medication_logs(
+            None, "妈妈", 100, 0, 30
+        )
+        assert len(logs_first) == 4
+
+        again = target.import_data(backup)
+        assert again["medications"] == 0
+        logs_second = target.list_medication_logs(
+            None, "妈妈", 100, 0, 30
+        )
+        assert len(logs_second) == 4, "重复恢复不能复制打卡"
+
+        names_by_id = {
+            row["id"]: row["name"]
+            for row in target.list_medications("妈妈")
+        }
+        attached = sorted(
+            names_by_id[log["medication_id"]] for log in logs_second
+        )
+        assert attached == ["药A", "药B", "药C", "药D"]
+    finally:
+        target.close()

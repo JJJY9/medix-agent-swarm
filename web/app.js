@@ -7249,7 +7249,14 @@ function renderMetricSummary(data) {
     addChip('较上期', deltaText + unit);
   }
 
-  if (data.target && Number.isFinite(Number(data.within_target))) {
+  // 步数/饮水按自然日判定：不再显示按条的「达标 x/N」，以今日累计为准
+  const isDailyMetric = data.daily_total !== null
+    && data.daily_total !== undefined;
+  if (
+    !isDailyMetric
+    && data.target
+    && Number.isFinite(Number(data.within_target))
+  ) {
     addChip('达标', `${data.within_target}/${count} 条`);
   }
 }

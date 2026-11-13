@@ -547,12 +547,23 @@ class SwarmCoordinator:
             logger.info(f"Route: Single Agent ({agent_id})")
             mode = "single_agent"
             routed_question = self._routed_question(question, task)
-            result = await agent.process({
-                'question': routed_question,
-                'memory_question': question,
-                'context': single_context,
-                'session_id': session_id
-            }, on_token=on_token)
+            try:
+                result = await agent.process({
+                    'question': routed_question,
+                    'memory_question': question,
+                    'context': single_context,
+                    'session_id': session_id
+                }, on_token=on_token)
+            except (asyncio.CancelledError, LLMError) as exc:
+                # AgentLoop 只挂自己的用量：Lead 分解的 token 也要合并
+                merged = merge_usages(
+                    lead_usage, getattr(exc, "usage", None)
+                )
+                calls = (1 if lead_usage else 0) + int(
+                    getattr(exc, "llm_calls", 0) or 0
+                )
+                self._attach_usage(exc, merged, calls)
+                raise
             final_answer = result.get('answer', '')
 
             result["usage"] = merge_usages(lead_usage, result.get("usage"))
@@ -594,6 +605,9 @@ class SwarmCoordinator:
                 patient_profile=patient_profile,
             )
             final_answer = result.get('answer', '')
+            if usage_state is not None:
+                # 落库窗口被取消时，外层包装器仍有完整用量可记账
+                usage_state["result"] = result
 
             # Swarm 的长期记忆已在 _process_with_swarm 中保存；这里补齐 triage 后
             # 再把会诊依据写入 SQLite
@@ -618,11 +632,21 @@ class SwarmCoordinator:
                 logger.info("Swarm disabled, fallback to ConsultationAgent")
                 mode = "disabled_swarm"
 
-            result = await self.consultation_agent.process({
-                'question': question,
-                'context': single_context,
-                'session_id': session_id
-            }, on_token=on_token)
+            try:
+                result = await self.consultation_agent.process({
+                    'question': question,
+                    'context': single_context,
+                    'session_id': session_id
+                }, on_token=on_token)
+            except (asyncio.CancelledError, LLMError) as exc:
+                merged = merge_usages(
+                    lead_usage, getattr(exc, "usage", None)
+                )
+                calls = (1 if lead_usage else 0) + int(
+                    getattr(exc, "llm_calls", 0) or 0
+                )
+                self._attach_usage(exc, merged, calls)
+                raise
             final_answer = result.get('answer', '')
 
             result["usage"] = merge_usages(lead_usage, result.get("usage"))
