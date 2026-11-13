@@ -713,8 +713,10 @@ def calculate_fib4(
         risk = "高风险"
         detail = "进展性肝纤维化可能性较高"
 
+    # 分层使用未取整的值：2.674 舍入成 2.67 会与「高风险」结论矛盾；
+    # 展示保留三位小数，与 APRI 的处理保持一致
     return {
-        "fib4": round(score, 2),
+        "fib4": round(score, 3),
         "risk": risk,
         "detail": detail,
         "note": "FIB-4 适用于成人慢性肝病风险分层；65 岁以上人群阈值需上调，急性肝损伤或血小板/转氨酶异常会影响结果。",

@@ -54,6 +54,17 @@ def test_parse_chinese_numbers():
     assert parse_quick_metric("饮水 一千零五毫升")["value1"] == 1005
 
 
+def test_parse_myriad_numbers():
+    assert parse_quick_metric("今天走了一万步")["value1"] == 10000
+    assert parse_quick_metric("饮水 一万两千毫升")["value1"] == 12000
+    # 「一万二」「两万五」按惯例是 12000 / 25000
+    assert parse_quick_metric("走了 一万二 步")["value1"] == 12000
+    assert parse_quick_metric("走了 两万五 步")["value1"] == 25000
+    assert parse_quick_metric("饮水 一万五毫升")["value1"] == 15000
+    # 「零」占位时不再是省略写法
+    assert parse_quick_metric("饮水 一万零五百毫升")["value1"] == 10500
+
+
 def test_numbers_must_be_next_to_metric():
     parsed = parse_quick_metric("餐后2小时血糖7.8")
     assert parsed["value1"] == 7.8

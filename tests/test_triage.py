@@ -148,6 +148,60 @@ def test_new_red_flags_respect_negation():
     assert detect_red_flags("没有酮症酸中毒")["level"] == "none"
 
 
+def test_uncertain_double_negation_still_flags():
+    # 「尚未完全排除/暂时不除外」等表示仍有可能，不能当成否定漏报
+    for text in (
+        "尚未完全排除酮症酸中毒",
+        "暂时不除外糖尿病酮症",
+        "不能彻底排除酮症酸中毒",
+        "未能排除酮症酸中毒",
+        "未能明确地排除酮症酸中毒",
+        "不可排除酮症酸中毒",
+        "难以排除酮症酸中毒",
+    ):
+        assert "糖尿病急症" in detect_red_flags(text)["matches"], text
+
+    # 单纯「排除」及其完成态仍是阴性描述
+    assert detect_red_flags("已排除酮症酸中毒")["level"] == "none"
+    assert detect_red_flags("医生排除了酮症酸中毒")["level"] == "none"
+
+
+def test_visit_recommendation_negation_and_distance():
+    from core.triage import has_visit_recommendation
+
+    assert has_visit_recommendation("请立即去医院") is True
+    assert has_visit_recommendation("目前还没有去医院") is False
+    assert has_visit_recommendation("尚未去医院就诊") is False
+    # 否定词离得远时不能把真实建议一并否定
+    assert has_visit_recommendation("没有明显诱因也应去医院检查") is True
+
+
+def test_negative_history_does_not_count_as_active():
+    fever = "发热 38.5 度，咳嗽"
+    assert detect_red_flags(fever, {"history": "无化疗史"})["level"] == "none"
+    assert detect_red_flags(
+        fever, {"history": "HIV抗体阴性"}
+    )["level"] == "none"
+    assert detect_red_flags(
+        fever, {"history": "正在化疗"}
+    )["matches"] == ["免疫功能低下伴发热"]
+    # 长否定窗口不能把真实病史误判为否定
+    assert detect_red_flags(
+        fever, {"history": "无诱因化疗后"}
+    )["matches"] == ["免疫功能低下伴发热"]
+    assert detect_red_flags(
+        fever, {"history": "化疗后复查阴性"}
+    )["matches"] == ["免疫功能低下伴发热"]
+
+    trauma = "摔倒后头部撞到门框"
+    assert detect_red_flags(
+        trauma, {"history": "无抗凝药物"}
+    )["level"] == "none"
+    assert detect_red_flags(
+        trauma, {"medications": "没有抗凝药物"}
+    )["level"] == "none"
+
+
 def test_active_medications_trigger_anticoagulant_head_injury():
     result = detect_red_flags(
         "今天摔倒撞到头了", {"active_medications": "华法林 3 mg 每日一次"}
