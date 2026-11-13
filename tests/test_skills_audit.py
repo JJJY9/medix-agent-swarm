@@ -55,6 +55,27 @@ def test_skill_registry_rejects_unknown_and_missing_arguments():
     assert calls == []
 
 
+def test_skill_annotation_types_and_varargs():
+    from agents.skill_registry_mixin import SkillRegistryMixin
+
+    assert SkillRegistryMixin._annotation_to_skill_type("bool") == "boolean"
+    assert SkillRegistryMixin._annotation_to_skill_type("list[int]") == "array"
+    assert SkillRegistryMixin._annotation_to_skill_type(list[int]) == "array"
+    assert SkillRegistryMixin._annotation_to_skill_type(dict[str, int]) == "object"
+    assert SkillRegistryMixin._annotation_to_skill_type(int | None) == "integer"
+    assert SkillRegistryMixin._annotation_to_skill_type("Dict[str, int]") == "object"
+
+    mixin = SkillRegistryMixin()
+
+    def skill(age: int, tags: list[str], *extra, **options):
+        pass
+
+    parameters = mixin._infer_skill_parameters({"function": skill})
+
+    assert [param.name for param in parameters] == ["age", "tags"]
+    assert [param.type for param in parameters] == ["integer", "array"]
+
+
 def test_skill_registry_coerces_registered_types():
     registry = SkillRegistry()
     calls = []
