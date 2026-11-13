@@ -268,7 +268,12 @@ def test_weekly_report_counts_consultations(client_and_store):
     store.set_session_profile("weekly-previous", "母亲")
     with store._lock, store._conn:
         store._conn.execute(
-            "UPDATE sessions SET created_at = ? WHERE id = ?",
+            "UPDATE sessions SET created_at = ?, updated_at = ?"
+            " WHERE id = ?",
+            (previous, previous, "weekly-previous"),
+        )
+        store._conn.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = ?",
             (previous, "weekly-previous"),
         )
 

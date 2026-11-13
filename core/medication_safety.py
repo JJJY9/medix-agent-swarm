@@ -739,7 +739,11 @@ def _find_drugs(text: str, group: str) -> List[str]:
         # 只跳过局部剂型所在的短语，不能把同段里的口服激素一起屏蔽
         found: List[str] = []
         for canonical, aliases in DRUG_GROUPS.get(group, ()):
-            for chunk in re.split(r"[；;，,\n、]", text):
+            # 和/与/及 也要切分：同一短语里的口服激素不能被局部剂型
+            # 标记一起跳过（「氢化可的松乳膏和泼尼松」）
+            for chunk in re.split(
+                r"(?:以及|[；;，,\n、和与及])", text
+            ):
                 if any(
                     marker in chunk
                     for marker in _TOPICAL_STEROID_MARKERS

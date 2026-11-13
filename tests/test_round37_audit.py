@@ -340,12 +340,12 @@ def test_import_medication_key_hole_restores_deleted(tmp_path):
         result = target.import_data(backup)
 
         # 同秒同名不同剂量、主键有空洞：被删的 100mg 必须补回，
-        # 本地编辑的 75mg 保留；不能因为名字相同把存活行认领给已删行
+        # 本地编辑的 75mg 保留；最后的备份行认领存活行，不再复制旧 50mg
         doses = {
             item["dose"] for item in target.list_medications(limit=100)
         }
-        assert result["medications"] == 2
-        assert {"100mg", "50mg", "75mg"} <= doses
+        assert result["medications"] == 1
+        assert doses == {"100mg", "75mg"}
     finally:
         target.close()
 
@@ -488,7 +488,12 @@ def test_family_insights_risk_respects_window(client_and_store):
     old_day = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
     with store._lock, store._conn:
         store._conn.execute(
-            "UPDATE sessions SET created_at = ? WHERE id = ?",
+            "UPDATE sessions SET created_at = ?, updated_at = ?"
+            " WHERE id = ?",
+            (f"{old_day}T08:00:00", f"{old_day}T08:00:00", "recent-risk"),
+        )
+        store._conn.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = ?",
             (f"{old_day}T08:00:00", "recent-risk"),
         )
 
@@ -508,8 +513,9 @@ def test_family_csv_risk_label_requires_window_consultation(client_and_store):
     old_day = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
     with store._lock, store._conn:
         store._conn.execute(
-            "UPDATE sessions SET created_at = ? WHERE id = ?",
-            (f"{old_day}T08:00:00", "old-risk"),
+            "UPDATE sessions SET created_at = ?, updated_at = ?"
+            " WHERE id = ?",
+            (f"{old_day}T08:00:00", f"{old_day}T08:00:00", "old-risk"),
         )
 
     response = client.get(
@@ -551,7 +557,7 @@ def test_forwarded_for_append_proxy_keeps_rightmost():
     })) == ""
 
 
-def test_shared_bucket_with_x_real_ip_does_not_lock_family(
+def test_shared_bucket_with_address_header_fails_closed(
     client_and_store, monkeypatch
 ):
     from core.ratelimit import SlidingWindowLimiter
@@ -561,6 +567,7 @@ def test_shared_bucket_with_x_real_ip_does_not_lock_family(
     client, _store = client_and_store
     token = "a-secure-random-token-123"
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", token)
+    monkeypatch.delenv("MEDIX_TRUST_PROXY_HEADERS", raising=False)
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
@@ -578,8 +585,8 @@ def test_shared_bucket_with_x_real_ip_does_not_lock_family(
     )
     assert wrong.status_code == 401
 
-    # 只有 X-Real-IP 的代理拿不到应用层可信客户端地址：所有用户共用
-    # 计数桶，另一个来源的正确令牌不能被预锁定
+    # 未信任代理头时计数键仍是共享的对端地址：正确令牌也被预锁定
+    # （fail closed 到限流，而不是免限流）
     other = client.get(
         "/api/sessions",
         headers={
@@ -587,7 +594,30 @@ def test_shared_bucket_with_x_real_ip_does_not_lock_family(
             "X-Real-IP": "198.51.100.20",
         },
     )
-    assert other.status_code == 200
+    assert other.status_code == 429
+
+    # 显式信任代理头后按转发的真实地址分桶，另一个来源不受影响
+    monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setattr(
+        api_server, "auth_failure_limiter",
+        SlidingWindowLimiter(1, window=300),
+    )
+    blocked = client.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": "bad-guess",
+            "X-Real-IP": "198.51.100.30",
+        },
+    )
+    assert blocked.status_code == 401
+    distinct = client.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": token,
+            "X-Real-IP": "198.51.100.40",
+        },
+    )
+    assert distinct.status_code == 200
 
 
 def test_uvicorn_proxy_headers_disabled():
@@ -668,9 +698,12 @@ def test_app_deep_link_consumed_after_success():
     assert "renderStoredMessages(" in restore
     # 首次 GET 失败不能消费深链标记，成功渲染后才消费
     assert restore.index("renderStoredMessages(") < restore.index(
-        "if (deepLinkedSession) deepLinkedSession = false;"
+        "if (deepLinkedSession) consumeDeepLink();"
     )
     assert "contextUserEdited = true;" in app_js
+    # 未消费的深链持久化到 sessionStorage，刷新后仍按深链处理
+    assert "DEEP_LINK_PENDING_KEY" in app_js
+    assert "pendingDeepLink === initialSessionFromUrl" in app_js
 
 
 def test_app_restore_race_guarded_by_open_session_seq():

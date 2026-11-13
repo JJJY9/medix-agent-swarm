@@ -120,6 +120,12 @@ _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
 _ALMOST_PATTERN = re.compile(
     r"(?:差点|险些|几乎|差一点|差些)\s*(?:没有|没)?\s*$"
 )
+#: 「从未有过的胸痛」「前所未有的呼吸困难」是“从未如此”的最高级
+#: 描述，实际为阳性，不能被否定填充词误判
+_SUPERLATIVE_NOVELTY_RE = re.compile(
+    r"(?:从未有过|从来没有过|从没有过|未曾有过|前所未有|"
+    r"从未出现过|从未像这样|第一次出现)[^，。；]{0,2}的\s*$"
+)
 
 #: 「不排除/不能排除 X」表示 X 仍有可能，不能当成否定
 _DOUBLE_NEGATION_SUFFIXES = (
@@ -178,6 +184,9 @@ def _is_negated(prefix: str) -> bool:
     if _ALMOST_PATTERN.search(prefix):
         return False
     stripped = prefix.rstrip()
+    if _SUPERLATIVE_NOVELTY_RE.search(stripped):
+        # 「从未有过的胸痛」是新发阳性描述，不是否定
+        return False
     if _UNCERTAIN_QUESTION_RE.search(stripped):
         # 「不知道是不是胸痛」「有没有胸痛」「是否呼吸困难」是疑似，
         # 与妊娠不确定的既有口径一致：按阳性处理，不能漏报
@@ -495,8 +504,20 @@ def _clean_complaint_clause(clause: str) -> str:
         if prefix and (
             _COURSE_MARKER_RE.search(prefix) is not None
             or any(marker in prefix for marker in _COURSE_MARKERS)
+            # 多症状枚举、客观测量值、头外伤或急性修饰都是真实主诉，
+            # 不能因为带「是什么病」就整句丢弃
+            or re.search(r"[、和及与]", prefix) is not None
+            or re.search(r"\d", prefix) is not None
+            or any(term in prefix for term in HEAD_TRAUMA_TERMS)
+            or any(
+                word in prefix
+                for word in (
+                    "突发", "突然", "剧烈", "加重", "无法", "不能",
+                    "大量", "持续", "反复",
+                )
+            )
         ):
-            # 带病程/时间线索的定义问句通常是在描述当前症状
+            # 带病程/时间线索或多症状的定义问句通常是在描述当前症状
             return prefix
         return ""
     return clause
@@ -695,7 +716,13 @@ _PAST_MEDICATION_PATTERN = re.compile(
     r"[^，。；]{0,8}(?:服用|口服|吃|用|注射|打)"
 )
 _CONTINUOUS_MEDICATION_PATTERN = re.compile(
-    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|这半年|近半年)"
+    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|这半年|近半年|"
+    r"几天|几日|几周|数天|数周|近期|这几天|最近|"
+    r"一周|两周|[一二两三四五六七八九十0-9]+(?:天|周|个月)来?)"
+)
+#: 同一分句出现这些词时仍属当前用药（即使前半句提到以前）
+_CURRENT_MEDICATION_CUE = re.compile(
+    r"(?:现在|目前|还在|仍在|仍|继续|改为|换成)"
 )
 
 #: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
@@ -839,8 +866,10 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if (
             _PAST_MEDICATION_PATTERN.search(clause)
             and not _CONTINUOUS_MEDICATION_PATTERN.search(clause)
+            and not _CURRENT_MEDICATION_CUE.search(clause)
         ):
-            # 「以前吃华法林」是既往用药；「过去半年每天吃」仍属当前
+            # 「以前吃华法林」是既往用药；含近期时长或「现在还在吃」
+            # 的分句仍属当前用药
             continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，

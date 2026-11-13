@@ -114,7 +114,7 @@ def test_import_rejects_invalid_repeat_window(store):
     assert result["invalid"] == 1
 
 
-def test_import_clears_memory_cleanup_queue(store):
+def test_import_keeps_memory_cleanup_queue(store):
     store.save_profile("妈妈", {"sex": "女"})
     backup = store.export_data()
     store.delete_profile("妈妈")
@@ -125,9 +125,11 @@ def test_import_clears_memory_cleanup_queue(store):
 
     store.import_data(backup)
 
+    # 恢复档案不能丢弃未完成的远端删除：队列保留后清理循环会按
+    # 删除时间窗清理旧摘要，并继续阻挡检索
     with store._lock:
         after = store.list_memory_cleanup()
-    assert after == []
+    assert after == before
 
 
 def test_reminder_content_match_not_cross_profile(store):

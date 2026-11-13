@@ -768,6 +768,9 @@ let sessionId = initialSessionFromUrl
 let lastServerMessageId = 0;
 //: 会诊中切换/清空档案后，下一轮提问前必须开启新会话
 const PENDING_RESET_KEY = 'medix.pendingSessionReset';
+// 未消费的深链：首屏恢复失败后整页刷新仍按深链处理，避免退化为
+// 普通刷新并把上一患者的补充信息带进深链会话
+const DEEP_LINK_PENDING_KEY = 'medix.deepLinkPending';
 let pendingSessionReset = false;
 //: ?session= 深链且与本标签页上次会话不同：按“打开历史会话”处理
 let deepLinkedSession = false;
@@ -781,7 +784,14 @@ let sessionRestoreInFlight = false;
 const previousTabSession = safeSessionGet('medix.session.tab');
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
-  deepLinkedSession = initialSessionFromUrl !== previousTabSession;
+  const pendingDeepLink = safeSessionGet(DEEP_LINK_PENDING_KEY);
+  deepLinkedSession = (
+    initialSessionFromUrl !== previousTabSession
+    || pendingDeepLink === initialSessionFromUrl
+  );
+  if (deepLinkedSession) {
+    safeSessionSet(DEEP_LINK_PENDING_KEY, initialSessionFromUrl);
+  }
 } else if (sessionId && !previousTabSession) {
   // 从共享 localStorage 采纳的会话要固定到本标签页：其它标签页之后
   // 切换会话并写入 localStorage 时，本标签页刷新才不会跟随过去
@@ -815,6 +825,8 @@ try {
   // 隐私模式下忽略
 }
 let busy = false;
+// 深链预恢复期间的发送锁：避免用户在 await 窗口内二次提交产生并发会诊
+let sendInFlight = false;
 let activeController = null;
 let pricing = null;
 let latestUsage = null;
@@ -3256,7 +3268,7 @@ async function startNewSession() {
     setSessionUrl(sessionId);
     lastServerMessageId = 0;
     safeStorageRemove(pendingResetStorageKey(sessionId));
-    deepLinkedSession = false;
+    consumeDeepLink();
 
     els.thread.replaceChildren(els.empty);
     els.empty.hidden = false;
@@ -5121,7 +5133,7 @@ async function openSession(id) {
 
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
     setPendingSessionReset(false);
-    deepLinkedSession = false;
+    consumeDeepLink();
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
     persistSessionId(id);
@@ -5306,7 +5318,7 @@ function clearCurrentSession() {
   // 同时作废在途的历史读取，防止被删会话的旧响应重新渲染
   openSessionSeq += 1;
   setPendingSessionReset(false);
-  deepLinkedSession = false;
+  consumeDeepLink();
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -5324,7 +5336,7 @@ function clearDeletedSession(id, notice = '') {
   if (!id || sessionId !== id) return false;
   openSessionSeq += 1;
   setPendingSessionReset(false);
-  deepLinkedSession = false;
+  consumeDeepLink();
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -6509,6 +6521,11 @@ function clearPersistedSessionId() {
 
 function pendingResetStorageKey(id) {
   return `medix.pendingReset.${id}`;
+}
+
+function consumeDeepLink() {
+  deepLinkedSession = false;
+  safeSessionRemove(DEEP_LINK_PENDING_KEY);
 }
 
 function setPendingSessionReset(active) {
@@ -20275,11 +20292,17 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     const messages = data.messages || [];
     if (!messages.length) {
       if (deepLinkedSession) {
-        // 深链指向空会话：清掉本标签页上一患者的草稿/档案，避免把
-        // 旧上下文带进这个会话，然后允许正常发送
-        applyPatientContext({});
-        setActiveProfile(data.profile || '');
-        deepLinkedSession = false;
+        if (contextUserEdited) {
+          // 用户在等待期间正在填写补充信息：保留草稿，不覆盖表单，
+          // 下一轮提问新建会话（否则异步重连会把输入静默清空）
+          setPendingSessionReset(true);
+        } else {
+          // 深链指向空会话：清掉本标签页上一患者的草稿/档案，避免把
+          // 旧上下文带进这个会话，然后允许正常发送
+          applyPatientContext({});
+          setActiveProfile(data.profile || '');
+        }
+        consumeDeepLink();
         contextUserEdited = false;
       }
       return false;
@@ -20342,7 +20365,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         skipProfile: pendingReset,
       }
     );
-    if (deepLinkedSession) deepLinkedSession = false;
+    if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
       setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
@@ -20373,7 +20396,7 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 /* ---------- 提交主诉 ---------- */
 
 async function send(question) {
-  if (busy) {
+  if (busy || sendInFlight) {
     window.alert('会诊进行中，请先停止当前会诊。');
     return;
   }
@@ -20381,14 +20404,27 @@ async function send(question) {
   // 深链尚未恢复成功时先补一次恢复：否则会把本标签页上一患者的
   // 补充信息发进深链患者的会话（服务端按会话绑定档案落库）
   if (deepLinkedSession) {
-    await restoreCurrentSession();
-    if (deepLinkedSession) {
+    const sendSession = sessionId;
+    const sendSeq = openSessionSeq;
+    sendInFlight = true;
+    try {
+      await restoreCurrentSession();
+    } finally {
+      sendInFlight = false;
+    }
+    if (
+      deepLinkedSession || busy
+      || sessionId !== sendSession
+      || openSessionSeq !== sendSeq
+    ) {
+      // 恢复失败，或等待期间用户打开了别的会话：不能把这条问题
+      // 发进错误的患者会话
       setVitals('warn', '会诊记录尚未打开，请稍后重试');
       return;
     }
   }
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
-  deepLinkedSession = false;
+  consumeDeepLink();
   if (pendingSessionReset) {
     // 会诊中切换/清空档案后的首次提问：服务端会话已绑定原档案，
     // 不能复用；这里丢弃本地绑定，由 ensureSession 新建会话
