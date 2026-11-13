@@ -2630,7 +2630,10 @@ async def create_local_backup(request: ConfirmRequest):
 async def inspect_local_backup(name: str):
     """恢复前预检：校验备份完整性并汇总各类记录数量。"""
     from core.backup import resolve_backup
-    from memory.session_store import _backup_checksum
+    from memory.session_store import (
+        _backup_checksum,
+        _legacy_backup_checksum,
+    )
 
     try:
         path = await asyncio.to_thread(resolve_backup, name)
@@ -2667,11 +2670,14 @@ async def inspect_local_backup(name: str):
     if checksum_present:
         try:
             expected = await asyncio.to_thread(_backup_checksum, payload)
+            legacy = await asyncio.to_thread(
+                _legacy_backup_checksum, payload
+            )
         except (UnicodeError, ValueError, TypeError):
             checksum_ok = False
             checksum_error = "备份包含无法编码的字符，恢复会失败。"
         else:
-            checksum_ok = checksum.strip() == expected
+            checksum_ok = checksum.strip() in {expected, legacy}
 
     count_keys = (
         "profiles", "health_metrics", "metric_targets", "reminders",
@@ -2912,8 +2918,9 @@ async def purge_old_sessions(request: PurgeRequest):
         def clear_short_term() -> None:
             memory = ShortTermMemory()
             for session_id in session_ids:
-                memory.clear_session(session_id)
+                # 先登记墓碑再清空，避免清空后的并发恢复把已删会话写回
                 memory.seal_session(session_id)
+                memory.clear_session(session_id)
 
         await asyncio.to_thread(clear_short_term)
         await asyncio.to_thread(
@@ -3249,7 +3256,14 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
 
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
 
     field_alias = {
@@ -4389,7 +4403,14 @@ async def import_lab_results_csv(
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
 
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
     field_alias = {
         "检测时间": "tested_at",
@@ -4638,7 +4659,14 @@ async def import_allergies_csv(
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
     field_alias = {
         "过敏原": "substance",
@@ -5630,7 +5658,14 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
 
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
 
     field_alias = {
@@ -9320,7 +9355,14 @@ async def import_metrics_csv(
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
 
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
 
     field_alias = {
@@ -13564,7 +13606,14 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="CSV 编码无法识别")
 
     reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as e:
+        logger.warning(f"CSV 表头解析失败: {e}")
+        raise HTTPException(
+            status_code=400, detail="CSV 格式错误，请检查表头。"
+        )
+    if not fieldnames:
         raise HTTPException(status_code=400, detail="CSV 缺少表头")
 
     field_alias = {
@@ -14273,6 +14322,10 @@ async def get_session_messages(session_id: str, limit: int = 50):
     messages = [] if deleted else memory.get_recent_messages(
         session_id=session_id, limit=limit
     )
+    if messages:
+        # 读取期间会话可能刚被删除：返回前再复核一次墓碑
+        if await asyncio.to_thread(store.is_session_deleted, session_id):
+            messages = []
     return {
         "session_id": session_id,
         "profile": "",
@@ -14409,8 +14462,8 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
     deleted = len(result["deleted"])
     missing = result["missing"]
     for session_id in ids:
-        memory.clear_session(session_id)
         memory.seal_session(session_id)
+        memory.clear_session(session_id)
     entries = [
         (result["profiles"].get(session_id, ""), session_id)
         for session_id in ids
@@ -14508,9 +14561,11 @@ async def clear_session(session_id: str):
 
     store = get_session_store()
     existing = await asyncio.to_thread(store.get_session, session_id)
+    # 先登记删除墓碑，避免短期记忆在清空前被并发恢复
+    await asyncio.to_thread(store.mark_session_deleted, session_id)
     short_term = ShortTermMemory()
-    short_term.clear_session(session_id)
     short_term.seal_session(session_id)
+    short_term.clear_session(session_id)
     deleted = await asyncio.to_thread(store.delete_session, session_id)
     profile = str((existing or {}).get("profile") or "")
     # SQLite 删除后同步清理外部长期记忆与会诊总结明文，
@@ -14861,22 +14916,32 @@ def _erase_long_term_entries(entries: List[Any]) -> None:
         return
     from memory.session_store import _normalize_profile_name
 
-    for profile, session_id in entries:
-        try:
-            # 会话可能先以无档案状态写入自己的命名空间，之后才绑定档案；
-            # 两次写入落在不同 user_id 下，因此两边都要清理
-            memory.delete_scope(session_memory_scope(session_id))
-        except Exception as e:
-            logger.warning(f"清理会话记忆失败（忽略）: {redact_secrets(str(e))}")
-        if _normalize_profile_name(profile):
+    def _retry(action) -> None:
+        # Mem0 是远端服务：瞬时网络错误不应让已删除会话永久留在云端
+        for attempt in range(3):
             try:
-                memory.delete_session_summary(
-                    session_id, user_id=_memory_scope(profile, session_id)
-                )
+                action()
+                last_error = getattr(memory, "last_error", "")
+                if last_error:
+                    raise RuntimeError(last_error)
+                return
             except Exception as e:
-                logger.warning(
-                    f"清理档案记忆失败（忽略）: {redact_secrets(str(e))}"
-                )
+                if attempt == 2:
+                    logger.warning(
+                        "清理会话记忆失败（已重试）: "
+                        f"{redact_secrets(str(e))}"
+                    )
+                    return
+                time.sleep(0.5 * (attempt + 1))
+
+    for profile, session_id in entries:
+        _retry(lambda: memory.delete_scope(
+            session_memory_scope(session_id)
+        ))
+        if _normalize_profile_name(profile):
+            _retry(lambda: memory.delete_session_summary(
+                session_id, user_id=_memory_scope(profile, session_id)
+            ))
 
 
 def _erase_long_term_scope(profile: str) -> None:
@@ -15220,6 +15285,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
         deadline = asyncio.get_event_loop().time() + STREAM_LOCK_TIMEOUT_SECONDS
         while True:
             if await http_request.is_disconnected():
+                _release_profile_claim(session_id, memory_profile)
                 return
             try:
                 await asyncio.wait_for(
@@ -15228,6 +15294,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 break
             except asyncio.TimeoutError:
                 if asyncio.get_event_loop().time() >= deadline:
+                    _release_profile_claim(session_id, memory_profile)
                     yield sse({
                         "type": "error",
                         "code": "busy",
@@ -15248,6 +15315,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             coordinator = state.get_coordinator()
         except Exception as e:
             release_lock()
+            _release_profile_claim(session_id, memory_profile)
             yield sse({"type": "error", "message": f"初始化失败：{redact_secrets(str(e))}"})
             return
 

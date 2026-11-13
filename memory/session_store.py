@@ -1740,6 +1740,20 @@ def _backup_checksum(payload: Dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _legacy_backup_checksum(payload: Dict[str, Any]) -> str:
+    """首个校验版本的算法：缺失字段也计入 JSON（值为 null）。"""
+    body = {key: payload.get(key) for key in _BACKUP_CHECKSUM_FIELDS}
+    canonical = json.dumps(
+        sanitize_json(body),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_export_payload(payload: Dict[str, Any]) -> None:
     """导出的备份必须能被 import_data 重新导入。
 
@@ -2372,7 +2386,7 @@ class SessionStore:
         profile = _normalize_profile_name(profile)
         if not session_id or not profile:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 """
                 UPDATE sessions SET profile = ?
@@ -3178,7 +3192,7 @@ class SessionStore:
         comment = " ".join((comment or "").split())[:MAX_FEEDBACK_LENGTH]
         now = self._now()
 
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             row = self._conn.execute(
                 """
                 SELECT metadata FROM messages
@@ -3578,7 +3592,12 @@ class SessionStore:
 
         checksum = data.get("checksum")
         if isinstance(checksum, str) and checksum.strip():
-            if checksum.strip() != _backup_checksum(data):
+            expected = checksum.strip()
+            # 首个校验版本把缺失字段按 null 计入，升级后仍要能导入
+            if expected not in {
+                _backup_checksum(data),
+                _legacy_backup_checksum(data),
+            }:
                 raise ValueError(
                     "备份校验失败，文件可能已损坏或被修改。"
                 )
@@ -5529,7 +5548,7 @@ class SessionStore:
         title = (title or "").strip()[:MAX_TITLE_LENGTH]
         if not title:
             return False
-        with self._lock, self._conn:
+        with self._write_and_checkpoint():
             cursor = self._conn.execute(
                 "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
                 (title, self._now(), session_id),
@@ -5657,6 +5676,12 @@ class SessionStore:
             # 指标目标属于档案配置，删除档案时一并清理，避免重建同名档案继承旧目标
             self._conn.execute(
                 "DELETE FROM metric_targets WHERE profile = ?", (name,)
+            )
+            # 旧会话不再绑定已删除档案：否则继续提问会写回同名命名空间，
+            # 重建同名档案后召回已删除患者的病史
+            self._conn.execute(
+                "UPDATE sessions SET profile = '' WHERE profile = ?",
+                (name,),
             )
             return True
 
