@@ -1015,16 +1015,27 @@ async def record_audit(action: str, target: str = "", detail: str = "") -> None:
         logger.warning(f"记录操作审计失败: {e}")
 
 
-async def _link_patient_profile(session_id: str, raw_profile: str) -> None:
-    """把已有会话关联到患者档案；失败只记日志，不影响会诊结果。"""
+async def _link_patient_profile(
+    session_id: str, raw_profile: str, since: str = ""
+) -> None:
+    """把已有会话关联到患者档案；失败只记日志，不影响会诊结果。
+
+    since 为本次请求开始时间：档案在会诊进行中被删除时跳过绑定，
+    避免把会话重新挂回已删除的患者。
+    """
     profile = " ".join(str(raw_profile or "").split())
     if not profile:
         return
     try:
         from memory import get_session_store
 
+        store = get_session_store()
+        if since and await asyncio.to_thread(
+            store.profile_deleted_since, profile, since
+        ):
+            return
         await asyncio.to_thread(
-            get_session_store().set_session_profile, session_id, profile
+            store.set_session_profile, session_id, profile
         )
     except Exception as e:
         logger.warning(f"关联患者档案失败（忽略）: {redact_secrets(str(e))}")
@@ -14973,17 +14984,35 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
 
 
 _standalone_long_term_memory = None
+#: 初始化失败后的重试冷却时间（秒），避免每次请求都重建客户端
+_LONG_TERM_RETRY_INTERVAL = 300.0
+_standalone_long_term_retry_at = 0.0
 
 
 def _get_long_term_memory():
-    """优先复用协调器已初始化的 Mem0 客户端，否则按需创建。"""
-    global _standalone_long_term_memory
+    """优先复用协调器已初始化的 Mem0 客户端，否则按需创建。
+
+    已配置 API key 但初始化因网络/鉴权瞬时失败而禁用时，冷却期过后
+    重建实例，让清理队列无需重启进程即可继续排空。
+    """
+    global _standalone_long_term_memory, _standalone_long_term_retry_at
     coordinator = state.coordinator
     if coordinator is not None:
         memory = getattr(coordinator, "long_term_memory", None)
         if memory is not None:
             return memory
-    if _standalone_long_term_memory is None:
+    now = time.monotonic()
+    should_build = _standalone_long_term_memory is None
+    if not should_build:
+        cached = _standalone_long_term_memory
+        should_build = bool(
+            not getattr(cached, "enabled", False)
+            and getattr(cached, "api_key_configured", False)
+            and now >= _standalone_long_term_retry_at
+        )
+    if should_build:
+        if _standalone_long_term_memory is not None:
+            _standalone_long_term_retry_at = now + _LONG_TERM_RETRY_INTERVAL
         from memory.long_term import LongTermMemory
 
         _standalone_long_term_memory = LongTermMemory()
@@ -15016,7 +15045,9 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
         )
         return False
     if not getattr(memory, "enabled", False):
-        return True
+        # 未配置 Mem0 时没有云端数据需要清理；已配置但初始化失败
+        # （网络/鉴权瞬时问题）必须保留队列稍后重试，不能当作删除成功
+        return not getattr(memory, "api_key_configured", False)
     from memory.session_store import _normalize_profile_name
 
     def _retry(action) -> bool:
@@ -15059,6 +15090,29 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
     return all_ok
 
 
+def _cleanup_target_recreated(
+    store: Any, profile: str, session_id: str, since: str
+) -> bool:
+    """删除后同名档案/同号会话是否已重建。
+
+    重建后继续按旧命名空间清理会误删新写入的长期记忆，
+    这类条目应直接作废而不是重试。
+    """
+    if not since:
+        return False
+    try:
+        if session_id:
+            session = store.get_session(session_id)
+            created = str((session or {}).get("created_at") or "")
+        elif profile:
+            created = store.profile_created_at(profile)
+        else:
+            return False
+    except Exception:
+        return False
+    return bool(created and created >= since)
+
+
 def _process_memory_cleanup_queue() -> None:
     """重试删除时未完成的 Mem0 清理；启动与后台循环调用。"""
     from memory import get_session_store
@@ -15066,10 +15120,21 @@ def _process_memory_cleanup_queue() -> None:
     store = get_session_store()
     rows = store.list_memory_cleanup(50)
     for row in rows:
-        entries = [(
-            str(row.get("profile") or ""),
-            str(row.get("session_id") or ""),
-        )]
+        profile = str(row.get("profile") or "")
+        session_id = str(row.get("session_id") or "")
+        if _cleanup_target_recreated(
+            store,
+            profile,
+            session_id,
+            str(row.get("created_at") or ""),
+        ):
+            logger.info(
+                "记忆清理目标已重建，作废队列条目"
+                f"（profile={profile} session={session_id}）"
+            )
+            store.complete_memory_cleanup([(profile, session_id)])
+            continue
+        entries = [(profile, session_id)]
         if _erase_long_term_entries(entries):
             store.complete_memory_cleanup(entries)
         else:
@@ -15376,6 +15441,7 @@ async def _attach_structured_conditions(
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     """同步接口：等 Swarm 全部跑完再返回。"""
+    request_started = datetime.now().isoformat(timespec="seconds")
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     memory_profile = await _resolve_memory_profile(
         session_id, request.patient_profile
@@ -15448,7 +15514,9 @@ async def chat(request: ChatRequest):
         _release_profile_claim(session_id, memory_profile)
         raise HTTPException(status_code=502, detail=_empty_answer_reason())
 
-    await _link_patient_profile(session_id, memory_profile)
+    await _link_patient_profile(
+        session_id, memory_profile, since=request_started
+    )
 
     return payload
 
@@ -15462,6 +15530,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
     - Swarm 汇总阶段通过 on_token 回调把增量文本推成 token 事件，
       前端据此渐进渲染会诊意见。
     """
+    request_started = datetime.now().isoformat(timespec="seconds")
     session_id = request.session_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{str(uuid.uuid4())[:8]}"
     memory_profile = await _resolve_memory_profile(
         session_id, request.patient_profile
@@ -15600,7 +15669,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
                 _release_profile_claim(session_id, memory_profile)
                 return
             asyncio.create_task(
-                _link_patient_profile(session_id, memory_profile)
+                _link_patient_profile(
+                    session_id, memory_profile, since=request_started
+                )
             )
 
         task.add_done_callback(link_profile_when_done)
@@ -15755,7 +15826,9 @@ async def chat_stream(request: ChatRequest, http_request: Request):
             })
             return
 
-        await _link_patient_profile(session_id, memory_profile)
+        await _link_patient_profile(
+            session_id, memory_profile, since=request_started
+        )
 
         yield sse({"type": "result", **payload})
 

@@ -138,6 +138,20 @@ class DeepResearchWorkflow:
         kb_results = self._dedupe_kb_results(kb_results)
         logger.info(f"Deduplicated to {len(kb_results)} KB results")
 
+        if not web_results and not kb_results:
+            # 没有任何证据时让模型「综合」只会得到自评 A 级/高置信度
+            # 的空报告，必须显式标记失败
+            logger.warning("No evidence collected; skipping synthesis")
+            return ResearchReport(
+                query=question,
+                summary=(
+                    "未检索到任何可用证据（网络搜索与知识库均无结果），"
+                    "无法生成有依据的研究报告。"
+                ),
+                evidence_level="",
+                failed=True,
+            )
+
         # Step 3: 证据综合
         report = await self.synthesizer.synthesize(
             query=question,

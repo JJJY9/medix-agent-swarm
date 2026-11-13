@@ -22,6 +22,45 @@ def test_parse_list_items_accepts_common_prefixes():
     assert items == ["第一条", "第二条", "第三条", "第四条", "纯文本第五条"]
 
 
+def test_deep_research_skips_synthesis_without_evidence():
+    pytest.importorskip("sentence_transformers")
+    from research.deep_research_workflow import DeepResearchWorkflow
+    from research.evidence_synthesizer import ResearchReport
+
+    workflow = object.__new__(DeepResearchWorkflow)
+    workflow.use_web_search = True
+    workflow.use_knowledge_base = True
+
+    class FakeWebSearch:
+        async def search(self, query, max_results=10):
+            return []
+
+    async def fake_plan(question, usage_out=None):
+        return ["子查询"]
+
+    async def fake_milvus(query, top_k=5):
+        return []
+
+    workflow.web_search = FakeWebSearch()
+    workflow.knowledge_base = object()
+    workflow._plan_queries = fake_plan
+    workflow._search_milvus = fake_milvus
+
+    calls = []
+
+    class FakeSynthesizer:
+        async def synthesize(self, **kwargs):
+            calls.append(kwargs)
+            return ResearchReport(query=kwargs["query"])
+
+    workflow.synthesizer = FakeSynthesizer()
+
+    report = asyncio.run(workflow.run("测试问题"))
+
+    assert report.failed is True
+    assert calls == [], "没有证据时不应再调用模型综合"
+
+
 def test_parse_list_items_keeps_disease_number():
     items = _parse_list_items("2型糖尿病的治疗方案")
 

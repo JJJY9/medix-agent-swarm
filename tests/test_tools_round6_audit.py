@@ -96,7 +96,13 @@ class FailingLLM:
 def test_synthesis_failure_is_marked_as_failed():
     synthesizer = EvidenceSynthesizer(llm_client=FailingLLM())
 
-    report = asyncio.run(synthesizer.synthesize("测试", [], []))
+    report = asyncio.run(synthesizer.synthesize(
+        "测试",
+        [SearchResult(
+            title="来源", url="https://example.com", snippet="证据",
+        )],
+        [],
+    ))
 
     assert isinstance(report, ResearchReport)
     assert report.failed is True

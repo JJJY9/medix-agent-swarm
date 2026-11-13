@@ -24,13 +24,22 @@ class UsageLLM:
 def test_deep_research_workflow_accumulates_usage():
     pytest.importorskip("sentence_transformers")
     from research.deep_research_workflow import DeepResearchWorkflow
+    from research.web_search import SearchResult
+
+    class FakeWebSearch:
+        async def search(self, query, max_results=10):
+            return [SearchResult(
+                title="高血压管理", url="https://example.com",
+                snippet="生活方式干预与规范用药",
+            )]
 
     usage = {}
     workflow = DeepResearchWorkflow(
         llm_client=UsageLLM(),
-        use_web_search=False,
+        use_web_search=True,
         use_knowledge_base=False,
     )
+    workflow.web_search = FakeWebSearch()
 
     asyncio.run(
         workflow.run("高血压如何管理？", usage_out=usage)

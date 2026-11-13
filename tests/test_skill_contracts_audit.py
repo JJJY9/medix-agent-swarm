@@ -46,6 +46,32 @@ def test_disease_code_extracts_section_category():
     assert missing is None
 
 
+def test_disease_code_extracts_heading_format():
+    """内置传染病文档用「疾病名（编码）」标题，也要能解析。"""
+    code_module = _load_skill(
+        ".claude/skills/disease-code/script/code.py",
+        "code_contract_infectious",
+    )
+    content = (
+        ROOT / "knowledge/data/documents/12_icd10_infectious.txt"
+    ).read_text(encoding="utf-8")
+
+    flu = code_module.extract_icd_details(content, "流行性感冒")
+    shingles = code_module.extract_icd_details(content, "带状疱疹")
+    meningitis = code_module.extract_icd_details(
+        content, "脑膜炎球菌性脑膜炎"
+    )
+
+    assert flu == {
+        "icd10_code": "J10",
+        "category": "传染病和寄生虫病（A00-B99）",
+    }
+    assert shingles["icd10_code"] == "B02"
+    assert meningitis["icd10_code"] == "A39.0"
+    # 分类标题行不能被当成疾病条目
+    assert code_module.extract_icd_details(content, "传染病") is None
+
+
 def test_disease_code_returns_not_found_for_missing_disease():
     code_module = _load_skill(
         ".claude/skills/disease-code/script/code.py", "code_contract_kb"

@@ -1,5 +1,7 @@
 """第十九轮审查：删除墓碑顺序、WAL 残留与 CSV 表头错误回归测试。"""
+import asyncio
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,6 +9,8 @@ from fastapi.testclient import TestClient
 import api_server
 import memory
 from memory.session_store import SessionStore
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -188,6 +192,60 @@ def test_memory_cleanup_retries_on_reported_error(monkeypatch):
     assert len(calls) == 2
 
 
+def test_erase_treats_unconfigured_mem0_as_success(monkeypatch):
+    """没配置 Mem0 时没有云端数据可清，直接视为成功。"""
+
+    class DisabledMemory:
+        enabled = False
+        api_key_configured = False
+
+    monkeypatch.setattr(
+        api_server, "_get_long_term_memory", lambda: DisabledMemory()
+    )
+
+    assert api_server._erase_long_term_entries([("妈妈", "s1")]) is True
+
+
+def test_erase_retries_when_mem0_init_failed(monkeypatch):
+    """已配置但初始化瞬时失败必须保留队列重试，不能当作删除成功。"""
+
+    class FailedInitMemory:
+        enabled = False
+        api_key_configured = True
+        init_error = "ConnectError: network down"
+
+    monkeypatch.setattr(
+        api_server, "_get_long_term_memory", lambda: FailedInitMemory()
+    )
+
+    assert api_server._erase_long_term_entries([("妈妈", "s1")]) is False
+
+
+def test_standalone_memory_rebuilds_after_transient_init_failure(monkeypatch):
+    class Disabled:
+        enabled = False
+        api_key_configured = True
+
+    class Healthy:
+        enabled = True
+        api_key_configured = True
+
+    import memory.long_term as long_term_module
+
+    monkeypatch.setattr(
+        long_term_module, "LongTermMemory", lambda: Healthy()
+    )
+    monkeypatch.setattr(
+        api_server, "_standalone_long_term_memory", Disabled()
+    )
+    monkeypatch.setattr(api_server, "_standalone_long_term_retry_at", 0.0)
+    monkeypatch.setattr(api_server.state, "coordinator", None)
+
+    rebuilt = api_server._get_long_term_memory()
+
+    assert rebuilt.enabled is True
+
+
 def test_delete_session_seals_before_clear(client_and_store, monkeypatch):
     client, store = client_and_store
     store.save_exchange("seal-order", "问题", "答复")
@@ -223,3 +281,101 @@ def test_csv_header_parse_error_returns_400(client_and_store):
 
     assert response.status_code == 400
     assert "CSV" in response.json()["detail"]
+
+
+def test_delete_profile_records_deletion_tombstone(tmp_path):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.save_profile("妈妈", {"age": 50})
+        past = "2000-01-01T00:00:00"
+
+        assert store.profile_deleted_since("妈妈", past) is False
+        assert store.delete_profile("妈妈") is True
+        assert store.profile_deleted_since("妈妈", past) is True
+        # 删除之后的时间点不受墓碑影响
+        assert store.profile_deleted_since(
+            "妈妈", "2999-01-01T00:00:00"
+        ) is False
+    finally:
+        store.close()
+
+
+def test_cleanup_queue_drops_entry_when_profile_recreated(
+    tmp_path, monkeypatch
+):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.save_profile("妈妈", {"age": 50})
+        store.delete_profile("妈妈")
+        store.queue_memory_cleanup([("妈妈", "")])
+        # 同名档案重建：继续按旧命名空间清理会误删新写入的记忆
+        store.save_profile("妈妈", {"age": 50})
+        monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+        calls = []
+        monkeypatch.setattr(
+            api_server,
+            "_erase_long_term_entries",
+            lambda entries: calls.append(entries) or True,
+        )
+
+        api_server._process_memory_cleanup_queue()
+
+        assert calls == []
+        assert store.list_memory_cleanup() == []
+    finally:
+        store.close()
+
+
+def test_cleanup_queue_erases_when_target_not_recreated(
+    tmp_path, monkeypatch
+):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.save_profile("妈妈", {"age": 50})
+        store.delete_profile("妈妈")
+        store.queue_memory_cleanup([("妈妈", "")])
+        monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+        calls = []
+        monkeypatch.setattr(
+            api_server,
+            "_erase_long_term_entries",
+            lambda entries: calls.append(entries) or True,
+        )
+
+        api_server._process_memory_cleanup_queue()
+
+        assert calls == [[("妈妈", "")]]
+        assert store.list_memory_cleanup() == []
+    finally:
+        store.close()
+
+
+def test_link_profile_skips_when_deleted_during_request(
+    tmp_path, monkeypatch
+):
+    store = SessionStore(str(tmp_path / "sessions.db"))
+    try:
+        store.save_exchange("s1", "头痛", "答案")
+        store.save_profile("妈妈", {"age": 50})
+        store.delete_profile("妈妈")
+        monkeypatch.setattr(memory, "get_session_store", lambda: store)
+
+        asyncio.run(api_server._link_patient_profile(
+            "s1", "妈妈", since="2000-01-01T00:00:00"
+        ))
+
+        assert (store.get_session("s1")["profile"] or "") == ""
+    finally:
+        store.close()
+
+
+def test_coordinator_checks_profile_deletion_tombstone():
+    source = (
+        PROJECT_ROOT / "swarm" / "swarm_coordinator.py"
+    ).read_text(encoding="utf-8")
+
+    assert "profile_deleted_since" in source
+    assert "profile=_bound_profile()" in source
+    assert "or _profile_gone()" in source

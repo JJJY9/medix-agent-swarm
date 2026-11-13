@@ -89,7 +89,46 @@ async def disease_code(disease_name: str) -> Dict[str, Any]:
 _ICD_PATTERN = re.compile(
     r"ICD-10\s*编码\s*[：:]\s*([A-Z]\d{2}(?:\.\d+)?)", re.IGNORECASE
 )
-_CATEGORY_PATTERN = re.compile(r"疾病分类\s*[：:]\s*([^\n]+)")
+_CATEGORY_PATTERN = re.compile(r"(?:疾病分类|类别)\s*[：:]\s*([^\n]+)")
+#: 部分文档用「疾病名（编码）」作小节标题，如「流行性感冒（J10-J11）」
+_HEADING_PATTERN = re.compile(
+    r"^[ \t]*(?P<name>[^\n（(]+?)[ \t]*[（(][ \t]*"
+    r"(?P<code>[A-Z]\d{2}(?:\.\d+)?(?:\s*[-–—]\s*[A-Z]?\d{2,3})?)"
+    r"[ \t]*[）)]",
+    re.MULTILINE,
+)
+#: 范围编码（J10-J11）对外返回首个单码，正文保留原始范围
+_SINGLE_CODE_PATTERN = re.compile(r"^[A-Z]\d{2}(?:\.\d+)?")
+_CHAPTER_NAME_PATTERN = re.compile(r"^第[一二三四五六七八九十百零〇]+章")
+
+
+def _extract_heading_details(
+    content: str, target: str
+) -> Optional[Dict[str, str]]:
+    """按「疾病名（编码）」小节标题提取编码与分类。"""
+    for match in _HEADING_PATTERN.finditer(content):
+        name = match.group("name").strip()
+        if not name:
+            continue
+        # 「类别：传染病和寄生虫病（A00-B99）」「第九章（I00-I99）」
+        # 描述的是分类/章节，不是疾病条目
+        if "：" in name or ":" in name:
+            continue
+        if _CHAPTER_NAME_PATTERN.match(name):
+            continue
+        if not (target in name or name in target):
+            continue
+        code = match.group("code").strip()
+        single = _SINGLE_CODE_PATTERN.match(code)
+        category_match = _CATEGORY_PATTERN.search(content)
+        return {
+            "icd10_code": single.group(0) if single else code,
+            "category": (
+                category_match.group(1).strip()
+                if category_match else ""
+            ),
+        }
+    return None
 
 
 def extract_icd_details(
@@ -117,6 +156,11 @@ def extract_icd_details(
                     ),
                 }
         return None
+
+    if target:
+        heading_details = _extract_heading_details(content, target)
+        if heading_details is not None:
+            return heading_details
 
     code_match = _ICD_PATTERN.search(content)
     if code_match is None:
