@@ -272,13 +272,21 @@ def _contains_prescription(output: str) -> bool:
             if _match_in_safe_medication_context(output, match):
                 continue
             # 片/粒/支或毫升/克也可能是食物/饮水建议（“每天吃一片面包”
-            # “建议每天饮水 2000ml”），没有明确药名或“药”语境时不算处方
+            # “建议每天饮水 2000ml”）；毫升/克在「用法/用量/剂量」语境
+            # 下明确是给药方案，不受此限
+            matched = match.group(0)
+            dosage_label = bool(re.search(
+                r"(?:用法|用量|剂量)", matched
+            ))
             if (
-                (
-                    _COUNT_UNIT_SUFFIX.search(match.group(0))
-                    or _VOLUME_MASS_UNIT_SUFFIX.search(match.group(0))
-                )
+                _COUNT_UNIT_SUFFIX.search(matched)
                 and not medication_context
+            ):
+                continue
+            if (
+                _VOLUME_MASS_UNIT_SUFFIX.search(matched)
+                and not medication_context
+                and not dosage_label
             ):
                 continue
             return True
