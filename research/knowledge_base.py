@@ -87,16 +87,27 @@ class KnowledgeBase:
         # 初始化存储后端
         self.qdrant_client = None
         self.memory_storage: Dict[str, Document] = {}  # 内存存储
+        #: Qdrant 初始化失败原因；非空表示已降级为易失内存存储
+        self.backend_error = ""
 
         if not use_memory and QDRANT_AVAILABLE and self.embedding_model:
             try:
                 # 尝试连接 Qdrant
-                self.qdrant_client = QdrantClient(host=qdrant_host, port=qdrant_port)
+                self.qdrant_client = QdrantClient(
+                    host=qdrant_host, port=qdrant_port
+                )
                 self._init_collection()
-                logger.info(f"Connected to Qdrant at {qdrant_host}:{qdrant_port}")
+                logger.info(
+                    f"Connected to Qdrant at {qdrant_host}:{qdrant_port}"
+                )
             except Exception as e:
-                logger.warning(f"Failed to connect to Qdrant: {e}, using in-memory storage")
+                # 明确记录降级：内存存储重启即丢失，不能伪装成已持久化
                 self.qdrant_client = None
+                self.backend_error = str(e)
+                logger.warning(
+                    "Failed to connect to Qdrant: "
+                    f"{e}；已降级为进程内存存储（重启后丢失）"
+                )
         else:
             logger.info("Using in-memory storage for knowledge base")
 
@@ -125,7 +136,8 @@ class KnowledgeBase:
 
         except Exception as e:
             logger.error(f"Failed to initialize collection: {e}")
-            self.qdrant_client = None
+            # 交给构造函数记录降级原因；不能在这里假装连接成功
+            raise RuntimeError(f"Qdrant 集合初始化失败：{e}") from e
 
     def _embed_text(self, text: str) -> Optional[List[float]]:
         """
@@ -205,13 +217,56 @@ class KnowledgeBase:
                 logger.info(f"Document added to Qdrant: {doc_id}")
             except Exception as e:
                 logger.error(f"Failed to add document to Qdrant: {e}")
-                return ""
+                # 写入失败必须让调用方知道，不能返回空 ID 伪装成成功
+                raise RuntimeError(f"Qdrant 写入失败：{e}") from e
         else:
             # 存储到内存
             self.memory_storage[doc_id] = document
             logger.info(f"Document added to memory: {doc_id}")
 
         return doc_id
+
+    @staticmethod
+    def _matches_filters(
+        metadata: Any, filters: Optional[Dict[str, Any]]
+    ) -> bool:
+        """按 metadata 过滤；值为列表时按“属于其中任一”处理。"""
+        if not filters:
+            return True
+        if not isinstance(metadata, dict):
+            return False
+        for key, expected in filters.items():
+            actual = metadata.get(key)
+            if isinstance(expected, (list, tuple, set)):
+                if actual not in expected:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    @staticmethod
+    def _build_qdrant_filter(filters: Optional[Dict[str, Any]]):
+        """构造 Qdrant 过滤条件；返回 (filter, 是否已由服务端过滤)。"""
+        if not filters:
+            return None, False
+        try:
+            from qdrant_client.models import (
+                FieldCondition,
+                Filter,
+                MatchValue,
+            )
+        except Exception:
+            return None, False
+        conditions = []
+        for key, value in filters.items():
+            if not isinstance(value, (str, int, float, bool)):
+                # 列表等复杂条件退回客户端过滤，保证结果正确
+                return None, False
+            conditions.append(FieldCondition(
+                key=f"metadata.{key}",
+                match=MatchValue(value=value),
+            ))
+        return Filter(must=conditions), True
 
     async def search(
         self,
@@ -242,39 +297,64 @@ class KnowledgeBase:
         if self.qdrant_client:
             # 从 Qdrant 检索
             try:
+                qdrant_filter, server_filtered = (
+                    self._build_qdrant_filter(filters)
+                )
+                # 复杂过滤条件退回客户端过滤时多取一些候选
+                limit = top_k
+                if filters and not server_filtered:
+                    limit = max(top_k * 5, 50)
                 search_result = self.qdrant_client.search(
                     collection_name=self.collection_name,
                     query_vector=query_vector,
-                    limit=top_k,
-                    score_threshold=score_threshold
+                    limit=limit,
+                    score_threshold=score_threshold,
+                    query_filter=qdrant_filter,
                 )
 
                 documents = []
                 for hit in search_result:
+                    payload = hit.payload or {}
+                    metadata = payload.get("metadata") or {}
+                    if not self._matches_filters(metadata, filters):
+                        continue
                     doc = Document(
                         id=hit.id,
-                        content=hit.payload.get("content", ""),
-                        metadata=hit.payload.get("metadata", {}),
+                        content=payload.get("content", ""),
+                        metadata=metadata,
                         score=hit.score
                     )
                     documents.append(doc)
 
+                documents = documents[:top_k]
                 logger.info(f"Found {len(documents)} documents from Qdrant")
                 return documents
 
             except Exception as e:
                 logger.error(f"Qdrant search error: {e}")
-                return []
+                # 后端故障不能伪装成“没有匹配文档”
+                raise RuntimeError(f"Qdrant 检索失败：{e}") from e
         else:
-            # 从内存检索（简单的余弦相似度）
+            # 从内存检索（简单的余弦相似度）；返回副本，避免后续检索
+            # 原地改写已返回结果的相关度
             results = []
             for doc in self.memory_storage.values():
-                if doc.vector:
-                    # 计算余弦相似度
-                    score = self._cosine_similarity(query_vector, doc.vector)
-                    if score >= score_threshold:
-                        doc.score = score
-                        results.append(doc)
+                if not doc.vector:
+                    continue
+                if not self._matches_filters(doc.metadata, filters):
+                    continue
+                score = self._cosine_similarity(
+                    query_vector, doc.vector
+                )
+                if score >= score_threshold:
+                    results.append(Document(
+                        id=doc.id,
+                        content=doc.content,
+                        metadata=dict(doc.metadata or {}),
+                        vector=list(doc.vector),
+                        score=score,
+                        created_at=doc.created_at,
+                    ))
 
             # 按分数排序
             results.sort(key=lambda x: x.score, reverse=True)
@@ -343,11 +423,15 @@ class KnowledgeBase:
                 logger.error(f"Failed to get Qdrant stats: {e}")
                 return {"backend": "qdrant", "error": str(e)}
         else:
-            return {
+            stats = {
                 "backend": "memory",
                 "count": len(self.memory_storage),
-                "vector_size": self.vector_size if self.embedding_model else 0
+                "vector_size": self.vector_size if self.embedding_model else 0,
             }
+            if self.backend_error:
+                stats["fallback_reason"] = self.backend_error
+                stats["volatile"] = True
+            return stats
 
 
 # 便捷函数
