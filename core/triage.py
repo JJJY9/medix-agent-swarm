@@ -211,17 +211,37 @@ _VISIT_NEGATIONS = (
     "可以不去", "没必要", "用不着", "无需去", "不必去", "不用去",
     "不去", "先不去", "暂时不去", "目前不去", "不打算去",
 )
-#: 紧贴就医建议的普通否定（"还没有去医院"）。必须锚定在短语之前：
-#: 窗口内出现裸「未/没/无」会把「无明显诱因也应去医院」误判成否定。
-#: 允许插入成分（及时/人/车/钱/法）与连续位移动词（送到/赶到），
-#: 覆盖「没法去医院」「没人送医院」「没送到医院」「来不及去医院」
-_VISIT_CLOSE_NEGATION_PATTERN = re.compile(
-    r"(?:没有|没|未|尚未|还没|并未|未曾|从未|并无|无|无法|不能|没法"
-    r"|来不及)"
-    r"\s*(?:及时|马上|立刻|立即|尽快|来得及|能|可以|法|人|车|钱|亲自)?"
-    r"\s*(?:去|到|送|再|赶|带)?"
-    r"\s*(?:去|到|送|再|赶|带)?\s*$"
+#: 就医短语前的否定窗口：否定词出现在前 12 字内，且其后到短语之间
+#: 不能有建议提示词（"没有明显诱因也应去医院"是建议）。
+#: 长词优先匹配，覆盖「没能及时/没来得及/没办法/没人送我去」等自然语序
+_VISIT_NEGATION_WORD = re.compile(
+    r"(?:没来得及|没有及时|没能及时|未能及时|没有能|没有办法|没办法"
+    r"|没时间|没有时间|来不及|尚未|还没|并未|未曾|从未|并无|无法|不能"
+    r"|没|未|无)"
 )
+#: 「没严重到必须/未到需要……的程度」式阈值否定
+_VISIT_NOT_SEVERE_PATTERN = re.compile(
+    r"(?:没有|没|未)(?:有)?(?:严重|厉害)?到"
+    r"(?:必须|需要|要|非得|一定)?"
+    r"(?:去|到|送|再|赶|带)?\s*$"
+)
+#: 否定词之后出现这些词说明是在给建议，不是否定描述
+_VISIT_CUE_IN_TAIL = re.compile(
+    r"(?:建议|推荐|请|需要|需|必须|务必|尽快|立即|马上|及时|最好|可以"
+    r"|前往|应(?:该|当)?|尽早|必要时|赶快)"
+)
+
+
+def _visit_prefix_negated(prefix: str) -> bool:
+    """就医短语前的分句是否是否定描述（就医建议与 120 呼救共用）。"""
+    tail = prefix.rstrip()[-12:]
+    if _VISIT_NOT_SEVERE_PATTERN.search(tail):
+        return True
+    match = _VISIT_NEGATION_WORD.search(tail)
+    if not match:
+        return False
+    between = tail[match.end():]
+    return not _VISIT_CUE_IN_TAIL.search(between)
 _VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
 _QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
 #: 就医建议通常带有这些祈使/建议词；仅有「医院」等名词不够
@@ -283,9 +303,7 @@ def has_visit_recommendation(text: str) -> bool:
                     any(
                         negation in prefix for negation in _VISIT_NEGATIONS
                     )
-                    or bool(_VISIT_CLOSE_NEGATION_PATTERN.search(
-                        prefix.rstrip()
-                    ))
+                    or _visit_prefix_negated(prefix)
                 )
                 questioning = any(
                     marker in prefix for marker in _QUESTION_MARKERS
@@ -326,9 +344,7 @@ def has_visit_recommendation(text: str) -> bool:
             tail = prefix.rstrip()[-10:]
             negated = (
                 any(negation in tail for negation in _VISIT_NEGATIONS)
-                or bool(_VISIT_CLOSE_NEGATION_PATTERN.search(
-                    prefix.rstrip()
-                ))
+                or _visit_prefix_negated(prefix)
             )
             questioning = any(
                 marker in prefix for marker in _QUESTION_MARKERS

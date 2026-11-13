@@ -237,6 +237,113 @@ def test_restore_after_metric_edit_does_not_duplicate(store):
     assert rows[0]["value1"] == 63.0
 
 
+def test_repeated_restore_with_primary_key_holes_is_idempotent(
+    store, tmp_path
+):
+    """备份主键有空洞（源库删过记录）时重复恢复仍保持幂等。"""
+    ids = []
+    for index in range(10):
+        med = store.add_medication("妈妈", f"药{index}", "1粒", "每日一次")
+        store.add_medication_log(med["id"], taken_at="2026-11-13T08:00")
+        ids.append(med["id"])
+    # 创建时间各不相同（真实数据的常见形态）
+    with store._lock, store._conn:
+        for index, med_id in enumerate(ids):
+            store._conn.execute(
+                "UPDATE medications SET created_at = ? WHERE id = ?",
+                (f"2026-11-01T08:00:{index:02d}", med_id),
+            )
+    assert store.delete_medication(ids[2]) is True
+    backup = store.export_data()
+
+    target = SessionStore(str(tmp_path / "holes.db"))
+    try:
+        first = target.import_data(backup)
+        second = target.import_data(backup)
+        third = target.import_data(backup)
+
+        assert first["medications"] == 9
+        assert second["medications"] == 0
+        assert third["medications"] == 0
+        assert second["medication_logs"] == 0
+        assert third["medication_logs"] == 0
+        assert len(target.list_medications("妈妈")) == 9
+        logs = target.list_medication_logs(None, "妈妈", 100, 0, 30)
+        assert len(logs) == 9
+    finally:
+        target.close()
+
+
+def test_repeated_restore_with_shifted_ids_and_distinct_created(
+    store, tmp_path
+):
+    """目标库已有本地记录造成 id 后移、且创建时间各不相同时保持幂等。"""
+    meds = []
+    for index in range(4):
+        med = store.add_medication("妈妈", f"药{index}", "1粒", "每日一次")
+        store.add_medication_log(med["id"], taken_at="2026-11-13T08:00")
+        meds.append(med)
+    with store._lock, store._conn:
+        for index, med in enumerate(meds):
+            store._conn.execute(
+                "UPDATE medications SET created_at = ? WHERE id = ?",
+                (f"2026-11-01T09:00:{index:02d}", med["id"]),
+            )
+    backup = store.export_data()
+
+    target = SessionStore(str(tmp_path / "shift2.db"))
+    try:
+        target.add_medication("妈妈", "本地药", "1粒", "每日一次")
+        first = target.import_data(backup)
+        second = target.import_data(backup)
+        third = target.import_data(backup)
+
+        assert first["medications"] == 4
+        assert second["medications"] == 0
+        assert third["medications"] == 0
+        assert second["medication_logs"] == 0
+        assert third["medication_logs"] == 0
+        assert len(target.list_medications("妈妈")) == 5
+        logs = target.list_medication_logs(None, "妈妈", 100, 0, 30)
+        assert len(logs) == 4
+    finally:
+        target.close()
+
+
+def test_restore_after_metric_delete_restores_reading(store):
+    """同批同秒导入的指标删除一条后，恢复要还原该读数。"""
+    store.import_data({
+        "health_metrics": [
+            {
+                "profile": "妈妈",
+                "metric": "weight",
+                "value1": 63.0 + index / 10,
+                "measured_at": f"2026-11-0{index + 1}T08:00",
+                "context": "",
+                "note": "",
+            }
+            for index in range(5)
+        ],
+    })
+    backup = store.export_data()
+    rows = store.list_metrics("妈妈", "weight")
+    assert len(rows) == 5
+
+    newest = max(rows, key=lambda row: row["value1"])
+    assert store.delete_metric(newest["id"]) is True
+
+    result = store.import_data(backup)
+
+    assert result["metrics"] == 1
+    values = sorted(
+        row["value1"] for row in store.list_metrics("妈妈", "weight")
+    )
+    assert len(values) == 5
+    assert abs(values[-1] - newest["value1"]) < 1e-9
+    # 再次导入仍然幂等
+    assert store.import_data(backup)["metrics"] == 0
+
+
 def test_repeated_restore_with_shifted_ids_keeps_log_mapping(
     store, tmp_path
 ):

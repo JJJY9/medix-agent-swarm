@@ -3938,20 +3938,21 @@ class SessionStore:
         table: str,
         columns: Tuple[str, ...],
         values: Tuple[Any, ...],
+        content_columns: Tuple[str, ...],
+        content_values: Tuple[Any, ...],
         state: Dict[tuple, set],
         raw_id: int = 0,
-        reserved_ids: Optional[set] = None,
     ) -> Optional[int]:
-        """按稳定身份配对已存在的记录，返回可复用的行 id（没有则 None）。
+        """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
-        身份 = 档案 + 创建时间，不含任何 PATCH 可编辑字段：备份后的
-        本地编辑（改剂量/停用/改期/改状态等）不会让旧记录复活。
-
-        配对顺序：先尝试备份行自带主键（同一条记录仍在库里时直接复用，
-        删除某条后恢复能真正还原它）；否则在同一身份尚未被本批认领、
-        且不属于本批其他 raw id 的候选行里按 id 升序取一条。
-        reserved_ids 是本批所有 raw id：这类 id 可能属于稍后才处理的
-        备份行（或同号但不同身份的其他记录），提前抢占会让双胞胎错配。
+        身份 = 档案 + 创建时间，不含 PATCH 可编辑字段；内容列（药名/
+        剂量、预约主题/时间等）只用于在同一身份组内锚定同一条记录。
+        配对顺序：
+        1. 备份主键 + 身份 + 内容完全一致（同一库、未删除）；
+        2. 同身份 + 同内容（跨库恢复或主键漂移）；
+        3. 同身份按 id 升序兜底（本地编辑过的记录，保留编辑）；
+        4. 没有可配对行时返回 None，调用方插入（还原被删记录）。
+        重复导入保持幂等，删除一条后恢复按原内容补回。
         """
         identity = (table,) + tuple(values)
         where = " AND ".join(f"{column} = ?" for column in columns)
@@ -3962,38 +3963,47 @@ class SessionStore:
                 values,
             ).fetchall()
             claimed = {int(row["id"]) for row in rows}
-            # 本地存在不属于本批主键的候选，说明本地 id 与备份主键已漂移
-            # （跨库恢复/重建后再次导入）：逐行主键复用可能把同秒组里
-            # 的另一条记录当成自己，改用按 id 升序的确定性配对
-            state[("drifted", identity)] = bool(
-                claimed - (reserved_ids or set())
-            )
-        drifted = bool(state.get(("drifted", identity)))
-        if raw_id > 0 and not drifted:
+        content_where = " AND ".join(
+            f"{column} = ?" for column in content_columns
+        )
+        if raw_id > 0 and content_where:
             row = self._conn.execute(
-                f"SELECT id FROM {table} WHERE id = ? AND {where}",
-                (raw_id, *values),
+                f"SELECT id FROM {table} WHERE id = ? AND {where}"
+                f" AND {content_where}",
+                (raw_id, *values, *content_values),
             ).fetchone()
             if row is not None and int(row["id"]) in claimed:
                 claimed.discard(int(row["id"]))
                 state[identity] = claimed
                 return int(row["id"])
-        reserved = set() if drifted else (reserved_ids or set())
-        usable = [item for item in claimed if item not in reserved]
-        if not usable:
+        if content_where:
+            rows = self._conn.execute(
+                f"SELECT id FROM {table} WHERE {where}"
+                f" AND {content_where} ORDER BY id",
+                (*values, *content_values),
+            ).fetchall()
+            for row in rows:
+                candidate = int(row["id"])
+                if candidate in claimed:
+                    claimed.discard(candidate)
+                    state[identity] = claimed
+                    return candidate
+        if not claimed:
             state[identity] = claimed
             return None
-        matched = min(usable)
+        matched = min(claimed)
         claimed.discard(matched)
         state[identity] = claimed
         return matched
 
-    @staticmethod
-    def _import_rows(raw_items: Any, limit: int) -> List[Dict[str, Any]]:
-        """整理待导入行：过滤非字典项，并按备份主键升序排列。
+    def _import_rows(
+        self, table: str, raw_items: Any, limit: int
+    ) -> List[Dict[str, Any]]:
+        """整理待导入行：过滤非字典项，主键仍存在的行优先处理。
 
-        与按 id 升序的配对逻辑对齐，避免导出顺序（active DESC 等）
-        让同身份记录的 raw id 映射错位；无 id 的 CSV 行保持原顺序。
+        备份主键在本地仍存在的行（未被删除）先与本地行配对并认领，
+        避免同身份组里已被删除的行在兜底配对时抢占这些候选；
+        其余行按主键升序处理，无 id 的 CSV 行保持原顺序。
         """
         if not isinstance(raw_items, list):
             return []
@@ -4001,21 +4011,25 @@ class SessionStore:
             item for item in raw_items[:limit]
             if isinstance(item, dict)
         ]
-        rows.sort(key=lambda item: _safe_db_id(item.get("id")))
+        raw_ids = {_safe_db_id(item.get("id")) for item in rows}
+        raw_ids.discard(0)
+        existing: set = set()
+        ordered = sorted(raw_ids)
+        for start in range(0, len(ordered), 500):
+            chunk = ordered[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            with self._lock:
+                found = self._conn.execute(
+                    f"SELECT id FROM {table}"
+                    f" WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+            existing.update(int(row["id"]) for row in found)
+        rows.sort(key=lambda item: (
+            0 if _safe_db_id(item.get("id")) in existing else 1,
+            _safe_db_id(item.get("id")),
+        ))
         return rows
-
-    @staticmethod
-    def _import_raw_ids(raw_items: Any) -> set:
-        """本批备份行的主键集合；这些位置留给对应的备份行配对。"""
-        if not isinstance(raw_items, list):
-            return set()
-        ids = {
-            _safe_db_id(item.get("id"))
-            for item in raw_items
-            if isinstance(item, dict)
-        }
-        ids.discard(0)
-        return ids
 
     def import_data(
         self, data: Any, max_sessions: int = 100000
@@ -4290,15 +4304,17 @@ class SessionStore:
                     profiles_imported += 1
 
             metrics_imported = 0
-            # 备份行带 created_at 时先按「档案 + 指标 + 创建时间」身份
-            # 判重（数值/备注可编辑，改完恢复不复制旧读数）；身份未命中
-            # 再按内容与数量合并，保持跨来源去重的既有契约
+            # 备份行带 created_at 时按「档案 + 指标 + 创建时间」配对，
+            # 同身份组内用内容（测量时间/数值/情境）锚定；未配对的行再按
+            # 内容计数兜底，保持跨来源去重的既有契约
             existing_metric_counts: Dict[tuple, int] = {}
             imported_metric_counts: Dict[tuple, int] = {}
             metric_identity_claims: Dict[tuple, set] = {}
-            metric_raw_ids = self._import_raw_ids(raw_metrics)
             if isinstance(raw_metrics, list):
-                for raw in raw_metrics[:IMPORT_LIST_LIMITS["health_metrics"]]:
+                for raw in self._import_rows(
+                    "health_metrics", raw_metrics,
+                    IMPORT_LIST_LIMITS["health_metrics"],
+                ):
                     if not isinstance(raw, dict):
                         continue
                     normalized = _normalize_metric(
@@ -4313,6 +4329,15 @@ class SessionStore:
                     if normalized is None:
                         invalid += 1
                         continue
+                    metric_key = (
+                        normalized["profile"],
+                        normalized["metric"],
+                        normalized["measured_at"],
+                        normalized["value1"],
+                        normalized["value2"],
+                        normalized["note"],
+                        normalized["context"],
+                    )
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
@@ -4325,21 +4350,29 @@ class SessionStore:
                                 normalized["metric"],
                                 created_key,
                             ),
+                            (
+                                "measured_at", "value1",
+                                "IFNULL(value2, -1)", "context", "note",
+                            ),
+                            (
+                                normalized["measured_at"],
+                                normalized["value1"],
+                                -1 if normalized["value2"] is None
+                                else normalized["value2"],
+                                normalized["context"],
+                                normalized["note"],
+                            ),
                             metric_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=metric_raw_ids,
                         )
                         if existing_metric_id is not None:
+                            # 配对成功的行也要计入内容计数：
+                            # 同一内容的备份行与本地行按数量对账
+                            imported_metric_counts[metric_key] = (
+                                imported_metric_counts.get(metric_key, 0)
+                                + 1
+                            )
                             continue
-                    metric_key = (
-                        normalized["profile"],
-                        normalized["metric"],
-                        normalized["measured_at"],
-                        normalized["value1"],
-                        normalized["value2"],
-                        normalized["note"],
-                        normalized["context"],
-                    )
                     if metric_key not in existing_metric_counts:
                         count_row = self._conn.execute(
                             """
@@ -4443,10 +4476,10 @@ class SessionStore:
 
             symptoms_imported = 0
             symptom_identity_claims: Dict[tuple, set] = {}
-            symptom_raw_ids = self._import_raw_ids(raw_symptoms)
             if isinstance(raw_symptoms, list):
                 for raw in self._import_rows(
-                    raw_symptoms, IMPORT_LIST_LIMITS["symptoms"]
+                    "symptoms", raw_symptoms,
+                    IMPORT_LIST_LIMITS["symptoms"],
                 ):
                     if not str(raw.get("recorded_at") or "").strip():
                         continue
@@ -4464,7 +4497,8 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        # 严重程度/备注/记录时间可编辑：身份只用档案 + 创建时间
+                        # 严重程度/备注可编辑：身份只用档案 + 创建时间，
+                        # 同身份组内用症状名与记录时间锚定
                         exists = self._import_identity_match(
                             "symptoms",
                             ("profile", "created_at"),
@@ -4472,9 +4506,13 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            ("symptom", "recorded_at"),
+                            (
+                                normalized["symptom"],
+                                normalized["recorded_at"],
+                            ),
                             symptom_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=symptom_raw_ids,
                         )
                     else:
                         exists = self._conn.execute(
@@ -4515,10 +4553,10 @@ class SessionStore:
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
             medication_identity_claims: Dict[tuple, set] = {}
-            medication_raw_ids = self._import_raw_ids(raw_medications)
             if isinstance(raw_medications, list):
                 for raw in self._import_rows(
-                    raw_medications, IMPORT_LIST_LIMITS["medications"]
+                    "medications", raw_medications,
+                    IMPORT_LIST_LIMITS["medications"],
                 ):
                     normalized = _normalize_medication(
                         raw.get("profile", ""),
@@ -4541,7 +4579,8 @@ class SessionStore:
                     created_key = str(raw.get("created_at") or "").strip()[:40]
                     if created_key:
                         # 备份带创建时间：身份只用档案 + 创建时间，
-                        # 停药/改剂量等本地编辑不会让旧记录在恢复时复活
+                        # 同身份组内用名称/剂量/频次/开始日期锚定；
+                        # 停药等状态编辑不会让旧记录在恢复时复活
                         existing_id = self._import_identity_match(
                             "medications",
                             ("profile", "created_at"),
@@ -4549,9 +4588,15 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            ("name", "dose", "frequency", "started_at"),
+                            (
+                                normalized["name"],
+                                normalized["dose"],
+                                normalized["frequency"],
+                                normalized["started_at"],
+                            ),
                             medication_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=medication_raw_ids,
                         )
                         existing = (
                             {"id": existing_id}
@@ -4790,10 +4835,10 @@ class SessionStore:
             vaccinations_imported = 0
             raw_vaccination_id_map: Dict[int, int] = {}
             vaccination_identity_claims: Dict[tuple, set] = {}
-            vaccination_raw_ids = self._import_raw_ids(raw_vaccinations)
             if isinstance(raw_vaccinations, list):
                 for raw in self._import_rows(
-                    raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"]
+                    "vaccinations", raw_vaccinations,
+                    IMPORT_LIST_LIMITS["vaccinations"],
                 ):
                     try:
                         normalized = _normalize_vaccination(
@@ -4819,9 +4864,17 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            (
+                                "vaccine_name", "dose_number",
+                                "vaccinated_at",
+                            ),
+                            (
+                                normalized["vaccine_name"],
+                                normalized["dose_number"],
+                                normalized["vaccinated_at"],
+                            ),
                             vaccination_identity_claims,
                             raw_id=raw_id,
-                            reserved_ids=vaccination_raw_ids,
                         )
                         duplicate = (
                             {"id": vaccination_id}
@@ -4874,10 +4927,10 @@ class SessionStore:
             appointments_imported = 0
             raw_appointment_id_map: Dict[int, int] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
-            appointment_raw_ids = self._import_raw_ids(raw_appointments)
             if isinstance(raw_appointments, list):
                 for raw in self._import_rows(
-                    raw_appointments, IMPORT_LIST_LIMITS["appointments"]
+                    "appointments", raw_appointments,
+                    IMPORT_LIST_LIMITS["appointments"],
                 ):
                     try:
                         normalized = _normalize_appointment(
@@ -4905,9 +4958,19 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            (
+                                "title", "scheduled_at", "department",
+                                "doctor", "location",
+                            ),
+                            (
+                                normalized["title"],
+                                normalized["scheduled_at"],
+                                normalized["department"],
+                                normalized["doctor"],
+                                normalized["location"],
+                            ),
                             appointment_identity_claims,
                             raw_id=raw_id,
-                            reserved_ids=appointment_raw_ids,
                         )
                         duplicate = (
                             {"id": appointment_id}
@@ -5046,10 +5109,10 @@ class SessionStore:
 
             allergies_imported = 0
             allergy_identity_claims: Dict[tuple, set] = {}
-            allergy_raw_ids = self._import_raw_ids(raw_allergies)
             if isinstance(raw_allergies, list):
                 for raw in self._import_rows(
-                    raw_allergies, IMPORT_LIST_LIMITS["allergies"]
+                    "allergies", raw_allergies,
+                    IMPORT_LIST_LIMITS["allergies"],
                 ):
                     try:
                         normalized = _normalize_allergy(
@@ -5079,9 +5142,14 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            ("substance", "kind", "noted_at"),
+                            (
+                                normalized["substance"],
+                                normalized["kind"],
+                                normalized["noted_at"],
+                            ),
                             allergy_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=allergy_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5126,10 +5194,10 @@ class SessionStore:
 
             care_items_imported = 0
             care_identity_claims: Dict[tuple, set] = {}
-            care_raw_ids = self._import_raw_ids(raw_care_items)
             if isinstance(raw_care_items, list):
                 for raw in self._import_rows(
-                    raw_care_items, IMPORT_LIST_LIMITS["care_items"]
+                    "care_items", raw_care_items,
+                    IMPORT_LIST_LIMITS["care_items"],
                 ):
                     try:
                         normalized = _normalize_care_item(
@@ -5155,9 +5223,13 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            ("title", "interval_days"),
+                            (
+                                normalized["title"],
+                                normalized["interval_days"],
+                            ),
                             care_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=care_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5206,10 +5278,9 @@ class SessionStore:
             visit_records_imported = 0
             visit_link_updates: List[Tuple[int, int, int]] = []
             visit_identity_claims: Dict[tuple, set] = {}
-            visit_raw_ids = self._import_raw_ids(raw_visit_records)
             if isinstance(raw_visit_records, list):
                 for raw in self._import_rows(
-                    raw_visit_records,
+                    "visit_records", raw_visit_records,
                     IMPORT_LIST_LIMITS["visit_records"],
                 ):
                     try:
@@ -5258,9 +5329,18 @@ class SessionStore:
                             "visit_records",
                             ("profile", "created_at"),
                             (normalized["profile"], created_key),
+                            (
+                                "visit_date", "diagnosis", "department",
+                                "doctor",
+                            ),
+                            (
+                                normalized["visit_date"],
+                                normalized["diagnosis"],
+                                normalized["department"],
+                                normalized["doctor"],
+                            ),
                             visit_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=visit_raw_ids,
                         )
                         duplicate = (
                             {"id": duplicate_id}
@@ -5330,10 +5410,10 @@ class SessionStore:
 
             conditions_imported = 0
             condition_identity_claims: Dict[tuple, set] = {}
-            condition_raw_ids = self._import_raw_ids(raw_conditions)
             if isinstance(raw_conditions, list):
                 for raw in self._import_rows(
-                    raw_conditions, IMPORT_LIST_LIMITS["conditions"]
+                    "conditions", raw_conditions,
+                    IMPORT_LIST_LIMITS["conditions"],
                 ):
                     try:
                         normalized = _normalize_condition(
@@ -5361,9 +5441,13 @@ class SessionStore:
                                 normalized["profile"],
                                 created_key,
                             ),
+                            ("name", "diagnosed_at"),
+                            (
+                                normalized["name"],
+                                normalized["diagnosed_at"],
+                            ),
                             condition_identity_claims,
                             raw_id=_safe_db_id(raw.get("id")),
-                            reserved_ids=condition_raw_ids,
                         )
                         duplicate = (
                             {"id": existing_id}
