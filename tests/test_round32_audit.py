@@ -274,7 +274,8 @@ def test_web_search_no_results_exception_not_retried(monkeypatch):
 
     assert results == []
     # 只有一轮后端尝试；空结果不再触发 3 轮重试
-    assert calls["count"] == len(ws._DDGS_BACKENDS)
+    # 离线 CI 未安装 ddgs 时 _DDGS_BACKENDS 为空元组，实际回退到 auto
+    assert calls["count"] == (len(ws._DDGS_BACKENDS) or 1)
 
 
 def test_web_search_redacts_query_from_error_logs(monkeypatch):
@@ -313,8 +314,8 @@ def test_web_search_redacts_query_from_error_logs(monkeypatch):
     joined = "\n".join(fake_logger.messages)
     assert "%E6%82%A3" not in joined
     assert "<redacted>" in joined
-    # 传输错误仍按 retry_count 重试
-    assert called["count"] == len(ws._DDGS_BACKENDS)
+    # 传输错误仍按 retry_count 重试（retry_count=0 只跑一轮）
+    assert called["count"] == (len(ws._DDGS_BACKENDS) or 1)
 
 
 def test_fetch_target_blocks_internal_addresses():
