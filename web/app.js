@@ -7244,6 +7244,21 @@ function renderMetricSummary(data) {
   if (data.target && Number.isFinite(Number(data.within_target))) {
     addChip('达标', `${data.within_target}/${count} 条`);
   }
+
+  // 步数/饮水按自然日累计：今日多条记录相加后才与每日目标比较
+  if (
+    Number(data.daily_count) > 0
+    && Number.isFinite(Number(data.daily_total))
+  ) {
+    let text = `${formatStatNumber(data.daily_total)}${unit}`;
+    if (data.target && Number.isFinite(Number(data.target.value1))) {
+      const gap = Number(data.target.value1) - Number(data.daily_total);
+      text += gap <= 0
+        ? '，已达成'
+        : `，还差 ${formatStatNumber(gap)}${unit}`;
+    }
+    addChip('今日累计', text);
+  }
 }
 
 async function loadMetricSummary() {

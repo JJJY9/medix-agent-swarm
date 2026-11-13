@@ -371,6 +371,9 @@ def classify_bp_grade(systolic: Any, diastolic: Any) -> Optional[str]:
 #: 目标为下限的指标（数值越高越好，低于目标视为未达标）。
 LOWER_BOUND_TARGET_METRICS = {"spo2", "sleep", "steps", "water"}
 
+#: 按自然日累计的指标：目标是每日总量，单条记录只是当日的一部分
+DAILY_ACCUMULATING_METRICS = {"steps", "water"}
+
 
 def metric_over_target(
     metric: str, value1: Any, value2: Any, target: Dict[str, Any]
@@ -6606,6 +6609,42 @@ class SessionStore:
                 prev_row["avg2"] if prev_row else None,
             )
 
+        # 步数/饮水的目标是每日总量：给出今日累计与达标情况，
+        # 单条记录不参与这条判定（历史「达标条数」语义保持不变）
+        daily_total = None
+        daily_count = 0
+        daily_within_target = None
+        if metric in DAILY_ACCUMULATING_METRICS:
+            today_start = now.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            today_conditions = list(base_conditions) + [
+                "measured_at >= ?",
+                "measured_at <= ?",
+            ]
+            today_params = base_params + [
+                today_start.isoformat(timespec="minutes"),
+                end_of_today,
+            ]
+            with self._lock:
+                today_row = self._conn.execute(
+                    "SELECT COUNT(*) AS count, SUM(value1) AS total"
+                    "  FROM health_metrics WHERE "
+                    + " AND ".join(today_conditions),
+                    today_params,
+                ).fetchone()
+            daily_count = (
+                int(today_row["count"] or 0) if today_row else 0
+            )
+            daily_total = (
+                round(float(today_row["total"] or 0), 1)
+                if daily_count and today_row else 0.0
+            )
+            if target_row is not None:
+                daily_within_target = (
+                    daily_total >= float(target_row["value1"])
+                )
+
         return {
             "metric": metric,
             "count": count,
@@ -6626,6 +6665,9 @@ class SessionStore:
                 metric in LOWER_BOUND_TARGET_METRICS
                 if target_row is not None else None
             ),
+            "daily_total": daily_total,
+            "daily_count": daily_count,
+            "daily_within_target": daily_within_target,
         }
 
     def add_vaccination(
