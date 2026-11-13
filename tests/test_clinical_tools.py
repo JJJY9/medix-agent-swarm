@@ -365,16 +365,23 @@ def test_qsofa_thresholds():
 
 def test_fib4_thresholds():
     low = calculate_fib4(age=30, ast=20, alt=20, platelets=250)
-    assert low["fib4"] == 0.54
+    assert low["fib4"] == 0.537
     assert low["risk"] == "低风险"
 
     middle = calculate_fib4(age=50, ast=40, alt=40, platelets=200)
-    assert middle["fib4"] == 1.58
+    assert middle["fib4"] == 1.581
     assert middle["risk"] == "中风险"
 
     high = calculate_fib4(age=70, ast=100, alt=50, platelets=80)
-    assert high["fib4"] == 12.37
+    assert high["fib4"] == 12.374
     assert high["risk"] == "高风险"
+
+
+def test_fib4_boundary_display_matches_classification():
+    # 2.6729 若按两位小数展示成 2.67 会与「高风险」矛盾
+    item = calculate_fib4(age=40, ast=37.8, alt=50, platelets=80)
+    assert item["fib4"] == 2.673
+    assert item["risk"] == "高风险"
 
 
 def test_meld_score_and_dialysis():

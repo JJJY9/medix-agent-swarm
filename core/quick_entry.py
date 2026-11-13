@@ -77,10 +77,11 @@ _CN_DIGITS = {
     "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
 }
 _CN_UNITS = {"十": 10, "百": 100, "千": 1000}
+_CN_MYRIAD = "万"
 
 _ASCII_NUMBER = r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)"
 _CN_NUMBER = (
-    r"[零〇一二两三四五六七八九十百千]+"
+    r"[零〇一二两三四五六七八九十百千万]+"
     r"(?:点[零〇一二两三四五六七八九]+)?"
 )
 _NUM_RE = rf"{_ASCII_NUMBER}|{_CN_NUMBER}"
@@ -107,7 +108,7 @@ def _normalize(text: Any) -> str:
     normalized = re.sub(r"([0-9])点([0-9])", r"\1.\2", normalized)
     normalized = re.sub(r"([0-9])度([0-9])", r"\1.\2", normalized)
     normalized = re.sub(
-        r"(?<=[零〇一二两三四五六七八九十百千])度"
+        r"(?<=[零〇一二两三四五六七八九十百千万])度"
         r"(?=[零〇一二两三四五六七八九])",
         "点",
         normalized,
@@ -116,7 +117,7 @@ def _normalize(text: Any) -> str:
 
 
 def _cn_number(text: str) -> Optional[float]:
-    """把一百五十、九十五、一百二（=120）、六十二点五转成数值。"""
+    """把一百五十、九十五、一百二（=120）、六十二点五、一万二转成数值。"""
     if not text:
         return None
     integer_part, _, decimal_part = text.partition("点")
@@ -135,14 +136,21 @@ def _cn_number(text: str) -> Optional[float]:
             last_unit = unit
             current = 0
             zero_placeholder = False
+        elif char == _CN_MYRIAD:
+            section = (section + current or 1) * 10000
+            last_unit = 10000
+            current = 0
+            zero_placeholder = False
         else:
             return None
-    # 「一百二」按惯例是 120，「一千二」是 1200；
+    # 「一百二」按惯例是 120，「一千二」是 1200，「一万二」是 12000；
     # 「一百零五」中的零已经明确占位，不能再用省略规则
     if current and not zero_placeholder and last_unit == 100:
         current *= 10
     elif current and not zero_placeholder and last_unit == 1000:
         current *= 100
+    elif current and not zero_placeholder and last_unit == 10000:
+        current *= 1000
     total = section + current
     if decimal_part:
         digits = []

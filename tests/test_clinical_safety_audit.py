@@ -162,3 +162,17 @@ def test_common_visit_recommendations_are_recognized(text):
 def test_negated_visit_recommendation_is_not_advice():
     assert has_visit_recommendation("不要去医院，先在家观察。") is False
     assert has_visit_recommendation("不应就诊。") is False
+    assert has_visit_recommendation(
+        "目前还没有去医院，可以先在家观察。"
+    ) is False
+    assert has_visit_recommendation("尚未去医院就诊。") is False
+    # 否定词离得远时不能把真实建议一并否定
+    assert has_visit_recommendation("没有明显诱因也应去医院检查。") is True
+
+    validator = ConstraintValidator()
+    result = validator.validate_output(
+        "diagnostic_agent",
+        "如果您目前没有去医院，可以先在家观察，注意休息。",
+        user_input="我胸痛两天了",
+    )
+    assert "高危症状未建议就医" in result["violations"]

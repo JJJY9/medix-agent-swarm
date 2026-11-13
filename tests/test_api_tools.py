@@ -433,7 +433,7 @@ def test_fib4_api(client):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["fib4"] == 12.37
+    assert data["fib4"] == 12.374
     assert data["risk"] == "高风险"
 
 

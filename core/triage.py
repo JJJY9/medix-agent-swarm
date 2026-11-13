@@ -111,6 +111,18 @@ _DOUBLE_NEGATION_SUFFIXES = (
     "不排除", "不能排除", "无法排除", "未排除",
     "不除外", "不能除外", "无法除外", "未除外",
 )
+#: 「排除/除外」前还有否定词时同样是双重否定（"尚未完全排除""暂不除外"）
+_RULED_OUT_SUFFIX_PATTERN = re.compile(
+    r"(?:"
+    r"(?:尚|还|暂|暂时|并|绝|从|也)?"
+    r"(?:不|未|没|无)"
+    r"(?:能|可以|可|有|法)?"
+    r"(?:完全|彻底|明确|确切|轻易|地)*"
+    r"|难以|不容易|不好"
+    r")$"
+)
+#: 「排除了/排除掉」是已完成的排除，属否定描述
+_RULED_OUT_DONE_PATTERN = re.compile(r"(?:排除|除外)(?:了|掉|啦)$")
 
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = ("怀孕", "孕期", "妊娠", "产妇", "产后")
@@ -142,14 +154,26 @@ def _is_negated(prefix: str) -> bool:
     ):
         # 「不排除酮症酸中毒」是阳性警示，不是否定
         return False
+    for ruled_out in ("排除", "除外"):
+        if stripped.endswith(ruled_out):
+            stem = stripped[:-len(ruled_out)].rstrip()
+            if _RULED_OUT_SUFFIX_PATTERN.search(stem):
+                # 「尚未完全排除/暂不除外/难以排除」同样表示仍有可能
+                return False
+    if _RULED_OUT_DONE_PATTERN.search(stripped):
+        # 「医生排除了酮症酸中毒」是已完成排除，按否定处理
+        return True
     return bool(_NEGATION_PATTERN.search(prefix))
 
 #: 分句标点：否定判断只在同一分句内进行，避免上一句的「不」误伤下一句
 CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
 
 
-def _clause_prefix(text: str, start: int, lookback: int = 6) -> str:
-    """返回短语之前、同一分句内的有限长度前缀。"""
+def _clause_prefix(text: str, start: int, lookback: int = 12) -> str:
+    """返回短语之前、同一分句内的有限长度前缀。
+
+    窗口需容纳「尚未能完全排除」这类较长的双重否定结构。
+    """
     boundary = start
     while boundary > 0 and text[boundary - 1] not in CLAUSE_DELIMITERS:
         boundary -= 1
@@ -183,6 +207,11 @@ _VISIT_NEGATIONS = (
     "不应", "不应该", "不要", "别", "不宜",
     "可以不去", "没必要", "用不着", "无需去", "不必去", "不用去",
     "不去", "先不去", "暂时不去", "目前不去", "不打算去",
+)
+#: 紧贴就医建议的普通否定（"还没有去医院"），远距离出现时可能否定的是
+#: 别的成分（"没有明显诱因也应去医院"），因此只在短语附近生效
+_VISIT_CLOSE_NEGATIONS = (
+    "没有", "没", "未", "尚未", "还没", "并未", "未曾", "从未", "并无", "无",
 )
 _VISIT_CLAUSE_PATTERN = re.compile(r"[。；;！!？?，,\n]")
 _QUESTION_MARKERS = ("是否", "要不要", "需不需要", "该不该", "用不用")
@@ -241,8 +270,15 @@ def has_visit_recommendation(text: str) -> bool:
             start = sentence.find(term)
             while start != -1:
                 prefix = sentence[:start]
-                negated = any(
-                    negation in prefix for negation in _VISIT_NEGATIONS
+                tail = prefix.rstrip()[-8:]
+                negated = (
+                    any(
+                        negation in prefix for negation in _VISIT_NEGATIONS
+                    )
+                    or any(
+                        negation in tail
+                        for negation in _VISIT_CLOSE_NEGATIONS
+                    )
                 )
                 questioning = any(
                     marker in prefix for marker in _QUESTION_MARKERS
@@ -281,8 +317,12 @@ def has_visit_recommendation(text: str) -> bool:
         for call in _CALL_120_PATTERN.finditer(sentence):
             prefix = sentence[:call.start()]
             tail = prefix.rstrip()[-10:]
-            negated = any(
-                negation in tail for negation in _VISIT_NEGATIONS
+            negated = (
+                any(negation in tail for negation in _VISIT_NEGATIONS)
+                or any(
+                    negation in tail
+                    for negation in _VISIT_CLOSE_NEGATIONS
+                )
             )
             questioning = any(
                 marker in prefix for marker in _QUESTION_MARKERS
@@ -344,6 +384,26 @@ _NEGATED_STOP_PATTERN = re.compile(
     r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|并非)"
     r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用)"
 )
+
+#: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
+_NEGATIVE_TEST_SUFFIX = re.compile(
+    r"\s*(?:抗体|抗原|检测|筛查|检查|结果)?\s*(?:为|呈|是)?\s*"
+    r"(?:阴性|[（(]\s*[-－—]\s*[）)])"
+)
+
+
+def _active_term_mention(text: str, term: str) -> bool:
+    """术语是否以非否定形式出现（"无化疗史""HIV阴性"不算当前状态）。"""
+    start = text.find(term)
+    while start != -1:
+        prefix = _clause_prefix(text, start)
+        negated = _is_negated(prefix) or bool(
+            _NEGATIVE_TEST_SUFFIX.match(text, start + len(term))
+        )
+        if not negated:
+            return True
+        start = text.find(term, start + len(term))
+    return False
 
 _AGE_YEARS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:岁|周岁|years?|yrs?|y)", re.I)
 _AGE_MONTHS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:个?月|months?|mos?)", re.I)
@@ -478,7 +538,10 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
 
     medical_text = _active_medical_text(context)
     if (
-        any(term in medical_text for term in IMMUNOSUPPRESSION_TERMS)
+        any(
+            _active_term_mention(medical_text, term)
+            for term in IMMUNOSUPPRESSION_TERMS
+        )
         and _has_fever(text)
     ):
         flags.append((
@@ -488,7 +551,10 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
         ))
 
     if (
-        any(term in medical_text for term in ANTICOAGULANT_TERMS)
+        any(
+            _active_term_mention(medical_text, term)
+            for term in ANTICOAGULANT_TERMS
+        )
         and any(_positive_mention(text, term) for term in HEAD_TRAUMA_TERMS)
     ):
         flags.append((
