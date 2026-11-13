@@ -23,6 +23,10 @@ def _load_search_history_module():
 
 
 def test_long_term_memory_reinitializes_after_transient_failure(monkeypatch):
+    import memory.long_term as long_term_module
+
+    if not getattr(long_term_module, "MEM0_AVAILABLE", False):
+        pytest.skip("mem0ai 未安装（CI 离线环境）")
     monkeypatch.setenv("MEM0_API_KEY", "test-key")
     calls = {"count": 0}
 
