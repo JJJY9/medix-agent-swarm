@@ -767,13 +767,35 @@ let sessionId = initialSessionFromUrl
 // “本轮新落库的问答”，仅靠问题文本会在重复提问时误判
 let lastServerMessageId = 0;
 //: 会诊中切换/清空档案后，下一轮提问前必须开启新会话
+const PENDING_RESET_KEY = 'medix.pendingSessionReset';
 let pendingSessionReset = false;
+//: ?session= 深链且与本标签页上次会话不同：按“打开历史会话”处理
+let deepLinkedSession = false;
+//: 用户最近一次手动切换档案的序号：恢复会话的晚到响应据此放弃
+let profileSelectionSeq = 0;
+//: 当前是否正在恢复会话（用于切换档案时按“已有会话”处理）
+let sessionRestoreInFlight = false;
+const previousTabSession = safeSessionGet('medix.session.tab');
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
-} else if (sessionId && !safeSessionGet('medix.session.tab')) {
+  deepLinkedSession = initialSessionFromUrl !== previousTabSession;
+} else if (sessionId && !previousTabSession) {
   // 从共享 localStorage 采纳的会话要固定到本标签页：其它标签页之后
   // 切换会话并写入 localStorage 时，本标签页刷新才不会跟随过去
   safeSessionSet('medix.session.tab', sessionId);
+}
+// 恢复未完成的「下一轮换新会话」标记：刷新/重开 PWA 后仍然有效
+try {
+  const pendingFor = safeSessionGet(PENDING_RESET_KEY);
+  if (pendingFor) {
+    if (pendingFor === sessionId) {
+      pendingSessionReset = true;
+    } else {
+      safeSessionRemove(PENDING_RESET_KEY);
+    }
+  }
+} catch {
+  // 隐私模式下忽略
 }
 let busy = false;
 let activeController = null;
@@ -3213,7 +3235,7 @@ async function startNewSession() {
     persistSessionId(sessionId);
     setSessionUrl(sessionId);
     lastServerMessageId = 0;
-    pendingSessionReset = false;
+    setPendingSessionReset(false);
 
     els.thread.replaceChildren(els.empty);
     els.empty.hidden = false;
@@ -5022,14 +5044,23 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
   }
 
   // 恢复「当前会话」（刷新/停止对账）时，用户可能有尚未提交的补充
-  // 信息草稿：不能用提问时刻的旧快照覆盖；打开历史会话仍按快照回填，
-  // 保持跨患者隔离
-  if (options.restoreContext !== false || !safeSessionGet('medix.context')) {
+  // 信息草稿：不能用提问时刻的旧快照覆盖；打开历史会话/深链仍按快照
+  // 回填，保持跨患者隔离。skipContext/skipProfile 用于用户已清空档案、
+  // 只能等下一轮新会话的情形，绝不能用旧快照把旧患者填回来。
+  const snapshotAllowed = options.skipContext
+    ? false
+    : (
+      options.restoreContext !== false
+      || !safeSessionGet('medix.context')
+    );
+  if (snapshotAllowed) {
     applyPatientContext(
       (lastMetadata && lastMetadata.patient_context) || {}
     );
   }
-  setActiveProfile(profile || '');
+  if (!options.skipProfile) {
+    setActiveProfile(profile || '');
+  }
 
   scrollThreadToBottom(true);
 }
@@ -5067,6 +5098,8 @@ async function openSession(id) {
     sessionId = id;
     persistSessionId(id);
     setSessionUrl(id);
+    // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
+    setPendingSessionReset(false);
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
@@ -5246,6 +5279,7 @@ async function toggleArchive(item) {
 function clearCurrentSession() {
   // 同时作废在途的历史读取，防止被删会话的旧响应重新渲染
   openSessionSeq += 1;
+  setPendingSessionReset(false);
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -5262,6 +5296,7 @@ function clearDeletedSession(id, notice = '') {
   // 界面却照常流式显示答案（token 照常消耗）。
   if (!id || sessionId !== id) return false;
   openSessionSeq += 1;
+  setPendingSessionReset(false);
   sessionId = null;
   lastServerMessageId = 0;
   clearPersistedSessionId();
@@ -6414,14 +6449,14 @@ async function detachSessionForProfileChange() {
   if (busy) {
     // 流式会诊进行中：不能立刻清空已生成的答案，标记在下一轮
     // 提问前开启新会话，避免把新患者的问题写进旧档案
-    pendingSessionReset = true;
+    setPendingSessionReset(true);
     setVitals('warn', '档案已切换，下一轮提问将开启新会话');
     return false;
   }
   const ok = await startNewSession();
   if (!ok) {
     // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定
-    pendingSessionReset = true;
+    setPendingSessionReset(true);
   }
   return ok;
 }
@@ -6438,6 +6473,19 @@ function persistSessionId(id) {
 function clearPersistedSessionId() {
   safeSessionRemove('medix.session.tab');
   safeStorageRemove('medix.session');
+}
+
+function setPendingSessionReset(active) {
+  pendingSessionReset = Boolean(active);
+  try {
+    if (pendingSessionReset && sessionId) {
+      safeSessionSet(PENDING_RESET_KEY, sessionId);
+    } else {
+      safeSessionRemove(PENDING_RESET_KEY);
+    }
+  } catch {
+    // 隐私模式下忽略存储失败
+  }
 }
 
 function safeSessionRemove(key) {
@@ -20139,6 +20187,8 @@ async function handleLaunchAction() {
 async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 0) {
   if (!sessionId) return false;
   const expectedSession = sessionId;
+  const restoreProfileSeq = profileSelectionSeq;
+  sessionRestoreInFlight = true;
 
   try {
     const res = await fetch(
@@ -20165,6 +20215,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
 
     const data = await res.json();
     if (sessionId !== expectedSession || busy) return false;
+    // 拉取期间用户切换了档案：晚到的会话恢复不能覆盖新选择
+    if (restoreProfileSeq !== profileSelectionSeq) return false;
 
     const messages = data.messages || [];
     if (!messages.length) return false;
@@ -20209,16 +20261,30 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     }
 
     els.readout.session.textContent = shortSession(expectedSession);
-    // 恢复当前会话只渲染历史，不用旧快照覆盖用户编辑中的补充信息
+    // 深链按「打开历史会话」回填快照；刷新/对账只渲染历史，不用旧
+    // 快照覆盖用户编辑中的补充信息。用户已清空档案时（pending）既不
+    // 回填快照也不改档案，等下一轮提问新建会话。
+    const pendingReset = pendingSessionReset;
     renderStoredMessages(
       messages, expectedSession, data.profile || '',
-      { restoreContext: false }
+      {
+        restoreContext: deepLinkedSession ? true : false,
+        skipContext: pendingReset,
+        skipProfile: pendingReset,
+      }
     );
-    setVitals('idle', '已恢复上次会诊');
+    deepLinkedSession = false;
+    if (pendingReset) {
+      setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
+    } else {
+      setVitals('idle', '已恢复上次会诊');
+    }
     return true;
   } catch {
     // 服务未启动或尚无记录时保持空状态
     return false;
+  } finally {
+    sessionRestoreInFlight = false;
   }
 }
 
@@ -20245,7 +20311,7 @@ async function send(question) {
   if (pendingSessionReset) {
     // 会诊中切换/清空档案后的首次提问：服务端会话已绑定原档案，
     // 不能复用；这里丢弃本地绑定，由 ensureSession 新建会话
-    pendingSessionReset = false;
+    setPendingSessionReset(false);
     openSessionSeq += 1;
     sessionId = null;
     lastServerMessageId = 0;
@@ -21226,7 +21292,10 @@ async function applySelectedProfile() {
     return;
   }
 
-  const hasTurns = els.thread.querySelectorAll('.turn').length > 0;
+  const hasTurns = (
+    els.thread.querySelectorAll('.turn').length > 0
+    || sessionRestoreInFlight
+  );
   if (sessionId && hasTurns) {
     const ok = window.confirm(
       '切换患者档案会开始新的会诊记录，是否继续？'
@@ -21235,12 +21304,18 @@ async function applySelectedProfile() {
       els.profileSelect.value = previous;
       return;
     }
-    const before = sessionId;
-    await startNewSession();
-    if (sessionId === before) {
-      els.profileSelect.value = previous;
+    // 用户手动换档：让仍在途的会话恢复放弃渲染，避免覆盖新选择
+    profileSelectionSeq += 1;
+    const created = await startNewSession();
+    if (!created) {
+      // 失败或并发打开了其它会话：同步下拉到当前实际档案，
+      // 避免把新档案/补充信息套到旧会话上
+      els.profileSelect.value = activeProfileName || '';
       return;
     }
+  } else {
+    // 没有既有会话/正在等待恢复：同样作废晚到的会话恢复
+    profileSelectionSeq += 1;
   }
 
   setActiveProfile(name);

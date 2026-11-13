@@ -151,6 +151,8 @@ python api_server.py --reload             # 开发模式，改代码自动重载
 > 用 `--host 0.0.0.0` 暴露到局域网时，**必须**同时设置 `MEDIX_ACCESS_TOKEN`：未设置令牌时服务会拒绝启动，避免同网段任何设备无凭证读取全部问诊与影像、或调用删除接口。确实在完全可信的内网使用时，可以加 `--allow-insecure-lan`（或设置 `MEDIX_ALLOW_INSECURE_LAN=1`）显式放行，启动时会打印醒目警告。该限制对所有启动方式生效：即使用 `uvicorn api_server:app --host 0.0.0.0` 或 gunicorn 直接启动，未设置令牌时的非本机 API 请求也会被 403 拒绝（`MEDIX_ALLOW_INSECURE_LAN=1` 同样放行）。设置令牌后除 `/api/status` 外的所有 API 都需要令牌：浏览器首次打开会提示输入，命令行请求可带 `X-Medix-Token` 请求头（也支持 `Authorization: Bearer`）。为了不把令牌写进访问日志，不再支持 `?token=` 查询参数。
 >
 > 服务会校验 Host 头以防 DNS rebinding：IP 地址、`localhost` 与 `testserver` 默认允许；如需通过局域网域名访问，请设置 `MEDIX_ALLOWED_HOSTS=medix.local`（逗号分隔多个域名）。
+>
+> 注意：绑定 `127.0.0.1` 不能防护端口转发。使用 `ssh -R`、socat、frp 等透明 TCP 隧道把服务暴露出去时，请求不会携带任何代理头，服务端无法与真正的本机请求区分；任何隧道外露前都必须设置 `MEDIX_ACCESS_TOKEN`。经本机反向代理访问时，携带 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 的请求默认按远程处理；确需按代理头里的真实客户端地址判定本机，请设置 `MEDIX_TRUST_PROXY_HEADERS=1`，并确保代理用 `$remote_addr` 覆盖 `X-Forwarded-For`（如 nginx `proxy_set_header X-Forwarded-For $remote_addr;`）。
 
 ### 界面说明
 
@@ -870,6 +872,7 @@ REDIS_CONFIG = {
 | `MEDIX_API_KEY` / `MEDIX_BASE_URL` / `MEDIX_MODEL` | 覆盖 LLM 的密钥、地址与模型名（默认取 `config.py`） |
 | `MEDIX_ACCESS_TOKEN` | 访问令牌；设置后所有 API 需要 `Authorization: Bearer <token>`（默认关闭） |
 | `MEDIX_ALLOWED_HOSTS` | 允许的 Host 域名（逗号分隔）；IP 地址与 localhost 默认允许（默认空） |
+| `MEDIX_TRUST_PROXY_HEADERS` | 设为 `1` 时信任本机反向代理带来的 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 客户端地址；默认关闭（见访问保护说明） |
 | `MEDIX_LOG_LEVEL` | 服务日志级别（默认 `INFO`）；调试可设为 `DEBUG` |
 | `MEDIX_RATE_LIMIT` | 每个客户端每分钟会诊请求上限（默认 30，`0` 表示关闭） |
 | `MEDIX_TIMEOUT` | 模型请求超时秒数（默认 60） |

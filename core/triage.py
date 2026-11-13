@@ -357,21 +357,61 @@ def clinical_statement_text(text: str) -> str:
     return "。".join(kept)
 
 
-#: 定义/科普型问句模式：无患者语境时整段不作为主诉
-_DEFINITIONAL_CLAUSE_RE = re.compile(
-    r"[^，,；;。！？!?\n]*(?:什么是|是什么|啥是|啥意思|什么意思|怎么回事|"
-    r"是指什么|的定义|定义为|请解释|解释一下|介绍一下|"
-    r"有哪些(?:症状|表现|原因|危害)|有什么(?:症状|表现|危害))"
-    r"[^，,；;。！？!?\n]*[？?]?"
-)
-
 #: 出现这些词说明在描述本人/家人当前情况，不能当科普问句过滤
 _PATIENT_CONTEXT_MARKERS = (
     "我", "本人", "孩子", "儿子", "女儿", "父亲", "母亲", "爸", "妈",
-    "爷爷", "奶奶", "外公", "外婆", "家人", "老人", "宝宝",
+    "爷爷", "奶奶", "外公", "外婆", "姥姥", "姥爷", "家人", "老人",
+    "宝宝", "大宝", "二宝", "小孩", "患儿", "患者", "病患",
+    "老婆", "老公", "爱人", "对象", "丈夫", "妻子", "配偶", "老伴",
+    "哥哥", "姐姐", "弟弟", "妹妹", "兄弟", "姐妹",
+    "阿姨", "叔叔", "舅舅", "姑姑", "婶婶", "侄子", "外甥",
+    "孙子", "孙女",
     "最近", "这两天", "今天", "昨天", "前天", "持续", "伴有",
-    "突然", "出现", "发作", "测得", "体温", "吃了", "服了",
+    "突然", "出现", "发作", "测得", "体温", "吃了", "服了", "正在吃",
 )
+
+#: 纯定义引导词开头的分句：整句丢弃（什么是X / 请解释X）
+_DEFINITION_PREFIX_RE = re.compile(
+    r"^(?:什么是|啥是|何谓|何为|请解释|解释一下|介绍一下|讲讲)"
+)
+#: 特征/信息型问句：X有哪些症状（前缀是症状时保留）
+_FEATURE_QUESTION_RE = re.compile(
+    r"(?:有哪些(?:症状|表现|原因|危害)|有什么(?:症状|表现|危害))"
+)
+#: 「X是什么原因/怎么回事」只去掉疑问尾巴，保留症状描述
+_CAUSE_TAIL_RE = re.compile(
+    r"(?:是什么原因|什么原因|怎么回事|咋回事)\s*[？?]?$"
+)
+#: 「X是什么」纯定义问句
+_DEFINITION_SUFFIX_RE = re.compile(
+    r"^[^，,；;。！？!?\n]*(?:是什么|啥是|是什么意思|什么意思)\s*[？?]?$"
+)
+
+
+def _is_red_flag_text(text: str) -> bool:
+    if any(term in text for term, _ in RED_FLAG_PHRASES):
+        return True
+    return any(term in text for term in HEAD_TRAUMA_TERMS)
+
+
+def _clean_complaint_clause(clause: str) -> str:
+    """清洗单个分句：有患者语境的保留；纯定义问句丢弃。"""
+    if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
+        return clause
+    if any(marker in clause for marker in EDUCATIONAL_MARKERS):
+        return ""
+    if _DEFINITION_PREFIX_RE.match(clause):
+        return ""
+    feature = _FEATURE_QUESTION_RE.search(clause)
+    if feature:
+        prefix = clause[: feature.start()].strip(" ，,、")
+        return prefix if _is_red_flag_text(prefix) else ""
+    cause = _CAUSE_TAIL_RE.search(clause)
+    if cause:
+        return clause[: cause.start()].strip(" ，,、")
+    if _DEFINITION_SUFFIX_RE.match(clause):
+        return ""
+    return clause
 
 
 def patient_complaint_text(text: str) -> str:
@@ -379,17 +419,20 @@ def patient_complaint_text(text: str) -> str:
 
     “什么是咯血？”没有患者语境，不能当作急症主诉；“咯血是什么？”
     同理；而“我父亲最近咯血是什么原因？”含患者语境，必须保留并触发
-    红旗。先经 clinical_statement_text 去掉科普性陈述分句。
+    红旗。按分句处理（含逗号/顿号）：含患者语境或症状描述的分句保留，
+    只有纯定义问句才整句丢弃，避免“孩子发烧了，医生说是一种病毒感染”
+    这类真实主诉被整段删除。
     """
-    text = clinical_statement_text(text)
+    text = str(text or "").strip()
     if not text:
         return ""
-    if any(marker in text for marker in _PATIENT_CONTEXT_MARKERS):
-        return text
-    if _DEFINITIONAL_CLAUSE_RE.search(text):
-        stripped = _DEFINITIONAL_CLAUSE_RE.sub("", text)
-        return stripped.strip(" ，,；;。！？!?\n")
-    return text
+    clauses = re.split(r"[。；;！!？?\n，,、]", text)
+    kept = []
+    for clause in clauses:
+        cleaned = _clean_complaint_clause(clause.strip())
+        if cleaned:
+            kept.append(cleaned)
+    return "，".join(kept)
 
 
 def has_visit_recommendation(text: str) -> bool:

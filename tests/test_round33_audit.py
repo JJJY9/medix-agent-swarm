@@ -284,10 +284,17 @@ def test_loopback_with_forwarded_headers_is_not_trusted(monkeypatch):
         FakeRequest({"forwarded": "for=203.0.113.9"})
     ) is False
 
+    # 显式信任代理头时按头里的真实地址判定：远程仍不是本机
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     assert api_server._is_loopback_client(
         FakeRequest({"x-forwarded-for": "203.0.113.9"})
+    ) is False
+    assert api_server._is_loopback_client(
+        FakeRequest({"x-forwarded-for": "127.0.0.1"})
     ) is True
+    assert api_server._is_loopback_client(
+        FakeRequest({"x-real-ip": "203.0.113.9"})
+    ) is False
 
 
 def test_same_origin_ignores_scheme_behind_tls_proxy(client_and_store):
@@ -333,6 +340,8 @@ def test_attachment_dir_owner_rename_takeover(tmp_path):
 
 
 def test_attachment_dir_case_only_session_db(tmp_path):
+    import os
+
     from core.storage_paths import attachment_dir_for_db
 
     legacy = tmp_path / "attachments"
@@ -342,7 +351,12 @@ def test_attachment_dir_case_only_session_db(tmp_path):
 
     resolved = attachment_dir_for_db(tmp_path / "Sessions.db")
 
-    assert resolved == legacy
+    if os.name == "nt":
+        # Windows 上大小写不同是同一个数据库文件：沿用共享目录
+        assert resolved == legacy
+    else:
+        # POSIX 上是两个不同文件：使用专属目录是正确行为
+        assert resolved == tmp_path / "Sessions.db-attachments"
 
 
 # ---------------------------------------------------------------- Lead 兜底
@@ -382,7 +396,7 @@ def test_session_flow_guards_are_present():
 
     assert "let pendingSessionReset = false;" in app_js
     assert "safeSessionGet('medix.session.tab')" in app_js
-    assert "else if (sessionId && !safeSessionGet('medix.session.tab'))" in app_js
+    assert "initialSessionFromUrl !== previousTabSession" in app_js
 
     start = app_js.index("async function startNewSession()")
     body = app_js[start:start + 1800]
@@ -390,23 +404,27 @@ def test_session_flow_guards_are_present():
 
     detach_start = app_js.index("async function detachSessionForProfileChange()")
     detach = app_js[detach_start:detach_start + 900]
-    assert "pendingSessionReset = true" in detach
+    assert "setPendingSessionReset(true)" in detach
 
     send_start = app_js.index("async function send(question)")
     send_body = app_js[send_start:send_start + 1200]
     assert "if (pendingSessionReset)" in send_body
     assert "clearPersistedSessionId()" in send_body
+    assert "setPendingSessionReset(false)" in send_body
 
 
 def test_restore_context_does_not_overwrite_draft():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
-    assert "options.restoreContext !== false" in app_js
+    assert "options.skipContext" in app_js
+    assert "options.skipProfile" in app_js
     restore = app_js[
         app_js.index("async function restoreCurrentSession"):
         app_js.index("function scheduleAbortReconcile")
     ]
-    assert "{ restoreContext: false }" in restore
+    assert "skipContext: pendingReset" in restore
+    assert "skipProfile: pendingReset" in restore
+    assert "restoreContext: deepLinkedSession ? true : false" in restore
 
 
 def test_attachment_limits_match_server():

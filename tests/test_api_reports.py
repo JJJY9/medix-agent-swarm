@@ -277,6 +277,7 @@ def test_weekly_report_counts_consultations(client_and_store):
     ).json()
     assert report["consultations"] == {
         "count": 1, "prev_count": 1, "risk": "",
+        "risk_profiles": [],
     }
 
     other = client.get(
@@ -284,11 +285,13 @@ def test_weekly_report_counts_consultations(client_and_store):
     ).json()
     assert other["consultations"] == {
         "count": 0, "prev_count": 0, "risk": "",
+        "risk_profiles": [],
     }
 
     family = client.get("/api/reports/weekly").json()
     assert family["consultations"] == {
         "count": 1, "prev_count": 1, "risk": "",
+        "risk_profiles": [],
     }
 
 
@@ -369,7 +372,12 @@ def test_weekly_report_consultation_risk(client_and_store):
     assert report["consultations"]["risk"] == "high"
 
     family = client.get("/api/reports/weekly").json()
-    assert family["consultations"]["risk"] == ""
+    # 家庭范围同样要给出成员级风险，健康提示才能提示高危会诊
+    assert family["consultations"]["risk"] == "high"
+    assert any(
+        item["profile"] == "妈妈" and item["risk"] == "high"
+        for item in family["consultations"]["risk_profiles"]
+    )
 
 
 def test_weekly_report_lists_active_medication_without_logs(client_and_store):

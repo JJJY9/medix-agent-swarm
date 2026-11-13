@@ -1856,13 +1856,10 @@ def _rate_limit_key(request: Request) -> str:
     return f"ip:{host}"
 
 
-def _client_ip_key(request: Request) -> str:
-    """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。"""
-    host = request.client.host if request.client else "unknown"
-    return f"ip:{host}"
-
-
 _PROXY_HEADER_NAMES = ("x-forwarded-for", "forwarded", "x-real-ip")
+_PROXY_FORWARDED_FOR_RE = re.compile(
+    r"(?:^|;)\s*for\s*=\s*([^;]+)", re.IGNORECASE
+)
 
 
 def _has_proxy_headers(request: Request) -> bool:
@@ -1876,21 +1873,73 @@ def _trust_proxy_headers() -> bool:
     return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
 
 
-def _is_loopback_client(request: Request) -> bool:
-    """本机请求不参与令牌错误限流（本机进程本身已可信）。
+def _forwarded_client_address(request: Request) -> str:
+    """从代理头解析原始客户端地址（XFF / X-Real-IP / RFC 7239）。"""
+    forwarded_for = (request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded_for:
+        parts = [part.strip() for part in forwarded_for.split(",")]
+        # 取最右侧：由最近的可信代理追加，客户端无法伪造
+        for part in reversed(parts):
+            if part:
+                return part
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    forwarded = (request.headers.get("forwarded") or "").strip()
+    if forwarded:
+        match = _PROXY_FORWARDED_FOR_RE.search(forwarded)
+        if match:
+            value = match.group(1).strip().strip('"')
+            if value.startswith("["):
+                end = value.find("]")
+                if end != -1:
+                    return value[1:end]
+            if value.count(":") == 1:
+                return value.rsplit(":", 1)[0]
+            return value
+    return ""
 
-    经本机反向代理/端口转发到达的请求携带 Forwarded/X-Forwarded-For
-    时不能算本机：否则远程浏览器经 nginx/ssh -R 会被当成 loopback，
-    绕过无令牌局域网拦截与令牌错误限流（带令牌时还能无限次猜测）。
-    确需信任代理头时显式设置 MEDIX_TRUST_PROXY_HEADERS=1。
-    """
-    if _has_proxy_headers(request) and not _trust_proxy_headers():
-        return False
-    host = request.client.host if request.client else ""
+
+def _is_loopback_address(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return host in {"testclient", "localhost"}
+
+
+def _is_loopback_client(request: Request) -> bool:
+    """本机请求不参与令牌错误限流（本机进程本身已可信）。
+
+    携带 Forwarded / X-Forwarded-For / X-Real-IP 的请求默认不信任
+    （视为远端）；只有显式设置 MEDIX_TRUST_PROXY_HEADERS=1 且 TCP
+    对端确实是本机代理时，才采信头里的原始客户端地址判定是否本机。
+
+    注意：ssh -R/socat/frp 等透明 TCP 隧道不会添加任何代理头，服务端
+    无法与真正的本机请求区分；隧道外露前必须设置 MEDIX_ACCESS_TOKEN。
+    """
+    peer = request.client.host if request.client else ""
+    if _has_proxy_headers(request):
+        if not (_trust_proxy_headers() and _is_loopback_address(peer)):
+            return False
+        forwarded = _forwarded_client_address(request)
+        if not forwarded:
+            return False
+        return _is_loopback_address(forwarded)
+    return _is_loopback_address(peer)
+
+
+def _client_ip_key(request: Request) -> str:
+    """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
+
+    显式信任代理头时按头里的真实客户端地址计数，避免经本机代理的
+    所有用户坍缩到同一个 127.0.0.1 计数桶（一个人即可锁死全家）。
+    """
+    if _trust_proxy_headers():
+        forwarded = _forwarded_client_address(request)
+        if forwarded:
+            return f"ip:{forwarded}"
+    host = request.client.host if request.client else "unknown"
+    return f"ip:{host}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -2011,10 +2060,19 @@ def _same_origin(request: Request, value: str) -> bool:
         request_port = request.url.port
     if origin_host != request_host.rstrip("."):
         return False
-    if origin_port is not None and request_port is not None:
-        return origin_port == request_port
-    # 一侧未显式带端口（默认端口/代理未保留端口）：按同源放行
-    return True
+    if request_port is not None:
+        origin_effective = origin_port
+        if origin_effective is None:
+            origin_effective = {
+                "http": 80, "https": 443,
+            }.get(str(parsed.scheme or "").lower())
+        return (
+            origin_effective is not None
+            and origin_effective == request_port
+        )
+    # Host 未带端口：只有 Origin 也未显式带端口时才按同源放行，
+    # 避免同主机其它端口的页面跨源写操作被误判为同源
+    return origin_port is None
 
 
 def _is_cross_site_request(request: Request) -> bool:
@@ -6345,6 +6403,7 @@ async def _weekly_report_impl(
         and prev_start <= str(item.get("created_at") or "")[:10] < start
     ]
     risk_level = ""
+    risk_profiles: List[Dict[str, str]] = []
     if profile is not None and sessions:
         profile_key = _normalized_profile_key(profile)
         latest_answers = await asyncio.to_thread(
@@ -6355,6 +6414,20 @@ async def _weekly_report_impl(
             if (item.get("profile") or "") == profile_key:
                 risk_level = parse_risk_level(item.get("last_answer"))
                 break
+    elif profile is None:
+        # 家庭范围：汇总每位成员最近一次会诊的风险，健康提示不能漏报
+        latest_answers = await asyncio.to_thread(
+            store.latest_session_answers_by_profile, True
+        )
+        risk_order = {"low": 1, "medium": 2, "high": 3, "emergency": 4}
+        for item in latest_answers:
+            level = parse_risk_level(item.get("last_answer"))
+            if not level:
+                continue
+            member = item.get("profile") or "未指定"
+            risk_profiles.append({"profile": member, "risk": level})
+            if risk_order.get(level, 0) > risk_order.get(risk_level, 0):
+                risk_level = level
     pending_reminders = await asyncio.to_thread(
         store.list_reminders, False, None
     )
@@ -6948,6 +7021,7 @@ async def _weekly_report_impl(
             "count": len(sessions),
             "prev_count": len(previous_sessions),
             "risk": risk_level,
+            "risk_profiles": risk_profiles,
         },
         "labs": {
             "count": len(lab_results),
@@ -7466,11 +7540,22 @@ def _build_health_insights(
 
     consultations = report.get("consultations") or {}
     if consultations.get("risk") in {"high", "emergency"}:
+        risky_members = [
+            str(item.get("profile") or "未指定")
+            for item in (consultations.get("risk_profiles") or [])
+            if item.get("risk") in {"high", "emergency"}
+        ]
+        if family_scope and risky_members:
+            title = "家庭成员最近会诊提示较高风险"
+            detail = "、".join(risky_members[:3])
+        else:
+            title = "最近一次会诊提示较高风险"
+            detail = f"近 {days} 天会诊 {consultations.get('count', 0)} 次。"
         insights.append(_health_insight(
             "consultation_risk",
             "warning",
-            "最近一次会诊提示较高风险",
-            f"近 {days} 天会诊 {consultations.get('count', 0)} 次。",
+            title,
+            detail,
             "请按会诊建议尽快线下就医或复诊。",
             "",
         ))
@@ -7733,6 +7818,7 @@ def _build_health_insights(
             + int((report.get("vaccinations") or {}).get("count") or 0)
             + int((report.get("medications") or {}).get("active") or 0)
             + int((report.get("reminders") or {}).get("pending") or 0)
+            + int((report.get("consultations") or {}).get("count") or 0)
         )
         if record_count == 0:
             insights.append(_health_insight(
@@ -10615,6 +10701,50 @@ async def family_overview(days: int = 7):
             "stale": stale,
             "critical_alerts": alerts,
         })
+
+    # 最新一条恢复正常不能掩盖窗口内更早的危急读数：与周报/复诊准备
+    # 单同口径，扫描窗口内指标并把未被最新值覆盖的危急读数并入
+    window_metrics = await asyncio.to_thread(
+        store.list_metrics, None, None, 100000, days
+    )
+    latest_metric_keys = {
+        (
+            item.get("profile") or "",
+            item.get("metric") or "",
+            str(item.get("measured_at") or ""),
+            item.get("value1"),
+            item.get("value2"),
+        )
+        for item in latest_metrics
+    }
+    seen_window_critical: set = set()
+    for item in window_metrics:
+        profile = item.get("profile") or ""
+        metric = item.get("metric") or ""
+        key = (
+            profile, metric,
+            str(item.get("measured_at") or ""),
+            item.get("value1"), item.get("value2"),
+        )
+        if key in latest_metric_keys or key in seen_window_critical:
+            continue
+        alerts = critical_metric_alerts(
+            metric, item.get("value1"), item.get("value2")
+        )
+        if not alerts:
+            continue
+        seen_window_critical.add(key)
+        label, _default_unit, _ = METRIC_TYPES.get(metric, (metric, "", (0, 0)))
+        day = str(item.get("measured_at") or "")[:10]
+        entry = critical_by_profile.setdefault(profile, {
+            "count": 0, "items": [],
+        })
+        entry["count"] += 1
+        if len(entry["items"]) < 3:
+            suffix = f"（{day[5:]}）" if day else ""
+            entry["items"].append(
+                f"{label} {format_metric_value(item)}{suffix}"
+            )
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
     medication_names_by_profile: Dict[str, List[str]] = {}
@@ -15936,11 +16066,16 @@ def _cleanup_target_recreated(
             created = str((session or {}).get("created_at") or "")
         elif profile:
             created = store.profile_created_at(profile)
+            if not created:
+                # data-only 档案：任一名下数据仍在即视为在使用
+                created = profile if store.profile_name_exists(profile) else ""
         else:
             return False
     except Exception:
         return False
-    return bool(created and created >= since)
+    # 只要目标当前仍在（包括改名后改回原名：created_at 早于删除时间），
+    # 就不能整段清空其命名空间，必须按删除时间窗清理旧记忆
+    return bool(created)
 
 
 def _process_memory_cleanup_queue() -> None:

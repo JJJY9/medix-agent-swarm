@@ -595,14 +595,18 @@ class SwarmCoordinator:
         # 2. 检索长期记忆（相似历史会话）；删除档案的云端清理尚未
         # 完成时不检索同名命名空间，避免召回已删除患者的病史
         skip_long_term = False
-        if patient_profile:
-            try:
-                skip_long_term = await asyncio.to_thread(
-                    self.session_store.profile_memory_cleanup_pending,
-                    patient_profile,
-                )
-            except Exception:
-                skip_long_term = False
+        scope_to_check = (
+            str(memory_scope or "").strip()
+            or session_memory_scope(session_id)
+        )
+        try:
+            # 作用域级门禁同时覆盖整档删除与单个会话删除的待清理项
+            skip_long_term = await asyncio.to_thread(
+                self.session_store.memory_scope_cleanup_pending,
+                scope_to_check,
+            )
+        except Exception:
+            skip_long_term = False
         if skip_long_term:
             similar_memories = []
         else:
@@ -1162,16 +1166,17 @@ class SwarmCoordinator:
                         return True
                 except Exception:
                     continue
-                try:
-                    # 请求开始前已删除、且未被真正重建的档案：墓碑仍在，
-                    # 另一标签页/重放请求也不能把摘要写回其命名空间
-                    if await asyncio.to_thread(
-                        self.session_store.profile_rebinding_blocked,
-                        name,
-                    ):
-                        return True
-                except Exception:
-                    continue
+            try:
+                # 只对解析后的当前名做墓碑判定：改名前的旧名在重建后
+                # 改名时也会“有墓碑且无档案行”，会误判为已删除
+                resolved = names[-1]
+                if await asyncio.to_thread(
+                    self.session_store.profile_rebinding_blocked,
+                    resolved,
+                ):
+                    return True
+            except Exception:
+                pass
             return False
 
         # Step 4: 生成 SessionSummary

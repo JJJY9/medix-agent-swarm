@@ -2558,6 +2558,10 @@ class SessionStore:
                     ON visit_records(profile, created_at);
                 CREATE INDEX IF NOT EXISTS idx_conditions_identity
                     ON conditions(profile, created_at);
+                CREATE INDEX IF NOT EXISTS idx_reminders_identity
+                    ON reminders(created_at);
+                CREATE INDEX IF NOT EXISTS idx_lab_results_identity
+                    ON lab_results(profile, created_at);
                 """
             )
             # 旧版本数据库没有 metadata 列，就地迁移
@@ -3168,47 +3172,49 @@ class SessionStore:
     def resolve_profile_alias(self, name: str) -> str:
         """把已改名档案的旧名称解析到当前名称。
 
-        只跟随本库记录过的改名链；旧名称后来被新档案重新使用时不解析
-        （那是另一位患者）。用于会诊中途改名/恢复改名前的备份。
+        只跟随本库记录过的改名链；输入名仍被数据使用时原样返回（可能
+        是另一位患者复用了这个名字）。中间名被新档案复用后，只跟随
+        「新主人创建之前」产生的改名记录，避免把旧患者解析成新患者。
         """
         name = _normalize_profile_name(name)
         if not name:
             return ""
+        if self.profile_name_exists(name):
+            return name
         current = name
         visited = {name}
         with self._lock:
             for _ in range(10):
-                row = self._conn.execute(
+                rows = self._conn.execute(
                     """
-                    SELECT new_name FROM profile_renames
+                    SELECT new_name, renamed_at FROM profile_renames
                      WHERE old_name = ?
-                     ORDER BY renamed_at DESC, id DESC
-                     LIMIT 1
+                     ORDER BY renamed_at ASC, id ASC
                     """,
                     (current,),
-                ).fetchone()
-                if row is None:
+                ).fetchall()
+                if not rows:
                     break
-                following = _normalize_profile_name(row["new_name"])
+                owner_created = self.profile_created_at(current)
+                if owner_created:
+                    # 当前名已由新主人占用：只认新主人创建之前的改名
+                    # 记录（属于旧链），之后的记录属于新主人
+                    older = [
+                        row for row in rows
+                        if str(row["renamed_at"] or "") < owner_created
+                    ]
+                    if not older:
+                        # 旧链在此中断：不能返回被他人占用的名字
+                        return name
+                    chosen = older[-1]
+                elif len(rows) > 1:
+                    # 无档案行且同名历史多次改名：无法判定归属，保守停止
+                    return name
+                else:
+                    chosen = rows[0]
+                following = _normalize_profile_name(chosen["new_name"])
                 if not following or following in visited:
                     break
-                if self.profile_name_exists(current):
-                    # 当前名称已被数据使用：原始旧名被复用、或某中间名
-                    # 被复用后又改名时，都不继续跟随，避免把旧患者的
-                    # 备份并进另一位患者；正常改名的最终目标没有后续
-                    # 改名记录，直接返回它
-                    if current == name:
-                        return name
-                    further = self._conn.execute(
-                        """
-                        SELECT 1 FROM profile_renames
-                         WHERE old_name = ? LIMIT 1
-                        """,
-                        (following,),
-                    ).fetchone()
-                    if further is not None:
-                        return name
-                    return current
                 visited.add(following)
                 current = following
         return current
@@ -4834,6 +4840,35 @@ class SessionStore:
                         cached.discard(candidate)
                 state[identity] = claimed
                 return candidate
+            # 跨库/合并恢复导致主键漂移后，改挂不能只靠主键相等识别：
+            # 按「创建时间 + 内容」在导入前已存在的行中找唯一候选
+            if pre_existing_ids is not None:
+                # 与内容配对同样要遵守档案等额外约束：提醒只有
+                # 创建时间+到期日，不能跨档案认领同一行
+                drift_clause = ""
+                drift_params: Tuple[Any, ...] = ()
+                if match_where is not None:
+                    drift_clause = " AND " + match_where[0]
+                    drift_params = tuple(match_where[1])
+                rows = self._conn.execute(
+                    f"SELECT id FROM {table}"
+                    f" WHERE created_at = ? AND {content_where}"
+                    f"{drift_clause}",
+                    (created_at_value, *content_values, *drift_params),
+                ).fetchall()
+                candidates = [
+                    int(row["id"]) for row in rows
+                    if int(row["id"]) in pre_existing_ids
+                    and int(row["id"]) not in moved
+                ]
+                if len(candidates) == 1:
+                    candidate = candidates[0]
+                    moved.add(candidate)
+                    for cached in state.values():
+                        if isinstance(cached, set) and cached is not moved:
+                            cached.discard(candidate)
+                    state[identity] = claimed
+                    return candidate
         if content_where:
             match_clause = ""
             match_params: Tuple[Any, ...] = ()
@@ -8426,47 +8461,111 @@ class SessionStore:
                         "WHERE done = 0 AND appointment_id = ?",
                         (int(appointment_id),),
                     )
+            # 取消/完成后恢复待就诊：待办提醒在取消时已被删除，按当前
+            # 预约字段重建一条（手改文案无法找回，但至少不会漏提醒）
+            was_upcoming = str(previous["status"] or "") == "upcoming"
+            if (
+                normalized["status"] == "upcoming"
+                and not was_upcoming
+                and reminder_due
+            ):
+                existing = self._conn.execute(
+                    "SELECT 1 FROM reminders WHERE done = 0"
+                    " AND appointment_id = ? LIMIT 1",
+                    (int(appointment_id),),
+                ).fetchone()
+                if existing is None:
+                    followup_style = str(
+                        previous["title"] or ""
+                    ).startswith("复诊：")
+                    generated_title = (
+                        normalized["title"] if followup_style
+                        else f"就诊：{normalized['title'] or '就诊'}"
+                    )[:120]
+                    if followup_style:
+                        note_parts = [
+                            "复诊 " + str(normalized["scheduled_at"])[:10],
+                            normalized["department"],
+                            normalized["doctor"],
+                        ]
+                    else:
+                        note_parts = [
+                            str(normalized["scheduled_at"]).replace(
+                                "T", " "
+                            )[:16],
+                            normalized["department"],
+                            normalized["doctor"],
+                            normalized["location"],
+                        ]
+                    generated_note = " ".join(
+                        part for part in note_parts if part
+                    )[:300]
+                    self._conn.execute(
+                        """
+                        INSERT INTO reminders(
+                            title, note, due_at, session_id, profile,
+                            advance_days, repeat_days, repeat_until,
+                            medication_id, vaccination_id,
+                            appointment_id, done, created_at, updated_at
+                        ) VALUES (?, ?, ?, '', ?, 0, 0, '', 0, 0, ?, 0, ?, ?)
+                        """,
+                        (
+                            generated_title, generated_note, reminder_due,
+                            normalized["profile"], int(appointment_id),
+                            now, now,
+                        ),
+                    )
             # 提醒的标题/备注是创建时按预约字段生成的快照：改期或改名
-            # 后必须同步，否则列表仍显示旧时间/科室/医生。仅在提醒仍是
-            # 自动生成内容时更新，不覆盖用户手动修改的文案
-            def _reminder_text(
+            # 后必须同步，否则列表仍显示旧时间/科室/医生。两种自动文案
+            # （就诊：X / 复诊：X）都要覆盖；仅在提醒仍是自动生成内容
+            # 时更新，不覆盖用户手动修改的文案
+            def _reminder_texts(
                 row_title: str, scheduled: str, department: str,
                 doctor: str, location: str,
-            ) -> Tuple[str, str]:
-                reminder_title = f"就诊：{row_title or '就诊'}"[:120]
-                parts = [
-                    str(scheduled or "").replace("T", " ")[:16],
-                    department or "",
-                    doctor or "",
-                    location or "",
-                ]
-                reminder_note = " ".join(
-                    part for part in parts if part
-                )[:300]
-                return reminder_title, reminder_note
+            ) -> List[Tuple[str, str]]:
+                full = (
+                    f"就诊：{row_title or '就诊'}"[:120],
+                    " ".join(part for part in [
+                        str(scheduled or "").replace("T", " ")[:16],
+                        department or "", doctor or "", location or "",
+                    ] if part)[:300],
+                )
+                follow = (
+                    str(row_title or "复诊")[:120],
+                    " ".join(part for part in [
+                        "复诊 " + str(scheduled or "")[:10],
+                        department or "", doctor or "",
+                    ] if part)[:300],
+                )
+                return [full, follow]
 
-            old_title, old_note = _reminder_text(
+            old_texts = _reminder_texts(
                 previous["title"], previous["scheduled_at"],
                 previous["department"], previous["doctor"],
                 previous["location"],
             )
-            new_title, new_note = _reminder_text(
+            new_texts = _reminder_texts(
                 normalized["title"], normalized["scheduled_at"],
                 normalized["department"], normalized["doctor"],
                 normalized["location"],
             )
-            if new_title != old_title:
-                self._conn.execute(
-                    "UPDATE reminders SET title = ?, updated_at = ?"
-                    " WHERE done = 0 AND appointment_id = ? AND title = ?",
-                    (new_title, now, int(appointment_id), old_title),
-                )
-            if new_note != old_note:
-                self._conn.execute(
-                    "UPDATE reminders SET note = ?, updated_at = ?"
-                    " WHERE done = 0 AND appointment_id = ? AND note = ?",
-                    (new_note, now, int(appointment_id), old_note),
-                )
+            for (old_title, old_note), (new_title, new_note) in zip(
+                old_texts, new_texts
+            ):
+                if new_title != old_title:
+                    self._conn.execute(
+                        "UPDATE reminders SET title = ?, updated_at = ?"
+                        " WHERE done = 0 AND appointment_id = ?"
+                        " AND title = ?",
+                        (new_title, now, int(appointment_id), old_title),
+                    )
+                if new_note != old_note:
+                    self._conn.execute(
+                        "UPDATE reminders SET note = ?, updated_at = ?"
+                        " WHERE done = 0 AND appointment_id = ?"
+                        " AND note = ?",
+                        (new_note, now, int(appointment_id), old_note),
+                    )
         return self.get_appointment(appointment_id)
 
     def get_appointment(
@@ -8577,6 +8676,15 @@ class SessionStore:
                 UPDATE visit_records
                    SET followup_appointment_id = 0, updated_at = ?
                  WHERE followup_appointment_id = ?
+                """,
+                (self._now(), int(appointment_id)),
+            )
+            # 从该预约补记的就诊记录不能留下悬空引用
+            self._conn.execute(
+                """
+                UPDATE visit_records
+                   SET appointment_id = 0, updated_at = ?
+                 WHERE appointment_id = ?
                 """,
                 (self._now(), int(appointment_id)),
             )
@@ -9451,14 +9559,16 @@ class SessionStore:
         appointment = _safe_db_id(appointment_id)
         if appointment:
             row = self._conn.execute(
-                "SELECT note FROM appointments WHERE id = ?",
+                "SELECT note, status FROM appointments WHERE id = ?",
                 (appointment,),
             ).fetchone()
             auto_created = row is not None and (
                 f"由就诊记录 #{int(visit_id)} 自动创建"
                 in str(row["note"] or "")
             )
-            if auto_created:
+            # 只有仍未就诊的自动复诊预约才删除；已完成/已取消的是就诊
+            # 历史，不能因为修改上一次就诊而复诊日期就消失
+            if auto_created and str(row["status"] or "") == "upcoming":
                 self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?",
                     (appointment,),
@@ -9468,6 +9578,12 @@ class SessionStore:
                     " WHERE done = 0 AND appointment_id = ?",
                     (appointment,),
                 )
+                # 从该预约补记的就诊记录不能留下悬空引用
+                self._conn.execute(
+                    "UPDATE visit_records SET appointment_id = 0"
+                    " WHERE appointment_id = ?",
+                    (appointment,),
+                )
             self._conn.execute(
                 "UPDATE visit_records SET followup_appointment_id = 0"
                 " WHERE followup_appointment_id = ?",
@@ -9475,8 +9591,9 @@ class SessionStore:
             )
         reminder = _safe_db_id(reminder_id)
         if reminder:
+            # 已完成的提醒是历史记录，不能随复诊改期删除
             self._conn.execute(
-                "DELETE FROM reminders WHERE id = ?",
+                "DELETE FROM reminders WHERE id = ? AND done = 0",
                 (reminder,),
             )
 
