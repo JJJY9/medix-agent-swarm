@@ -4541,6 +4541,7 @@ async function importHistoryBackup() {
           visit_records: data.visit_records,
           conditions: data.conditions,
           audit_log: data.audit_log,
+          usage_events: data.usage_events,
           checksum: data.checksum,
         }),
       });

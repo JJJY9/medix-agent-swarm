@@ -2536,6 +2536,7 @@ class SessionStore:
                 ("visit_records", "profile"),
                 ("conditions", "profile"),
                 ("attachments", "profile"),
+                ("usage_events", "profile"),
             ):
                 rows = self._conn.execute(
                     f"SELECT DISTINCT {column} AS name FROM {table}"
@@ -3520,8 +3521,8 @@ class SessionStore:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT prompt_tokens, completion_tokens, total_tokens,
-                       llm_calls, created_at
+                SELECT profile, prompt_tokens, completion_tokens,
+                       total_tokens, llm_calls, created_at
                   FROM usage_events
                  WHERE created_at >= ? AND created_at < ?
                 """,
@@ -5987,6 +5988,7 @@ class SessionStore:
                     ("visit_records", "profile"),
                     ("conditions", "profile"),
                     ("attachments", "profile"),
+                    ("usage_events", "profile"),
                 ):
                     row = self._conn.execute(
                         f"SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1",
@@ -6041,6 +6043,7 @@ class SessionStore:
                 "conditions",
                 "sessions",
                 "attachments",
+                "usage_events",
             ):
                 self._conn.execute(
                     f"UPDATE {table} SET profile = ? WHERE profile = ?",

@@ -36,6 +36,21 @@ class FailedCoordinator:
         raise error
 
 
+class EmptyAnswerCoordinator:
+    worker_pool = []
+
+    async def process(self, question, context=None, session_id=None, **kwargs):
+        return {
+            "answer": "",
+            "usage": {
+                "prompt_tokens": 50,
+                "completion_tokens": 5,
+                "total_tokens": 55,
+            },
+            "llm_calls": 1,
+        }
+
+
 def test_failed_chat_usage_is_recorded(client_and_store, monkeypatch):
     client, store = client_and_store
     api_server.state.coordinator = FailedCoordinator()
@@ -69,6 +84,66 @@ def test_usage_events_merge_total_from_prompt_completion(tmp_path):
         assert month["llm_calls"] == 2
     finally:
         store.close()
+
+
+def test_daily_usage_profile_filter_includes_usage_events(tmp_path):
+    """按档案筛选日用量时，失败调用的用量必须按档案命中而非被丢弃。"""
+    store = SessionStore(str(tmp_path / "usage.db"))
+    try:
+        store.record_usage_event(
+            "s1", "妈妈", {"total_tokens": 100}, 1
+        )
+        store.record_usage_event(
+            "s2", "爸爸", {"total_tokens": 40}, 1
+        )
+        mom = store.daily_usage(7, False, "妈妈")
+        assert mom["totals"]["usage"]["total_tokens"] == 100
+        assert mom["totals"]["llm_calls"] == 1
+        dad = store.daily_usage(7, False, "爸爸")
+        assert dad["totals"]["usage"]["total_tokens"] == 40
+        everything = store.daily_usage(7)
+        assert everything["totals"]["usage"]["total_tokens"] == 140
+    finally:
+        store.close()
+
+
+def test_empty_answer_chat_records_usage(client_and_store):
+    client, store = client_and_store
+    api_server.state.coordinator = EmptyAnswerCoordinator()
+
+    response = client.post("/api/chat", json={
+        "question": "头痛",
+        "session_id": "empty-usage",
+        "patient_profile": "妈妈",
+    })
+
+    assert response.status_code == 502
+    month = store.month_usage()
+    assert month["usage"]["total_tokens"] == 55
+    assert month["llm_calls"] == 1
+
+
+def test_rename_profile_moves_usage_events(tmp_path):
+    store = SessionStore(str(tmp_path / "usage.db"))
+    try:
+        store.record_usage_event("s1", "妈妈", {"total_tokens": 70}, 1)
+
+        assert store.rename_profile("妈妈", "母亲") == "母亲"
+
+        renamed = store.daily_usage(7, False, "母亲")
+        assert renamed["totals"]["usage"]["total_tokens"] == 70
+        assert "母亲" in store.list_used_profile_names()
+        assert "妈妈" not in store.list_used_profile_names()
+    finally:
+        store.close()
+
+
+def test_frontend_import_payload_keeps_usage_events():
+    app = (
+        Path(__file__).resolve().parents[1] / "web" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "usage_events: data.usage_events" in app
 
 
 def test_usage_month_percent_not_rounded_to_full(
