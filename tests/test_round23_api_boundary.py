@@ -6,7 +6,11 @@ from fastapi.testclient import TestClient
 
 import api_server
 import memory
-from memory.session_store import MAX_SQLITE_INT, SessionStore
+from memory.session_store import (
+    MAX_SQLITE_INT,
+    MAX_USAGE_COUNT,
+    SessionStore,
+)
 
 
 @pytest.fixture
@@ -36,10 +40,10 @@ def test_import_usage_events_clamps_token_bounds(tmp_path):
 
         assert result["usage_events"] == 1
         assert len(events) == 1
-        assert events[0]["prompt_tokens"] == MAX_SQLITE_INT
+        assert events[0]["prompt_tokens"] == MAX_USAGE_COUNT
         assert events[0]["completion_tokens"] == 0
-        assert events[0]["llm_calls"] == MAX_SQLITE_INT
-        assert events[0]["total_tokens"] == MAX_SQLITE_INT
+        assert events[0]["llm_calls"] == MAX_USAGE_COUNT
+        assert events[0]["total_tokens"] == MAX_USAGE_COUNT
     finally:
         store.close()
 
@@ -59,6 +63,28 @@ def test_import_endpoint_handles_usage_overflow(client_and_store):
     assert response.json()["usage_events"] == 1
 
 
+def test_huge_usage_in_imported_message_is_clamped(client_and_store):
+    """消息 metadata 里的超大用量不能让统计端点溢出成 500。"""
+    client, _store = client_and_store
+
+    response = client.post("/api/sessions/import", json={
+        "sessions": [{
+            "id": "s1", "title": "x",
+            "messages": [{
+                "role": "assistant", "content": "答复",
+                "metadata": {"usage": {"total_tokens": 10**400}},
+            }],
+        }],
+    })
+    assert response.status_code == 200, response.text
+
+    assert client.get("/api/usage/month").status_code == 200
+    assert client.get("/api/insights/quality").status_code == 200
+    assert client.get("/api/usage/export.csv").status_code == 200
+    month = client.get("/api/usage/month").json()
+    assert month["usage"]["total_tokens"] <= MAX_USAGE_COUNT
+
+
 def test_metric_summary_failure_clears_previous_profile_values():
     app = (
         Path(__file__).resolve().parents[1] / "web" / "app.js"
@@ -73,3 +99,16 @@ def test_metric_summary_failure_clears_previous_profile_values():
     weekly = weekly[:weekly.index("async function loadMetricOverview")]
     assert "if (!res.ok) return;" not in weekly
     assert "metricWeeklyList.replaceChildren()" in weekly
+
+
+def test_backup_export_keeps_server_bytes():
+    """导出备份必须保存服务端原文，浏览器 JSON 往返会改写大整数。"""
+    app = (
+        Path(__file__).resolve().parents[1] / "web" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    start = app.index("async function exportHistoryBackup")
+    chunk = app[start:start + 1400]
+
+    assert "await res.text()" in chunk
+    assert "JSON.stringify(data, null, 2)" not in chunk

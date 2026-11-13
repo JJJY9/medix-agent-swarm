@@ -15,6 +15,7 @@ from typing import Callable, Dict, Any, Optional, List, Tuple
 from loguru import logger
 
 from core import LLMClient
+from core.llm_client import LLMError
 from core.context import format_context, public_context
 from core.triage import detect_red_flags
 from core.medication_safety import check_medication_safety
@@ -334,6 +335,19 @@ class SwarmCoordinator:
 
         assessment["subtasks"] = subtasks
 
+    @staticmethod
+    def _attach_usage(
+        exc: BaseException, usage: Optional[Dict[str, Any]], calls: int
+    ) -> None:
+        """把已消耗的用量挂到异常上，供 api_server 写入用量流水。"""
+        if not usage and not calls:
+            return
+        try:
+            exc.usage = usage or {}
+            exc.llm_calls = max(0, int(calls))
+        except (AttributeError, TypeError):
+            pass
+
     async def process(
         self,
         question: str,
@@ -342,6 +356,52 @@ class SwarmCoordinator:
         on_token: Optional[Callable[[str], None]] = None,
         enable_swarm: Optional[bool] = None,
         patient_profile: str = "",
+    ) -> Dict[str, Any]:
+        """对外入口：异常路径补挂已消耗的用量。
+
+        取消或模型失败时，本轮已计费的 tokens 可能只存在于局部变量
+        （Lead 任务分解、单 Agent 结果、Swarm 汇总）。子流程若已把
+        快照挂到异常上则直接复用，否则在这里补挂 Lead 与已完成结果
+        的用量，api_server 的 _record_failed_usage 才能记账。
+        """
+        usage_state: Dict[str, Any] = {}
+        try:
+            return await self._process_inner(
+                question=question,
+                context=context,
+                session_id=session_id,
+                on_token=on_token,
+                enable_swarm=enable_swarm,
+                patient_profile=patient_profile,
+                usage_state=usage_state,
+            )
+        except (asyncio.CancelledError, LLMError) as exc:
+            if getattr(exc, "usage", None) or getattr(exc, "llm_calls", 0):
+                raise
+            usage: Dict[str, Any] = {}
+            calls = 0
+            result = usage_state.get("result")
+            if isinstance(result, dict):
+                # 结果已合并 Lead 用量，不能再叠加一次
+                usage = merge_usages(usage, result.get("usage"))
+                calls += int(result.get("llm_calls") or 0)
+            else:
+                lead_usage = usage_state.get("lead_usage")
+                if isinstance(lead_usage, dict) and lead_usage:
+                    usage = merge_usages(usage, lead_usage)
+                    calls += 1
+            self._attach_usage(exc, usage, calls)
+            raise
+
+    async def _process_inner(
+        self,
+        question: str,
+        context: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        on_token: Optional[Callable[[str], None]] = None,
+        enable_swarm: Optional[bool] = None,
+        patient_profile: str = "",
+        usage_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         处理用户问题
@@ -455,6 +515,9 @@ class SwarmCoordinator:
             if key not in ("memory_scope", "historical_cases")
         }
         lead_usage: Dict[str, int] = {}
+        if usage_state is not None:
+            # 保存引用：usage_out 会就地累加，异常包装器读取最新值
+            usage_state["lead_usage"] = lead_usage
         assessment = await self.lead_agent.assess_and_decompose(
             question,
             format_context(lead_context, include_internal=True) or "无",
@@ -494,6 +557,8 @@ class SwarmCoordinator:
 
             result["usage"] = merge_usages(lead_usage, result.get("usage"))
             result["llm_calls"] = int(result.get("llm_calls") or 0) + 1
+            if usage_state is not None:
+                usage_state["result"] = result
 
             result.update({
                 'swarm_enabled': False,
@@ -562,6 +627,8 @@ class SwarmCoordinator:
 
             result["usage"] = merge_usages(lead_usage, result.get("usage"))
             result["llm_calls"] = int(result.get("llm_calls") or 0) + 1
+            if usage_state is not None:
+                usage_state["result"] = result
 
             result.update({
                 'swarm_enabled': False,
@@ -653,16 +720,18 @@ class SwarmCoordinator:
         memory_scope: str = "",
         patient_profile: str = "",
     ) -> Dict[str, Any]:
-        """包装 Swarm 流程：被取消时把已消耗的用量挂到异常上。
+        """包装 Swarm 流程：取消或模型失败时把已消耗的用量挂到异常上。
 
         客户端中途停止/断线会 cancel 整个任务，此时各家 LLM 的 token
         已被服务商计费，但 SQLite 里没有 assistant 消息可承载用量；
-        由 api_server 从 CancelledError 上读取后写入 usage_events。
+        由 api_server 从 CancelledError/LLMError 上读取后写入
+        usage_events。汇总阶段的用量通过共享字典回传，确保覆盖。
         """
         stale_ids = {
             id(getattr(worker, "shared_context", None))
             for worker in self.worker_pool
         }
+        synthesis_usage: Dict[str, int] = {}
         try:
             return await self._process_with_swarm_inner(
                 question=question,
@@ -675,28 +744,28 @@ class SwarmCoordinator:
                 patient_context=patient_context,
                 memory_scope=memory_scope,
                 patient_profile=patient_profile,
+                synthesis_usage=synthesis_usage,
             )
-        except asyncio.CancelledError as exc:
+        except (asyncio.CancelledError, LLMError) as exc:
             usage, calls = self._cancelled_usage_snapshot(
-                lead_usage, stale_ids
+                lead_usage, stale_ids, synthesis_usage
             )
-            if usage or calls:
-                try:
-                    exc.usage = usage
-                    exc.llm_calls = calls
-                except (AttributeError, TypeError):
-                    pass
+            self._attach_usage(exc, usage, calls)
             raise
 
     def _cancelled_usage_snapshot(
         self,
         lead_usage: Optional[Dict[str, int]] = None,
         stale_ids: Optional[set] = None,
+        synthesis_usage: Optional[Dict[str, int]] = None,
     ) -> Tuple[Dict[str, Any], int]:
-        """收集本次 Swarm 已消耗的用量：Lead、已完成科室与失败子任务。"""
+        """收集本次 Swarm 已消耗的用量：Lead、汇总、科室与失败子任务。"""
         skip = stale_ids or set()
         usage: Dict[str, Any] = dict(lead_usage or {})
         calls = 1 if lead_usage else 0
+        if synthesis_usage:
+            usage = merge_usages(usage, synthesis_usage)
+            calls += 1
         seen = set(skip)
         for worker in self.worker_pool:
             shared = getattr(worker, "shared_context", None)
@@ -732,6 +801,7 @@ class SwarmCoordinator:
         patient_context: Optional[Dict[str, Any]] = None,
         memory_scope: str = "",
         patient_profile: str = "",
+        synthesis_usage: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         使用 Swarm 处理复杂问题
@@ -820,7 +890,8 @@ class SwarmCoordinator:
         # Step 3: LeadAgent 汇总结果
         # 即使超时，也尝试汇总已完成的部分结果
         had_contributions = bool(shared_context.get_contributions())
-        synthesis_usage: Dict[str, int] = {}
+        if synthesis_usage is None:
+            synthesis_usage = {}
         final_answer = await self.lead_agent.synthesize_results(
             question=question,
             shared_context=shared_context,

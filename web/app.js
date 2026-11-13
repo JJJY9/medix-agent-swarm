@@ -4333,14 +4333,22 @@ async function exportHistoryBackup() {
 
   try {
     const res = await fetch('/api/sessions/export');
-    const data = await res.json().catch(() => ({}));
+    const text = await res.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
     if (!res.ok) throw new Error(data.detail || `服务返回 ${res.status}`);
 
     const stamp = String(data.exported_at || new Date().toISOString())
       .replace(/[:T]/g, '-')
       .slice(0, 19);
+    // 直接保存服务端原文：浏览器 JSON 解析/序列化会把超过 2^53 的
+    // 整数改写，导致文件内容与 checksum 不自洽、备份无法再导入
     downloadFile(
-      JSON.stringify(data, null, 2),
+      text,
       `medix-sessions-${stamp}.json`,
       'application/json;charset=utf-8'
     );

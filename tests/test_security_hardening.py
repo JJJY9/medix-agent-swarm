@@ -30,10 +30,13 @@ def test_scope_route_path_root_slash_boundary():
     assert api_server._scope_route_path({
         "path": "//api/sessions", "root_path": "/",
     }) == "/api/sessions"
-    # 带尾斜杠的部署前缀
+    # uvicorn --root-path /medix/ 会把 path 拼成 "/medix//api/..."
     assert api_server._scope_route_path({
-        "path": "/medix/api/sessions", "root_path": "/medix/",
+        "path": "/medix//api/sessions", "root_path": "/medix/",
     }) == "/api/sessions"
+    assert api_server._body_limit_for_path(api_server._scope_route_path({
+        "path": "/medix//api/sessions/import", "root_path": "/medix/",
+    })) == api_server.MAX_BACKUP_FILE_BYTES
     # 前缀相同但并非子路径时不能截断
     assert api_server._scope_route_path({
         "path": "/medix2/api/sessions", "root_path": "/medix",

@@ -158,6 +158,14 @@ def test_uncertain_double_negation_still_flags():
         "未能明确地排除酮症酸中毒",
         "不可排除酮症酸中毒",
         "难以排除酮症酸中毒",
+        # 「排除」后接系词时也不能漏判双重否定
+        "未能排除是酮症酸中毒",
+        "尚未完全排除为糖尿病酮症",
+        # 「不排除出现/有/发生/伴有 X」是常见临床表述
+        "医生说不排除出现酮症酸中毒的可能",
+        "不排除有酮症酸中毒的可能",
+        "不排除发生糖尿病酮症",
+        "不能排除伴有酮症酸中毒",
     ):
         assert "糖尿病急症" in detect_red_flags(text)["matches"], text
 
@@ -171,9 +179,17 @@ def test_visit_recommendation_negation_and_distance():
 
     assert has_visit_recommendation("请立即去医院") is True
     assert has_visit_recommendation("目前还没有去医院") is False
+    assert has_visit_recommendation("还没有去医院") is False
     assert has_visit_recommendation("尚未去医院就诊") is False
     # 否定词离得远时不能把真实建议一并否定
     assert has_visit_recommendation("没有明显诱因也应去医院检查") is True
+    assert has_visit_recommendation("无明显诱因也应去医院") is True
+    # 「无缓解/未来/无尿」中的字不能被当成对建议的否定
+    assert has_visit_recommendation("胸痛无缓解请立即就医") is True
+    assert has_visit_recommendation("若胸痛无缓解请立即就医") is True
+    assert has_visit_recommendation("未来几天建议去医院复查") is True
+    assert has_visit_recommendation("无尿请立即就医") is True
+    assert has_visit_recommendation("胸痛无缓解请拨打120") is True
 
 
 def test_negative_history_does_not_count_as_active():
@@ -192,6 +208,16 @@ def test_negative_history_does_not_count_as_active():
     assert detect_red_flags(
         fever, {"history": "化疗后复查阴性"}
     )["matches"] == ["免疫功能低下伴发热"]
+    # 分句边界不能把上一段的「无」带到下一段真实病史上
+    assert detect_red_flags(
+        fever, {"history": "无；化疗后"}
+    )["matches"] == ["免疫功能低下伴发热"]
+    assert detect_red_flags(
+        fever, {"history": "吸烟史：无，饮酒史：无，化疗中"}
+    )["matches"] == ["免疫功能低下伴发热"]
+    assert detect_red_flags(
+        "摔倒后头部撞到门框", {"history": "饮酒史：无，华法林 3mg"}
+    )["matches"] == ["抗凝治疗期间头部外伤"]
 
     trauma = "摔倒后头部撞到门框"
     assert detect_red_flags(

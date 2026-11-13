@@ -64,6 +64,19 @@ def test_skill_annotation_types_and_varargs():
     assert SkillRegistryMixin._annotation_to_skill_type(dict[str, int]) == "object"
     assert SkillRegistryMixin._annotation_to_skill_type(int | None) == "integer"
     assert SkillRegistryMixin._annotation_to_skill_type("Dict[str, int]") == "object"
+    # PEP 563 下的字符串组合写法
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "Optional[int]"
+    ) == "integer"
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "int | None"
+    ) == "integer"
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "Optional[list[int]]"
+    ) == "array"
+    assert SkillRegistryMixin._annotation_to_skill_type(
+        "Union[int, str]"
+    ) == ""
 
     mixin = SkillRegistryMixin()
 

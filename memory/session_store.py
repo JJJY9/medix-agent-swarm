@@ -1545,6 +1545,40 @@ def _usage_int(value: Any) -> int:
         return 0
 
 
+#: 用量计数的上限：2^53-1 保证浏览器 JSON 解析/序列化往返不丢精度，
+#: 也远小于 SQLite/浮点运算的溢出边界
+MAX_USAGE_COUNT = 2**53 - 1
+
+
+def _usage_count(value: Any) -> int:
+    """把用量计数解析为非负整数并钳制在安全范围内。"""
+    return min(max(0, _usage_int(value)), MAX_USAGE_COUNT)
+
+
+def _clamp_usage_metadata(metadata: Any) -> Any:
+    """钳制 metadata 里的用量字段，避免超大整数落库后撑爆统计接口。"""
+    if not isinstance(metadata, dict):
+        return metadata
+
+    def _clamp(value: Any) -> Any:
+        # 非有限浮点交给 sanitize_json 统一变成 null，保持既有语义
+        if isinstance(value, float) and not math.isfinite(value):
+            return value
+        return _usage_count(value)
+
+    cleaned = dict(metadata)
+    usage = cleaned.get("usage")
+    if isinstance(usage, dict):
+        clamped = dict(usage)
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if key in clamped:
+                clamped[key] = _clamp(clamped[key])
+        cleaned["usage"] = clamped
+    if "llm_calls" in cleaned:
+        cleaned["llm_calls"] = _clamp(cleaned["llm_calls"])
+    return cleaned
+
+
 def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
     """把一条 assistant 消息的元数据累加进用量统计。"""
     entry["turns"] += 1
@@ -1553,20 +1587,20 @@ def _accumulate_usage(entry: Dict[str, Any], metadata: Any) -> None:
 
     usage = metadata.get("usage")
     if isinstance(usage, dict):
-        prompt = _usage_int(usage.get("prompt_tokens"))
-        completion = _usage_int(usage.get("completion_tokens"))
+        prompt = _usage_count(usage.get("prompt_tokens"))
+        completion = _usage_count(usage.get("completion_tokens"))
         raw_total = usage.get("total_tokens")
-        total = _usage_int(raw_total)
+        total = _usage_count(raw_total)
         if (
             not total
             and (prompt or completion)
         ):
-            total = prompt + completion
+            total = min(prompt + completion, MAX_USAGE_COUNT)
         entry["usage"]["prompt_tokens"] += prompt
         entry["usage"]["completion_tokens"] += completion
         entry["usage"]["total_tokens"] += total
 
-    entry["llm_calls"] += _usage_int(metadata.get("llm_calls"))
+    entry["llm_calls"] += _usage_count(metadata.get("llm_calls"))
 
     feedback = metadata.get("feedback")
     if isinstance(feedback, dict):
@@ -2685,7 +2719,7 @@ class SessionStore:
         title = self._make_title(question)
         profile_value = _normalize_profile_name(profile)
         metadata_json = json.dumps(
-            sanitize_json(metadata or {}),
+            sanitize_json(_clamp_usage_metadata(metadata or {})),
             ensure_ascii=False,
             allow_nan=False,
         )
@@ -3512,10 +3546,7 @@ class SessionStore:
 
             usage = metadata.get("usage")
             if isinstance(usage, dict):
-                try:
-                    total_tokens += int(usage.get("total_tokens") or 0)
-                except (TypeError, ValueError, OverflowError):
-                    pass
+                total_tokens += _usage_count(usage.get("total_tokens"))
 
         feedback_total = helpful + unhelpful
         top_risks = sorted(
@@ -3559,24 +3590,12 @@ class SessionStore:
         """记录一次未落库调用（失败/中止）的已消耗用量。"""
         if not isinstance(usage, dict):
             usage = {}
-        prompt = min(
-            max(0, _usage_int(usage.get("prompt_tokens"))),
-            MAX_SQLITE_INT,
-        )
-        completion = min(
-            max(0, _usage_int(usage.get("completion_tokens"))),
-            MAX_SQLITE_INT,
-        )
-        total = min(
-            max(0, _usage_int(usage.get("total_tokens"))),
-            MAX_SQLITE_INT,
-        )
+        prompt = _usage_count(usage.get("prompt_tokens"))
+        completion = _usage_count(usage.get("completion_tokens"))
+        total = _usage_count(usage.get("total_tokens"))
         if not total and (prompt or completion):
-            total = min(prompt + completion, MAX_SQLITE_INT)
-        try:
-            calls = min(max(0, int(llm_calls or 0)), MAX_SQLITE_INT)
-        except (TypeError, ValueError, OverflowError):
-            calls = 0
+            total = min(prompt + completion, MAX_USAGE_COUNT)
+        calls = _usage_count(llm_calls)
         if not (prompt or completion or total or calls):
             return
         with self._write_and_checkpoint():
@@ -3868,25 +3887,60 @@ class SessionStore:
         table: str,
         columns: Tuple[str, ...],
         values: Tuple[Any, ...],
-        counts: Dict[tuple, int],
+        state: Dict[tuple, List[int]],
+        raw_id: int = 0,
     ) -> Optional[int]:
-        """计数式判重：返回该稳定身份下第 N 条已存在记录的 id。
+        """按稳定身份配对已存在的记录，返回可复用的行 id（没有则 None）。
 
-        身份只含不可编辑字段；counts 记录本批已处理的同身份行数，
-        配合 ORDER BY id 的偏移量：重复导入保持幂等，同一身份的多次
-        真实记录也能全部保留，备份后的本地编辑（停药/完成/改状态）
-        不会让旧记录重新插入。
+        身份 = 档案 + 创建时间，不含任何 PATCH 可编辑字段：备份后的
+        本地编辑（改剂量/停用/改期/改状态等）不会让旧记录复活。
+
+        配对顺序：先尝试备份行自带主键（同一条记录仍在库里时直接复用，
+        删除某条后恢复能真正还原它）；否则在同一身份尚未被本批认领的
+        候选行里按 id 升序取一条。state 缓存每个身份的候选 id 与已认领
+        集合：重复导入保持幂等，同身份的多条真实记录也能全部保留。
         """
         identity = (table,) + tuple(values)
-        seen = counts.get(identity, 0)
-        counts[identity] = seen + 1
         where = " AND ".join(f"{column} = ?" for column in columns)
-        row = self._conn.execute(
-            f"SELECT id FROM {table} WHERE {where}"
-            " ORDER BY id LIMIT 1 OFFSET ?",
-            (*values, seen),
-        ).fetchone()
-        return int(row["id"]) if row is not None else None
+        claimed = state.get(identity)
+        if claimed is None:
+            rows = self._conn.execute(
+                f"SELECT id FROM {table} WHERE {where} ORDER BY id",
+                values,
+            ).fetchall()
+            claimed = {int(row["id"]) for row in rows}
+        if raw_id > 0:
+            row = self._conn.execute(
+                f"SELECT id FROM {table} WHERE id = ? AND {where}",
+                (raw_id, *values),
+            ).fetchone()
+            if row is not None and int(row["id"]) in claimed:
+                claimed.discard(int(row["id"]))
+                state[identity] = claimed
+                return int(row["id"])
+        if not claimed:
+            state[identity] = claimed
+            return None
+        matched = min(claimed)
+        claimed.discard(matched)
+        state[identity] = claimed
+        return matched
+
+    @staticmethod
+    def _import_rows(raw_items: Any, limit: int) -> List[Dict[str, Any]]:
+        """整理待导入行：过滤非字典项，并按备份主键升序排列。
+
+        与按 id 升序的配对逻辑对齐，避免导出顺序（active DESC 等）
+        让同身份记录的 raw id 映射错位；无 id 的 CSV 行保持原顺序。
+        """
+        if not isinstance(raw_items, list):
+            return []
+        rows = [
+            item for item in raw_items[:limit]
+            if isinstance(item, dict)
+        ]
+        rows.sort(key=lambda item: _safe_db_id(item.get("id")))
+        return rows
 
     def import_data(
         self, data: Any, max_sessions: int = 100000
@@ -3989,6 +4043,7 @@ class SessionStore:
             ("conditions", "慢病清单", raw_conditions),
             ("reminders", "提醒", raw_reminders),
             ("audit_log", "审计记录", raw_audit),
+            ("usage_events", "用量流水", raw_usage_events),
         ):
             cap = IMPORT_LIST_LIMITS[key]
             if isinstance(items, list) and len(items) > cap:
@@ -4064,7 +4119,7 @@ class SessionStore:
                     if not isinstance(metadata, dict):
                         metadata = {}
                     metadata_json = json.dumps(
-                        sanitize_json(metadata),
+                        sanitize_json(_clamp_usage_metadata(metadata)),
                         ensure_ascii=False,
                         allow_nan=False,
                     )
@@ -4294,11 +4349,11 @@ class SessionStore:
                     targets_imported += 1
 
             symptoms_imported = 0
-            symptom_identity_counts: Dict[tuple, int] = {}
+            symptom_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_symptoms, list):
-                for raw in raw_symptoms[:IMPORT_LIST_LIMITS["symptoms"]]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_symptoms, IMPORT_LIST_LIMITS["symptoms"]
+                ):
                     if not str(raw.get("recorded_at") or "").strip():
                         continue
                     normalized = _normalize_symptom(
@@ -4315,18 +4370,16 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     if created_key:
-                        # 严重程度/备注可编辑：身份只含症状、时间与创建时间
+                        # 严重程度/备注/记录时间可编辑：身份只用档案 + 创建时间
                         exists = self._import_identity_match(
                             "symptoms",
-                            ("profile", "symptom", "recorded_at",
-                             "created_at"),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["symptom"],
-                                normalized["recorded_at"],
                                 created_key,
                             ),
-                            symptom_identity_counts,
+                            symptom_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
                         )
                     else:
                         exists = self._conn.execute(
@@ -4366,11 +4419,11 @@ class SessionStore:
 
             medications_imported = 0
             medication_id_map: Dict[int, Dict[str, Any]] = {}
-            medication_identity_counts: Dict[tuple, int] = {}
+            medication_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_medications, list):
-                for raw in raw_medications[:IMPORT_LIST_LIMITS["medications"]]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_medications, IMPORT_LIST_LIMITS["medications"]
+                ):
                     normalized = _normalize_medication(
                         raw.get("profile", ""),
                         raw.get("name", ""),
@@ -4391,20 +4444,17 @@ class SessionStore:
                         continue
                     created_key = str(raw.get("created_at") or "").strip()[:40]
                     if created_key:
-                        # 备份带创建时间：按稳定身份判重，停药/改剂量等
-                        # 本地编辑不会让旧记录在恢复时复活
+                        # 备份带创建时间：身份只用档案 + 创建时间，
+                        # 停药/改剂量等本地编辑不会让旧记录在恢复时复活
                         existing_id = self._import_identity_match(
                             "medications",
+                            ("profile", "created_at"),
                             (
-                                "profile", "name", "dose", "frequency",
-                                "started_at", "created_at",
+                                normalized["profile"],
+                                created_key,
                             ),
-                            (
-                                normalized["profile"], normalized["name"],
-                                normalized["dose"], normalized["frequency"],
-                                normalized["started_at"], created_key,
-                            ),
-                            medication_identity_counts,
+                            medication_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
                         )
                         existing = (
                             {"id": existing_id}
@@ -4642,13 +4692,11 @@ class SessionStore:
 
             vaccinations_imported = 0
             raw_vaccination_id_map: Dict[int, int] = {}
-            vaccination_identity_counts: Dict[tuple, int] = {}
+            vaccination_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_vaccinations, list):
-                for raw in raw_vaccinations[
-                    :IMPORT_LIST_LIMITS["vaccinations"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"]
+                ):
                     try:
                         normalized = _normalize_vaccination(
                             raw.get("profile") or "",
@@ -4668,18 +4716,13 @@ class SessionStore:
                     if created_key:
                         vaccination_id = self._import_identity_match(
                             "vaccinations",
-                            (
-                                "profile", "vaccine_name", "dose_number",
-                                "vaccinated_at", "created_at",
-                            ),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["vaccine_name"],
-                                normalized["dose_number"],
-                                normalized["vaccinated_at"],
                                 created_key,
                             ),
-                            vaccination_identity_counts,
+                            vaccination_identity_claims,
+                            raw_id=raw_id,
                         )
                         duplicate = (
                             {"id": vaccination_id}
@@ -4731,13 +4774,11 @@ class SessionStore:
 
             appointments_imported = 0
             raw_appointment_id_map: Dict[int, int] = {}
-            appointment_identity_counts: Dict[tuple, int] = {}
+            appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
-                for raw in raw_appointments[
-                    :IMPORT_LIST_LIMITS["appointments"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_appointments, IMPORT_LIST_LIMITS["appointments"]
+                ):
                     try:
                         normalized = _normalize_appointment(
                             raw.get("profile") or "",
@@ -4759,21 +4800,13 @@ class SessionStore:
                     if created_key:
                         appointment_id = self._import_identity_match(
                             "appointments",
-                            (
-                                "profile", "title", "scheduled_at",
-                                "department", "doctor", "location",
-                                "created_at",
-                            ),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["title"],
-                                normalized["scheduled_at"],
-                                normalized["department"],
-                                normalized["doctor"],
-                                normalized["location"],
                                 created_key,
                             ),
-                            appointment_identity_counts,
+                            appointment_identity_claims,
+                            raw_id=raw_id,
                         )
                         duplicate = (
                             {"id": appointment_id}
@@ -4911,13 +4944,11 @@ class SessionStore:
                     lab_results_imported += 1
 
             allergies_imported = 0
-            allergy_identity_counts: Dict[tuple, int] = {}
+            allergy_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_allergies, list):
-                for raw in raw_allergies[
-                    :IMPORT_LIST_LIMITS["allergies"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_allergies, IMPORT_LIST_LIMITS["allergies"]
+                ):
                     try:
                         normalized = _normalize_allergy(
                             raw.get("profile") or "",
@@ -4936,23 +4967,18 @@ class SessionStore:
                         raw.get("created_at") or ""
                     ).strip()[:40]
                     # 同一过敏原可能有多次不同反应（如先皮疹后休克），
-                    # 判重带上记录创建时间区分多次记录；反应/程度是
-                    # 可编辑字段，本地修改后恢复备份不能重复插入
+                    # 身份只用档案 + 创建时间；反应/程度/物质可编辑，
+                    # 本地修改后恢复备份不能重复插入
                     if created_key:
                         existing_id = self._import_identity_match(
                             "allergies",
-                            (
-                                "profile", "substance", "kind",
-                                "noted_at", "created_at",
-                            ),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["substance"],
-                                normalized["kind"],
-                                normalized["noted_at"],
                                 created_key,
                             ),
-                            allergy_identity_counts,
+                            allergy_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -4996,13 +5022,11 @@ class SessionStore:
                     allergies_imported += 1
 
             care_items_imported = 0
-            care_identity_counts: Dict[tuple, int] = {}
+            care_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_care_items, list):
-                for raw in raw_care_items[
-                    :IMPORT_LIST_LIMITS["care_items"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_care_items, IMPORT_LIST_LIMITS["care_items"]
+                ):
                     try:
                         normalized = _normalize_care_item(
                             raw.get("profile") or "",
@@ -5022,15 +5046,13 @@ class SessionStore:
                     if created_key:
                         existing_id = self._import_identity_match(
                             "care_items",
-                            ("profile", "title", "interval_days",
-                             "created_at"),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["title"],
-                                normalized["interval_days"],
                                 created_key,
                             ),
-                            care_identity_counts,
+                            care_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5209,13 +5231,11 @@ class SessionStore:
                     visit_records_imported += 1
 
             conditions_imported = 0
-            condition_identity_counts: Dict[tuple, int] = {}
+            condition_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_conditions, list):
-                for raw in raw_conditions[
-                    :IMPORT_LIST_LIMITS["conditions"]
-                ]:
-                    if not isinstance(raw, dict):
-                        continue
+                for raw in self._import_rows(
+                    raw_conditions, IMPORT_LIST_LIMITS["conditions"]
+                ):
                     try:
                         normalized = _normalize_condition(
                             raw.get("profile") or "",
@@ -5232,20 +5252,18 @@ class SessionStore:
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
-                    # 同名慢病可能是不同次诊断；按诊断时间与创建时间
-                    # 区分多次记录，状态/严重程度可编辑，不参与判重
+                    # 同名慢病可能是不同次诊断；身份只用档案 + 创建时间，
+                    # 名称/状态/严重程度/诊断日期可编辑，不参与判重
                     if created_key:
                         existing_id = self._import_identity_match(
                             "conditions",
-                            ("profile", "name", "diagnosed_at",
-                             "created_at"),
+                            ("profile", "created_at"),
                             (
                                 normalized["profile"],
-                                normalized["name"],
-                                normalized["diagnosed_at"],
                                 created_key,
                             ),
-                            condition_identity_counts,
+                            condition_identity_claims,
+                            raw_id=_safe_db_id(raw.get("id")),
                         )
                         duplicate = (
                             {"id": existing_id}
@@ -5666,24 +5684,12 @@ class SessionStore:
                     profile = _normalize_profile_name(
                         raw.get("profile")
                     )
-                    prompt = min(
-                        max(0, _usage_int(raw.get("prompt_tokens"))),
-                        MAX_SQLITE_INT,
-                    )
-                    completion = min(
-                        max(0, _usage_int(raw.get("completion_tokens"))),
-                        MAX_SQLITE_INT,
-                    )
-                    total = min(
-                        max(0, _usage_int(raw.get("total_tokens"))),
-                        MAX_SQLITE_INT,
-                    )
+                    prompt = _usage_count(raw.get("prompt_tokens"))
+                    completion = _usage_count(raw.get("completion_tokens"))
+                    total = _usage_count(raw.get("total_tokens"))
                     if not total and (prompt or completion):
-                        total = min(prompt + completion, MAX_SQLITE_INT)
-                    calls = min(
-                        max(0, _usage_int(raw.get("llm_calls"))),
-                        MAX_SQLITE_INT,
-                    )
+                        total = min(prompt + completion, MAX_USAGE_COUNT)
+                    calls = _usage_count(raw.get("llm_calls"))
                     created_at = str(
                         raw.get("created_at") or now
                     )[:40]
