@@ -123,20 +123,17 @@ def client_and_store(tmp_path, monkeypatch):
 
 
 def _record_erasures(monkeypatch):
-    calls = {"entries": [], "summaries": [], "scopes": []}
+    calls = {"entries": [], "summaries": []}
 
     def fake_entries(entries):
         calls["entries"].append(list(entries))
+        return True
 
     def fake_summaries(session_ids):
         calls["summaries"].append(list(session_ids))
 
-    def fake_scope(profile):
-        calls["scopes"].append(profile)
-
     monkeypatch.setattr(api_server, "_erase_long_term_entries", fake_entries)
     monkeypatch.setattr(api_server, "_erase_session_summaries", fake_summaries)
-    monkeypatch.setattr(api_server, "_erase_long_term_scope", fake_scope)
     return calls
 
 
@@ -202,12 +199,12 @@ def test_profile_delete_and_rename_clear_old_scope(client_and_store, monkeypatch
         "/api/profiles/妈妈", json={"new_name": "母亲"}
     )
     assert renamed.status_code == 200
-    assert calls["scopes"] == ["妈妈"]
+    assert calls["entries"] == [[("妈妈", "")]]
 
     assert store.save_profile("妈妈", {"age": 60}) is not None
     deleted = client.delete("/api/profiles/妈妈")
     assert deleted.status_code == 200
-    assert calls["scopes"] == ["妈妈", "妈妈"]
+    assert calls["entries"] == [[("妈妈", "")], [("妈妈", "")]]
 
 
 def test_delete_backup_endpoint(tmp_path, monkeypatch):

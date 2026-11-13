@@ -1454,6 +1454,7 @@ async def lifespan(_: FastAPI):
         state.warmup_task = asyncio.create_task(state.warm_up())
     archive_task = asyncio.create_task(auto_archive_loop())
     backup_task = asyncio.create_task(auto_backup_loop())
+    cleanup_task = asyncio.create_task(memory_cleanup_loop())
     try:
         yield
     finally:
@@ -1464,10 +1465,13 @@ async def lifespan(_: FastAPI):
             state.warmup_task = None
         archive_task.cancel()
         backup_task.cancel()
+        cleanup_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await archive_task
         with suppress(asyncio.CancelledError, Exception):
             await backup_task
+        with suppress(asyncio.CancelledError, Exception):
+            await cleanup_task
         logger.info("MediX API 服务已停止")
 
 
@@ -2923,13 +2927,16 @@ async def purge_old_sessions(request: PurgeRequest):
                 memory.clear_session(session_id)
 
         await asyncio.to_thread(clear_short_term)
-        await asyncio.to_thread(
-            _erase_long_term_entries,
-            [
-                (str(session_profiles.get(session_id) or ""), session_id)
-                for session_id in session_ids
-            ],
-        )
+        entries = [
+            (str(session_profiles.get(session_id) or ""), session_id)
+            for session_id in session_ids
+        ]
+        store = get_session_store()
+        await asyncio.to_thread(store.queue_memory_cleanup, entries)
+        if await asyncio.to_thread(_erase_long_term_entries, entries):
+            await asyncio.to_thread(
+                store.complete_memory_cleanup, entries
+            )
         await asyncio.to_thread(_erase_session_summaries, session_ids)
     await record_audit(
         "maintenance.purge",
@@ -9616,7 +9623,16 @@ async def delete_profile(name: str):
         raise HTTPException(status_code=404, detail="档案不存在")
     # 档案作用域是档案名的哈希；删除档案必须清空对应命名空间，
     # 否则重建同名档案会召回旧患者的病史对话
-    await asyncio.to_thread(_erase_long_term_scope, name)
+    cleanup_entries = [(name, "")]
+    await asyncio.to_thread(
+        store.queue_memory_cleanup, cleanup_entries
+    )
+    if await asyncio.to_thread(
+        _erase_long_term_entries, cleanup_entries
+    ):
+        await asyncio.to_thread(
+            store.complete_memory_cleanup, cleanup_entries
+        )
     normalized_name = _normalize_profile_name(name)
     audit_key = _profile_audit_key(name)
     # 清理历史审计中的档案名
@@ -9654,7 +9670,18 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     # 路径里的旧名称可能含多余空格；只有规范化后确实改名才清理旧命名空间
     if new_name != _normalize_profile_name(name):
         # 旧命名空间无法原地改名；删除它，避免旧患者病史在新名字下被召回
-        await asyncio.to_thread(_erase_long_term_scope, name)
+        cleanup_entries = [(name, "")]
+        await asyncio.to_thread(
+            get_session_store().queue_memory_cleanup,
+            cleanup_entries,
+        )
+        if await asyncio.to_thread(
+            _erase_long_term_entries, cleanup_entries
+        ):
+            await asyncio.to_thread(
+                get_session_store().complete_memory_cleanup,
+                cleanup_entries,
+            )
     store = get_session_store()
     old_key = _profile_audit_key(name)
     await asyncio.to_thread(
@@ -14469,7 +14496,9 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
         for session_id in ids
     ]
 
-    await asyncio.to_thread(_erase_long_term_entries, entries)
+    await asyncio.to_thread(store.queue_memory_cleanup, entries)
+    if await asyncio.to_thread(_erase_long_term_entries, entries):
+        await asyncio.to_thread(store.complete_memory_cleanup, entries)
     await asyncio.to_thread(_erase_session_summaries, ids)
     await record_audit(
         "session.bulk_delete",
@@ -14568,9 +14597,13 @@ async def clear_session(session_id: str):
     short_term.clear_session(session_id)
     deleted = await asyncio.to_thread(store.delete_session, session_id)
     profile = str((existing or {}).get("profile") or "")
+    entries = [(profile, session_id)]
+    # 先登记清理队列：进程在删除后崩溃也能在下次启动重试
+    await asyncio.to_thread(store.queue_memory_cleanup, entries)
     # SQLite 删除后同步清理外部长期记忆与会诊总结明文，
     # 兑现「删除后不可恢复」的承诺
-    await asyncio.to_thread(_erase_long_term_entries, [(profile, session_id)])
+    if await asyncio.to_thread(_erase_long_term_entries, entries):
+        await asyncio.to_thread(store.complete_memory_cleanup, entries)
     await asyncio.to_thread(_erase_session_summaries, [session_id])
     if deleted:
         await record_audit("session.delete", session_id)
@@ -14899,11 +14932,12 @@ def _get_session_summary_manager():
     return SessionSummaryManager()
 
 
-def _erase_long_term_entries(entries: List[Any]) -> None:
-    """清理会话对应的 Mem0 长期记忆；失败只记日志，不影响删除主流程。
+def _erase_long_term_entries(entries: List[Any]) -> bool:
+    """清理会话对应的 Mem0 长期记忆，返回是否全部成功。
 
     entries 为 ``(患者档案, 会话 ID)`` 列表。档案作用域由多个会话共享，
     只能按 metadata.session_id 精确删除；无档案的会话独占自己的命名空间。
+    失败时调用方应把条目留在清理队列中重试。
     """
     try:
         memory = _get_long_term_memory()
@@ -14911,12 +14945,12 @@ def _erase_long_term_entries(entries: List[Any]) -> None:
         logger.warning(
             f"初始化长期记忆失败（跳过清理）: {redact_secrets(str(e))}"
         )
-        return
+        return False
     if not getattr(memory, "enabled", False):
-        return
+        return True
     from memory.session_store import _normalize_profile_name
 
-    def _retry(action) -> None:
+    def _retry(action) -> bool:
         # Mem0 是远端服务：瞬时网络错误不应让已删除会话永久留在云端
         for attempt in range(3):
             try:
@@ -14924,34 +14958,65 @@ def _erase_long_term_entries(entries: List[Any]) -> None:
                 last_error = getattr(memory, "last_error", "")
                 if last_error:
                     raise RuntimeError(last_error)
-                return
+                return True
             except Exception as e:
                 if attempt == 2:
                     logger.warning(
                         "清理会话记忆失败（已重试）: "
                         f"{redact_secrets(str(e))}"
                     )
-                    return
+                    return False
                 time.sleep(0.5 * (attempt + 1))
+        return False
 
+    all_ok = True
     for profile, session_id in entries:
-        _retry(lambda: memory.delete_scope(
-            session_memory_scope(session_id)
-        ))
-        if _normalize_profile_name(profile):
-            _retry(lambda: memory.delete_session_summary(
+        profile = _normalize_profile_name(profile)
+        session_id = str(session_id or "").strip()
+        if session_id:
+            if not _retry(lambda: memory.delete_scope(
+                session_memory_scope(session_id)
+            )):
+                all_ok = False
+            if profile and not _retry(lambda: memory.delete_session_summary(
                 session_id, user_id=_memory_scope(profile, session_id)
-            ))
+            )):
+                all_ok = False
+        elif profile:
+            if not _retry(lambda: memory.delete_scope(
+                _memory_scope(profile, "")
+            )):
+                all_ok = False
+    return all_ok
 
 
-def _erase_long_term_scope(profile: str) -> None:
-    """删除患者档案关联的整个 Mem0 命名空间。"""
-    try:
-        memory = _get_long_term_memory()
-        if getattr(memory, "enabled", False):
-            memory.delete_scope(_memory_scope(profile, ""))
-    except Exception as e:
-        logger.warning(f"清理档案长期记忆失败（忽略）: {redact_secrets(str(e))}")
+def _process_memory_cleanup_queue() -> None:
+    """重试删除时未完成的 Mem0 清理；启动与后台循环调用。"""
+    from memory import get_session_store
+
+    store = get_session_store()
+    rows = store.list_memory_cleanup(50)
+    for row in rows:
+        entries = [(
+            str(row.get("profile") or ""),
+            str(row.get("session_id") or ""),
+        )]
+        if _erase_long_term_entries(entries):
+            store.complete_memory_cleanup(entries)
+        else:
+            store.fail_memory_cleanup(
+                int(row.get("id") or 0), "cleanup failed"
+            )
+
+
+async def memory_cleanup_loop(interval_seconds: int = 600) -> None:
+    """周期重试长期记忆清理队列，避免云端残留已删除会话。"""
+    while True:
+        try:
+            await asyncio.to_thread(_process_memory_cleanup_queue)
+        except Exception as e:
+            logger.warning(f"重试长期记忆清理失败: {redact_secrets(str(e))}")
+        await asyncio.sleep(max(60, int(interval_seconds)))
 
 
 def _erase_session_summaries(session_ids: List[str]) -> None:

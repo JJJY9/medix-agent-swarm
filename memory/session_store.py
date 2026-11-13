@@ -1888,6 +1888,15 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_created
                     ON audit_log(created_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_cleanup_queue (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile    TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL DEFAULT '',
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(profile, session_id)
+                );
                 CREATE TABLE IF NOT EXISTS reminders (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     title      TEXT NOT NULL,
@@ -2366,6 +2375,74 @@ class SessionStore:
     def is_session_deleted(self, session_id: str) -> bool:
         with self._lock:
             return str(session_id or "").strip() in self._deleted_sessions
+
+    def queue_memory_cleanup(self, entries: Any) -> None:
+        """登记待清理的长期记忆作用域，供启动/后台任务重试。"""
+        now = self._now()
+        pairs = []
+        for profile, session_id in entries or []:
+            normalized = _normalize_profile_name(profile)
+            sid = str(session_id or "").strip()[:64]
+            if normalized or sid:
+                pairs.append((normalized, sid))
+        if not pairs:
+            return
+        with self._write_and_checkpoint():
+            for profile, session_id in pairs:
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_cleanup_queue(
+                        profile, session_id, attempts, last_error, created_at
+                    ) VALUES (?, ?, 0, '', ?)
+                    """,
+                    (profile, session_id, now),
+                )
+
+    def list_memory_cleanup(self, limit: int = 50) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit or 50), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, profile, session_id, attempts, last_error,
+                       created_at
+                  FROM memory_cleanup_queue
+                 ORDER BY id
+                 LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def complete_memory_cleanup(self, entries: Any) -> None:
+        pairs = [
+            (
+                _normalize_profile_name(profile),
+                str(session_id or "").strip()[:64],
+            )
+            for profile, session_id in entries or []
+        ]
+        if not pairs:
+            return
+        with self._write_and_checkpoint():
+            for profile, session_id in pairs:
+                self._conn.execute(
+                    """
+                    DELETE FROM memory_cleanup_queue
+                     WHERE profile = ? AND session_id = ?
+                    """,
+                    (profile, session_id),
+                )
+
+    def fail_memory_cleanup(self, queue_id: int, error: str = "") -> None:
+        with self._write_and_checkpoint():
+            self._conn.execute(
+                """
+                UPDATE memory_cleanup_queue
+                   SET attempts = attempts + 1, last_error = ?
+                 WHERE id = ?
+                """,
+                (str(error or "")[:300], int(queue_id)),
+            )
 
     def revive_session(self, session_id: str) -> None:
         """解除删除墓碑；用于同一编号被复用发起新会诊的场景。

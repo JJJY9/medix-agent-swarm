@@ -141,7 +141,9 @@ def test_profile_rename_with_extra_spaces_does_not_erase_memories(
     client, store = client_and_store
     erased = []
     monkeypatch.setattr(
-        api_server, "_erase_long_term_scope", lambda name: erased.append(name)
+        api_server,
+        "_erase_long_term_entries",
+        lambda entries: erased.append(list(entries)) or True,
     )
     assert store.save_profile("a b", {"age": 50}) is not None
 

@@ -96,6 +96,50 @@ def test_stream_init_failure_releases_profile_claim(
         assert session_id not in api_server._PROFILE_CLAIMS
 
 
+def test_memory_cleanup_queue_roundtrip(tmp_path):
+    store = SessionStore(str(tmp_path / "cleanup.db"))
+    try:
+        store.queue_memory_cleanup([("妈妈", "s1"), ("", "s2")])
+        rows = store.list_memory_cleanup()
+        assert {(row["profile"], row["session_id"]) for row in rows} == {
+            ("妈妈", "s1"), ("", "s2")
+        }
+
+        store.fail_memory_cleanup(rows[0]["id"], "network")
+        updated = store.list_memory_cleanup()[0]
+        assert updated["attempts"] == 1
+        assert updated["last_error"] == "network"
+
+        store.complete_memory_cleanup([("妈妈", "s1"), ("", "s2")])
+        assert store.list_memory_cleanup() == []
+    finally:
+        store.close()
+
+
+def test_memory_cleanup_queue_retries_until_success(
+    tmp_path, monkeypatch
+):
+    store = SessionStore(str(tmp_path / "cleanup-retry.db"))
+    monkeypatch.setattr(
+        memory, "get_session_store", lambda: store
+    )
+    results = [False, True]
+
+    def fake_erase(entries):
+        return results.pop(0)
+
+    monkeypatch.setattr(api_server, "_erase_long_term_entries", fake_erase)
+    try:
+        store.queue_memory_cleanup([("妈妈", "s1")])
+        api_server._process_memory_cleanup_queue()
+        assert store.list_memory_cleanup()[0]["attempts"] == 1
+
+        api_server._process_memory_cleanup_queue()
+        assert store.list_memory_cleanup() == []
+    finally:
+        store.close()
+
+
 def test_memory_cleanup_retries_transient_failures(monkeypatch):
     calls = []
 
