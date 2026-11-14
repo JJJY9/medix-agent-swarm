@@ -1969,15 +1969,33 @@ def _same_forwarded_address(first: str, second: str) -> bool:
         return first == second
 
 
+def _allowed_proxy_address_source() -> str:
+    """部署声明代理实际覆盖/追加的地址头（用于避免采信客户端自带头）。"""
+    return (
+        os.environ.get("MEDIX_PROXY_CLIENT_IP_HEADER") or ""
+    ).strip().lower()
+
+
 def _forwarded_client_address(request: Request) -> str:
     """从代理头解析原始客户端地址（XFF / X-Real-IP / RFC 7239）。
 
     多个转发头同时存在且互相矛盾时返回空串（fail closed）：说明代理
     配置不一致，客户端可能自带了一个头，不能据此判定本机或分配限流桶。
+    MEDIX_PROXY_CLIENT_IP_HEADER 可指定唯一可信的地址头；设为 none
+    表示代理不提供地址（客户端自带地址头一律不采信）。
     """
-    forwarded_for = ",".join(
-        _proxy_header_values(request, "x-forwarded-for")
-    ).strip()
+    allowed_source = _allowed_proxy_address_source()
+    if allowed_source == "none":
+        return ""
+    use_xff = allowed_source in ("", "x-forwarded-for")
+    use_real = allowed_source in ("", "x-real-ip")
+    use_forwarded = allowed_source in ("", "forwarded")
+    if not (use_xff or use_real or use_forwarded):
+        return ""
+    forwarded_for = (
+        ",".join(_proxy_header_values(request, "x-forwarded-for")).strip()
+        if use_xff else ""
+    )
     xff_value = ""
     if forwarded_for:
         parts = [
@@ -2004,18 +2022,19 @@ def _forwarded_client_address(request: Request) -> str:
             _normalize_forwarded_address(item)
             for item in _proxy_header_values(request, "x-real-ip")
         ) if value
-    ]
+    ] if use_real else []
     if len(set(real_values)) > 1:
         # 重复的 X-Real-IP 给出互相矛盾的地址：fail closed
         return ""
     real_value = real_values[0] if real_values else ""
     forwarded_header = ""
-    try:
-        forwarded_header = ", ".join(
-            request.headers.getlist("forwarded")
-        )
-    except AttributeError:
-        forwarded_header = request.headers.get("forwarded") or ""
+    if use_forwarded:
+        try:
+            forwarded_header = ", ".join(
+                request.headers.getlist("forwarded")
+            )
+        except AttributeError:
+            forwarded_header = request.headers.get("forwarded") or ""
     forwarded_value = _parse_forwarded_header(forwarded_header)
     values = [value for value in (
         xff_value, real_value, forwarded_value
@@ -3506,6 +3525,17 @@ async def purge_old_sessions(request: PurgeRequest):
                 store.complete_memory_cleanup, entries
             )
         await asyncio.to_thread(_erase_session_summaries, session_ids)
+        for session_id in session_ids:
+            await asyncio.to_thread(
+                store.redact_audit_targets,
+                ["session.tags"], session_id, "tags=redacted",
+                "tags=redacted",
+            )
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.bulk_tags"], "", "tags=redacted",
+            "tags=redacted", True,
+        )
     await record_audit(
         "maintenance.purge",
         f"days={request.days}",
@@ -6577,7 +6607,16 @@ async def _weekly_report_impl(
         )
         for item in latest_answers:
             if (item.get("profile") or "") == profile_key:
-                risk_level = parse_risk_level(item.get("last_answer"))
+                answered_day = str(
+                    item.get("answered_at")
+                    or item.get("last_active_at")
+                    or item.get("created_at")
+                    or ""
+                )[:10]
+                if answered_day and start <= answered_day <= end:
+                    risk_level = parse_risk_level(
+                        item.get("last_answer")
+                    )
                 break
     elif profile is None:
         # 家庭范围：汇总每位成员最近一次会诊的风险，健康提示不能漏报
@@ -11098,6 +11137,16 @@ async def family_overview(days: int = 7):
     for item in latest_answers:
         profile_name = item.get("profile") or ""
         risk = parse_risk_level(item.get("last_answer"))
+        answered_day = str(
+            item.get("answered_at")
+            or item.get("last_active_at")
+            or item.get("created_at")
+            or ""
+        )[:10]
+        if answered_day and not (cutoff <= answered_day <= today):
+            # 旧会诊里的高危答复不能因为今天续聊了一句普通问题
+            # 就冒充「最近会诊风险」
+            risk = ""
         # 「未指定档案」的会诊同样要参与家庭风险提示
         if risk:
             risk_by_profile[profile_name] = risk
@@ -14289,6 +14338,7 @@ async def export_health_dossier(
             hour=23, minute=59, second=59
         ).isoformat(timespec="seconds"),
         100000, True,
+        by_updated=True,
     )
     streak = _streak_info(
         await asyncio.to_thread(store.recorded_days, profile_key, 3650)
@@ -16018,6 +16068,19 @@ async def bulk_delete_sessions(request: BulkSessionsRequest):
     if await asyncio.to_thread(_erase_long_term_entries, entries):
         await asyncio.to_thread(store.complete_memory_cleanup, entries)
     await asyncio.to_thread(_erase_session_summaries, ids)
+    for session_id in ids:
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.tags"], session_id, "tags=redacted",
+            "tags=redacted",
+        )
+    if deleted:
+        # 批量标签审计没有单条 target：任一被删会话都要清理历史原文
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.bulk_tags"], "", "tags=redacted",
+            "tags=redacted", True,
+        )
     await record_audit(
         "session.bulk_delete",
         detail=f"deleted={deleted} missing={len(missing)}",
@@ -16124,6 +16187,12 @@ async def clear_session(session_id: str):
         await asyncio.to_thread(store.complete_memory_cleanup, entries)
     await asyncio.to_thread(_erase_session_summaries, [session_id])
     if deleted:
+        # 旧版本审计里可能留有标签原文：删除会话时一并擦除
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["session.tags"], session_id, "tags=redacted",
+            "tags=redacted",
+        )
         await record_audit("session.delete", session_id)
     return {"ok": True, "session_id": session_id}
 

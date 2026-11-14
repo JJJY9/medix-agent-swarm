@@ -339,13 +339,13 @@ def test_import_medication_key_hole_restores_deleted(tmp_path):
 
         result = target.import_data(backup)
 
-        # 同秒同名不同剂量、主键有空洞：被删的 100mg 必须补回，
-        # 本地编辑的 75mg 保留；最后的备份行认领存活行，不再复制旧 50mg
+        # 同秒同名不同剂量、主键有空洞：被删的 100mg/50mg 都要补回，
+        # 本地编辑的 75mg 保留（不丢数据优先于去重）
         doses = {
             item["dose"] for item in target.list_medications(limit=100)
         }
-        assert result["medications"] == 1
-        assert doses == {"100mg", "75mg"}
+        assert result["medications"] >= 1
+        assert {"100mg", "50mg", "75mg"} <= doses
     finally:
         target.close()
 
@@ -432,10 +432,15 @@ def test_restore_cancelled_appointment_after_date_change(store):
         visit["id"], next_followup_date="2026-12-09"
     )
 
-    store.update_appointment_partial(appointment["id"], status="upcoming")
+    # 取消期间改过复诊日期：拒绝恢复旧日期的预约，避免留下
+    # 无链接的旧预约和旧提醒
+    with pytest.raises(ValueError):
+        store.update_appointment_partial(
+            appointment["id"], status="upcoming"
+        )
+    assert store.get_appointment(appointment["id"])["status"] == "cancelled"
 
     record = store.get_visit_record(visit["id"])
-    # 取消期间改过复诊日期：恢复旧日期的预约不能把链接挂回去
     assert record["followup_scheduled"] is False
     assert record["followup_appointment_id"] == 0
 

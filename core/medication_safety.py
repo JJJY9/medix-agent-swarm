@@ -602,9 +602,11 @@ _PAST_USE_PREFIX = re.compile(
 )
 #: 持续用药：「过去半年每天吃」「既往长期服用」不是既往用药
 _CONTINUOUS_USE_PREFIX = re.compile(
-    r"(?:过去|近|最近|这|既往|曾经?)"
+    r"(?:过去|之前|以前|近|最近|这|既往|曾经?|现在|目前|还在|仍在|仍|继续)"
     r"[^，。；,.!?！？\n]{0,6}"
-    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|半年)"
+    r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|半年|"
+    r"几天|几日|几周|数天|数周|近期|这几天|"
+    r"一周|两周|[一二两三四五六七八九十0-9]+(?:天|周|个月))"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:服用|口服|吃|用|注射|打|喝|饮)\s*$"
 )
@@ -651,13 +653,20 @@ def _alias_matches(text: str, alias: str) -> bool:
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
-            if _CONTINUOUS_USE_PREFIX.search(prefix):
+            if (
+                _INTENT_STOP_PREFIX.search(prefix)
+                or _INTENT_STOP_SUFFIX.search(suffix)
+                or _NEGATED_STOP_SUFFIX.search(suffix)
+                or _CONTINUOUS_USE_PREFIX.search(prefix)
+            ):
                 return True
             if (
                 _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
+                or _STOPPED_USE_SUFFIX.search(suffix)
                 or _STOPPED_USE_SUFFIX_EN.search(suffix)
                 or _NEGATED_USE_PREFIX.search(prefix)
+                or _PAST_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX_EN.search(prefix)
             ):
                 continue

@@ -3577,7 +3577,8 @@ class SessionStore:
                     return True
             row = self._conn.execute(
                 "SELECT 1 FROM sessions s WHERE s.profile = ''"
-                " AND substr(s.created_at, 1, 10) >= ?"
+                " AND substr(COALESCE(s.updated_at, s.created_at), 1, 10)"
+                " >= ?"
                 " AND EXISTS (SELECT 1 FROM messages m"
                 " WHERE m.session_id = s.id) LIMIT 1",
                 (cutoff,),
@@ -3910,6 +3911,7 @@ class SessionStore:
             ("medication_logs", "taken_at"),
             ("lab_results", "tested_at"),
             ("visit_records", "visit_date"),
+            ("vaccinations", "vaccinated_at"),
         ):
             conditions = [f"substr({column}, 1, 10) >= ?"]
             values: List[Any] = [cutoff]
@@ -3963,6 +3965,7 @@ class SessionStore:
             ("medication_logs", "taken_at"),
             ("lab_results", "tested_at"),
             ("visit_records", "visit_date"),
+            ("vaccinations", "vaccinated_at"),
         ):
             parts.append(
                 f"SELECT profile, substr({column}, 1, 10) AS day"
@@ -4979,6 +4982,8 @@ class SessionStore:
         backup_group_size: int = 0,
         backup_soft_size: int = 0,
         backup_anchor_size: int = 0,
+        backup_ids: Optional[set] = None,
+        backup_profiles: Optional[Dict[int, str]] = None,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -5022,15 +5027,14 @@ class SessionStore:
         group_seen_key = (table, "__seen__", identity)
         group_seen = int(state.get(group_seen_key, 0)) + 1
         state[group_seen_key] = group_seen
+        local_size_key = (table, "__local_size__", identity)
+        local_group_size = state.get(local_size_key)
+        if local_group_size is None:
+            local_group_size = len(claimed)
+            state[local_size_key] = local_group_size
 
         def _ambiguous() -> Optional[int]:
-            """歧义时：该身份组最后一条备份行仍可认领唯一候选。"""
-            if (
-                backup_group_size > 0
-                and group_seen >= backup_group_size
-                and len(candidates) == 1
-            ):
-                return _claim(min(candidates))
+            """无法区分时按被删记录补回，绝不复制存活行旧版本。"""
             state[identity] = claimed
             return None
         content_where = " AND ".join(
@@ -5052,10 +5056,25 @@ class SessionStore:
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
             # 是同一条，恢复旧备份时不能在原档案名下重新插入
+            raw_scope_clause = ""
+            raw_scope_params: Tuple[Any, ...] = ()
+            if (
+                (not columns or columns[0] != "profile")
+                and match_where is not None
+                and str(match_where[0]).strip().lower().startswith(
+                    "profile"
+                )
+            ):
+                raw_scope_clause = " AND " + match_where[0]
+                raw_scope_params = tuple(match_where[1])
             row = self._conn.execute(
                 f"SELECT id FROM {table}"
-                f" WHERE id = ? AND created_at = ? AND {content_where}",
-                (raw_id, created_at_value, *content_values),
+                f" WHERE id = ? AND created_at = ? AND {content_where}"
+                f"{raw_scope_clause}",
+                (
+                    raw_id, created_at_value, *content_values,
+                    *raw_scope_params,
+                ),
             ).fetchone()
             if row is not None:
                 candidate = int(row["id"])
@@ -5098,6 +5117,24 @@ class SessionStore:
                         continue
                     if candidate in moved or candidate in matched:
                         continue
+                    if (
+                        backup_ids
+                        and candidate in backup_ids
+                        and candidate != raw_id
+                    ):
+                        candidate_profile_key = (
+                            backup_profiles.get(candidate)
+                            if backup_profiles else None
+                        )
+                        if (
+                            candidate_profile_key is not None
+                            and _normalize_profile_name(
+                                str(row["profile"] or "")
+                            ) == candidate_profile_key
+                        ):
+                            # 该本地行本身对应备份里的另一条同档案记录：
+                            # 不能被当作本行“改挂”的版本吞掉
+                            continue
                     candidate_profile = str(row["profile"] or "")
                     if (
                         row_profile
@@ -5146,6 +5183,66 @@ class SessionStore:
         candidates = {
             c for c in claimed if c not in moved and c not in matched
         }
+        if backup_ids:
+            # 本地行若对应备份里的另一条同档案记录，不能拿来认领本行；
+            # 改挂到其它档案的记录仍可参与漂移配对
+            filtered_candidates = set()
+            for candidate_idx in candidates:
+                if candidate_idx == raw_id or candidate_idx not in backup_ids:
+                    filtered_candidates.add(candidate_idx)
+                    continue
+                expected_profile = (
+                    backup_profiles.get(candidate_idx)
+                    if backup_profiles else None
+                )
+                if expected_profile is None:
+                    filtered_candidates.add(candidate_idx)
+                    continue
+                candidate_meta = self._conn.execute(
+                    f"SELECT profile FROM {table} WHERE id = ?",
+                    (candidate_idx,),
+                ).fetchone()
+                if candidate_meta is None or _normalize_profile_name(
+                    candidate_meta["profile"] or ""
+                ) != expected_profile:
+                    filtered_candidates.add(candidate_idx)
+            candidates = filtered_candidates
+        if (
+            raw_id > 0
+            and raw_id in candidates
+            and (pre_existing_ids is None or raw_id in pre_existing_ids)
+            and (
+                backup_group_size <= 1
+                or local_group_size >= backup_group_size
+            )
+        ):
+            expected_profile = None
+            if columns and columns[0] == "profile":
+                expected_profile = _normalize_profile_name(values[0])
+            elif match_where is not None and str(
+                match_where[0]
+            ).strip().lower().startswith("profile"):
+                expected_profile = _normalize_profile_name(
+                    match_where[1][0]
+                )
+            same_profile_candidate = True
+            if expected_profile is not None:
+                candidate_row = self._conn.execute(
+                    f"SELECT profile FROM {table} WHERE id = ?",
+                    (raw_id,),
+                ).fetchone()
+                if candidate_row is None or (
+                    _normalize_profile_name(
+                        candidate_row["profile"] or ""
+                    )
+                    != expected_profile
+                ):
+                    same_profile_candidate = False
+            if same_profile_candidate:
+                # 本地存活行不少于备份行：这条备份行就是本地存活行的
+                # 旧版本，即使内容/软字段都被编辑过也认领自身。
+                # 本地确有缺行时仍走插入，优先补回被删记录
+                return _claim(raw_id)
         if not candidates:
             state[identity] = claimed
             return None
@@ -5264,6 +5361,20 @@ class SessionStore:
             cls._identity_group_sizes(raw_items, limit, identity_key),
             cls._identity_group_sizes(raw_items, limit, soft_key),
         )
+
+    @staticmethod
+    def _import_raw_ids(raw_items: Any, limit: int) -> set:
+        """备份中出现的原始主键集合（用于拒绝跨备份行的漂移认领）。"""
+        if not isinstance(raw_items, list):
+            return set()
+        result = set()
+        for item in raw_items[:limit]:
+            if not isinstance(item, dict):
+                continue
+            raw_id = _safe_db_id(item.get("id"))
+            if raw_id > 0:
+                result.add(raw_id)
+        return result
 
     def _import_rows(
         self, table: str, raw_items: Any, limit: int, match_probe=None
@@ -6064,6 +6175,18 @@ class SessionStore:
                         " ".join(str(item.get("name") or "").split()),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
+                medication_backup_ids = self._import_raw_ids(
+                    raw_medications, IMPORT_LIST_LIMITS["medications"]
+                )
+                medication_backup_profiles = {}
+                for item in raw_medications[:IMPORT_LIST_LIMITS["medications"]]:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_id = _safe_db_id(item.get("id"))
+                    if raw_id > 0:
+                        medication_backup_profiles[raw_id] = (
+                            _normalize_profile_name(item.get("profile"))
+                        )
                 for raw in self._import_rows(
                     "medications", raw_medications,
                     IMPORT_LIST_LIMITS["medications"],
@@ -6124,6 +6247,8 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=medication_pre_ids,
+                            backup_ids=medication_backup_ids,
+                            backup_profiles=medication_backup_profiles,
                             backup_group_size=(
                                 medication_group_sizes.get(
                                     (
@@ -7837,13 +7962,21 @@ class SessionStore:
                         and appointment_ok
                         and (followup_appointment_id or followup_reminder_id)
                     )
+                    local_link = int(
+                        visit_row["followup_appointment_id"] or 0
+                    ) if visit_row is not None else 0
                     if (
                         not visit_is_new
                         and followup_appointment_id
-                        and not appointment_ok
+                        and (
+                            not appointment_ok
+                            or local_link not in (
+                                0, int(followup_appointment_id)
+                            )
+                        )
                     ):
-                        # 恢复出的旧日期自动预约对已改期的就诊已失效：
-                        # 不挂链接也不留下旧日期提醒
+                        # 恢复出的旧日期预约已失效，或就诊已链接另一条
+                        # 待就诊复诊预约：当作重复项清理，不挂链接
                         stale_appointment_ids.append(
                             int(followup_appointment_id)
                         )
@@ -8250,9 +8383,11 @@ class SessionStore:
         if not title:
             return False
         with self._write_and_checkpoint():
+            # 改名只是标题编辑，不算健康活动：不能刷新 updated_at，
+            # 否则旧会诊会被统计为「近 N 天会诊」并重新触发风险提示
             cursor = self._conn.execute(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                (title, self._now(), session_id),
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                (title, session_id),
             )
             return cursor.rowcount > 0
 
@@ -9299,10 +9434,20 @@ class SessionStore:
                 )
                 if restore_visit_id:
                     linked_visit = self._conn.execute(
-                        "SELECT followup_appointment_id FROM visit_records"
-                        " WHERE id = ?",
+                        "SELECT profile, followup_appointment_id,"
+                        " next_followup_date"
+                        " FROM visit_records WHERE id = ?",
                         (restore_visit_id,),
                     ).fetchone()
+                    if linked_visit is not None and (
+                        _normalize_profile_name(
+                            linked_visit["profile"] or ""
+                        )
+                        != normalized["profile"]
+                    ):
+                        # 备注里的 #N 指向本库同号的另一档案就诊：
+                        # 不能把预约恢复并挂到无关成员名下
+                        linked_visit = None
                     if linked_visit is not None:
                         linked_id = int(
                             linked_visit["followup_appointment_id"] or 0
@@ -9311,6 +9456,15 @@ class SessionStore:
                             raise ValueError(
                                 "该就诊已有另一条待就诊复诊预约，"
                                 "不能恢复旧预约"
+                            )
+                        visit_date = str(
+                            linked_visit["next_followup_date"] or ""
+                        )[:10]
+                        if visit_date and visit_date != str(
+                            normalized["scheduled_at"] or ""
+                        )[:10]:
+                            raise ValueError(
+                                "就诊复诊日期已变更，不能恢复旧日期预约"
                             )
             cursor = self._conn.execute(
                 """
@@ -9330,6 +9484,12 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 预约改档案时提醒跟随，避免提醒留在旧成员名下
+            self._conn.execute(
+                "UPDATE reminders SET profile = ?"
+                " WHERE appointment_id = ?",
+                (normalized["profile"], int(appointment_id)),
+            )
             # 取消/完成时去掉待办提醒；只有改期或状态变化才重算提醒时间，
             # 只改备注/医生不能把用户手动推迟的提醒拨回原日期
             reminder_due = ""
@@ -9480,6 +9640,7 @@ class SessionStore:
                             " SET followup_appointment_id = ?,"
                             " followup_reminder_id = ?, updated_at = ?"
                             " WHERE id = ? AND followup_appointment_id = 0"
+                            " AND profile = ?"
                             " AND next_followup_date != ''"
                             " AND substr(next_followup_date, 1, 10)"
                             " = substr(?, 1, 10)",
@@ -9488,6 +9649,7 @@ class SessionStore:
                                 restored_reminder_id,
                                 now,
                                 visit_target,
+                                normalized["profile"],
                                 normalized["scheduled_at"],
                             ),
                         )
@@ -9522,11 +9684,13 @@ class SessionStore:
                     self._conn.execute(
                         "UPDATE visit_records"
                         " SET next_followup_date = ?, updated_at = ?"
-                        " WHERE id = ? AND next_followup_date != ?",
+                        " WHERE id = ? AND profile = ?"
+                        " AND next_followup_date != ?",
                         (
                             str(normalized["scheduled_at"])[:10],
                             now,
                             visit_target,
+                            normalized["profile"],
                             str(normalized["scheduled_at"])[:10],
                         ),
                     )
@@ -10585,16 +10749,26 @@ class SessionStore:
         appointment = _safe_db_id(appointment_id)
         if appointment:
             row = self._conn.execute(
-                "SELECT note, status, scheduled_at, owner_visit_id"
+                "SELECT note, status, scheduled_at, owner_visit_id, profile"
                 " FROM appointments WHERE id = ?",
                 (appointment,),
             ).fetchone()
-            auto_created = row is not None and (
+            visit_row = self._conn.execute(
+                "SELECT profile FROM visit_records WHERE id = ?",
+                (int(visit_id),),
+            ).fetchone()
+            same_profile = bool(
+                row is not None
+                and visit_row is not None
+                and _normalize_profile_name(row["profile"] or "")
+                == _normalize_profile_name(visit_row["profile"] or "")
+            )
+            auto_created = same_profile and (
                 f"由就诊记录 #{int(visit_id)} 自动创建"
                 in str(row["note"] or "")
             )
             if (
-                row is not None
+                same_profile
                 and not auto_created
                 and int(row["owner_visit_id"] or 0) == int(visit_id)
             ):
@@ -10708,6 +10882,37 @@ class SessionStore:
                     " WHERE kind = 'visit' AND ref_id = ?",
                     (normalized["profile"], int(visit_id)),
                 )
+                # 复诊预约与提醒跟随就诊改档案，否则新档案看不到提醒、
+                # 旧档案却保留别人的待办
+                linked_appointment = _safe_db_id(
+                    old_row["followup_appointment_id"]
+                )
+                linked_reminder = _safe_db_id(
+                    old_row["followup_reminder_id"]
+                )
+                if linked_appointment:
+                    self._conn.execute(
+                        "UPDATE appointments SET profile = ?,"
+                        " updated_at = ? WHERE id = ?",
+                        (
+                            normalized["profile"], now,
+                            linked_appointment,
+                        ),
+                    )
+                    self._conn.execute(
+                        "UPDATE reminders SET profile = ?,"
+                        " updated_at = ? WHERE appointment_id = ?",
+                        (
+                            normalized["profile"], now,
+                            linked_appointment,
+                        ),
+                    )
+                if linked_reminder:
+                    self._conn.execute(
+                        "UPDATE reminders SET profile = ?,"
+                        " updated_at = ? WHERE id = ?",
+                        (normalized["profile"], now, linked_reminder),
+                    )
             # 复诊日期变化后撤销旧的自动预约/提醒：只清关联编号会留下
             # 幽灵预约和仍会到期的旧提醒，再次安排时两套并存
             if (

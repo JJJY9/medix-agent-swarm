@@ -20252,10 +20252,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
   const restoreProfileSeq = profileSelectionSeq;
   const restoreOpenSeq = openSessionSeq;
   // 深链上下文在成功渲染后才消费：首次恢复失败（后端未启动）时保留，
-  // 重连重试仍能回填快照；用户已手动编辑补充信息时跳过快照，
-  // 改走「下一轮新建会话」，避免跨患者上下文混用
-  const useDeepLinkContext = deepLinkedSession && !contextUserEdited;
-  const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;
+  // 重连重试仍能回填快照；草稿冲突标志在响应返回后再读取，
+  // 覆盖等待期间用户新填写的补充信息
   sessionRestoreInFlight = true;
 
   try {
@@ -20351,6 +20349,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 深链按「打开历史会话」回填快照；刷新/对账只渲染历史，不用旧
     // 快照覆盖用户编辑中的补充信息。用户已清空档案时（pending）既不
     // 回填快照也不改档案，等下一轮提问新建会话。
+    // 在响应返回后读取 contextUserEdited：等待期间新填写的草稿
+    // 不能被深链快照覆盖
+    const useDeepLinkContext = deepLinkedSession && !contextUserEdited;
+    const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;
     const pendingReset = pendingSessionReset || deepLinkDraftConflict;
     if (deepLinkDraftConflict) {
       // 深链快照与用户草稿冲突：不覆盖草稿，也不把深链档案塞进
@@ -20397,6 +20399,7 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 
 async function send(question) {
   if (busy || sendInFlight) {
+    restoreComposer(question);
     window.alert('会诊进行中，请先停止当前会诊。');
     return;
   }
@@ -20418,7 +20421,9 @@ async function send(question) {
       || openSessionSeq !== sendSeq
     ) {
       // 恢复失败，或等待期间用户打开了别的会话：不能把这条问题
-      // 发进错误的患者会话
+      // 发进错误的患者会话；主诉要放回输入框而不是静默丢失
+      restoreComposer(question);
+      if (els.empty) els.empty.hidden = false;
       setVitals('warn', '会诊记录尚未打开，请稍后重试');
       return;
     }
@@ -21497,6 +21502,16 @@ function clearDraft() {
   } catch {
     // 忽略
   }
+}
+
+function restoreComposer(question) {
+  // send 早退（深链未恢复/发送锁）时把主诉放回输入框与草稿，
+  // 不能让 submit 的预清空静默丢掉用户文本
+  const text = String(question || '');
+  if (!text || els.input.value.trim()) return;
+  els.input.value = text;
+  autoGrow();
+  saveDraft();
 }
 
 function loadDraft() {
@@ -22864,14 +22879,17 @@ els.contextToggle.addEventListener('click', () => {
   if (opening) els.ctxAge.focus();
 });
 
-els.contextPanel.addEventListener('input', () => {
-  contextUserEdited = true;
+const onContextPanelEdit = (event) => {
+  const target = event && event.target;
+  const id = target && target.id;
+  // 档案下拉与「仅单科」开关不是补充信息字段，不能触发草稿冲突
+  if (id !== 'profile-select' && id !== 'ctx-single') {
+    contextUserEdited = true;
+  }
   updateContextSummary();
-});
-els.contextPanel.addEventListener('change', () => {
-  contextUserEdited = true;
-  updateContextSummary();
-});
+};
+els.contextPanel.addEventListener('input', onContextPanelEdit);
+els.contextPanel.addEventListener('change', onContextPanelEdit);
 
 els.contextClear.addEventListener('click', () => {
   applyPatientContext({});

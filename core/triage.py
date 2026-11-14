@@ -177,6 +177,24 @@ PREGNANCY_BLEEDING_TERMS = (
     "下体出血", "见红", "早孕出血", "孕早期出血", "孕中期出血",
     "孕晚期出血", "产前出血", "孕妇出血",
 )
+#: 量词插入「阴道」与「出血」之间（阴道少量出血/阴道有点流血）仍属
+#: 孕产期出血；牙龈/鼻/皮肤出血没有这些部位词，不会命中
+_PREGNANCY_BLEEDING_RE = re.compile(
+    r"(?:阴道|产道|下体)"
+    r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
+    r"|(?:孕妇|孕[早中晚]期|产前|早孕)(?:出血|流血|见红)"
+    r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
+    r"|见红"
+)
+
+
+def _has_pregnancy_bleeding(text: str) -> bool:
+    for match in _PREGNANCY_BLEEDING_RE.finditer(text):
+        if not _is_negated(_clause_prefix(text, match.start())):
+            return True
+    return any(
+        _positive_mention(text, term) for term in PREGNANCY_BLEEDING_TERMS
+    )
 
 
 def _is_negated(prefix: str) -> bool:
@@ -238,7 +256,7 @@ _ENUM_POSITIVE_CUES = (
 )
 
 
-def _clause_prefix(text: str, start: int, lookback: int = 12) -> str:
+def _clause_prefix(text: str, start: int, lookback: int = 24) -> str:
     """返回短语之前、同一分句内的有限长度前缀。
 
     窗口需容纳「尚未能完全排除」这类较长的双重否定结构；顿号不截断
@@ -264,16 +282,18 @@ def _enum_negated(prefix: str) -> bool:
     # 力气、」「无诱因、」「未婚、」里的无/没/未是词的一部分，不能
     # 让它否定后面的真实症状
     neg_word = re.match(r"(?:没有|没|无|未|否认)", span)
-    tail = span[neg_word.end():] if neg_word else span
-    first_item = re.split(r"、|和|及|与|以及", tail, maxsplit=1)[0]
-    first_item = re.sub(
+    body = span[neg_word.end():] if neg_word else span
+    body = re.sub(
         r"^(?:出现|伴有|伴随|感|有|见|见到|任何|明显|明确|特殊|显著)",
         "",
-        first_item,
+        body,
     )
+    first_item = re.split(r"、|和|及|与|以及", body, maxsplit=1)[0]
     if not any(term in first_item for term in _NEGATED_SYMPTOM_TERMS):
         return False
-    return not any(cue in span for cue in _ENUM_POSITIVE_CUES)
+    # 阳性线索只在剥离否定词与填充词后的枚举正文上判断：
+    # 「没有出现胸痛和呼吸困难」里紧跟否定词的「出现」不是阳性线索
+    return not any(cue in body for cue in _ENUM_POSITIVE_CUES)
 
 
 def _positive_mention(text: str, phrase: str) -> bool:
@@ -453,6 +473,9 @@ _COURSE_MARKER_RE = re.compile(
 )
 _COURSE_MARKERS = (
     "持续", "反复", "最近", "今天", "昨天", "前天", "这几天", "刚才",
+    "经常", "常常", "时常", "总是", "老是", "一直", "长期", "多年",
+    "很久", "好久", "很长时间", "好几天", "数天", "数周", "数月",
+    "近来", "这段时间",
 )
 
 
@@ -981,10 +1004,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
     )
     if (
         pregnancy_mentioned
-        and any(
-            _positive_mention(text, term)
-            for term in PREGNANCY_BLEEDING_TERMS
-        )
+        and _has_pregnancy_bleeding(text)
         and "孕产期出血" not in matches
     ):
         matches.append("孕产期出血")
