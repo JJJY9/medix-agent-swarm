@@ -2743,7 +2743,9 @@ async def require_access_token(request: Request, call_next):
         # 某个人的错误尝试把全家 429。直连远程客户端伪造
         # X-Forwarded-* 不满足对端条件，仍按自身地址预锁定；声明了
         # 地址头却解析失败（unknown/矛盾）同样继续预锁定
-        loopback_bucket_key = f"ip:{peer_host or 'unknown'}"
+        loopback_bucket_key = (
+            f"ip:{_bucket_address(peer_host or 'unknown')}"
+        )
         shared_bucket = (not peer_host) or (
             _is_trusted_proxy_peer(peer_host)
             and _client_ip_key(request)
@@ -2757,6 +2759,19 @@ async def require_access_token(request: Request, call_next):
             and _is_trusted_proxy_peer(peer_host)
             and _forwarded_client_address(request)
         )
+        # 与当前令牌一致的请求不是猜测：直通闸门（不占槽位、不被
+        # 失败桶退避拖慢）；错误令牌仍按闸门串行限速
+        known_token = False
+        _expected_token = get_access_token()
+        _supplied_token = request_token(request)
+        if _expected_token and _supplied_token:
+            try:
+                known_token = secrets.compare_digest(
+                    _supplied_token.encode("utf-8"),
+                    _expected_token.encode("utf-8"),
+                )
+            except UnicodeError:
+                known_token = False
         gate_handle = None
         appended_address = (
             _forwarded_appended_address(request)
@@ -2776,13 +2791,14 @@ async def require_access_token(request: Request, call_next):
                 # IPv6 /64 常由同一家庭/局域网共享：聚合桶不做硬
                 # 预锁定（否则一人输错令牌全家正确令牌也 429），
                 # 改用同键闸门串行比较并限制单源占槽，正确令牌仍可通过
-                gate_handle = await _auth_compare_enter(
-                    prelock_key,
-                    source=_peer_key(
-                        request.client.host if request.client else ""
-                    ),
-                )
-                if gate_handle is None:
+                if not known_token:
+                    gate_handle = await _auth_compare_enter(
+                        prelock_key,
+                        source=_peer_key(
+                            request.client.host if request.client else ""
+                        ),
+                    )
+                if gate_handle is None and not known_token:
                     return add_security_headers(JSONResponse(
                         status_code=429,
                         content={
@@ -2817,11 +2833,12 @@ async def require_access_token(request: Request, call_next):
             # 命中后不再逐次比较令牌，在线猜解被真正降速
             prelock_key = f"ip:{_bucket_address(appended_address)}"
             if _is_ipv6_aggregate_key(prelock_key):
-                gate_handle = await _auth_compare_enter(
-                    prelock_key,
-                    source=_peer_key(appended_address),
-                )
-                if gate_handle is None:
+                if not known_token:
+                    gate_handle = await _auth_compare_enter(
+                        prelock_key,
+                        source=_peer_key(appended_address),
+                    )
+                if gate_handle is None and not known_token:
                     return add_security_headers(JSONResponse(
                         status_code=429,
                         content={
@@ -2853,14 +2870,20 @@ async def require_access_token(request: Request, call_next):
             # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
             # 预锁定共享键，否则任何人的错误尝试都会误锁全家；改为
             # 同键互斥闸门——并发请求串行比较令牌、相邻比较至少间隔
-            # 0.2s，在线猜解被真正限速；无并发时正确令牌不被额外延迟。
-            # 排队超过上限直接 429（含正确令牌），避免闸门被洪泛时
-            # 无限占用内存/连接
-            gate_handle = await _auth_compare_enter(
-                loopback_bucket_key,
-                source=_peer_key(peer_host or "unknown"),
-            )
-            if gate_handle is None:
+            # 0.2s，在线猜解被真正限速；已知正确令牌直通。单源槽位
+            # 按已解析的真实客户端地址计；地址不可解析时只保留总
+            # 队列上限，攻击者占满自己的槽位不能把全家挡在 429
+            if not known_token:
+                gate_source = ""
+                if forwarded_resolved:
+                    gate_source = _peer_key(
+                        _forwarded_client_address(request) or ""
+                    )
+                gate_handle = await _auth_compare_enter(
+                    loopback_bucket_key,
+                    source=gate_source,
+                )
+            if gate_handle is None and not known_token:
                 return add_security_headers(JSONResponse(
                     status_code=429,
                     content={
@@ -2885,21 +2908,25 @@ async def require_access_token(request: Request, call_next):
                 )
                 pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
                 if pre_blocked and pre_retry > 0:
-                    # 失败桶已满：错误令牌先退避（最多 5 秒），把猜测
-                    # 速率压到桶声明的量级；携带正确令牌的请求只多
-                    # 一次常量时间比较，不再被退避拖慢
-                    expected_token = get_access_token()
-                    supplied_token = request_token(request)
-                    already_known = bool(
-                        expected_token
-                        and supplied_token
-                        and secrets.compare_digest(
-                            supplied_token.encode("utf-8"),
-                            expected_token.encode("utf-8"),
-                        )
-                    )
-                    if not already_known:
-                        await asyncio.sleep(min(pre_retry, 5.0))
+                    # 失败桶已满：先释放比较闸门再退避（最多 5 秒），
+                    # 错误令牌的睡眠不能占着共享锁把全家的请求拖慢；
+                    # 退避结束直接 429，不再执行令牌比较
+                    _auth_compare_exit(gate_handle)
+                    gate_handle = None
+                    await asyncio.sleep(min(pre_retry, 5.0))
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(pre_retry, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(pre_retry))
+                            )
+                        },
+                    ))
             if not is_authorized(request):
                 loopback_source = _is_loopback_client(request)
                 trusted_proxy_request = bool(
@@ -8173,6 +8200,26 @@ async def _weekly_report_impl(
             "skip_reasons": skip_reasons,
             "skip_members": skip_members,
             "skip_items": skip_items,
+            "expired": sum(
+                1 for item in active_meds if item.get("expired")
+            ),
+            "low_stock": sum(
+                1 for item in active_meds if item.get("low_stock")
+            ),
+            "expiring": sum(
+                1 for item in active_meds
+                if item.get("expiring_soon") and not item.get("expired")
+            ),
+            "stock_items": [
+                {
+                    "profile": item.get("profile", ""),
+                    "name": item.get("name", ""),
+                    "expired": bool(item.get("expired")),
+                    "low_stock": bool(item.get("low_stock")),
+                }
+                for item in active_meds
+                if item.get("expired") or item.get("low_stock")
+            ][:5],
             "adherence": (
                 {
                     "expected": adherence_expected,
@@ -8878,6 +8925,44 @@ def _build_health_insights(
             f"近 {days} 天登记未服 {medication_skips} 次",
             "；".join(detail_parts)[:200],
             "反复未服可与医生或药师讨论服药方案，不要自行停药。",
+            "medication",
+        ))
+
+    medications_stock = report.get("medications") or {}
+    stock_count = int(medications_stock.get("expired") or 0) + int(
+        medications_stock.get("low_stock") or 0
+    )
+    if stock_count:
+        stock_items = medications_stock.get("stock_items") or []
+        stock_parts = []
+        for item in stock_items[:5]:
+            prefix = ""
+            if family_scope:
+                prefix = f"{item.get('profile') or '未指定档案'}："
+            flags = "、".join(
+                label for label, hit in (
+                    ("已过期", item.get("expired")),
+                    ("库存不足", item.get("low_stock")),
+                ) if hit
+            )
+            stock_parts.append(
+                f"{prefix}{item.get('name') or '药物'}（{flags}）"
+            )
+        insights.append(_health_insight(
+            "medication_stock",
+            "warning",
+            f"{stock_count} 种在用药物过期或缺货",
+            "、".join(stock_parts)[:200],
+            "请及时补药或更换，过期药物不要继续服用。",
+            "medication",
+        ))
+    elif int(medications_stock.get("expiring") or 0):
+        insights.append(_health_insight(
+            "medication_expiring",
+            "info",
+            f"{medications_stock['expiring']} 种药物即将过期",
+            "",
+            "请核对有效期并提前补药。",
             "medication",
         ))
 
@@ -11876,7 +11961,9 @@ def _family_attention(
     medication_lab: Dict[str, Any],
     vaccinations: Dict[str, Any],
     appointments: Dict[str, Any],
-    metrics: List[Dict[str, Any]],
+    visits: Optional[Dict[str, Any]] = None,
+    glucose_alert: str = "",
+    metrics: Optional[List[Dict[str, Any]]] = None,
     stale_critical: Optional[List[str]] = None,
 ) -> Dict[str, str]:
     """从家庭总览已聚合的数据中提取最需要关注的一条提示。"""
@@ -11932,6 +12019,14 @@ def _family_attention(
                 or care.get("items") or []
             )[:120],
         }
+    if visits and visits.get("overdue_followup"):
+        # 与健康提示 followup_overdue 同口径：复诊已逾期不能显示
+        # 「暂无需要关注」
+        return {
+            "level": "warning",
+            "label": f"复诊已逾期（{visits['overdue_followup']}）",
+            "detail": "请尽快联系医院安排复诊",
+        }
     if labs.get("abnormal"):
         return {
             "level": "warning",
@@ -11965,6 +12060,13 @@ def _family_attention(
                 _metric_attention_text(item)
                 for item in over_target[:3]
             )[:120],
+        }
+    if glucose_alert:
+        # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
+        return {
+            "level": "warning",
+            "label": "血糖偏高",
+            "detail": glucose_alert[:120],
         }
     if medications.get("expired") or medications.get("low_stock"):
         parts = []
@@ -12003,6 +12105,12 @@ def _family_attention(
             "level": "info",
             "label": f"复查临近 {care['due_soon']} 项",
             "detail": "、".join(care.get("items") or [])[:120],
+        }
+    if appointments.get("overdue"):
+        return {
+            "level": "info",
+            "label": f"就诊预约已过期 {appointments['overdue']} 个",
+            "detail": "请确认实际就诊情况并更新状态",
         }
     next_appointment = appointments.get("next") or {}
     days_until = next_appointment.get("days_until")
@@ -12346,6 +12454,43 @@ async def family_overview(days: int = 7):
                 f"{label} {format_metric_value(item)}{suffix}"
             )
 
+    # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
+    # （空腹/未分情境均值 ≥7、餐后均值 ≥11.1 mmol/L）
+    glucose_alert_by_profile: Dict[str, str] = {}
+    glucose_groups: Dict[str, Dict[str, List[float]]] = {}
+    for item in window_metrics:
+        if item.get("metric") != "glucose":
+            continue
+        try:
+            value = float(item.get("value1") or 0)
+        except (TypeError, ValueError):
+            continue
+        group = glucose_groups.setdefault(
+            item.get("profile") or "",
+            {"fasting": [0.0, 0], "postprandial": [0.0, 0]},
+        )
+        context = str(item.get("context") or "unspecified")
+        if context in ("fasting", "unspecified"):
+            group["fasting"][0] += value
+            group["fasting"][1] += 1
+        elif context == "postprandial":
+            group["postprandial"][0] += value
+            group["postprandial"][1] += 1
+    for member, group in glucose_groups.items():
+        fasting = group["fasting"]
+        postprandial = group["postprandial"]
+        if fasting[1] and fasting[0] / fasting[1] >= 7:
+            glucose_alert_by_profile[member] = (
+                "空腹/未分情境血糖平均 "
+                f"{round(fasting[0] / fasting[1], 2):g} mmol/L 偏高"
+            )
+        elif postprandial[1] and postprandial[0] / postprandial[1] >= 11.1:
+            glucose_alert_by_profile[member] = (
+                "餐后血糖平均 "
+                f"{round(postprandial[0] / postprandial[1], 2):g}"
+                " mmol/L 明显偏高"
+            )
+
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
     medication_names_by_profile: Dict[str, List[str]] = {}
     for item in medications:
@@ -12600,9 +12745,21 @@ async def family_overview(days: int = 7):
     for item in visit_records:
         profile = item.get("profile") or ""
         entry = visits_by_profile.setdefault(profile, {
-            "count": 0, "latest": None,
+            "count": 0, "latest": None, "overdue_followup": "",
         })
         entry["count"] += 1
+        followup_day = str(item.get("next_followup_date") or "")[:10]
+        if (
+            followup_day
+            and followup_day < today
+            and not item.get("followup_scheduled")
+        ):
+            # 逾期待复诊：与健康提示 followup_overdue 同口径
+            if (
+                not entry["overdue_followup"]
+                or followup_day < entry["overdue_followup"]
+            ):
+                entry["overdue_followup"] = followup_day
         if (
             entry["latest"] is None
             and str(item.get("visit_date") or "")[:10] <= today
@@ -12653,9 +12810,13 @@ async def family_overview(days: int = 7):
     for item in appointments:
         profile = item.get("profile") or ""
         entry = appointments_by_profile.setdefault(profile, {
-            "upcoming": 0, "next": None,
+            "upcoming": 0, "next": None, "overdue": 0,
         })
-        if item.get("status") != "upcoming" or item.get("is_past"):
+        if item.get("status") != "upcoming":
+            continue
+        if item.get("is_past"):
+            # 已过期未处理的预约：家庭关注与健康提示必须同口径
+            entry["overdue"] += 1
             continue
         entry["upcoming"] += 1
         current = entry["next"]
@@ -12714,7 +12875,7 @@ async def family_overview(days: int = 7):
             "overdue_items": [],
         })
         appointment = appointments_by_profile.get(name, {
-            "upcoming": 0, "next": None,
+            "upcoming": 0, "next": None, "overdue": 0,
         })
         labs = labs_by_profile.get(name, {
             "count": 0, "abnormal": 0, "critical": 0,
@@ -12790,6 +12951,8 @@ async def family_overview(days: int = 7):
             medication_lab=medication_lab,
             vaccinations=vaccination,
             appointments=appointment,
+            visits=visits,
+            glucose_alert=glucose_alert_by_profile.get(name, ""),
             metrics=metrics,
             stale_critical=stale_critical_by_profile.get(name, []),
         )
@@ -12839,12 +13002,9 @@ async def family_overview(days: int = 7):
         if member.get("metrics"):
             return True
         med = member.get("medications") or {}
-        if (
-            int(med.get("active") or 0)
-            or int(med.get("taken_today") or 0)
-            or int(med.get("skipped_today") or 0)
-            or med.get("names")
-        ):
+        if int(med.get("active") or 0) or med.get("names"):
+            # 停用药物的当日打卡前端/CSV 都不渲染，不能据此生成
+            # 空白遗留成员卡
             return True
         reminder = member.get("reminders") or {}
         if (
@@ -12872,7 +13032,9 @@ async def family_overview(days: int = 7):
             or care.get("next")
         ):
             return True
-        if int((member.get("visits") or {}).get("count") or 0):
+        if (member.get("visits") or {}).get("latest"):
+            # 只有可展示的（非未来）最近就诊才算：未来日期的遗留
+            # 就诊记录前端不渲染
             return True
         if int((member.get("appointments") or {}).get("upcoming") or 0):
             return True

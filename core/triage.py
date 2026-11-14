@@ -925,6 +925,13 @@ _EDUCATION_BLOCKERS_STRONG = (
 )
 
 
+#: 以否定开头的分句（没有胸痛/无发热/否认咯血）不建立患者语境
+_NEGATED_CONTEXT_LEAD = re.compile(
+    r"^\s*(?:今天|昨天|最近|目前|现在|我|本人)?\s*"
+    r"(?:没有|没再|未见|未出现|否认|并非|不是|无(?!力|精神|食欲|胃口))"
+)
+
+
 def _course_context_clause(clause: str) -> bool:
     """纯病程/时间铺垫分句（最近/两天了/反复发作）建立患者语境。"""
     text = str(clause or "").strip()
@@ -998,6 +1005,20 @@ def patient_complaint_text(text: str) -> str:
             elif _course_context_clause(clause):
                 # 纯病程/时间铺垫（「最近」「两天了」）同样说明后置
                 # 定义问句在描述患者本人；查资料/问问等科普铺垫除外
+                context_seen = True
+            elif (
+                not any(
+                    word in clause for word in _EDUCATION_BLOCKERS_STRONG
+                )
+                and not any(
+                    word in clause for word in _COURSE_CONTEXT_BLOCKERS
+                )
+                and _NEGATED_CONTEXT_LEAD.match(clause) is None
+            ):
+                # 词表外的口语症状（「手脚发麻」「胸口闷痛」）同样是
+                # 真实主诉：已保留的普通分句也建立患者语境，
+                # 「手脚发麻，说话不清是什么病」不能只留下前半句。
+                # 「没有胸痛，抽搐是什么病」这类否定铺垫除外
                 context_seen = True
     return "，".join(kept)
 
@@ -1231,6 +1252,15 @@ _DOSE_MISSED_PATTERN = re.compile(
     r"前晚|刚才|这次|这一顿|这顿)"
     r"[^，。；,.!?！？\n]{0,8}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
 )
+#: 未来停药计划（明天就停/下周就不吃了/等这盒吃完就停）：当前仍在用药
+_FUTURE_STOP_PATTERN = re.compile(
+    r"(?:明天|后天|下周|下个?月|下星期|明年|月底|年底|"
+    r"过[0-9一二两三四五六七八九十]+(?:天|周|个月|月|年)|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*(?:后|以后)|"
+    r"等[^，。；]{0,12}(?:就|再))"
+    r"[^，。；]{0,6}"
+    r"(?:停用|停药|停服|停了|停掉|停止服用|不吃|不再吃|不用吃|不服|不喝)"
+)
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
 _NEGATED_STOP_PATTERN = re.compile(
     r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|"
@@ -1280,6 +1310,44 @@ _RESTART_TEXT_RE = re.compile(
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用)"
 )
+#: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
+_RESTART_OBJECT_RE = re.compile(
+    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
+    r"|仍在吃|仍在服用|仍然服用)"
+    r"(?:了)?\s*([一-龥A-Za-z0-9]{1,10})"
+)
+#: 代词/泛称宾语（还在吃这个/那种药）仍指同一药物
+_RESTART_OBJECT_IGNORE = (
+    "这个", "那个", "这种", "那种", "这些", "那些", "同样", "原来",
+    "之前", "它", "药",
+)
+#: 分句里的用药宾语（以前吃华法林）
+_MED_OBJECT_IN_CLAUSE = re.compile(
+    r"(?:吃|服用|口服|服|用|注射|打)(?:过|了)?\s*([一-龥A-Za-z0-9]{1,10})"
+)
+
+
+def _restart_names_other_medication(follow: str, clause: str) -> bool:
+    """续用分句是否在说另一种药（「还在吃阿司匹林」）。
+
+    续用线索必须与既往分句的药名一致；换用其它药、家属用药都不能
+    把已停用的药复活成当前用药。无宾语或代词宾语（还在吃这个）保持
+    原来的续用语义。
+    """
+    match = _RESTART_OBJECT_RE.search(follow)
+    if match is None:
+        return False
+    obj = re.split(r"[，。；,.!?！？\n和及与、]", match.group(1))[0]
+    if not obj or len(obj) < 2:
+        return False
+    if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
+        return False
+    past = _MED_OBJECT_IN_CLAUSE.search(clause)
+    past_obj = past.group(1) if past else ""
+    if past_obj and (past_obj in obj or obj in past_obj):
+        return False
+    return True
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
     r"(?:以前|之前|曾经|曾|既往|过去)"
@@ -1307,7 +1375,8 @@ _NEGATIVE_TEST_SUFFIX = re.compile(
 
 
 _MED_USE_NEGATION_RE = re.compile(
-    r"(?:没|没有|未|不|无需|不用)(?:再|在)?(?:吃|服用|服|用|喝|注射|打)"
+    r"(?:没|没有|未|不|无需|不用)(?:再|在)?"
+    r"(?:吃|服用|服|用|喝|注射|打|做|接受|进行|感染|得)(?:过|了)?"
     r"\s*$"
 )
 _MED_USE_STOP_SUFFIX_RE = re.compile(
@@ -1322,8 +1391,16 @@ def _active_term_mention(text: str, term: str) -> bool:
     while start != -1:
         prefix = _clause_prefix(text, start)
         suffix = text[start + len(term):start + len(term) + 16]
+        # 单次漏服（我今天没吃 X）与未来停药计划（下周就不吃 X 了）
+        # 仍处于用药状态：不能被「没吃/不吃」当作否定
+        continued_use = (
+            _DOSE_MISSED_PATTERN.search(prefix) is not None
+            or _FUTURE_STOP_PATTERN.search(prefix) is not None
+            or _FUTURE_STOP_PATTERN.search(suffix) is not None
+        )
         negated = (
             not _TRIAGE_DOUBLE_NEGATION.search(prefix)
+            and not continued_use
             and (
                 _is_negated(prefix)
                 or bool(
@@ -1471,8 +1548,29 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
                 clause,
             ):
                 continue
+        if re.search(r"(?<!抗)过敏", clause) and not re.search(
+            r"(?:吃|服用|口服|服|用|注射|打|喝)", clause
+        ):
+            # 「肝素过敏/对华法林过敏」是过敏陈述，不是正在用药；
+            # 「抗过敏药」不算（保留该分句里的用药信息）
+            continue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
-        restart_window = "；".join(clauses[index + 1:index + 3])[:40]
+        # 家属用药或换用其它药物的分句不能复活本句的既往药：
+        # 「以前吃华法林，我爸还在吃华法林」「…现在还在吃阿司匹林」
+        restart_parts = []
+        for follow in clauses[index + 1:index + 3]:
+            follow = follow.strip()
+            if not follow:
+                continue
+            if any(
+                marker in follow
+                for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                continue
+            if _restart_names_other_medication(follow, clause):
+                continue
+            restart_parts.append(follow)
+        restart_window = "；".join(restart_parts)[:40]
         if (
             _NEGATED_STOP_PATTERN.search(clause)
             or _STOP_INTENT_PATTERN.search(clause)
@@ -1494,6 +1592,10 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             # 不能按「没吃」整句丢弃
             kept.append(clause)
             continue
+        if _FUTURE_STOP_PATTERN.search(clause):
+            # 「下周就不吃华法林了」是未来的停药计划，当前仍在用药
+            kept.append(clause)
+            continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
             if (
                 _RESTART_TEXT_RE.search(clause)
@@ -1508,7 +1610,6 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             ):
                 # 没有明确远期时长的停药保守按仍有抗凝作用处理
                 kept.append(clause)
-            continue
             continue
         if (
             _PAST_MEDICATION_PATTERN.search(clause)

@@ -556,7 +556,10 @@ _MEDICATION_VERBS = (
 _AMBIGUOUS_SHORT_ALIASES = {"安定"}
 _NEGATED_USE_PREFIX = re.compile(
     r"(?:没有|没吃|没喝|没在吃|没再吃|未用|未服|未|否认|并非|无需|不用|"
-    r"不要|避免|不需要|不必|无|不吃|不服用|不再吃|不在吃|没吃了?)"
+    r"不要|避免|不需要|不必|无|不吃|不服用|不再吃|不在吃|没吃了?"
+    # 带谓词/完成体的否定：「没用过/没做过化疗/没有感染过HIV」
+    r"|没(?:有)?(?:再|在)?(?:吃|服用|口服|服|用|喝|注射|打|做|接受|"
+    r"进行|感染|得)(?:过|了)?)"
     r"[^，。；,.!?！？\n]{0,4}$"
 )
 #: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
@@ -645,7 +648,18 @@ _FUTURE_STOP_PREFIX = re.compile(
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*后|"
     r"等[^，。；,.!?！？\n]{0,10}(?:就|再))"
     r"[^，。；,.!?！？\n]{0,10}"
-    r"(?:停用|停药|停服|停了|停掉|不吃了|不再吃|不用吃了)\s*$"
+    r"(?:停用|停药|停服|停了|停掉|不吃了?|不再吃|不用吃(?:了)?|"
+    r"不吃|不服|不喝)\s*$"
+)
+#: 未来停药的任意语序（「下周就不吃华法林了」「华法林下周就不吃了」）：
+#: 停药计划落实之前仍按当前用药处理
+_FUTURE_STOP_CONTEXT = re.compile(
+    r"(?:明天|后天|下周|下个?月|下星期|明年|月底|年底|"
+    r"过[0-9一二两三四五六七八九十]+(?:天|周|个月|月|年)|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*(?:后|以后)|"
+    r"等[^，。；,.!?！？\n]{0,12}(?:就|再))"
+    r"[^，。；,.!?！？\n]{0,6}"
+    r"(?:停用|停药|停服|停了|停掉|不吃|不再吃|不用吃|不服|不喝)"
 )
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_PREFIX = re.compile(
@@ -843,6 +857,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             _USE_DOUBLE_NEGATION.search(prefix)
             or _DOSE_MISSED_PREFIX.search(prefix)
             or _FUTURE_STOP_PREFIX.search(prefix)
+            or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
             or _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
