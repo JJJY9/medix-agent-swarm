@@ -702,8 +702,8 @@ def test_app_deep_link_consumed_after_success():
         app_js.index("function scheduleAbortReconcile")
     ]
 
-    assert "const useDeepLinkContext = deepLinkedSession && !contextUserEdited;" in restore
-    assert "const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;" in restore
+    assert "const useDeepLinkContext = deepLinkedSession && !deepLinkEdited;" in restore
+    assert "const deepLinkDraftConflict = deepLinkedSession && deepLinkEdited;" in restore
     assert "renderStoredMessages(" in restore
     # 首次 GET 失败不能消费深链标记，成功渲染后才消费
     assert restore.index("renderStoredMessages(") < restore.index(

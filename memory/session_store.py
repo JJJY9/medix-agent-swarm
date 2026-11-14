@@ -3392,6 +3392,19 @@ class SessionStore:
                 following = _normalize_profile_name(chosen["new_name"])
                 if not following or following in visited:
                     break
+                renamed_at = str(chosen["renamed_at"] or "")
+                following_deleted = self.profile_deleted_at(following)
+                if (
+                    following_deleted
+                    and renamed_at
+                    and following_deleted >= renamed_at
+                ):
+                    # 目标名在改名之后被删除：旧链已过期，不能解析到
+                    # 之后同名重建的新患者
+                    break
+                # 中间名被新主人复用是既有支持场景（第四十二/三十四轮：
+                # 下一轮会按 owner_created 只跟随更早的改名记录），不在此
+                # 处中断；只有「目标名在改名后被删除再重建」才视为旧链过期
                 visited.add(following)
                 current = following
         return current
@@ -3498,16 +3511,21 @@ class SessionStore:
         if metric not in METRIC_TYPES:
             return []
         try:
-            days = max(1, min(int(days or 30), 365))
+            days = max(0, min(int(days or 0), 3650))
         except (TypeError, ValueError, OverflowError):
-            days = 30
+            days = 0
         now = datetime.now()
-        cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
         end_of_today = now.replace(
             hour=23, minute=59, second=59
         ).isoformat(timespec="seconds")
-        conditions = ["metric = ?", "measured_at >= ?", "measured_at <= ?"]
-        params: List[Any] = [metric, cutoff, end_of_today]
+        conditions = ["metric = ?", "measured_at <= ?"]
+        params: List[Any] = [metric, end_of_today]
+        if days > 0:
+            cutoff = (
+                now - timedelta(days=days - 1)
+            ).strftime("%Y-%m-%d")
+            conditions.insert(1, "measured_at >= ?")
+            params.insert(1, cutoff)
         if profile is not None:
             conditions.append("profile = ?")
             params.append(_normalize_profile_name(profile))
@@ -5733,6 +5751,14 @@ class SessionStore:
                     and backup_anchor_size > 1
                     and local_group_size < backup_group_size
                 ):
+                    # 本行主键未漂移且已有编辑证据：该行就是本备份行
+                    # 的存活版本，不应把编辑前的旧值再插一份
+                    if (
+                        raw_id in candidates
+                        and _same_backup_origin()
+                        and _candidate_edited(raw_id)
+                    ):
+                        return _claim(raw_id)
                     # 同身份组内多条备份行共享同一锚点且本地有缺行：
                     # 到最后一行时才认领唯一候选，之前的行按被删记录
                     # 补回。本地全部存活（只是被编辑）时继续正常配对
@@ -6406,8 +6432,30 @@ class SessionStore:
                 metric_pre_ids = self._existing_ids_locked(
                     "health_metrics"
                 )
+                # 组大小只统计能通过校验的行：永远无法导入的非法行
+                # 不能把合法行误判成「本地缺行」而补插旧值
+                metric_valid_rows = []
+                for raw_item in raw_metrics[
+                    : IMPORT_LIST_LIMITS["health_metrics"]
+                ]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    try:
+                        normalized_item = _normalize_metric(
+                            raw_item.get("profile", ""),
+                            raw_item.get("metric", ""),
+                            raw_item.get("value1"),
+                            raw_item.get("value2"),
+                            raw_item.get("measured_at", ""),
+                            raw_item.get("note", ""),
+                            raw_item.get("context", ""),
+                        )
+                    except Exception:
+                        normalized_item = None
+                    if normalized_item is not None:
+                        metric_valid_rows.append(raw_item)
                 metric_group_sizes = self._identity_group_sizes(
-                    raw_metrics,
+                    metric_valid_rows,
                     IMPORT_LIST_LIMITS["health_metrics"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -6416,7 +6464,7 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 metric_anchor_sizes = self._identity_group_sizes(
-                    raw_metrics,
+                    metric_valid_rows,
                     IMPORT_LIST_LIMITS["health_metrics"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -6652,8 +6700,28 @@ class SessionStore:
             symptom_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_symptoms, list):
                 symptom_pre_ids = self._existing_ids_locked("symptoms")
+                symptom_valid_rows = []
+                for raw_item in raw_symptoms[
+                    : IMPORT_LIST_LIMITS["symptoms"]
+                ]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    if not str(raw_item.get("recorded_at") or "").strip():
+                        continue
+                    try:
+                        normalized_item = _normalize_symptom(
+                            raw_item.get("profile", ""),
+                            raw_item.get("symptom", ""),
+                            raw_item.get("severity"),
+                            raw_item.get("recorded_at", ""),
+                            raw_item.get("note", ""),
+                        )
+                    except Exception:
+                        normalized_item = None
+                    if normalized_item is not None:
+                        symptom_valid_rows.append(raw_item)
                 symptom_group_sizes = self._identity_group_sizes(
-                    raw_symptoms,
+                    symptom_valid_rows,
                     IMPORT_LIST_LIMITS["symptoms"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -6661,7 +6729,7 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 symptom_anchor_sizes = self._identity_group_sizes(
-                    raw_symptoms,
+                    symptom_valid_rows,
                     IMPORT_LIST_LIMITS["symptoms"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -8861,50 +8929,99 @@ class SessionStore:
                     # 否则逾期复诊提示会被错挂链接永久抑制。
                     # 已完成预约是就诊历史，恢复链接才能避免已按时
                     # 复诊被重新报成逾期
-                same_appt_profile = bool(
-                    appt_row is not None
-                    and _normalize_profile_name(
-                        str(appt_row["profile"] or "")
-                    ) == _normalize_profile_name(
-                        str(visit_row["profile"] or "")
-                        if visit_row is not None else ""
-                    )
-                )
-                appt_status = (
-                    str(appt_row["status"] or "")
-                    if appt_row is not None else ""
-                )
-                if appt_status == "completed" and same_appt_profile:
-                    # 已完成预约是就诊历史：实际就诊日期可以与计划复诊
-                    # 日期不同，只要归属（owner/备注标记）指向该就诊
-                    # 就恢复链接，避免已复诊被误报为逾期
-                    marker_visit = 0
-                    marker = re.search(
-                        r"由就诊记录 #(\d+) 自动创建",
-                        str(appt_row["note"] or ""),
-                    )
-                    if marker is not None:
-                        marker_visit = visit_raw_local_map.get(
-                            _safe_db_id(marker.group(1)), 0
+                    same_appt_profile = bool(
+                        appt_row is not None
+                        and _normalize_profile_name(
+                            str(appt_row["profile"] or "")
+                        ) == _normalize_profile_name(
+                            str(visit_row["profile"] or "")
+                            if visit_row is not None else ""
                         )
-                    appointment_ok = bool(
-                        int(appt_row["owner_visit_id"] or 0)
-                        == int(visit_id)
-                        or marker_visit == int(visit_id)
-                        or (
-                            visit_followup_date
+                    )
+                    appt_status = (
+                        str(appt_row["status"] or "")
+                        if appt_row is not None else ""
+                    )
+                    if appt_status == "completed" and same_appt_profile:
+                        # 已完成预约是就诊历史：实际就诊日期可以与计划复诊
+                        # 日期不同，只要归属（owner/备注标记）指向该就诊
+                        # 就恢复链接，避免已复诊被误报为逾期
+                        marker_visit = 0
+                        marker = re.search(
+                            r"由就诊记录 #(\d+) 自动创建",
+                            str(appt_row["note"] or ""),
+                        )
+                        if marker is not None:
+                            marker_visit = visit_raw_local_map.get(
+                                _safe_db_id(marker.group(1)), 0
+                            )
+                        appointment_ok = bool(
+                            int(appt_row["owner_visit_id"] or 0)
+                            == int(visit_id)
+                            or marker_visit == int(visit_id)
+                            or (
+                                visit_followup_date
+                                and str(appt_row["scheduled_at"] or "")[:10]
+                                == visit_followup_date[:10]
+                            )
+                        )
+                    else:
+                        appointment_ok = bool(
+                            same_appt_profile
+                            and appt_status == "upcoming"
+                            and visit_followup_date
                             and str(appt_row["scheduled_at"] or "")[:10]
                             == visit_followup_date[:10]
                         )
-                    )
-                else:
-                    appointment_ok = bool(
-                        same_appt_profile
-                        and appt_status == "upcoming"
-                        and visit_followup_date
-                        and str(appt_row["scheduled_at"] or "")[:10]
-                        == visit_followup_date[:10]
-                    )
+                    if followup_appointment_id and appointment_ok:
+                        # 同一自动预约已被另一条就诊占用：旧备份里的共享
+                        # 链接不能重新建立，否则编辑任一就诊会连带删除
+                        other_link = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_appointment_id = ? AND id != ?"
+                            " LIMIT 1",
+                            (int(followup_appointment_id), int(visit_id)),
+                        ).fetchone()
+                        if other_link is not None:
+                            appointment_ok = False
+                    if (
+                        followup_appointment_id
+                        and not appointment_ok
+                        and int(followup_appointment_id)
+                        in imported_appointment_ids
+                    ):
+                        # 本次新插入的预约链接被拒绝时，其归属/备注标记
+                        # 不能继续指向该就诊，否则会留下 owner 与链接
+                        # 不一致的孤儿自动预约；导入前已存在的预约保留
+                        # 既有归属映射（第四十二轮约定）
+                        note_row = self._conn.execute(
+                            "SELECT note FROM appointments WHERE id = ?",
+                            (int(followup_appointment_id),),
+                        ).fetchone()
+                        if note_row is not None:
+                            def _strip_visit_marker(match):
+                                raw_visit = _safe_db_id(match.group(1))
+                                if visit_raw_local_map.get(raw_visit) == int(
+                                    visit_id
+                                ):
+                                    return ""
+                                return match.group(0)
+
+                            cleaned_note = re.sub(
+                                r"由就诊记录 #(\d+) 自动创建",
+                                _strip_visit_marker,
+                                str(note_row["note"] or ""),
+                            ).strip()[:300]
+                            self._conn.execute(
+                                "UPDATE appointments SET"
+                                " owner_visit_id = CASE WHEN owner_visit_id = ?"
+                                " THEN 0 ELSE owner_visit_id END,"
+                                " note = ?, updated_at = ? WHERE id = ?",
+                                (
+                                    int(visit_id), cleaned_note, now,
+                                    int(followup_appointment_id),
+                                ),
+                            )
                 if visit_is_new:
                     apply_links = bool(
                         appointment_ok
@@ -9019,7 +9136,7 @@ class SessionStore:
                     # 同一备份被静默删除
                     continue
                 # 只删除未被任何就诊引用的 upcoming 旧日期预约
-                self._conn.execute(
+                deleted = self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?"
                     " AND status = 'upcoming'"
                     " AND id NOT IN (SELECT followup_appointment_id"
@@ -9027,11 +9144,32 @@ class SessionStore:
                     " WHERE followup_appointment_id != 0)",
                     (stale_id,),
                 )
-                self._conn.execute(
-                    "DELETE FROM reminders WHERE done = 0"
-                    " AND appointment_id = ?",
-                    (stale_id,),
-                )
+                if deleted.rowcount:
+                    # 预约仍被本次新插入的就诊引用时不能删它的提醒：
+                    # 就诊的提前提醒会凭空消失
+                    doomed_reminders = [
+                        int(row["id"]) for row in self._conn.execute(
+                            "SELECT id FROM reminders"
+                            " WHERE done = 0 AND appointment_id = ?",
+                            (stale_id,),
+                        ).fetchall()
+                    ]
+                    self._conn.execute(
+                        "DELETE FROM reminders WHERE done = 0"
+                        " AND appointment_id = ?",
+                        (stale_id,),
+                    )
+                    if doomed_reminders:
+                        doomed_ph = ",".join(
+                            "?" for _ in doomed_reminders
+                        )
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_reminder_id = 0"
+                            " WHERE followup_reminder_id IN"
+                            f" ({doomed_ph})",
+                            doomed_reminders,
+                        )
 
             # 备份恢复不能把提醒/复诊链接重新挂到已取消/已完成的预约：
             # 已取消/已完成预约都不应再有待办提醒（与 update_appointment
@@ -10066,9 +10204,10 @@ class SessionStore:
         if metric in DAILY_ACCUMULATING_METRICS and value1 is not None:
             # 每日累计指标按条均值的「较上期」会被记录频次误导
             value1["prev_avg"] = None
-            if profile is not None and days > 0:
+            if profile is not None:
                 # 平均/最低/最高同样按自然日合计：同日 4000+5000 不能
-                # 显示成「平均 4500」而当日累计 9000
+                # 显示成「平均 4500」而当日累计 9000；「全部」范围
+                # （days=0）也按天统计
                 daily_series = self.metric_daily_series(
                     profile, metric, days
                 )
