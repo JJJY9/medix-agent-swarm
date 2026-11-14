@@ -1,4 +1,5 @@
 """未设置访问令牌时的绑定地址安全校验。"""
+import os
 import sys
 
 import pytest
@@ -75,8 +76,13 @@ def test_main_allows_public_bind_with_opt_in_flag(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
 
-    with pytest.raises(StopServer):
-        api_server.main()
+    try:
+        with pytest.raises(StopServer):
+            api_server.main()
+    finally:
+        # main() 会把命令行开关写入请求期环境变量：真实进程里这是
+        # 期望行为，测试内必须清理，否则后续用例会以为已放行内网
+        os.environ.pop(api_server.INSECURE_LAN_ENV, None)
 
 
 def test_main_allows_public_bind_with_env_opt_in(monkeypatch):

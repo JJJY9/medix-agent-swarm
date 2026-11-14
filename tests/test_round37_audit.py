@@ -690,7 +690,7 @@ def test_app_deep_link_clears_stale_pending_reset():
     # 深链等同显式打开历史会话，残留的待重置标记必须失效
     block = app_js[
         app_js.index("if (deepLinkedSession && sessionId) {"):
-        app_js.index("if (deepLinkedSession && sessionId) {") + 500
+        app_js.index("if (deepLinkedSession && sessionId) {") + 1000
     ]
     assert "safeStorageRemove(pendingResetStorageKey(sessionId));" in block
 

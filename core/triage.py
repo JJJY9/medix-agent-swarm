@@ -163,7 +163,10 @@ PREGNANCY_TERMS = (
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
     r"(?<![避备不待])(?:怀)?孕\s*[0-9一二两三四五六七八九十]+\s*"
-    r"(?:[+＋]\s*\d+)?\s*(?:周|个月|月)"
+    # 「孕12+周」（12 周多）、「孕12-14周」（筛查孕周范围）、「孕20w」
+    r"(?:[+＋]\s*\d*)?"
+    r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
+    r"\s*(?:周|[wW]|个?月)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -192,7 +195,9 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
     r"|胎停育?|稽留流产"
     r"|孕\s*[0-9一二两三四五六七八九十]+"
-    r"\s*(?:[+＋]\s*\d+)?\s*(?:周|个月|月))"
+    r"\s*(?:[+＋]\s*\d*)?"
+    r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
+    r"\s*(?:周|[wW]|个?月))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
@@ -816,7 +821,13 @@ def patient_complaint_text(text: str) -> str:
                 _positive_mention(clause, phrase)
                 for phrase, _label in RED_FLAG_PHRASES
             )
-            if subject_seen or positive_flag:
+            # 「发烧两天，抽搐是什么病」：没有主语但有真实症状的分句
+            # 同样说明后置定义问句在描述患者本人
+            symptom_seen = any(
+                _positive_mention(clause, term)
+                for term in _NEGATED_SYMPTOM_TERMS
+            )
+            if subject_seen or positive_flag or symptom_seen:
                 # 已有患者本人的症状分句：后续定义问句按新症状保留。
                 # 「今天想问问」「没有胸痛」这类铺垫/否定分句不算语境
                 context_seen = True
@@ -1184,7 +1195,11 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            continue
+            clause = _strip_family_narration(clause).strip()
+            if not clause or any(
+                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                continue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
         restart_window = "；".join(clauses[index + 1:index + 3])[:40]
         if (
@@ -1228,6 +1243,62 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
     return "；".join(kept)
 
 
+#: 家属只是叙述者/提醒者时的框架（「我妈说我头撞到门框」
+#: 「我爸让我吃华法林」）：剥离后仍是患者本人的表述
+_FAMILY_NARRATION_RE = re.compile(
+    r"(?:他|她)?\s*(?:刚才|刚刚|当时|今天|昨天|在旁)?\s*"
+    r"(?:说|告诉|讲|提醒|让|叫|喊|看到|看见|发现|扶着?|带着?|"
+    r"陪着?|送|抱|背)"
+)
+
+
+def _strip_family_narration(clause: str) -> str:
+    """家属称谓只是叙述者时剥离框架，保留患者本人的表述。
+
+    「我妈说我今天头撞到门框」→「今天头撞到门框」；
+    「我爸让我吃华法林」→「吃华法林」。家属本人作主语
+    （「我爸吃华法林」「我爸撞到头」）时原样返回，由调用方过滤。
+    """
+    if not any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+        return clause
+    for marker in _FAMILY_HISTORY_MARKERS:
+        start = clause.find(marker)
+        while start != -1:
+            tail = clause[start + len(marker):]
+            verb = _FAMILY_NARRATION_RE.match(tail)
+            if verb:
+                rest = tail[verb.end():]
+                pos = rest.find("我")
+                if pos != -1:
+                    remainder = rest[pos + 1:].lstrip("，,、 的")
+                    if remainder:
+                        return remainder
+            start = clause.find(marker, start + len(marker))
+    return clause
+
+
+def _patient_only_text(text: str) -> str:
+    """拼接只属于患者本人的分句（家属作主语的分句丢弃）。"""
+    kept = []
+    # 小数点不是分句边界：「38.5度」不能被拆成「38」「5度」，
+    # 否则体温规则看不到完整读数
+    for clause in re.split(
+        r"[，。；;！!？?\n]|,(?![0-9])|[.](?![0-9])|(?<![0-9])[.]",
+        str(text or ""),
+    ):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+            clause = _strip_family_narration(clause).strip()
+            if not clause or any(
+                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                continue
+        kept.append(clause)
+    return "；".join(kept)
+
+
 def _patient_term_mention(text: str, term: str) -> bool:
     """只匹配患者本人的表述：同一分句出现家属称谓时跳过。
 
@@ -1237,7 +1308,11 @@ def _patient_term_mention(text: str, term: str) -> bool:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            continue
+            clause = _strip_family_narration(clause)
+            if not clause or any(
+                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                continue
         if _positive_mention(clause, term):
             return True
     return False
@@ -1249,8 +1324,9 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
         return []
 
     flags: List[Tuple[str, str]] = []
+    patient_text = _patient_only_text(text)
     age_months = _parse_age_months(context.get("age"))
-    if age_months is not None and age_months < 3 and _has_fever(text):
+    if age_months is not None and age_months < 3 and _has_fever(patient_text):
         flags.append((
             "3 个月以下婴儿发热",
             "3 个月以下婴儿出现发热需要尽快由儿科或急诊医生评估，"
@@ -1269,7 +1345,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             _active_term_mention(active_text, term)
             for term in IMMUNOSUPPRESSION_TERMS
         )
-        and _has_fever(text)
+        and _has_fever(patient_text)
     ):
         flags.append((
             "免疫功能低下伴发热",

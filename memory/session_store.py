@@ -3963,7 +3963,10 @@ class SessionStore:
                        m.id AS message_id,
                        ROW_NUMBER() OVER (
                            PARTITION BY s.profile
-                           ORDER BY m.created_at DESC, m.id DESC
+                           ORDER BY
+                               CASE WHEN m.content LIKE '%风险等级%'
+                                    THEN 0 ELSE 1 END,
+                               m.created_at DESC, m.id DESC
                        ) AS rn
                   FROM messages m
                   JOIN sessions s ON s.id = m.session_id
@@ -5174,9 +5177,14 @@ class SessionStore:
             if fingerprint == current:
                 return False
             current_created = str(created_at_value or "")
+            # 只把「尚无本地存活行」的另一条备份记录视为占用了该
+            # 内容：若那条记录已另有存活行，候选更可能是本行被编辑
+            # 后的版本（例如不同成员同一时间各录一条同名同剂量用药，
+            # 其中一条被改剂量后恢复旧备份）
             return any(
                 other_id != raw_id
                 and contents == fingerprint
+                and not _other_backup_row_survives(other_id)
                 and (
                     not backup_created
                     or backup_created.get(other_id) == current_created
@@ -5436,11 +5444,18 @@ class SessionStore:
             # 按「创建时间 + 内容」在导入前已存在的行中找唯一候选
             if pre_existing_ids:
                 # 空集合时候选必然为空，跳过可让空库/换机恢复保持线性
-                # 与内容配对同样要遵守档案等额外约束：提醒只有
-                # 创建时间+到期日，不能跨档案认领同一行
+                # 档案约束不能直接放进 SQL：改挂到另一位成员的记录
+                # 档案已变化，直接过滤会看不到它。跨档案候选在下面
+                # 的循环里要求编辑证据；非档案约束照常参与查询
                 drift_clause = ""
                 drift_params: Tuple[Any, ...] = ()
-                if match_where is not None:
+                profile_scoped = bool(
+                    match_where is not None
+                    and str(match_where[0]).strip().lower().startswith(
+                        "profile"
+                    )
+                )
+                if match_where is not None and not profile_scoped:
                     drift_clause = " AND " + match_where[0]
                     drift_params = tuple(match_where[1])
                 rows = self._conn.execute(
@@ -5743,6 +5758,15 @@ class SessionStore:
             candidate = min(candidates)
             if _content_owned_by_other(candidate):
                 # 候选内容精确对应备份里的另一条记录：按被删记录补回
+                return _ambiguous()
+            if (
+                soft_where is not None
+                and not _soft_matches(candidate)
+                and not _candidate_edited(candidate)
+            ):
+                # 标题/名称对不上、又缺少编辑证据的同秒新建记录不是
+                # 本行的存活版本：按被删记录补回，避免误认领后把
+                # owner/复诊链接写到另一条记录上
                 return _ambiguous()
             if not _same_backup_origin() and not _candidate_edited(
                 candidate
@@ -8313,15 +8337,16 @@ class SessionStore:
                     appointment_owner_raw.items()
                 ):
                     local_owner = visit_raw_local_map.get(raw_owner, 0)
+                    appointment_row = self._conn.execute(
+                        "SELECT profile, owner_visit_id FROM appointments"
+                        " WHERE id = ?",
+                        (appointment_key,),
+                    ).fetchone()
                     if local_owner:
                         visit_profile = self._conn.execute(
                             "SELECT profile FROM visit_records"
                             " WHERE id = ?",
                             (local_owner,),
-                        ).fetchone()
-                        appointment_row = self._conn.execute(
-                            "SELECT profile FROM appointments WHERE id = ?",
-                            (appointment_key,),
                         ).fetchone()
                         if (
                             visit_profile is None
@@ -8333,6 +8358,18 @@ class SessionStore:
                             )
                         ):
                             local_owner = 0
+                    existing_owner = (
+                        int(appointment_row["owner_visit_id"] or 0)
+                        if appointment_row is not None else 0
+                    )
+                    if (
+                        appointment_key not in imported_appointment_ids
+                        and existing_owner != 0
+                        and existing_owner != local_owner
+                    ):
+                        # 本地存活的预约已有明确归属：恢复旧备份不能把它
+                        # 改挂到另一条就诊（误认领时会造成日期错配）
+                        continue
                     self._conn.execute(
                         "UPDATE appointments SET owner_visit_id = ?"
                         " WHERE id = ?",
@@ -8355,6 +8392,27 @@ class SessionStore:
             reminder_backup_meta = self._import_backup_meta(
                 raw_reminders, IMPORT_LIST_LIMITS["reminders"], "reminders"
             )
+            #: 备份中同一预约+标题的未完成提醒条数：日期不同的合法多条
+            #: 不能被「同预约+标题」兜底合并掉
+            backup_reminder_title_counts: Dict[tuple, int] = {}
+            if isinstance(raw_reminders, list):
+                for raw_item in raw_reminders[
+                    : IMPORT_LIST_LIMITS["reminders"]
+                ]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    if raw_item.get("done") in (1, True, "1"):
+                        continue
+                    raw_appt = _safe_db_id(raw_item.get("appointment_id"))
+                    raw_title = " ".join(
+                        str(raw_item.get("title") or "").split()
+                    )[:MAX_REMINDER_TITLE_LENGTH]
+                    if raw_appt > 0 and raw_title:
+                        count_key = (raw_appt, raw_title)
+                        backup_reminder_title_counts[count_key] = (
+                            backup_reminder_title_counts.get(count_key, 0)
+                            + 1
+                        )
             if isinstance(raw_reminders, list):
                 reminder_group_sizes = self._identity_group_sizes(
                     raw_reminders,
@@ -8622,9 +8680,15 @@ class SessionStore:
                             " ORDER BY id LIMIT 1",
                             (appointment_id, due_at, profile, title),
                         ).fetchone()
-                        if existing_pending is None:
+                        if existing_pending is None and (
+                            backup_reminder_title_counts.get(
+                                (raw_appointment_id, title), 0
+                            ) <= 1
+                        ):
                             # 预约已在本地改期并重建过提醒：旧备份提醒
-                            # 日期不同，但同一预约+标题的待办不应重复
+                            # 日期不同，但同一预约+标题的待办不应重复。
+                            # 备份里同一预约+标题有多条（日期不同的合法
+                            # 多条提醒）时不能合并，否则会静默丢失
                             existing_pending = self._conn.execute(
                                 "SELECT id FROM reminders"
                                 " WHERE appointment_id = ? AND done = 0"
@@ -10660,6 +10724,16 @@ class SessionStore:
                                 now,
                                 int(appointment_id),
                             ),
+                        )
+                        # 就诊上的复诊链接必须一起切断：否则“已安排
+                        # 复诊”状态会永久抑制逾期复诊提示，之后改就诊
+                        # 复诊日期还会凭残留链接删掉这条独立预约
+                        self._conn.execute(
+                            "UPDATE visit_records SET"
+                            " followup_appointment_id = 0,"
+                            " followup_reminder_id = 0, updated_at = ?"
+                            " WHERE followup_appointment_id = ?",
+                            (now, int(appointment_id)),
                         )
                 if visit_target:
                     self._conn.execute(

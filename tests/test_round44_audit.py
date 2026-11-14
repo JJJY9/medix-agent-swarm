@@ -376,18 +376,13 @@ def test_trusted_proxy_buckets_by_forwarded_client(monkeypatch, tmp_path):
         })
         # 攻击者只能锁自己的桶；另一位真实客户端的正确令牌仍可用
         assert victim.status_code == 200
-        # 已解析转发地址的受信代理请求不做令牌比较前预锁定：正确
-        # 令牌不会因为别人预先塞满的桶被拒（错误令牌在失败路径仍 429）
-        attacker_ok = client.get("/api/sessions", headers={
+        # XFF 最右项是代理追加写入的真实客户端地址（客户端不可伪造），
+        # 因此攻击者自己的地址仍会在令牌比较前被预锁定
+        attacker = client.get("/api/sessions", headers={
             "X-Medix-Token": token,
             "X-Forwarded-For": "203.0.113.9",
         })
-        assert attacker_ok.status_code == 200
-        attacker_wrong = client.get("/api/sessions", headers={
-            "X-Medix-Token": "bad-again",
-            "X-Forwarded-For": "203.0.113.9",
-        })
-        assert attacker_wrong.status_code == 429
+        assert attacker.status_code == 429
     finally:
         session_store.close()
 

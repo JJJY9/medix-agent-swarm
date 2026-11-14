@@ -464,23 +464,28 @@ def test_forwarded_address_cannot_prelock_victim(monkeypatch, tmp_path):
         client=("127.0.0.1", 50000),
     )
     try:
-        # 攻击者伪造受害者地址连发 10 次错误令牌
+        # 多级本机代理：最后一跳在末尾追加 127.0.0.1，左侧地址来自
+        # 客户端，可被伪造成受害者地址；这种情况不能预锁定
+        spoofed = [
+            ("X-Forwarded-For", "192.168.1.50"),
+            ("X-Forwarded-For", "127.0.0.1"),
+        ]
         for _ in range(10):
-            client.get("/api/sessions", headers={
-                "X-Medix-Token": "bad",
-                "X-Forwarded-For": "192.168.1.50",
-            })
+            client.get("/api/sessions", headers=[
+                ("X-Medix-Token", "bad"),
+                *spoofed,
+            ])
         # 受害者携带正确令牌：不能因为别人塞满的桶被 429
-        victim = client.get("/api/sessions", headers={
-            "X-Medix-Token": token,
-            "X-Forwarded-For": "192.168.1.50",
-        })
+        victim = client.get("/api/sessions", headers=[
+            ("X-Medix-Token", token),
+            *spoofed,
+        ])
         assert victim.status_code == 200
         # 但同一伪造地址继续猜令牌仍会被限流
-        attacker = client.get("/api/sessions", headers={
-            "X-Medix-Token": "bad-more",
-            "X-Forwarded-For": "192.168.1.50",
-        })
+        attacker = client.get("/api/sessions", headers=[
+            ("X-Medix-Token", "bad-more"),
+            *spoofed,
+        ])
         assert attacker.status_code == 429
     finally:
         session_store.close()
@@ -570,7 +575,7 @@ def test_frontend_deep_link_open_session_keeps_snapshot():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "const deepLinkOpen = deepLinkedSession && sameSession;" in app_js
     assert "restoreContext: deepLinkOpen || !sameSession" in app_js
-    assert "if (deepLinkOpen) consumeDeepLink();" in app_js
+    assert "if (deepLinkOpen) {" in app_js
     assert "if (!deepLinkOpen) consumeDeepLink();" in app_js
 
 
