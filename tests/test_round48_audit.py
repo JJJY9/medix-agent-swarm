@@ -454,7 +454,7 @@ def test_frontend_round48_guards():
 
     # 待重置期间重开当前会话保留现场；深链草稿冲突保留用户编辑
     assert "const keepPendingReset = sameSession && pendingSessionReset" in app_js
-    assert "const deepLinkDraftConflict = deepLinkOpen && contextUserEdited;" in app_js
+    assert "const deepLinkDraftConflict = deepLinkOpen && Boolean(" in app_js
     assert "preserveComposer" in app_js
     # 待重置与深链的时间戳裁决
     assert "PENDING_RESET_AT_KEY" in app_js

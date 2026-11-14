@@ -504,6 +504,6 @@ def test_deep_link_flags_read_after_fetch():
     ]
     fetch_at = restore.index("await fetch(")
     flag_at = restore.index(
-        "const useDeepLinkContext = deepLinkedSession && !contextUserEdited;"
+        "const useDeepLinkContext = deepLinkedSession && !deepLinkEdited;"
     )
     assert flag_at > fetch_at

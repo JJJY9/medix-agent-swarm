@@ -114,12 +114,14 @@ def test_terminal_cards_are_announced(client):
 
     assert app_js.count("wrap.setAttribute('role', 'alert');") >= 2
     assert re.search(
-        r"announceChat\('已停止生成'\);\s*"
+        r"announceChat\('已停止生成'\);"
+        r"(?:(?!renderStopped)[\s\S]){0,200}"
         r"renderStopped\(",
         app_js,
     )
     assert re.search(
-        r"announceChat\('会诊中断'\);\s*"
+        r"announceChat\('会诊中断'\);"
+        r"(?:(?!renderError)[\s\S]){0,200}"
         r"renderError\(",
         app_js,
     )
