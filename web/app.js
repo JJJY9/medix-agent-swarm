@@ -5144,6 +5144,10 @@ async function openSession(id) {
     return false;
   }
   const sameSession = id === sessionId;
+  // 深链尚未消费时的「同 ID」打开其实还是深链恢复本身：不能提前
+  // 消费标记、也不能按普通重开跳过档案快照，否则深链会话会丢失
+  // 服务端绑定的患者上下文
+  const deepLinkOpen = deepLinkedSession && sameSession;
   const seq = ++openSessionSeq;
 
   try {
@@ -5169,7 +5173,7 @@ async function openSession(id) {
 
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
     setPendingSessionReset(false);
-    consumeDeepLink();
+    if (!deepLinkOpen) consumeDeepLink();
     // 在切换 sessionId 之前处理草稿归属：旧版无归属草稿据此判断
     // 是否属于另一个会话
     settleDraftForSession(id);
@@ -5183,9 +5187,10 @@ async function openSession(id) {
     renderStoredMessages(
       data.messages || [], id, data.profile || '',
       // 重开当前会话按普通恢复处理：不用旧快照覆盖用户未发送的
-      // 补充信息编辑；只有切换到其它会话才按历史快照回填
-      { restoreContext: !sameSession }
+      // 补充信息编辑；只有切换到其它会话或深链恢复才按历史快照回填
+      { restoreContext: deepLinkOpen || !sameSession }
     );
+    if (deepLinkOpen) consumeDeepLink();
     setVitals('idle', '历史会诊');
     els.input.focus();
     return true;
@@ -7554,8 +7559,7 @@ function renderMetricSummary(data) {
   }
 
   // 步数/饮水按自然日判定：不再显示按条的「达标 x/N」，以今日累计为准
-  const isDailyMetric = data.daily_total !== null
-    && data.daily_total !== undefined;
+  const isDailyMetric = DAILY_ACCUMULATING_METRICS.has(metric);
   if (
     !isDailyMetric
     && data.target
@@ -17615,7 +17619,7 @@ function renderFamilyCompare(data) {
     const head = document.createElement('div');
     head.className = 'compare-head';
     const name = document.createElement('strong');
-    name.textContent = row.name;
+    name.textContent = row.name || '未指定档案';
     const meta = document.createElement('span');
     meta.className = 'compare-meta';
     if (Number(row.count) > 0 && row.avg_value1 !== null) {
@@ -21649,6 +21653,9 @@ function settleDraftForSession(targetId) {
   // 出现在另一位患者的会话页面，更不能按回车写进该会话
   const target = targetId || '';
   const owner = safeSessionGet(DRAFT_OWNER_KEY);
+  // 待重置期间草稿属于即将新建的会话（owner 为空），不是上一位
+  // 患者残留：刷新/中止对账经过这里时不能把用户正在写的草稿清掉
+  if (owner === '' && pendingSessionReset) return;
   const hasText = Boolean(els.input.value.trim());
   if (!hasText) {
     if (owner !== null && owner !== target) clearDraft();
@@ -21696,8 +21703,16 @@ function loadDraft() {
     if (!draft) return;
     const owner = safeSessionGet(DRAFT_OWNER_KEY);
     // 草稿带有归属会话且与当前会话不符（如深链指向另一位患者）：
-    // 不显示、直接清理
-    if (owner !== null && owner !== (sessionId || '')) {
+    // 不显示、直接清理。待重置期间 owner 为空的草稿属于即将新建
+    // 的会话，必须保留，刷新后用户还能继续编辑
+    const pendingNewSession = owner === '' && (
+      pendingSessionReset
+      || safeSessionGet(PENDING_RESET_KEY) === (sessionId || '')
+    );
+    if (
+      owner !== null && owner !== (sessionId || '')
+      && !pendingNewSession
+    ) {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
       return;

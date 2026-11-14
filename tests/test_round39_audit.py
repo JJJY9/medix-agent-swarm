@@ -417,7 +417,7 @@ def test_forwarded_unclosed_quote_fails_closed(monkeypatch):
     )) == "203.0.113.9"
 
 
-def test_contradictory_proxy_headers_do_not_skip_preblock(
+def test_contradictory_proxy_headers_fail_closed_without_preblock(
     monkeypatch, tmp_path
 ):
     from fastapi.testclient import TestClient
@@ -451,6 +451,8 @@ def test_contradictory_proxy_headers_do_not_skip_preblock(
             headers={"X-Medix-Token": "bad", **contradicting},
         )
         assert first.status_code == 401
+        # 矛盾头解析失败后回退共享桶：不能预锁定正确令牌（否则任何
+        # 客户端用一对矛盾头就能把全家 429），但错误令牌仍被限流
         correct = client.get(
             "/api/sessions",
             headers={
@@ -458,8 +460,12 @@ def test_contradictory_proxy_headers_do_not_skip_preblock(
                 **contradicting,
             },
         )
-        # 地址头互相矛盾时按普通远程请求预锁定，不能借矛盾头免限流
-        assert correct.status_code == 429
+        assert correct.status_code == 200
+        another_wrong = client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "bad2", **contradicting},
+        )
+        assert another_wrong.status_code == 429
     finally:
         session_store.close()
 

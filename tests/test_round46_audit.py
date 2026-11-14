@@ -497,5 +497,6 @@ def test_frontend_round46_guards():
     assert "if (!saved && profile.name)" in app_js
 
     # 重开当前会话不用旧快照覆盖未发送的补充信息
+    # （第四十七轮起：未消费的深链同 ID 打开仍按深链回填快照）
     assert "const sameSession = id === sessionId;" in app_js
-    assert "{ restoreContext: !sameSession }" in app_js
+    assert "restoreContext: deepLinkOpen || !sameSession" in app_js
