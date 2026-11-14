@@ -603,17 +603,20 @@ def test_shared_bucket_skips_auth_preblock(client_and_store, monkeypatch):
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
     )
-    monkeypatch.setattr(
-        api_server, "_is_loopback_client", lambda request: False
-    )
+    from fastapi.testclient import TestClient
 
-    wrong = client.get(
+    remote = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("203.0.113.9", 50000),
+    )
+    wrong = remote.get(
         "/api/sessions", headers={"X-Medix-Token": "bad-guess"}
     )
     assert wrong.status_code == 401
 
-    # 代理只加了 X-Forwarded-Proto、没有真实客户端地址：所有用户共用
-    # 一个计数桶，不能因为其中一人的错误尝试把全家锁死
+    # 本机代理只加了 X-Forwarded-Proto、没有真实客户端地址：该来源
+    # 按共享桶处理，不因某个人的错误尝试被预锁定
     proxied = client.get(
         "/api/sessions",
         headers={
@@ -623,8 +626,8 @@ def test_shared_bucket_skips_auth_preblock(client_and_store, monkeypatch):
     )
     assert proxied.status_code == 200
 
-    # 直连来源仍受限流保护，正确定义也不会绕过已锁定状态
-    plain = client.get(
+    # 直连远程来源仍受限流保护，正确令牌也不会绕过已锁定状态
+    plain = remote.get(
         "/api/sessions", headers={"X-Medix-Token": token}
     )
     assert plain.status_code == 429

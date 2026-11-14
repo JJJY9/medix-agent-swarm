@@ -123,14 +123,19 @@ def test_remote_wrong_tokens_are_rate_limited(client, monkeypatch):
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(2, window=300),
     )
-    monkeypatch.setattr(
-        api_server, "_is_loopback_client", lambda request: False
+    # 真实远程对端：共享桶只对受信代理生效，远程来源仍会预锁定
+    from fastapi.testclient import TestClient
+
+    remote = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("203.0.113.9", 50000),
     )
     wrong = {"X-Medix-Token": "bad-guess"}
 
-    first = client.get("/api/sessions", headers=wrong)
-    second = client.get("/api/sessions", headers=wrong)
-    limited = client.get("/api/sessions", headers=wrong)
+    first = remote.get("/api/sessions", headers=wrong)
+    second = remote.get("/api/sessions", headers=wrong)
+    limited = remote.get("/api/sessions", headers=wrong)
 
     assert first.status_code == 401
     assert second.status_code == 401
@@ -140,7 +145,7 @@ def test_remote_wrong_tokens_are_rate_limited(client, monkeypatch):
 
     # 锁定期间任何令牌都在比较前被拒绝：正确定义不再绕过限流，
     # 也是暴力猜测真正被降速的前提；本机客户端不受影响
-    ok = client.get("/api/sessions", headers={"X-Medix-Token": token})
+    ok = remote.get("/api/sessions", headers={"X-Medix-Token": token})
     assert ok.status_code == 429
     assert ok.json()["code"] == "auth_rate_limited"
 
