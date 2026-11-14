@@ -2453,33 +2453,20 @@ async def require_access_token(request: Request, call_next):
             _is_trusted_proxy_peer(peer_host)
             and _client_ip_key(request) == loopback_bucket_key
         )
-        if (
+        # 受信代理已解析出真实客户端地址时，键来自客户端可影响的
+        # 转发头：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
+        # 把正确令牌用户锁死）。这类请求的失败仍会按地址计数并在
+        # 失败路径 429，共享回环桶也继续累计错误尝试
+        forwarded_resolved = bool(
             _trust_proxy_headers()
             and _is_trusted_proxy_peer(peer_host)
+            and _forwarded_client_address(request)
+        )
+        if (
+            not _is_loopback_client(request)
+            and not shared_bucket
+            and not forwarded_resolved
         ):
-            # 回环/套接字对端的失败统一记入共享回环桶：伪造转发
-            # 地址（ssh -R/本机进程/隧道）无法轮换桶绕过限流，
-            # 也不能用伪造地址预锁定其他真实客户端
-            shared_blocked, shared_retry = (
-                auth_failure_limiter_loopback.is_blocked(
-                    loopback_bucket_key
-                )
-            )
-            if shared_blocked:
-                return add_security_headers(JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "访问令牌错误次数过多，请稍后再试。",
-                        "code": "auth_rate_limited",
-                        "retry_after": round(shared_retry, 1),
-                    },
-                    headers={
-                        "Retry-After": str(
-                            max(1, math.ceil(shared_retry))
-                        )
-                    },
-                ))
-        if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
             # 降低猜测速率（而不是只把 401 改成 429）。
             # 拿不到真实客户端地址（只有 X-Forwarded-Proto 等）时所有
@@ -7257,7 +7244,11 @@ async def _weekly_report_impl(
         if severity < 7 or not name or name in seen_severe:
             continue
         seen_severe.add(name)
-        severe_items.append({"symptom": name, "severity": severity})
+        severe_items.append({
+            "symptom": name,
+            "severity": severity,
+            "profile": item.get("profile") or "",
+        })
         if len(severe_items) >= 3:
             break
 
@@ -7680,6 +7671,7 @@ async def _weekly_report_impl(
                     "vaccine_name": item.get("vaccine_name", ""),
                     "dose_number": item.get("dose_number"),
                     "next_due": item.get("next_due", ""),
+                    "profile": item.get("profile", ""),
                 }
                 for item in sorted(
                     vaccine_upcoming,
@@ -7756,6 +7748,7 @@ async def _weekly_report_impl(
             "overdue_followups": [
                 {
                     "diagnosis": item.get("diagnosis", ""),
+                    "profile": item.get("profile", ""),
                     "next_followup_date": item.get(
                         "next_followup_date", ""
                     ),
@@ -7770,6 +7763,7 @@ async def _weekly_report_impl(
             "upcoming_followups": [
                 {
                     "diagnosis": item.get("diagnosis", ""),
+                    "profile": item.get("profile", ""),
                     "next_followup_date": item.get(
                         "next_followup_date", ""
                     ),
@@ -8212,7 +8206,12 @@ def _build_health_insights(
             "warning",
             f"近 {days} 天出现重度症状（最高 {max_severity}/10）",
             "、".join(
-                f"{item.get('symptom')} {int(item.get('severity') or 0)}/10"
+                (
+                    f"{item.get('profile') or '未指定档案'}："
+                    if family_scope else ""
+                )
+                + f"{item.get('symptom')} "
+                f"{int(item.get('severity') or 0)}/10"
                 for item in (symptoms.get("severe_items") or [])[:3]
             ) or "、".join(
                 str(item.get("symptom") or "")
@@ -8432,7 +8431,12 @@ def _build_health_insights(
         insights.append(_health_insight(
             "vaccine_upcoming",
             "info",
-            f"疫苗 {first.get('vaccine_name')} 将在 "
+            (
+                f"疫苗 {first.get('profile') or '未指定档案'} · "
+                if family_scope
+                else "疫苗 "
+            )
+            + f"{first.get('vaccine_name')} 将在 "
             f"{first.get('next_due')} 到期",
             f"第 {first.get('dose_number') or 1} 剂",
             "",
@@ -8487,7 +8491,10 @@ def _build_health_insights(
             "followup_overdue",
             "warning",
             f"复诊已逾期（{first.get('next_followup_date')}）",
-            first.get("diagnosis") or "",
+            (
+                f"{first.get('profile') or '未指定档案'}："
+                if family_scope else ""
+            ) + (first.get("diagnosis") or ""),
             "请尽快联系医院安排复诊。",
             "visit",
         ))
@@ -8497,7 +8504,10 @@ def _build_health_insights(
             "followup_upcoming",
             "info",
             f"下次复诊：{first.get('next_followup_date')}",
-            first.get("diagnosis") or "",
+            (
+                f"{first.get('profile') or '未指定档案'}："
+                if family_scope else ""
+            ) + (first.get("diagnosis") or ""),
             "可一键安排复诊预约与提醒。",
             "visit",
         ))
@@ -12388,6 +12398,12 @@ async def family_compare(metric: str = "weight", days: int = 30):
     from memory.session_store import DAILY_ACCUMULATING_METRICS
 
     names = await asyncio.to_thread(store.list_used_profile_names)
+    # 未指定档案但已有该指标记录时也要参与对比，避免“全家都看不到”
+    unassigned_summary = await asyncio.to_thread(
+        store.metric_summary, "", metric, days
+    )
+    if unassigned_summary and int(unassigned_summary.get("count") or 0):
+        names = list(names) + [""]
     rows = []
     for name in names:
         summary = await asyncio.to_thread(
@@ -12517,7 +12533,7 @@ async def export_family_compare_csv(metric: str = "weight", days: int = 30):
         if latest.get("value2") is not None:
             latest_value += f"/{fmt(latest.get('value2'))}"
         rows.append([
-            csv_safe_cell(item.get("name", "")),
+            csv_safe_cell(item.get("name") or "未指定档案"),
             csv_safe_cell(data["label"]),
             csv_safe_cell(data["unit"]),
             str(data["days"]),

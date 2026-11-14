@@ -162,8 +162,8 @@ PREGNANCY_TERMS = (
 )
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
-    r"(?<![避备不待])(?:怀)?孕\s*\d+\s*(?:[+＋]\s*\d+)?\s*"
-    r"(?:周|个月|月)"
+    r"(?<![避备不待])(?:怀)?孕\s*[0-9一二两三四五六七八九十]+\s*"
+    r"(?:[+＋]\s*\d+)?\s*(?:周|个月|月)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -196,6 +196,18 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
+)
+
+#: 口语出血表述：「阴道流了一点血」「有少量血」「内裤上有点血」
+#: 「擦到血」「血丝」；排除血常规/血压/血糖等非出血词
+_COLLOQUIAL_BLEEDING_RE = re.compile(
+    r"(?:阴道|产道|下体|内裤上?|护垫|擦拭?)"
+    r"[^，。；,;！!？?\n]{0,6}"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友)"
+    r"|(?:流了?|出了?|带有?|擦到|看到|见到|有点|有些|少量|少许)"
+    r"[^，。；,;！!？?\n]{0,3}"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友)"
+    r"|血丝"
 )
 
 
@@ -268,6 +280,8 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             if not gum_hit and not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
+    if _colloquial_bleeding_positive(text):
+        return True
     return False
 
 
@@ -310,6 +324,36 @@ def _generic_bleeding_positive(text: str) -> bool:
             ):
                 start = text.find(term, start + len(term))
                 continue
+            return True
+    if _colloquial_bleeding_positive(text):
+        return True
+    return False
+
+
+def _colloquial_bleeding_positive(text: str) -> bool:
+    """口语出血表述（流了一点血/有少量血/血丝等）是否阳性。"""
+    for match in _COLLOQUIAL_BLEEDING_RE.finditer(text):
+        span = match.group(0)
+        prefix = _clause_prefix(text, match.start())
+        body = re.sub(r"血丝?$", "", span)
+        # 模式只在「血」前停住：先剥离残留的出血动词（出/流/见/了），
+        # 才能看见紧贴其前的否定（阴道没有出血/阴道没有流血）
+        body = re.sub(r"(?:出|流|见|了)+$", "", body)
+        body = re.sub(
+            r"(?:阴道|产道|下体|内裤上?|护垫|擦拭?)\s*$", "", body
+        )
+        if re.search(
+            r"(?:没有|没|无|未|不|否认|非)"
+            r"(?:(?:明显|任何|见|见到|出现|发现|一点|一些|少量)\s*)*$",
+            body,
+        ) is not None:
+            continue
+        if any(
+            word in span or word in prefix[-6:]
+            for word in _GUM_BLEEDING_WORDS
+        ):
+            continue
+        if not _is_negated(prefix):
             return True
     return False
 
@@ -922,6 +966,10 @@ HEAD_TRAUMA_TERMS = (
     # 头部+动词的组合变体（头部碰到/磕了后脑勺/脑袋着地等）
     "头部碰到", "头部磕到", "磕了后脑勺", "撞了后脑勺",
     "磕到后脑勺", "撞到后脑勺", "碰到后脑勺",
+    "磕到了后脑勺", "撞到了后脑勺", "碰到了后脑勺",
+    "后脑勺被磕", "后脑勺被撞", "后脑勺被碰",
+    "后脑勺先着地", "后脑勺直接着地", "后脑勺重重着地",
+    "碰到了头", "碰到了脑袋",
     "碰了后脑勺", "脑袋着地", "头顶磕到", "头顶撞到", "头受伤",
     "枕部撞到", "枕部磕到", "额头撞到", "前额撞到", "额头磕到",
 )
@@ -930,6 +978,9 @@ HEAD_TRAUMA_TERMS = (
 _FAMILY_HISTORY_MARKERS = (
     "父亲", "母亲", "父母", "家人", "家族", "爷爷", "奶奶", "外公", "外婆",
     "丈夫", "妻子", "配偶", "哥哥", "姐姐", "弟弟", "妹妹", "儿子", "女儿",
+    # 口语称谓：家人服药不能算患者本人抗凝
+    "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
+    "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
 )
 
 #: 已经结束、停用、否认或仅为过敏的病史/用药不属于当前高危状态
@@ -1177,6 +1228,21 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
     return "；".join(kept)
 
 
+def _patient_term_mention(text: str, term: str) -> bool:
+    """只匹配患者本人的表述：同一分句出现家属称谓时跳过。
+
+    避免「我吃华法林，我爸撞到头」把家人的外伤拼到患者身上。
+    """
+    for clause in re.split(r"[，。；;,.!?！？\n]", text):
+        if not clause:
+            continue
+        if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+            continue
+        if _positive_mention(clause, term):
+            return True
+    return False
+
+
 def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
     """结合年龄、免疫状态与抗凝用药补充高危提示。"""
     if not isinstance(context, dict):
@@ -1217,7 +1283,10 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             _active_term_mention(anticoag_text, term)
             for term in ANTICOAGULANT_TERMS
         )
-        and any(_positive_mention(text, term) for term in HEAD_TRAUMA_TERMS)
+        and any(
+            _patient_term_mention(text, term)
+            for term in HEAD_TRAUMA_TERMS
+        )
     ):
         flags.append((
             "抗凝治疗期间头部外伤",

@@ -546,7 +546,8 @@ _MEDICATION_VERBS = (
 #: 本身也是普通词语的药名，短别名需要用药语境才认定
 _AMBIGUOUS_SHORT_ALIASES = {"安定"}
 _NEGATED_USE_PREFIX = re.compile(
-    r"(?:没有|没吃|没喝|未用|未服|未|否认|并非|无需|不用|不要|避免|不需要|不必|无)"
+    r"(?:没有|没吃|没喝|没在吃|没再吃|未用|未服|未|否认|并非|无需|不用|"
+    r"不要|避免|不需要|不必|无|不吃|不服用|不再吃|不在吃|没吃了?)"
     r"[^，。；,.!?！？\n]{0,4}$"
 )
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
@@ -562,7 +563,7 @@ _NEGATED_STOP_PREFIX = re.compile(
 #: 明确停药/停服的表述才算当前未用药
 _STOPPED_USE_PREFIX = re.compile(
     r"(?:已经|已|刚刚|刚|最近|早就|现已|目前)?\s*"
-    r"(?:停用|停药|停服|停止服用|不再服用|停了)\s*$"
+    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停掉|已停)\s*$"
 )
 #: 药名之后的停药表述：「华法林已经停用两个月了」
 #: 只允许时间表达式出现在药名与停药动词之间，避免「准备停药/头痛停了」
@@ -571,8 +572,9 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"前几天|前几周|前几个月|前几年|最近|目前|现在|"
     r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|天|周|年)"
     r"(?:多)?(?:前|以来)?)?"
-    r"\s*(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
-    r"(?:停用|停药|停服|停止服用|不再服用|停了|停掉)"
+    r"\s*(?:我|本人|现在|目前)?\s*"
+    r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
+    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停掉|已停)"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗))"
 )
 #: 「想/打算/准备停用华法林」是意图，当前仍在用药
@@ -641,8 +643,14 @@ _RECENT_STOP_PREFIX_EN = re.compile(
 )
 _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
-    r"(?:stopped|discontinued)"
-    r"[^.!?]{0,12}(?:ago|days?|weeks?)",
+    r"(?:stopped|discontinued)\s+"
+    r"(?:(?:\d+\s*)?(?:days?|weeks?)\s+ago|yesterday|today)",
+    re.IGNORECASE,
+)
+#: 英文明确未用药：「I do not take warfarin」
+_NEGATED_USE_PREFIX_EN = re.compile(
+    r"(?:do not|don't|didn't|does not|not)\s+(?:take|taking|use|using)"
+    r"\s*$|no longer (?:taking|on)\s*$",
     re.IGNORECASE,
 )
 #: 持续用药：「过去半年每天吃」「既往长期服用」不是既往用药
@@ -735,6 +743,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _NEGATED_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX_EN.search(prefix)
+                or _NEGATED_USE_PREFIX_EN.search(prefix)
             ):
                 continue
             return True
