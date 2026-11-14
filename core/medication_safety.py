@@ -566,7 +566,8 @@ _USE_DOUBLE_NEGATION = re.compile(
 )
 #: 单次漏服（今天没吃/漏服了一次）仍属当前用药，不是未用药
 _DOSE_MISSED_PREFIX = re.compile(
-    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|刚才|这次|这一顿|这顿)"
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
+    r"前晚|刚才|这次|这一顿|这顿)"
     r"[^，。；,.!?！？\n]{0,6}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
 )
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
@@ -636,6 +637,12 @@ _PAST_USE_PREFIX = re.compile(
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)"
     r"(?:过|了|过几次|过几次了)\s*(?:的)?\s*$"
+)
+#: 未来停药意图（明天/下周停用）当前仍在用药
+_FUTURE_STOP_PREFIX = re.compile(
+    r"(?:明天|后天|下周|下个?月|下星期|过两天|过几天|以后|将来|"
+    r"等[^，。；,.!?！？\n]{0,6}再)"
+    r"[^，。；,.!?！？\n]{0,8}(?:停用|停药|停服|停了|停掉)\s*$"
 )
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_PREFIX = re.compile(
@@ -820,6 +827,7 @@ def _alias_matches(text: str, alias: str) -> bool:
         if (
             _USE_DOUBLE_NEGATION.search(prefix)
             or _DOSE_MISSED_PREFIX.search(prefix)
+            or _FUTURE_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)

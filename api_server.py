@@ -1682,11 +1682,14 @@ auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
 _AUTH_COMPARE_GATE_SECONDS = 0.2
 _AUTH_COMPARE_GATE_MAX_KEYS = 4096
 _AUTH_COMPARE_GATE_MAX_WAITING = 64
+#: 单一来源最多占用的闸门槽位：共享 IPv6 /64 前缀内的一台设备不能
+#: 用并发洪泛占满整条队列，让同前缀其它客户端的正确令牌被 429
+_AUTH_COMPARE_GATE_MAX_PER_SOURCE = 8
 _auth_compare_gates: Dict[tuple, Dict[str, Any]] = {}
 _auth_compare_gates_lock = threading.Lock()
 
 
-async def _auth_compare_enter(key: str):
+async def _auth_compare_enter(key: str, source: str = ""):
     """进入同键比较闸门；排队过深返回 None（调用方回 429）。"""
     loop = asyncio.get_running_loop()
     map_key = (id(loop), key)
@@ -1699,8 +1702,24 @@ async def _auth_compare_enter(key: str):
             _auth_compare_gates[map_key] = gate
         if gate["waiting"] >= _AUTH_COMPARE_GATE_MAX_WAITING:
             return None
+        if source:
+            sources = gate.setdefault("sources", {})
+            if sources.get(source, 0) >= (
+                _AUTH_COMPARE_GATE_MAX_PER_SOURCE
+            ):
+                return None
+            sources[source] = sources.get(source, 0) + 1
         gate["waiting"] += 1
     acquired = False
+    handle = {"gate": gate, "source": source}
+
+    def _release_source() -> None:
+        if not source:
+            return
+        with _auth_compare_gates_lock:
+            sources = gate.get("sources") or {}
+            sources[source] = max(0, sources.get(source, 1) - 1)
+
     try:
         await gate["lock"].acquire()
         acquired = True
@@ -1719,24 +1738,41 @@ async def _auth_compare_enter(key: str):
                     # 必须释放，否则该来源键的后续请求会永久排队
                     gate["lock"].release()
                     acquired = False
+                    _release_source()
                     raise
-        return gate
+        return handle
     except BaseException:
         if acquired:
             try:
                 gate["lock"].release()
             except RuntimeError:
                 pass
+        else:
+            _release_source()
         with _auth_compare_gates_lock:
             gate["waiting"] = max(0, gate["waiting"] - 1)
         raise
 
 
-def _auth_compare_exit(gate) -> None:
+def _auth_compare_exit(handle) -> None:
+    gate = (
+        handle.get("gate")
+        if isinstance(handle, dict) and "gate" in handle else handle
+    )
+    source = (
+        handle.get("source", "")
+        if isinstance(handle, dict) and "gate" in handle else ""
+    )
     try:
         gate["lock"].release()
     finally:
         gate["last"] = time.monotonic()
+        if source:
+            with _auth_compare_gates_lock:
+                sources = gate.get("sources") or {}
+                sources[source] = max(
+                    0, sources.get(source, 1) - 1
+                )
         with _auth_compare_gates_lock:
             gate["waiting"] = max(0, gate["waiting"] - 1)
 _short_access_token_warned = False
@@ -2381,6 +2417,11 @@ def _bucket_address(address: str) -> str:
             # ::ffff:a.b.c.d 是 IPv4 客户端：按真实 IPv4 分开计数，
             # 否则所有 IPv4 客户端会落进同一个 ::/64 桶
             return str(mapped)
+        # NAT64 well-known 前缀（64:ff9b::/96）与链路本地地址不是
+        # 「同一户」：跨用户聚合会让一人输错令牌锁死所有 NAT64 用户
+        for prefix in ("64:ff9b::/96", "fe80::/10"):
+            if parsed in ipaddress.ip_network(prefix):
+                return str(parsed)
         return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
     return str(parsed)
 
@@ -2712,8 +2753,13 @@ async def require_access_token(request: Request, call_next):
             if _is_ipv6_aggregate_key(prelock_key):
                 # IPv6 /64 常由同一家庭/局域网共享：聚合桶不做硬
                 # 预锁定（否则一人输错令牌全家正确令牌也 429），
-                # 改用同键闸门串行比较，正确令牌仍可通过
-                gate_handle = await _auth_compare_enter(prelock_key)
+                # 改用同键闸门串行比较并限制单源占槽，正确令牌仍可通过
+                gate_handle = await _auth_compare_enter(
+                    prelock_key,
+                    source=_peer_key(
+                        request.client.host if request.client else ""
+                    ),
+                )
                 if gate_handle is None:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -2749,7 +2795,10 @@ async def require_access_token(request: Request, call_next):
             # 命中后不再逐次比较令牌，在线猜解被真正降速
             prelock_key = f"ip:{_bucket_address(appended_address)}"
             if _is_ipv6_aggregate_key(prelock_key):
-                gate_handle = await _auth_compare_enter(prelock_key)
+                gate_handle = await _auth_compare_enter(
+                    prelock_key,
+                    source=_peer_key(appended_address),
+                )
                 if gate_handle is None:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -2785,7 +2834,10 @@ async def require_access_token(request: Request, call_next):
             # 0.2s，在线猜解被真正限速；无并发时正确令牌不被额外延迟。
             # 排队超过上限直接 429（含正确令牌），避免闸门被洪泛时
             # 无限占用内存/连接
-            gate_handle = await _auth_compare_enter(loopback_bucket_key)
+            gate_handle = await _auth_compare_enter(
+                loopback_bucket_key,
+                source=_peer_key(peer_host or "unknown"),
+            )
             if gate_handle is None:
                 return add_security_headers(JSONResponse(
                     status_code=429,
@@ -2797,6 +2849,23 @@ async def require_access_token(request: Request, call_next):
                     headers={"Retry-After": "1"},
                 ))
         try:
+            if gate_handle is not None:
+                pre_loopback = _is_loopback_client(request)
+                pre_limiter = (
+                    auth_failure_limiter_loopback
+                    if pre_loopback
+                    else auth_failure_limiter
+                )
+                pre_key = (
+                    loopback_bucket_key
+                    if pre_loopback
+                    else _client_ip_key(request)
+                )
+                pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
+                if pre_blocked and pre_retry > 0:
+                    # 失败桶已满：比较前先退避（最多 5 秒），把猜测
+                    # 速率压到桶声明的量级；正确令牌只是稍慢
+                    await asyncio.sleep(min(pre_retry, 5.0))
             if not is_authorized(request):
                 loopback_source = _is_loopback_client(request)
                 trusted_proxy_request = bool(
@@ -6297,22 +6366,38 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             ownership = (
                 f"由就诊记录 #{int(visit.get('id') or 0)} 自动创建"
             )
+            unowned_candidates = []
             for candidate in store.list_appointments(
                 profile, None, False, 100000, 0
             ):
                 if (
-                    candidate.get("title") == title
-                    and str(candidate.get("scheduled_at") or "")[:10]
-                    == followup_date
-                    and candidate.get("status") == "upcoming"
-                    and (
-                        ownership in str(candidate.get("note") or "")
-                        or int(candidate.get("owner_visit_id") or 0)
-                        == int(visit.get("id") or 0)
-                    )
+                    candidate.get("title") != title
+                    or str(candidate.get("scheduled_at") or "")[:10]
+                    != followup_date
+                    or candidate.get("status") != "upcoming"
+                ):
+                    continue
+                if (
+                    ownership in str(candidate.get("note") or "")
+                    or int(candidate.get("owner_visit_id") or 0)
+                    == int(visit.get("id") or 0)
                 ):
                     appointment = candidate
                     break
+                if (
+                    int(candidate.get("owner_visit_id") or 0) == 0
+                    and "由就诊记录 #" not in str(
+                        candidate.get("note") or ""
+                    )
+                ):
+                    unowned_candidates.append(candidate)
+            if appointment is None and len(unowned_candidates) == 1:
+                # 恢复旧备份留下的无归属同日预约：唯一候选视为本
+                # 就诊的复诊安排，直接接管而不是再建一条
+                appointment = unowned_candidates[0]
+                store.adopt_visit_appointment(
+                    int(visit.get("id") or 0), int(appointment["id"])
+                )
         if appointment is None:
             appointment = store.add_appointment(
                 profile,
@@ -12022,6 +12107,10 @@ async def family_overview(days: int = 7):
     ):
         if int(item.get("message_count") or 0) <= 0:
             continue
+        from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+        if DELETED_PROFILE_SESSION_TAG in (item.get("tags") or []):
+            continue
         profile = item.get("profile") or ""
         at = str(item.get("updated_at") or item.get("created_at") or "")
         if at[:10] > today:
@@ -15305,6 +15394,12 @@ async def export_health_dossier(
         100000, True,
         by_updated=True,
     )
+    from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+    sessions = [
+        item for item in sessions
+        if DELETED_PROFILE_SESSION_TAG not in (item.get("tags") or [])
+    ]
     streak = _streak_info(
         await asyncio.to_thread(store.recorded_days, profile_key, 3650)
     )

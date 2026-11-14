@@ -5164,6 +5164,12 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
 let openSessionSeq = 0;
 
 async function openSession(id) {
+  if (sendInFlight) {
+    // 深链预恢复/提交流程仍在进行：此时切换会话会把刚放回输入框的
+    // 主诉清掉（settleDraftForSession），也可能把提问发进错误会话
+    window.alert('会诊正在提交，请稍候再切换会话。');
+    return false;
+  }
   if (busy) {
     window.alert('会诊进行中，请先停止当前会诊。');
     return false;
@@ -20474,6 +20480,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       (message) => (Number(message.id) || 0) > 0
     );
     if (expectedQuestion) {
+      if (!baselineMessageId) {
+        // 本页从未成功同步过该会话（基线为 0）：同文本的旧问答会被
+        // 误判为本轮已落库，静默吞掉新提问；无法证明时按未落库重发
+        return false;
+      }
       if (!hasIds) {
         // 纯短期记忆回退时没有消息 ID，退回按文本和顺序判断
         let questionIndex = -1;
@@ -21049,9 +21060,16 @@ async function checkStatusOnce() {
 
       const verify = await fetch('/api/auth/verify');
       if (!verify.ok) {
-        safeSessionRemove('medix.token');
-        setVitals('warn', '需要访问令牌');
-        showAuthGate('访问令牌无效或已失效，请重新输入。');
+        if (verify.status === 401) {
+          safeSessionRemove('medix.token');
+          setVitals('warn', '需要访问令牌');
+          showAuthGate('访问令牌无效或已失效，请重新输入。');
+        } else {
+          // 429/421/5xx 是限流或服务异常，不代表令牌无效：
+          // 删除令牌会让用户在限流窗口内永远无法恢复
+          setVitals('warn', '访问受限，稍后自动重试');
+          showAuthGate('服务暂时限流或不可用，请稍候（会自动重试）。');
+        }
         return;
       }
     } else if (authGateOpen) {
@@ -21892,6 +21910,10 @@ function settleDraftForSession(targetId) {
   // 待重置期间草稿属于即将新建的会话（owner 为空），不是上一位
   // 患者残留：刷新/中止对账经过这里时不能把用户正在写的草稿清掉
   if (owner === '' && pendingSessionReset) return;
+  if (detachedComposerText && els.input.value === detachedComposerText) {
+    // 深链接管后放回、等待用户确认的主诉不属于任何会话，不能被清掉
+    return;
+  }
   const hasText = Boolean(els.input.value.trim());
   if (!hasText) {
     if (owner !== null && owner !== target) clearDraft();
@@ -23347,8 +23369,15 @@ els.authForm.addEventListener('submit', async (event) => {
       window.location.reload();
       return;
     }
+    if (verify.status !== 401) {
+      // 限流/服务异常：令牌可能正确，保留并提示稍后重试
+      showAuthGate('服务暂时限流或不可用，请稍后重试。');
+      return;
+    }
   } catch {
-    // 网络异常按令牌无效处理，让用户重试
+    // 网络异常：不能据此删除令牌
+    showAuthGate('网络异常，请稍后重试。');
+    return;
   }
 
   safeSessionRemove('medix.token');

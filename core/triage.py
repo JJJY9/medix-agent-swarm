@@ -95,7 +95,7 @@ NEGATIONS = ("没有", "没", "无", "不", "未", "否认")
 
 #: 否定词与短语之间允许的填充词；普通否定与「排除/除外」双重否定共用
 _NEGATION_FILLERS = (
-    "出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
+    "再|再次|出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
     "诉说|诉|特殊|显著|疑似|表现|是|过|曾经|曾|为|存在|得了|会|"
     "可能|一定|肯定|真的|确实"
 )
@@ -232,7 +232,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         )
         if re.search(
             r"(?:没有|没|无|未|不|否认|非)"
-            r"(?:(?:明显|任何|见|见到|出现|发现)\s*)*$",
+            r"(?:(?:再|再次|明显|任何|见|见到|出现|发现)\s*)*$",
             internal_body,
         ) is not None:
             continue
@@ -379,7 +379,8 @@ def _colloquial_bleeding_positive(text: str) -> bool:
         )
         if re.search(
             r"(?:没有|没|无|未|不|否认|非)"
-            r"(?:(?:明显|任何|见|见到|出现|发现|一点|一些|少量)\s*)*$",
+            r"(?:(?:再|再次|明显|任何|见|见到|出现|发现|一点|"
+            r"一些|少量)\s*)*$",
             body,
         ) is not None:
             continue
@@ -783,10 +784,20 @@ def _clean_complaint_clause(
     """
     educational = _EDUCATIONAL_PREFIX_RE.match(clause)
     if educational:
-        if _HEARSAY_PREFIX_RE.match(clause):
-            return ""
         rest = clause[educational.end():].strip(" ，,、")
         if not rest:
+            return ""
+        if _HEARSAY_PREFIX_RE.match(clause):
+            # 「听说我爸今天胸痛得厉害」是家属急症：剥掉传闻前缀后
+            # 仍按主体/红旗判断；「听说咯血是肺癌的症状」才是科普
+            if (
+                any(
+                    marker in rest
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+                and _is_red_flag_text(rest)
+            ) or _has_patient_subject(rest) or _course_context_clause(rest):
+                return _clean_complaint_clause(rest, patient_context_seen)
             return ""
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
@@ -1140,6 +1151,9 @@ HEAD_TRAUMA_TERMS = (
     # 标准写法与「砸伤/撞伤」语序（含中间插入物体由正则覆盖）
     "头外伤", "砸到头", "砸到头部", "头部砸到", "磕伤头部",
     "撞伤头部", "撞伤了头", "砸伤了头", "头砸伤", "头撞伤",
+    # 跌倒/摔伤语序（后脑勺摔到地上/摔到后脑勺/头摔破）
+    "后脑勺摔", "摔到后脑勺", "摔了后脑勺", "头摔破", "摔破头",
+    "头摔伤", "摔伤了头", "后脑勺着地", "头着地",
 )
 
 #: 头部外伤的复合语序：部位词 + 撞击/外伤动词（可含「被…撞」），
@@ -1149,19 +1163,27 @@ _HEAD_NON_HEAD_PREFIX = "趾指骨枕馒拳舌木砖石车脚"
 _HEAD_TRAUMA_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|头顶|"
     r"后脑勺|枕部)"
-    r"(?:外伤|受伤|撞伤|砸伤|磕伤|撞|磕|碰|砸|伤|着地|破|"
+    r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
+    r"伤|着地|破|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打))"
-    r"|(?:撞|磕|碰|砸)(?:到|了|着|伤)?了?"
+    r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
     r"头顶|后脑勺|枕部)"
 )
 
 
 def _has_head_trauma(text: str) -> bool:
-    return (
-        any(term in text for term in HEAD_TRAUMA_TERMS)
-        or _HEAD_TRAUMA_RE.search(text) is not None
-    )
+    for term in HEAD_TRAUMA_TERMS:
+        start = text.find(term)
+        while start != -1:
+            if not (
+                term.startswith("头")
+                and start > 0
+                and text[start - 1] in _HEAD_NON_HEAD_PREFIX
+            ):
+                return True
+            start = text.find(term, start + len(term))
+    return _HEAD_TRAUMA_RE.search(text) is not None
 
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -1188,7 +1210,8 @@ _TRIAGE_DOUBLE_NEGATION = re.compile(
 )
 #: 单次漏服（今天没吃/漏服了一次）仍处于用药/抗凝状态
 _DOSE_MISSED_PATTERN = re.compile(
-    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|刚才|这次|这一顿|这顿)"
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
+    r"前晚|刚才|这次|这一顿|这顿)"
     r"[^，。；,.!?！？\n]{0,8}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
 )
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
@@ -1643,6 +1666,39 @@ def _patient_pattern_mention(text: str, pattern) -> bool:
     return False
 
 
+def _patient_head_trauma_mention(text: str) -> bool:
+    """患者本人的头部外伤：词表按词边界（排除脚趾头/手指头）与否定过滤。"""
+    for clause in re.split(r"[，。；;,.!?！？\n]", text):
+        if not clause:
+            continue
+        if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
+            stripped = _strip_family_narration(clause)
+            if stripped and not any(
+                marker in stripped for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                clause = stripped
+            elif _has_patient_subject(clause):
+                pass
+            else:
+                continue
+        for term in HEAD_TRAUMA_TERMS:
+            start = clause.find(term)
+            while start != -1:
+                if not (
+                    term.startswith("头")
+                    and start > 0
+                    and clause[start - 1] in _HEAD_NON_HEAD_PREFIX
+                ):
+                    prefix = _clause_prefix(clause, start)
+                    suffix = _clause_suffix(
+                        clause, start + len(term)
+                    )
+                    if not _is_negated(prefix, suffix):
+                        return True
+                start = clause.find(term, start + len(term))
+    return _patient_pattern_mention(text, _HEAD_TRAUMA_RE)
+
+
 def _patient_term_mention(text: str, term: str) -> bool:
     """只匹配患者本人的表述：同一分句出现家属称谓时跳过。
 
@@ -1708,13 +1764,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             _active_term_mention(anticoag_text, term)
             for term in ANTICOAGULANT_TERMS
         )
-        and (
-            any(
-                _patient_term_mention(text, term)
-                for term in HEAD_TRAUMA_TERMS
-            )
-            or _patient_pattern_mention(text, _HEAD_TRAUMA_RE)
-        )
+        and _patient_head_trauma_mention(text)
     ):
         flags.append((
             "抗凝治疗期间头部外伤",
