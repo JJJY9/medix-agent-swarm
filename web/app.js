@@ -6607,10 +6607,19 @@ async function detachSessionForProfileChange() {
   // 但本地 sessionId 仍是旧会话；用户在窗口内按回车必须走新会话，
   // 不能把新患者的问题写进旧档案的会诊记录
   setPendingSessionReset(true);
+  const beforeSession = sessionId;
+  const beforeSeq = openSessionSeq;
   const ok = await startNewSession();
   if (!ok) {
-    // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定
-    setPendingSessionReset(true);
+    const takenOver = Boolean(
+      busy || sessionId !== beforeSession
+      || openSessionSeq !== beforeSeq
+    );
+    if (!takenOver) {
+      // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定；
+      // send 已接管并建好新会话时不能把 pending 挂回新会话
+      setPendingSessionReset(true);
+    }
   }
   return ok;
 }
@@ -20520,6 +20529,17 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         skipProfile: pendingReset,
       }
     );
+    if (
+      expectedQuestion
+      && els.input.value.trim() === expectedQuestion.trim()
+    ) {
+      // 对账确认本轮问答已落库并渲染：输入框里的同一主诉会让回车
+      // 重复提交同一问题，恢复成功后清空
+      els.input.value = '';
+      autoGrow();
+      clearDraft();
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    }
     if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
@@ -20588,7 +20608,10 @@ async function send(question) {
       // 发进错误的患者会话；主诉要放回输入框而不是静默丢失
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
       restoreComposer(question);
-      if (els.empty) els.empty.hidden = false;
+      if (els.empty && !els.thread.querySelector('.turn')) {
+        // 等待期间用户已打开带消息的会话：不能把欢迎空状态插回
+        els.empty.hidden = false;
+      }
       setVitals('warn', '会诊记录尚未打开，请稍后重试');
       return;
     }
@@ -21641,9 +21664,32 @@ async function applySelectedProfile() {
     // 新建等待期间禁止复用旧会话：否则回车会把新患者的问题写进
     // 旧档案的会诊记录（startNewSession 成功后清除标记）
     const hadPendingReset = pendingSessionReset;
+    const attemptSession = sessionId;
+    const attemptSeq = openSessionSeq;
+    const previousContext = (
+      readProfiles()[activeProfileName] || {}
+    ).context || {};
+    // await 期间用户可能直接提交：先把新档案与上下文字段应用上去，
+    // 让 send 组装的请求与档案选择一致
     setPendingSessionReset(true);
+    setActiveProfile(name);
+    if (name && readProfiles()[name]) {
+      applyPatientContext(readProfiles()[name].context || {});
+      els.profileSelect.value = name;
+    } else {
+      applyPatientContext({});
+    }
     const created = await startNewSession();
     if (!created) {
+      const takenOver = Boolean(
+        busy || sessionId !== attemptSession
+        || openSessionSeq !== attemptSeq
+      );
+      if (takenOver) {
+        // send/openSession 已接管：保留用户选择的新档案与当前会话，
+        // 不能把选择回滚并用旧档案继续
+        return;
+      }
       // 被 busy/用户取消拒绝时档案实际没有切换：撤销刚设置的标记，
       // 否则下一问会静默清空当前会话
       setPendingSessionReset(hadPendingReset);
@@ -21652,7 +21698,9 @@ async function applySelectedProfile() {
         // 会丢失当前会诊
         persistSessionId(sessionId);
       }
-      els.profileSelect.value = activeProfileName || '';
+      setActiveProfile(previous || '');
+      applyPatientContext(previousContext);
+      els.profileSelect.value = previous;
       return;
     }
   } else if (sessionId) {

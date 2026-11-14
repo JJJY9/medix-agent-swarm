@@ -1677,35 +1677,51 @@ auth_failure_limiter = SlidingWindowLimiter(10, window=300)
 #: 回环来源（含 ssh -R/socat 透明隧道）的令牌失败桶：不能完全豁免，
 #: 否则隧道外的远程攻击者可无限在线猜解；阈值高于局域网以避免误伤
 auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
-#: 无法证明客户端地址时的令牌比较闸门：同一键按固定间隔排队，
-#: 并发请求不能并行比较令牌（每次猜测仍会计入失败桶）
+#: 无法证明客户端地址时的令牌比较闸门：同一键用互斥锁真正串行，
+#: 并发请求不能并行比较令牌；排队过深直接拒绝，避免锁被当 DoS 放大器
 _AUTH_COMPARE_GATE_SECONDS = 0.2
 _AUTH_COMPARE_GATE_MAX_KEYS = 4096
-_auth_compare_gates: Dict[str, float] = {}
+_AUTH_COMPARE_GATE_MAX_WAITING = 64
+_auth_compare_gates: Dict[tuple, Dict[str, Any]] = {}
 _auth_compare_gates_lock = threading.Lock()
 
 
-#: 闸门排队欠账上限：未认证洪泛不能把后续请求的等待无限累积
-_AUTH_COMPARE_GATE_MAX_DEBT = 0.4
-
-
-def _auth_compare_wait_seconds(key: str) -> float:
-    """返回本次令牌比较前需要等待的秒数（同键串行化）。"""
-    now = time.monotonic()
+async def _auth_compare_enter(key: str):
+    """进入同键比较闸门；排队过深返回 None（调用方回 429）。"""
+    loop = asyncio.get_running_loop()
+    map_key = (id(loop), key)
     with _auth_compare_gates_lock:
         if len(_auth_compare_gates) > _AUTH_COMPARE_GATE_MAX_KEYS:
             _auth_compare_gates.clear()
-        ready_at = _auth_compare_gates.get(key, 0.0)
-        if ready_at <= now:
-            ready_at = now
-        else:
-            # 欠账封顶：一次并发洪泛最多让后续请求多等 0.4 秒，
-            # 不会永久固定为 2 秒
-            ready_at = min(ready_at, now + _AUTH_COMPARE_GATE_MAX_DEBT)
-        _auth_compare_gates[key] = (
-            ready_at + _AUTH_COMPARE_GATE_SECONDS
-        )
-        return max(0.0, ready_at - now)
+        gate = _auth_compare_gates.get(map_key)
+        if gate is None:
+            gate = {"lock": asyncio.Lock(), "waiting": 0}
+            _auth_compare_gates[map_key] = gate
+        if gate["waiting"] >= _AUTH_COMPARE_GATE_MAX_WAITING:
+            return None
+        gate["waiting"] += 1
+    try:
+        await gate["lock"].acquire()
+        try:
+            await asyncio.sleep(_AUTH_COMPARE_GATE_SECONDS)
+        except BaseException:
+            # 客户端断开/任务取消时 sleep 会被取消：锁已获得，必须
+            # 释放，否则该来源键的后续请求会永久排队
+            gate["lock"].release()
+            raise
+        return gate
+    except BaseException:
+        with _auth_compare_gates_lock:
+            gate["waiting"] = max(0, gate["waiting"] - 1)
+        raise
+
+
+def _auth_compare_exit(gate) -> None:
+    try:
+        gate["lock"].release()
+    finally:
+        with _auth_compare_gates_lock:
+            gate["waiting"] = max(0, gate["waiting"] - 1)
 _short_access_token_warned = False
 
 
@@ -1986,6 +2002,24 @@ def _trust_proxy_headers() -> bool:
     return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
 
 
+def _peer_key(value: str) -> str:
+    """把主机/对端写法归一化为可比较的键（去端口/括号、映射 IPv4）。"""
+    text = str(value or "").strip()
+    if text.startswith("["):
+        end = text.find("]")
+        text = text[1:end].strip() if end != -1 else text
+    if text.count(":") == 1:
+        host, _sep, port = text.partition(":")
+        if port.strip().isdigit():
+            text = host.strip()
+    try:
+        parsed = ipaddress.ip_address(text)
+    except ValueError:
+        return text.lower()
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    return str(mapped or parsed)
+
+
 def _trusted_proxy_peers() -> set:
     """显式声明的受信反向代理对端地址（非 loopback 反代需配置）。
 
@@ -1995,12 +2029,8 @@ def _trusted_proxy_peers() -> set:
     peers = set()
     for value in os.getenv("MEDIX_TRUSTED_PROXY_ADDRS", "").split(","):
         value = value.strip()
-        if not value:
-            continue
-        try:
-            peers.add(str(ipaddress.ip_address(value)))
-        except ValueError:
-            peers.add(value.lower())
+        if value:
+            peers.add(_peer_key(value))
     return peers
 
 
@@ -2012,7 +2042,8 @@ def _is_trusted_proxy_peer(host: str) -> bool:
     """
     if not host:
         return True
-    return _is_loopback_address(host) or host in _trusted_proxy_peers()
+    key = _peer_key(host)
+    return _is_loopback_address(key) or key in _trusted_proxy_peers()
 
 
 def _normalize_forwarded_address(value: str) -> str:
@@ -2109,7 +2140,10 @@ def _parse_forwarded_header(header: str) -> str:
             if not value:
                 # 显式 for=unknown/不可解析：无地址不等于本机
                 return ""
-            if not (_is_loopback_address(value) or value in trusted_hops):
+            if not (
+                _is_loopback_address(value)
+                or _peer_key(value) in trusted_hops
+            ):
                 return value
     return rightmost
 
@@ -2177,7 +2211,10 @@ def _forwarded_client_address(request: Request) -> str:
             # append 型代理追加的真实非本机地址不能被客户端自带的
             # 更左项覆盖，否则伪造前缀即可轮换限流桶
             trusted_hops = _trusted_proxy_peers()
-            if _is_loopback_address(rightmost) or rightmost in trusted_hops:
+            if (
+                _is_loopback_address(rightmost)
+                or _peer_key(rightmost) in trusted_hops
+            ):
                 for part in reversed(parts[:-1]):
                     candidate = _normalize_forwarded_address(part)
                     if not candidate:
@@ -2186,7 +2223,7 @@ def _forwarded_client_address(request: Request) -> str:
                         return ""
                     if not (
                         _is_loopback_address(candidate)
-                        or candidate in trusted_hops
+                        or _peer_key(candidate) in trusted_hops
                     ):
                         xff_value = candidate
                         break
@@ -2238,7 +2275,7 @@ def _forwarded_appended_address(request: Request) -> str:
         if (
             candidate
             and not _is_loopback_address(candidate)
-            and candidate not in trusted_peers
+            and _peer_key(candidate) not in trusted_peers
         ):
             return candidate
         return ""
@@ -2493,6 +2530,36 @@ def _is_cross_site_request(request: Request) -> bool:
     return False
 
 
+def _host_header_hostname(request: Request) -> str:
+    host = str(request.headers.get("host") or "").strip()
+    if not host:
+        return ""
+    if host.startswith("["):
+        end = host.find("]")
+        hostname = host[1:end] if end != -1 else ""
+    else:
+        hostname = host.split(":", 1)[0]
+    return hostname.strip().lower().rstrip(".")
+
+
+def _local_ui_host_allowed(request: Request) -> bool:
+    """无令牌兜底只放行真正的本机界面。
+
+    同机反向代理（如 nginx 默认不添加任何转发头）会让局域网请求以
+    回环对端到达：Host 不是 localhost/回环 IP 时按远程处理，避免
+    无令牌部署被代理整体暴露。
+    """
+    hostname = _host_header_hostname(request)
+    if not hostname:
+        return False
+    if hostname in {"localhost", "testserver"}:
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def _host_header_allowed(request: Request) -> bool:
     """校验 Host 头，防止 DNS rebinding 把恶意域名解析到本机。
 
@@ -2550,7 +2617,10 @@ async def require_access_token(request: Request, call_next):
         path.startswith("/api/")
         and not get_access_token()
         and not _insecure_lan_allowed()
-        and not _is_loopback_client(request)
+        and not (
+            _is_loopback_client(request)
+            and _local_ui_host_allowed(request)
+        )
     ):
         # main() 里的绑定检查只覆盖 python api_server.py 启动方式；
         # uvicorn/gunicorn 直接导入 app 时在这里兜底，避免无鉴权裸奔
@@ -2592,6 +2662,7 @@ async def require_access_token(request: Request, call_next):
             and _is_trusted_proxy_peer(peer_host)
             and _forwarded_client_address(request)
         )
+        gate_handle = None
         appended_address = (
             _forwarded_appended_address(request)
             if (
@@ -2647,74 +2718,87 @@ async def require_access_token(request: Request, call_next):
         else:
             # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
             # 预锁定共享键，否则任何人的错误尝试都会误锁全家；改为
-            # 同键串行闸门——并发请求按 0.2s 间隔排队比较，在线猜解
-            # 被真正限速，但正确令牌只是稍慢、不会被拒绝
-            gate_wait = _auth_compare_wait_seconds(loopback_bucket_key)
-            if gate_wait > 0:
-                await asyncio.sleep(gate_wait)
-        if not is_authorized(request):
-            loopback_source = _is_loopback_client(request)
-            trusted_proxy_request = bool(
-                _trust_proxy_headers()
-                and _is_trusted_proxy_peer(peer_host)
-            )
-            limiter = (
-                auth_failure_limiter_loopback
-                if loopback_source
-                else auth_failure_limiter
-            )
-            limiter_key = _client_ip_key(request)
-            if loopback_source and trusted_proxy_request:
-                # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
-                # 新桶：回环来源的失败统一按代理对端计数
-                limiter_key = loopback_bucket_key
-            allowed, retry_after = limiter.check(limiter_key)
-            if not allowed:
+            # 同键互斥闸门——并发请求串行比较令牌（0.2s/次），在线
+            # 猜解被真正限速，但正确令牌只是稍慢、不会被拒绝。排队
+            # 超过上限直接 429，避免闸门本身被洪泛放大成拒绝服务
+            gate_handle = await _auth_compare_enter(loopback_bucket_key)
+            if gate_handle is None:
                 return add_security_headers(JSONResponse(
                     status_code=429,
                     content={
-                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "detail": "访问令牌校验排队过多，请稍后再试。",
                         "code": "auth_rate_limited",
-                        "retry_after": round(retry_after, 1),
+                        "retry_after": 1.0,
                     },
-                    headers={
-                        "Retry-After": str(
-                            max(1, math.ceil(retry_after))
-                        )
-                    },
+                    headers={"Retry-After": "1"},
                 ))
-            if (
-                limiter is not auth_failure_limiter_loopback
-                and _trust_proxy_headers()
-                and _is_trusted_proxy_peer(peer_host)
-            ):
-                # 共享桶只统计「尚未被自身限流挡住」的失败：攻击者
-                # 单键满载后不再继续累积共享桶，避免拖慢本机用户；
-                # 轮换地址的攻击每个新键仍会为共享桶计数
-                shared_allowed, shared_retry = (
-                    auth_failure_limiter_loopback.check(
-                        loopback_bucket_key
-                    )
+        try:
+            if not is_authorized(request):
+                loopback_source = _is_loopback_client(request)
+                trusted_proxy_request = bool(
+                    _trust_proxy_headers()
+                    and _is_trusted_proxy_peer(peer_host)
                 )
-                if not shared_allowed:
+                limiter = (
+                    auth_failure_limiter_loopback
+                    if loopback_source
+                    else auth_failure_limiter
+                )
+                limiter_key = _client_ip_key(request)
+                if loopback_source and trusted_proxy_request:
+                    # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
+                    # 新桶：回环来源的失败统一按代理对端计数
+                    limiter_key = loopback_bucket_key
+                allowed, retry_after = limiter.check(limiter_key)
+                if not allowed:
                     return add_security_headers(JSONResponse(
                         status_code=429,
                         content={
                             "detail": "访问令牌错误次数过多，请稍后再试。",
                             "code": "auth_rate_limited",
-                            "retry_after": round(shared_retry, 1),
+                            "retry_after": round(retry_after, 1),
                         },
                         headers={
                             "Retry-After": str(
-                                max(1, math.ceil(shared_retry))
+                                max(1, math.ceil(retry_after))
                             )
                         },
                     ))
-            return add_security_headers(JSONResponse(
-                status_code=401,
-                content={"detail": "需要访问令牌", "code": "auth_required"},
-            ))
+                if (
+                    limiter is not auth_failure_limiter_loopback
+                    and _trust_proxy_headers()
+                    and _is_trusted_proxy_peer(peer_host)
+                ):
+                    # 共享桶只统计「尚未被自身限流挡住」的失败：攻击者
+                    # 单键满载后不再继续累积共享桶，避免拖慢本机用户；
+                    # 轮换地址的攻击每个新键仍会为共享桶计数
+                    shared_allowed, shared_retry = (
+                        auth_failure_limiter_loopback.check(
+                            loopback_bucket_key
+                        )
+                    )
+                    if not shared_allowed:
+                        return add_security_headers(JSONResponse(
+                            status_code=429,
+                            content={
+                                "detail": "访问令牌错误次数过多，请稍后再试。",
+                                "code": "auth_rate_limited",
+                                "retry_after": round(shared_retry, 1),
+                            },
+                            headers={
+                                "Retry-After": str(
+                                    max(1, math.ceil(shared_retry))
+                                )
+                            },
+                        ))
+                return add_security_headers(JSONResponse(
+                    status_code=401,
+                    content={"detail": "需要访问令牌", "code": "auth_required"},
+                ))
 
+        finally:
+            if gate_handle is not None:
+                _auth_compare_exit(gate_handle)
     if path in CHAT_PATHS:
         chat_limiter.limit = get_rate_limit()
         client_key = _rate_limit_key(request)
@@ -7766,7 +7850,13 @@ async def _weekly_report_impl(
         and not item.get("followup_scheduled")
     ]
     # “最近就诊”不能受 2×days 窗口限制：稍旧的记录也应作为最近一次展示
-    latest_visit = followup_visits[0] if followup_visits else None
+    latest_visit = next(
+        (
+            item for item in followup_visits
+            if str(item.get("visit_date") or "")[:10] <= today
+        ),
+        None,
+    )
 
     active_conditions = await asyncio.to_thread(
         store.list_conditions, profile, True, None, 100000
@@ -11756,6 +11846,9 @@ async def family_overview(days: int = 7):
     ):
         profile = item.get("profile") or ""
         at = str(item.get("recorded_at") or "")
+        if at[:10] > today:
+            # 未来时间的记录（允许 24h 偏差/导入）不是「最近活动」
+            continue
         if at and at > latest_symptom_at.get(profile, ""):
             latest_symptom_at[profile] = at
     latest_lab_at: Dict[str, str] = {}
@@ -11764,6 +11857,8 @@ async def family_overview(days: int = 7):
     ):
         profile = item.get("profile") or ""
         at = str(item.get("tested_at") or "")
+        if at[:10] > today:
+            continue
         if at and at > latest_lab_at.get(profile, ""):
             latest_lab_at[profile] = at
     latest_session_at: Dict[str, str] = {}
@@ -11776,6 +11871,8 @@ async def family_overview(days: int = 7):
             continue
         profile = item.get("profile") or ""
         at = str(item.get("updated_at") or item.get("created_at") or "")
+        if at[:10] > today:
+            continue
         if at and at > latest_session_at.get(profile, ""):
             latest_session_at[profile] = at
     recorded_days = await asyncio.to_thread(
@@ -12367,17 +12464,29 @@ async def family_overview(days: int = 7):
         consultation = sessions_by_profile.get(name, {
             "count": 0, "latest_at": "",
         })
+        def _past_or_today(value: Any) -> str:
+            text = str(value or "")
+            return text if text and text[:10] <= today else ""
+
         activity_candidates = [
-            metrics[0]["measured_at"] if metrics else "",
-            latest_symptom_at.get(name, ""),
-            (vaccination.get("latest") or {}).get("vaccinated_at") or "",
-            latest_session_at.get(name, "") or consultation.get(
-                "latest_at"
-            ) or "",
-            medication.get("last_taken_at") or "",
-            medication.get("last_skip_at") or "",
-            latest_lab_at.get(name, "") or (labs.get("latest_at") or ""),
-            (visits.get("latest") or {}).get("visit_date") or "",
+            _past_or_today(metrics[0]["measured_at"]) if metrics else "",
+            _past_or_today(latest_symptom_at.get(name, "")),
+            _past_or_today(
+                (vaccination.get("latest") or {}).get("vaccinated_at")
+                or ""
+            ),
+            _past_or_today(
+                latest_session_at.get(name, "")
+                or consultation.get("latest_at") or ""
+            ),
+            _past_or_today(medication.get("last_taken_at") or ""),
+            _past_or_today(medication.get("last_skip_at") or ""),
+            _past_or_today(
+                latest_lab_at.get(name, "") or (labs.get("latest_at") or "")
+            ),
+            _past_or_today(
+                (visits.get("latest") or {}).get("visit_date") or ""
+            ),
         ]
         last_activity = max(activity_candidates)
         # 停药后当天的打卡日志仍属于健康记录，统一按 store 的
@@ -13179,12 +13288,14 @@ async def list_attachments(
     start: str = "",
     end: str = "",
     sort: str = "",
+    snapshot: bool = False,
 ):
     """附件列表（不含文件内容）；可按档案、类型、关联、日期与关键字筛选。"""
     from memory import get_session_store
     from memory.session_store import ATTACHMENT_KINDS
 
-    limit = max(1, min(int(limit or 100), 1000))
+    # snapshot=True 供 CSV 导出一致性快照使用（一次性读取全部匹配行）
+    limit = max(1, min(int(limit or 100), 100000 if snapshot else 1000))
     offset = _bounded_offset(offset)
     q = " ".join(str(q or "").split())[:80]
     kind_key = str(kind or "").strip().lower()
@@ -13367,36 +13478,32 @@ async def export_attachments_csv(
         "上传日期", "文件名", "类型", "大小(字节)", "备注",
         "关联状态", "关联编号", "关联摘要", "文件状态",
     ]]
-    offset = 0
-    while offset < 100000:
-        data = await list_attachments(
-            profile=profile,
-            kind=kind,
-            ref_id=ref_id,
-            limit=1000,
-            offset=offset,
-            q=q,
-            linked=linked,
-            start=start,
-            end=end,
-            sort=sort,
-        )
-        batch = data.get("attachments") or []
-        for item in batch:
-            rows.append([
-                csv_safe_cell(str(item.get("created_at") or "")[:10]),
-                csv_safe_cell(item.get("original_name") or "附件"),
-                csv_safe_cell(item.get("kind_label") or "其他"),
-                str(int(item.get("size") or 0)),
-                csv_safe_cell(item.get("note") or ""),
-                "已关联" if item.get("ref_id") else "未关联",
-                str(int(item.get("ref_id") or 0)),
-                csv_safe_cell(item.get("ref_label") or ""),
-                "缺失" if item.get("file_missing") else "正常",
-            ])
-        if len(batch) < 1000:
-            break
-        offset += 1000
+    # 一次性读取快照：分页 OFFSET 在导出期间增删附件时会错位
+    data = await list_attachments(
+        profile=profile,
+        kind=kind,
+        ref_id=ref_id,
+        limit=100000,
+        offset=0,
+        q=q,
+        linked=linked,
+        start=start,
+        end=end,
+        sort=sort,
+        snapshot=True,
+    )
+    for item in data.get("attachments") or []:
+        rows.append([
+            csv_safe_cell(str(item.get("created_at") or "")[:10]),
+            csv_safe_cell(item.get("original_name") or "附件"),
+            csv_safe_cell(item.get("kind_label") or "其他"),
+            str(int(item.get("size") or 0)),
+            csv_safe_cell(item.get("note") or ""),
+            "已关联" if item.get("ref_id") else "未关联",
+            str(int(item.get("ref_id") or 0)),
+            csv_safe_cell(item.get("ref_label") or ""),
+            "缺失" if item.get("file_missing") else "正常",
+        ])
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\r\n").writerows(rows)
     content = "﻿" + buffer.getvalue()
@@ -18438,6 +18545,14 @@ def main():
     if bind_error:
         logger.error(bind_error)
         raise SystemExit(2)
+    if not get_access_token() and _is_loopback_host(args.host):
+        logger.warning(
+            "未设置 MEDIX_ACCESS_TOKEN：同机反向代理保留局域网 Host 时，"
+            "转发来的请求会按远程拒绝（403）；若代理把 Host 改写为回环"
+            "上游地址（如 nginx 默认），请求与本机请求无法区分。"
+            "「反代 + 无令牌」部署请设置访问令牌，或显式 "
+            "MEDIX_ALLOW_INSECURE_LAN=1。"
+        )
     if (
         allow_insecure
         and not get_access_token()

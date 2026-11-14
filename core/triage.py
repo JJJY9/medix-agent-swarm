@@ -256,6 +256,8 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             )
         if gum_hit:
             continue
+        if _non_pregnancy_bleeding_site(span, prefix):
+            continue
         if not _is_negated(prefix):
             return True
     location_terms = (
@@ -285,6 +287,31 @@ def _has_pregnancy_bleeding(text: str) -> bool:
     if _colloquial_bleeding_positive(text):
         return True
     return False
+
+
+#: 非妊娠部位的出血：便/尿/痰/咳/呕等即使带孕周也不能按孕产期
+#: 出血处理（大便出血、尿里有血、痰中带血）
+_NON_PREG_BLEEDING_WORDS = (
+    "大便", "便中", "便血", "解便", "肛门", "直肠", "痔疮",
+    "小便", "尿液", "尿里", "尿血", "血尿", "排尿",
+    "痰中", "痰里", "咳血", "咯血", "呕血", "吐血",
+    "出血热", "出血性疾病", "伤口", "术后", "鼻腔", "牙龈",
+)
+
+
+def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
+    """匹配片段/前缀是否明确指向非妊娠部位。"""
+    head = span[:4]
+    tail = prefix[-6:]
+    if any(
+        location in head or location in tail[-4:]
+        for location in ("阴道", "产道", "下体", "见红", "内裤", "护垫")
+    ):
+        return False
+    return any(
+        word in span or word in tail
+        for word in _NON_PREG_BLEEDING_WORDS
+    )
 
 
 _GUM_BLEEDING_WORDS = (
@@ -320,6 +347,7 @@ def _generic_bleeding_positive(text: str) -> bool:
             )
             if (
                 any(word in prefix[-6:] for word in _GUM_BLEEDING_WORDS)
+                or _non_pregnancy_bleeding_site(term, prefix)
                 or _bleeding_negated(prefix)
                 or (
                     location_stripped != prefix
@@ -358,6 +386,8 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             word in span or word in prefix[-6:]
             for word in _GUM_BLEEDING_WORDS
         ):
+            continue
+        if _non_pregnancy_bleeding_site(span, prefix):
             continue
         if not _is_negated(prefix):
             return True
@@ -761,9 +791,19 @@ def _clean_complaint_clause(
         rest = clause[definition_lead.end():].strip(" ，,、")
         if not rest:
             return ""
-        if _has_patient_subject(rest):
-            # 只有明确的患者主体（我/宝宝/孩子…）才说明在描述本人；
-            # 「什么是持续性胸痛」仍是术语解释
+        if (
+            _has_patient_subject(rest)
+            # 孕产期出血无论是否有主语都是真实急症描述
+            or any(term in rest for term in PREGNANCY_BLEEDING_TERMS)
+            # 家属语境 + 红旗（请解释一下我爸胸痛是什么原因）
+            or (
+                any(
+                    marker in rest
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+                and _is_red_flag_text(rest)
+            )
+        ):
             return _clean_complaint_clause(rest, patient_context_seen)
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
@@ -1050,6 +1090,11 @@ _CONTEXT_INACTIVE_MARKERS = (
     "否认", "未曾", "从未", "过敏",
 )
 
+#: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
+_TRIAGE_DOUBLE_NEGATION = re.compile(
+    r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
+    r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?"
+)
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
 _NEGATED_STOP_PATTERN = re.compile(
     r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|"
@@ -1142,10 +1187,17 @@ def _active_term_mention(text: str, term: str) -> bool:
         prefix = _clause_prefix(text, start)
         suffix = text[start + len(term):start + len(term) + 16]
         negated = (
-            _is_negated(prefix)
-            or bool(_NEGATIVE_TEST_SUFFIX.match(text, start + len(term)))
-            or _MED_USE_NEGATION_RE.search(prefix) is not None
-            or _MED_USE_STOP_SUFFIX_RE.search(suffix) is not None
+            not _TRIAGE_DOUBLE_NEGATION.search(prefix)
+            and (
+                _is_negated(prefix)
+                or bool(
+                    _NEGATIVE_TEST_SUFFIX.match(
+                        text, start + len(term)
+                    )
+                )
+                or _MED_USE_NEGATION_RE.search(prefix) is not None
+                or _MED_USE_STOP_SUFFIX_RE.search(suffix) is not None
+            )
         )
         if not negated:
             return True
@@ -1296,6 +1348,11 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             # 「昨天停药」都表示当前仍有用药/抗凝作用，不能整句丢弃
             kept.append(clause)
             continue
+        if _TRIAGE_DOUBLE_NEGATION.search(clause):
+            # 「不得不吃/不能不吃华法林」= 仍在用药，不能被
+            # 「不吃」子串当作停药
+            kept.append(clause)
+            continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
             if (
                 _RESTART_TEXT_RE.search(clause)
@@ -1407,8 +1464,17 @@ def _patient_only_text(text: str) -> str:
             ):
                 clause = stripped
             elif _FAMILY_CARE_RE.search(clause):
-                # 「我陪我妈去化疗」：不是患者本人的治疗
-                continue
+                # 「我陪我妈去化疗」：不是患者本人的治疗；但同一分句
+                # 若在描述患者本人的发热/症状（我照顾我爸时发烧），
+                # 不能整句丢弃
+                if not (
+                    _has_fever(clause)
+                    or TEMPERATURE_PATTERN.search(clause) is not None
+                    or any(
+                        term in clause for term in _NEGATED_SYMPTOM_TERMS
+                    )
+                ):
+                    continue
             elif _has_patient_subject(clause):
                 # 「我妈说宝宝发烧」「我和我爸都发烧」：句中有明确的
                 # 患者主体，不能因为家属称谓整句丢弃
