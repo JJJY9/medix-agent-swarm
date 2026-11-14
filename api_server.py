@@ -2385,6 +2385,16 @@ def _bucket_address(address: str) -> str:
     return str(parsed)
 
 
+def _is_ipv6_aggregate_key(key: str) -> bool:
+    """限流键是否为 IPv6 /64 聚合桶（这类桶不参与硬预锁定）。"""
+    text = str(key or "")
+    return (
+        text.startswith("ip:")
+        and ":" in text
+        and text.rstrip().endswith("/64")
+    )
+
+
 def _client_ip_key(request: Request) -> str:
     """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
 
@@ -2698,45 +2708,76 @@ async def require_access_token(request: Request, call_next):
             and not shared_bucket
             and not forwarded_resolved
         ):
-            # 直连远程来源：前置检查已锁定的来源不再执行令牌比较，
-            # 限流才真正降低猜测速率（而不是只把 401 改成 429）
-            blocked, retry_after = auth_failure_limiter.is_blocked(
-                _client_ip_key(request)
-            )
-            if blocked:
-                return add_security_headers(JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "访问令牌错误次数过多，请稍后再试。",
-                        "code": "auth_rate_limited",
-                        "retry_after": round(retry_after, 1),
-                    },
-                    headers={
-                        "Retry-After": str(
-                            max(1, math.ceil(retry_after))
-                        )
-                    },
-                ))
+            prelock_key = _client_ip_key(request)
+            if _is_ipv6_aggregate_key(prelock_key):
+                # IPv6 /64 常由同一家庭/局域网共享：聚合桶不做硬
+                # 预锁定（否则一人输错令牌全家正确令牌也 429），
+                # 改用同键闸门串行比较，正确令牌仍可通过
+                gate_handle = await _auth_compare_enter(prelock_key)
+                if gate_handle is None:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌校验排队过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": 1.0,
+                        },
+                        headers={"Retry-After": "1"},
+                    ))
+            else:
+                # 直连远程来源：前置检查已锁定的来源不再执行令牌比较，
+                # 限流才真正降低猜测速率（而不是只把 401 改成 429）
+                blocked, retry_after = auth_failure_limiter.is_blocked(
+                    prelock_key
+                )
+                if blocked:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(retry_after, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(retry_after))
+                            )
+                        },
+                    ))
         elif appended_address:
             # 受信代理追加写入的真实客户端地址：预锁定其自身桶，
             # 命中后不再逐次比较令牌，在线猜解被真正降速
-            blocked, retry_after = auth_failure_limiter.is_blocked(
-                f"ip:{_bucket_address(appended_address)}"
-            )
-            if blocked:
-                return add_security_headers(JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "访问令牌错误次数过多，请稍后再试。",
-                        "code": "auth_rate_limited",
-                        "retry_after": round(retry_after, 1),
-                    },
-                    headers={
-                        "Retry-After": str(
-                            max(1, math.ceil(retry_after))
-                        )
-                    },
-                ))
+            prelock_key = f"ip:{_bucket_address(appended_address)}"
+            if _is_ipv6_aggregate_key(prelock_key):
+                gate_handle = await _auth_compare_enter(prelock_key)
+                if gate_handle is None:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌校验排队过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": 1.0,
+                        },
+                        headers={"Retry-After": "1"},
+                    ))
+            else:
+                blocked, retry_after = auth_failure_limiter.is_blocked(
+                    prelock_key
+                )
+                if blocked:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(retry_after, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(retry_after))
+                            )
+                        },
+                    ))
         else:
             # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
             # 预锁定共享键，否则任何人的错误尝试都会误锁全家；改为
@@ -7116,6 +7157,12 @@ async def _weekly_report_impl(
         profile, session_window_start, f"{end}T23:59:59", 100000,
         by_updated=True,
     )
+    from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+    raw_sessions = [
+        item for item in raw_sessions
+        if DELETED_PROFILE_SESSION_TAG not in (item.get("tags") or [])
+    ]
     sessions = [
         item for item in raw_sessions
         if int(item.get("message_count") or 0) > 0
@@ -9549,6 +9596,12 @@ async def health_timeline(
         store.list_sessions_for_timeline,
         profile, start, session_end, source_limit("consultation"), True,
     )
+    from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+    raw_sessions = [
+        item for item in raw_sessions
+        if DELETED_PROFILE_SESSION_TAG not in (item.get("tags") or [])
+    ]
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
         (item.get("profile") or "", item.get("metric")): item
@@ -9862,7 +9915,7 @@ async def health_timeline(
         message_count = int(item.get("message_count") or 0)
         if message_count <= 0:
             continue
-        risk = parse_risk_level(item.get("last_answer"))
+        risk = parse_risk_level(item.get("risk_text") or item.get("last_answer"))
         risk_label = RISK_LEVEL_LABELS.get(risk, "")
         events.append({
             "type": "consultation",
@@ -10804,6 +10857,12 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         store.list_sessions_for_timeline,
         profile, start, f"{end}T23:59:59", 100000, True,
     )
+    from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+    raw_sessions = [
+        item for item in raw_sessions
+        if DELETED_PROFILE_SESSION_TAG not in (item.get("tags") or [])
+    ]
     targets = await asyncio.to_thread(store.list_metric_targets, None)
     target_map = {
         (item.get("profile") or "", item.get("metric")): item
@@ -10925,7 +10984,7 @@ async def health_calendar(profile: Optional[str] = None, month: str = ""):
         if in_month(at) and int(item.get("message_count") or 0) > 0:
             entry = bucket(at[:10])
             entry["consultations"] += 1
-            risk = parse_risk_level(item.get("last_answer"))
+            risk = parse_risk_level(item.get("risk_text") or item.get("last_answer"))
             if risk in ("high", "emergency"):
                 entry["alerts"] += 1
     for item in reminders:
@@ -11552,17 +11611,29 @@ async def delete_profile(name: str):
     # 旧版本把改名前的名字留在审计里：detail 为当前名的 profile.rename
     # 行、target 是旧名。先收集旧名，连同其指标目标审计一起清理，
     # 避免删除档案后旧姓名仍出现在审计/CSV/备份中
-    old_names = set()
-    for entry in await asyncio.to_thread(
+    audit_entries = await asyncio.to_thread(
         store.list_audit_log, 100000
-    ):
-        if str(entry.get("action") or "") != "profile.rename":
-            continue
-        if str(entry.get("detail") or "").strip() != normalized_name:
-            continue
-        old_name = str(entry.get("target") or "").strip()
-        if old_name:
-            old_names.add(old_name)
+    )
+    chain_names = {normalized_name}
+    growing = True
+    while growing:
+        growing = False
+        for entry in audit_entries:
+            if str(entry.get("action") or "") != "profile.rename":
+                continue
+            target = str(entry.get("target") or "").strip()
+            detail = str(entry.get("detail") or "").strip()
+            if detail in chain_names and target and (
+                target not in chain_names
+            ):
+                chain_names.add(target)
+                growing = True
+            if target in chain_names and detail and (
+                detail not in chain_names
+            ):
+                chain_names.add(detail)
+                growing = True
+    old_names = chain_names - {normalized_name}
     for old_name in sorted(old_names):
         await asyncio.to_thread(
             store.redact_audit_targets,
@@ -11586,18 +11657,19 @@ async def delete_profile(name: str):
     )
     # 旧版本把指标目标写成「档案名·指标」，且 rename 的新名字存在
     # detail 里：删除档案时一并清理，避免审计/备份继续残留姓名
-    await asyncio.to_thread(
-        store.redact_audit_targets,
-        ["metric_target.set", "metric_target.delete"],
-        f"{normalized_name}·",
-        "metric_target",
-    )
-    await asyncio.to_thread(
-        store.redact_audit_details,
-        ["profile.rename"],
-        normalized_name,
-        "renamed",
-    )
+    for chain_name in sorted(chain_names):
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["metric_target.set", "metric_target.delete"],
+            f"{chain_name}·",
+            "metric_target",
+        )
+        await asyncio.to_thread(
+            store.redact_audit_details,
+            ["profile.rename"],
+            chain_name,
+            "renamed",
+        )
     await record_audit("profile.delete", audit_key)
     return {"ok": True, "name": name}
 
@@ -11913,6 +11985,12 @@ async def family_overview(days: int = 7):
         None, cutoff, f"{today}T23:59:59", 100000,
         by_updated=True,
     )
+    from memory.session_store import DELETED_PROFILE_SESSION_TAG
+
+    sessions = [
+        item for item in sessions
+        if DELETED_PROFILE_SESSION_TAG not in (item.get("tags") or [])
+    ]
     # 「最近活动」不能只看窗口内列表：窗口外的症状/化验/会诊才是
     # 成员的真正最近记录
     latest_symptom_at: Dict[str, str] = {}
@@ -15690,7 +15768,7 @@ async def export_health_dossier(
     ]
     if visible_sessions:
         for item in visible_sessions:
-            risk = parse_risk_level(item.get("last_answer"))
+            risk = parse_risk_level(item.get("risk_text") or item.get("last_answer"))
             risk_text = (
                 f"（{RISK_LEVEL_LABELS[risk]}）" if risk else ""
             )
