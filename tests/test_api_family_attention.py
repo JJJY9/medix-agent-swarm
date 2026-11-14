@@ -85,7 +85,10 @@ def test_attention_uses_max_severity_in_window(client_and_store):
 
 def test_attention_ignores_old_labs(client_and_store):
     client, _store = client_and_store
-    client.post("/api/profiles", json={"name": "妈妈", "context": {}})
+    client.post(
+        "/api/profiles",
+        json={"name": "妈妈", "context": {"sex": "女"}},
+    )
     client.post("/api/lab-results", json={
         "profile": "妈妈", "item": "LDL", "value": 4.9,
         "ref_high": 3.4, "tested_at": f"{_date(-100)}T09:00",

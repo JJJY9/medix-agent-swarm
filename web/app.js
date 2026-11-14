@@ -20593,7 +20593,9 @@ async function send(question) {
   // （ensureSession 之后会用真实会话 ID 覆盖同一条记录）
   try {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
-      sessionId: sessionId || '',
+      // 待重置换档会新建会话：旧 sessionId 会让刷新后的恢复
+      // 因「有归属但无会话」被跳过，主诉静默丢失
+      sessionId: pendingSessionReset ? '' : (sessionId || ''),
       profile: activeProfileName || '',
       question,
       at: Date.now(),
@@ -21696,9 +21698,9 @@ async function applySelectedProfile() {
     // 旧档案的会诊记录（startNewSession 成功后清除标记）
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
-    const previousContext = (
-      readProfiles()[activeProfileName] || {}
-    ).context || {};
+    // 回滚要恢复用户当前表单（可能含未保存的编辑），不能用档案里
+    // 上次保存的上下文覆盖
+    const previousFormContext = readPatientContext();
     // await 期间用户可能直接提交：先把新档案与上下文字段应用上去，
     // 让 send 组装的请求与档案选择一致
     setPendingSessionReset(true);
@@ -21730,7 +21732,7 @@ async function applySelectedProfile() {
         persistSessionId(sessionId);
       }
       setActiveProfile(previous || '');
-      applyPatientContext(previousContext);
+      applyPatientContext(previousFormContext);
       els.profileSelect.value = previous;
       return;
     }
@@ -21740,9 +21742,7 @@ async function applySelectedProfile() {
     profileSelectionSeq += 1;
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
-    const previousContext = (
-      readProfiles()[activeProfileName] || {}
-    ).context || {};
+    const previousFormContext = readPatientContext();
     // await 期间用户可能直接提交：先应用新档案与上下文，让 send
     // 组装的档案与补充信息一致，避免把旧患者病史写进新档案
     setPendingSessionReset(true);
@@ -21768,7 +21768,7 @@ async function applySelectedProfile() {
         persistSessionId(sessionId);
       }
       setActiveProfile(previous || '');
-      applyPatientContext(previousContext);
+      applyPatientContext(previousFormContext);
       els.profileSelect.value = previous;
       return;
     }
@@ -21980,8 +21980,10 @@ function restoreInflightQuestion() {
     // 其它标签页/其它会话的问题不填进本页
     if (owner && sessionId && owner !== sessionId) return;
     // 提交时的档案与当前档案不一致：上一位患者的病情描述不能
-    // 填进当前患者的输入框
-    if (profile && activeProfileName && profile !== activeProfileName) {
+    // 填进当前患者的输入框。启动时 activeProfileName 尚未恢复，
+    // 回退到 sessionStorage 中已保存的档案名
+    const currentProfile = activeProfileName || readStoredProfile();
+    if (profile && currentProfile && profile !== currentProfile) {
       return;
     }
     if (els.input.value.includes(question)) {

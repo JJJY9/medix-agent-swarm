@@ -641,8 +641,11 @@ _PAST_USE_PREFIX = re.compile(
 #: 未来停药意图（明天/下周停用）当前仍在用药
 _FUTURE_STOP_PREFIX = re.compile(
     r"(?:明天|后天|下周|下个?月|下星期|过两天|过几天|以后|将来|"
-    r"等[^，。；,.!?！？\n]{0,6}再)"
-    r"[^，。；,.!?！？\n]{0,8}(?:停用|停药|停服|停了|停掉)\s*$"
+    r"月底|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*后|"
+    r"等[^，。；,.!?！？\n]{0,10}(?:就|再))"
+    r"[^，。；,.!?！？\n]{0,10}"
+    r"(?:停用|停药|停服|停了|停掉|不吃了|不再吃|不用吃了)\s*$"
 )
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_PREFIX = re.compile(
@@ -708,6 +711,17 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
     r"|(?:1|a|an|one)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today)",
+    re.IGNORECASE,
+)
+#: 英文单次漏服（today/yesterday + didn't take）仍属当前用药
+_DOSE_MISSED_PREFIX_EN = re.compile(
+    r"(?:today|yesterday|last\s+night|this\s+morning|tonight)"
+    r"[^,.;!?\n]{0,24}"
+    r"(?:didn't|did\s+not|haven't|have\s+not|missed)"
+    r"\s+(?:take|taking|use|using|my\s+dose)"
+    r"|(?:didn't|did\s+not|haven't|have\s+not|missed)"
+    r"\s+(?:take|taking|use|using|my\s+dose)"
+    r"[^,.;!?\n]{0,24}(?:today|yesterday|last\s+night|this\s+morning)",
     re.IGNORECASE,
 )
 #: 英文明确未用药：「I do not take warfarin」
@@ -783,7 +797,8 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # 「没有停用」= 仍在服用
                 return True
             if (
-                _NEGATED_STOP_PREFIX_EN.search(prefix)
+                _DOSE_MISSED_PREFIX_EN.search(prefix + suffix)
+                or _NEGATED_STOP_PREFIX_EN.search(prefix)
                 or _INTENT_STOP_PREFIX.search(prefix)
                 or _INTENT_STOP_SUFFIX.search(suffix)
                 or _NEGATED_STOP_SUFFIX.search(suffix)
@@ -947,7 +962,7 @@ _ALLERGY_STATEMENT_PATTERNS = (
     # 「我青霉素过敏」这类不带「对」的陈述；捕获组排除否定表达
     re.compile(
         r"(?:^|[，。；,.!?！？\n])\s*(?:我|本人|患者)?\s*"
-        r"([^，。；,.!?！？\n]{1,20}?)\s*过敏(?!史|的药|的药物)"
+        r"([^，。；,.!?！？\n]{1,20}?)\s*(?<!抗)过敏(?!史|的药|的药物)"
     ),
 )
 

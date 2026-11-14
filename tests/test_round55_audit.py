@@ -362,15 +362,17 @@ def test_gate_per_source_slot_cap():
 
     async def run():
         key = "ip:r55-source"
+        cap = api_server._AUTH_COMPARE_GATE_MAX_PER_SOURCE
+        assert cap >= 16
         tasks = [
             asyncio.create_task(
                 api_server._auth_compare_enter(key, source="A")
             )
-            for _ in range(8)
+            for _ in range(cap)
         ]
         await asyncio.sleep(0.05)
-        ninth = await api_server._auth_compare_enter(key, source="A")
-        assert ninth is None
+        overflow = await api_server._auth_compare_enter(key, source="A")
+        assert overflow is None
         b_task = asyncio.create_task(
             api_server._auth_compare_enter(key, source="B")
         )

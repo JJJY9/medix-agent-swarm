@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import hashlib
+import secrets
 import ipaddress
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -1622,6 +1623,25 @@ async def lifespan(_: FastAPI):
         state.startup_error = redact_secrets(str(e))
         # 不直接退出：首次请求会懒加载重试，后台维护任务也应继续运行
         logger.error(f"初始化失败（将在首次请求时重试）: {e}")
+    # 只要启动时观察到 Mem0 key 就持久化「曾启用」：移除/吊销 key 后
+    # 删除会话或档案仍需继续云端清理，不能依赖删除路径作为唯一写入点
+    try:
+        _coordinator = state.coordinator
+        _memory = (
+            getattr(_coordinator, "long_term_memory", None)
+            if _coordinator is not None else None
+        )
+        if _memory is not None:
+            _mark_memory_configured(_memory)
+        elif (os.environ.get("MEM0_API_KEY") or "").strip():
+            from memory import get_session_store
+
+            get_session_store().set_app_state("mem0_configured", "1")
+    except Exception as e:
+        logger.warning(
+            "记录长期记忆启用标记失败（忽略）: "
+            f"{redact_secrets(str(e))}"
+        )
     # 后台预热知识库，不阻塞服务启动；测试环境可跳过真实模型加载
     if str(os.environ.get("MEDIX_SKIP_WARMUP", "")).strip().lower() not in {
         "1", "true", "yes", "on"
@@ -1684,7 +1704,9 @@ _AUTH_COMPARE_GATE_MAX_KEYS = 4096
 _AUTH_COMPARE_GATE_MAX_WAITING = 64
 #: 单一来源最多占用的闸门槽位：共享 IPv6 /64 前缀内的一台设备不能
 #: 用并发洪泛占满整条队列，让同前缀其它客户端的正确令牌被 429
-_AUTH_COMPARE_GATE_MAX_PER_SOURCE = 8
+#: 浏览器页面一次并发约 6–12 个请求：单源槽位留足余量，只有
+#: 真正的洪水才会触发 429（总队列 64 仍是硬上限）
+_AUTH_COMPARE_GATE_MAX_PER_SOURCE = 32
 _auth_compare_gates: Dict[tuple, Dict[str, Any]] = {}
 _auth_compare_gates_lock = threading.Lock()
 
@@ -2417,11 +2439,11 @@ def _bucket_address(address: str) -> str:
             # ::ffff:a.b.c.d 是 IPv4 客户端：按真实 IPv4 分开计数，
             # 否则所有 IPv4 客户端会落进同一个 ::/64 桶
             return str(mapped)
-        # NAT64 well-known 前缀（64:ff9b::/96）与链路本地地址不是
-        # 「同一户」：跨用户聚合会让一人输错令牌锁死所有 NAT64 用户
-        for prefix in ("64:ff9b::/96", "fe80::/10"):
-            if parsed in ipaddress.ip_network(prefix):
-                return str(parsed)
+        # NAT64 well-known 前缀（64:ff9b::/96）跨用户：按单地址计数，
+        # 避免一人输错令牌锁死所有 NAT64 用户；链路本地地址仍按 /64
+        # 聚合（同一链路可任意轮换 fe80 地址，按单地址会被绕过）
+        if parsed in ipaddress.ip_network("64:ff9b::/96"):
+            return str(parsed)
         return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
     return str(parsed)
 
@@ -2863,9 +2885,21 @@ async def require_access_token(request: Request, call_next):
                 )
                 pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
                 if pre_blocked and pre_retry > 0:
-                    # 失败桶已满：比较前先退避（最多 5 秒），把猜测
-                    # 速率压到桶声明的量级；正确令牌只是稍慢
-                    await asyncio.sleep(min(pre_retry, 5.0))
+                    # 失败桶已满：错误令牌先退避（最多 5 秒），把猜测
+                    # 速率压到桶声明的量级；携带正确令牌的请求只多
+                    # 一次常量时间比较，不再被退避拖慢
+                    expected_token = get_access_token()
+                    supplied_token = request_token(request)
+                    already_known = bool(
+                        expected_token
+                        and supplied_token
+                        and secrets.compare_digest(
+                            supplied_token.encode("utf-8"),
+                            expected_token.encode("utf-8"),
+                        )
+                    )
+                    if not already_known:
+                        await asyncio.sleep(min(pre_retry, 5.0))
             if not is_authorized(request):
                 loopback_source = _is_loopback_client(request)
                 trusted_proxy_request = bool(
@@ -12792,6 +12826,65 @@ async def family_overview(days: int = 7):
         reverse=True,
     )
     # 稳定排序：需要关注的成员排在前面，同级别内保持最近活动顺序
+    saved_name_set = set(contexts)
+
+    def _has_displayable_data(member: Dict[str, Any]) -> bool:
+        """成员卡是否有任何会渲染的数据（与前端卡片口径一致）。
+
+        仅剩用量流水（已删档案）、未指定附件、已完成预约、已解决
+        慢病或已停用过敏的遗留名字不再生成空白成员卡。
+        """
+        if member.get("name") in saved_name_set:
+            return True
+        if member.get("metrics"):
+            return True
+        med = member.get("medications") or {}
+        if (
+            int(med.get("active") or 0)
+            or int(med.get("taken_today") or 0)
+            or int(med.get("skipped_today") or 0)
+            or med.get("names")
+        ):
+            return True
+        reminder = member.get("reminders") or {}
+        if (
+            int(reminder.get("pending") or 0)
+            or int(reminder.get("overdue") or 0)
+            or int(reminder.get("due_today") or 0)
+        ):
+            return True
+        if int((member.get("symptoms") or {}).get("count") or 0):
+            return True
+        vaccination = member.get("vaccinations") or {}
+        if member.get("name") != "" and (
+            int(vaccination.get("count") or 0)
+            or int(vaccination.get("overdue") or 0)
+        ):
+            # 具名成员的疫苗记录会随卡片/CSV 展示；未指定成员的
+            # 疫苗不单独生成空白「未指定」卡
+            return True
+        if int((member.get("labs") or {}).get("count") or 0):
+            return True
+        care = member.get("care_plan") or {}
+        if (
+            int(care.get("overdue") or 0)
+            or int(care.get("due_soon") or 0)
+            or care.get("next")
+        ):
+            return True
+        if int((member.get("visits") or {}).get("count") or 0):
+            return True
+        if int((member.get("appointments") or {}).get("upcoming") or 0):
+            return True
+        if int((member.get("conditions") or {}).get("count") or 0):
+            return True
+        if int((member.get("consultations") or {}).get("count") or 0):
+            return True
+        return False
+
+    profiles = [
+        item for item in profiles if _has_displayable_data(item)
+    ]
     profiles.sort(
         key=lambda item: FAMILY_ATTENTION_ORDER.get(
             (item.get("attention") or {}).get("level"), 9

@@ -379,7 +379,7 @@ def test_stale_high_risk_after_thanks_not_current(client_and_store):
 
 def test_rename_session_does_not_refresh_activity(client_and_store):
     client, store = client_and_store
-    store.save_profile("妈妈", {})
+    store.save_profile("妈妈", {"sex": "女"})
     store.save_exchange(
         "old-session", "胸痛怎么办",
         "风险等级：高危，请立即就医。", profile="妈妈",
