@@ -525,6 +525,8 @@ def test_profile_delete_cleans_legacy_memory_scope(monkeypatch):
     monkeypatch.setattr(
         api_server, "_get_long_term_memory", lambda: FakeMemory()
     )
+    # 旧版可读命名空间清理需显式开启（默认不发送明文姓名）
+    monkeypatch.setenv("MEDIX_MEM0_LEGACY_CLEANUP", "1")
 
     assert api_server._erase_long_term_entries([("妈妈", "")])
     assert ("scope", "medix_profile_妈妈") in calls

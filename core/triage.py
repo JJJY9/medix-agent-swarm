@@ -292,6 +292,8 @@ def _has_pregnancy_bleeding(text: str) -> bool:
 
 _GUM_BLEEDING_WORDS = (
     "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔", "口腔",
+    # 口腔动作：刷牙/漱口/吐口水带血同样是牙龈或口腔黏膜出血
+    "刷牙", "牙刷", "漱口", "吐口水", "剔牙", "牙缝", "泡沫带血",
 )
 
 
@@ -697,6 +699,18 @@ _HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
 _COURSE_MARKER_RE = re.compile(
     r"[0-9一二两三四五六七八九十半几]+\s*(?:天|日|周|个月|月|小时|年)"
 )
+#: 定义问句前缀里出现这些场景/程度修饰时按真实主诉保留
+#: （「活动后胸痛是什么病」「胸痛越来越重是什么病」「一侧肢体
+#: 无力是什么病」都在描述患者的当前症状组合，不是纯术语询问）
+_DEFINITION_KEEP_CUES = (
+    "活动后", "活动时", "活动", "劳累", "走路", "行走", "爬楼",
+    "夜间", "夜里", "半夜", "睡前", "晨起", "早上",
+    "深呼吸", "呼吸时", "按压", "触碰",
+    "一侧", "单侧", "半边", "偏侧", "肢体",
+    "加剧", "越来越", "加重",
+)
+
+
 _COURSE_MARKERS = (
     "持续", "反复", "最近", "今天", "昨天", "前天", "这几天", "刚才",
     "经常", "常常", "时常", "总是", "老是", "一直", "长期", "多年",
@@ -781,6 +795,10 @@ def _clean_complaint_clause(
                     "闷痛", "绞痛", "刀割",
                 )
             )
+            # 枚举/后置阳性线索（越来越/加剧/恶化…）与场景修饰
+            # （活动后/夜间/走路时…）同样说明是在描述真实主诉
+            or any(word in prefix for word in _POST_POSITIVE_CUES)
+            or any(word in prefix for word in _DEFINITION_KEEP_CUES)
             # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
             # 单一红旗症状也按真实主诉保留
             or (patient_context_seen and _is_red_flag_text(prefix))
@@ -1250,6 +1268,17 @@ _FAMILY_NARRATION_RE = re.compile(
     r"(?:说|告诉|讲|提醒|让|叫|喊|看到|看见|发现|扶着?|带着?|"
     r"陪着?|送|抱|背)"
 )
+#: 家属作宾语的动作（「我扶我爸起来时头撞到」「照顾我妈时摔到头」
+#: 「给我爸拿药时头撞到柜子」）：患者是动作主语，家属只是宾语
+_FAMILY_OBJECT_RE = re.compile(
+    r"(?:照顾|搀扶|扶着?|带着?|陪着?|送|背|抱|帮|给|替|喂|接|"
+    r"看望|看看|叫醒|抱起|搀着?)\s*(?:了|着)?\s*(?:我|本人|自己)?\s*$"
+)
+#: 叙述框架后的患者主体（家属转述患者/宝宝的症状）
+_PATIENT_SUBJECT_SAFE = (
+    "本人", "宝宝", "孩子", "婴儿", "幼儿", "患儿", "患者",
+    "小孩", "儿童",
+)
 
 
 def _strip_family_narration(clause: str) -> str:
@@ -1273,6 +1302,19 @@ def _strip_family_narration(clause: str) -> str:
                     remainder = rest[pos + 1:].lstrip("，,、 的")
                     if remainder:
                         return remainder
+                # 家属转述的宾语是宝宝/孩子/患者本人
+                for subject in _PATIENT_SUBJECT_SAFE:
+                    pos = rest.find(subject)
+                    if pos != -1:
+                        remainder = rest[pos:].lstrip("，,、 的")
+                        if remainder:
+                            return remainder
+            prefix = clause[:start]
+            if _FAMILY_OBJECT_RE.search(prefix):
+                remainder = clause[start + len(marker):]
+                # 宾语结构后若出现「他/她」另一主体，不能算到患者头上
+                if remainder and "他" not in remainder and "她" not in remainder:
+                    return remainder.lstrip("，,、 的")
             start = clause.find(marker, start + len(marker))
     return clause
 
@@ -1290,13 +1332,31 @@ def _patient_only_text(text: str) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            clause = _strip_family_narration(clause).strip()
-            if not clause or any(
-                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            stripped = _strip_family_narration(clause).strip()
+            if stripped and not any(
+                marker in stripped for marker in _FAMILY_HISTORY_MARKERS
             ):
+                clause = stripped
+            elif _has_patient_subject(clause):
+                # 「我妈说宝宝发烧」「我和我爸都发烧」：句中有明确的
+                # 患者主体，不能因为家属称谓整句丢弃
+                pass
+            else:
                 continue
         kept.append(clause)
     return "；".join(kept)
+
+
+def _has_patient_subject(clause: str) -> bool:
+    """分句里是否有不依附家属称谓的患者主体。"""
+    if any(subject in clause for subject in _PATIENT_SUBJECT_SAFE):
+        return True
+    # 裸「我」不能是家属称谓的一部分（我爸/我妈/我儿子…）
+    return re.search(
+        r"我(?!爸|妈|父母|父|母|爷|奶|外公|外婆|姥姥|姥爷|哥|姐|弟|妹|"
+        r"儿|女|爱人|对象|丈夫|妻子|配偶|老公|老婆|家人|亲)",
+        clause,
+    ) is not None
 
 
 def _patient_term_mention(text: str, term: str) -> bool:

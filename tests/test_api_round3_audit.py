@@ -63,6 +63,8 @@ def test_erase_long_term_clears_session_and_profile_scopes(monkeypatch):
     monkeypatch.setattr(
         api_server, "_get_long_term_memory", lambda: FakeMemory()
     )
+    # 旧版可读命名空间清理需显式开启（默认不发送明文姓名/原始会话 ID）
+    monkeypatch.setenv("MEDIX_MEM0_LEGACY_CLEANUP", "1")
 
     # 会话可能先以无档案状态写入，再绑定档案：两个命名空间都要清理
     api_server._erase_long_term_entries([("妈妈", "s1"), ("", "s2")])

@@ -790,9 +790,12 @@ const previousTabSession = safeSessionGet('medix.session.tab');
 const pendingDeepLinkSession = safeSessionGet(DEEP_LINK_PENDING_KEY);
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
-  // 记录本次深链导航时间：用户在深链恢复失败期间新设置的待重置
-  // 时间更晚，刷新后不能被深链覆盖
-  safeSessionSet(DEEP_LINK_AT_KEY, String(Date.now()));
+  // 只记录「新的一次深链导航」时间：刷新同一个 ?session= 时沿用
+  // 首次导航时间，用户在后来的恢复失败期间新设置的待重置
+  // （pendingAt 更晚）才能在刷新后正确优先
+  if (pendingDeepLinkSession !== initialSessionFromUrl) {
+    safeSessionSet(DEEP_LINK_AT_KEY, String(Date.now()));
+  }
   deepLinkedSession = (
     initialSessionFromUrl !== previousTabSession
     || pendingDeepLinkSession === initialSessionFromUrl
@@ -5211,7 +5214,13 @@ async function openSession(id) {
     settleDraftForSession(id);
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
-    persistSessionId(id);
+    if (keepPendingReset || deepLinkDraftConflict) {
+      // 待重置仍要生效：只固定本标签页，不能重新写回共享 localStorage
+      // 指针（冷启动/新标签页会复活已放弃的旧档案会话）
+      safeSessionSet('medix.session.tab', id);
+    } else {
+      persistSessionId(id);
+    }
     setSessionUrl(id);
     closeHistory();
     resetRail();
@@ -6622,6 +6631,7 @@ function pendingResetStorageKey(id) {
 function consumeDeepLink() {
   deepLinkedSession = false;
   safeSessionRemove(DEEP_LINK_PENDING_KEY);
+  safeSessionRemove(DEEP_LINK_AT_KEY);
 }
 
 function setPendingSessionReset(active) {
