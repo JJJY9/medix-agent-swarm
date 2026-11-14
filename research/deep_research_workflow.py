@@ -6,22 +6,29 @@
 from typing import List, Dict, Any, Optional
 from loguru import logger
 import asyncio
+import os
 import re
 import time
 
 from core import LLMClient
 from core.usage import merge_usage
 from research.web_search import WebSearchTool, SearchResult
-from knowledge.milvus_kb import MedicalKnowledgeBase
 from research.evidence_synthesizer import EvidenceSynthesizer, ResearchReport
+
+def web_search_disabled() -> bool:
+    """部署可通过 MEDIX_DISABLE_WEB_SEARCH=1 关闭第三方网络搜索。"""
+    return (os.getenv("MEDIX_DISABLE_WEB_SEARCH") or "").strip() == "1"
+
 
 # 全局知识库实例（单例）
 _kb_instance = None
 
 def get_knowledge_base():
-    """获取知识库单例"""
+    """获取知识库单例（惰性导入 vector 依赖，离线测试最小依赖可运行）"""
     global _kb_instance
     if _kb_instance is None:
+        from knowledge.milvus_kb import MedicalKnowledgeBase
+
         _kb_instance = MedicalKnowledgeBase()
         from knowledge.service import ensure_knowledge_index_fresh
         ensure_knowledge_index_fresh(_kb_instance)
@@ -54,11 +61,11 @@ class DeepResearchWorkflow:
             use_knowledge_base: 是否使用 Milvus 知识库
         """
         self.llm_client = llm_client or LLMClient()
-        self.use_web_search = use_web_search
+        self.use_web_search = bool(use_web_search) and not web_search_disabled()
         self.use_knowledge_base = use_knowledge_base
 
-        # 初始化组件
-        self.web_search = WebSearchTool() if use_web_search else None
+        # 初始化组件（受 MEDIX_DISABLE_WEB_SEARCH 约束）
+        self.web_search = WebSearchTool() if self.use_web_search else None
         # 使用 Milvus 知识库单例（和其他 Skills 共享，避免重复加载模型）；
         # 知识库初始化/索引重建失败时降级为纯网络搜索，而不是整体报错
         self.knowledge_base = None
@@ -131,8 +138,8 @@ class DeepResearchWorkflow:
                 timeout=max(5.0, remaining() * 0.4),
             )
         except asyncio.TimeoutError:
-            logger.warning("Query planning timed out, using original question")
-            sub_queries = [question]
+            logger.warning("Query planning timed out, using fallback queries")
+            sub_queries = self._fallback_queries(question)
         logger.info(f"Planned {len(sub_queries)} sub-queries")
 
         # Step 2: 并行搜索
@@ -339,6 +346,17 @@ class DeepResearchWorkflow:
             logger.error(f"Milvus search failed: {e}")
             return []
 
+    def _fallback_queries(self, question: str) -> List[str]:
+        """查询规划失败时的降级检索词。
+
+        网络搜索会把查询串发往 DuckDuckGo 等第三方后端，规划失败时
+        不能把包含患者姓名/年龄/用药的原始问题当作搜索词；关闭网络
+        搜索时本地知识库仍可使用原文。
+        """
+        if not self.use_web_search:
+            return [str(question or "")[:200] or "最新临床指南"]
+        return ["最新临床指南"]
+
     async def _plan_queries(
         self,
         question: str,
@@ -399,9 +417,9 @@ class DeepResearchWorkflow:
                 if line and len(line) > 5:  # 过滤太短的行
                     sub_queries.append(line)
 
-            # 至少包含原始问题
+            # 至少包含可用的检索词（网络搜索时不能回退原文）
             if not sub_queries:
-                sub_queries = [question]
+                sub_queries = self._fallback_queries(question)
 
             # 限制数量
             sub_queries = sub_queries[:3]
@@ -410,8 +428,8 @@ class DeepResearchWorkflow:
 
         except Exception as e:
             logger.error(f"Query planning error: {e}")
-            # 降级：返回原始问题
-            return [question]
+            # 降级：网络搜索会把查询串交给第三方，不能用原始问题
+            return self._fallback_queries(question)
 
     async def research_with_refinement(
         self,

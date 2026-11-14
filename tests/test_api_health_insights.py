@@ -788,9 +788,18 @@ def test_family_insights_label_members_and_avoid_family_average(
     assert "妈妈：" in critical["detail"]
     assert "爸爸：" in critical["detail"]
 
-    bp = insights["metric_bp_single"]
-    assert "家庭成员" in bp["title"]
-    assert "平均" not in bp["detail"]
+    # 家庭范围按成员分别判定：两人的单次高位读数都要出现，
+    # 不能只保留全家庭合并峰值
+    bp_titles = [
+        item["title"] for item in data["insights"]
+        if item["key"] == "metric_bp_single"
+    ]
+    assert any("妈妈" in title and "190/130" in title
+               for title in bp_titles)
+    assert any("爸爸" in title and "185/125" in title
+               for title in bp_titles)
+    assert all("平均" not in item["detail"] for item in data["insights"]
+               if item["key"] == "metric_bp_single")
 
 
 def test_single_profile_bp_insight_still_uses_average(client_and_store):

@@ -711,7 +711,7 @@ def test_app_deep_link_consumed_after_success():
     assert "contextUserEdited = true;" in app_js
     # 未消费的深链持久化到 sessionStorage，刷新后仍按深链处理
     assert "DEEP_LINK_PENDING_KEY" in app_js
-    assert "pendingDeepLink === initialSessionFromUrl" in app_js
+    assert "pendingDeepLinkSession === initialSessionFromUrl" in app_js
 
 
 def test_app_restore_race_guarded_by_open_session_seq():

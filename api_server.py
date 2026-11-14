@@ -1970,8 +1970,12 @@ def _normalize_forwarded_address(value: str) -> str:
     return text
 
 
-def _forwarded_for_values(header: str) -> List[str]:
-    """按 RFC 7239 把 Forwarded 拆成每个元素的 for= 值（缺失为 ""）。"""
+def _forwarded_for_values(header: str) -> List[Optional[str]]:
+    """按 RFC 7239 拆出每个元素的 for= 值。
+
+    返回 None 表示该元素没有 for 参数；空串表示显式 for= 但值
+    不可解析（unknown/混淆标识），两者在信任跳扫描中语义不同。
+    """
     elements: List[str] = []
     current: List[str] = []
     in_quotes = False
@@ -1999,9 +2003,9 @@ def _forwarded_for_values(header: str) -> List[str]:
         return []
     if current:
         elements.append("".join(current))
-    values: List[str] = []
+    values: List[Optional[str]] = []
     for element in elements:
-        value = ""
+        value: Optional[str] = None
         for part in str(element).split(";"):
             key, _sep, raw_value = part.strip().partition("=")
             if key.strip().lower() == "for" and raw_value.strip():
@@ -2017,7 +2021,7 @@ def _parse_forwarded_header(header: str) -> str:
     与 XFF 分支一致：多级本机代理会把自己的 127.0.0.1 追加在最右，
     真实客户端只出现在更左元素；此时从右向左跳过 loopback 信任跳。
     最右元素存在但没有可解析的 for 时必须 fail closed，不能回退到
-    客户端自带的更早元素。
+    客户端自带的更早元素；信任跳左侧显式 for=unknown 同样 fail closed。
     """
     values = _forwarded_for_values(header)
     if not values:
@@ -2027,7 +2031,13 @@ def _parse_forwarded_header(header: str) -> str:
         return ""
     if _is_loopback_address(rightmost):
         for value in reversed(values[:-1]):
-            if value and not _is_loopback_address(value):
+            if value is None:
+                # 该元素没有 for 参数（如只有 proto=https），跳过
+                continue
+            if not value:
+                # 显式 for=unknown/不可解析：无地址不等于本机
+                return ""
+            if not _is_loopback_address(value):
                 return value
     return rightmost
 
@@ -2089,7 +2099,11 @@ def _forwarded_client_address(request: Request) -> str:
             if _is_loopback_address(rightmost):
                 for part in reversed(parts[:-1]):
                     candidate = _normalize_forwarded_address(part)
-                    if candidate and not _is_loopback_address(candidate):
+                    if not candidate:
+                        # 信任跳左侧是 unknown/无法解析的客户端条目：
+                        # 无地址不能等同于本机，fail closed 按远端处理
+                        return ""
+                    if not _is_loopback_address(candidate):
                         xff_value = candidate
                         break
     real_values = [
@@ -2394,15 +2408,13 @@ async def require_access_token(request: Request, call_next):
         and path not in PUBLIC_API_PATHS
     ):
         _warn_if_short_access_token()
+        peer_host = request.client.host if request.client else ""
+        # 只有真正按客户端地址分桶时才做按来源的预锁定；拿不到
+        # 可用地址（无地址头、未声明头名、非 loopback 代理等）时
+        # 所有客户端共用一个键，不能因某个人的错误尝试把全家 429
         shared_bucket = (
-            _is_loopback_address(
-                request.client.host if request.client else ""
-            )
-            and _has_proxy_headers(request)
-            # 只有完全没有地址头（仅 X-Forwarded-Proto 等）才算共享桶；
-            # 地址头存在但互相矛盾时按普通远程请求继续预锁定，
-            # 不能把“fail closed 解析失败”变成“免限流”
-            and not _has_forwarded_address_header(request)
+            _has_proxy_headers(request)
+            and _client_ip_key(request) == f"ip:{peer_host or 'unknown'}"
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -5759,13 +5771,18 @@ async def update_visit(
     from memory import get_session_store
 
     store = get_session_store()
-    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖；
+    # 与「安排复诊」共用锁，避免并发下写入与旧复诊日期不一致的链接
+    payload = _patch_payload(request)
+
+    def _locked_update():
+        with _VISIT_FOLLOWUP_LOCK:
+            return store.update_visit_record_partial(
+                visit_id, **payload
+            )
+
     try:
-        item = await asyncio.to_thread(
-            store.update_visit_record_partial,
-            visit_id,
-            **_patch_payload(request),
-        )
+        item = await asyncio.to_thread(_locked_update)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if item is None:
@@ -5901,9 +5918,17 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             )
             reminder_created = True
 
-        store.set_visit_followup_links(
+        linked = store.set_visit_followup_links(
             visit_id, appointment["id"], reminder["id"]
         )
+        if not linked:
+            # 就诊在安排期间被删除：回滚本次新建的预约/提醒，
+            # 避免留下无主预约与待办提醒
+            if reminder_created:
+                store.delete_reminder(reminder["id"])
+            if appointment_created:
+                store.delete_appointment(appointment["id"])
+            raise HTTPException(status_code=404, detail="记录不存在")
         return {
             "appointment": appointment,
             "appointment_created": appointment_created,
@@ -5930,10 +5955,15 @@ async def delete_visit(visit_id: SafeIntPath):
     from memory import get_session_store
 
     store = get_session_store()
-    item = await asyncio.to_thread(store.get_visit_record, visit_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    ok = await asyncio.to_thread(store.delete_visit_record, visit_id)
+
+    def _locked_delete():
+        with _VISIT_FOLLOWUP_LOCK:
+            current = store.get_visit_record(visit_id)
+            if current is None:
+                return False
+            return store.delete_visit_record(visit_id)
+
+    ok = await asyncio.to_thread(_locked_delete)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
     await asyncio.to_thread(store.detach_attachments, "visit", visit_id)
@@ -6889,6 +6919,7 @@ async def _weekly_report_impl(
                     "count": postprandial[1],
                 })
 
+    member_bp_peaks: Dict[str, Dict[str, Any]] = {}
     grouped: dict = {}
     for item in metrics:
         entry = grouped.setdefault(item["metric"], {
@@ -6920,6 +6951,24 @@ async def _weekly_report_impl(
             if entry["max2"] is None or second_value > entry["max2"]:
                 entry["max2"] = second_value
                 entry["peak2"] = item
+        if item["metric"] == "bp":
+            member_key = str(item.get("profile") or "")
+            member = member_bp_peaks.setdefault(
+                member_key, {"peak": None, "peak2": None}
+            )
+            if (
+                member["peak"] is None
+                or first_value > float(member["peak"]["value1"])
+            ):
+                member["peak"] = item
+            if item.get("value2") is not None:
+                second_value = float(item["value2"])
+                if (
+                    member["peak2"] is None
+                    or second_value
+                    > float(member["peak2"]["value2"])
+                ):
+                    member["peak2"] = item
         if entry["latest"] is None:
             entry["latest"] = item
         measured_at = str(item.get("measured_at") or "")
@@ -7436,6 +7485,7 @@ async def _weekly_report_impl(
         "metrics": {"count": len(metrics), "by_metric": metric_rows},
         "member_metric_alerts": member_metric_alerts,
         "member_glucose_alerts": member_glucose_alerts,
+        "member_bp_peaks": member_bp_peaks,
         "symptoms": {
             "count": len(symptoms),
             "avg_severity": (
@@ -7844,70 +7894,77 @@ def _build_health_insights(
                     metric=metric,
                 ))
         elif metric == "bp":
-            sys_peak = row.get("peak") or {}
-            dia_peak = row.get("peak2") or {}
-            sys_high = float(sys_peak.get("value1") or 0)
-            sys_low = (
-                float(sys_peak["value2"])
-                if sys_peak.get("value2") is not None else 0.0
-            )
-            dia_high = (
-                float(dia_peak["value1"])
-                if dia_peak.get("value1") is not None else 0.0
-            )
-            dia_low = float(dia_peak.get("value2") or 0)
-
-            def bp_reading(high_limit: int, low_limit: int):
-                """优先引用收缩压最高的真实读数，其次舒张压最高的读数。
-
-                两个最大值可能来自不同次测量，不能拼成一条不存在的血压。
-                """
-                if sys_high >= high_limit or sys_low >= low_limit:
-                    return sys_high, sys_low
-                if dia_high >= high_limit or dia_low >= low_limit:
-                    return dia_high, dia_low
+            def _bp_peak_reading(peaks):
+                """单次血压峰值判定：收缩压优先，舒张压补充。"""
+                sys_peak = peaks.get("peak") or {}
+                dia_peak = peaks.get("peak2") or {}
+                sys_high = float(sys_peak.get("value1") or 0)
+                sys_low = (
+                    float(sys_peak["value2"])
+                    if sys_peak.get("value2") is not None else 0.0
+                )
+                dia_high = (
+                    float(dia_peak["value1"])
+                    if dia_peak.get("value1") is not None else 0.0
+                )
+                dia_low = float(dia_peak.get("value2") or 0)
+                for high_limit, low_limit, level in (
+                    (160, 100, "warning"), (140, 90, "info"),
+                ):
+                    if sys_high >= high_limit or sys_low >= low_limit:
+                        return level, sys_high, sys_low
+                    if dia_high >= high_limit or dia_low >= low_limit:
+                        return level, dia_high, dia_low
                 return None
 
-            reading = bp_reading(160, 100)
-            if reading is not None:
-                high, low = reading
-                insights.append(_health_insight(
-                    "metric_bp_single",
-                    "warning",
-                    (
-                        f"家庭成员血压最高 {high:g}/{low:g} mmHg"
-                        if family_scope
-                        else f"单次血压最高 {high:g}/{low:g} mmHg"
-                    ),
-                    (
-                        "家庭范围内单次最高读数；请按成员分别查看各自血压。"
-                        if family_scope
-                        else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。"
-                    ),
-                    "单次明显升高也需要复测；持续偏高请咨询医生。",
-                    "metric",
-                    metric="bp",
-                ))
-            else:
-                reading = bp_reading(140, 90)
-                if reading is not None:
-                    high, low = reading
+            member_peaks = (
+                report.get("member_bp_peaks") if family_scope else None
+            )
+            if family_scope and member_peaks:
+                # 家庭范围必须按成员分别判定：某成员更高的收缩压
+                # 不能掩盖另一位成员的高舒张压读数
+                for member_key in sorted(member_peaks):
+                    reading = _bp_peak_reading(member_peaks[member_key])
+                    if reading is None:
+                        continue
+                    level, high, low = reading
+                    member = member_key or "未指定档案"
                     insights.append(_health_insight(
                         "metric_bp_single",
-                        "info",
+                        level,
                         (
-                            f"家庭成员有血压读数达到 {high:g}/{low:g} mmHg"
-                            if family_scope
+                            f"{member}血压最高 {high:g}/{low:g} mmHg"
+                            if level == "warning"
+                            else f"{member}有血压读数达到 "
+                            f"{high:g}/{low:g} mmHg"
+                        ),
+                        f"家庭范围内该成员近 {days} 天的单次最高读数。",
+                        (
+                            "单次明显升高也需要复测；持续偏高请咨询医生。"
+                            if level == "warning"
+                            else "建议按成员分别复测并记录。"
+                        ),
+                        "metric",
+                        metric="bp",
+                    ))
+            else:
+                reading = _bp_peak_reading(row)
+                if reading is not None:
+                    level, high, low = reading
+                    insights.append(_health_insight(
+                        "metric_bp_single",
+                        level,
+                        (
+                            f"单次血压最高 {high:g}/{low:g} mmHg"
+                            if level == "warning"
                             else f"有血压读数达到 {high:g}/{low:g} mmHg"
                         ),
+                        f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。",
                         (
-                            "家庭范围内出现偏高读数；"
-                            "建议按成员分别复测并记录。"
-                            if family_scope
-                            else f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
-                            "建议早晚测量并记录。"
+                            "单次明显升高也需要复测；持续偏高请咨询医生。"
+                            if level == "warning"
+                            else "建议早晚测量并记录。"
                         ),
-                        "设置血压目标后可自动判断是否达标。",
                         "metric",
                         metric="bp",
                     ))
@@ -11306,11 +11363,11 @@ async def family_overview(days: int = 7):
                 f"{label} {format_metric_value(item)}"
             )
             alerts = []
-        if over_target and stale and not (
-            metric in DAILY_ACCUMULATING_METRICS and day_total is not None
-        ):
+        if over_target and stale:
             # 陈旧读数不能继续以「超标/低于目标」标红返回：
-            # 卡片与 CSV 会把它当成当前状态，和「暂无需要关注」矛盾
+            # 卡片与 CSV 会把它当成当前状态，和「暂无需要关注」矛盾。
+            # 每日累计同样处理——day_total 就来自这条陈旧最新记录
+            # 所在自然日，今日有记录时 stale 必为 False
             over_target = None
         elif alerts:
             entry = critical_by_profile.setdefault(profile, {
@@ -16749,6 +16806,12 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
                 _memory_scope(profile, "")
             )):
                 all_ok = False
+            # 旧版可读档案命名空间（medix_profile_<原名>）中的病史
+            # 摘要也必须随档案删除，否则删除承诺未兑现
+            if not _retry(lambda: memory.delete_scope(
+                f"medix_profile_{profile}"[:120]
+            )):
+                all_ok = False
     return all_ok
 
 
@@ -16816,6 +16879,11 @@ def _erase_long_term_before(
     elif profile:
         if not _retry(lambda: memory.delete_scope_before(
             _memory_scope(profile, ""), cutoff
+        )):
+            all_ok = False
+        # 旧版可读档案命名空间按时间窗清理（目标已重建时保留新数据）
+        if not _retry(lambda: memory.delete_scope_before(
+            f"medix_profile_{profile}"[:120], cutoff
         )):
             all_ok = False
     return all_ok

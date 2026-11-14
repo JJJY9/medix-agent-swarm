@@ -539,7 +539,7 @@ def test_default_attachment_dir_survives_owner_marker_loss(tmp_path):
 def test_deep_link_pending_persisted_across_reload():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "DEEP_LINK_PENDING_KEY" in app_js
-    assert "pendingDeepLink === initialSessionFromUrl" in app_js
+    assert "pendingDeepLinkSession === initialSessionFromUrl" in app_js
     assert "function consumeDeepLink()" in app_js
     assert "safeSessionRemove(DEEP_LINK_PENDING_KEY);" in app_js
 
