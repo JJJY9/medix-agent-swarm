@@ -2186,7 +2186,9 @@ def _client_ip_key(request: Request) -> str:
     客户端地址；直连客户端伪造转发头无法更换计数桶。
     """
     peer = request.client.host if request.client else ""
-    if _trust_proxy_headers() and _is_loopback_address(peer):
+    # 受信代理包括 loopback 与显式声明的非 loopback 对端：这类请求
+    # 才可以采信转发地址，让每个真实客户端独立分桶
+    if _trust_proxy_headers() and _is_trusted_proxy_peer(peer):
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{forwarded}"
@@ -2431,7 +2433,7 @@ async def require_access_token(request: Request, call_next):
         shared_bucket = (
             _is_trusted_proxy_peer(peer_host)
             and _has_proxy_headers(request)
-            and not _has_forwarded_address_header(request)
+            and _client_ip_key(request) == f"ip:{peer_host or 'unknown'}"
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -5849,9 +5851,12 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 appointment.get("status") != "upcoming"
                 or str(appointment.get("scheduled_at") or "")[:10]
                 != followup_date
+                or _normalized_profile_key(
+                    appointment.get("profile") or ""
+                ) != _normalized_profile_key(visit.get("profile") or "")
             ):
                 # completed/cancelled 的预约不能复用（否则会给已完成预约
-                # 新建待办提醒）；复诊日期已改时旧日期预约也不算已安排
+                # 新建待办提醒）；复诊日期/档案已改时旧预约不算已安排
                 appointment = None
         profile = visit.get("profile") or ""
         title = (
@@ -5902,6 +5907,9 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 reminder.get("done")
                 or int(reminder.get("appointment_id") or 0)
                 != int(appointment["id"])
+                or _normalized_profile_key(
+                    reminder.get("profile") or ""
+                ) != _normalized_profile_key(visit.get("profile") or "")
             ):
                 # 已完成的提醒不是待办：改期/再次安排时必须重建，
                 # 否则该复诊永远没有提醒
@@ -7035,6 +7043,13 @@ async def _weekly_report_impl(
         }
         for metric, entry in previous_grouped.items()
     }
+    # 步数/饮水按自然日累计：两周的记录条数不同时，逐条均值差异
+    # 不代表趋势（每天 2 次 3000 vs 1 次 6000 是同一总量），不输出
+    # 「较上期」，避免误导
+    for daily_metric in DAILY_ACCUMULATING_METRICS:
+        if daily_metric in previous_rows:
+            previous_rows[daily_metric]["prev_avg_value1"] = None
+            previous_rows[daily_metric]["prev_avg_value2"] = None
 
     # 步数/饮水按自然日累计：给出今日累计与每日目标判定，
     # 单条记录不再直接与每日目标比较（家庭范围跨成员累计无意义）
@@ -7307,6 +7322,7 @@ async def _weekly_report_impl(
             "value": item.get("value"),
             "unit": item.get("unit", ""),
             "tested_at": item.get("tested_at", ""),
+            "profile": item.get("profile", ""),
             "abnormal_low": bool(item.get("abnormal_low")),
             "abnormal_high": bool(item.get("abnormal_high")),
         }
@@ -8248,7 +8264,11 @@ def _build_health_insights(
     if labs.get("abnormal"):
         items = labs.get("items") or []
         detail = "、".join(
-            f"{item.get('item', '')} "
+            (
+                f"{item.get('profile')}："
+                if family_scope and item.get("profile") else ""
+            )
+            + f"{item.get('item', '')} "
             f"{_health_search_number(item.get('value'))}"
             f"{item.get('unit') or ''}"
             for item in items[:5]
@@ -12015,17 +12035,34 @@ async def export_family_overview_csv(days: int = 7):
         context = item.get("context") or {}
         metric_parts = []
         for metric in (item.get("metrics") or [])[:3]:
-            text = f"{metric['label']} {metric['value']} ".strip()
-            text = (text + f"{metric['unit']}").strip()
-            if metric.get("daily_total") is not None:
-                # 步数/饮水显示今日累计，不按单条记录判“超标”
-                text += f"（今日累计 {metric['daily_total']:g}）"
-            elif metric.get("over_target"):
-                text += (
-                    "（低于目标）"
-                    if metric.get("target_direction") == "low"
-                    else "（超标）"
+            unit = metric.get("unit") or ""
+            direction = metric.get("target_direction")
+            suffix = ""
+            if metric.get("over_target") is not None:
+                suffix = (
+                    "（低于目标）" if direction == "low" else "（超标）"
                 )
+            if metric.get("daily_total") is not None:
+                # 今日有记录：展示当日累计并按同一数字判定方向
+                text = (
+                    f"{metric['label']} 今日累计 "
+                    f"{metric['daily_total']:g}{unit}{suffix}"
+                )
+            elif metric.get("daily_judged_total") is not None:
+                # 今天没记录：明确标注判定所用的是哪一天的累计，
+                # 不能与「最近单条读数」混成同一行的两个数字
+                judged_day = str(
+                    metric.get("daily_judged_day") or ""
+                )[5:]
+                day_prefix = f"{judged_day}累计 " if judged_day else "累计 "
+                text = (
+                    f"{metric['label']} {day_prefix}"
+                    f"{metric['daily_judged_total']:g}{unit}{suffix}"
+                )
+            else:
+                text = f"{metric['label']} {metric['value']} ".strip()
+                text = (text + unit).strip()
+                text += suffix
             metric_parts.append(text)
         metric_text = "；".join(metric_parts)
         medications = item.get("medications") or {}

@@ -366,6 +366,9 @@ class LongTermMemory:
                 logger.warning(
                     "Mem0 get_all 分页未前进，停止遍历该命名空间"
                 )
+                # 删除路径必须知道遍历不完整，否则会把「没找到目标」
+                # 当成「已清理干净」并移除重试队列
+                self._iter_truncated = True
                 return
             last_first_id = first_id
             yield from batch
@@ -375,6 +378,7 @@ class LongTermMemory:
         logger.warning(
             f"Mem0 记忆遍历达到最大页数 {max_pages}，可能漏掉部分记忆"
         )
+        self._iter_truncated = True
 
     def _delete_memory(self, memory_id: str) -> bool:
         try:
@@ -395,6 +399,7 @@ class LongTermMemory:
         """
         matching_ids: List[str] = []
         self.last_error = ""
+        self._iter_truncated = False
         try:
             for item in self._iter_memories(user_id):
                 if predicate is not None:
@@ -410,6 +415,9 @@ class LongTermMemory:
         except Exception as e:
             self.last_error = str(e)
             logger.error(f"Failed to list Mem0 memories for deletion: {e}")
+        if getattr(self, "_iter_truncated", False) and not self.last_error:
+            # 分页未完成：目标摘要可能从未被枚举到，保留清理队列重试
+            self.last_error = "Mem0 分页遍历未完成，清理可能不完整"
 
         deleted = 0
         for memory_id in matching_ids:

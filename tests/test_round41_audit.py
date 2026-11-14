@@ -365,9 +365,14 @@ def test_schedule_followup_recreates_completed_reminder(store):
         first["appointment"]["id"], scheduled_at="2026-12-20T09:00"
     )
 
+    # 改期本身就会重建待办提醒（第四十四轮）：安排复诊接口只需复用
+    pending_after_reschedule = store.list_reminders(False, "妈妈")
+    assert [
+        item["due_at"] for item in pending_after_reschedule
+    ] == ["2026-12-19"]
+
     second = _schedule_followup_sync(store, visit["id"])
 
-    assert second["reminder_created"] is True
     assert second["reminder"]["due_at"] == "2026-12-19"
     pending = store.list_reminders(False, "妈妈")
     assert [item["due_at"] for item in pending] == ["2026-12-19"]

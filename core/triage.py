@@ -188,6 +188,8 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"(?:阴道|产道|下体)"
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
     r"|(?:孕妇|产妇|孕产妇|怀孕|孕期|产前|产后|早孕|孕[早中晚]期"
+    r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
+    r"|胎停育?|稽留流产"
     r"|孕\s*[0-9一二两三四五六七八九十]+\s*(?:周|个月|月))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
@@ -211,28 +213,118 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             bleed_body,
         ) is not None:
             continue
-        if any(
-            word in span or word in prefix[-6:]
-            for word in (
-                "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+        # 部位明确的匹配（阴道出血/产道出血）只看匹配片段本身：
+        # 前置枚举里的「牙龈出血、」不能吞掉后面的阴道出血
+        location_match = span.startswith(
+            ("阴道", "产道", "下体")
+        ) or span.endswith(("阴道", "产道"))
+        gum_words = (
+            "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+        )
+        if location_match:
+            gum_hit = any(word in span for word in gum_words)
+        else:
+            # 非部位匹配只看顿号/逗号后的最后一个枚举项：前面的
+            # 「牙龈出血、」不能吞掉后面的孕产期「见红」
+            prefix_tail = re.split(
+                r"[，。；;,.!?！？、\n]", prefix
+            )[-1]
+            gum_hit = any(
+                word in span or word in prefix_tail[-6:]
+                for word in gum_words
             )
-        ):
+        if gum_hit:
             continue
         if not _is_negated(prefix):
             return True
+    location_terms = (
+        "阴道出血", "阴道流血", "阴道大量出血", "产道出血", "下体出血",
+    )
     for term in PREGNANCY_BLEEDING_TERMS:
         start = text.find(term)
         while start != -1:
             prefix = _clause_prefix(text, start)
-            if not any(
-                word in prefix[-6:]
-                for word in (
-                    "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+            if term in location_terms:
+                gum_hit = any(
+                    word in term for word in (
+                        "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+                    )
                 )
-            ) and not _is_negated(prefix):
+            else:
+                prefix_tail = re.split(
+                    r"[，。；;,.!?！？、\n]", prefix
+                )[-1]
+                gum_hit = any(
+                    word in prefix_tail[-6:]
+                    for word in (
+                        "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+                    )
+                )
+            if not gum_hit and not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
     return False
+
+
+_GUM_BLEEDING_WORDS = (
+    "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔", "口腔",
+)
+
+
+def _generic_bleeding_positive(text: str) -> bool:
+    """孕产妇主诉里任何未否定的出血/流血/见红（牙鼻皮肤除外）。
+
+    妊娠状态可能只在档案病史里，主诉只说「今天出血了」：此时不能
+    要求出血前必须出现妊娠词。
+    """
+    for term in ("出血", "流血", "见红"):
+        start = text.find(term)
+        while start != -1:
+            prefix = _clause_prefix(text, start)
+
+            def _bleeding_negated(value: str) -> bool:
+                return (
+                    re.search(
+                        r"(?:没有|没|无|未|不|否认|非)"
+                        r"(?:(?:明显|任何|见|见到|出现|发现)\s*)*$",
+                        value,
+                    ) is not None
+                    or _is_negated(value)
+                )
+
+            location_stripped = re.sub(
+                r"(?:阴道|产道|下体)\s*$", "", prefix
+            )
+            if (
+                any(word in prefix[-6:] for word in _GUM_BLEEDING_WORDS)
+                or _bleeding_negated(prefix)
+                or (
+                    location_stripped != prefix
+                    and _bleeding_negated(location_stripped)
+                )
+            ):
+                start = text.find(term, start + len(term))
+                continue
+            return True
+    return False
+
+
+#: 病史里的既往产科史（不再代表当前妊娠）
+_HISTORY_PAST_OBSTETRIC = re.compile(
+    r"(?:曾经|以前|去年|前年|多年前|既往|已流产|已结束|"
+    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|妊娠期糖尿病|"
+    r"产后抑郁|已控制|已治愈)"
+)
+
+
+def _current_history_text(history: str) -> str:
+    """过滤掉病史中的既往产科记录，只保留可能代表当前妊娠的分句。"""
+    kept = []
+    for clause in re.split(r"[，。；;,.!?！？\n]", history):
+        if _HISTORY_PAST_OBSTETRIC.search(clause):
+            continue
+        kept.append(clause)
+    return "；".join(kept)
 
 
 def _is_negated(prefix: str, suffix: str = "") -> bool:
@@ -609,6 +701,10 @@ def _clean_complaint_clause(clause: str) -> str:
                 for word in (
                     "突发", "突然", "剧烈", "加重", "无法", "不能",
                     "大量", "持续", "反复",
+                    # 典型急症修饰：放射/压榨/冷汗等同样说明是真实主诉
+                    "放射", "压榨", "撕裂", "大汗", "冷汗", "冒汗",
+                    "难忍", "濒死", "躺不平", "不能平卧", "端坐呼吸",
+                    "闷痛", "绞痛", "刀割",
                 )
             )
         ):
@@ -1127,7 +1223,9 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
     history_text = ""
     if isinstance(context, dict):
         try:
-            history_text = _active_medical_text(context)
+            history_text = _current_history_text(
+                _active_medical_text(context)
+            )
         except Exception:
             history_text = ""
     pregnancy_text = text
@@ -1154,7 +1252,10 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
     )
     if (
         pregnancy_mentioned
-        and _has_pregnancy_bleeding(text)
+        and (
+            _has_pregnancy_bleeding(text)
+            or _generic_bleeding_positive(text)
+        )
         and "孕产期出血" not in matches
     ):
         matches.append("孕产期出血")
