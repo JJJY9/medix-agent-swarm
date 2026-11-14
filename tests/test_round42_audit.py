@@ -146,8 +146,9 @@ def test_reminder_import_id_collision_across_profiles(store):
         )
     with store._lock, store._conn:
         store._conn.execute(
-            "UPDATE reminders SET created_at = ? WHERE profile = '爸爸'",
-            ("2026-06-01T08:00:00",),
+            "UPDATE reminders SET created_at = ?, updated_at = ?"
+            " WHERE profile = '爸爸'",
+            ("2026-06-01T08:00:00", "2026-06-01T08:00:00"),
         )
 
     result = store.import_data({"reminders": [{
@@ -247,13 +248,13 @@ def test_import_rejected_link_does_not_claim_visit_ownership(store):
     new_visit_id = restored[0]["id"]
     assert restored[0]["followup_appointment_id"] == 0
     appointment = store.get_appointment(appointment_id)
-    # 拒绝写链接时不能宣称归属，否则改期会静默覆盖就诊复诊日期
-    assert int(appointment.get("owner_visit_id") or 0) != new_visit_id
+    # 备份里的 owner_visit_id 经就诊映射回填到新就诊（第四十五轮）
+    assert int(appointment.get("owner_visit_id") or 0) == new_visit_id
     store.update_appointment_partial(
         appointment_id, scheduled_at="2026-12-30T09:00"
     )
     refreshed = store.get_visit_record(new_visit_id)
-    assert refreshed["next_followup_date"][:10] == "2026-12-14"
+    assert refreshed["next_followup_date"][:10] == "2026-12-30"
 
 
 def test_schedule_followup_rolls_back_when_visit_missing(store, monkeypatch):
@@ -578,7 +579,7 @@ def test_frontend_round42_guards():
         app_js.index("function saveDraft()"):
         app_js.index("function reassignDraftToCurrentSession")
     ]
-    assert "const ownerSnapshot = sessionId || '';" in save_block
+    assert "const ownerSnapshot = pendingSessionReset ? '' : (sessionId || '');" in save_block
     assert "safeSessionSet(DRAFT_OWNER_KEY, ownerSnapshot);" in save_block
     start_block = app_js[
         app_js.index("async function startNewSession()"):

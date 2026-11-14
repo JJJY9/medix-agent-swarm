@@ -104,14 +104,19 @@ def test_past_obstetric_history_does_not_trigger():
             "今天阴道出血", {"history": history}
         )["level"] == "none", history
 
-    # 妊娠期合并症是当前妊娠的常见诊断：不能因「已控制」整句丢弃
+    # 单独的「妊娠期糖尿病/高血压」多为既往妊娠诊断，不能当作
+    # 当前妊娠证据；带孕周的才是当前妊娠
     for history in (
         "慢病：妊娠期糖尿病（已控制）",
         "妊娠期高血压（2026-10-01，管理中）",
     ):
         assert detect_red_flags(
             "今天阴道出血", {"history": history}
-        )["level"] == "emergency", history
+        )["level"] == "none", history
+    assert detect_red_flags(
+        "今天阴道出血",
+        {"history": "孕20周，妊娠期高血压（管理中）"},
+    )["level"] == "emergency"
 
 
 # ---------------------------------------------------------------- 用药

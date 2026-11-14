@@ -3021,6 +3021,12 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
   if (question) {
     actions.appendChild(makeAction('再次会诊', () => {
       if (busy) return;
+      if (pendingSessionReset) {
+        // 档案已切换：旧患者的问题不能写进新档案的会话
+        restoreComposer(question);
+        setVitals('warn', '档案已切换，请确认后再提交');
+        return;
+      }
       send(question);
     }));
   }
@@ -3105,6 +3111,12 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
     }
     retry.askTurn?.remove();
     wrap.remove();
+    if (pendingSessionReset) {
+      // 档案已切换：旧患者的问题不能按新档案自动重发
+      restoreComposer(retry.question);
+      setVitals('warn', '档案已切换，请确认后再提交');
+      return;
+    }
     if (sessionId !== retrySession || openSessionSeq !== retrySeq) {
       // 会话已切换：把问题放回输入框，而不是写进另一位患者名下
       restoreComposer(retry.question);
@@ -5131,6 +5143,7 @@ async function openSession(id) {
     window.alert('会诊进行中，请先停止当前会诊。');
     return false;
   }
+  const sameSession = id === sessionId;
   const seq = ++openSessionSeq;
 
   try {
@@ -5167,7 +5180,12 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
-    renderStoredMessages(data.messages || [], id, data.profile || '');
+    renderStoredMessages(
+      data.messages || [], id, data.profile || '',
+      // 重开当前会话按普通恢复处理：不用旧快照覆盖用户未发送的
+      // 补充信息编辑；只有切换到其它会话才按历史快照回填
+      { restoreContext: !sameSession }
+    );
     setVitals('idle', '历史会诊');
     els.input.focus();
     return true;
@@ -9660,7 +9678,8 @@ function renderFamilyOverview(data) {
       meta.textContent = contextText;
       head.appendChild(meta);
     }
-    if (!saved) {
+    if (!saved && profile.name) {
+      // 未指定档案（name 为空）不是被删除的档案
       const gone = document.createElement('span');
       gone.className = 'family-card-gone';
       gone.textContent = '已删除';
@@ -21556,8 +21575,9 @@ let draftTimer = null;
 function saveDraft() {
   clearTimeout(draftTimer);
   // 归属在调用时捕获：定时器触发前可能已切换会话，不能把上一
-  // 会话的草稿改挂到新会话上
-  const ownerSnapshot = sessionId || '';
+  // 会话的草稿改挂到新会话上。待重置期间草稿属于「尚未创建的新
+  // 会话」，不能记在旧档案会话名下
+  const ownerSnapshot = pendingSessionReset ? '' : (sessionId || '');
   draftTimer = setTimeout(() => {
     try {
       if (els.input.value.trim()) {
@@ -21579,7 +21599,9 @@ function flushDraftNow() {
   try {
     if (els.input.value.trim()) {
       safeSessionSet(DRAFT_KEY, els.input.value);
-      safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
+      safeSessionSet(
+        DRAFT_OWNER_KEY, pendingSessionReset ? '' : (sessionId || '')
+      );
     } else {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);

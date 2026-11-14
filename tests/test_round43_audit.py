@@ -286,15 +286,15 @@ def test_appointment_stale_note_marker_is_remapped(store):
     assert len(restored) == 1
     new_visit_id = restored[0]["id"]
     appointment = store.get_appointment(appointment_id)
-    # 备注标记改成新库就诊 id；归属未写回（旧 owner 仍指向已删就诊）
+    # 备注标记与持久 owner 都按备份映射重写到新库就诊
     assert f"#{new_visit_id}" in str(appointment.get("note") or "")
-    assert int(appointment.get("owner_visit_id") or 0) != new_visit_id
-    # 改期不会静默覆盖新就诊的复诊日期
+    assert int(appointment.get("owner_visit_id") or 0) == new_visit_id
+    # 归属经映射后，改期同步的是这条预约自己的就诊
     store.update_appointment_partial(
         appointment_id, scheduled_at="2026-12-30T09:00"
     )
     refreshed = store.get_visit_record(new_visit_id)
-    assert refreshed["next_followup_date"][:10] == "2026-12-14"
+    assert refreshed["next_followup_date"][:10] == "2026-12-30"
 
 
 def test_import_merges_restored_reminder_duplicate(store):
