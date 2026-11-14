@@ -1700,17 +1700,33 @@ async def _auth_compare_enter(key: str):
         if gate["waiting"] >= _AUTH_COMPARE_GATE_MAX_WAITING:
             return None
         gate["waiting"] += 1
+    acquired = False
     try:
         await gate["lock"].acquire()
-        try:
-            await asyncio.sleep(_AUTH_COMPARE_GATE_SECONDS)
-        except BaseException:
-            # 客户端断开/任务取消时 sleep 会被取消：锁已获得，必须
-            # 释放，否则该来源键的后续请求会永久排队
-            gate["lock"].release()
-            raise
+        acquired = True
+        # 与上一次比较至少间隔 0.2 秒；长时间空闲后的单个请求无需
+        # 等待（round51 语义），并发/连续猜解被真正限速
+        last = gate.get("last")
+        if last is not None:
+            delay = _AUTH_COMPARE_GATE_SECONDS - (
+                time.monotonic() - last
+            )
+            if delay > 0:
+                try:
+                    await asyncio.sleep(delay)
+                except BaseException:
+                    # 客户端断开/任务取消时 sleep 会被取消：锁已获得，
+                    # 必须释放，否则该来源键的后续请求会永久排队
+                    gate["lock"].release()
+                    acquired = False
+                    raise
         return gate
     except BaseException:
+        if acquired:
+            try:
+                gate["lock"].release()
+            except RuntimeError:
+                pass
         with _auth_compare_gates_lock:
             gate["waiting"] = max(0, gate["waiting"] - 1)
         raise
@@ -1720,6 +1736,7 @@ def _auth_compare_exit(gate) -> None:
     try:
         gate["lock"].release()
     finally:
+        gate["last"] = time.monotonic()
         with _auth_compare_gates_lock:
             gate["waiting"] = max(0, gate["waiting"] - 1)
 _short_access_token_warned = False
@@ -2132,7 +2149,11 @@ def _parse_forwarded_header(header: str) -> str:
     if not rightmost:
         return ""
     trusted_hops = _trusted_proxy_peers()
-    if _is_loopback_address(rightmost) or rightmost in trusted_hops:
+    rightmost_key = _peer_key(rightmost)
+    if (
+        _is_loopback_address(rightmost_key)
+        or rightmost_key in trusted_hops
+    ):
         for value in reversed(values[:-1]):
             if value is None:
                 # 该元素没有 for 参数（如只有 proto=https），跳过
@@ -2543,11 +2564,12 @@ def _host_header_hostname(request: Request) -> str:
 
 
 def _local_ui_host_allowed(request: Request) -> bool:
-    """无令牌兜底只放行真正的本机界面。
+    """无令牌兜底的本机界面判定：回环对端 + Host 为本机。
 
-    同机反向代理（如 nginx 默认不添加任何转发头）会让局域网请求以
-    回环对端到达：Host 不是 localhost/回环 IP 时按远程处理，避免
-    无令牌部署被代理整体暴露。
+    Host 是客户端可完全控制的数据，这里不是认证边界：只能拦下如实
+    携带局域网 Host 的浏览器。同机反代无论保留客户端 Host 还是改写
+    为回环上游地址，都无法与真正本机请求区分，部署反代必须设置
+    MEDIX_ACCESS_TOKEN（或显式 MEDIX_ALLOW_INSECURE_LAN=1）。
     """
     hostname = _host_header_hostname(request)
     if not hostname:
@@ -2718,9 +2740,10 @@ async def require_access_token(request: Request, call_next):
         else:
             # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
             # 预锁定共享键，否则任何人的错误尝试都会误锁全家；改为
-            # 同键互斥闸门——并发请求串行比较令牌（0.2s/次），在线
-            # 猜解被真正限速，但正确令牌只是稍慢、不会被拒绝。排队
-            # 超过上限直接 429，避免闸门本身被洪泛放大成拒绝服务
+            # 同键互斥闸门——并发请求串行比较令牌、相邻比较至少间隔
+            # 0.2s，在线猜解被真正限速；无并发时正确令牌不被额外延迟。
+            # 排队超过上限直接 429（含正确令牌），避免闸门被洪泛时
+            # 无限占用内存/连接
             gate_handle = await _auth_compare_enter(loopback_bucket_key)
             if gate_handle is None:
                 return add_security_headers(JSONResponse(
@@ -4617,11 +4640,16 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
             })
     if not family_alerts:
         return None
+    by_source: Dict[str, int] = {}
+    for alert in family_alerts:
+        source_key = str(alert.get("source") or "base")
+        by_source[source_key] = by_source.get(source_key, 0) + 1
     return {
         "level": "warning",
         "alerts": family_alerts[:5],
-        # 展示只截前 5 条，但总数必须是全部成员的告警数
+        # 展示只截前 5 条，但总数与来源计数必须是全部成员的告警
         "count": len(family_alerts),
+        "by_source": by_source,
     }
 
 
@@ -8212,12 +8240,18 @@ def _build_health_insights(
             ("condition", "慢病用药"),
             ("base", "过敏/相互作用"),
         )
-        source_counts: Dict[str, int] = {}
-        for item in alerts:
-            source_key = str(item.get("source") or "base")
-            source_counts[source_key] = (
-                source_counts.get(source_key, 0) + 1
-            )
+        source_counts: Dict[str, int] = {
+            str(key): int(value)
+            for key, value in (
+                safety.get("by_source") or {}
+            ).items()
+        }
+        if not source_counts:
+            for item in alerts:
+                source_key = str(item.get("source") or "base")
+                source_counts[source_key] = (
+                    source_counts.get(source_key, 0) + 1
+                )
         summary = "、".join(
             f"{label} {source_counts[key]} 条"
             for key, label in source_labels
@@ -11515,6 +11549,27 @@ async def delete_profile(name: str):
             store.complete_memory_cleanup, cleanup_entries
         )
     audit_key = _profile_audit_key(name)
+    # 旧版本把改名前的名字留在审计里：detail 为当前名的 profile.rename
+    # 行、target 是旧名。先收集旧名，连同其指标目标审计一起清理，
+    # 避免删除档案后旧姓名仍出现在审计/CSV/备份中
+    old_names = set()
+    for entry in await asyncio.to_thread(
+        store.list_audit_log, 100000
+    ):
+        if str(entry.get("action") or "") != "profile.rename":
+            continue
+        if str(entry.get("detail") or "").strip() != normalized_name:
+            continue
+        old_name = str(entry.get("target") or "").strip()
+        if old_name:
+            old_names.add(old_name)
+    for old_name in sorted(old_names):
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            ["metric_target.set", "metric_target.delete"],
+            f"{old_name}·",
+            "metric_target",
+        )
     # 清理历史审计中的档案名
     await asyncio.to_thread(
         store.redact_audit_targets,
@@ -11528,6 +11583,20 @@ async def delete_profile(name: str):
         ["profile.save", "profile.delete"],
         normalized_name,
         audit_key,
+    )
+    # 旧版本把指标目标写成「档案名·指标」，且 rename 的新名字存在
+    # detail 里：删除档案时一并清理，避免审计/备份继续残留姓名
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["metric_target.set", "metric_target.delete"],
+        f"{normalized_name}·",
+        "metric_target",
+    )
+    await asyncio.to_thread(
+        store.redact_audit_details,
+        ["profile.rename"],
+        normalized_name,
+        "renamed",
     )
     await record_audit("profile.delete", audit_key)
     return {"ok": True, "name": name}
@@ -11590,6 +11659,12 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
         ["profile.save", "profile.delete"],
         _normalize_profile_name(name),
         old_key,
+    )
+    await asyncio.to_thread(
+        store.redact_audit_targets,
+        ["metric_target.set", "metric_target.delete"],
+        f"{_normalize_profile_name(name)}·",
+        "metric_target",
     )
     await record_audit("profile.rename", _profile_audit_key(new_name))
     return {"ok": True, "old_name": name, "name": new_name}
@@ -11945,11 +12020,7 @@ async def family_overview(days: int = 7):
         daily = daily_totals.get((profile, metric))
         daily_total = daily["total"] if daily else None
         day_total = daily_total
-        if (
-            target is not None
-            and metric in DAILY_ACCUMULATING_METRICS
-            and day_total is None
-        ):
+        if metric in DAILY_ACCUMULATING_METRICS and day_total is None:
             extra = extra_daily.get((profile, metric))
             if extra is not None:
                 day_total = extra["total"]
@@ -12331,7 +12402,10 @@ async def family_overview(days: int = 7):
             "count": 0, "latest": None,
         })
         entry["count"] += 1
-        if entry["latest"] is None:
+        if (
+            entry["latest"] is None
+            and str(item.get("visit_date") or "")[:10] <= today
+        ):
             entry["latest"] = {
                 "id": item.get("id"),
                 "visit_date": item.get("visit_date", ""),
@@ -14316,8 +14390,13 @@ async def health_visit_prep(
     window_from_last_visit = False
     if since_last_visit:
         recent_visits = await asyncio.to_thread(
-            store.list_visit_records, profile_key, 0, "", 1
+            store.list_visit_records, profile_key, 0, "", 50
         )
+        today_text = now.strftime("%Y-%m-%d")
+        recent_visits = [
+            item for item in recent_visits
+            if str(item.get("visit_date") or "")[:10] <= today_text
+        ]
         if recent_visits:
             visit_date = str(
                 recent_visits[0].get("visit_date") or ""
@@ -14579,7 +14658,14 @@ async def health_visit_prep(
     ]
     taken_count = len(logs) - len(skip_logs)
 
-    latest_visit = visits[0] if visits else None
+    latest_visit = next(
+        (
+            item for item in visits
+            if str(item.get("visit_date") or "")[:10]
+            <= datetime.now().strftime("%Y-%m-%d")
+        ),
+        None,
+    )
     last_visit = None
     if latest_visit:
         last_visit = {
@@ -16264,11 +16350,22 @@ async def bulk_delete_reminders(request: BulkIdsRequest):
 
     # 只删除服务端当前仍为已完成的提醒：前端缓存可能过期，其它
     # 标签页/设备期间恢复（reopen）的提醒不能被「清理已完成」误删
-    deleted = await asyncio.to_thread(
-        get_session_store().delete_reminders_bulk, request.ids, True
+    store = get_session_store()
+    deleted_ids = await asyncio.to_thread(
+        store.delete_reminders_bulk_with_ids, request.ids, True
     )
-    await record_audit("reminder.bulk_delete", str(deleted))
-    return {"ok": True, "deleted": deleted}
+    for reminder_id in deleted_ids:
+        await asyncio.to_thread(
+            store.redact_audit_targets,
+            [
+                "reminder.create", "reminder.update", "reminder.complete",
+                "reminder.reopen", "reminder.snooze", "reminder.delete",
+            ],
+            f"{reminder_id}·",
+            str(reminder_id),
+        )
+    await record_audit("reminder.bulk_delete", str(len(deleted_ids)))
+    return {"ok": True, "deleted": len(deleted_ids)}
 
 
 @app.post("/api/tools/bmi")

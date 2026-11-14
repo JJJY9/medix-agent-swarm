@@ -363,6 +363,8 @@ def test_compare_gate_releases_lock_when_cancelled():
     api_server._auth_compare_gates.clear()
 
     async def run():
+        first = await api_server._auth_compare_enter("ip:round52-cancel")
+        api_server._auth_compare_exit(first)
         holder = asyncio.create_task(
             api_server._auth_compare_enter("ip:round52-cancel")
         )

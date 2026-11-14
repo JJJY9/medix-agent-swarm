@@ -20599,20 +20599,29 @@ async function send(question) {
     } finally {
       sendInFlight = false;
     }
-    if (
-      deepLinkedSession || busy
-      || sessionId !== sendSession
-      || openSessionSeq !== sendSeq
-    ) {
+    const takenOver = Boolean(
+      sessionId !== sendSession || openSessionSeq !== sendSeq
+    );
+    if (deepLinkedSession || busy || takenOver) {
       // 恢复失败，或等待期间用户打开了别的会话：不能把这条问题
       // 发进错误的患者会话；主诉要放回输入框而不是静默丢失
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
-      restoreComposer(question);
+      if (takenOver) {
+        // 会话已切换：只把文本放回输入框，不写成当前会话的草稿，
+        // 否则另一位患者的会话会带着前一位病情的草稿被提交
+        els.input.value = question;
+        autoGrow();
+        setVitals('warn', '会诊已切换，刚才的主诉未提交，请确认后重新发送');
+      } else {
+        restoreComposer(question);
+      }
       if (els.empty && !els.thread.querySelector('.turn')) {
         // 等待期间用户已打开带消息的会话：不能把欢迎空状态插回
         els.empty.hidden = false;
       }
-      setVitals('warn', '会诊记录尚未打开，请稍后重试');
+      if (!takenOver) {
+        setVitals('warn', '会诊记录尚未打开，请稍后重试');
+      }
       return;
     }
   }
@@ -21707,7 +21716,42 @@ async function applySelectedProfile() {
     // 线程为空但 sessionId 仍绑定服务端旧档案（恢复失败/尚未完成）：
     // 换档前必须断开旧会话，否则下一问会被服务端按旧档案回答并落库
     profileSelectionSeq += 1;
-    await detachSessionForProfileChange();
+    const hadPendingReset = pendingSessionReset;
+    const attemptSession = sessionId;
+    const attemptSeq = openSessionSeq;
+    const previousContext = (
+      readProfiles()[activeProfileName] || {}
+    ).context || {};
+    // await 期间用户可能直接提交：先应用新档案与上下文，让 send
+    // 组装的档案与补充信息一致，避免把旧患者病史写进新档案
+    setPendingSessionReset(true);
+    setActiveProfile(name);
+    if (name && readProfiles()[name]) {
+      applyPatientContext(readProfiles()[name].context || {});
+      els.profileSelect.value = name;
+    } else {
+      applyPatientContext({});
+    }
+    const ok = await detachSessionForProfileChange();
+    const takenOver = Boolean(
+      busy || sessionId !== attemptSession
+      || openSessionSeq !== attemptSeq
+    );
+    if (takenOver) {
+      // send/openSession 已接管：保留新档案与当前会话，不能回滚
+      return;
+    }
+    if (!ok) {
+      // 新建失败：撤销刚设置的待重置并恢复进入前的档案与表单
+      setPendingSessionReset(hadPendingReset);
+      if (!hadPendingReset && sessionId) {
+        persistSessionId(sessionId);
+      }
+      setActiveProfile(previous || '');
+      applyPatientContext(previousContext);
+      els.profileSelect.value = previous;
+      return;
+    }
   } else {
     // 没有既有会话/正在等待恢复：同样作废晚到的会话恢复
     profileSelectionSeq += 1;
@@ -21749,6 +21793,11 @@ function saveDraft() {
       } else {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
+        if (!busy && !sendInFlight) {
+          // 用户已主动清空主诉：在途记录不能继续保留，否则刷新后
+          // 会把被删除的病情描述重新填回输入框
+          safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        }
       }
     } catch {
       // 隐私模式下 sessionStorage 不可用时忽略
@@ -21866,7 +21915,17 @@ function restoreInflightQuestion() {
     const data = JSON.parse(raw);
     const question = String((data && data.question) || '').trim();
     const owner = String((data && data.sessionId) || '');
+    const at = Number((data && data.at) || 0);
     if (!question) return;
+    // 超过 6 小时的在途记录视为已放弃：陈旧病情描述不能在任何页面
+    // （尤其是新会话）被重新填回；缺少时间戳的旧记录同样丢弃
+    if (!at || Date.now() - at > 6 * 60 * 60 * 1000) {
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      return;
+    }
+    // 属于某个会话的主诉不能在「无当前会话」的页面恢复：上一位患者
+    // 的描述会直接落进新会话；保留给真正打开该会话的页面
+    if (owner && !sessionId) return;
     // 其它标签页/其它会话的问题不填进本页
     if (owner && sessionId && owner !== sessionId) return;
     if (els.input.value.includes(question)) {
