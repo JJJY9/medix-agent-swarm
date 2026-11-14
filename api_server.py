@@ -1963,7 +1963,13 @@ def _trusted_proxy_peers() -> set:
 
 
 def _is_trusted_proxy_peer(host: str) -> bool:
-    """TCP 对端是否可证明是本机/显式声明的反向代理。"""
+    """TCP 对端是否可证明是本机/显式声明的反向代理。
+
+    Unix 套接字部署没有对端地址（request.client 为 None）：套接字
+    只能由本机进程/同机反向代理连接，按受信代理处理。
+    """
+    if not host:
+        return True
     return _is_loopback_address(host) or host in _trusted_proxy_peers()
 
 
@@ -1985,8 +1991,6 @@ def _normalize_forwarded_address(value: str) -> str:
         if port.strip().isdigit():
             text = host.strip()
     text = text.strip()
-    if text.lower() == "localhost":
-        return text
     try:
         # RFC 7239 的混淆标识符（for=_hidden）、unknown 变体等都不是
         # 地址：只有合法 IP 才可用于本机判定与限流分桶
@@ -2180,8 +2184,11 @@ def _is_loopback_client(request: Request) -> bool:
     无法与真正的本机请求区分；隧道外露前必须设置 MEDIX_ACCESS_TOKEN。
     """
     peer = request.client.host if request.client else ""
+    if not peer and not _has_proxy_headers(request):
+        # Unix 套接字部署：没有对端地址，请求来自本机套接字
+        return True
     if _has_proxy_headers(request):
-        if not (_trust_proxy_headers() and _is_loopback_address(peer)):
+        if not (_trust_proxy_headers() and _is_trusted_proxy_peer(peer)):
             return False
         forwarded = _forwarded_client_address(request)
         if not forwarded:
@@ -2441,10 +2448,37 @@ async def require_access_token(request: Request, call_next):
         # 某个人的错误尝试把全家 429。直连远程客户端伪造
         # X-Forwarded-* 不满足对端条件，仍按自身地址预锁定；声明了
         # 地址头却解析失败（unknown/矛盾）同样继续预锁定
-        shared_bucket = (
+        loopback_bucket_key = f"ip:{peer_host or 'unknown'}"
+        shared_bucket = (not peer_host) or (
             _is_trusted_proxy_peer(peer_host)
-            and _client_ip_key(request) == f"ip:{peer_host or 'unknown'}"
+            and _client_ip_key(request) == loopback_bucket_key
         )
+        if (
+            _trust_proxy_headers()
+            and _is_trusted_proxy_peer(peer_host)
+        ):
+            # 回环/套接字对端的失败统一记入共享回环桶：伪造转发
+            # 地址（ssh -R/本机进程/隧道）无法轮换桶绕过限流，
+            # 也不能用伪造地址预锁定其他真实客户端
+            shared_blocked, shared_retry = (
+                auth_failure_limiter_loopback.is_blocked(
+                    loopback_bucket_key
+                )
+            )
+            if shared_blocked:
+                return add_security_headers(JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "code": "auth_rate_limited",
+                        "retry_after": round(shared_retry, 1),
+                    },
+                    headers={
+                        "Retry-After": str(
+                            max(1, math.ceil(shared_retry))
+                        )
+                    },
+                ))
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
             # 降低猜测速率（而不是只把 401 改成 429）。
@@ -2468,11 +2502,36 @@ async def require_access_token(request: Request, call_next):
                     },
                 ))
         if not is_authorized(request):
+            loopback_source = _is_loopback_client(request)
             limiter = (
                 auth_failure_limiter_loopback
-                if _is_loopback_client(request)
+                if loopback_source
                 else auth_failure_limiter
             )
+            if (
+                limiter is not auth_failure_limiter_loopback
+                and _trust_proxy_headers()
+                and _is_trusted_proxy_peer(peer_host)
+            ):
+                shared_allowed, shared_retry = (
+                    auth_failure_limiter_loopback.check(
+                        loopback_bucket_key
+                    )
+                )
+                if not shared_allowed:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(shared_retry, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(shared_retry))
+                            )
+                        },
+                    ))
             allowed, retry_after = limiter.check(
                 _client_ip_key(request)
             )
@@ -7263,9 +7322,9 @@ async def _weekly_report_impl(
         key=lambda row: str(row.get("taken_at") or ""),
         reverse=True,
     ):
-        name = str(item.get("profile") or "")
-        if name and name not in skip_members:
-            skip_members.append(name)
+        display = str(item.get("profile") or "") or "未指定档案"
+        if display not in skip_members:
+            skip_members.append(display)
     skip_items = [
         {
             "medication_name": item.get("medication_name") or "已删除药物",
@@ -7609,6 +7668,7 @@ async def _weekly_report_impl(
                 {
                     "vaccine_name": item.get("vaccine_name", ""),
                     "next_due": item.get("next_due", ""),
+                    "profile": item.get("profile", ""),
                 }
                 for item in sorted(
                     vaccine_overdue,
@@ -7636,6 +7696,7 @@ async def _weekly_report_impl(
                 {
                     "title": item.get("title", ""),
                     "next_due_at": item.get("next_due_at", ""),
+                    "profile": item.get("profile", ""),
                     "overdue": bool(item.get("overdue")),
                 }
                 for item in sorted(
@@ -7653,6 +7714,7 @@ async def _weekly_report_impl(
                 {
                     "title": item.get("title", ""),
                     "scheduled_at": item.get("scheduled_at", ""),
+                    "profile": item.get("profile", ""),
                 }
                 for item in sorted(
                     appointments_overdue,
@@ -7665,6 +7727,7 @@ async def _weekly_report_impl(
                     "scheduled_at": item.get("scheduled_at", ""),
                     "department": item.get("department", ""),
                     "doctor": item.get("doctor", ""),
+                    "profile": item.get("profile", ""),
                 }
                 for item in sorted(
                     appointments_upcoming,
@@ -8196,11 +8259,14 @@ def _build_health_insights(
         if worst is not None and worst[0] < 60:
             rate = int(worst[0])
             row = worst[1]
+            member = row.get("profile") or ""
             label = "·".join(
                 part for part in (
-                    row.get("profile") or "", row.get("name") or ""
+                    member, row.get("name") or ""
                 ) if part
             ) or "药物"
+            if family_scope and not member:
+                label = f"未指定档案 · {row.get('name') or '药物'}"
             insights.append(_health_insight(
                 "adherence",
                 "warning" if rate < 40 else "info",
@@ -8315,7 +8381,12 @@ def _build_health_insights(
             "warning",
             f"{care['overdue']} 项复查已逾期",
             "、".join(
-                f"{item.get('title', '')}（{item.get('next_due_at', '')}）"
+                (
+                    f"{item.get('profile') or '未指定档案'}："
+                    if family_scope else ""
+                )
+                + f"{item.get('title', '')}"
+                f"（{item.get('next_due_at', '')}）"
                 for item in overdue_items[:5]
             ),
             "请尽快安排复查并记录结果。",
@@ -8327,7 +8398,11 @@ def _build_health_insights(
             "info",
             f"未来 7 天有 {care['due_in_7_days']} 项复查到期",
             "、".join(
-                item.get("title", "")
+                (
+                    f"{item.get('profile') or '未指定档案'}："
+                    if family_scope else ""
+                )
+                + item.get("title", "")
                 for item in (care.get("items") or [])[:5]
             ),
             "可提前预约检查。",
@@ -8341,7 +8416,11 @@ def _build_health_insights(
             "info",
             f"{vaccines['overdue']} 剂疫苗已逾期",
             "、".join(
-                f"{item.get('vaccine_name', '')}"
+                (
+                    f"{item.get('profile') or '未指定档案'}："
+                    if family_scope else ""
+                )
+                + f"{item.get('vaccine_name', '')}"
                 f"（{item.get('next_due', '')}）"
                 for item in (vaccines.get("overdue_items") or [])[:5]
             ),
@@ -8367,7 +8446,11 @@ def _build_health_insights(
             "info",
             f"{appointments['overdue']} 个就诊预约已过期未更新",
             "、".join(
-                f"{item.get('title', '')}"
+                (
+                    f"{item.get('profile') or '未指定档案'}："
+                    if family_scope else ""
+                )
+                + f"{item.get('title', '')}"
                 f"（{str(item.get('scheduled_at') or '')[:16].replace('T', ' ')}）"
                 for item in (appointments.get("overdue_items") or [])[:5]
             ),
@@ -8379,7 +8462,12 @@ def _build_health_insights(
         insights.append(_health_insight(
             "appointment_upcoming",
             "info",
-            f"下一次就诊：{first.get('title') or '就诊'}",
+            (
+                f"下一次就诊：{first.get('profile') or '未指定档案'} · "
+                if family_scope
+                else "下一次就诊："
+            )
+            + f"{first.get('title') or '就诊'}",
             " · ".join(part for part in (
                 str(first.get("scheduled_at") or "")
                 .replace("T", " ")[:16],
@@ -14808,6 +14896,9 @@ async def export_health_dossier(
     lines.append("## 最近指标")
     # 步数/饮水按自然日累计判定：单条记录只是当日的一部分
     dossier_daily_totals: Dict[tuple, float] = {}
+    # 每个 (档案, 指标) 的当日合计必须来自该指标最新记录自己的日期：
+    # 不能把其他指标/其他日期返回的合计 map 全量覆盖进来
+    latest_daily_items: Dict[tuple, Dict[str, Any]] = {}
     for item in latest_metrics or []:
         metric = str(item.get("metric") or "")
         if metric not in DAILY_ACCUMULATING_METRICS:
@@ -14815,11 +14906,20 @@ async def export_health_dossier(
         day_key = str(item.get("measured_at") or "")[:10]
         if not day_key:
             continue
+        total_key = (item.get("profile") or "", metric)
+        current = latest_daily_items.get(total_key)
+        if current is None or str(item.get("measured_at") or "") > str(
+            current.get("measured_at") or ""
+        ):
+            latest_daily_items[total_key] = item
+    for total_key, item in latest_daily_items.items():
+        day_key = str(item.get("measured_at") or "")[:10]
         day_totals = await asyncio.to_thread(
             store.metric_daily_totals, day_key
         )
-        for key, value in day_totals.items():
-            dossier_daily_totals[key] = value["total"]
+        value = day_totals.get(total_key)
+        if value is not None:
+            dossier_daily_totals[total_key] = value["total"]
     if latest_metrics:
         for item in sorted(
             latest_metrics,
@@ -17935,6 +18035,18 @@ async def service_worker():
 
 if WEB_DIR.exists():
     app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR)), name="static")
+
+
+if (os.getenv("FORWARDED_ALLOW_IPS") or "").strip():
+    # uvicorn/gunicorn 的服务器级代理头信任会先于应用重写
+    # request.client，客户端可借此轮换限流键；应用层无法察觉，
+    # 只能在启动时提示必须关闭服务器级 proxy headers
+    logger.warning(
+        "检测到 FORWARDED_ALLOW_IPS：uvicorn/gunicorn 可能已按客户端"
+        " X-Forwarded-For 重写 request.client；请使用 --no-proxy-headers"
+        "（gunicorn 设 FORWARDED_ALLOW_IPS=''），代理头信任只由 "
+        "MEDIX_TRUST_PROXY_HEADERS 控制。"
+    )
 
 
 def main():

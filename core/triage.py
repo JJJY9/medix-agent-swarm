@@ -604,10 +604,21 @@ _PATIENT_CONTEXT_MARKERS = (
     "突然", "出现", "发作", "测得", "体温", "吃了", "服了", "正在吃",
     "现在", "目前", "这几天",
 )
+#: 真正的患者主语（不含「今天/最近/持续」等时间副词）：
+#: 只有这些词或正向红旗症状才把后置定义问句当作新症状保留
+_PATIENT_SUBJECT_MARKERS = (
+    "我", "本人", "孩子", "儿子", "女儿", "父亲", "母亲", "爸", "妈",
+    "爷爷", "奶奶", "外公", "外婆", "姥姥", "姥爷", "家人", "老人",
+    "宝宝", "大宝", "二宝", "小孩", "患儿", "患者", "病患",
+    "老婆", "老公", "爱人", "对象", "丈夫", "妻子", "配偶", "老伴",
+    "哥哥", "姐姐", "弟弟", "妹妹", "兄弟", "姐妹",
+    "阿姨", "叔叔", "舅舅", "姑姑", "婶婶", "侄子", "外甥",
+    "孙子", "孙女",
+)
 
 #: 纯定义引导词开头的分句：整句丢弃（什么是X / 请解释X）
 _DEFINITION_PREFIX_RE = re.compile(
-    r"^(?:什么是|啥是|何谓|何为|请解释|解释一下|介绍一下|讲讲)"
+    r"^(?:什么是|啥是|什么叫|啥叫|何谓|何为|请解释|解释一下|介绍一下|讲讲)"
 )
 #: 特征/信息型问句：X有哪些症状（前缀是症状时保留）
 _FEATURE_QUESTION_RE = re.compile(
@@ -670,6 +681,10 @@ def _clean_complaint_clause(
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
         return _clean_complaint_clause(rest, patient_context_seen)
+    if _DEFINITION_PREFIX_RE.match(clause):
+        # 句首定义引导词（什么是/什么叫/啥叫…）整句按科普丢弃，
+        # 即使分句后面带有「持续/今天」等时间词
+        return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         return clause
     if any(marker in clause for marker in EDUCATIONAL_MARKERS):
@@ -682,8 +697,6 @@ def _clean_complaint_clause(
             and not _FEATURE_QUESTION_RE.search(clause)
         ):
             return clause
-        return ""
-    if _DEFINITION_PREFIX_RE.match(clause):
         return ""
     feature = _FEATURE_QUESTION_RE.search(clause)
     if feature:
@@ -752,11 +765,16 @@ def patient_complaint_text(text: str) -> str:
         )
         if cleaned:
             kept.append(cleaned)
-            if (
-                any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS)
-                or _is_red_flag_text(clause)
-            ):
-                # 已有患者本人的症状分句：后续定义问句按新症状保留
+            subject_seen = any(
+                marker in clause for marker in _PATIENT_SUBJECT_MARKERS
+            )
+            positive_flag = any(
+                _positive_mention(clause, phrase)
+                for phrase, _label in RED_FLAG_PHRASES
+            )
+            if subject_seen or positive_flag:
+                # 已有患者本人的症状分句：后续定义问句按新症状保留。
+                # 「今天想问问」「没有胸痛」这类铺垫/否定分句不算语境
                 context_seen = True
     return "，".join(kept)
 
@@ -848,9 +866,12 @@ FEVER_TERMS = (
 TEMPERATURE_PATTERN = re.compile(
     # 有发热语境时接受「体温 39」「发烧 38.5 度」等写法
     r"(?:体温|发烧|发热|高烧|低烧|烧到)[^，。；！？\n]{0,8}"
-    r"(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*(?:°\s*c|℃|度)?"
-    # 明确摄氏单位时可直接出现（仍需排除气温/水温等）
-    r"|(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*(?:°\s*c|℃)"
+    r"(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*"
+    r"(?:°\s*[cC]|℃|摄氏度|度)?"
+    # 明确摄氏单位时可直接出现（仍需排除气温/水温等）；
+    # 「38度5」「38.5度」等口语写法同样按体温处理
+    r"|(?:3[89](?:\.\d+)?|4[0-2](?:\.\d+)?)\s*"
+    r"(?:°\s*[cC]|℃|摄氏度|度)(?:[0-9](?![0-9]))?"
 )
 #: 枚举否定的首个症状项词表：否定词后必须先出现常见症状，避免把
 #: 「全身无力、胸痛」「没有力气、胸痛」「无诱因、胸痛」「未婚、胸痛」
@@ -900,6 +921,7 @@ HEAD_TRAUMA_TERMS = (
     "脑袋被撞", "脑袋被磕", "脑袋被碰",
     # 头部+动词的组合变体（头部碰到/磕了后脑勺/脑袋着地等）
     "头部碰到", "头部磕到", "磕了后脑勺", "撞了后脑勺",
+    "磕到后脑勺", "撞到后脑勺", "碰到后脑勺",
     "碰了后脑勺", "脑袋着地", "头顶磕到", "头顶撞到", "头受伤",
     "枕部撞到", "枕部磕到", "额头撞到", "前额撞到", "额头磕到",
 )
@@ -1252,6 +1274,12 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
             )
         except Exception:
             history_text = ""
+    history_text = re.sub(
+        r"妊娠期(?:糖尿病|高血压|肝内胆汁淤积症?|贫血|甲减|甲亢"
+        r"|血小板减少)",
+        "",
+        history_text,
+    )
     pregnancy_text = text
     if history_text and history_text not in text:
         pregnancy_text = f"{text}；{history_text}"

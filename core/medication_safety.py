@@ -707,6 +707,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             left, right = _clause_bounds(text, match.start(), match.end())
             prefix = text[left:match.start()]
             suffix = text[match.end():right]
+            long_suffix = text[match.end():right + 25]
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
@@ -715,8 +716,10 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _INTENT_STOP_SUFFIX.search(suffix)
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
-                or _RESTART_USE_SUFFIX.search(suffix)
-                or _RESTART_USE_SUFFIX_EN.search(suffix)
+                or _RESTART_USE_SUFFIX.search(long_suffix)
+                or _RESTART_USE_SUFFIX_EN.search(long_suffix)
+                or _ADHERENCE_USE_PREFIX.search(prefix)
+                and _NEGATED_USE_PREFIX.search(prefix)
                 or _RECENT_STOP_PREFIX.search(prefix)
                 or _RECENT_STOP_PREFIX_EN.search(prefix)
                 or _RECENT_STOP_SUFFIX.search(suffix)
