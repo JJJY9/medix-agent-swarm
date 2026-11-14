@@ -565,6 +565,7 @@ def test_empty_deep_link_respects_user_edits():
         app_js.index("const messages = data.messages || [];"):
         app_js.index("const newestAssistantId = messages.reduce")
     ]
-    assert "if (contextUserEdited) {" in block
+    # 深链编辑标记刷新后仍生效（第五十一轮持久化）
+    assert "safeSessionGet(DEEP_LINK_EDITED_KEY) === sessionId" in block
     assert "setPendingSessionReset(true);" in block
     assert "applyPatientContext({});" in block

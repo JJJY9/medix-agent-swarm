@@ -442,9 +442,11 @@ def test_frontend_round50_guards():
         app_js.index("function restoreInflightQuestion()"):
         app_js.index("window.addEventListener('beforeunload'")
     ]
-    assert restore.index("restoreComposer(question);") < restore.index(
-        "safeSessionRemove(INFLIGHT_QUESTION_KEY);"
-    )
+    assert "if (els.input.value.includes(question)) {" in restore
+    assert (
+        "restoreComposer(question);\n"
+        "    safeSessionRemove(INFLIGHT_QUESTION_KEY);"
+    ) in app_js
     assert "if (!busy && !sendInFlight) return;" in app_js
     assert "极早持久化已提交主诉" in app_js
     # 撤销待重置恢复共享指针

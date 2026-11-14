@@ -397,6 +397,12 @@ _ALCOHOL_NEGATIONS = re.compile(
 _ALCOHOL_DOUBLE_NEGATIONS = re.compile(
     r"(?:不得不|不能不|忍不住|没法不|无法不)(?:喝|饮)?\s*$"
 )
+#: A 不 A 疑问（「能不能喝酒」「可不可以喝」）不是否定，按饮酒语境处理
+_ALCOHOL_UNCERTAIN_QUESTION = re.compile(
+    r"(?:能|可)不能(?:喝|饮)?\s*$|可不可以(?:喝|饮)?\s*$|"
+    r"要不要(?:喝|饮)?\s*$|会不会(?:喝|饮)?\s*$|"
+    r"是否可以(?:喝|饮)?\s*$|是否(?:喝|饮)?\s*$|敢不敢(?:喝|饮)?\s*$"
+)
 
 #: 「不喝酒就难受/睡不着」是在描述饮酒依赖，仍视为饮酒语境
 _ALCOHOL_DEPENDENCE_WORDS = (
@@ -422,6 +428,9 @@ def _has_alcohol_use(text: str) -> bool:
         for position in matches:
             prefix = text[max(0, position - 8):position]
             if _ALCOHOL_DOUBLE_NEGATIONS.search(prefix):
+                return True
+            if _ALCOHOL_UNCERTAIN_QUESTION.search(prefix):
+                # 「能不能喝酒」是疑问，不是「不能喝酒」
                 return True
             if not _ALCOHOL_NEGATIONS.search(prefix):
                 return True

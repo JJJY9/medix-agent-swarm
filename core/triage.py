@@ -208,10 +208,11 @@ _PREGNANCY_BLEEDING_RE = re.compile(
 _COLLOQUIAL_BLEEDING_RE = re.compile(
     r"(?:阴道|产道|下体|下面|下身|内裤上?|护垫|卫生巾上?|纸巾上?|擦拭?)"
     r"[^，。；,;！!？?\n]{0,6}"
-    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友)"
-    r"|(?:流了?|出了?|带有?|擦到|看到|见到|有点|有些|少量|少许)"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿)"
+    r"|(?:有一点|有一些|有点|有些|少量|少许|带有?|擦到|看到|见到|"
+    r"流了?|出了?|有)"
     r"[^，。；,;！!？?\n]{0,3}"
-    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友)"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿)"
     r"|血丝"
 )
 
@@ -240,9 +241,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         location_match = span.startswith(
             ("阴道", "产道", "下体")
         ) or span.endswith(("阴道", "产道"))
-        gum_words = (
-            "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
-        )
+        gum_words = _GUM_BLEEDING_WORDS
         if location_match:
             gum_hit = any(word in span for word in gum_words)
         else:
@@ -268,9 +267,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             prefix = _clause_prefix(text, start)
             if term in location_terms:
                 gum_hit = any(
-                    word in term for word in (
-                        "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
-                    )
+                    word in term for word in _GUM_BLEEDING_WORDS
                 )
             else:
                 prefix_tail = re.split(
@@ -418,6 +415,14 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
             return False
         # 「医生排除了酮症酸中毒」是已完成排除，按否定处理
         return True
+    if re.search(
+        r"(?:不|未|没|尚未|暂未|不能|无法|难以|别)"
+        r"[^，。；,.!?！？\n]{0,4}(?:排除|除外)",
+        stripped,
+    ):
+        # 「未排除发热和胸痛」：枚举项里的双重否定同样是阳性，
+        # 不能按枚举否定吞掉后续症状
+        return False
     if _NEGATION_PATTERN.search(prefix):
         return True
     enum_negated = _enum_negated(prefix)
@@ -724,7 +729,10 @@ _COURSE_MARKERS = (
 def _is_red_flag_text(text: str) -> bool:
     if any(term in text for term, _ in RED_FLAG_PHRASES):
         return True
-    return any(term in text for term in HEAD_TRAUMA_TERMS)
+    if any(term in text for term in HEAD_TRAUMA_TERMS):
+        return True
+    # 孕产期出血同样是确定性急症信号（阴道出血/见红）
+    return _has_pregnancy_bleeding(text)
 
 
 def _clean_complaint_clause(
@@ -813,6 +821,9 @@ def _clean_complaint_clause(
             # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
             # 单一红旗症状也按真实主诉保留
             or (patient_context_seen and _is_red_flag_text(prefix))
+            # 孕产期出血无论是否有前文患者语境都按真实主诉保留：
+            # 「阴道出血是什么病」在孕期档案下同样是急症描述
+            or any(term in prefix for term in PREGNANCY_BLEEDING_TERMS)
         ):
             # 带病程/时间线索或多症状的定义问句通常是在描述当前症状
             return prefix
@@ -1035,6 +1046,7 @@ _FAMILY_HISTORY_MARKERS = (
 _CONTEXT_INACTIVE_MARKERS = (
     "已结束", "结束后", "已停", "停用", "停药", "停了", "已完成",
     "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
+    "没吃", "不吃", "不吃了", "不再吃", "不用吃", "无需吃", "没再吃",
     "否认", "未曾", "从未", "过敏",
 )
 
@@ -1113,13 +1125,27 @@ _NEGATIVE_TEST_SUFFIX = re.compile(
 )
 
 
+_MED_USE_NEGATION_RE = re.compile(
+    r"(?:没|没有|未|不|无需|不用)(?:再|在)?(?:吃|服用|服|用|喝|注射|打)"
+    r"\s*$"
+)
+_MED_USE_STOP_SUFFIX_RE = re.compile(
+    r"^[^，。；]{0,3}(?:我|本人)?(?:已经|已|刚|才)?"
+    r"(?:不吃了|不再吃了|不用吃了)"
+)
+
+
 def _active_term_mention(text: str, term: str) -> bool:
     """术语是否以非否定形式出现（"无化疗史""HIV阴性"不算当前状态）。"""
     start = text.find(term)
     while start != -1:
         prefix = _clause_prefix(text, start)
-        negated = _is_negated(prefix) or bool(
-            _NEGATIVE_TEST_SUFFIX.match(text, start + len(term))
+        suffix = text[start + len(term):start + len(term) + 16]
+        negated = (
+            _is_negated(prefix)
+            or bool(_NEGATIVE_TEST_SUFFIX.match(text, start + len(term)))
+            or _MED_USE_NEGATION_RE.search(prefix) is not None
+            or _MED_USE_STOP_SUFFIX_RE.search(suffix) is not None
         )
         if not negated:
             return True
@@ -1232,11 +1258,18 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            stripped = _strip_family_narration(clause).strip()
+            # 病史提取不做宾语剥离：「陪我妈化疗/照顾我爸吃药」不是
+            # 患者本人在用药
+            stripped = _strip_family_narration(
+                clause, allow_object=False
+            ).strip()
             if stripped and not any(
                 marker in stripped for marker in _FAMILY_HISTORY_MARKERS
             ):
                 clause = stripped
+            elif _FAMILY_CARE_RE.search(clause):
+                # 「我陪我妈去化疗/我照顾我爸吃药」：治疗属于家属
+                continue
             elif _has_patient_subject(clause):
                 # 「我和我爸都吃华法林/都在化疗」：患者是并列主语，
                 # 不能因为家属称谓整句丢弃
@@ -1313,7 +1346,9 @@ _PATIENT_SUBJECT_SAFE = (
 )
 
 
-def _strip_family_narration(clause: str) -> str:
+def _strip_family_narration(
+    clause: str, allow_object: bool = True
+) -> str:
     """家属称谓只是叙述者时剥离框架，保留患者本人的表述。
 
     「我妈说我今天头撞到门框」→「今天头撞到门框」；
@@ -1342,7 +1377,7 @@ def _strip_family_narration(clause: str) -> str:
                         if remainder:
                             return remainder
             prefix = clause[:start]
-            if _FAMILY_OBJECT_RE.search(prefix):
+            if allow_object and _FAMILY_OBJECT_RE.search(prefix):
                 remainder = clause[start + len(marker):]
                 # 宾语结构后若出现「他/她」另一主体，不能算到患者头上
                 if remainder and "他" not in remainder and "她" not in remainder:
@@ -1364,11 +1399,16 @@ def _patient_only_text(text: str) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            stripped = _strip_family_narration(clause).strip()
+            stripped = _strip_family_narration(
+                clause, allow_object=False
+            ).strip()
             if stripped and not any(
                 marker in stripped for marker in _FAMILY_HISTORY_MARKERS
             ):
                 clause = stripped
+            elif _FAMILY_CARE_RE.search(clause):
+                # 「我陪我妈去化疗」：不是患者本人的治疗
+                continue
             elif _has_patient_subject(clause):
                 # 「我妈说宝宝发烧」「我和我爸都发烧」：句中有明确的
                 # 患者主体，不能因为家属称谓整句丢弃
@@ -1379,10 +1419,32 @@ def _patient_only_text(text: str) -> str:
     return "；".join(kept)
 
 
+_FAMILY_POSSESSIVE_RE = re.compile(
+    r"(?:爸|妈|父亲|母亲|老公|老婆|爱人|老伴|爷爷|奶奶|外公|外婆|"
+    r"姥姥|姥爷|哥哥|姐姐|弟弟|妹妹|儿子|女儿|家人|亲属)"
+    r"[^，。；]{0,4}(?:是|作为|当|这个|那个|一位|一名)"
+    r"[^，。；]{0,6}\s*$"
+)
+#: 「陪/照顾/送/喂家属」结构：治疗属于家属，不能算患者本人
+_FAMILY_CARE_RE = re.compile(
+    r"(?:陪|送|照顾|搀扶|扶着?|带着?|喂|帮|替|给)(?:着|了)?"
+    r"(?:我|他|她)?"
+    r"(?:爸|妈|父亲|母亲|老公|老婆|爱人|老伴|爷爷|奶奶|外公|外婆|"
+    r"姥姥|姥爷|哥哥|姐姐|弟弟|妹妹|儿子|女儿|家人|亲属)"
+)
+
+
 def _has_patient_subject(clause: str) -> bool:
     """分句里是否有不依附家属称谓的患者主体。"""
-    if any(subject in clause for subject in _PATIENT_SUBJECT_SAFE):
-        return True
+    for subject in _PATIENT_SUBJECT_SAFE:
+        start = clause.find(subject)
+        while start != -1:
+            before = clause[:start]
+            if _FAMILY_POSSESSIVE_RE.search(before):
+                # 「我爸是化疗患者」：患者一词修饰的是家属
+                start = clause.find(subject, start + len(subject))
+                continue
+            return True
     # 裸「我」不能是家属称谓的一部分（我爸/我妈/我儿子…）
     return re.search(
         r"我(?!爸|妈|父母|父|母|爷|奶|外公|外婆|姥姥|姥爷|哥|姐|弟|妹|"

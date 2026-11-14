@@ -774,6 +774,8 @@ const DEEP_LINK_PENDING_KEY = 'medix.deepLinkPending';
 //: 待重置标记的设置时间与深链导航时间：判断刷新后该保留哪一方
 const PENDING_RESET_AT_KEY = 'medix.pendingSessionResetAt';
 const DEEP_LINK_AT_KEY = 'medix.deepLinkAt';
+//: 深链恢复期间用户编辑过补充信息：刷新后仍要保留用户草稿
+const DEEP_LINK_EDITED_KEY = 'medix.deepLinkEdited';
 //: 流式会诊进行中的主诉：刷新/被系统回收后恢复到输入框
 const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
 let pendingSessionReset = false;
@@ -5176,8 +5178,11 @@ async function openSession(id) {
   const keepPendingReset = sameSession && pendingSessionReset
     && !deepLinkOpen;
   // 深链恢复期间用户已编辑补充信息：快照会覆盖用户刚填的内容，
-  // 按冲突处理（保留草稿，下一问开启新会话）
-  const deepLinkDraftConflict = deepLinkOpen && contextUserEdited;
+  // 按冲突处理（保留草稿，下一问开启新会话）；刷新后按持久化标记
+  const deepLinkDraftConflict = deepLinkOpen && Boolean(
+    contextUserEdited
+    || safeSessionGet(DEEP_LINK_EDITED_KEY) === id
+  );
   const seq = ++openSessionSeq;
 
   try {
@@ -6632,6 +6637,7 @@ function consumeDeepLink() {
   deepLinkedSession = false;
   safeSessionRemove(DEEP_LINK_PENDING_KEY);
   safeSessionRemove(DEEP_LINK_AT_KEY);
+  safeSessionRemove(DEEP_LINK_EDITED_KEY);
 }
 
 function setPendingSessionReset(active) {
@@ -20429,7 +20435,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     const messages = data.messages || [];
     if (!messages.length) {
       if (deepLinkedSession) {
-        if (contextUserEdited) {
+        if (
+          contextUserEdited
+          || safeSessionGet(DEEP_LINK_EDITED_KEY) === sessionId
+        ) {
           // 用户在等待期间正在填写补充信息：保留草稿，不覆盖表单，
           // 下一轮提问新建会话（否则异步重连会把输入静默清空）
           setPendingSessionReset(true);
@@ -20490,8 +20499,13 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 回填快照也不改档案，等下一轮提问新建会话。
     // 在响应返回后读取 contextUserEdited：等待期间新填写的草稿
     // 不能被深链快照覆盖
-    const useDeepLinkContext = deepLinkedSession && !contextUserEdited;
-    const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;
+    const deepLinkEdited = Boolean(
+      contextUserEdited
+      || (deepLinkedSession
+        && safeSessionGet(DEEP_LINK_EDITED_KEY) === sessionId)
+    );
+    const useDeepLinkContext = deepLinkedSession && !deepLinkEdited;
+    const deepLinkDraftConflict = deepLinkedSession && deepLinkEdited;
     const pendingReset = pendingSessionReset || deepLinkDraftConflict;
     if (deepLinkDraftConflict) {
       // 深链快照与用户草稿冲突：不覆盖草稿，也不把深链档案塞进
@@ -20572,6 +20586,7 @@ async function send(question) {
     ) {
       // 恢复失败，或等待期间用户打开了别的会话：不能把这条问题
       // 发进错误的患者会话；主诉要放回输入框而不是静默丢失
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
       restoreComposer(question);
       if (els.empty) els.empty.hidden = false;
       setVitals('warn', '会诊记录尚未打开，请稍后重试');
@@ -20623,6 +20638,7 @@ async function send(question) {
     requestAnimationFrame(() => scrollThreadToBottom(true));
   }
 
+  let sendPersisted = false;
   let firstAgentSeen = false;
   let agentDoneCount = 0;
   let streamTurn = null;
@@ -20765,6 +20781,7 @@ async function send(question) {
     if (!finalPayload) {
       throw new Error('服务未返回结果');
     }
+    sendPersisted = true;
 
     // 兼容只拿到最终结果的客户端：结果里也带有 triage 字段
     if (finalPayload.triage) {
@@ -20836,6 +20853,9 @@ async function send(question) {
 
     if (err.name === 'AbortError') {
       announceChat('已停止生成');
+      // 本轮未落库时主诉不能只留在卡片闭包里：刷新/新建会诊后
+      // 那份描述将无法恢复
+      restoreComposer(question);
       renderStopped({ question, askTurn, baselineMessageId });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
@@ -20865,6 +20885,8 @@ async function send(question) {
       els.thread.setAttribute('aria-live', 'off');
       // 传输错误也可能发生在服务端已保存之后：稍后核对并恢复，避免重试重复落库
       announceChat('会诊中断');
+      // 失败轮次可能从未落库：把主诉放回输入框与草稿
+      restoreComposer(question);
       renderError(
         err.message || String(err),
         { question, askTurn, baselineMessageId }
@@ -20877,10 +20899,13 @@ async function send(question) {
     }
   } finally {
     clearInterval(elapsedTimer);
-    try {
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
-    } catch {
-      // 忽略
+    if (sendPersisted) {
+      // 成功落库后才清在途记录；失败/停止保留到下次加载恢复
+      try {
+        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      } catch {
+        // 忽略
+      }
     }
     busy = false;
     activeController = null;
@@ -21796,6 +21821,11 @@ function restoreInflightQuestion() {
     if (!question) return;
     // 其它标签页/其它会话的问题不填进本页
     if (owner && sessionId && owner !== sessionId) return;
+    if (els.input.value.includes(question)) {
+      // 主诉已在草稿里：只清理在途记录，不重复合并
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      return;
+    }
     // 输入框可能已有刷新恢复的后续草稿：合并而不是丢弃先提交的主诉
     restoreComposer(question);
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
@@ -23204,6 +23234,11 @@ const onContextPanelEdit = (event) => {
   // 档案下拉与「仅单科」开关不是补充信息字段，不能触发草稿冲突
   if (id !== 'profile-select' && id !== 'ctx-single') {
     contextUserEdited = true;
+    if (deepLinkedSession && sessionId) {
+      // 持久化「深链恢复期间编辑过」：刷新后 contextUserEdited 会
+      // 重置，不能再让服务端快照覆盖用户已录入的补充信息
+      safeSessionSet(DEEP_LINK_EDITED_KEY, sessionId);
+    }
   }
   updateContextSummary();
 };

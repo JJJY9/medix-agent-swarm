@@ -1685,6 +1685,10 @@ _auth_compare_gates: Dict[str, float] = {}
 _auth_compare_gates_lock = threading.Lock()
 
 
+#: 闸门排队欠账上限：未认证洪泛不能把后续请求的等待无限累积
+_AUTH_COMPARE_GATE_MAX_DEBT = 0.4
+
+
 def _auth_compare_wait_seconds(key: str) -> float:
     """返回本次令牌比较前需要等待的秒数（同键串行化）。"""
     now = time.monotonic()
@@ -1693,10 +1697,15 @@ def _auth_compare_wait_seconds(key: str) -> float:
             _auth_compare_gates.clear()
         ready_at = _auth_compare_gates.get(key, 0.0)
         if ready_at <= now:
-            _auth_compare_gates[key] = now + _AUTH_COMPARE_GATE_SECONDS
-            return 0.0
-        _auth_compare_gates[key] = ready_at + _AUTH_COMPARE_GATE_SECONDS
-        return min(ready_at - now, 2.0)
+            ready_at = now
+        else:
+            # 欠账封顶：一次并发洪泛最多让后续请求多等 0.4 秒，
+            # 不会永久固定为 2 秒
+            ready_at = min(ready_at, now + _AUTH_COMPARE_GATE_MAX_DEBT)
+        _auth_compare_gates[key] = (
+            ready_at + _AUTH_COMPARE_GATE_SECONDS
+        )
+        return max(0.0, ready_at - now)
 _short_access_token_warned = False
 
 
@@ -2309,6 +2318,11 @@ def _bucket_address(address: str) -> str:
     except ValueError:
         return address
     if parsed.version == 6:
+        mapped = parsed.ipv4_mapped
+        if mapped is not None:
+            # ::ffff:a.b.c.d 是 IPv4 客户端：按真实 IPv4 分开计数，
+            # 否则所有 IPv4 客户端会落进同一个 ::/64 桶
+            return str(mapped)
         return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
     return str(parsed)
 
@@ -2567,7 +2581,8 @@ async def require_access_token(request: Request, call_next):
         loopback_bucket_key = f"ip:{peer_host or 'unknown'}"
         shared_bucket = (not peer_host) or (
             _is_trusted_proxy_peer(peer_host)
-            and _client_ip_key(request) == loopback_bucket_key
+            and _client_ip_key(request)
+            == f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
         # 受信代理已解析出真实客户端地址时，键可能来自客户端可影响的
         # 更左转发项：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
@@ -11733,6 +11748,36 @@ async def family_overview(days: int = 7):
         None, cutoff, f"{today}T23:59:59", 100000,
         by_updated=True,
     )
+    # 「最近活动」不能只看窗口内列表：窗口外的症状/化验/会诊才是
+    # 成员的真正最近记录
+    latest_symptom_at: Dict[str, str] = {}
+    for item in await asyncio.to_thread(
+        store.list_symptoms, None, 100000, 0
+    ):
+        profile = item.get("profile") or ""
+        at = str(item.get("recorded_at") or "")
+        if at and at > latest_symptom_at.get(profile, ""):
+            latest_symptom_at[profile] = at
+    latest_lab_at: Dict[str, str] = {}
+    for item in await asyncio.to_thread(
+        store.list_lab_results, None, None, None, 0, 100000, 0
+    ):
+        profile = item.get("profile") or ""
+        at = str(item.get("tested_at") or "")
+        if at and at > latest_lab_at.get(profile, ""):
+            latest_lab_at[profile] = at
+    latest_session_at: Dict[str, str] = {}
+    for item in await asyncio.to_thread(
+        store.list_sessions_for_timeline,
+        None, "", f"{today}T23:59:59", 100000,
+        by_updated=True,
+    ):
+        if int(item.get("message_count") or 0) <= 0:
+            continue
+        profile = item.get("profile") or ""
+        at = str(item.get("updated_at") or item.get("created_at") or "")
+        if at and at > latest_session_at.get(profile, ""):
+            latest_session_at[profile] = at
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
     )
@@ -12324,12 +12369,14 @@ async def family_overview(days: int = 7):
         })
         activity_candidates = [
             metrics[0]["measured_at"] if metrics else "",
-            (symptom.get("latest") or {}).get("recorded_at") or "",
+            latest_symptom_at.get(name, ""),
             (vaccination.get("latest") or {}).get("vaccinated_at") or "",
-            consultation.get("latest_at") or "",
+            latest_session_at.get(name, "") or consultation.get(
+                "latest_at"
+            ) or "",
             medication.get("last_taken_at") or "",
             medication.get("last_skip_at") or "",
-            (labs.get("latest_at") or ""),
+            latest_lab_at.get(name, "") or (labs.get("latest_at") or ""),
             (visits.get("latest") or {}).get("visit_date") or "",
         ]
         last_activity = max(activity_candidates)

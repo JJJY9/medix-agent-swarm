@@ -429,8 +429,8 @@ def test_restore_context_does_not_overwrite_draft():
     assert "skipProfile: pendingReset" in restore
     # 深链快照不能覆盖用户草稿；编辑过补充信息时改为下一轮新建会话。
     # 未编辑时快照在成功渲染后才消费，失败重试仍能回填（round37）
-    assert "const useDeepLinkContext = deepLinkedSession && !contextUserEdited;" in restore
-    assert "const deepLinkDraftConflict = deepLinkedSession && contextUserEdited;" in restore
+    assert "const useDeepLinkContext = deepLinkedSession && !deepLinkEdited;" in restore
+    assert "const deepLinkDraftConflict = deepLinkedSession && deepLinkEdited;" in restore
     assert "if (deepLinkedSession) consumeDeepLink();" in restore
     assert "restoreContext: useDeepLinkContext ? true : false" in restore
 
