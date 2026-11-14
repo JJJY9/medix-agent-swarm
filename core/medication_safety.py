@@ -616,8 +616,19 @@ _RECENT_STOP_PREFIX = re.compile(
 _RECENT_STOP_SUFFIX = re.compile(
     r"^\s*(?:停用|停药|停了|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
-    r"(?:今天|昨天|前天|几天|几天前|一周|两周|"
-    r"[0-9一二两三四五六七八九十]+\s*(?:天|周))"
+    r"(?:今天|昨天|前天|几天|几天前|一周|"
+    r"[0-9一二两三四五六七八九十]+\s*天)"
+)
+#: 近期停药的任意语序（药名前/后的文本拼接后判断）：
+#: 「停了华法林三天了」「华法林昨天停了」「刚把华法林停了」
+_RECENT_STOP_CONTEXT = re.compile(
+    r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前?)"
+    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停服|停止服用)"
+    r"|(?:停用|停药|停了|停服|停止服用)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:今天|昨天|前天|几天|一周|"
+    r"[0-9一二两三四五六七八九十]+\s*天)"
 )
 _RECENT_STOP_PREFIX_EN = re.compile(
     r"(?:just|recently|yesterday|today)\s+"
@@ -706,6 +717,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _RECENT_STOP_PREFIX_EN.search(prefix)
                 or _RECENT_STOP_SUFFIX.search(suffix)
                 or _RECENT_STOP_SUFFIX_EN.search(suffix)
+                or _RECENT_STOP_CONTEXT.search(prefix + suffix)
             ):
                 return True
             if (
@@ -739,6 +751,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _RESTART_USE_SUFFIX.search(long_suffix)
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
+            or _RECENT_STOP_CONTEXT.search(prefix + suffix)
         ):
             return True
         if (

@@ -110,7 +110,6 @@ def test_stopped_use_time_expression_variants():
 
     for question in (
         "华法林半年前停了，能吃布洛芬吗",
-        "华法林前几天停了，能吃布洛芬吗",
         "华法林两个月前就停了，能吃布洛芬吗",
         "华法林几个月前停了，能吃布洛芬吗",
         "华法林一年多前停了，能吃布洛芬吗",
@@ -121,6 +120,8 @@ def test_stopped_use_time_expression_variants():
     for question in (
         "华法林吃了半年，现在准备停药，能同时吃布洛芬吗",
         "华法林不能停药，能吃布洛芬吗",
+        # 前几天停用仍可能有抗凝作用（第四十四轮收窄为近期停药）
+        "华法林前几天停了，能吃布洛芬吗",
     ):
         result = check_medication_safety(question, {})
         assert result.get("level") == "warning", question

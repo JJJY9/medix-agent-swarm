@@ -813,6 +813,10 @@ try {
   if (pendingFor) {
     if (pendingFor === sessionId) {
       pendingSessionReset = true;
+      // 启动时若 URL 带 ?session=，上面的 persistSessionId 会把
+      // 已放弃的会话重新写回共享指针：这里再次失效，避免刷新后
+      // 新标签页/PWA 冷启动复活旧档案会话
+      if (sessionId) safeStorageRemove('medix.session');
     } else {
       safeSessionRemove(PENDING_RESET_KEY);
     }
@@ -3085,6 +3089,9 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
   button.addEventListener('click', async () => {
     if (busy) return;
     button.disabled = true;
+    // 恢复等待期间用户可能切换/新建/删除会话：旧问题不能发到当前会话
+    const retrySession = sessionId;
+    const retrySeq = openSessionSeq;
     // 传输中断不代表服务端没有保存：先核对本轮问答，已落库时恢复而不是重发
     if (sessionId) {
       const restored = await restoreCurrentSession(
@@ -3098,6 +3105,12 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
     }
     retry.askTurn?.remove();
     wrap.remove();
+    if (sessionId !== retrySession || openSessionSeq !== retrySeq) {
+      // 会话已切换：把问题放回输入框，而不是写进另一位患者名下
+      restoreComposer(retry.question);
+      setVitals('warn', '会话已切换，旧问题已放回输入框');
+      return;
+    }
     send(retry.question);
   });
   wrap.appendChild(button);
@@ -21747,6 +21760,12 @@ els.input.addEventListener('keydown', (e) => {
 
 els.composer.addEventListener('submit', (e) => {
   e.preventDefault();
+  if (sendInFlight) {
+    // 深链预恢复期间的再次提交：不能先清空输入框，否则第一条
+    // 问题恢复失败回填时会把用户刚输入的内容覆盖掉
+    setVitals('warn', '正在打开会诊记录，请稍候');
+    return;
+  }
   stopVoice();
   if (busy) {
     setVitals('active', '会诊进行中');
