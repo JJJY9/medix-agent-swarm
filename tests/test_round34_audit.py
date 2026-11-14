@@ -332,6 +332,7 @@ def test_trusted_proxy_headers_use_forwarded_address(monkeypatch):
             self.client = FakeClient()
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     assert api_server._is_loopback_client(
         FakeRequest({"x-forwarded-for": "203.0.113.9"})
     ) is False
@@ -342,6 +343,8 @@ def test_trusted_proxy_headers_use_forwarded_address(monkeypatch):
     assert api_server._client_ip_key(
         FakeRequest({"x-forwarded-for": "203.0.113.9"})
     ) == "ip:203.0.113.9"
+    # 部署声明代理写 X-Real-IP 时同样按其真实地址分桶
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-real-ip")
     assert api_server._client_ip_key(
         FakeRequest({"x-real-ip": "198.51.100.7"})
     ) == "ip:198.51.100.7"

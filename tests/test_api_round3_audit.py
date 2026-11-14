@@ -69,12 +69,16 @@ def test_erase_long_term_clears_session_and_profile_scopes(monkeypatch):
 
     assert session_memory_scope("s1") in calls["scopes"]
     assert session_memory_scope("s2") in calls["scopes"]
-    assert calls["sessions"] == [
-        ("s1", api_server._memory_scope("妈妈", "s1")),
-        # 旧版本单科会诊可能把无档案会话写进共享 medix_local：
-        # 按 metadata.session_id 精确清理该会话残留
-        ("s2", "medix_local"),
-    ]
+    assert ("s1", api_server._memory_scope("妈妈", "s1")) in calls["sessions"]
+    # 旧版本单科会诊可能把无档案会话写进共享 medix_local：
+    # 按 metadata.session_id 精确清理该会话残留
+    assert ("s2", "medix_local") in calls["sessions"]
+    # 旧格式（可读命名空间 + 原始 session_id）同样必须清理，
+    # 否则历史云端摘要永远无法删除
+    for legacy_scope in ("medix_user", "medix_local", "medix_profile_妈妈"):
+        assert ("s1", legacy_scope) in calls["sessions"]
+    for legacy_scope in ("medix_user", "medix_local", "medix_session_s2"):
+        assert ("s2", legacy_scope) in calls["sessions"]
 
 
 def test_huge_feedback_message_id_is_rejected(client_and_store):

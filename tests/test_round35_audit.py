@@ -210,7 +210,7 @@ def test_cancel_appointment_unlinks_visit_followup(store):
 
 
 # ---------------------------------------------------------------- 代理头
-def test_forwarded_header_rightmost_and_conflicts():
+def test_forwarded_header_rightmost_and_conflicts(monkeypatch):
     import api_server
 
     class FakeClient:
@@ -221,6 +221,8 @@ def test_forwarded_header_rightmost_and_conflicts():
             self.headers = headers
             self.client = FakeClient()
 
+    # 地址头必须由部署显式声明（默认 none 一律不采信）
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "forwarded")
     # 多元素 Forwarded：取最后一个元素的 for（最近代理追加）
     assert api_server._forwarded_client_address(
         FakeRequest({"forwarded": "for=127.0.0.1, for=203.0.113.9"})
@@ -234,11 +236,12 @@ def test_forwarded_header_rightmost_and_conflicts():
             "forwarded": "for=127.0.0.1;proto=https, for=203.0.113.9",
         })
     ) is False
-    # 多转发头互相矛盾：fail closed
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    # 声明只信任 XFF 时，X-Real-IP 不再参与比对（客户端可任意伪造）
     assert api_server._forwarded_client_address(FakeRequest({
         "x-forwarded-for": "127.0.0.1",
         "x-real-ip": "203.0.113.9",
-    })) == ""
+    })) == "127.0.0.1"
     # XFF 带端口/方括号/引号时归一化
     assert api_server._forwarded_client_address(
         FakeRequest({"x-forwarded-for": "127.0.0.1:40001"})
@@ -263,6 +266,7 @@ def test_client_ip_key_requires_trusted_loopback_peer(monkeypatch):
             self.client = client
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     # 直连 LAN 客户端伪造 XFF 不能更换限流桶
     assert api_server._client_ip_key(FakeRequest(
         {"x-forwarded-for": "10.0.0.9"}, LanClient()

@@ -573,7 +573,7 @@ _STOPPED_USE_SUFFIX = re.compile(
 )
 #: 「想/打算/准备停用华法林」是意图，当前仍在用药
 _INTENT_STOP_PREFIX = re.compile(
-    r"(?:想|打算|准备|计划|考虑|要不要|是否)"
+    r"(?:想|打算|准备|计划|考虑|要不要|是否|让|叫我|建议|嘱咐|叮嘱|要求|医嘱)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:停用|停药|停服|停了|停掉)\s*$"
 )
@@ -613,6 +613,18 @@ _CONTINUOUS_USE_PREFIX = re.compile(
 _STOPPED_USE_SUFFIX_EN = re.compile(
     r"^\s*(?:has been |had been |was |is |been )?"
     r"(?:stopped(?!\s*working)|discontinued|no longer taking)",
+    re.IGNORECASE,
+)
+#: 药名之后跨分句出现的续用/重启表述：「停了半年，最近又吃上了」
+_RESTART_USE_SUFFIX = re.compile(
+    r"^[^。；;！!？?\n]{0,24}"
+    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
+    r"|仍在吃|仍在服用|仍然服用)"
+)
+_RESTART_USE_SUFFIX_EN = re.compile(
+    r"\b(?:restarted|started (?:it )?again|still taking|still on"
+    r"|continuing (?:it|to take))\b",
     re.IGNORECASE,
 )
 _PAST_USE_PREFIX_EN = re.compile(
@@ -658,6 +670,8 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _INTENT_STOP_SUFFIX.search(suffix)
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
+                or _RESTART_USE_SUFFIX.search(suffix)
+                or _RESTART_USE_SUFFIX_EN.search(suffix)
             ):
                 return True
             if (
@@ -679,12 +693,16 @@ def _alias_matches(text: str, alias: str) -> bool:
         left, right = _clause_bounds(text, start, end)
         prefix = text[left:start]
         suffix = text[end:right]
+        # 续用/重启常出现在下一个分句（「停了半年，最近又吃上了」）：
+        # 允许向后多看一段，句号仍截断
+        long_suffix = text[end:right + 25]
         if (
             _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
+            or _RESTART_USE_SUFFIX.search(long_suffix)
         ):
             return True
         if (

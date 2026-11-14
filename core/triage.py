@@ -182,7 +182,8 @@ PREGNANCY_BLEEDING_TERMS = (
 _PREGNANCY_BLEEDING_RE = re.compile(
     r"(?:阴道|产道|下体)"
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
-    r"|(?:孕妇|孕[早中晚]期|产前|早孕)(?:出血|流血|见红)"
+    r"|(?:孕妇|孕[早中晚]期|产前|早孕|怀孕|孕期)"
+    r"[^，。；,;！!？?\n]{0,6}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
 )
@@ -190,11 +191,33 @@ _PREGNANCY_BLEEDING_RE = re.compile(
 
 def _has_pregnancy_bleeding(text: str) -> bool:
     for match in _PREGNANCY_BLEEDING_RE.finditer(text):
-        if not _is_negated(_clause_prefix(text, match.start())):
+        span = match.group(0)
+        prefix = _clause_prefix(text, match.start())
+        # 匹配内部含否定（阴道没有出血/阴道未见出血/阴道不出血）
+        # 或明确是牙龈/鼻/皮肤出血时不算孕产期出血。裸「见红」的
+        # 部位修饰在匹配之前，需要连前缀一起判断
+        if re.search(
+            r"(?:没有|没|无|未|不|否认|非)", span
+        ) is not None:
+            continue
+        if any(
+            word in span or word in prefix[-6:]
+            for word in ("牙龈", "鼻腔", "鼻子", "皮肤", "痔")
+        ):
+            continue
+        if not _is_negated(prefix):
             return True
-    return any(
-        _positive_mention(text, term) for term in PREGNANCY_BLEEDING_TERMS
-    )
+    for term in PREGNANCY_BLEEDING_TERMS:
+        start = text.find(term)
+        while start != -1:
+            prefix = _clause_prefix(text, start)
+            if not any(
+                word in prefix[-6:]
+                for word in ("牙龈", "鼻腔", "鼻子", "皮肤", "痔")
+            ) and not _is_negated(prefix):
+                return True
+            start = text.find(term, start + len(term))
+    return False
 
 
 def _is_negated(prefix: str) -> bool:
@@ -244,9 +267,9 @@ _ENUM_NEGATION_PATTERN = re.compile(
     r"(?:没有|没|无|未|否认)"
     r"(?:出现|伴有|伴随|感|有|见|见到|任何|明显|明确|特殊|显著)?"
     r"[^，。；！？,.!?;\n但|]{1,8}?"
-    r"(?:(?:、|和|及|与|以及)"
+    r"(?:(?:、|和|及|与|以及|或|或者)"
     r"[^，。；！？,.!?;\n但|]{0,8}?)*"
-    r"(?:、|和|及|与|以及)?\s*$"
+    r"(?:、|和|及|与|以及|或|或者)?\s*$"
 )
 #: 枚举项里出现这些词时按阳性处理（症状修饰/转折/加重）
 _ENUM_POSITIVE_CUES = (
@@ -276,7 +299,7 @@ def _enum_negated(prefix: str) -> bool:
     span = match.group(0)
     # 必须存在显式枚举连接词，否则交给 _NEGATION_PATTERN 判断，
     # 避免把「无明显诱因的」这类普通修饰当成枚举否定
-    if not any(sep in span for sep in ('、', '和', '及', '与', '以及')):
+    if not any(sep in span for sep in ('、', '和', '及', '与', '以及', '或', '或者')):
         return False
     # 否定词后的第一项必须是常见症状/体征词：「全身无力、」「没有
     # 力气、」「无诱因、」「未婚、」里的无/没/未是词的一部分，不能
@@ -288,7 +311,7 @@ def _enum_negated(prefix: str) -> bool:
         "",
         body,
     )
-    first_item = re.split(r"、|和|及|与|以及", body, maxsplit=1)[0]
+    first_item = re.split(r"、|和|及|与|以及|或|或者", body, maxsplit=1)[0]
     if not any(term in first_item for term in _NEGATED_SYMPTOM_TERMS):
         return False
     # 阳性线索只在剥离否定词与填充词后的枚举正文上判断：
@@ -674,6 +697,10 @@ _NEGATED_SYMPTOM_TERMS = tuple(
         "失眠", "麻木", "抽搐", "晕厥", "咽痛", "鼻塞", "流涕",
         "关节痛", "腰痛", "背痛", "胸痛", "咯血", "呕血", "出血",
         "视物模糊", "言语不清", "意识不清",
+        "喉咙痛", "嗓子痛", "寒战", "畏寒", "怕冷", "发冷", "发热感",
+        "流鼻涕", "鼻涕", "打喷嚏", "嗜睡", "耳鸣", "口苦", "口干",
+        "肌肉酸痛", "酸痛", "腹胀", "反酸", "烧心", "嗳气", "便溏",
+        "食欲不振", "精神差", "犯困",
     }
 )
 IMMUNOSUPPRESSION_TERMS = (
@@ -732,6 +759,17 @@ _STOP_INTENT_PATTERN = re.compile(
 _STOP_QUESTION_PATTERN = re.compile(
     r"(?:停用|停药|停服|停了)[^，。；]{0,4}"
     r"(?:可以吗|行吗|好吗|行不行|可以么|是否|吗)"
+)
+#: 换药/续用线索：同一分句里「停用旧药改用新药」仍是当前用药
+_SWITCH_MEDICATION_PATTERN = re.compile(
+    r"(?:改用|换成|改吃|换用|改为|重新吃|又吃上|恢复服用|"
+    r"还在吃|仍在服用|继续服用|仍然服用)"
+)
+#: 近期停药仍有抗凝作用：「停用两天/昨天停药」按当前用药处理
+_RECENT_STOP_PATTERN = re.compile(
+    r"(?:停用|停药|停了)[^，。；]{0,3}"
+    r"(?:今天|昨天|前天|[0-9一二两三四五六七八九十]+天|几天|"
+    r"一周|两周)"
 )
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
@@ -879,9 +917,11 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             _NEGATED_STOP_PATTERN.search(clause)
             or _STOP_INTENT_PATTERN.search(clause)
             or _STOP_QUESTION_PATTERN.search(clause)
+            or _SWITCH_MEDICATION_PATTERN.search(clause)
+            or _RECENT_STOP_PATTERN.search(clause)
         ):
-            # 「未停用华法林」「打算停用华法林」「华法林停用可以吗」
-            # 都表示当前仍在用药，不能被“停用”关键字过滤掉
+            # 「未停用华法林」「打算停用华法林」「停用旧药改用新药」
+            # 「昨天停药」都表示当前仍有用药/抗凝作用，不能整句丢弃
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):

@@ -547,8 +547,10 @@ def _fake_request(headers):
     return FakeRequest(headers)
 
 
-def test_forwarded_for_append_proxy_keeps_rightmost():
+def test_forwarded_for_append_proxy_keeps_rightmost(monkeypatch):
     import api_server
+
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
 
     # append 型代理在末尾追加真实地址：客户端自带的更左项不能覆盖
     assert api_server._forwarded_client_address(_fake_request({
@@ -590,8 +592,8 @@ def test_shared_bucket_with_address_header_fails_closed(
     )
     assert wrong.status_code == 401
 
-    # 未信任代理头时计数键仍是共享的对端地址：正确令牌也被预锁定
-    # （fail closed 到限流，而不是免限流）
+    # 未声明代理地址头（默认 none）时客户端自带的地址头一律不采信：
+    # 回退到共享限流桶，跳过预锁定（错误令牌仍计数），正确令牌可用
     other = client.get(
         "/api/sessions",
         headers={
@@ -599,10 +601,11 @@ def test_shared_bucket_with_address_header_fails_closed(
             "X-Real-IP": "198.51.100.20",
         },
     )
-    assert other.status_code == 429
+    assert other.status_code == 200
 
     # 显式信任代理头后按转发的真实地址分桶，另一个来源不受影响
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-real-ip")
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),

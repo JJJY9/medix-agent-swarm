@@ -286,6 +286,9 @@ def test_loopback_with_forwarded_headers_is_not_trusted(monkeypatch):
 
     # 显式信任代理头时按头里的真实地址判定：远程仍不是本机
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    # 默认不采信客户端自带地址头（fail closed）：必须声明代理真正
+    # 覆盖/追加的头名后才解析
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     assert api_server._is_loopback_client(
         FakeRequest({"x-forwarded-for": "203.0.113.9"})
     ) is False

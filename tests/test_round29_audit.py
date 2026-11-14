@@ -1,5 +1,6 @@
 """第二十九轮审查：导入/别名/墓碑/规则/家庭累计/PWA 回归测试。"""
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,7 +23,10 @@ def store(tmp_path):
 def test_import_moved_record_is_not_duplicated(store):
     visit = store.add_visit_record("妈妈", visit_date="2026-11-01")
     backup = store.export_data()
-    # 记录被改挂到另一位成员
+    # 记录被改挂到另一位成员。时间戳只有秒精度：跨档案认领要求能看到
+    # 「被编辑过」的证据（updated_at != created_at），这里让改动落在
+    # 下一秒，模拟真实用户操作
+    time.sleep(1.05)
     store.update_visit_record_partial(visit["id"], profile="爸爸")
 
     result = store.import_data(backup)
