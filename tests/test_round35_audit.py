@@ -355,6 +355,7 @@ def test_pending_reset_persists_and_profile_switch_detaches():
     assert "safeStorageRemove('medix.session')" in app_js
     assert "const pendingFor = safeSessionGet(PENDING_RESET_KEY);" in app_js
     # 恢复失败/线程为空时换档也要断开旧会话
-    start = app_js.index("async function applySelectedProfile()")
-    body = app_js[start:start + 2200]
+    start = app_js.index("async function applySelectedProfile() {")
+    end = app_js.index("\n}\n", start) + 3
+    body = app_js[start:end]
     assert "await detachSessionForProfileChange()" in body

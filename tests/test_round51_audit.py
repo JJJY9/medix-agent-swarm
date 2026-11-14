@@ -337,15 +337,28 @@ def test_ipv6_proxy_peer_uses_shared_bucket(monkeypatch, tmp_path):
         session_store.close()
 
 
-def test_compare_gate_debt_is_bounded():
+def test_compare_gate_serializes_concurrent_compares():
+    import asyncio
+
     import api_server
 
     api_server._auth_compare_gates.clear()
-    waits = [
-        api_server._auth_compare_wait_seconds("ip:test")
-        for _ in range(30)
-    ]
-    assert all(wait <= 0.41 for wait in waits)
+
+    async def run():
+        times = []
+
+        async def worker():
+            gate = await api_server._auth_compare_enter("ip:test")
+            assert gate is not None
+            times.append(asyncio.get_running_loop().time())
+            api_server._auth_compare_exit(gate)
+
+        await asyncio.gather(*(worker() for _ in range(3)))
+        return sorted(times)
+
+    times = asyncio.run(run())
+    assert times[1] - times[0] >= 0.15
+    assert times[2] - times[1] >= 0.15
     api_server._auth_compare_gates.clear()
 
 

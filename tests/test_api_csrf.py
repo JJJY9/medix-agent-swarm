@@ -97,6 +97,9 @@ def test_ip_and_allowed_hostnames_are_accepted(
     client_and_store, monkeypatch
 ):
     client, _store = client_and_store
+    # 无令牌 + 非本机 Host 现在按远程来源拒绝（同机反代暴露防护），
+    # 这里显式放行以便单独验证 Host 白名单本身
+    monkeypatch.setenv("MEDIX_ALLOW_INSECURE_LAN", "1")
     for host in (
         "127.0.0.1:8000", "192.168.1.20:8000",
         "[::1]:8000", "localhost:8000", "testserver",

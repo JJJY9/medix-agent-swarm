@@ -766,6 +766,23 @@ def _db_init_lock(db_path: Path):
         handle.close()
 
 
+def _import_valid_rows(raw_items: Any, limit: int, validator) -> list:
+    """返回能通过导入校验的备份行（非法行不参与身份组大小统计）。"""
+    valid = []
+    if not isinstance(raw_items, list):
+        return valid
+    for item in raw_items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            normalized = validator(item)
+        except Exception:
+            normalized = None
+        if normalized is not None:
+            valid.append(item)
+    return valid
+
+
 def _import_probe_spec(raw: Dict[str, Any], columns, extract):
     """构造「身份 + 内容」精确配对的查询条件；无法判断时返回 None。
 
@@ -3603,12 +3620,18 @@ class SessionStore:
             days = max(1, min(int(days or 30), 365))
         except (TypeError, ValueError, OverflowError):
             days = 30
-        cutoff = (
-            datetime.now() - timedelta(days=days - 1)
-        ).strftime("%Y-%m-%d")
+        now = datetime.now()
+        cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        today = now.strftime("%Y-%m-%d")
         checks = (
             ("reminders", "profile = '' AND done = 0", ()),
-            ("health_metrics", "profile = ''", ()),
+            (
+                # 未来时间的记录不会在健康档案中展示：不能凭空生成
+                # 空的「未指定」卡片
+                "health_metrics",
+                "profile = '' AND substr(measured_at, 1, 10) <= ?",
+                (today,),
+            ),
             ("medications", "profile = ''", ()),
             ("vaccinations", "profile = ''", ()),
             ("appointments", "profile = ''", ()),
@@ -3619,13 +3642,15 @@ class SessionStore:
             ("attachments", "profile = ''", ()),
             (
                 "symptoms",
-                "profile = '' AND substr(recorded_at, 1, 10) >= ?",
-                (cutoff,),
+                "profile = '' AND substr(recorded_at, 1, 10) >= ?"
+                " AND substr(recorded_at, 1, 10) <= ?",
+                (cutoff, today),
             ),
             (
                 "lab_results",
-                "profile = '' AND substr(tested_at, 1, 10) >= ?",
-                (cutoff,),
+                "profile = '' AND substr(tested_at, 1, 10) >= ?"
+                " AND substr(tested_at, 1, 10) <= ?",
+                (cutoff, today),
             ),
         )
         with self._lock:
@@ -3640,9 +3665,11 @@ class SessionStore:
                 "SELECT 1 FROM sessions s WHERE s.profile = ''"
                 " AND substr(COALESCE(s.updated_at, s.created_at), 1, 10)"
                 " >= ?"
+                " AND substr(COALESCE(s.updated_at, s.created_at), 1, 10)"
+                " <= ?"
                 " AND EXISTS (SELECT 1 FROM messages m"
                 " WHERE m.session_id = s.id) LIMIT 1",
-                (cutoff,),
+                (cutoff, today),
             ).fetchone()
         return row is not None
 
@@ -5104,6 +5131,7 @@ class SessionStore:
         backup_group_size: int = 0,
         backup_soft_size: int = 0,
         backup_anchor_size: int = 0,
+        backup_exported_at: str = "",
         backup_ids: Optional[set] = None,
         backup_profiles: Optional[Dict[int, str]] = None,
         backup_created: Optional[Dict[int, str]] = None,
@@ -5156,6 +5184,9 @@ class SessionStore:
         group_seen_key = (table, "__seen__", identity)
         group_seen = int(state.get(group_seen_key, 0)) + 1
         state[group_seen_key] = group_seen
+        # 本条是否为该身份组的最后一行备份记录：最后一行才允许认领
+        # 同秒孪生组里剩下的唯一存活行
+        is_group_last = group_seen >= max(backup_group_size, 1)
         local_size_key = (table, "__local_size__", identity)
         local_group_size = state.get(local_size_key)
         if local_group_size is None:
@@ -5273,10 +5304,53 @@ class SessionStore:
                 return False
             return row is not None
 
+        def _candidate_content_matches_backup(candidate: int) -> bool:
+            """候选内容列是否仍与当前备份行一致（编辑只发生在软字段）。"""
+            if not backup_contents or not content_columns:
+                return True
+            expected = backup_contents.get(raw_id)
+            if expected is None:
+                return True
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return True
+            if row is None:
+                return True
+            return self._db_content_fingerprint(
+                row, content_columns
+            ) == expected
+
         def _soft_or_edited(candidate: int) -> bool:
             # 主键撞号只是巧合时，软字段（标题/名称）必须命中；
             # 真正被本地编辑过的存活行看不到软字段，改用编辑证据
             return _soft_matches(candidate) or _candidate_edited(candidate)
+
+        def _edited_after_export() -> bool:
+            """本行是否在备份导出之后被编辑过。
+
+            updated_at 只有秒级精度：导出与编辑落在同一秒时两者相等，
+            仍视为在快照之后编辑。备份缺少导出时间（旧版或手工构造）
+            时不采信，避免把另一个库中同主键同秒的无关记录认领为
+            本备份行的旧版本。
+            """
+            if not backup_exported_at or raw_id <= 0:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT updated_at FROM {table} WHERE id = ?",
+                    (raw_id,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            updated = str(row["updated_at"] or "")
+            return bool(updated) and updated >= backup_exported_at
 
         def _candidate_owned_by_profile_sibling(
             candidate: int, candidate_profile: str
@@ -5374,6 +5448,26 @@ class SessionStore:
                 if _normalize_profile_name(
                     str(other["profile"] or "")
                 ) == profile_key:
+                    if backup_contents and content_columns:
+                        expected_content = backup_contents.get(candidate)
+                        try:
+                            fingerprint_row = self._conn.execute(
+                                f"SELECT {', '.join(content_columns)}"
+                                f" FROM {table} WHERE id = ?",
+                                (other_id,),
+                            ).fetchone()
+                        except sqlite3.Error:
+                            fingerprint_row = None
+                        if (
+                            expected_content is not None
+                            and fingerprint_row is not None
+                            and self._db_content_fingerprint(
+                                fingerprint_row, content_columns
+                            ) != expected_content
+                        ):
+                            # 该行内容与那条备份记录不符（被编辑过）：
+                            # 不能据此把候选判给兄弟
+                            continue
                     return True
             return False
         content_where = " AND ".join(
@@ -5459,6 +5553,13 @@ class SessionStore:
                         == str(meta["created_at"] or "")
                     ):
                         claimable = False
+                if claimable and _candidate_owned_by_profile_sibling(
+                    candidate, str(row["profile"] or "")
+                ):
+                    # 候选实为备份里另一条同档案同秒同内容记录的存活
+                    # 行（普通编辑也会刷新 updated_at），不能当作本行
+                    # 改挂吞掉，否则被删记录不恢复、对方记录被复制
+                    claimable = False
                 if claimable and not _soft_or_edited(candidate):
                     # 内容列相同但软字段不符且无编辑证据：更像备份里
                     # 另一条同秒记录，交给后续内容/软字段配对
@@ -5486,6 +5587,14 @@ class SessionStore:
                 ).fetchone()
                 if soft_row is not None:
                     candidate = int(soft_row["id"])
+                    candidate_profile_row = self._conn.execute(
+                        f"SELECT profile FROM {table} WHERE id = ?",
+                        (candidate,),
+                    ).fetchone()
+                    candidate_profile = (
+                        str(candidate_profile_row["profile"] or "")
+                        if candidate_profile_row is not None else ""
+                    )
                     if (
                         (
                             pre_existing_ids is None
@@ -5494,6 +5603,9 @@ class SessionStore:
                         and candidate not in moved
                         and candidate not in matched
                         and _candidate_edited(candidate)
+                        and not _candidate_owned_by_profile_sibling(
+                            candidate, candidate_profile
+                        )
                     ):
                         return _claim(candidate, mark_moved=True)
 
@@ -5593,7 +5705,9 @@ class SessionStore:
                             continue
                         # 候选档案与备份里另一条同秒记录一致：它是那条
                         # 记录的存活行（改备注/启停等普通编辑也满足编辑
-                        # 证据），不能当作本行改挂，否则被删记录丢失
+                        # 证据），不能当作本行改挂，否则被删记录丢失。
+                        # 这里只看跨档案候选，对方备份行必然会被自己的
+                        # 原始记录认领，本行组内是否最后一条无关紧要
                         if _candidate_owned_by_profile_sibling(
                             candidate, candidate_profile
                         ):
@@ -5651,6 +5765,19 @@ class SessionStore:
                         ).fetchone()
                         if soft_row is None:
                             continue
+                    if not is_group_last:
+                        candidate_profile_row = self._conn.execute(
+                            f"SELECT profile FROM {table} WHERE id = ?",
+                            (candidate,),
+                        ).fetchone()
+                        candidate_profile_value = (
+                            str(candidate_profile_row["profile"] or "")
+                            if candidate_profile_row is not None else ""
+                        )
+                        if _candidate_owned_by_profile_sibling(
+                            candidate, candidate_profile_value
+                        ):
+                            continue
                     return _claim(candidate)
         candidates = {
             c for c in claimed if c not in moved and c not in matched
@@ -5701,6 +5828,7 @@ class SessionStore:
                 backup_group_size <= 1
                 or local_group_size >= backup_group_size
             )
+            and (_soft_or_edited(raw_id) or _edited_after_export())
         ):
             expected_profile = None
             if columns and columns[0] == "profile":
@@ -5759,6 +5887,16 @@ class SessionStore:
                         and _candidate_edited(raw_id)
                     ):
                         return _claim(raw_id)
+                    if (
+                        is_group_last
+                        and len(candidates) == 1
+                        and _candidate_content_matches_backup(
+                            min(candidates)
+                        )
+                    ):
+                        sole = min(candidates)
+                        if not _content_owned_by_other(sole):
+                            return _claim(sole, mark_moved=True)
                     # 同身份组内多条备份行共享同一锚点且本地有缺行：
                     # 到最后一行时才认领唯一候选，之前的行按被删记录
                     # 补回。本地全部存活（只是被编辑）时继续正常配对
@@ -5820,6 +5958,14 @@ class SessionStore:
                     or backup_soft_size == 1
                     or local_group_size >= backup_group_size
                 ):
+                    candidates = soft
+                elif (
+                    is_group_last
+                    and len(soft) == 1
+                    and _candidate_content_matches_backup(min(soft))
+                ):
+                    # 组内最后一条备份行：剩余唯一软字段命中的候选
+                    # 且内容未变（编辑只发生在软字段）才是它的存活行
                     candidates = soft
                 else:
                     return _ambiguous()
@@ -6173,6 +6319,7 @@ class SessionStore:
         # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
         # 作为另一个档案重新插入（校验在改写前完成）
         data = self._remap_import_aliases(data)
+        backup_exported_at = str(data.get("exported_at") or "").strip()[:40]
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
@@ -6549,6 +6696,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=metric_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=metric_backup_meta["ids"],
                             backup_profiles=metric_backup_meta["profiles"],
                             backup_created=metric_backup_meta["created"],
@@ -6792,6 +6940,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=symptom_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=symptom_backup_meta["ids"],
                             backup_profiles=symptom_backup_meta["profiles"],
                             backup_created=symptom_backup_meta["created"],
@@ -6864,8 +7013,27 @@ class SessionStore:
                 medication_pre_ids = self._existing_ids_locked(
                     "medications"
                 )
-                medication_group_sizes = self._identity_group_sizes(
+                medication_valid_rows = _import_valid_rows(
                     raw_medications,
+                    IMPORT_LIST_LIMITS["medications"],
+                    lambda item: _normalize_medication(
+                        item.get("profile", ""),
+                        item.get("name", ""),
+                        item.get("dose", ""),
+                        item.get("frequency", ""),
+                        item.get("note", ""),
+                        item.get("active", True),
+                        item.get("stock"),
+                        item.get("stock_unit", ""),
+                        item.get("low_stock_threshold", 0),
+                        item.get("expiry_date", ""),
+                        item.get("started_at", ""),
+                        item.get("stopped_at", ""),
+                        item.get("stop_reason", ""),
+                    ),
+                )
+                medication_group_sizes = self._identity_group_sizes(
+                    medication_valid_rows,
                     IMPORT_LIST_LIMITS["medications"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -6873,7 +7041,7 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 medication_soft_sizes = self._identity_group_sizes(
-                    raw_medications,
+                    medication_valid_rows,
                     IMPORT_LIST_LIMITS["medications"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -6944,6 +7112,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=medication_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=medication_backup_meta["ids"],
                             backup_profiles=medication_backup_meta["profiles"],
                             backup_created=medication_backup_meta["created"],
@@ -7238,11 +7407,23 @@ class SessionStore:
                 vaccination_pre_ids = self._existing_ids_locked(
                     "vaccinations"
                 )
+                vaccination_valid_rows = _import_valid_rows(
+                    raw_vaccinations,
+                    IMPORT_LIST_LIMITS["vaccinations"],
+                    lambda item: _normalize_vaccination(
+                        item.get("profile") or "",
+                        item.get("vaccine_name") or item.get("name") or "",
+                        item.get("dose_number") or 1,
+                        item.get("vaccinated_at") or "",
+                        item.get("next_due") or "",
+                        item.get("note") or "",
+                    ),
+                )
                 (
                     vaccination_group_sizes,
                     vaccination_soft_sizes,
                 ) = self._identity_group_meta(
-                    raw_vaccinations,
+                    vaccination_valid_rows,
                     IMPORT_LIST_LIMITS["vaccinations"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -7316,6 +7497,7 @@ class SessionStore:
                             raw_id=raw_id,
                             created_at_value=created_key,
                             pre_existing_ids=vaccination_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=vaccination_backup_meta["ids"],
                             backup_profiles=vaccination_backup_meta["profiles"],
                             backup_created=vaccination_backup_meta["created"],
@@ -7396,11 +7578,25 @@ class SessionStore:
                 appointment_pre_ids = self._existing_ids_locked(
                     "appointments"
                 )
+                appointment_valid_rows = _import_valid_rows(
+                    raw_appointments,
+                    IMPORT_LIST_LIMITS["appointments"],
+                    lambda item: _normalize_appointment(
+                        item.get("profile") or "",
+                        item.get("title") or "",
+                        item.get("department") or "",
+                        item.get("doctor") or "",
+                        item.get("location") or "",
+                        item.get("scheduled_at") or "",
+                        item.get("status") or "upcoming",
+                        item.get("note") or "",
+                    ),
+                )
                 (
                     appointment_group_sizes,
                     appointment_soft_sizes,
                 ) = self._identity_group_meta(
-                    raw_appointments,
+                    appointment_valid_rows,
                     IMPORT_LIST_LIMITS["appointments"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -7477,6 +7673,7 @@ class SessionStore:
                             raw_id=raw_id,
                             created_at_value=created_key,
                             pre_existing_ids=appointment_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=appointment_backup_meta["ids"],
                             backup_profiles=appointment_backup_meta["profiles"],
                             backup_created=appointment_backup_meta["created"],
@@ -7565,8 +7762,24 @@ class SessionStore:
             lab_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_lab_results, list):
                 lab_pre_ids = self._existing_ids_locked("lab_results")
-                lab_group_sizes, lab_soft_sizes = self._identity_group_meta(
+                lab_valid_rows = _import_valid_rows(
                     raw_lab_results,
+                    IMPORT_LIST_LIMITS["lab_results"],
+                    lambda item: _normalize_lab_result(
+                        item.get("profile") or "",
+                        item.get("panel") or "",
+                        item.get("item") or "",
+                        item.get("value"),
+                        item.get("unit") or "",
+                        item.get("ref_low"),
+                        item.get("ref_high"),
+                        item.get("tested_at") or "",
+                        item.get("lab_name") or "",
+                        item.get("note") or "",
+                    ),
+                )
+                lab_group_sizes, lab_soft_sizes = self._identity_group_meta(
+                    lab_valid_rows,
                     IMPORT_LIST_LIMITS["lab_results"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -7665,6 +7878,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=lab_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=lab_backup_meta["ids"],
                             backup_profiles=lab_backup_meta["profiles"],
                             backup_created=lab_backup_meta["created"],
@@ -7766,11 +7980,25 @@ class SessionStore:
             allergy_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_allergies, list):
                 allergy_pre_ids = self._existing_ids_locked("allergies")
+                allergy_valid_rows = _import_valid_rows(
+                    raw_allergies,
+                    IMPORT_LIST_LIMITS["allergies"],
+                    lambda item: _normalize_allergy(
+                        item.get("profile") or "",
+                        item.get("substance") or "",
+                        item.get("reaction") or "",
+                        item.get("severity") or "moderate",
+                        item.get("kind") or "drug",
+                        item.get("active", True),
+                        item.get("noted_at") or "",
+                        item.get("note") or "",
+                    ),
+                )
                 (
                     allergy_group_sizes,
                     allergy_soft_sizes,
                 ) = self._identity_group_meta(
-                    raw_allergies,
+                    allergy_valid_rows,
                     IMPORT_LIST_LIMITS["allergies"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -7843,6 +8071,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=allergy_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=allergy_backup_meta["ids"],
                             backup_profiles=allergy_backup_meta["profiles"],
                             backup_created=allergy_backup_meta["created"],
@@ -7908,9 +8137,22 @@ class SessionStore:
             care_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_care_items, list):
                 care_pre_ids = self._existing_ids_locked("care_items")
+                care_valid_rows = _import_valid_rows(
+                    raw_care_items,
+                    IMPORT_LIST_LIMITS["care_items"],
+                    lambda item: _normalize_care_item(
+                        item.get("profile") or "",
+                        item.get("title") or "",
+                        item.get("interval_days") or 30,
+                        item.get("last_done_at") or "",
+                        item.get("next_due_at") or "",
+                        item.get("note") or "",
+                        item.get("active", True),
+                    ),
+                )
                 care_group_sizes, care_soft_sizes = (
                     self._identity_group_meta(
-                        raw_care_items,
+                        care_valid_rows,
                         IMPORT_LIST_LIMITS["care_items"],
                         lambda item: (
                             _normalize_profile_name(item.get("profile")),
@@ -7982,6 +8224,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=care_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=care_backup_meta["ids"],
                             backup_profiles=care_backup_meta["profiles"],
                             backup_created=care_backup_meta["created"],
@@ -8053,9 +8296,26 @@ class SessionStore:
             visit_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_visit_records, list):
                 visit_pre_ids = self._existing_ids_locked("visit_records")
+                visit_valid_rows = _import_valid_rows(
+                    raw_visit_records,
+                    IMPORT_LIST_LIMITS["visit_records"],
+                    lambda item: _normalize_visit_record(
+                        item.get("profile") or "",
+                        item.get("appointment_id") or 0,
+                        item.get("visit_date") or "",
+                        item.get("department") or "",
+                        item.get("doctor") or "",
+                        item.get("facility") or "",
+                        item.get("diagnosis") or "",
+                        item.get("advice") or "",
+                        item.get("prescription") or "",
+                        item.get("next_followup_date") or "",
+                        item.get("note") or "",
+                    ),
+                )
                 visit_group_sizes, visit_soft_sizes = (
                     self._identity_group_meta(
-                        raw_visit_records,
+                        visit_valid_rows,
                         IMPORT_LIST_LIMITS["visit_records"],
                         lambda item: (
                             _normalize_profile_name(item.get("profile")),
@@ -8157,6 +8417,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=visit_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=visit_backup_meta["ids"],
                             backup_profiles=visit_backup_meta["profiles"],
                             backup_created=visit_backup_meta["created"],
@@ -8275,11 +8536,24 @@ class SessionStore:
             condition_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_conditions, list):
                 condition_pre_ids = self._existing_ids_locked("conditions")
+                condition_valid_rows = _import_valid_rows(
+                    raw_conditions,
+                    IMPORT_LIST_LIMITS["conditions"],
+                    lambda item: _normalize_condition(
+                        item.get("profile") or "",
+                        item.get("name") or "",
+                        item.get("icd10") or "",
+                        item.get("diagnosed_at") or "",
+                        item.get("status") or "active",
+                        item.get("severity") or "moderate",
+                        item.get("note") or "",
+                    ),
+                )
                 (
                     condition_group_sizes,
                     condition_soft_sizes,
                 ) = self._identity_group_meta(
-                    raw_conditions,
+                    condition_valid_rows,
                     IMPORT_LIST_LIMITS["conditions"],
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
@@ -8346,6 +8620,7 @@ class SessionStore:
                             raw_id=_safe_db_id(raw.get("id")),
                             created_at_value=created_key,
                             pre_existing_ids=condition_pre_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=condition_backup_meta["ids"],
                             backup_profiles=condition_backup_meta["profiles"],
                             backup_created=condition_backup_meta["created"],
@@ -8559,9 +8834,32 @@ class SessionStore:
                             backup_reminder_title_counts.get(count_key, 0)
                             + 1
                         )
+            def _reminder_import_valid(item):
+                title_text = " ".join(
+                    str(item.get("title") or "").split()
+                )
+                if not title_text:
+                    return None
+                due_text = _normalize_reminder_due(item.get("due_at"))
+                _validate_repeat_window(
+                    due_text,
+                    _normalize_reminder_repeat_days(
+                        item.get("repeat_days")
+                    ),
+                    _normalize_reminder_repeat_until(
+                        item.get("repeat_until")
+                    ),
+                )
+                return {"title": title_text, "due": due_text}
+
+            reminder_valid_rows = _import_valid_rows(
+                raw_reminders,
+                IMPORT_LIST_LIMITS["reminders"],
+                _reminder_import_valid,
+            )
             if isinstance(raw_reminders, list):
                 reminder_group_sizes = self._identity_group_sizes(
-                    raw_reminders,
+                    reminder_valid_rows,
                     IMPORT_LIST_LIMITS["reminders"],
                     lambda item: (
                         str(item.get("created_at") or "").strip()[:40],
@@ -8569,7 +8867,7 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 reminder_soft_sizes = self._identity_group_sizes(
-                    raw_reminders,
+                    reminder_valid_rows,
                     IMPORT_LIST_LIMITS["reminders"],
                     lambda item: (
                         str(item.get("created_at") or "").strip()[:40],
@@ -8750,6 +9048,7 @@ class SessionStore:
                             created_at_value=raw_created,
                             fallback_where=("profile = ?", (profile,)),
                             pre_existing_ids=pre_existing_reminder_ids,
+                            backup_exported_at=backup_exported_at,
                             backup_ids=reminder_backup_meta["ids"],
                             backup_profiles=reminder_backup_meta["profiles"],
                             backup_created=reminder_backup_meta["created"],
@@ -8761,6 +9060,11 @@ class SessionStore:
                             ),
                             backup_soft_size=reminder_soft_sizes.get(
                                 (raw_created, profile, title), 1
+                            ),
+                            # 提醒没有独立锚点：同秒组大小即锚点组，
+                            # 启用「主键未漂移+有编辑证据」自认领
+                            backup_anchor_size=reminder_group_sizes.get(
+                                (raw_created, profile), 1
                             ),
                         )
                         if existing_reminder_id is not None:
@@ -10953,6 +11257,17 @@ class SessionStore:
                         "WHERE done = 0 AND appointment_id = ?",
                         (int(appointment_id),),
                     )
+            if (
+                normalized["status"] in ("cancelled", "completed")
+                and str(previous["status"] or "") == "upcoming"
+            ):
+                # 预约取消/完成后原复诊提醒已脱钩或删除：就诊上的
+                # 提醒链接必须清空，避免之后重开提醒再被误删
+                self._conn.execute(
+                    "UPDATE visit_records SET followup_reminder_id = 0"
+                    " WHERE followup_appointment_id = ?",
+                    (int(appointment_id),),
+                )
             # 取消/完成后恢复待就诊：待办提醒在取消时已被删除，按当前
             # 预约字段重建一条（手改文案无法找回，但至少不会漏提醒）
             was_upcoming = str(previous["status"] or "") == "upcoming"
@@ -12247,7 +12562,7 @@ class SessionStore:
                 (int(visit_id),),
             ).fetchone()
             reminder_row = self._conn.execute(
-                "SELECT profile FROM reminders WHERE id = ?",
+                "SELECT profile, appointment_id FROM reminders WHERE id = ?",
                 (reminder,),
             ).fetchone()
             same_owner = bool(
@@ -12259,8 +12574,19 @@ class SessionStore:
                     visit_profile["profile"] or ""
                 )
             )
-            if same_owner:
-                # 已完成的提醒是历史记录，不能随复诊改期删除
+            reminder_appointment = (
+                int(reminder_row["appointment_id"] or 0)
+                if reminder_row is not None else -1
+            )
+            if (
+                same_owner
+                and (
+                    reminder_appointment == -1
+                    or reminder_appointment == (int(appointment) or 0)
+                )
+            ):
+                # 已完成的提醒是历史记录，不能随复诊改期删除；
+                # 已移交/脱钩的独立提醒也不能被就诊级联删除
                 self._conn.execute(
                     "DELETE FROM reminders WHERE id = ? AND done = 0",
                     (reminder,),
@@ -13907,7 +14233,7 @@ class SessionStore:
         order: str = "",
     ) -> List[Dict[str, Any]]:
         """按时间倒序返回附件登记信息（文件内容不在数据库中）。"""
-        limit = max(1, min(int(limit or 100), 1000))
+        limit = max(1, min(int(limit or 100), 100000))
         try:
             offset = _bounded_offset(offset)
         except (TypeError, ValueError, OverflowError):
