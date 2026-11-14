@@ -6021,9 +6021,22 @@ class SessionStore:
                         # 同档案同秒的孪生组里，先处理行的唯一候选
                         # 可能是后面那行内容相同、仅非内容字段不同的
                         # 存活行：非内容字段与本行一致时它就是本行
-                        # 的存活版本；否则按被删记录补回
-                        if not _tail_matches(sole):
+                        # 的存活版本；存活行被编辑过（备注等尾字段已
+                        # 变）时无法据此区分，仍按本行认领
+                        if not _tail_matches(sole) and not (
+                            _candidate_edited(sole)
+                        ):
                             return _ambiguous()
+                    if (
+                        is_group_last
+                        and tail_where is not None
+                        and not _tail_matches(sole)
+                        and not _candidate_edited(sole)
+                    ):
+                        # 最后一行同样核对非内容字段：候选属于更早的
+                        # 兄弟行时必须补插本行（停药/完成状态等）。
+                        # 存活行被编辑过时尾字段已变，仍按本行认领
+                        return _ambiguous()
                     if _content_owned_by_other(sole):
                         return _ambiguous()
                     return _claim(sole, mark_moved=True)
@@ -7111,16 +7124,15 @@ class SessionStore:
                                 + 1
                             )
                             continue
-                    if metric_key not in existing_metric_counts:
-                        count_row = self._conn.execute(
-                            """
-                            SELECT COUNT(*) AS total FROM health_metrics
-                             WHERE profile = ? AND metric = ?
-                               AND measured_at = ?
-                               AND value1 = ?
-                               AND IFNULL(value2, -1) = IFNULL(?, -1)
-                               AND note = ? AND context = ?
-                            """,
+                    count_gate = True
+                    if created_key:
+                        same_created = self._conn.execute(
+                            "SELECT 1 FROM health_metrics"
+                            " WHERE profile = ? AND metric = ?"
+                            " AND measured_at = ? AND value1 = ?"
+                            " AND IFNULL(value2, -1) = IFNULL(?, -1)"
+                            " AND note = ? AND context = ?"
+                            " AND created_at = ? LIMIT 1",
                             (
                                 normalized["profile"],
                                 normalized["metric"],
@@ -7129,15 +7141,43 @@ class SessionStore:
                                 normalized["value2"],
                                 normalized["note"],
                                 normalized["context"],
+                                created_key,
                             ),
                         ).fetchone()
-                        existing_metric_counts[metric_key] = int(
-                            count_row["total"] if count_row else 0
-                        )
-                    seen = imported_metric_counts.get(metric_key, 0)
-                    imported_metric_counts[metric_key] = seen + 1
-                    if seen < existing_metric_counts[metric_key]:
-                        continue
+                        if same_created is not None:
+                            # 同源同秒的存活读数：孪生补插由身份匹配层
+                            # 负责，不能按内容数量跳过
+                            count_gate = False
+                    if count_gate:
+                        # 内容计数兜底：跨来源恢复（创建时间不同）按
+                        # 内容数量判重，同一条读数不重复插入
+                        if metric_key not in existing_metric_counts:
+                            count_row = self._conn.execute(
+                                """
+                                SELECT COUNT(*) AS total FROM health_metrics
+                                 WHERE profile = ? AND metric = ?
+                                   AND measured_at = ?
+                                   AND value1 = ?
+                                   AND IFNULL(value2, -1) = IFNULL(?, -1)
+                                   AND note = ? AND context = ?
+                                """,
+                                (
+                                    normalized["profile"],
+                                    normalized["metric"],
+                                    normalized["measured_at"],
+                                    normalized["value1"],
+                                    normalized["value2"],
+                                    normalized["note"],
+                                    normalized["context"],
+                                ),
+                            ).fetchone()
+                            existing_metric_counts[metric_key] = int(
+                                count_row["total"] if count_row else 0
+                            )
+                        seen = imported_metric_counts.get(metric_key, 0)
+                        imported_metric_counts[metric_key] = seen + 1
+                        if seen < existing_metric_counts[metric_key]:
+                            continue
                     self._conn.execute(
                         """
                         INSERT INTO health_metrics(
@@ -7346,6 +7386,13 @@ class SessionStore:
                                 "recorded_at = ?",
                                 (normalized["recorded_at"],),
                             ),
+                            tail_where=(
+                                "severity = ? AND COALESCE(note, '') = ?",
+                                (
+                                    normalized["severity"],
+                                    normalized["note"],
+                                ),
+                            ),
                         )
                     else:
                         exists = self._conn.execute(
@@ -7533,12 +7580,20 @@ class SessionStore:
                             tail_where=(
                                 "COALESCE(note, '') = ? AND active = ?"
                                 " AND COALESCE(stopped_at, '') = ?"
-                                " AND stop_reason = ?",
+                                " AND stop_reason = ?"
+                                " AND IFNULL(stock, -1) = IFNULL(?, -1)"
+                                " AND COALESCE(stock_unit, '') = ?"
+                                " AND COALESCE(low_stock_threshold, 0) = ?"
+                                " AND COALESCE(expiry_date, '') = ?",
                                 (
                                     normalized["note"],
                                     normalized["active"],
                                     normalized["stopped_at"],
                                     normalized["stop_reason"],
+                                    normalized["stock"],
+                                    normalized["stock_unit"],
+                                    normalized["low_stock_threshold"],
+                                    normalized["expiry_date"],
                                 ),
                             ),
                         )
@@ -7897,6 +7952,14 @@ class SessionStore:
                             soft_where=(
                                 "vaccine_name = ?",
                                 (normalized["vaccine_name"],),
+                            ),
+                            tail_where=(
+                                "COALESCE(next_due, '') = ?"
+                                " AND COALESCE(note, '') = ?",
+                                (
+                                    normalized["next_due"],
+                                    normalized["note"],
+                                ),
                             ),
                             backup_group_size=vaccination_group_sizes.get(
                                 (normalized["profile"], created_key), 1
@@ -8483,6 +8546,17 @@ class SessionStore:
                                 "substance = ?",
                                 (normalized["substance"],),
                             ),
+                            tail_where=(
+                                "COALESCE(reaction, '') = ?"
+                                " AND severity = ? AND active = ?"
+                                " AND COALESCE(note, '') = ?",
+                                (
+                                    normalized["reaction"],
+                                    normalized["severity"],
+                                    normalized["active"],
+                                    normalized["note"],
+                                ),
+                            ),
                             backup_group_size=allergy_group_sizes.get(
                                 (normalized["profile"], created_key), 1
                             ),
@@ -8634,6 +8708,16 @@ class SessionStore:
                             backup_contents=care_backup_meta["contents"],
                             soft_where=(
                                 "title = ?", (normalized["title"],)
+                            ),
+                            tail_where=(
+                                "COALESCE(last_done_at, '') = ?"
+                                " AND COALESCE(next_due_at, '') = ?"
+                                " AND active = ?",
+                                (
+                                    normalized["last_done_at"],
+                                    normalized["next_due_at"],
+                                    normalized["active"],
+                                ),
                             ),
                             backup_group_size=care_group_sizes.get(
                                 (normalized["profile"], created_key), 1
@@ -8794,6 +8878,27 @@ class SessionStore:
                         )
                         if raw_followup_appointment else 0
                     )
+                    for _attr, _linked in (
+                        ("appointment", mapped_appointment_id),
+                        ("followup", mapped_followup_appointment_id),
+                    ):
+                        if not _linked:
+                            continue
+                        appt_owner = self._conn.execute(
+                            "SELECT profile FROM appointments"
+                            " WHERE id = ?",
+                            (int(_linked),),
+                        ).fetchone()
+                        if (
+                            appt_owner is None
+                            or _normalize_profile_name(
+                                appt_owner["profile"]
+                            ) != normalized["profile"]
+                        ):
+                            if _attr == "appointment":
+                                mapped_appointment_id = 0
+                            else:
+                                mapped_followup_appointment_id = 0
                     raw_followup_reminder = _safe_db_id(
                         raw.get("followup_reminder_id")
                     )
@@ -8831,6 +8936,18 @@ class SessionStore:
                                 (
                                     normalized["visit_date"],
                                     normalized["diagnosis"],
+                                ),
+                            ),
+                            tail_where=(
+                                "COALESCE(facility, '') = ?"
+                                " AND COALESCE(advice, '') = ?"
+                                " AND COALESCE(prescription, '') = ?"
+                                " AND COALESCE(next_followup_date, '') = ?",
+                                (
+                                    normalized["facility"],
+                                    normalized["advice"],
+                                    normalized["prescription"],
+                                    normalized["next_followup_date"],
                                 ),
                             ),
                             backup_group_size=visit_group_sizes.get(
@@ -9033,6 +9150,15 @@ class SessionStore:
                             backup_contents=condition_backup_meta["contents"],
                             soft_where=(
                                 "name = ?", (normalized["name"],)
+                            ),
+                            tail_where=(
+                                "COALESCE(icd10, '') = ? AND status = ?"
+                                " AND severity = ?",
+                                (
+                                    normalized["icd10"],
+                                    normalized["status"],
+                                    normalized["severity"],
+                                ),
                             ),
                             backup_group_size=condition_group_sizes.get(
                                 (normalized["profile"], created_key), 1
@@ -9427,6 +9553,11 @@ class SessionStore:
                         mapped_medication["id"]
                         if mapped_medication else 0
                     )
+                    if medication_id and _normalize_profile_name(
+                        str(mapped_medication.get("profile") or "")
+                    ) != profile:
+                        # 跨成员药物不能被提醒挂接
+                        medication_id = 0
                     medication_name = " ".join(
                         str(raw.get("medication_name") or "").split()
                     )[:MAX_MEDICATION_NAME_LENGTH]
@@ -9480,6 +9611,17 @@ class SessionStore:
                     vaccination_id = raw_vaccination_id_map.get(
                         raw_vaccination_id, 0
                     )
+                    if vaccination_id:
+                        vac_owner = self._conn.execute(
+                            "SELECT profile FROM vaccinations WHERE id = ?",
+                            (vaccination_id,),
+                        ).fetchone()
+                        if (
+                            vac_owner is None
+                            or _normalize_profile_name(vac_owner["profile"])
+                            != profile
+                        ):
+                            vaccination_id = 0
                     if not vaccination_id and raw_vaccination_id > 0:
                         # CSV 只带疫苗 id：确认同档案后关联到库中已有记录
                         vac_row = self._conn.execute(
@@ -9498,6 +9640,18 @@ class SessionStore:
                     appointment_id = raw_appointment_id_map.get(
                         raw_appointment_id, 0
                     )
+                    if appointment_id:
+                        appt_owner = self._conn.execute(
+                            "SELECT profile, status FROM appointments"
+                            " WHERE id = ?",
+                            (appointment_id,),
+                        ).fetchone()
+                        if (
+                            appt_owner is None
+                            or _normalize_profile_name(appt_owner["profile"])
+                            != profile
+                        ):
+                            appointment_id = 0
                     if not appointment_id and raw_appointment_id > 0:
                         appt_row = self._conn.execute(
                             "SELECT id, profile, status FROM appointments"
@@ -9513,6 +9667,17 @@ class SessionStore:
                         ):
                             appointment_id = int(appt_row["id"])
                     done = 1 if raw.get("done") in (1, True, "1") else 0
+                    if appointment_id and not done:
+                        appt_status = self._conn.execute(
+                            "SELECT status FROM appointments WHERE id = ?",
+                            (appointment_id,),
+                        ).fetchone()
+                        if (
+                            appt_status is None
+                            or str(appt_status["status"] or "")
+                            != "upcoming"
+                        ):
+                            appointment_id = 0
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
 
@@ -9555,8 +9720,14 @@ class SessionStore:
                                 (raw_created, profile), 1
                             ),
                             tail_where=(
-                                "COALESCE(note, '') = ? AND advance_days = ?",
-                                (note, advance_days),
+                                "COALESCE(note, '') = ? AND advance_days = ?"
+                                " AND repeat_days = ?"
+                                " AND COALESCE(repeat_until, '') = ?"
+                                " AND done = ?",
+                                (
+                                    note, advance_days, repeat_days,
+                                    repeat_until, done,
+                                ),
                             ),
                         )
                         if existing_reminder_id is not None:
@@ -11599,9 +11770,9 @@ class SessionStore:
                 return None
             # 预约改档案时提醒跟随，避免提醒留在旧成员名下
             self._conn.execute(
-                "UPDATE reminders SET profile = ?"
+                "UPDATE reminders SET profile = ?, updated_at = ?"
                 " WHERE appointment_id = ?",
-                (normalized["profile"], int(appointment_id)),
+                (normalized["profile"], now, int(appointment_id)),
             )
             profile_changed = (
                 _normalize_profile_name(str(previous["profile"] or ""))
@@ -13143,11 +13314,13 @@ class SessionStore:
                 auto_created = linked is not None
             # 只有仍未就诊的自动复诊预约才删除；已完成/已取消的是就诊
             # 历史，不能因为修改上一次就诊而复诊日期就消失
+            if auto_created and keep_date and (
+                str(row["scheduled_at"] or "")[:10] == keep_date
+            ):
+                # 日期与新复诊日期一致：无论待就诊还是已完成都保留，
+                # completed 是按时复诊的历史，清链接会重新报逾期
+                return True
             if auto_created and str(row["status"] or "") == "upcoming":
-                if keep_date and (
-                    str(row["scheduled_at"] or "")[:10] == keep_date
-                ):
-                    return True
                 self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?",
                     (appointment,),
@@ -15810,6 +15983,42 @@ class SessionStore:
         appointment_id = _safe_db_id(appointment_id)
         now = self._now()
         with self._lock, self._conn:
+            # 关联记录必须存在且属于同一档案；待办提醒只能挂待就诊
+            # 预约，避免通过公开接口创建会被级联静默删除的提醒
+            for _table, _row_id, _require_upcoming in (
+                ("medications", medication_id, False),
+                ("vaccinations", vaccination_id, False),
+                ("appointments", appointment_id, True),
+            ):
+                if not _row_id:
+                    continue
+                if _table == "appointments":
+                    owner_row = self._conn.execute(
+                        "SELECT profile, status FROM appointments"
+                        " WHERE id = ?",
+                        (int(_row_id),),
+                    ).fetchone()
+                else:
+                    owner_row = self._conn.execute(
+                        f"SELECT profile FROM {_table} WHERE id = ?",
+                        (int(_row_id),),
+                    ).fetchone()
+                valid = bool(
+                    owner_row is not None
+                    and _normalize_profile_name(owner_row["profile"])
+                    == profile
+                    and (
+                        not _require_upcoming
+                        or str(owner_row["status"] or "") == "upcoming"
+                    )
+                )
+                if not valid:
+                    if _table == "medications":
+                        medication_id = 0
+                    elif _table == "vaccinations":
+                        vaccination_id = 0
+                    else:
+                        appointment_id = 0
             cursor = self._conn.execute(
                 """
                 INSERT INTO reminders(

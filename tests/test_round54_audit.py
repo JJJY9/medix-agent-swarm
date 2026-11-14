@@ -451,7 +451,7 @@ def test_frontend_round54_guards():
     assert "|| pendingSessionReset" in open_body
     # 在途主诉记录档案并在恢复时校验
     assert app_js.count("profile: activeProfileName || ''") == 2
-    assert "profile !== activeProfileName" in app_js
+    assert "profile !== currentProfile" in app_js
     # 深链接管文本不写当前会话草稿，pagehide 同步落盘同样生效
     assert "let detachedComposerText = '';" in app_js
     assert "function composerIsDetached()" in app_js

@@ -114,7 +114,9 @@ _UNCERTAIN_QUESTION_RE = re.compile(
 )
 #: 「不是没有/并非没有」是双重否定，实际为阳性
 _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
-    r"(?:不是|并非|并非说|不能说|不代表|又不是)\s*(?:没有|没|无)\s*$"
+    r"(?:不是|并非|并非说|并不是说?|不能说|不代表|又不是)"
+    r"[^，。；,.!?！？\n]{0,8}(?:没有|没|无)"
+    rf"(?:{_NEGATION_FILLERS})*\s*$"
 )
 #: 「差点没昏倒」是“几乎发生”，不是否定
 _ALMOST_PATTERN = re.compile(
@@ -182,7 +184,8 @@ PREGNANCY_UNCERTAIN_TERMS = (
 #: 孕产期出血只认与妊娠相关的出血部位，牙龈/鼻/皮肤出血不能算
 PREGNANCY_BLEEDING_TERMS = (
     "阴道出血", "阴道流血", "阴道大量出血", "产道出血",
-    "下体出血", "见红", "早孕出血", "孕早期出血", "孕中期出血",
+    "下体出血", "下面出血", "下面流血", "下身出血", "下身流血",
+    "见红", "早孕出血", "孕早期出血", "孕中期出血",
     "孕晚期出血", "产前出血", "孕妇出血",
 )
 #: 量词插入「阴道」与「出血」之间（阴道少量出血/阴道有点流血）仍属
@@ -884,7 +887,13 @@ def _clean_complaint_clause(
             or any(word in prefix for word in _DEFINITION_KEEP_CUES)
             # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
             # 单一红旗症状也按真实主诉保留
-            or (patient_context_seen and _is_red_flag_text(prefix))
+            or (
+                patient_context_seen
+                and (
+                    _is_red_flag_text(prefix)
+                    or _colloquial_bleeding_positive(prefix)
+                )
+            )
             # 孕产期出血无论是否有前文患者语境都按真实主诉保留：
             # 「阴道出血是什么病」在孕期档案下同样是急症描述
             or any(term in prefix for term in PREGNANCY_BLEEDING_TERMS)
@@ -965,13 +974,21 @@ def patient_complaint_text(text: str) -> str:
                 _positive_mention(clause, term)
                 for term in _NEGATED_SYMPTOM_TERMS
             )
-            if subject_seen or positive_flag or symptom_seen:
-                # 已有患者本人的症状分句：后续定义问句按新症状保留。
-                # 「今天想问问」「没有胸痛」这类铺垫/否定分句不算语境；
-                # 「我在网上查了资料」里的「我」是检索者而非患者
+            pregnancy_seen = (
+                any(term in clause for term in PREGNANCY_TERMS)
+                or PREGNANCY_WEEK_PATTERN.search(clause) is not None
+            )
+            if (
+                subject_seen or positive_flag or symptom_seen
+                or pregnancy_seen
+            ):
+                # 已有患者本人的症状/妊娠分句：后续定义问句按新症状
+                # 保留。「今天想问问」「没有胸痛」这类铺垫/否定分句
+                # 不算语境；「我在网上查了资料」里的「我」是检索者
                 if (
                     positive_flag
                     or symptom_seen
+                    or pregnancy_seen
                     or not any(
                         word in clause
                         for word in _EDUCATION_BLOCKERS_STRONG
@@ -1200,7 +1217,7 @@ _CONTEXT_INACTIVE_MARKERS = (
     "已结束", "结束后", "已停", "停用", "停药", "停了", "已完成",
     "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
     "没吃", "不吃", "不吃了", "不再吃", "不用吃", "无需吃", "没再吃",
-    "否认", "未曾", "从未", "过敏",
+    "否认", "未曾", "从未", "过敏史", "过敏原", "过敏反应",
 )
 
 #: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
@@ -1498,8 +1515,13 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             and not _CONTINUOUS_MEDICATION_PATTERN.search(clause)
             and not _CURRENT_MEDICATION_CUE.search(clause)
         ):
-            # 「以前吃华法林」是既往用药；含近期时长或「现在还在吃」
-            # 的分句仍属当前用药
+            # 「以前吃华法林」是既往用药；含近期时长、「现在还在吃」
+            # 或后续分句出现续用线索时仍属当前用药
+            if (
+                _RESTART_TEXT_RE.search(clause)
+                or _RESTART_TEXT_RE.search(restart_window)
+            ):
+                kept.append(clause)
             continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，
