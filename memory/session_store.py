@@ -5260,6 +5260,45 @@ class SessionStore:
             # 真正被本地编辑过的存活行看不到软字段，改用编辑证据
             return _soft_matches(candidate) or _candidate_edited(candidate)
 
+        def _candidate_owned_by_profile_sibling(
+            candidate: int, candidate_profile: str
+        ) -> bool:
+            """候选是否就是备份里另一条同秒同档案记录的存活行。
+
+            只有内容指纹也命中那条记录时才算（改挂到其他成员的记录
+            内容通常与自己的备份行一致）；内容不同的同档案同秒记录
+            只是主键漂移的巧合，不能排除。
+            """
+            if not (
+                backup_profiles and backup_created and backup_contents
+            ) or not content_columns:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            fingerprint = self._db_content_fingerprint(
+                row, content_columns
+            )
+            wanted = _normalize_profile_name(candidate_profile)
+            created_key = str(created_at_value or "")
+            for other_id, other_profile in backup_profiles.items():
+                if other_id == raw_id:
+                    continue
+                if backup_created.get(other_id) != created_key:
+                    continue
+                if _normalize_profile_name(other_profile) != wanted:
+                    continue
+                if backup_contents.get(other_id) == fingerprint:
+                    return True
+            return False
+
         def _other_backup_row_survives(candidate: int) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
@@ -5534,6 +5573,13 @@ class SessionStore:
                             == str(meta["created_at"] or "")
                         ):
                             continue
+                        # 候选档案与备份里另一条同秒记录一致：它是那条
+                        # 记录的存活行（改备注/启停等普通编辑也满足编辑
+                        # 证据），不能当作本行改挂，否则被删记录丢失
+                        if _candidate_owned_by_profile_sibling(
+                            candidate, candidate_profile
+                        ):
+                            continue
                     candidates.append(candidate)
                 if candidates and soft_where is not None:
                     # 漂移候选必须满足不可编辑的软字段（如提醒标题）：
@@ -5682,10 +5728,14 @@ class SessionStore:
             ).fetchall()
             candidates = {int(row["id"]) for row in rows}
             if candidates:
-                if backup_group_size > 1 and backup_anchor_size > 1:
-                    # 同身份组内多条备份行共享同一锚点（如同秒同测量
-                    # 时间的两条读数）：到最后一行时才认领唯一候选，
-                    # 之前的行按被删记录补回
+                if (
+                    backup_group_size > 1
+                    and backup_anchor_size > 1
+                    and local_group_size < backup_group_size
+                ):
+                    # 同身份组内多条备份行共享同一锚点且本地有缺行：
+                    # 到最后一行时才认领唯一候选，之前的行按被删记录
+                    # 补回。本地全部存活（只是被编辑）时继续正常配对
                     return _ambiguous()
             if not candidates:
                 # 兜底锚点未命中：可能是本地编辑了锚点字段。先回到锚点
@@ -6925,10 +6975,22 @@ class SessionStore:
                     except (TypeError, ValueError, OverflowError):
                         raw_id = 0
                     if raw_id:
+                        # 目标库主键漂移时实际命中行可能属于另一档案
+                        # （改挂）：打卡/历史必须写到真实行档案名下
+                        actual_profile = normalized["profile"]
+                        actual_name = normalized["name"]
+                        actual_row = self._conn.execute(
+                            "SELECT profile, name FROM medications"
+                            " WHERE id = ?",
+                            (actual_id,),
+                        ).fetchone()
+                        if actual_row is not None:
+                            actual_profile = str(actual_row["profile"] or "")
+                            actual_name = str(actual_row["name"] or "")
                         medication_id_map[raw_id] = {
                             "id": actual_id,
-                            "profile": normalized["profile"],
-                            "name": normalized["name"],
+                            "profile": actual_profile,
+                            "name": actual_name,
                         }
 
             medication_logs_imported = 0
@@ -8781,7 +8843,8 @@ class SessionStore:
                 ).fetchone()
                 appt_row = (
                     self._conn.execute(
-                        "SELECT profile, status, scheduled_at"
+                        "SELECT profile, status, scheduled_at,"
+                        " owner_visit_id, note"
                         " FROM appointments WHERE id = ?",
                         (int(followup_appointment_id),),
                     ).fetchone()
@@ -8798,19 +8861,49 @@ class SessionStore:
                     # 否则逾期复诊提示会被错挂链接永久抑制。
                     # 已完成预约是就诊历史，恢复链接才能避免已按时
                     # 复诊被重新报成逾期
+                same_appt_profile = bool(
+                    appt_row is not None
+                    and _normalize_profile_name(
+                        str(appt_row["profile"] or "")
+                    ) == _normalize_profile_name(
+                        str(visit_row["profile"] or "")
+                        if visit_row is not None else ""
+                    )
+                )
+                appt_status = (
+                    str(appt_row["status"] or "")
+                    if appt_row is not None else ""
+                )
+                if appt_status == "completed" and same_appt_profile:
+                    # 已完成预约是就诊历史：实际就诊日期可以与计划复诊
+                    # 日期不同，只要归属（owner/备注标记）指向该就诊
+                    # 就恢复链接，避免已复诊被误报为逾期
+                    marker_visit = 0
+                    marker = re.search(
+                        r"由就诊记录 #(\d+) 自动创建",
+                        str(appt_row["note"] or ""),
+                    )
+                    if marker is not None:
+                        marker_visit = visit_raw_local_map.get(
+                            _safe_db_id(marker.group(1)), 0
+                        )
                     appointment_ok = bool(
-                        appt_row is not None
-                        and str(appt_row["status"] or "")
-                        in ("upcoming", "completed")
+                        int(appt_row["owner_visit_id"] or 0)
+                        == int(visit_id)
+                        or marker_visit == int(visit_id)
+                        or (
+                            visit_followup_date
+                            and str(appt_row["scheduled_at"] or "")[:10]
+                            == visit_followup_date[:10]
+                        )
+                    )
+                else:
+                    appointment_ok = bool(
+                        same_appt_profile
+                        and appt_status == "upcoming"
                         and visit_followup_date
                         and str(appt_row["scheduled_at"] or "")[:10]
                         == visit_followup_date[:10]
-                        and _normalize_profile_name(
-                            str(appt_row["profile"] or "")
-                        ) == _normalize_profile_name(
-                            str(visit_row["profile"] or "")
-                            if visit_row is not None else ""
-                        )
                     )
                 if visit_is_new:
                     apply_links = bool(
@@ -10126,7 +10219,8 @@ class SessionStore:
         now = self._now()
         with self._lock, self._conn:
             previous = self._conn.execute(
-                "SELECT next_due FROM vaccinations WHERE id = ?",
+                "SELECT next_due, profile, vaccine_name, dose_number"
+                " FROM vaccinations WHERE id = ?",
                 (int(vaccination_id),),
             ).fetchone()
             cursor = self._conn.execute(
@@ -10146,6 +10240,46 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
+            # 档案变化/疫苗改名/剂次变化时同步提醒的档案与自动标题
+            profile_changed = bool(
+                previous is not None
+                and _normalize_profile_name(
+                    str(previous["profile"] or "")
+                ) != _normalize_profile_name(normalized["profile"])
+            )
+            old_title = (
+                f"接种：{str(previous['vaccine_name'] or '') or '疫苗'}"
+                f"（第{int(previous['dose_number'] or 1)}剂）"[:120]
+                if previous is not None else ""
+            )
+            new_title = (
+                f"接种：{normalized['vaccine_name'] or '疫苗'}"
+                f"（第{int(normalized['dose_number'] or 1)}剂）"[:120]
+            )
+            if profile_changed or old_title != new_title:
+                reminder_rows = self._conn.execute(
+                    "SELECT id, title FROM reminders"
+                    " WHERE done = 0 AND vaccination_id = ?",
+                    (int(vaccination_id),),
+                ).fetchall()
+                for reminder_row in reminder_rows:
+                    updates = ["updated_at = ?"]
+                    update_params: List[Any] = [now]
+                    if profile_changed:
+                        updates.append("profile = ?")
+                        update_params.append(normalized["profile"])
+                    if (
+                        old_title != new_title
+                        and str(reminder_row["title"] or "") == old_title
+                    ):
+                        updates.append("title = ?")
+                        update_params.append(new_title)
+                    update_params.append(int(reminder_row["id"]))
+                    self._conn.execute(
+                        f"UPDATE reminders SET {', '.join(updates)}"
+                        " WHERE id = ?",
+                        update_params,
+                    )
             # 只有下一剂日期变化才同步接种提醒；只改备注/剂次不能把
             # 用户手动推迟的提醒拨回原日期。清空日期表示系列结束
             next_due = str(normalized["next_due"] or "")
@@ -10237,8 +10371,8 @@ class SessionStore:
             )
             self._conn.execute(
                 "DELETE FROM reminders WHERE done = 0"
-                " AND vaccination_id = ? AND profile = ?",
-                (int(vaccination_id), str(vaccination["profile"] or "")),
+                " AND vaccination_id = ?",
+                (int(vaccination_id),),
             )
             return True
 
@@ -10601,17 +10735,68 @@ class SessionStore:
                     )
                     if updated.rowcount == 0:
                         # 该预约唯一的提醒已被勾选完成：改期后必须重建
-                        # 待办，否则复诊前没有任何提醒。从未创建或已被
-                        # 用户删除的提醒不能因改期复活
-                        had_reminder = self._conn.execute(
-                            "SELECT 1 FROM reminders"
-                            " WHERE appointment_id = ? LIMIT 1",
+                        # 待办，否则复诊前没有任何提醒。从未创建、已被
+                        # 用户删除的提醒不能因改期复活：优先按就诊上的
+                        # 提醒链接判断（删除时链接已被清空）
+                        link_row = self._conn.execute(
+                            "SELECT followup_reminder_id FROM visit_records"
+                            " WHERE followup_appointment_id = ? LIMIT 1",
                             (int(appointment_id),),
                         ).fetchone()
-                        rebuilt_id = (
-                            _create_reminder()
-                            if had_reminder is not None else 0
+                        linked_reminder_id = (
+                            int(link_row["followup_reminder_id"] or 0)
+                            if link_row is not None else 0
                         )
+                        rebuild = False
+                        if linked_reminder_id:
+                            linked_alive = self._conn.execute(
+                                "SELECT done FROM reminders WHERE id = ?",
+                                (linked_reminder_id,),
+                            ).fetchone()
+                            rebuild = bool(
+                                linked_alive is not None
+                                and int(linked_alive["done"] or 1) == 1
+                            )
+                        elif link_row is None:
+                            # 没有就诊链接的普通预约：以是否有已完成
+                            # 提醒判断。就诊链接存在但已清空说明用户
+                            # 主动删除了提醒，不能再复活
+                            had_completed = self._conn.execute(
+                                "SELECT 1 FROM reminders"
+                                " WHERE appointment_id = ? AND done = 1"
+                                " LIMIT 1",
+                                (int(appointment_id),),
+                            ).fetchone()
+                            rebuild = had_completed is not None
+                            if rebuild:
+                                # 用户主动删除过该预约的提醒（重建后
+                                # 又删）：删除墓碑晚于任何已完成提醒时
+                                # 不再复活
+                                try:
+                                    marker = self.get_app_state(
+                                        "reminder_deleted_"
+                                        f"{int(appointment_id)}"
+                                    )
+                                except sqlite3.Error:
+                                    marker = ""
+                                if marker:
+                                    latest_done = self._conn.execute(
+                                        "SELECT MAX(updated_at) AS latest"
+                                        " FROM reminders"
+                                        " WHERE appointment_id = ?"
+                                        " AND done = 1",
+                                        (int(appointment_id),),
+                                    ).fetchone()
+                                    latest_text = (
+                                        str(latest_done["latest"] or "")
+                                        if latest_done is not None else ""
+                                    )
+                                    if (
+                                        not latest_text
+                                        or latest_text <= marker
+                                    ):
+                                        rebuild = False
+                        rebuilt_id = _create_reminder() if rebuild else 0
                         if rebuilt_id:
                             self._conn.execute(
                                 "UPDATE visit_records"
@@ -11918,11 +12103,29 @@ class SessionStore:
             )
         reminder = _safe_db_id(reminder_id)
         if reminder:
-            # 已完成的提醒是历史记录，不能随复诊改期删除
-            self._conn.execute(
-                "DELETE FROM reminders WHERE id = ? AND done = 0",
+            visit_profile = self._conn.execute(
+                "SELECT profile FROM visit_records WHERE id = ?",
+                (int(visit_id),),
+            ).fetchone()
+            reminder_row = self._conn.execute(
+                "SELECT profile FROM reminders WHERE id = ?",
                 (reminder,),
+            ).fetchone()
+            same_owner = bool(
+                visit_profile is None
+                or reminder_row is None
+                or _normalize_profile_name(
+                    reminder_row["profile"] or ""
+                ) == _normalize_profile_name(
+                    visit_profile["profile"] or ""
+                )
             )
+            if same_owner:
+                # 已完成的提醒是历史记录，不能随复诊改期删除
+                self._conn.execute(
+                    "DELETE FROM reminders WHERE id = ? AND done = 0",
+                    (reminder,),
+                )
         return False
 
     def update_visit_record(
@@ -14728,10 +14931,36 @@ class SessionStore:
 
     def delete_reminder(self, reminder_id: int) -> bool:
         with self._write_and_checkpoint():
+            doomed_row = self._conn.execute(
+                "SELECT appointment_id FROM reminders WHERE id = ?",
+                (int(reminder_id),),
+            ).fetchone()
             cursor = self._conn.execute(
                 "DELETE FROM reminders WHERE id = ?", (int(reminder_id),)
             )
-            return cursor.rowcount > 0
+            if cursor.rowcount == 0:
+                return False
+            if (
+                doomed_row is not None
+                and int(doomed_row["appointment_id"] or 0)
+            ):
+                # 用户主动删除预约提醒：记录墓碑，之后改期不能凭旧的
+                # 已完成提醒把它复活
+                try:
+                    self.set_app_state(
+                        f"reminder_deleted_{int(doomed_row['appointment_id'])}",
+                        self._now(),
+                    )
+                except sqlite3.Error:
+                    pass
+            # 用户主动删除提醒后，就诊上的复诊提醒链接一并解除，
+            # 下次改期不能凭残留链接把提醒复活
+            self._conn.execute(
+                "UPDATE visit_records SET followup_reminder_id = 0"
+                " WHERE followup_reminder_id = ?",
+                (int(reminder_id),),
+            )
+            return True
 
     def delete_reminders_bulk(
         self, reminder_ids: Any, only_done: bool = False
@@ -14751,11 +14980,37 @@ class SessionStore:
         placeholders = ",".join("?" for _ in values)
         condition = " AND done = 1" if only_done else ""
         with self._write_and_checkpoint():
+            doomed_rows = self._conn.execute(
+                f"SELECT id, appointment_id FROM reminders"
+                f" WHERE id IN ({placeholders}){condition}",
+                values,
+            ).fetchall()
+            doomed = [int(row["id"]) for row in doomed_rows]
             cursor = self._conn.execute(
                 f"DELETE FROM reminders"
                 f" WHERE id IN ({placeholders}){condition}",
                 values,
             )
+            if doomed:
+                doomed_placeholders = ",".join("?" for _ in doomed)
+                self._conn.execute(
+                    "UPDATE visit_records SET followup_reminder_id = 0"
+                    f" WHERE followup_reminder_id IN ({doomed_placeholders})",
+                    doomed,
+                )
+                for doomed_row in doomed_rows:
+                    appointment_ref = int(
+                        doomed_row["appointment_id"] or 0
+                    )
+                    if not appointment_ref:
+                        continue
+                    try:
+                        self.set_app_state(
+                            f"reminder_deleted_{appointment_ref}",
+                            self._now(),
+                        )
+                    except sqlite3.Error:
+                        pass
             return int(cursor.rowcount or 0)
 
     def update_reminder(
@@ -14819,7 +15074,7 @@ class SessionStore:
 
         with self._lock, self._conn:
             current = self._conn.execute(
-                "SELECT due_at, repeat_days, repeat_until "
+                "SELECT due_at, repeat_days, repeat_until, profile "
                 "FROM reminders WHERE id = ?",
                 (int(reminder_id),),
             ).fetchone()
@@ -14849,6 +15104,20 @@ class SessionStore:
                 (int(reminder_id),),
             ).fetchone()
             result = {**dict(row), "done": bool(row["done"])}
+            profile_changed = bool(
+                profile is not None
+                and current is not None
+                and _normalize_profile_name(str(profile))
+                != _normalize_profile_name(str(current["profile"] or ""))
+            )
+            if profile_changed:
+                # 提醒移交其他成员后，原就诊上的提醒链接必须解除：
+                # 之后编辑/删除该就诊不能把别人的待办一起删掉
+                self._conn.execute(
+                    "UPDATE visit_records SET followup_reminder_id = 0"
+                    " WHERE followup_reminder_id = ?",
+                    (int(reminder_id),),
+                )
             if profile is not None and int(result["appointment_id"] or 0):
                 appointment_row = self._conn.execute(
                     "SELECT profile FROM appointments WHERE id = ?",

@@ -20543,6 +20543,17 @@ async function send(question) {
     return;
   }
   if (!question.trim()) return;
+  // 极早持久化已提交主诉：深链预恢复等待期间刷新/关页也不会丢失
+  // （ensureSession 之后会用真实会话 ID 覆盖同一条记录）
+  try {
+    safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
+      sessionId: sessionId || '',
+      question,
+      at: Date.now(),
+    }));
+  } catch {
+    // 隐私模式忽略
+  }
   // 深链尚未恢复成功时先补一次恢复：否则会把本标签页上一患者的
   // 补充信息发进深链患者的会话（服务端按会话绑定档案落库）
   if (deepLinkedSession) {
@@ -21611,6 +21622,11 @@ async function applySelectedProfile() {
       // 被 busy/用户取消拒绝时档案实际没有切换：撤销刚设置的标记，
       // 否则下一问会静默清空当前会话
       setPendingSessionReset(hadPendingReset);
+      if (!hadPendingReset && sessionId) {
+        // 撤销待重置后恢复共享会话指针：否则新标签页/冷启动
+        // 会丢失当前会诊
+        persistSessionId(sessionId);
+      }
       els.profileSelect.value = activeProfileName || '';
       return;
     }
@@ -21774,15 +21790,15 @@ function restoreInflightQuestion() {
   try {
     raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
     if (!raw) return;
-    safeSessionRemove(INFLIGHT_QUESTION_KEY);
     const data = JSON.parse(raw);
     const question = String((data && data.question) || '').trim();
     const owner = String((data && data.sessionId) || '');
     if (!question) return;
     // 其它标签页/其它会话的问题不填进本页
     if (owner && sessionId && owner !== sessionId) return;
-    if (els.input.value.trim()) return;
+    // 输入框可能已有刷新恢复的后续草稿：合并而不是丢弃先提交的主诉
     restoreComposer(question);
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
     setVitals('warn', '上次会诊未完成，主诉已恢复到输入框');
   } catch {
     // 数据损坏/隐私模式：忽略
@@ -21790,7 +21806,7 @@ function restoreInflightQuestion() {
 }
 
 window.addEventListener('beforeunload', (event) => {
-  if (!busy) return;
+  if (!busy && !sendInFlight) return;
   // 会诊进行中离开页面会中断生成：让浏览器弹出确认
   event.preventDefault();
   event.returnValue = '';

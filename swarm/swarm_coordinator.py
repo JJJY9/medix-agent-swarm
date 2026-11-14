@@ -539,10 +539,24 @@ class SwarmCoordinator:
             """写回 SQLite 的档案名：已改名时用新名称，已删除时为空。"""
             if await _profile_deleted_midflight():
                 return ""
+            # 已存在的会话优先采用数据库里当前绑定的档案：改名会同步
+            # 更新 sessions.profile，而请求开始时捕获的旧名可能已被
+            # 新主人复用（resolve_profile_alias 会解析回旧名本身）
+            canonical_profile = patient_profile
+            if session_id and patient_profile:
+                try:
+                    session_row = await asyncio.to_thread(
+                        self.session_store.get_session, session_id
+                    )
+                except Exception:
+                    session_row = None
+                bound = str((session_row or {}).get("profile") or "")
+                if bound and bound != patient_profile:
+                    canonical_profile = bound
             try:
                 resolved = await asyncio.to_thread(
                     self.session_store.resolve_profile_alias,
-                    patient_profile,
+                    canonical_profile,
                 )
             except Exception:
                 return patient_profile
