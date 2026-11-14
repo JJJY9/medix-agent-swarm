@@ -782,12 +782,12 @@ let profileSelectionSeq = 0;
 //: 当前是否正在恢复会话（用于切换档案时按“已有会话”处理）
 let sessionRestoreInFlight = false;
 const previousTabSession = safeSessionGet('medix.session.tab');
+const pendingDeepLinkSession = safeSessionGet(DEEP_LINK_PENDING_KEY);
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
-  const pendingDeepLink = safeSessionGet(DEEP_LINK_PENDING_KEY);
   deepLinkedSession = (
     initialSessionFromUrl !== previousTabSession
-    || pendingDeepLink === initialSessionFromUrl
+    || pendingDeepLinkSession === initialSessionFromUrl
   );
   if (deepLinkedSession) {
     safeSessionSet(DEEP_LINK_PENDING_KEY, initialSessionFromUrl);
@@ -796,6 +796,15 @@ if (initialSessionFromUrl) {
   // 从共享 localStorage 采纳的会话要固定到本标签页：其它标签页之后
   // 切换会话并写入 localStorage 时，本标签页刷新才不会跟随过去
   safeSessionSet('medix.session.tab', sessionId);
+}
+if (
+  !deepLinkedSession
+  && sessionId
+  && pendingDeepLinkSession === sessionId
+) {
+  // 未消费的深链在导航丢掉 ?session= 后仍按深链处理：不能用
+  // 上一患者残留的补充信息套用到深链会话上
+  deepLinkedSession = true;
 }
 // 恢复未完成的「下一轮换新会话」标记：localStorage 持久化，
 // 关闭标签页/重开 PWA 后仍然有效
@@ -818,6 +827,13 @@ try {
     !pendingSessionReset
     && sessionId
     && safeStorageGet(pendingResetStorageKey(sessionId))
+    && (
+      // localStorage 标记被所有标签页共享：只有本标签页（sessionStorage
+      // 仍是同一标记）或独立 PWA 重开时才采信，避免另一个标签页的
+      // 换档标记让本标签页下一问丢弃当前会话
+      window.matchMedia
+      && window.matchMedia('(display-mode: standalone)').matches
+    )
   ) {
     pendingSessionReset = true;
   }
@@ -3269,6 +3285,8 @@ async function startNewSession() {
     lastServerMessageId = 0;
     safeStorageRemove(pendingResetStorageKey(sessionId));
     consumeDeepLink();
+    // 输入框里未发送的草稿归属到新会话，刷新不会把它静默删除
+    reassignDraftToCurrentSession();
 
     els.thread.replaceChildren(els.empty);
     els.empty.hidden = false;
@@ -5137,6 +5155,9 @@ async function openSession(id) {
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
     setPendingSessionReset(false);
     consumeDeepLink();
+    // 在切换 sessionId 之前处理草稿归属：旧版无归属草稿据此判断
+    // 是否属于另一个会话
+    settleDraftForSession(id);
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
     persistSessionId(id);
@@ -21453,6 +21474,9 @@ async function applySelectedProfile() {
     }
     // 用户手动换档：让仍在途的会话恢复放弃渲染，避免覆盖新选择
     profileSelectionSeq += 1;
+    // 新建等待期间禁止复用旧会话：否则回车会把新患者的问题写进
+    // 旧档案的会诊记录（startNewSession 成功后清除标记）
+    setPendingSessionReset(true);
     const created = await startNewSession();
     if (!created) {
       // 失败或并发打开了其它会话：同步下拉到当前实际档案，
@@ -21494,11 +21518,14 @@ let draftTimer = null;
 
 function saveDraft() {
   clearTimeout(draftTimer);
+  // 归属在调用时捕获：定时器触发前可能已切换会话，不能把上一
+  // 会话的草稿改挂到新会话上
+  const ownerSnapshot = sessionId || '';
   draftTimer = setTimeout(() => {
     try {
       if (els.input.value.trim()) {
         safeSessionSet(DRAFT_KEY, els.input.value);
-        safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
+        safeSessionSet(DRAFT_OWNER_KEY, ownerSnapshot);
       } else {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
@@ -21507,6 +21534,22 @@ function saveDraft() {
       // 隐私模式下 sessionStorage 不可用时忽略
     }
   }, 200);
+}
+
+function reassignDraftToCurrentSession() {
+  // 新建/切换会话后输入框里的草稿仍属于当前页面：归属改到新会话，
+  // 否则刷新时会被当成「上一会话的草稿」静默删除
+  try {
+    if (els.input.value.trim()) {
+      safeSessionSet(DRAFT_KEY, els.input.value);
+      safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
+    } else {
+      safeSessionRemove(DRAFT_KEY);
+      safeSessionRemove(DRAFT_OWNER_KEY);
+    }
+  } catch {
+    // 忽略
+  }
 }
 
 function clearDraft() {
@@ -21522,13 +21565,25 @@ function clearDraft() {
 function settleDraftForSession(targetId) {
   // 打开的会话与草稿归属不一致时丢弃草稿：上一位患者的主诉不能
   // 出现在另一位患者的会话页面，更不能按回车写进该会话
+  const target = targetId || '';
   const owner = safeSessionGet(DRAFT_OWNER_KEY);
-  if (owner === null) return;
-  if (owner === (targetId || '')) return;
-  if (!els.input.value.trim()) {
-    clearDraft();
+  const hasText = Boolean(els.input.value.trim());
+  if (!hasText) {
+    if (owner !== null && owner !== target) clearDraft();
     return;
   }
+  if (owner === null) {
+    // 旧版草稿没有归属：只在确实切换到另一个会话时丢弃。
+    // openSession 会在切换 sessionId 之前调用本函数，此时
+    // sessionId 仍是旧会话，可区分「打开同一会话」与「切换到别的」
+    if (target !== (sessionId || '')) {
+      els.input.value = '';
+      autoGrow();
+      clearDraft();
+    }
+    return;
+  }
+  if (owner === target) return;
   els.input.value = '';
   autoGrow();
   clearDraft();

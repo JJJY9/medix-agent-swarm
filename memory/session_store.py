@@ -5125,6 +5125,11 @@ class SessionStore:
                 return False
             for other in rows:
                 other_id = int(other["id"])
+                if backup_ids and other_id in backup_ids:
+                    # 该兄弟行本身就是备份里另一条记录的存活行
+                    # （主键撞号）：不能作为「本备份记录另有存活行」
+                    # 的证据，否则会放行跨成员认领并丢失被删记录
+                    continue
                 if pre_existing_ids is not None and (
                     other_id not in pre_existing_ids
                 ):
@@ -5139,10 +5144,19 @@ class SessionStore:
             f"{column} = ?" for column in content_columns
         )
         if raw_id > 0 and content_where:
+            step1_clause = ""
+            step1_params: Tuple[Any, ...] = ()
+            if match_where is not None and not (
+                columns and columns[0] == "profile"
+            ):
+                # 提醒的身份只有创建时间：主键撞号但不同档案时不能
+                # 直接认领，必须先满足档案约束
+                step1_clause = " AND " + match_where[0]
+                step1_params = tuple(match_where[1])
             row = self._conn.execute(
                 f"SELECT id FROM {table} WHERE id = ? AND {where}"
-                f" AND {content_where}",
-                (raw_id, *values, *content_values),
+                f" AND {content_where}{step1_clause}",
+                (raw_id, *values, *content_values, *step1_params),
             ).fetchone()
             if (
                 row is not None
@@ -5176,21 +5190,24 @@ class SessionStore:
             ).fetchone()
             if row is not None:
                 candidate = int(row["id"])
+                claimable = True
                 # 只接受「本次导入开始前已存在」的行：本次导入刚插入的
-                # 同秒同内容行不能被当成改挂记录吞掉
+                # 同秒同内容行不能被当成改挂记录吞掉；但只跳过本步，
+                # 后续内容配对仍可找到上次导入的同一条记录，保持幂等
                 if pre_existing_ids is not None and (
                     candidate not in pre_existing_ids
                 ):
-                    return None
-                if candidate in moved or candidate in matched:
-                    return None
+                    claimable = False
+                if claimable and (candidate in moved or candidate in matched):
+                    claimable = False
                 expected_row_profile = (
                     str(values[0])
                     if columns and columns[0] == "profile" else ""
                 )
-                if expected_row_profile and _normalize_profile_name(
-                    str(row["profile"] or "")
-                ) != _normalize_profile_name(expected_row_profile):
+                if claimable and expected_row_profile and (
+                    _normalize_profile_name(str(row["profile"] or ""))
+                    != _normalize_profile_name(expected_row_profile)
+                ):
                     # 跨档案认领同样需要改挂/编辑证据：另一位成员
                     # 同秒同内容的未编辑记录不能被吞掉
                     try:
@@ -5207,10 +5224,12 @@ class SessionStore:
                         or str(meta["updated_at"])
                         == str(meta["created_at"] or "")
                     ):
-                        return None
-                # 同一候选行不能再被任何身份组（目标档案的内容配对与
-                # 兜底）重复认领，否则被删的同秒记录会被当成“已存在”
-                return _claim(candidate, mark_moved=True)
+                        claimable = False
+                if claimable:
+                    # 同一候选行不能再被任何身份组（目标档案的内容配对
+                    # 与兜底）重复认领，否则被删的同秒记录会被当成
+                    # “已存在”
+                    return _claim(candidate, mark_moved=True)
             # 跨库/合并恢复导致主键漂移后，改挂不能只靠主键相等识别：
             # 按「创建时间 + 内容」在导入前已存在的行中找唯一候选
             if pre_existing_ids:
@@ -6851,6 +6870,7 @@ class SessionStore:
                         raw_vaccination_id_map[raw_id] = vaccination_id
 
             appointments_imported = 0
+            imported_appointment_ids: set = set()
             raw_appointment_id_map: Dict[int, int] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
@@ -7003,6 +7023,7 @@ class SessionStore:
                             ),
                         )
                         appointment_id = int(cursor.lastrowid)
+                        imported_appointment_ids.add(appointment_id)
                         appointments_imported += 1
                     if raw_id > 0 and appointment_id > 0:
                         raw_appointment_id_map[raw_id] = appointment_id
@@ -8171,12 +8192,15 @@ class SessionStore:
                         str(visit_row["next_followup_date"] or "")
                         if visit_row is not None else ""
                     )
-                    # 无论就诊是新插入还是已有：只有恢复出的预约仍为
-                    # 待就诊且与该就诊复诊日期一致才允许写链接，
-                    # 否则逾期复诊提示会被错挂链接永久抑制
+                    # 无论就诊是新插入还是已有：只有恢复出的预约仍是
+                    # 待就诊/已完成且与该就诊复诊日期一致才允许写链接，
+                    # 否则逾期复诊提示会被错挂链接永久抑制。
+                    # 已完成预约是就诊历史，恢复链接才能避免已按时
+                    # 复诊被重新报成逾期
                     appointment_ok = bool(
                         appt_row is not None
-                        and str(appt_row["status"] or "") == "upcoming"
+                        and str(appt_row["status"] or "")
+                        in ("upcoming", "completed")
                         and visit_followup_date
                         and str(appt_row["scheduled_at"] or "")[:10]
                         == visit_followup_date[:10]
@@ -8243,10 +8267,12 @@ class SessionStore:
                             visit_id,
                         ),
                     )
-                if followup_appointment_id and raw_visit_id:
+                if apply_links and followup_appointment_id and raw_visit_id:
                     # 归属标记里是旧库就诊 id：重映射后改写，否则
                     # 改期/删除恢复的就诊无法级联清理自动预约；
-                    # owner_visit_id 用本地就诊 id 持久化归属
+                    # owner_visit_id 用本地就诊 id 持久化归属。
+                    # 拒绝写链接时不能宣称归属：否则改期会静默覆盖
+                    # 就诊复诊日期并留下孤儿预约
                     self._conn.execute(
                         "UPDATE appointments SET owner_visit_id = ?"
                         " WHERE id = ?",
@@ -8278,6 +8304,11 @@ class SessionStore:
                             )
 
             for stale_id in set(stale_appointment_ids):
+                if stale_id not in imported_appointment_ids:
+                    # 只清理本次导入新插入的重复预约：导入前已存在
+                    # （或上次恢复保留）的待就诊预约不能因再次恢复
+                    # 同一备份被静默删除
+                    continue
                 # 只删除未被任何就诊引用的 upcoming 旧日期预约
                 self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?"

@@ -178,12 +178,14 @@ PREGNANCY_BLEEDING_TERMS = (
     "孕晚期出血", "产前出血", "孕妇出血",
 )
 #: 量词插入「阴道」与「出血」之间（阴道少量出血/阴道有点流血）仍属
-#: 孕产期出血；牙龈/鼻/皮肤出血没有这些部位词，不会命中
+#: 孕产期出血；牙龈/鼻/皮肤出血没有这些部位词，不会命中。妊娠词分支
+#: 允许跨逗号并覆盖「孕8周」「产后/产妇」等常见简写
 _PREGNANCY_BLEEDING_RE = re.compile(
     r"(?:阴道|产道|下体)"
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
-    r"|(?:孕妇|孕[早中晚]期|产前|早孕|怀孕|孕期)"
-    r"[^，。；,;！!？?\n]{0,6}(?:出血|流血|见红)"
+    r"|(?:孕妇|产妇|孕产妇|怀孕|孕期|产前|产后|早孕|孕[早中晚]期"
+    r"|孕\s*[0-9一二两三四五六七八九十]+\s*(?:周|个月|月))"
+    r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
 )
@@ -193,16 +195,23 @@ def _has_pregnancy_bleeding(text: str) -> bool:
     for match in _PREGNANCY_BLEEDING_RE.finditer(text):
         span = match.group(0)
         prefix = _clause_prefix(text, match.start())
-        # 匹配内部含否定（阴道没有出血/阴道未见出血/阴道不出血）
-        # 或明确是牙龈/鼻/皮肤出血时不算孕产期出血。裸「见红」的
-        # 部位修饰在匹配之前，需要连前缀一起判断
+        # 匹配内部含紧邻出血词的否定（阴道没有出血/阴道未见出血/
+        # 阴道不出血）或明确是牙龈/鼻/皮肤出血时不算孕产期出血。
+        # 只认出血词之前的否定：「不规则/无痛性/非常」等修饰是阳性
+        bleed_body = re.sub(
+            r"(?:出血|流血|见红)\s*$", "", span
+        )
         if re.search(
-            r"(?:没有|没|无|未|不|否认|非)", span
+            r"(?:没有|没|无|未|不|否认|非)"
+            r"(?:明显|任何|见|见到|出现)?\s*$",
+            bleed_body,
         ) is not None:
             continue
         if any(
             word in span or word in prefix[-6:]
-            for word in ("牙龈", "鼻腔", "鼻子", "皮肤", "痔")
+            for word in (
+                "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+            )
         ):
             continue
         if not _is_negated(prefix):
@@ -213,7 +222,9 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             prefix = _clause_prefix(text, start)
             if not any(
                 word in prefix[-6:]
-                for word in ("牙龈", "鼻腔", "鼻子", "皮肤", "痔")
+                for word in (
+                    "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
+                )
             ) and not _is_negated(prefix):
                 return True
             start = text.find(term, start + len(term))
@@ -551,8 +562,11 @@ def _clean_complaint_clause(clause: str) -> str:
             _COURSE_MARKER_RE.search(prefix) is not None
             or any(marker in prefix for marker in _COURSE_MARKERS)
             # 多症状枚举、客观测量值、头外伤或急性修饰都是真实主诉，
-            # 不能因为带「是什么病」就整句丢弃
-            or re.search(r"[、和及与]", prefix) is not None
+            # 不能因为带「是什么病」就整句丢弃；「伴/伴随/合并」
+            # 与顿号/和/及/与同属多症状连接词
+            or re.search(
+                r"[、和及与]|伴|合并|并发", prefix
+            ) is not None
             or re.search(r"\d", prefix) is not None
             or any(term in prefix for term in HEAD_TRAUMA_TERMS)
             or any(
@@ -765,11 +779,33 @@ _SWITCH_MEDICATION_PATTERN = re.compile(
     r"(?:改用|换成|改吃|换用|改为|重新吃|又吃上|恢复服用|"
     r"还在吃|仍在服用|继续服用|仍然服用)"
 )
-#: 近期停药仍有抗凝作用：「停用两天/昨天停药」按当前用药处理
+#: 近期停药仍有抗凝作用：「停用两天/昨天停药/刚停用」按当前用药处理
 _RECENT_STOP_PATTERN = re.compile(
-    r"(?:停用|停药|停了)[^，。；]{0,3}"
+    r"(?:停用|停药|停了)[^，。；;,.!?！？\n]{0,3}"
     r"(?:今天|昨天|前天|[0-9一二两三四五六七八九十]+天|几天|"
     r"一周|两周)"
+    r"|(?:刚刚?|今天|昨天|前天|前几天|前几周|几天|几周|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
+    r"[^，。；;,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
+    r"(?:停用|停药|停了|停服|停止服用)"
+)
+#: 明确远期停药（月/年量级）才按已结束处理；裸「停用/停了」保守
+#: 视为仍有抗凝作用（停药 1–2 天内 INR 仍可能偏高）
+_LONG_STOP_PATTERN = re.compile(
+    r"(?:停用|停药|停了|停服|停止服用)"
+    r"[^，。；;,.!?！？\n]{0,6}"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|半年)"
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年)"
+    r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
+    r"(?:停用|停药|停了|停服|停止服用)"
+)
+#: 停药动词：只有真正的停药表述才做「无时长保守保留」
+_STOP_VERB_PATTERN = re.compile(r"(?:停用|停药|停了|停服|停止服用|已停)")
+#: 停药后又重新服用（可跨一个分句）：抗凝状态仍然成立
+_RESTART_TEXT_RE = re.compile(
+    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
+    r"|仍在吃|仍在服用|仍然服用)"
 )
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
@@ -907,12 +943,14 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
     )
     clauses = re.split(r"[，。；;,.!?！？\n]", raw)
     kept = []
-    for clause in clauses:
+    for index, clause in enumerate(clauses):
         clause = clause.strip()
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
             continue
+        # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
+        restart_window = "；".join(clauses[index + 1:index + 3])[:40]
         if (
             _NEGATED_STOP_PATTERN.search(clause)
             or _STOP_INTENT_PATTERN.search(clause)
@@ -925,6 +963,20 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
+            if (
+                _RESTART_TEXT_RE.search(clause)
+                or _RESTART_TEXT_RE.search(restart_window)
+            ):
+                # 「停了半年，最近又吃上了」：跨分句续用线索
+                kept.append(clause)
+                continue
+            if (
+                _STOP_VERB_PATTERN.search(clause)
+                and not _LONG_STOP_PATTERN.search(clause)
+            ):
+                # 没有明确远期时长的停药保守按仍有抗凝作用处理
+                kept.append(clause)
+            continue
             continue
         if (
             _PAST_MEDICATION_PATTERN.search(clause)
