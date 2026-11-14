@@ -5391,6 +5391,99 @@ class SessionStore:
                     return True
             return False
 
+        def _candidate_attributable_to_profile_sibling(
+            candidate: int, candidate_profile: str
+        ) -> bool:
+            """候选是否可能属于备份里同档案同秒的另一行（不论内容）。
+
+            对方把内容编辑成与被删记录相同后，只按内容指纹相等判断
+            会误把对方存活行认领给本行：只要备份里存在同档案、同
+            创建时间的另一条记录、且那条记录在本地没有「内容仍与
+            备份一致」的其它存活行，就不能把候选当作本行改挂的
+            版本，否则被删记录不恢复、对方记录被复制。
+            对方记录另有内容一致的存活行时（真正的改挂），候选仍是
+            本行的存活版本，可以继续认领。
+            """
+            if not (backup_profiles and backup_created) or not candidate_profile:
+                return False
+            wanted = _normalize_profile_name(candidate_profile)
+            created_key = str(created_at_value or "")
+            for other_id, other_profile in backup_profiles.items():
+                if other_id == raw_id:
+                    continue
+                if backup_created.get(other_id) != created_key:
+                    continue
+                if _normalize_profile_name(other_profile) != wanted:
+                    continue
+                expected = (backup_contents or {}).get(other_id)
+                if expected is not None and content_columns:
+                    try:
+                        rows = self._conn.execute(
+                            f"SELECT id, {', '.join(content_columns)}"
+                            f" FROM {table} WHERE profile = ?"
+                            " AND created_at = ? AND id != ?",
+                            (candidate_profile, created_key, candidate),
+                        ).fetchall()
+                    except sqlite3.Error:
+                        rows = []
+                    if any(
+                        self._db_content_fingerprint(row, content_columns)
+                        == expected
+                        for row in rows
+                    ):
+                        # 该同档案记录另有内容一致的存活行：候选确属
+                        # 当前行（例如成员改挂后内容未变）
+                        continue
+                return True
+            return False
+
+        def _sole_may_own_later_sibling(candidate: int) -> bool:
+            """唯一候选的内容是否与尚未处理的同身份备份行完全相同。
+
+            相同说明候选可能是后面那行（仅非内容字段不同）的存活行，
+            先处理行应补回被删记录；内容不同（跨档案改挂/不同内容
+            孪生）则候选确属当前行，可以立即认领。
+            """
+            if not backup_contents or not content_columns:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            fingerprint = self._db_content_fingerprint(
+                row, content_columns
+            )
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            for other_id, contents in backup_contents.items():
+                if other_id == raw_id or other_id in seen_raw_ids:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if contents == fingerprint:
+                    return True
+            return False
+
         def _other_backup_row_survives(candidate: int) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
@@ -5704,11 +5797,11 @@ class SessionStore:
                         ):
                             continue
                         # 候选档案与备份里另一条同秒记录一致：它是那条
-                        # 记录的存活行（改备注/启停等普通编辑也满足编辑
-                        # 证据），不能当作本行改挂，否则被删记录丢失。
-                        # 这里只看跨档案候选，对方备份行必然会被自己的
-                        # 原始记录认领，本行组内是否最后一条无关紧要
-                        if _candidate_owned_by_profile_sibling(
+                        # 记录的存活行（即使内容已被改成与本行相同），
+                        # 不能当作本行改挂，否则被删记录丢失、对方记录
+                        # 被复制。这里只看跨档案候选，对方备份行必然会
+                        # 被自己的原始记录认领，本行组内是否最后一条无关
+                        if _candidate_attributable_to_profile_sibling(
                             candidate, candidate_profile
                         ):
                             continue
@@ -5732,9 +5825,21 @@ class SessionStore:
                         if candidate in soft_ids
                     ]
                 if len(candidates) == 1:
-                    if _content_owned_by_other(candidates[0]):
+                    sole = min(candidates)
+                    if (
+                        not is_group_last
+                        and backup_group_size > 1
+                        and local_group_size < backup_group_size
+                        and _sole_may_own_later_sibling(sole)
+                    ):
+                        # 同档案同秒的孪生组里，先处理行的唯一候选
+                        # 可能是后面那行内容相同、仅非内容字段不同的
+                        # 存活行：按被删记录补回；跨档案改挂或内容
+                        # 不同的孪生仍可立即认领
                         return _ambiguous()
-                    return _claim(candidates[0], mark_moved=True)
+                    if _content_owned_by_other(sole):
+                        return _ambiguous()
+                    return _claim(sole, mark_moved=True)
         if content_where:
             match_clause = ""
             match_params: Tuple[Any, ...] = ()
@@ -6617,7 +6722,10 @@ class SessionStore:
                         _normalize_profile_name(item.get("profile")),
                         str(item.get("metric") or "").strip(),
                         str(item.get("created_at") or "").strip()[:40],
-                        str(item.get("measured_at") or ""),
+                        str(
+                            _canonical_local_time(item.get("measured_at"))
+                            or ""
+                        ),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 metric_backup_meta = self._import_backup_meta(
@@ -6882,7 +6990,10 @@ class SessionStore:
                     lambda item: (
                         _normalize_profile_name(item.get("profile")),
                         str(item.get("created_at") or "").strip()[:40],
-                        str(item.get("recorded_at") or ""),
+                        str(
+                            _canonical_local_time(item.get("recorded_at"))
+                            or ""
+                        ),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 symptom_backup_meta = self._import_backup_meta(
@@ -8841,6 +8952,7 @@ class SessionStore:
                 if not title_text:
                     return None
                 due_text = _normalize_reminder_due(item.get("due_at"))
+                _normalize_reminder_advance(item.get("advance_days"))
                 _validate_repeat_window(
                     due_text,
                     _normalize_reminder_repeat_days(
@@ -9259,16 +9371,23 @@ class SessionStore:
                             marker_visit = visit_raw_local_map.get(
                                 _safe_db_id(marker.group(1)), 0
                             )
-                        appointment_ok = bool(
-                            int(appt_row["owner_visit_id"] or 0)
-                            == int(visit_id)
-                            or marker_visit == int(visit_id)
-                            or (
-                                visit_followup_date
-                                and str(appt_row["scheduled_at"] or "")[:10]
-                                == visit_followup_date[:10]
-                            )
+                        same_date = bool(
+                            visit_followup_date
+                            and str(appt_row["scheduled_at"] or "")[:10]
+                            == visit_followup_date[:10]
                         )
+                        if visit_is_new:
+                            appointment_ok = bool(
+                                int(appt_row["owner_visit_id"] or 0)
+                                == int(visit_id)
+                                or marker_visit == int(visit_id)
+                                or same_date
+                            )
+                        else:
+                            # 已存在的就诊可能已被本地改期：旧备份里的
+                            # 已完成预约不能重新挂回，否则逾期复诊提示
+                            # 会被永久抑制；日期仍一致时才恢复链接
+                            appointment_ok = same_date
                     else:
                         appointment_ok = bool(
                             same_appt_profile
@@ -12544,6 +12663,13 @@ class SessionStore:
                     " WHERE done = 0 AND appointment_id = ?",
                     (appointment,),
                 )
+                # 已完成提醒是历史：不能继续指向已删除的预约，否则
+                # 跨设备导入时会被按本地同号预约兜底挂接
+                self._conn.execute(
+                    "UPDATE reminders SET appointment_id = 0, updated_at = ?"
+                    " WHERE done = 1 AND appointment_id = ?",
+                    (self._now(), appointment),
+                )
                 # 从该预约补记的就诊记录不能留下悬空引用
                 self._conn.execute(
                     "UPDATE visit_records SET appointment_id = 0"
@@ -12578,15 +12704,26 @@ class SessionStore:
                 int(reminder_row["appointment_id"] or 0)
                 if reminder_row is not None else -1
             )
+            still_linked = (
+                reminder_appointment == 0
+                and self._conn.execute(
+                    "SELECT 1 FROM visit_records WHERE id = ?"
+                    " AND followup_reminder_id = ?",
+                    (int(visit_id), reminder),
+                ).fetchone() is not None
+            )
             if (
                 same_owner
                 and (
                     reminder_appointment == -1
                     or reminder_appointment == (int(appointment) or 0)
+                    or still_linked
                 )
             ):
                 # 已完成的提醒是历史记录，不能随复诊改期删除；
-                # 已移交/脱钩的独立提醒也不能被就诊级联删除
+                # 已移交/脱钩的独立提醒也不能被就诊级联删除。
+                # 但就诊仍把该提醒当作自己的复诊提醒时（完成→重开
+                # 后脱钩），它必须随改期删除，否则留下过期幽灵提醒
                 self._conn.execute(
                     "DELETE FROM reminders WHERE id = ? AND done = 0",
                     (reminder,),
@@ -14983,6 +15120,38 @@ class SessionStore:
             )
             return cursor.rowcount
 
+    def redact_audit_details(
+        self,
+        actions: List[str],
+        prefix: str,
+        replacement: str,
+    ) -> int:
+        """把 detail 以 prefix 开头的审计行整体替换为不可识别内容。
+
+        旧版本把 profile.rename 的新档案名写在 detail 里：删除该档案
+        时仅按 target 前缀清理擦不到这行，姓名会继续出现在审计、
+        审计 CSV 与 JSON 备份中。
+        """
+        actions = [str(action) for action in actions if str(action)]
+        prefix = str(prefix or "")
+        if not actions or not prefix:
+            return 0
+        placeholders = ",".join("?" for _ in actions)
+        with self._write_and_checkpoint():
+            cursor = self._conn.execute(
+                f"""
+                UPDATE audit_log
+                   SET target = ?, detail = ?
+                 WHERE action IN ({placeholders})
+                   AND (detail = ? OR substr(detail, 1, ?) = ?)
+                """,
+                (
+                    str(replacement), str(replacement),
+                    *actions, prefix, len(prefix), prefix,
+                ),
+            )
+            return cursor.rowcount
+
     def ensure_reminder(
         self,
         title: Any,
@@ -15430,7 +15599,15 @@ class SessionStore:
     def delete_reminders_bulk(
         self, reminder_ids: Any, only_done: bool = False
     ) -> int:
-        """批量删除提醒，只提交并 checkpoint 一次。
+        """批量删除提醒，返回实际删除条数。"""
+        return len(
+            self.delete_reminders_bulk_with_ids(reminder_ids, only_done)
+        )
+
+    def delete_reminders_bulk_with_ids(
+        self, reminder_ids: Any, only_done: bool = False
+    ) -> List[int]:
+        """批量删除提醒并按实际删除返回 id（供审计标题清理）。
 
         only_done=True 供「清理已完成」使用：在 SQL 层只删除已完成
         行，其它标签页/设备期间恢复（reopen）的提醒不会被误删。
@@ -15476,7 +15653,7 @@ class SessionStore:
                         )
                     except sqlite3.Error:
                         pass
-            return int(cursor.rowcount or 0)
+            return doomed
 
     def update_reminder(
         self,

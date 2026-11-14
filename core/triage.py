@@ -295,6 +295,7 @@ _NON_PREG_BLEEDING_WORDS = (
     "大便", "便中", "便血", "解便", "肛门", "直肠", "痔疮",
     "小便", "尿液", "尿里", "尿血", "血尿", "排尿",
     "痰中", "痰里", "咳血", "咯血", "呕血", "吐血",
+    "尿中", "咳出", "咯出", "呕出", "呕吐物",
     "出血热", "出血性疾病", "伤口", "术后", "鼻腔", "牙龈",
 )
 
@@ -394,6 +395,12 @@ def _colloquial_bleeding_positive(text: str) -> bool:
     return False
 
 
+#: 主诉中带明确年数的产后/流产后表述：已不是当前妊娠，不能据此
+#: 把阴道出血判为孕产期出血（「产后2年，阴道出血」）
+_PAST_OBSTETRIC_YEARS = re.compile(
+    r"(?:产后|流产后|胎停后?|剖宫产后|顺产后|引产后)\s*"
+    r"[0-9一二两三四五六七八九十]+\s*年"
+)
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
 _HISTORY_PAST_OBSTETRIC = re.compile(
@@ -728,7 +735,7 @@ _DEFINITION_SUFFIX_RE = re.compile(
 #: 咯血」因含「我」被当成患者主诉而触发急症横幅
 _EDUCATIONAL_PREFIX_RE = re.compile(
     r"^(?:请问(?:一下)?|我想知道|我想问(?:一下)?|想问(?:一下)?|"
-    r"想了解(?:一下)?|了解一下|听说|我听说|据说)"
+    r"我想了解(?:一下|下)?|想了解(?:一下)?|了解一下|听说|我听说|据说)"
 )
 #: 传闻式语句整句按科普处理，不构成患者本人当前主诉
 _HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
@@ -871,6 +878,27 @@ def _clean_complaint_clause(
     return clause
 
 
+#: 科普/寒暄式铺垫：即使带时间词也不建立患者语境
+_COURSE_CONTEXT_BLOCKERS = (
+    "查", "资料", "学习", "了解", "问问", "问一下", "搜索", "网上",
+    "听说", "据说", "请问", "科普", "看了", "文章", "视频", "新闻",
+    "百科", "帖子",
+)
+
+
+def _course_context_clause(clause: str) -> bool:
+    """纯病程/时间铺垫分句（最近/两天了/反复发作）建立患者语境。"""
+    text = str(clause or "").strip()
+    if not text or len(text) > 10:
+        return False
+    if any(word in text for word in _COURSE_CONTEXT_BLOCKERS):
+        return False
+    return (
+        any(marker in text for marker in _COURSE_MARKERS)
+        or _COURSE_MARKER_RE.search(text) is not None
+    )
+
+
 def patient_complaint_text(text: str) -> str:
     """提取「患者主诉」部分：去掉定义/科普型问句，保留症状描述。
 
@@ -910,6 +938,10 @@ def patient_complaint_text(text: str) -> str:
             if subject_seen or positive_flag or symptom_seen:
                 # 已有患者本人的症状分句：后续定义问句按新症状保留。
                 # 「今天想问问」「没有胸痛」这类铺垫/否定分句不算语境
+                context_seen = True
+            elif _course_context_clause(clause):
+                # 纯病程/时间铺垫（「最近」「两天了」）同样说明后置
+                # 定义问句在描述患者本人；查资料/问问等科普铺垫除外
                 context_seen = True
     return "，".join(kept)
 
@@ -1071,6 +1103,12 @@ HEAD_TRAUMA_TERMS = (
     "碰到了头", "碰到了脑袋",
     "碰了后脑勺", "脑袋着地", "头顶磕到", "头顶撞到", "头受伤",
     "枕部撞到", "枕部磕到", "额头撞到", "前额撞到", "额头磕到",
+    # 中间插入物体（头被门撞了）与「额头/头顶+磕撞」的常见语序
+    "头被", "脑袋被", "额头被", "头顶被", "前额被", "后脑勺被",
+    "枕部被", "额头磕", "额头撞", "额头碰", "头顶磕", "头顶撞",
+    "头顶碰", "前额磕", "前额撞", "前额碰", "磕到了脑袋",
+    "撞到了脑袋", "碰到了脑袋", "磕着脑袋", "撞着脑袋",
+    "头磕了个包", "脑袋磕了个包",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -1650,7 +1688,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
         "",
         history_text,
     )
-    pregnancy_text = text
+    pregnancy_text = _PAST_OBSTETRIC_YEARS.sub("；", text)
     if history_text and history_text not in text:
         pregnancy_text = f"{text}；{history_text}"
     pregnancy_weeks = False
