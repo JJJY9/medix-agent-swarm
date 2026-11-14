@@ -778,6 +778,12 @@ const DEEP_LINK_AT_KEY = 'medix.deepLinkAt';
 const DEEP_LINK_EDITED_KEY = 'medix.deepLinkEdited';
 //: 流式会诊进行中的主诉：刷新/被系统回收后恢复到输入框
 const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
+//: 首屏会话恢复（initProfiles 之后的 restoreCurrentSession）就绪：
+//: 发送必须等它结束，否则问题会写进上一会话（可能是另一位患者）
+let resolveInitialSessionRestore = () => {};
+const initialSessionRestore = new Promise((resolve) => {
+  resolveInitialSessionRestore = resolve;
+});
 let pendingSessionReset = false;
 //: ?session= 深链且与本标签页上次会话不同：按“打开历史会话”处理
 let deepLinkedSession = false;
@@ -20641,6 +20647,17 @@ async function send(question) {
       return;
     }
   }
+  // 首屏恢复尚未完成时先等它结束：普通启动也会从 localStorage
+  // 采纳上次会话，直接发送会把问题写进上一会话（可能是另一位
+  // 患者），且随后的恢复响应会因 busy 被丢弃
+  if (!deepLinkedSession) {
+    sendInFlight = true;
+    try {
+      await initialSessionRestore;
+    } finally {
+      sendInFlight = false;
+    }
+  }
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
   consumeDeepLink();
   if (pendingSessionReset) {
@@ -21623,6 +21640,9 @@ async function renamePatientProfile() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
 
+    // 在途主诉记录的是提交时的档案名：改名后同步，否则刷新恢复
+    // 会因档案名不符把整段主诉静默丢弃
+    updateInflightQuestionProfile(name, data.name);
     await initProfiles();
     setActiveProfile(data.name);
     // 家庭概览缓存仍保留旧档案名，重命名后立即刷新
@@ -21652,6 +21672,8 @@ async function deletePatientProfile() {
     }
     const wasSelected = els.profileSelect.value === name;
     delete profilesCache[name];
+    // 删除档案后旧主诉不再属于任何患者：清理在途记录
+    updateInflightQuestionProfile(name, '');
     refreshProfileOptions('');
     loadFamilyOverview();
     loadHomeGlance();
@@ -21955,6 +21977,25 @@ ${current}`;
   saveDraft();
 }
 
+function updateInflightQuestionProfile(oldName, newName) {
+  // 在途主诉的档案名随改名同步；档案被删除时清理，避免刷新恢复
+  // 时档案名不符把主诉丢弃，或把已删档案的主诉带进别的档案
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.profile !== oldName) return;
+    if (!newName) {
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      return;
+    }
+    parsed.profile = newName;
+    safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify(parsed));
+  } catch {
+    // 隐私模式/损坏记录：忽略
+  }
+}
+
 function restoreInflightQuestion() {
   // 流式会诊期间刷新/被系统回收：服务端取消后问答不落库，把未完成
   // 的主诉恢复到输入框，避免整段描述丢失
@@ -21983,7 +22024,9 @@ function restoreInflightQuestion() {
     // 填进当前患者的输入框。启动时 activeProfileName 尚未恢复，
     // 回退到 sessionStorage 中已保存的档案名
     const currentProfile = activeProfileName || readStoredProfile();
-    if (profile && currentProfile && profile !== currentProfile) {
+    if (profile && profile !== currentProfile) {
+      // 记录带档案而当前没有档案（如流式中「清空补充信息」）同样
+      // 按不一致处理：上一位患者的主诉不能进无归属输入框
       return;
     }
     if (els.input.value.includes(question)) {
@@ -23807,7 +23850,9 @@ loadSavedContext();
 loadDraft();
 restoreInflightQuestion();
 initProfiles().finally(() => {
-  restoreCurrentSession();
+  Promise.resolve(restoreCurrentSession())
+    .catch(() => {})
+    .finally(resolveInitialSessionRestore);
   handleLaunchAction();
 });
 checkStatus();

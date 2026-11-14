@@ -184,6 +184,25 @@ IMPORT_CONTENT_COLUMNS = {
     "reminders": ("due_at",),
 }
 
+#: 各表参与孪生归属判断的「尾字段」：内容列相同、仅这些字段不同的
+#: 同秒记录（如一条在用/一条停药）恢复时要按尾字段区分归属
+IMPORT_TAIL_COLUMNS = {
+    "symptoms": ("severity", "note"),
+    "medications": (
+        "note", "active", "stopped_at", "stop_reason", "stock",
+        "stock_unit", "low_stock_threshold", "expiry_date",
+    ),
+    "vaccinations": ("next_due", "note"),
+    "appointments": ("status", "note"),
+    "allergies": ("reaction", "severity", "active", "note"),
+    "care_items": ("last_done_at", "next_due_at", "active"),
+    "visit_records": (
+        "facility", "advice", "prescription", "next_followup_date",
+    ),
+    "conditions": ("icd10", "status", "severity"),
+    "reminders": ("note", "advance_days", "repeat_days", "repeat_until", "done"),
+}
+
 IMPORT_LIST_LIMITS = {
     "profiles": 100000,
     "health_metrics": 100000,
@@ -5239,6 +5258,7 @@ class SessionStore:
         backup_profiles: Optional[Dict[int, str]] = None,
         backup_created: Optional[Dict[int, str]] = None,
         backup_contents: Optional[Dict[int, tuple]] = None,
+        backup_tails: Optional[Dict[int, tuple]] = None,
     ) -> Optional[int]:
         """按「身份 + 内容」配对已存在的记录，返回可复用的行 id（没有则 None）。
 
@@ -5441,6 +5461,75 @@ class SessionStore:
             except sqlite3.Error:
                 return False
             return row is not None
+
+        def _tail_match_score(
+            candidate: int, target_raw_id: int
+        ) -> int:
+            """候选尾字段与某条备份记录的逐字段匹配数（-1 无法比较）。"""
+            tail_columns = IMPORT_TAIL_COLUMNS.get(table)
+            if not tail_columns or not backup_tails:
+                return -1
+            expected = backup_tails.get(target_raw_id)
+            if expected is None:
+                return -1
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(tail_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return -1
+            if row is None:
+                return -1
+            local = self._db_content_fingerprint(row, tail_columns)
+            return sum(
+                1 for mine, want in zip(local, expected) if mine == want
+            )
+
+        def _tail_prefers_sibling(candidate: int) -> bool:
+            """候选尾字段更像同组另一条同内容孪生备份行。
+
+            「被删的是靠前那条、存活并编辑的是靠后那条」时，先处理行
+            不能凭「存活行被编辑过」把属于兄弟行的候选认领走，否则被
+            删记录的启停/停药等尾字段永久丢失、存活行被复制。
+            """
+            if not backup_tails or not backup_contents or tail_where is None:
+                return False
+            expected_content = backup_contents.get(raw_id)
+            if expected_content is None:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            best_other = own_score
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if backup_contents.get(other_id) != expected_content:
+                    continue
+                other_score = _tail_match_score(candidate, other_id)
+                if other_score > best_other:
+                    best_other = other_score
+            return best_other > own_score
 
         def _soft_matches(candidate: int) -> bool:
             if soft_where is None:
@@ -5774,7 +5863,11 @@ class SessionStore:
                 and int(row["id"]) not in matched
                 and _soft_or_edited(int(row["id"]))
             ):
-                return _claim(int(row["id"]))
+                # 主键命中的内容相同孪生行可能属于同组另一条备份记录：
+                # 尾字段更像兄弟行时不能认领，否则被删记录不恢复、
+                # 存活记录被复制
+                if not _tail_prefers_sibling(int(row["id"])):
+                    return _claim(int(row["id"]))
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
             # 是同一条，恢复旧备份时不能在原档案名下重新插入
@@ -6006,12 +6099,41 @@ class SessionStore:
                         (*candidates, *soft_extra),
                     ).fetchall()
                     soft_ids = {int(row["id"]) for row in soft_rows}
-                    candidates = [
+                    filtered_candidates = [
                         candidate for candidate in candidates
                         if candidate in soft_ids
                     ]
+                    if (
+                        not filtered_candidates
+                        and tail_where is not None
+                        and not _backup_content_shared_with_sibling()
+                    ):
+                        # 软字段被本地编辑过（提醒改标题）：回退到满足
+                        # 尾字段的漂移候选，避免把改编前旧版本再插一份。
+                        # 同内容孪生（如两条同秒同到期日提醒）无法用
+                        # 尾字段区分时必须保持歧义，不能吞掉兄弟行
+                        tail_fragment, tail_extra = tail_where
+                        tail_rows = self._conn.execute(
+                            f"SELECT id FROM {table}"
+                            f" WHERE id IN ({placeholders})"
+                            f" AND {tail_fragment}",
+                            (*candidates, *tail_extra),
+                        ).fetchall()
+                        tail_ids = {int(row["id"]) for row in tail_rows}
+                        filtered_candidates = [
+                            candidate for candidate in candidates
+                            if candidate in tail_ids
+                        ]
+                    candidates = filtered_candidates
                 if len(candidates) == 1:
                     sole = min(candidates)
+                    if not _tail_matches(sole) and _tail_prefers_sibling(
+                        sole
+                    ):
+                        # 候选尾字段更像同组另一条同内容孪生备份行：
+                        # 无论本地行数是否足够，都不能认领给本行；
+                        # 本地同秒无关行会虚增组大小，不能据此抢兄弟行
+                        return _ambiguous()
                     if (
                         not is_group_last
                         and backup_group_size > 1
@@ -6022,20 +6144,26 @@ class SessionStore:
                         # 可能是后面那行内容相同、仅非内容字段不同的
                         # 存活行：非内容字段与本行一致时它就是本行
                         # 的存活版本；存活行被编辑过（备注等尾字段已
-                        # 变）时无法据此区分，仍按本行认领
-                        if not _tail_matches(sole) and not (
-                            _candidate_edited(sole)
+                        # 变）时若尾字段更像同组另一条备份行，候选属于
+                        # 兄弟行，必须先补回本行
+                        if not _tail_matches(sole) and (
+                            _tail_prefers_sibling(sole)
+                            or not _candidate_edited(sole)
                         ):
                             return _ambiguous()
                     if (
                         is_group_last
                         and tail_where is not None
                         and not _tail_matches(sole)
-                        and not _candidate_edited(sole)
+                        and (
+                            _tail_prefers_sibling(sole)
+                            or not _candidate_edited(sole)
+                        )
                     ):
                         # 最后一行同样核对非内容字段：候选属于更早的
                         # 兄弟行时必须补插本行（停药/完成状态等）。
-                        # 存活行被编辑过时尾字段已变，仍按本行认领
+                        # 存活行被编辑过且尾字段不再指向兄弟行时仍按
+                        # 本行认领
                         return _ambiguous()
                     if _content_owned_by_other(sole):
                         return _ambiguous()
@@ -6108,6 +6236,12 @@ class SessionStore:
                         ).fetchone()
                         if soft_row is None:
                             continue
+                    if _tail_prefers_sibling(candidate) and not (
+                        _tail_matches(candidate)
+                    ):
+                        # 同内容孪生：候选的尾字段（停药/完成等）更像
+                        # 兄弟备份行时留给那条记录认领
+                        continue
                     if not is_group_last:
                         candidate_profile_row = self._conn.execute(
                             f"SELECT profile FROM {table} WHERE id = ?",
@@ -6182,7 +6316,18 @@ class SessionStore:
                 backup_group_size <= 1
                 or local_group_size >= backup_group_size
             )
-            and (_soft_or_edited(raw_id) or _edited_after_export())
+            and (
+                _soft_or_edited(raw_id)
+                or (
+                    _edited_after_export()
+                    and (
+                        _candidate_edited(raw_id)
+                        # 同一秒内的软/尾字段编辑：内容列仍与备份一致，
+                        # 同样能证明它就是这个备份行的本地版本
+                        or _candidate_content_matches_backup(raw_id)
+                    )
+                )
+            )
         ):
             expected_profile = None
             if columns and columns[0] == "profile":
@@ -6210,7 +6355,14 @@ class SessionStore:
                 # 本地存活行不少于备份行：这条备份行就是本地存活行的
                 # 旧版本，即使内容/软字段都被编辑过也认领自身。
                 # 本地确有缺行时仍走插入，优先补回被删记录
-                return _claim(raw_id)
+                if _tail_prefers_sibling(raw_id) and not _tail_matches(
+                    raw_id
+                ):
+                    # 本主键上的行其实是同组另一条孪生备份记录的
+                    # 存活行：交给那条记录认领，本行按被删补插
+                    pass
+                else:
+                    return _claim(raw_id)
         if not candidates:
             state[identity] = claimed
             return None
@@ -6374,10 +6526,38 @@ class SessionStore:
                     candidates = fresh
                 # 组内只剩唯一候选：软字段已被本地编辑（改名/改标题），
                 # 它仍是这条备份行的存活版本，不能把旧版本再插一份
+        if len(candidates) > 1:
+            # 多候选里只保留对本行有证据的版本（软字段命中、尾字段
+            # 命中或确实被编辑过）；同秒无关行不能因为「本地行数
+            # 足够」被随机认领，否则被删记录不恢复、无关行被吞掉
+            preferred = {
+                candidate for candidate in candidates
+                if _soft_matches(candidate)
+                or _tail_matches(candidate)
+                or _candidate_edited(candidate)
+            }
+            if not preferred:
+                return _ambiguous()
+            tail_preferred = {
+                candidate for candidate in preferred
+                if _tail_matches(candidate)
+            }
+            if tail_preferred:
+                # 多个软字段命中的同内容孪生：尾字段（停药/完成等）
+                # 精确命中的那条才是本行的存活版本
+                preferred = tail_preferred
+            candidates = preferred
         if len(candidates) == 1:
             candidate = min(candidates)
             if _content_owned_by_other(candidate):
                 # 候选内容精确对应备份里的另一条记录：按被删记录补回
+                return _ambiguous()
+            if _tail_prefers_sibling(candidate) and not _tail_matches(
+                candidate
+            ):
+                # 候选的非内容字段更像同组另一条同内容孪生备份行：
+                # 交给那条记录认领，本行按被删记录补插（否则「恢复的
+                # 已完成孪生被在用孪生吞掉」或反方向都可能发生）
                 return _ambiguous()
             if (
                 soft_where is not None
@@ -6495,20 +6675,33 @@ class SessionStore:
                 values.append(" ".join(str(value).split()))
         return tuple(values)
 
+    @staticmethod
+    def _tail_value_key(value: Any) -> str:
+        """备份尾字段值的归一化：与 DB 侧内容指纹同口径（布尔→0/1）。"""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, (int, float)):
+            return f"{float(value):.10g}"
+        return " ".join(str(value).split())
+
     @classmethod
     def _import_backup_meta(
         cls, raw_items: Any, limit: int, table: str = ""
     ) -> Dict[str, Any]:
-        """备份原始主键 → （档案、创建时间、内容指纹）映射。"""
+        """备份原始主键 → （档案、创建时间、内容指纹、尾字段）映射。"""
         ids = set()
         profiles: Dict[int, str] = {}
         created: Dict[int, str] = {}
         contents: Dict[int, tuple] = {}
+        tails: Dict[int, tuple] = {}
         columns = IMPORT_CONTENT_COLUMNS.get(table)
+        tail_columns = IMPORT_TAIL_COLUMNS.get(table)
         if not isinstance(raw_items, list):
             return {
                 "ids": ids, "profiles": profiles, "created": created,
-                "contents": contents,
+                "contents": contents, "tails": tails,
             }
         for item in raw_items[:limit]:
             if not isinstance(item, dict):
@@ -6527,9 +6720,14 @@ class SessionStore:
                 contents[raw_id] = cls._backup_content_fingerprint(
                     item, columns
                 )
+            if tail_columns:
+                tails[raw_id] = tuple(
+                    cls._tail_value_key(item.get(column))
+                    for column in tail_columns
+                )
         return {
             "ids": ids, "profiles": profiles, "created": created,
-            "contents": contents,
+            "contents": contents, "tails": tails,
         }
 
     def _import_rows(
@@ -7092,6 +7290,7 @@ class SessionStore:
                             backup_profiles=metric_backup_meta["profiles"],
                             backup_created=metric_backup_meta["created"],
                             backup_contents=metric_backup_meta["contents"],
+                            backup_tails=metric_backup_meta["tails"],
                             backup_group_size=metric_group_sizes.get(
                                 (
                                     normalized["profile"],
@@ -7366,6 +7565,7 @@ class SessionStore:
                             backup_profiles=symptom_backup_meta["profiles"],
                             backup_created=symptom_backup_meta["created"],
                             backup_contents=symptom_backup_meta["contents"],
+                            backup_tails=symptom_backup_meta["tails"],
                             backup_group_size=symptom_group_sizes.get(
                                 (
                                     normalized["profile"],
@@ -7545,6 +7745,7 @@ class SessionStore:
                             backup_profiles=medication_backup_meta["profiles"],
                             backup_created=medication_backup_meta["created"],
                             backup_contents=medication_backup_meta["contents"],
+                            backup_tails=medication_backup_meta["tails"],
                             backup_group_size=(
                                 medication_group_sizes.get(
                                     (
@@ -7949,6 +8150,7 @@ class SessionStore:
                             backup_profiles=vaccination_backup_meta["profiles"],
                             backup_created=vaccination_backup_meta["created"],
                             backup_contents=vaccination_backup_meta["contents"],
+                            backup_tails=vaccination_backup_meta["tails"],
                             soft_where=(
                                 "vaccine_name = ?",
                                 (normalized["vaccine_name"],),
@@ -8134,6 +8336,7 @@ class SessionStore:
                             backup_profiles=appointment_backup_meta["profiles"],
                             backup_created=appointment_backup_meta["created"],
                             backup_contents=appointment_backup_meta["contents"],
+                            backup_tails=appointment_backup_meta["tails"],
                             soft_where=(
                                 "title = ?", (normalized["title"],)
                             ),
@@ -8349,6 +8552,7 @@ class SessionStore:
                             backup_profiles=lab_backup_meta["profiles"],
                             backup_created=lab_backup_meta["created"],
                             backup_contents=lab_backup_meta["contents"],
+                            backup_tails=lab_backup_meta["tails"],
                             soft_where=(
                                 "panel = ? AND item = ?",
                                 (normalized["panel"], normalized["item"]),
@@ -8542,6 +8746,7 @@ class SessionStore:
                             backup_profiles=allergy_backup_meta["profiles"],
                             backup_created=allergy_backup_meta["created"],
                             backup_contents=allergy_backup_meta["contents"],
+                            backup_tails=allergy_backup_meta["tails"],
                             soft_where=(
                                 "substance = ?",
                                 (normalized["substance"],),
@@ -8706,6 +8911,7 @@ class SessionStore:
                             backup_profiles=care_backup_meta["profiles"],
                             backup_created=care_backup_meta["created"],
                             backup_contents=care_backup_meta["contents"],
+                            backup_tails=care_backup_meta["tails"],
                             soft_where=(
                                 "title = ?", (normalized["title"],)
                             ),
@@ -8931,6 +9137,7 @@ class SessionStore:
                             backup_profiles=visit_backup_meta["profiles"],
                             backup_created=visit_backup_meta["created"],
                             backup_contents=visit_backup_meta["contents"],
+                            backup_tails=visit_backup_meta["tails"],
                             soft_where=(
                                 "visit_date = ? AND diagnosis = ?",
                                 (
@@ -9148,6 +9355,7 @@ class SessionStore:
                             backup_profiles=condition_backup_meta["profiles"],
                             backup_created=condition_backup_meta["created"],
                             backup_contents=condition_backup_meta["contents"],
+                            backup_tails=condition_backup_meta["tails"],
                             soft_where=(
                                 "name = ?", (normalized["name"],)
                             ),
@@ -9250,10 +9458,12 @@ class SessionStore:
                         # 本地已把该预约降级为独立预约（改期早于就诊后
                         # owner/备注被清空）：仅当它仍是 upcoming 且日期
                         # 与本地就诊复诊日一致时才恢复标记，避免只写
-                        # owner 不写链接的半挂接
+                        # owner 不写链接的半挂接。已完成/已取消的预约
+                        # 一律不恢复：再次导入不能复活被拒绝的旧标记
+                        if str(marker_row["status"] or "") != "upcoming":
+                            continue
                         if (
-                            str(marker_row["status"] or "") == "upcoming"
-                            and int(marker_row["owner_visit_id"] or 0) == 0
+                            int(marker_row["owner_visit_id"] or 0) == 0
                         ):
                             scheduled_day = str(
                                 marker_row["scheduled_at"] or ""
@@ -9364,16 +9574,11 @@ class SessionStore:
                         int(appointment_row["owner_visit_id"] or 0)
                         if appointment_row is not None else 0
                     )
-                    if (
-                        local_owner
-                        and appointment_key not in imported_appointment_ids
-                        and existing_owner == 0
-                        and appointment_row is not None
-                        and str(appointment_row["status"] or "")
-                        == "upcoming"
-                    ):
-                        # 本地已清空 owner 的待就诊预约（降级为独立
-                        # 预约）：日期与就诊复诊日不一致时不再回写
+                    owner_ok = True
+                    if local_owner and appointment_row is not None:
+                        # 日期与就诊复诊日不一致：不得写回 owner/标记，
+                        # 否则已改期的复诊预约会被旧备份重新挂回原
+                        # 就诊，留下无链接的半挂接
                         owner_visit_row = self._conn.execute(
                             "SELECT next_followup_date"
                             " FROM visit_records WHERE id = ?",
@@ -9388,14 +9593,42 @@ class SessionStore:
                         )
                         if (
                             not (
-                                backup_status == "upcoming"
-                                and local_owner in inserted_visit_ids
+                                local_owner in inserted_visit_ids
+                                and backup_status in ("upcoming", "completed")
                             )
                             and owner_visit_day != str(
                                 appointment_row["scheduled_at"] or ""
                             )[:10]
                         ):
-                            continue
+                            owner_ok = False
+                    if not owner_ok:
+                        if appointment_key in imported_appointment_ids:
+                            # 本次新插入的预约：拒绝归属时同步剥掉备注
+                            # 里的就诊标记，避免无链接的半挂接
+                            def _strip_owner_marker(match):
+                                raw_visit = _safe_db_id(match.group(1))
+                                if visit_raw_local_map.get(raw_visit) == int(
+                                    local_owner
+                                ):
+                                    return ""
+                                return match.group(0)
+
+                            note_row = self._conn.execute(
+                                "SELECT note FROM appointments WHERE id = ?",
+                                (int(appointment_key),),
+                            ).fetchone()
+                            cleaned_note = re.sub(
+                                r"由就诊记录 #(\d+) 自动创建",
+                                _strip_owner_marker,
+                                str(note_row["note"] or "")
+                                if note_row is not None else "",
+                            ).strip()[:300]
+                            self._conn.execute(
+                                "UPDATE appointments SET owner_visit_id = 0,"
+                                " note = ?, updated_at = ? WHERE id = ?",
+                                (cleaned_note, now, int(appointment_key)),
+                            )
+                        continue
                     if (
                         appointment_key not in imported_appointment_ids
                         and existing_owner != 0
@@ -9706,6 +9939,7 @@ class SessionStore:
                             backup_profiles=reminder_backup_meta["profiles"],
                             backup_created=reminder_backup_meta["created"],
                             backup_contents=reminder_backup_meta["contents"],
+                            backup_tails=reminder_backup_meta["tails"],
                             match_where=("profile = ?", (profile,)),
                             soft_where=("title = ?", (title,)),
                             backup_group_size=reminder_group_sizes.get(
@@ -11940,10 +12174,13 @@ class SessionStore:
                                 linked_alive is not None
                                 and int(linked_alive["done"] or 1) == 1
                             )
-                        elif link_row is None:
-                            # 没有就诊链接的普通预约：以是否有已完成
-                            # 提醒判断。就诊链接存在但已清空说明用户
-                            # 主动删除了提醒，不能再复活
+                        if not rebuild:
+                            # 没有就诊链接的普通预约，或就诊链接仍在但
+                            # 提醒链接已被删除清空（用户用『提醒』按钮
+                            # 重新建过）：以是否有已完成提醒判断。就诊
+                            # 链接存在且从未重建过提醒时，用户主动删除
+                            # 后不能再复活；重新建过并完成则改期必须
+                            # 重建待办，否则复诊前没有任何提醒
                             had_completed = self._conn.execute(
                                 "SELECT 1 FROM reminders"
                                 " WHERE appointment_id = ? AND done = 1"

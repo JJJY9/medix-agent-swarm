@@ -410,7 +410,8 @@ def test_session_flow_guards_are_present():
     assert "setPendingSessionReset(true)" in detach
 
     send_start = app_js.index("async function send(question)")
-    send_body = app_js[send_start:send_start + 2200]
+    # 首屏恢复等待块让 send 头部变长，窗口相应放宽
+    send_body = app_js[send_start:send_start + 3600]
     assert "if (pendingSessionReset)" in send_body
     assert "clearPersistedSessionId()" in send_body
     assert "setPendingSessionReset(false)" in send_body

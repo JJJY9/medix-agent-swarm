@@ -403,7 +403,11 @@ def test_family_overview_recorded_today_counts_stopped_medication_logs(
     """停药当天的打卡日志仍算今天的健康记录，与 streak 口径一致。"""
     client, _store = client_and_store
     today = datetime.now().strftime("%Y-%m-%d")
-    client.post("/api/profiles", json={"name": "奶奶", "context": {}})
+    # 空 context 会被档案校验拒绝（400）：用有效档案字段，确保
+    # 成员以「已保存档案」身份出现在家庭总览
+    client.post(
+        "/api/profiles", json={"name": "奶奶", "context": {"sex": "女"}}
+    )
     medication = client.post("/api/medications", json={
         "profile": "奶奶", "name": "阿司匹林",
     }).json()["medication"]

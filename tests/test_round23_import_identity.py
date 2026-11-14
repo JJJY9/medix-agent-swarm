@@ -124,8 +124,12 @@ def test_restore_after_identity_field_edits_does_not_duplicate(store):
     assert appointments[0]["scheduled_at"] == "2026-12-08T09:00"
 
 
-def test_restore_after_all_editable_fields_changed(store):
+def test_restore_after_all_editable_fields_changed(store, monkeypatch):
     """七类实体的可编辑字段都被修改后恢复，不能复制旧记录。"""
+    clock = {"now": "2026-11-15T10:00:00"}
+    monkeypatch.setattr(
+        SessionStore, "_now", staticmethod(lambda: clock["now"])
+    )
     med = store.add_medication("妈妈", "氨氯地平", "5mg", "每日一次")
     appt = store.add_appointment(
         "妈妈", "心内科复诊", "心内科", scheduled_at="2026-12-01 09:00",
@@ -142,6 +146,8 @@ def test_restore_after_all_editable_fields_changed(store):
         "妈妈", "头痛", 3, recorded_at="2026-11-12",
     )
     backup = store.export_data()
+    # 真实编辑发生在导出之后的时刻：updated_at > created_at
+    clock["now"] = "2026-11-15T10:00:05"
 
     store.update_medication(med["id"], name="苯磺酸氨氯地平", dose="10mg")
     store.update_appointment_partial(
@@ -204,11 +210,16 @@ def test_restore_recreates_deleted_twin_without_duplicating(store):
     assert len(store.list_medications("妈妈")) == 2
 
 
-def test_restore_after_visit_edit_does_not_duplicate(store):
+def test_restore_after_visit_edit_does_not_duplicate(store, monkeypatch):
+    clock = {"now": "2026-11-15T10:00:00"}
+    monkeypatch.setattr(
+        SessionStore, "_now", staticmethod(lambda: clock["now"])
+    )
     visit = store.add_visit_record(
         "妈妈", visit_date="2026-11-01", diagnosis="高血压复诊",
     )
     backup = store.export_data()
+    clock["now"] = "2026-11-15T10:00:05"
 
     store.update_visit_record_partial(
         visit["id"], diagnosis="原发性高血压"
