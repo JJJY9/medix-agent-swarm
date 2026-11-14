@@ -438,9 +438,13 @@ class LongTermMemory:
         if not self.ensure_available():
             return 0
         scope = session_memory_scope(session_id)
+        legacy_id = str(session_id or "").strip()
 
         def _match(meta: Dict[str, Any]) -> bool:
-            if str(meta.get("session_id") or "") != scope:
+            recorded = str(meta.get("session_id") or "")
+            # 旧版本（会话作用域哈希之前）写入的是原始会话 ID：
+            # 删除会话时必须一并清除，否则云端摘要永久残留
+            if recorded != scope and (not legacy_id or recorded != legacy_id):
                 return False
             if before:
                 stamp = str(meta.get("timestamp") or "")

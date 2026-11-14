@@ -552,9 +552,11 @@ def _fake_request(headers):
     return FakeRequest(headers)
 
 
-def test_forwarded_headers_fail_closed_on_unparsable_last_hop():
+def test_forwarded_headers_fail_closed_on_unparsable_last_hop(monkeypatch):
     import api_server
 
+    # 只信任部署声明的地址头（默认 none 一律不采信）
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "forwarded")
     # Forwarded 只看最右元素：最右元素存在但没有可解析的 for
     # （或为 unknown）时必须视为失败，不能回退到客户端自带元素
     assert api_server._forwarded_client_address(_fake_request({
@@ -563,12 +565,19 @@ def test_forwarded_headers_fail_closed_on_unparsable_last_hop():
     assert api_server._forwarded_client_address(_fake_request({
         "forwarded": "for=203.0.113.9, for=unknown",
     })) == ""
+    # 多级本机代理：Forwarded 与 XFF 一样跳过最右 loopback 信任跳
+    assert api_server._forwarded_client_address(_fake_request({
+        "forwarded": "for=203.0.113.9, for=127.0.0.1",
+    })) == "203.0.113.9"
+    assert api_server._is_loopback_client(_fake_request({
+        "forwarded": "for=203.0.113.9, for=127.0.0.1",
+    })) is False
 
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     # XFF 最右项无法解析同样 fail closed
     assert api_server._forwarded_client_address(_fake_request({
         "x-forwarded-for": "203.0.113.9, unknown",
     })) == ""
-
     # 多级本机代理：从右向左跳过 loopback 信任跳
     assert api_server._forwarded_client_address(_fake_request({
         "x-forwarded-for": "198.51.100.7, 203.0.113.9, 127.0.0.1",

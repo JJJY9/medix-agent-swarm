@@ -4992,6 +4992,9 @@ function closeHistory(restoreFocus = false) {
 }
 
 function renderStoredMessages(messages, activeSessionId = sessionId, profile = '', options = {}) {
+  // 打开历史会话/深链前先处理输入框草稿归属：另一位患者的草稿不能
+  // 留在这次会话页面上
+  settleDraftForSession(activeSessionId);
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = messages.length > 0;
   lastServerMessageId = messages.reduce(
@@ -6497,6 +6500,10 @@ async function detachSessionForProfileChange() {
     setVitals('warn', '档案已切换，下一轮提问将开启新会话');
     return false;
   }
+  // 发起新建会话前先标记待重置：await 期间表单已被清空、档案已切换，
+  // 但本地 sessionId 仍是旧会话；用户在窗口内按回车必须走新会话，
+  // 不能把新患者的问题写进旧档案的会诊记录
+  setPendingSessionReset(true);
   const ok = await startNewSession();
   if (!ok) {
     // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定
@@ -20681,11 +20688,14 @@ async function send(question) {
       logStep('用户停止了本次会诊', false);
       setVitals('idle', '已停止会诊');
     } else if (err.sessionDeleted) {
-      // 服务端会话已被删除：清空本地编号，下一次提问自动新建会话
+      // 服务端会话已被删除：清空本地编号，下一次提问自动新建会话。
+      // 用户刚提交的主诉必须放回输入框，不能让 submit 的预清空
+      // 把整段描述静默丢掉
       const cleared = clearDeletedSession(
         sessionId, '该会诊已被删除，已为你开启新会话，请重新提问。'
       );
       if (!cleared) renderError('该会诊已被删除，请开启新会话后重试。');
+      restoreComposer(question);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '已失效';
       logStep('会诊已在其它设备删除', false);
@@ -21478,6 +21488,8 @@ function autoGrow() {
 }
 
 const DRAFT_KEY = 'medix.draft';
+//: 草稿归属的会话：切换/深链打开另一位患者的会话时不能沿用旧草稿
+const DRAFT_OWNER_KEY = 'medix.draft.session';
 let draftTimer = null;
 
 function saveDraft() {
@@ -21486,8 +21498,10 @@ function saveDraft() {
     try {
       if (els.input.value.trim()) {
         safeSessionSet(DRAFT_KEY, els.input.value);
+        safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
       } else {
         safeSessionRemove(DRAFT_KEY);
+        safeSessionRemove(DRAFT_OWNER_KEY);
       }
     } catch {
       // 隐私模式下 sessionStorage 不可用时忽略
@@ -21499,9 +21513,25 @@ function clearDraft() {
   clearTimeout(draftTimer);
   try {
     safeSessionRemove(DRAFT_KEY);
+    safeSessionRemove(DRAFT_OWNER_KEY);
   } catch {
     // 忽略
   }
+}
+
+function settleDraftForSession(targetId) {
+  // 打开的会话与草稿归属不一致时丢弃草稿：上一位患者的主诉不能
+  // 出现在另一位患者的会话页面，更不能按回车写进该会话
+  const owner = safeSessionGet(DRAFT_OWNER_KEY);
+  if (owner === null) return;
+  if (owner === (targetId || '')) return;
+  if (!els.input.value.trim()) {
+    clearDraft();
+    return;
+  }
+  els.input.value = '';
+  autoGrow();
+  clearDraft();
 }
 
 function restoreComposer(question) {
@@ -21517,10 +21547,17 @@ function restoreComposer(question) {
 function loadDraft() {
   try {
     const draft = safeSessionGet(DRAFT_KEY);
-    if (draft) {
-      els.input.value = draft;
-      autoGrow();
+    if (!draft) return;
+    const owner = safeSessionGet(DRAFT_OWNER_KEY);
+    // 草稿带有归属会话且与当前会话不符（如深链指向另一位患者）：
+    // 不显示、直接清理
+    if (owner !== null && owner !== (sessionId || '')) {
+      safeSessionRemove(DRAFT_KEY);
+      safeSessionRemove(DRAFT_OWNER_KEY);
+      return;
     }
+    els.input.value = draft;
+    autoGrow();
   } catch {
     // 忽略
   }

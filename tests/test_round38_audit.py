@@ -510,7 +510,11 @@ def test_remote_client_cannot_spoof_proxy_header_to_skip_preblock(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
     )
-    client = TestClient(api_server.app, client=("203.0.113.9", 50000))
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("203.0.113.9", 50000),
+    )
     try:
         first = client.get("/api/sessions", headers={
             "X-Medix-Token": "bad",
@@ -543,7 +547,14 @@ def test_duplicate_xff_fields_use_last_appended(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "get_session_store", lambda: session_store)
     monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
-    client = TestClient(api_server.app, client=("127.0.0.1", 50000))
+    monkeypatch.setenv(
+        "MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for"
+    )
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("127.0.0.1", 50000),
+    )
     try:
         spoofed = client.get("/api/sessions", headers=[
             ("X-Forwarded-For", "127.0.0.1"),
@@ -564,6 +575,7 @@ def test_rate_limit_key_uses_forwarded_address(monkeypatch):
     import api_server
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
 
     class FakeClient:
         host = "127.0.0.1"

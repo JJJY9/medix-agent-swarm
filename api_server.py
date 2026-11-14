@@ -1422,6 +1422,38 @@ def parse_risk_level(text: Any) -> str:
     return ""
 
 
+def _latest_parseable_risk(
+    answers: Any, start: str = "", end: str = ""
+) -> Dict[str, Dict[str, Any]]:
+    """按档案取窗口内最近一条能解析出等级的风险答复。
+
+    普通追问里的「请紧急就医」「高危人群」解析不出等级，不能因此
+    丢弃更早一条真正的分级答复；同一档案按消息时间取最新一条。
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+    for item in answers or []:
+        if not isinstance(item, dict):
+            continue
+        profile_key = str(item.get("profile") or "")
+        day = str(item.get("answered_at") or "")[:10]
+        if not day or (start and day < start) or (end and day > end):
+            continue
+        level = parse_risk_level(item.get("content"))
+        if not level:
+            continue
+        message_id = int(item.get("message_id") or 0)
+        best = result.get(profile_key)
+        if best is None or (day, message_id) > (
+            best["answered_at"], best["message_id"]
+        ):
+            result[profile_key] = {
+                "risk": level,
+                "answered_at": day,
+                "message_id": message_id,
+            }
+    return result
+
+
 def _normalized_profile_key(value: Any) -> str:
     """与写入侧一致地规范化档案名，避免首尾/连续空格导致过滤丢数据。"""
     from memory.session_store import _normalize_profile_name
@@ -1874,11 +1906,27 @@ def _proxy_header_values(request: Request, name: str) -> List[str]:
 
 
 def _has_forwarded_address_header(request: Request) -> bool:
-    """请求是否带了客户端地址类代理头（XFF/Forwarded/X-Real-IP）。"""
-    return any(
-        _proxy_header_values(request, name)
-        for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+    """请求是否带了「可采信」的客户端地址类代理头。
+
+    与 _forwarded_client_address 同源：MEDIX_PROXY_CLIENT_IP_HEADER=none
+    时不采信任何客户端自带地址头（返回 False，回到共享限流桶）；指定
+    具体头时只认该头，unknown/空 for 等归一化后为空的值视为无地址。
+    """
+    source = _allowed_proxy_address_source()
+    if source == "none":
+        return False
+    names = (
+        [source] if source in ("x-forwarded-for", "x-real-ip", "forwarded")
+        else ["x-forwarded-for", "forwarded", "x-real-ip"]
     )
+    for name in names:
+        for value in _proxy_header_values(request, name):
+            if name == "forwarded":
+                if _parse_forwarded_header(value):
+                    return True
+            elif _normalize_forwarded_address(value):
+                return True
+    return False
 
 
 def _has_proxy_headers(request: Request) -> bool:
@@ -1922,8 +1970,8 @@ def _normalize_forwarded_address(value: str) -> str:
     return text
 
 
-def _parse_forwarded_header(header: str) -> str:
-    """按 RFC 7239 解析 Forwarded，取最后一个元素的 for=（最近代理追加）。"""
+def _forwarded_for_values(header: str) -> List[str]:
+    """按 RFC 7239 把 Forwarded 拆成每个元素的 for= 值（缺失为 ""）。"""
     elements: List[str] = []
     current: List[str] = []
     in_quotes = False
@@ -1948,18 +1996,40 @@ def _parse_forwarded_header(header: str) -> str:
     if in_quotes:
         # 引号未闭合：字段被客户端截断，代理追加的元素无法区分，
         # 整条 Forwarded 不可信，fail closed
-        return ""
+        return []
     if current:
         elements.append("".join(current))
-    if not elements:
+    values: List[str] = []
+    for element in elements:
+        value = ""
+        for part in str(element).split(";"):
+            key, _sep, raw_value = part.strip().partition("=")
+            if key.strip().lower() == "for" and raw_value.strip():
+                value = _normalize_forwarded_address(raw_value)
+                break
+        values.append(value)
+    return values
+
+
+def _parse_forwarded_header(header: str) -> str:
+    """按 RFC 7239 解析 Forwarded，取最右侧非本机信任跳的 for=。
+
+    与 XFF 分支一致：多级本机代理会把自己的 127.0.0.1 追加在最右，
+    真实客户端只出现在更左元素；此时从右向左跳过 loopback 信任跳。
+    最右元素存在但没有可解析的 for 时必须 fail closed，不能回退到
+    客户端自带的更早元素。
+    """
+    values = _forwarded_for_values(header)
+    if not values:
         return ""
-    # 只看最右侧元素（最近可信代理追加）：它存在但没有可解析的 for
-    # 时必须 fail closed，不能回退到客户端自带的更早元素
-    for part in str(elements[-1]).split(";"):
-        key, _sep, value = part.strip().partition("=")
-        if key.strip().lower() == "for" and value.strip():
-            return _normalize_forwarded_address(value)
-    return ""
+    rightmost = values[-1]
+    if not rightmost:
+        return ""
+    if _is_loopback_address(rightmost):
+        for value in reversed(values[:-1]):
+            if value and not _is_loopback_address(value):
+                return value
+    return rightmost
 
 
 def _same_forwarded_address(first: str, second: str) -> bool:
@@ -1970,10 +2040,15 @@ def _same_forwarded_address(first: str, second: str) -> bool:
 
 
 def _allowed_proxy_address_source() -> str:
-    """部署声明代理实际覆盖/追加的地址头（用于避免采信客户端自带头）。"""
+    """部署声明代理实际覆盖/追加的地址头。
+
+    默认 none（fail closed）：代理若不覆盖客户端自带的 XFF/Forwarded，
+    这些头可被伪造为 127.0.0.1 冒充本机；升级后的既有部署必须显式
+    设置 MEDIX_PROXY_CLIENT_IP_HEADER 指向代理真正写入的头。
+    """
     return (
-        os.environ.get("MEDIX_PROXY_CLIENT_IP_HEADER") or ""
-    ).strip().lower()
+        os.environ.get("MEDIX_PROXY_CLIENT_IP_HEADER") or "none"
+    ).strip().lower() or "none"
 
 
 def _forwarded_client_address(request: Request) -> str:
@@ -2243,8 +2318,10 @@ def _is_cross_site_request(request: Request) -> bool:
 def _host_header_allowed(request: Request) -> bool:
     """校验 Host 头，防止 DNS rebinding 把恶意域名解析到本机。
 
-    IP 字面量（含局域网地址）默认允许；localhost 与 testserver 放行；
-    其它域名需要在 MEDIX_ALLOWED_HOSTS 中显式配置（逗号分隔）。
+    IP 字面量（含局域网地址）默认允许；localhost 放行；testserver 只在
+    Starlette TestClient 的对端名下放行（生产环境该单标签名可被局域网
+    解析劫持，不能作为 rebinding 的合法 Host）。其它域名需要在
+    MEDIX_ALLOWED_HOSTS 中显式配置（逗号分隔）。
     """
     host = str(request.headers.get("host") or "").strip()
     if not host:
@@ -2257,8 +2334,11 @@ def _host_header_allowed(request: Request) -> bool:
     hostname = hostname.strip().lower().rstrip(".")
     if not hostname:
         return False
-    if hostname in {"localhost", "testserver"}:
+    if hostname == "localhost":
         return True
+    if hostname == "testserver":
+        peer = request.client.host if request.client else ""
+        return peer == "testclient"
     try:
         ipaddress.ip_address(hostname)
         return True
@@ -5778,14 +5858,18 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         linked_reminder_id = int(visit.get("followup_reminder_id") or 0)
         if linked_reminder_id:
             reminder = store.get_reminder(linked_reminder_id)
-            if (
-                reminder
-                and int(reminder.get("appointment_id") or 0)
+            if reminder and (
+                reminder.get("done")
+                or int(reminder.get("appointment_id") or 0)
                 != int(appointment["id"])
             ):
+                # 已完成的提醒不是待办：改期/再次安排时必须重建，
+                # 否则该复诊永远没有提醒
                 reminder = None
         if reminder is None:
-            reminders = store.list_reminders(True, profile)
+            # 后备扫描只看未完成提醒：include_done=True 会把已完成
+            # 提醒当成安排结果返回
+            reminders = store.list_reminders(False, profile)
             for candidate in reminders:
                 if int(candidate.get("appointment_id") or 0) == int(
                     appointment["id"]
@@ -6601,44 +6685,30 @@ async def _weekly_report_impl(
     risk_profiles: List[Dict[str, str]] = []
     if profile is not None and sessions:
         profile_key = _normalized_profile_key(profile)
-        latest_answers = await asyncio.to_thread(
-            store.latest_session_answers_by_profile,
-            profile_key == "",
+        risk_answers = await asyncio.to_thread(
+            store.recent_risk_answers, start
         )
-        for item in latest_answers:
-            if (item.get("profile") or "") == profile_key:
-                answered_day = str(
-                    item.get("answered_at")
-                    or item.get("last_active_at")
-                    or item.get("created_at")
-                    or ""
-                )[:10]
-                if answered_day and start <= answered_day <= end:
-                    risk_level = parse_risk_level(
-                        item.get("last_answer")
-                    )
-                break
+        # 取窗口内最近一条可解析的分级答复：普通追问里的「紧急
+        # 就医」不能把同窗口内真正的高危评估整体掩盖
+        risk_level = str(
+            _latest_parseable_risk(risk_answers, start, end)
+            .get(profile_key, {})
+            .get("risk")
+            or ""
+        )
     elif profile is None:
         # 家庭范围：汇总每位成员最近一次会诊的风险，健康提示不能漏报
-        latest_answers = await asyncio.to_thread(
-            store.latest_session_answers_by_profile, True
+        risk_answers = await asyncio.to_thread(
+            store.recent_risk_answers, start
         )
         risk_order = {"low": 1, "medium": 2, "high": 3, "emergency": 4}
-        for item in latest_answers:
-            level = parse_risk_level(item.get("last_answer"))
+        for member_key, info in _latest_parseable_risk(
+            risk_answers, start, end
+        ).items():
+            level = str(info.get("risk") or "")
             if not level:
                 continue
-            # 与单档案视图/家庭总览一致：窗口外的旧会诊不能触发
-            # 「最近会诊风险」提示
-            answered_day = str(
-                item.get("answered_at")
-                or item.get("last_active_at")
-                or item.get("created_at")
-                or ""
-            )[:10]
-            if not answered_day or not (start <= answered_day <= end):
-                continue
-            member = item.get("profile") or "未指定"
+            member = member_key or "未指定"
             risk_profiles.append({"profile": member, "risk": level})
             if risk_order.get(level, 0) > risk_order.get(risk_level, 0):
                 risk_level = level
@@ -11117,9 +11187,6 @@ async def family_overview(days: int = 7):
         None, cutoff, f"{today}T23:59:59", 100000,
         by_updated=True,
     )
-    latest_answers = await asyncio.to_thread(
-        store.latest_session_answers_by_profile, True
-    )
     recorded_days = await asyncio.to_thread(
         store.recorded_days_by_profile, 3650
     )
@@ -11134,22 +11201,15 @@ async def family_overview(days: int = 7):
         name: set(days) for name, days in recorded_days.items()
     }
     risk_by_profile: Dict[str, str] = {}
-    for item in latest_answers:
-        profile_name = item.get("profile") or ""
-        risk = parse_risk_level(item.get("last_answer"))
-        answered_day = str(
-            item.get("answered_at")
-            or item.get("last_active_at")
-            or item.get("created_at")
-            or ""
-        )[:10]
-        if answered_day and not (cutoff <= answered_day <= today):
-            # 旧会诊里的高危答复不能因为今天续聊了一句普通问题
-            # 就冒充「最近会诊风险」
-            risk = ""
+    risk_answers = await asyncio.to_thread(
+        store.recent_risk_answers, cutoff
+    )
+    for profile_name, info in _latest_parseable_risk(
+        risk_answers, cutoff, today
+    ).items():
+        # 最近的普通答复不再掩盖同窗口内真正的分级答复；
         # 「未指定档案」的会诊同样要参与家庭风险提示
-        if risk:
-            risk_by_profile[profile_name] = risk
+        risk_by_profile[profile_name] = str(info.get("risk") or "")
 
     target_map = {
         (item.get("profile") or "", item.get("metric")): item
@@ -11246,6 +11306,12 @@ async def family_overview(days: int = 7):
                 f"{label} {format_metric_value(item)}"
             )
             alerts = []
+        if over_target and stale and not (
+            metric in DAILY_ACCUMULATING_METRICS and day_total is not None
+        ):
+            # 陈旧读数不能继续以「超标/低于目标」标红返回：
+            # 卡片与 CSV 会把它当成当前状态，和「暂无需要关注」矛盾
+            over_target = None
         elif alerts:
             entry = critical_by_profile.setdefault(profile, {
                 "count": 0, "items": [],
@@ -16501,6 +16567,21 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
     return session_memory_scope(session_id)
 
 
+def _legacy_memory_scopes(profile: str, session_id: str) -> List[str]:
+    """旧版本写入过的可读命名空间，删除会话时需一并清理。
+
+    会话作用域哈希之前，摘要写入 medix_user / medix_local 或可读的
+    medix_profile_<原名>、medix_session_<原始ID>，metadata.session_id
+    也是原始会话 ID；只按新命名空间删除会永远漏掉这些云端数据。
+    """
+    scopes = ["medix_user", "medix_local"]
+    if profile:
+        scopes.append(f"medix_profile_{profile}"[:120])
+    if session_id:
+        scopes.append(f"medix_session_{session_id}"[:120])
+    return scopes
+
+
 _standalone_long_term_memory = None
 #: 初始化失败后的重试冷却时间（秒），避免每次请求都重建客户端
 _LONG_TERM_RETRY_INTERVAL = 300.0
@@ -16654,6 +16735,15 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
                 # 旧版本单科会诊可能把摘要写入共享的 medix_local：
                 # 按 metadata.session_id 精确删除该会话残留
                 all_ok = False
+            for legacy_scope in _legacy_memory_scopes(profile, session_id):
+                if not _retry(
+                    lambda scope=legacy_scope: memory.delete_session_summary(
+                        session_id, user_id=scope
+                    )
+                ):
+                    # 旧格式条目（可读命名空间 + 原始 session_id）同样
+                    # 必须删除成功，否则不能把清理队列标记完成
+                    all_ok = False
         elif profile:
             if not _retry(lambda: memory.delete_scope(
                 _memory_scope(profile, "")
@@ -16716,6 +16806,13 @@ def _erase_long_term_before(
             )
         ):
             all_ok = False
+        for legacy_scope in _legacy_memory_scopes(profile, session_id):
+            if not _retry(
+                lambda scope=legacy_scope: memory.delete_session_summary(
+                    session_id, user_id=scope, before=cutoff
+                )
+            ):
+                all_ok = False
     elif profile:
         if not _retry(lambda: memory.delete_scope_before(
             _memory_scope(profile, ""), cutoff

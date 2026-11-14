@@ -396,8 +396,10 @@ def test_stale_metric_does_not_warn_in_family_overview(client_and_store):
 
 
 # ---------------------------------------------------------------- 代理
-def test_forwarded_unclosed_quote_fails_closed():
+def test_forwarded_unclosed_quote_fails_closed(monkeypatch):
     import api_server
+
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "forwarded")
 
     class FakeClient:
         host = "127.0.0.1"
@@ -429,11 +431,16 @@ def test_contradictory_proxy_headers_do_not_skip_preblock(
     monkeypatch.setattr(memory, "get_session_store", lambda: session_store)
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "a-secure-random-token-123")
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
     )
-    client = TestClient(api_server.app, client=("127.0.0.1", 50000))
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("127.0.0.1", 50000),
+    )
     try:
         contradicting = {
             "X-Forwarded-For": "203.0.113.9",
@@ -468,7 +475,14 @@ def test_duplicate_xff_fields_use_last_appended(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "get_session_store", lambda: session_store)
     monkeypatch.delenv("MEDIX_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
-    client = TestClient(api_server.app, client=("127.0.0.1", 50000))
+    monkeypatch.setenv(
+        "MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for"
+    )
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("127.0.0.1", 50000),
+    )
     try:
         spoofed = client.get("/api/sessions", headers=[
             ("X-Forwarded-For", "127.0.0.1"),

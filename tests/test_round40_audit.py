@@ -468,7 +468,10 @@ def test_proxy_address_header_allowlist(monkeypatch):
     assert api_server._forwarded_client_address(request) == ""
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-real-ip")
     assert api_server._forwarded_client_address(request) == ""
+    # 默认 fail closed：未显式声明代理写入的地址头时不采信客户端自带头
     monkeypatch.delenv("MEDIX_PROXY_CLIENT_IP_HEADER")
+    assert api_server._forwarded_client_address(request) == ""
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     assert api_server._forwarded_client_address(request) == "127.0.0.1"
 
 
