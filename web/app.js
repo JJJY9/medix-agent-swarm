@@ -5181,6 +5181,7 @@ async function openSession(id) {
   // 按冲突处理（保留草稿，下一问开启新会话）；刷新后按持久化标记
   const deepLinkDraftConflict = deepLinkOpen && Boolean(
     contextUserEdited
+    || pendingSessionReset
     || safeSessionGet(DEEP_LINK_EDITED_KEY) === id
   );
   const seq = ++openSessionSeq;
@@ -6608,12 +6609,11 @@ async function detachSessionForProfileChange() {
   // 不能把新患者的问题写进旧档案的会诊记录
   setPendingSessionReset(true);
   const beforeSession = sessionId;
-  const beforeSeq = openSessionSeq;
   const ok = await startNewSession();
   if (!ok) {
+    // startNewSession 自己递增 openSessionSeq，不能作为接管依据
     const takenOver = Boolean(
       busy || sessionId !== beforeSession
-      || openSessionSeq !== beforeSeq
     );
     if (!takenOver) {
       // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定；
@@ -20446,10 +20446,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       if (deepLinkedSession) {
         if (
           contextUserEdited
+          || pendingSessionReset
           || safeSessionGet(DEEP_LINK_EDITED_KEY) === sessionId
         ) {
-          // 用户在等待期间正在填写补充信息：保留草稿，不覆盖表单，
-          // 下一轮提问新建会话（否则异步重连会把输入静默清空）
+          // 用户在等待期间正在填写补充信息或刚换档：保留草稿与
+          // 档案选择，不覆盖表单，下一轮提问新建会话
           setPendingSessionReset(true);
         } else {
           // 深链指向空会话：清掉本标签页上一患者的草稿/档案，避免把
@@ -20582,6 +20583,7 @@ async function send(question) {
   try {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
       sessionId: sessionId || '',
+      profile: activeProfileName || '',
       question,
       at: Date.now(),
     }));
@@ -20610,6 +20612,7 @@ async function send(question) {
         // 会话已切换：只把文本放回输入框，不写成当前会话的草稿，
         // 否则另一位患者的会话会带着前一位病情的草稿被提交
         els.input.value = question;
+        detachedComposerText = question;
         autoGrow();
         setVitals('warn', '会诊已切换，刚才的主诉未提交，请确认后重新发送');
       } else {
@@ -20689,6 +20692,7 @@ async function send(question) {
     try {
       safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
         sessionId: sid || sessionId || '',
+        profile: activeProfileName || '',
         question,
         at: Date.now(),
       }));
@@ -21674,7 +21678,6 @@ async function applySelectedProfile() {
     // 旧档案的会诊记录（startNewSession 成功后清除标记）
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
-    const attemptSeq = openSessionSeq;
     const previousContext = (
       readProfiles()[activeProfileName] || {}
     ).context || {};
@@ -21690,9 +21693,10 @@ async function applySelectedProfile() {
     }
     const created = await startNewSession();
     if (!created) {
+      // startNewSession 自己会递增 openSessionSeq：不能用它判断
+      // 是否被 send/openSession 接管，否则创建失败时永远不回滚
       const takenOver = Boolean(
         busy || sessionId !== attemptSession
-        || openSessionSeq !== attemptSeq
       );
       if (takenOver) {
         // send/openSession 已接管：保留用户选择的新档案与当前会话，
@@ -21718,7 +21722,6 @@ async function applySelectedProfile() {
     profileSelectionSeq += 1;
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
-    const attemptSeq = openSessionSeq;
     const previousContext = (
       readProfiles()[activeProfileName] || {}
     ).context || {};
@@ -21735,7 +21738,6 @@ async function applySelectedProfile() {
     const ok = await detachSessionForProfileChange();
     const takenOver = Boolean(
       busy || sessionId !== attemptSession
-      || openSessionSeq !== attemptSeq
     );
     if (takenOver) {
       // send/openSession 已接管：保留新档案与当前会话，不能回滚
@@ -21775,9 +21777,20 @@ function autoGrow() {
 }
 
 const DRAFT_KEY = 'medix.draft';
+//: 深链接管后只放回输入框、尚未确认归属的主诉文本：pagehide 等
+//: 同步落盘不能把它记成当前会话的草稿
+let detachedComposerText = '';
 //: 草稿归属的会话：切换/深链打开另一位患者的会话时不能沿用旧草稿
 const DRAFT_OWNER_KEY = 'medix.draft.session';
 let draftTimer = null;
+
+function composerIsDetached() {
+  // 输入框仍是被接管后放回的原文时不写草稿；用户改动后恢复保存
+  if (!detachedComposerText) return false;
+  if (els.input.value === detachedComposerText) return true;
+  detachedComposerText = '';
+  return false;
+}
 
 function saveDraft() {
   clearTimeout(draftTimer);
@@ -21787,6 +21800,11 @@ function saveDraft() {
   const ownerSnapshot = pendingSessionReset ? '' : (sessionId || '');
   draftTimer = setTimeout(() => {
     try {
+      if (composerIsDetached()) {
+        safeSessionRemove(DRAFT_KEY);
+        safeSessionRemove(DRAFT_OWNER_KEY);
+        return;
+      }
       if (els.input.value.trim()) {
         safeSessionSet(DRAFT_KEY, els.input.value);
         safeSessionSet(DRAFT_OWNER_KEY, ownerSnapshot);
@@ -21809,6 +21827,11 @@ function flushDraftNow() {
   // 刷新/关闭/PWA 被杀时定时器不会执行：同步落盘当前草稿
   clearTimeout(draftTimer);
   try {
+    if (composerIsDetached()) {
+      safeSessionRemove(DRAFT_KEY);
+      safeSessionRemove(DRAFT_OWNER_KEY);
+      return;
+    }
     if (els.input.value.trim()) {
       safeSessionSet(DRAFT_KEY, els.input.value);
       safeSessionSet(
@@ -21817,6 +21840,11 @@ function flushDraftNow() {
     } else {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
+      if (!busy && !sendInFlight) {
+        // 与 saveDraft 一致：用户清空主诉后立即隐藏/刷新时
+        // 也要丢弃在途记录，避免刷新后复活已删除的内容
+        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      }
     }
   } catch {
     // 隐私模式忽略
@@ -21915,6 +21943,7 @@ function restoreInflightQuestion() {
     const data = JSON.parse(raw);
     const question = String((data && data.question) || '').trim();
     const owner = String((data && data.sessionId) || '');
+    const profile = String((data && data.profile) || '');
     const at = Number((data && data.at) || 0);
     if (!question) return;
     // 超过 6 小时的在途记录视为已放弃：陈旧病情描述不能在任何页面
@@ -21928,6 +21957,11 @@ function restoreInflightQuestion() {
     if (owner && !sessionId) return;
     // 其它标签页/其它会话的问题不填进本页
     if (owner && sessionId && owner !== sessionId) return;
+    // 提交时的档案与当前档案不一致：上一位患者的病情描述不能
+    // 填进当前患者的输入框
+    if (profile && activeProfileName && profile !== activeProfileName) {
+      return;
+    }
     if (els.input.value.includes(question)) {
       // 主诉已在草稿里：只清理在途记录，不重复合并
       safeSessionRemove(INFLIGHT_QUESTION_KEY);

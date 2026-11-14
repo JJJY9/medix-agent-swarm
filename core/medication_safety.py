@@ -564,6 +564,11 @@ _USE_DOUBLE_NEGATION = re.compile(
     r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
     r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?\s*$"
 )
+#: 单次漏服（今天没吃/漏服了一次）仍属当前用药，不是未用药
+_DOSE_MISSED_PREFIX = re.compile(
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|刚才|这次|这一顿|这顿)"
+    r"[^，。；,.!?！？\n]{0,6}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
+)
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
     r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
@@ -643,7 +648,8 @@ _RECENT_STOP_SUFFIX = re.compile(
     r"^\s*(?:停用|停药|停了|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:今天|昨天|前天|几天|几天前|一周|"
-    r"[0-9一二两三四五六七八九十]+\s*天)"
+    r"[0-9一二两三四五六七八九十]+\s*天|"
+    r"(?:1|[一])\s*周(?:半)?)"
 )
 #: 近期停药的任意语序（药名前/后的文本拼接后判断）：
 #: 「停了华法林三天了」「华法林昨天停了」「刚把华法林停了」
@@ -654,7 +660,8 @@ _RECENT_STOP_CONTEXT = re.compile(
     r"|(?:停用|停药|停了|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:今天|昨天|前天|几天|一周|"
-    r"[0-9一二两三四五六七八九十]+\s*天)"
+    r"[0-9一二两三四五六七八九十]+\s*天|"
+    r"(?:1|[一])\s*周(?:半)?)"
 )
 _RECENT_STOP_PREFIX_EN = re.compile(
     r"(?:just|recently|yesterday|today)\s+"
@@ -664,7 +671,9 @@ _RECENT_STOP_PREFIX_EN = re.compile(
 _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
     r"(?:stopped|discontinued|quit|ceased)\s+"
-    r"(?:(?:\d+\s*)?(?:days?|weeks?)\s+ago|yesterday|today)",
+    r"(?:(?:\d+\s*)?days?\s+ago"
+    r"|(?:1|a|an|one)\s*weeks?\s+ago"
+    r"|yesterday|today)",
     re.IGNORECASE,
 )
 #: 英文否定停药：「I have not stopped warfarin」「never stopped」
@@ -688,7 +697,8 @@ _STOPPED_USE_PREFIX_EN = re.compile(
 #: 英文近期停药（天/周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_CONTEXT_EN = re.compile(
     r"(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
-    r"(?:(?:\d+|a|an|one|two|three|few)\s+)?(?:days?|weeks?)\s+ago"
+    r"(?:(?:\d+|a|an|one|two|few)\s+days?\s+ago"
+    r"|(?:1|a|an|one)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today)",
     re.IGNORECASE,
@@ -809,6 +819,7 @@ def _alias_matches(text: str, alias: str) -> bool:
         long_suffix = text[end:right + 25]
         if (
             _USE_DOUBLE_NEGATION.search(prefix)
+            or _DOSE_MISSED_PREFIX.search(prefix)
             or _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
