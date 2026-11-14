@@ -823,19 +823,6 @@ try {
     pendingSessionReset = false;
     safeSessionRemove(PENDING_RESET_KEY);
     safeStorageRemove(pendingResetStorageKey(sessionId));
-  } else if (
-    !pendingSessionReset
-    && sessionId
-    && safeStorageGet(pendingResetStorageKey(sessionId))
-    && (
-      // localStorage 标记被所有标签页共享：只有本标签页（sessionStorage
-      // 仍是同一标记）或独立 PWA 重开时才采信，避免另一个标签页的
-      // 换档标记让本标签页下一问丢弃当前会话
-      window.matchMedia
-      && window.matchMedia('(display-mode: standalone)').matches
-    )
-  ) {
-    pendingSessionReset = true;
   }
 } catch {
   // 隐私模式下忽略
@@ -3253,6 +3240,8 @@ async function ensureSession(signal) {
   sessionId = data.session_id;
   persistSessionId(sessionId);
   setSessionUrl(sessionId);
+  // 空状态直接点常用主诉/没有会话时的新建：输入框草稿归属到新会话
+  reassignDraftToCurrentSession();
   els.readout.session.textContent = shortSession(sessionId);
   return sessionId;
 }
@@ -5347,6 +5336,8 @@ function clearCurrentSession() {
   lastServerMessageId = 0;
   clearPersistedSessionId();
   setSessionUrl(null);
+  // 无会话页面的草稿归属空串：刷新时不会被当成其它会话的草稿删除
+  reassignDraftToCurrentSession();
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = false;
   resetRail();
@@ -5365,6 +5356,7 @@ function clearDeletedSession(id, notice = '') {
   lastServerMessageId = 0;
   clearPersistedSessionId();
   setSessionUrl(null);
+  reassignDraftToCurrentSession();
   // 已删除会话的历史与悬空提问不能留在界面上，否则会与新会话混排
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = false;
@@ -6561,9 +6553,11 @@ function setPendingSessionReset(active) {
   try {
     if (pendingSessionReset && sessionId) {
       safeSessionSet(PENDING_RESET_KEY, sessionId);
-      // 关闭标签页/结束 PWA 后 sessionStorage 会清空：用 localStorage
-      // 按会话记录，重开时仍能拒绝旧快照与旧档案
-      safeStorageSet(pendingResetStorageKey(sessionId), '1');
+      // 关闭标签页意味着 sessionStorage 全部丢失：同时失效所有
+      // 标签页共享的会话指针，冷启动不会再把已放弃的旧档案会话
+      // 恢复回来；其它标签页有自己的 sessionStorage 会话，不受影响
+      safeStorageRemove('medix.session');
+      safeStorageRemove(pendingResetStorageKey(sessionId));
     } else {
       safeSessionRemove(PENDING_RESET_KEY);
       if (sessionId) {
@@ -16578,6 +16572,19 @@ function formatBpMonitoringAvg(stats) {
   return `${stats.avg_systolic}/${stats.avg_diastolic} mmHg（${stats.count} 次）`;
 }
 
+function bpMemberLines(data) {
+  if (!Array.isArray(data.members) || data.members.length <= 1) return [];
+  return data.members.map((member) => {
+    const label = member.display_name || member.profile || '未指定档案';
+    const diff = member.morning_evening_systolic_diff;
+    const diffText = diff != null
+      ? `，晨晚差 ${Number(diff) > 0 ? '+' : ''}${diff} mmHg`
+      : '';
+    return `${label}：完成 ${member.completed_slots}/${member.expected_slots}`
+      + ` 时段（${member.completion_rate}%）${diffText}`;
+  });
+}
+
 function bpMonitoringText(data) {
   const range = data.is_future_plan
     ? `${data.start} 至 ${data.planned_end}（统计至 ${data.end}）`
@@ -16591,6 +16598,10 @@ function bpMonitoringText(data) {
     `晨起：${formatBpMonitoringAvg(data.morning)}`,
     `睡前：${formatBpMonitoringAvg(data.evening)}`,
   ];
+  // 家庭范围按成员分别展示：晨晚时段与差值不能跨成员合并
+  for (const line of bpMemberLines(data)) {
+    lines.push(line);
+  }
   if (data.morning_evening_systolic_diff != null) {
     const diff = Number(data.morning_evening_systolic_diff);
     lines.push(
@@ -16629,6 +16640,10 @@ function renderBpMonitoring(data) {
   const lines = [];
   if (hasRecords) {
     lines.push(`平均 ${formatBpMonitoringAvg(data.average)}`);
+    // 家庭范围按成员分别展示完成度与晨晚差
+    for (const line of bpMemberLines(data)) {
+      lines.push(line);
+    }
     if (data.morning && data.morning.avg_systolic != null) {
       lines.push(`晨起 ${formatBpMonitoringAvg(data.morning)}`);
     }
@@ -21476,11 +21491,13 @@ async function applySelectedProfile() {
     profileSelectionSeq += 1;
     // 新建等待期间禁止复用旧会话：否则回车会把新患者的问题写进
     // 旧档案的会诊记录（startNewSession 成功后清除标记）
+    const hadPendingReset = pendingSessionReset;
     setPendingSessionReset(true);
     const created = await startNewSession();
     if (!created) {
-      // 失败或并发打开了其它会话：同步下拉到当前实际档案，
-      // 避免把新档案/补充信息套到旧会话上
+      // 被 busy/用户取消拒绝时档案实际没有切换：撤销刚设置的标记，
+      // 否则下一问会静默清空当前会话
+      setPendingSessionReset(hadPendingReset);
       els.profileSelect.value = activeProfileName || '';
       return;
     }
@@ -21538,7 +21555,9 @@ function saveDraft() {
 
 function reassignDraftToCurrentSession() {
   // 新建/切换会话后输入框里的草稿仍属于当前页面：归属改到新会话，
-  // 否则刷新时会被当成「上一会话的草稿」静默删除
+  // 否则刷新时会被当成「上一会话的草稿」静默删除。先取消尚在
+  // 防抖窗口里的定时器，避免它稍后把归属写回旧会话
+  clearTimeout(draftTimer);
   try {
     if (els.input.value.trim()) {
       safeSessionSet(DRAFT_KEY, els.input.value);

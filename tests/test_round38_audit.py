@@ -528,11 +528,11 @@ def test_remote_client_cannot_spoof_proxy_header_to_skip_preblock(
             "X-Medix-Token": "a-secure-random-token-123",
             "X-Forwarded-Proto": "https",
         })
-        # 无可用地址头时按共享桶处理：错误令牌仍计数（第二次 429），
-        # 但共享键不能被预锁定，正确令牌必须始终可用（否则全家 429）
+        # 直连远程客户端不能被请求头「证明」为代理对端：伪造
+        # X-Forwarded-Proto 仍按自身地址预锁定，正确令牌也 429
         assert first.status_code == 401
         assert second.status_code == 429
-        assert correct.status_code == 200
+        assert correct.status_code == 429
     finally:
         session_store.close()
 

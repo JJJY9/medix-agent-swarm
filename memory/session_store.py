@@ -2778,18 +2778,32 @@ class SessionStore:
                     " owner_visit_id INTEGER NOT NULL DEFAULT 0"
                 )
             for row in self._conn.execute(
-                "SELECT id, note FROM appointments"
+                "SELECT id, note, profile FROM appointments"
                 " WHERE owner_visit_id = 0 AND note LIKE '%由就诊记录 #%'"
             ).fetchall():
                 owner_match = re.search(
                     r"由就诊记录 #(\d+) 自动创建", str(row["note"] or "")
                 )
-                if owner_match is not None:
-                    self._conn.execute(
-                        "UPDATE appointments SET owner_visit_id = ?"
-                        " WHERE id = ?",
-                        (int(owner_match.group(1)), int(row["id"])),
-                    )
+                if owner_match is None:
+                    continue
+                target = int(owner_match.group(1))
+                visit_row = self._conn.execute(
+                    "SELECT profile FROM visit_records WHERE id = ?",
+                    (target,),
+                ).fetchone()
+                if visit_row is None:
+                    # 备注里的 #N 指向不存在的就诊（导入残留/旧库 id）：
+                    # 不能据此回填错误的归属
+                    continue
+                if _normalize_profile_name(
+                    str(visit_row["profile"] or "")
+                ) != _normalize_profile_name(str(row["profile"] or "")):
+                    continue
+                self._conn.execute(
+                    "UPDATE appointments SET owner_visit_id = ?"
+                    " WHERE id = ?",
+                    (target, int(row["id"])),
+                )
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_appointments_owner"
                 " ON appointments(owner_visit_id, status)"
@@ -3976,7 +3990,8 @@ class SessionStore:
             )
             params.extend(values)
         session_conditions = [
-            "substr(created_at, 1, 10) >= ?",
+            # 与家庭总览/时间线一致：续聊旧会话按最近一次提问计入今日
+            "substr(COALESCE(updated_at, created_at), 1, 10) >= ?",
             "EXISTS (SELECT 1 FROM messages m"
             " WHERE m.session_id = sessions.id)",
         ]
@@ -3985,7 +4000,8 @@ class SessionStore:
             session_conditions.append("profile = ?")
             session_params.append(_normalize_profile_name(profile))
         parts.append(
-            "SELECT substr(created_at, 1, 10) AS day FROM sessions"
+            "SELECT substr(COALESCE(updated_at, created_at), 1, 10)"
+            " AS day FROM sessions"
             f" WHERE {' AND '.join(session_conditions)}"
         )
         params.extend(session_params)
@@ -4026,9 +4042,10 @@ class SessionStore:
             )
             params.append(cutoff)
         parts.append(
-            "SELECT profile, substr(created_at, 1, 10) AS day"
+            "SELECT profile, substr(COALESCE(updated_at, created_at),"
+            " 1, 10) AS day"
             " FROM sessions WHERE profile != ''"
-            " AND substr(created_at, 1, 10) >= ?"
+            " AND substr(COALESCE(updated_at, created_at), 1, 10) >= ?"
             " AND EXISTS (SELECT 1 FROM messages m"
             " WHERE m.session_id = sessions.id)"
         )
@@ -5096,6 +5113,56 @@ class SessionStore:
             state[identity] = claimed
             return None
 
+        def _same_backup_origin() -> bool:
+            """本地库是否可证明就是该备份的来源库（主键空间同源）。
+
+            恢复后本地自增 id 与备份原始主键数值相等可能只是巧合；
+            只有当所有落在备份主键范围内的既有行都在备份主键集合内、
+            且 created_at（不可编辑）与备份一致时，才允许仅凭主键
+            相等或「未编辑的同身份行」认领，否则只能按内容/编辑证据
+            配对，缺行时插入补回。
+            """
+            if not backup_ids or not backup_created or not pre_existing_ids:
+                return True
+            cache_key = (table, "__same_origin__")
+            cached = state.get(cache_key)
+            if cached is not None:
+                return bool(cached)
+            result = True
+            try:
+                rows = self._conn.execute(
+                    f"SELECT id, created_at FROM {table} WHERE id <= ?",
+                    (max(backup_ids),),
+                ).fetchall()
+            except sqlite3.Error:
+                rows = []
+            for row in rows:
+                local_id = int(row["id"])
+                if local_id not in pre_existing_ids:
+                    continue
+                if local_id not in backup_ids:
+                    result = False
+                    break
+                expected = backup_created.get(local_id)
+                if expected and str(
+                    row["created_at"] or ""
+                )[:40] != expected:
+                    result = False
+                    break
+            state[cache_key] = result
+            return result
+
+        def _candidate_edited(candidate: int) -> bool:
+            try:
+                row = self._conn.execute(
+                    f"SELECT 1 FROM {table} WHERE id = ?"
+                    " AND updated_at != created_at",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            return row is not None
+
         def _other_backup_row_survives(candidate: int) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
@@ -5126,10 +5193,25 @@ class SessionStore:
             for other in rows:
                 other_id = int(other["id"])
                 if backup_ids and other_id in backup_ids:
-                    # 该兄弟行本身就是备份里另一条记录的存活行
-                    # （主键撞号）：不能作为「本备份记录另有存活行」
-                    # 的证据，否则会放行跨成员认领并丢失被删记录
-                    continue
+                    # 只有该兄弟行确实对应备份里另一条「同档案同秒」
+                    # 记录时才不能当作本备份记录的存活行证据；
+                    # 数值相等可能只是本地自增 id 与备份主键的巧合
+                    other_profile = (
+                        backup_profiles.get(other_id)
+                        if backup_profiles else None
+                    )
+                    other_created = (
+                        backup_created.get(other_id)
+                        if backup_created else None
+                    )
+                    if (
+                        other_profile is not None
+                        and other_created == created_key
+                        and _normalize_profile_name(
+                            str(other["profile"] or "")
+                        ) == other_profile
+                    ):
+                        continue
                 if pre_existing_ids is not None and (
                     other_id not in pre_existing_ids
                 ):
@@ -5401,7 +5483,7 @@ class SessionStore:
                     != expected_profile
                 ):
                     same_profile_candidate = False
-            if same_profile_candidate:
+            if same_profile_candidate and _same_backup_origin():
                 # 本地存活行不少于备份行：这条备份行就是本地存活行的
                 # 旧版本，即使内容/软字段都被编辑过也认领自身。
                 # 本地确有缺行时仍走插入，优先补回被删记录
@@ -5448,7 +5530,14 @@ class SessionStore:
                         int(row["id"]) for row in scope_rows
                     }
                 if soft_where is None:
-                    if backup_group_size <= 1 and len(candidates) == 1:
+                    if (
+                        backup_group_size <= 1
+                        and len(candidates) == 1
+                        and (
+                            _same_backup_origin()
+                            or _candidate_edited(min(candidates))
+                        )
+                    ):
                         return _claim(min(candidates))
                     return _ambiguous()
         if not candidates:
@@ -5490,9 +5579,20 @@ class SessionStore:
                 except sqlite3.Error:
                     fresh = set()
                 if fresh:
+                    if not _same_backup_origin():
+                        # 未编辑的同身份行在非同源库中更可能对应
+                        # 备份里的另一条记录：按被删记录补回
+                        return _ambiguous()
                     candidates = fresh
                 # 组内只剩唯一候选：软字段已被本地编辑（改名/改标题），
                 # 它仍是这条备份行的存活版本，不能把旧版本再插一份
+        if (
+            len(candidates) == 1
+            and not _same_backup_origin()
+            and not _candidate_edited(min(candidates))
+        ):
+            # 非同源且看不到任何编辑证据：不能凭撞号认领另一条遗留行
+            return _ambiguous()
         return _claim(min(candidates))
 
     @staticmethod
@@ -8123,6 +8223,24 @@ class SessionStore:
                                         existing_row["id"]
                                     )
                             continue
+                    if appointment_id and not done:
+                        # 同一预约已有等价的待办提醒（恢复待就诊重建的
+                        # 提醒与备份旧提醒创建时间不同，身份配对看不到）：
+                        # 复用现有提醒，避免同一预约两条重复待办
+                        existing_pending = self._conn.execute(
+                            "SELECT id FROM reminders"
+                            " WHERE appointment_id = ? AND due_at = ?"
+                            " AND done = 0 AND profile = ?"
+                            " ORDER BY id LIMIT 1",
+                            (appointment_id, due_at, profile),
+                        ).fetchone()
+                        if existing_pending is not None:
+                            if reminder_id > 0:
+                                raw_reminder_id_map.setdefault(
+                                    reminder_id,
+                                    int(existing_pending["id"]),
+                                )
+                            continue
                     cursor = self._conn.execute(
                         """
                         INSERT INTO reminders(
@@ -8267,17 +8385,10 @@ class SessionStore:
                             visit_id,
                         ),
                     )
-                if apply_links and followup_appointment_id and raw_visit_id:
-                    # 归属标记里是旧库就诊 id：重映射后改写，否则
-                    # 改期/删除恢复的就诊无法级联清理自动预约；
-                    # owner_visit_id 用本地就诊 id 持久化归属。
-                    # 拒绝写链接时不能宣称归属：否则改期会静默覆盖
-                    # 就诊复诊日期并留下孤儿预约
-                    self._conn.execute(
-                        "UPDATE appointments SET owner_visit_id = ?"
-                        " WHERE id = ?",
-                        (int(visit_id), int(followup_appointment_id)),
-                    )
+                if followup_appointment_id and raw_visit_id:
+                    # 归属标记里是旧库就诊 id：无论链接是否写回都要
+                    # 重映射备注，否则陈旧 #N 会让恢复/改期挂到错误的
+                    # 就诊并产生重复预约
                     appointment_row = self._conn.execute(
                         "SELECT note FROM appointments WHERE id = ?",
                         (int(followup_appointment_id),),
@@ -8302,6 +8413,14 @@ class SessionStore:
                                     int(followup_appointment_id),
                                 ),
                             )
+                    if apply_links:
+                        # 链接写回成功才宣称归属：拒绝链接时改写
+                        # owner_visit_id 会让改期静默覆盖就诊复诊日期
+                        self._conn.execute(
+                            "UPDATE appointments SET owner_visit_id = ?"
+                            " WHERE id = ?",
+                            (int(visit_id), int(followup_appointment_id)),
+                        )
 
             for stale_id in set(stale_appointment_ids):
                 if stale_id not in imported_appointment_ids:
@@ -9392,9 +9511,9 @@ class SessionStore:
             )
             daily_total = (
                 round(float(today_row["total"] or 0), 1)
-                if daily_count and today_row else 0.0
+                if daily_count and today_row else None
             )
-            if target_row is not None:
+            if target_row is not None and daily_count:
                 daily_within_target = (
                     daily_total >= float(target_row["value1"])
                 )
@@ -9670,6 +9789,37 @@ class SessionStore:
                 merged.get("note") or "",
             )
 
+    def _appointment_owner_visit(
+        self, note: Any, owner_visit_id: Any, profile: str = ""
+    ) -> int:
+        """解析预约归属就诊：备注标记与持久 owner 冲突时以持久值为准。
+
+        备注可被用户编辑、导入时也可能残留旧库 id；只有标记指向真实
+        存在（且档案一致、与 owner_visit_id 不矛盾）的就诊才可采用。
+        """
+        owner = _safe_db_id(owner_visit_id)
+        marker = re.search(
+            r"由就诊记录 #(\d+) 自动创建", str(note or "")
+        )
+        marker_id = int(marker.group(1)) if marker is not None else 0
+        if marker_id and owner and marker_id != owner:
+            marker_id = 0
+        for candidate in (marker_id, owner):
+            if not candidate:
+                continue
+            row = self._conn.execute(
+                "SELECT profile FROM visit_records WHERE id = ?",
+                (candidate,),
+            ).fetchone()
+            if row is None:
+                continue
+            if profile and _normalize_profile_name(
+                str(row["profile"] or "")
+            ) != profile:
+                continue
+            return candidate
+        return 0
+
     def update_appointment(
         self,
         appointment_id: int,
@@ -9704,14 +9854,10 @@ class SessionStore:
                 normalized["status"] == "upcoming"
                 and str(previous["status"] or "") != "upcoming"
             ):
-                restore_marker = re.search(
-                    r"由就诊记录 #(\d+) 自动创建",
-                    str(previous["note"] or ""),
-                )
-                restore_visit_id = (
-                    int(restore_marker.group(1))
-                    if restore_marker is not None
-                    else int(previous["owner_visit_id"] or 0)
+                restore_visit_id = self._appointment_owner_visit(
+                    previous["note"],
+                    previous["owner_visit_id"],
+                    normalized["profile"],
                 )
                 if restore_visit_id:
                     linked_visit = self._conn.execute(
@@ -9901,17 +10047,11 @@ class SessionStore:
                 if restored_reminder_id:
                     # 恢复待就诊后把就诊记录的复诊链接写回：否则逾期
                     # 复诊提示会被抑制、再次安排复诊会产生重复预约
-                    marker = re.search(
-                        r"由就诊记录 #(\d+) 自动创建",
-                        str(previous["note"] or ""),
+                    visit_target = self._appointment_owner_visit(
+                        previous["note"],
+                        previous["owner_visit_id"],
+                        normalized["profile"],
                     )
-                    visit_target = (
-                        int(marker.group(1)) if marker is not None else 0
-                    )
-                    if not visit_target:
-                        visit_target = int(
-                            previous["owner_visit_id"] or 0
-                        )
                     if not visit_target:
                         linked = self._conn.execute(
                             "SELECT id FROM visit_records"
@@ -9952,15 +10092,11 @@ class SessionStore:
                 and str(previous["scheduled_at"] or "")
                 != normalized["scheduled_at"]
             ):
-                marker = re.search(
-                    r"由就诊记录 #(\d+) 自动创建",
-                    str(previous["note"] or ""),
+                visit_target = self._appointment_owner_visit(
+                    previous["note"],
+                    previous["owner_visit_id"],
+                    normalized["profile"],
                 )
-                visit_target = (
-                    int(marker.group(1)) if marker is not None else 0
-                )
-                if not visit_target:
-                    visit_target = int(previous["owner_visit_id"] or 0)
                 if not visit_target:
                     # 备注可被用户编辑：就诊链接同样是归属证据
                     linked = self._conn.execute(
@@ -11243,9 +11379,61 @@ class SessionStore:
         appointment_id: Any = 0,
         reminder_id: Any = 0,
     ) -> bool:
-        """记录就诊复诊安排对应的预约与提醒；记录不存在时返回 False。"""
+        """记录就诊复诊安排对应的预约与提醒。
+
+        记录不存在、预约已取消/日期不符、提醒已完成时返回 False，
+        避免并发下写入指向失效预约的链接（逾期复诊会被永久抑制）。
+        """
+        appointment = _safe_db_id(appointment_id)
+        reminder = _safe_db_id(reminder_id)
         now = self._now()
         with self._lock, self._conn:
+            visit_row = self._conn.execute(
+                "SELECT next_followup_date FROM visit_records"
+                " WHERE id = ?",
+                (int(visit_id),),
+            ).fetchone()
+            if visit_row is None:
+                return False
+            if appointment:
+                appointment_row = self._conn.execute(
+                    "SELECT status, scheduled_at FROM appointments"
+                    " WHERE id = ?",
+                    (appointment,),
+                ).fetchone()
+                if appointment_row is None:
+                    return False
+                if str(appointment_row["status"] or "") not in (
+                    "upcoming", "completed",
+                ):
+                    return False
+                followup_date = str(
+                    visit_row["next_followup_date"] or ""
+                )[:10]
+                scheduled = str(
+                    appointment_row["scheduled_at"] or ""
+                )[:10]
+                if followup_date and scheduled and (
+                    followup_date != scheduled
+                ):
+                    return False
+            if reminder:
+                reminder_row = self._conn.execute(
+                    "SELECT done, appointment_id FROM reminders"
+                    " WHERE id = ?",
+                    (reminder,),
+                ).fetchone()
+                if reminder_row is None:
+                    return False
+                if reminder_row["done"]:
+                    return False
+                linked_appointment = int(
+                    reminder_row["appointment_id"] or 0
+                )
+                if appointment and linked_appointment not in (
+                    0, appointment
+                ):
+                    return False
             cursor = self._conn.execute(
                 """
                 UPDATE visit_records
@@ -11254,12 +11442,7 @@ class SessionStore:
                        updated_at = ?
                  WHERE id = ?
                 """,
-                (
-                    _safe_db_id(appointment_id),
-                    _safe_db_id(reminder_id),
-                    now,
-                    int(visit_id),
-                ),
+                (appointment, reminder, now, int(visit_id)),
             )
             return cursor.rowcount > 0
 

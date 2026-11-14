@@ -155,6 +155,10 @@ PREGNANCY_TERMS = (
     "怀孕", "孕期", "妊娠", "产妇", "产后", "孕妇", "孕产妇",
     "早孕", "中孕", "晚孕", "孕早期", "孕中期", "孕晚期",
     "产前", "待产", "临产",
+    # 明确的妊娠相关表述：宫外孕/孕吐/产检等出现出血时同样是
+    # 产科急症高风险场景
+    "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
+    "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
 )
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
@@ -203,7 +207,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         )
         if re.search(
             r"(?:没有|没|无|未|不|否认|非)"
-            r"(?:明显|任何|见|见到|出现)?\s*$",
+            r"(?:(?:明显|任何|见|见到|出现|发现)\s*)*$",
             bleed_body,
         ) is not None:
             continue
@@ -231,8 +235,13 @@ def _has_pregnancy_bleeding(text: str) -> bool:
     return False
 
 
-def _is_negated(prefix: str) -> bool:
-    """前缀是否以否定结构结束（"没有"、"未见"、"无"…）。"""
+def _is_negated(prefix: str, suffix: str = "") -> bool:
+    """前缀是否以否定结构结束（"没有"、"未见"、"无"…）。
+
+    suffix 为短语之后、同一分句内的有限文本：枚举否定后面若跟着
+    「加重/伴大汗/放射/不缓解」等阳性修饰（「无发热、咳嗽、胸痛加重」），
+    说明最后一项其实是阳性描述，不能整组按否定处理。
+    """
     if _ALMOST_PATTERN.search(prefix):
         return False
     stripped = prefix.rstrip()
@@ -261,7 +270,10 @@ def _is_negated(prefix: str) -> bool:
         return True
     if _NEGATION_PATTERN.search(prefix):
         return True
-    return _enum_negated(prefix)
+    enum_negated = _enum_negated(prefix)
+    if enum_negated and suffix and _post_modifier_positive(suffix):
+        return False
+    return enum_negated
 
 #: 分句标点：否定判断只在同一分句内进行，避免上一句的「不」误伤下一句
 CLAUSE_DELIMITERS = "，。；！？、,.!?;\n"
@@ -302,6 +314,28 @@ def _clause_prefix(text: str, start: int, lookback: int = 24) -> str:
     return text[max(boundary, start - lookback):start]
 
 
+#: 短语之后的阳性修饰：枚举否定不能吞掉「胸痛加重/伴大汗/放射…」
+_POST_POSITIVE_CUES = (
+    "加重", "加剧", "恶化", "难忍", "剧痛", "大汗", "出汗",
+    "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
+)
+
+
+def _clause_suffix(text: str, start: int, lookahead: int = 12) -> str:
+    """返回短语之后、同一分句内的有限长度文本（顿号即截断）。"""
+    boundary = start
+    while (
+        boundary < len(text)
+        and text[boundary] not in CLAUSE_DELIMITERS
+    ):
+        boundary += 1
+    return text[start:min(boundary, start + lookahead)]
+
+
+def _post_modifier_positive(suffix: str) -> bool:
+    return any(cue in suffix for cue in _POST_POSITIVE_CUES)
+
+
 def _enum_negated(prefix: str) -> bool:
     """否定词是否以枚举形式覆盖到前缀末尾（含「和/、/及」连接）。"""
     match = _ENUM_NEGATION_PATTERN.search(prefix)
@@ -335,7 +369,8 @@ def _positive_mention(text: str, phrase: str) -> bool:
     start = text.find(phrase)
     while start != -1:
         prefix = _clause_prefix(text, start)
-        if not _is_negated(prefix):
+        suffix = _clause_suffix(text, start + len(phrase))
+        if not _is_negated(prefix, suffix):
             return True
         start = text.find(phrase, start + len(phrase))
     return False
@@ -743,6 +778,10 @@ HEAD_TRAUMA_TERMS = (
     "撞了一下头", "撞了下头", "撞到了头", "磕到了头", "碰了一下头",
     "磕了下头", "头部撞了一下", "头部被撞", "撞了一下脑袋",
     "脑袋被撞", "脑袋被磕", "脑袋被碰",
+    # 头部+动词的组合变体（头部碰到/磕了后脑勺/脑袋着地等）
+    "头部碰到", "头部磕到", "磕了后脑勺", "撞了后脑勺",
+    "碰了后脑勺", "脑袋着地", "头顶磕到", "头顶撞到", "头受伤",
+    "枕部撞到", "枕部磕到", "额头撞到", "前额撞到", "额头磕到",
 )
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -811,6 +850,10 @@ _RESTART_TEXT_RE = re.compile(
 _PAST_MEDICATION_PATTERN = re.compile(
     r"(?:以前|之前|曾经|曾|既往|过去)"
     r"[^，。；]{0,8}(?:服用|口服|吃|用|注射|打)"
+    # 「十年前吃过/几年前服用过」：完成体语缀才按既往处理，
+    # 「两年前开始吃」仍是当前用药
+    r"|[0-9一二两三四五六七八九十半几]+\s*(?:天|周|个月|月|年)前"
+    r"[^，。；]{0,8}(?:服用|口服|吃|用|注射|打)(?:过|了)"
 )
 _CONTINUOUS_MEDICATION_PATTERN = re.compile(
     r"(?:每天|每日|天天|长期|一直|持续|规律|常年|多年|这半年|近半年|"
@@ -1071,26 +1114,41 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 start = text.find(phrase, start + len(phrase))
                 continue
             prefix = _clause_prefix(text, start)
-            if not _is_negated(prefix):
+            suffix = _clause_suffix(text, start + len(phrase))
+            if not _is_negated(prefix, suffix):
                 if label not in matches:
                     matches.append(label)
                 break
             start = text.find(phrase, start + len(phrase))
 
+    # 孕期状态可能只写在档案病史里（本次主诉只描述出血）：
+    # 复用 _active_medical_text 的分句过滤把患者本人的现症/妊娠
+    # 表述并入判定，家族史/否认表述会被过滤掉
+    history_text = ""
+    if isinstance(context, dict):
+        try:
+            history_text = _active_medical_text(context)
+        except Exception:
+            history_text = ""
+    pregnancy_text = text
+    if history_text and history_text not in text:
+        pregnancy_text = f"{text}；{history_text}"
     pregnancy_weeks = False
-    for match in PREGNANCY_WEEK_PATTERN.finditer(text):
-        if not _is_negated(_clause_prefix(text, match.start())):
+    for match in PREGNANCY_WEEK_PATTERN.finditer(pregnancy_text):
+        if not _is_negated(
+            _clause_prefix(pregnancy_text, match.start())
+        ):
             pregnancy_weeks = True
             break
     pregnancy_mentioned = (
-        PREGNANCY_UNCERTAIN_PATTERN.search(text) is not None
+        PREGNANCY_UNCERTAIN_PATTERN.search(pregnancy_text) is not None
         or pregnancy_weeks
         or any(
-            _positive_mention(text, term)
+            _positive_mention(pregnancy_text, term)
             for term in PREGNANCY_UNCERTAIN_TERMS
         )
         or any(
-            _positive_mention(text, term)
+            _positive_mention(pregnancy_text, term)
             for term in PREGNANCY_TERMS
         )
     )

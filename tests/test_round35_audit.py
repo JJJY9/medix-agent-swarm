@@ -349,10 +349,11 @@ def test_family_overview_risk_for_unassigned_records(client_and_store):
 def test_pending_reset_persists_and_profile_switch_detaches():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
-    # 关闭标签页/重开 PWA 后仍能识别「下一轮换新会话」
+    # 关闭标签页/重开 PWA 后不能恢复已放弃的旧档案会话：
+    # 设置待重置时同时失效共享会话指针，冷启动从空会话开始
     assert "pendingResetStorageKey(sessionId)" in app_js
-    assert "safeStorageSet(pendingResetStorageKey(sessionId), '1')" in app_js
-    assert "safeStorageGet(pendingResetStorageKey(sessionId))" in app_js
+    assert "safeStorageRemove('medix.session')" in app_js
+    assert "const pendingFor = safeSessionGet(PENDING_RESET_KEY);" in app_js
     # 恢复失败/线程为空时换档也要断开旧会话
     start = app_js.index("async function applySelectedProfile()")
     body = app_js[start:start + 2200]
