@@ -771,6 +771,11 @@ const PENDING_RESET_KEY = 'medix.pendingSessionReset';
 // 未消费的深链：首屏恢复失败后整页刷新仍按深链处理，避免退化为
 // 普通刷新并把上一患者的补充信息带进深链会话
 const DEEP_LINK_PENDING_KEY = 'medix.deepLinkPending';
+//: 待重置标记的设置时间与深链导航时间：判断刷新后该保留哪一方
+const PENDING_RESET_AT_KEY = 'medix.pendingSessionResetAt';
+const DEEP_LINK_AT_KEY = 'medix.deepLinkAt';
+//: 流式会诊进行中的主诉：刷新/被系统回收后恢复到输入框
+const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
 let pendingSessionReset = false;
 //: ?session= 深链且与本标签页上次会话不同：按“打开历史会话”处理
 let deepLinkedSession = false;
@@ -785,6 +790,9 @@ const previousTabSession = safeSessionGet('medix.session.tab');
 const pendingDeepLinkSession = safeSessionGet(DEEP_LINK_PENDING_KEY);
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
+  // 记录本次深链导航时间：用户在深链恢复失败期间新设置的待重置
+  // 时间更晚，刷新后不能被深链覆盖
+  safeSessionSet(DEEP_LINK_AT_KEY, String(Date.now()));
   deepLinkedSession = (
     initialSessionFromUrl !== previousTabSession
     || pendingDeepLinkSession === initialSessionFromUrl
@@ -823,10 +831,22 @@ try {
   }
   if (deepLinkedSession && sessionId) {
     // 显式 ?session= 深链等同打开历史会话：服务端绑定档案与快照
-    // 优先，旧会话残留的待重置标记失效
-    pendingSessionReset = false;
-    safeSessionRemove(PENDING_RESET_KEY);
-    safeStorageRemove(pendingResetStorageKey(sessionId));
+    // 优先，旧会话残留的待重置标记失效；但用户在本次深链恢复失败
+    // 期间新设置的待重置（时间更晚）不能被覆盖，否则换档意图与
+    // 已录入的补充信息会在刷新后丢失
+    const pendingAt = Number(
+      safeSessionGet(PENDING_RESET_AT_KEY) || 0
+    );
+    const deepLinkAt = Number(safeSessionGet(DEEP_LINK_AT_KEY) || 0);
+    const userEditedAfterDeepLink = Boolean(
+      pendingFor === sessionId && pendingAt > deepLinkAt
+    );
+    if (!userEditedAfterDeepLink) {
+      pendingSessionReset = false;
+      safeSessionRemove(PENDING_RESET_KEY);
+      safeSessionRemove(PENDING_RESET_AT_KEY);
+      safeStorageRemove(pendingResetStorageKey(sessionId));
+    }
   }
 } catch {
   // 隐私模式下忽略
@@ -5148,6 +5168,13 @@ async function openSession(id) {
   // 消费标记、也不能按普通重开跳过档案快照，否则深链会话会丢失
   // 服务端绑定的患者上下文
   const deepLinkOpen = deepLinkedSession && sameSession;
+  // 待重置期间重开当前会话不是「放弃换档」：保留待重置标记、当前
+  // 档案选择与 owner 为空的新会话草稿，下一问仍开启新会话
+  const keepPendingReset = sameSession && pendingSessionReset
+    && !deepLinkOpen;
+  // 深链恢复期间用户已编辑补充信息：快照会覆盖用户刚填的内容，
+  // 按冲突处理（保留草稿，下一问开启新会话）
+  const deepLinkDraftConflict = deepLinkOpen && contextUserEdited;
   const seq = ++openSessionSeq;
 
   try {
@@ -5171,8 +5198,13 @@ async function openSession(id) {
     // 否则会把流式输出清空并把 sessionId 改回旧会话
     if (seq !== openSessionSeq || busy) return false;
 
-    // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记失效
-    setPendingSessionReset(false);
+    // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记
+    // 失效；待重置期间重开当前会话或深链草稿冲突时保留现场
+    if (deepLinkDraftConflict) {
+      setPendingSessionReset(true);
+    } else if (!keepPendingReset) {
+      setPendingSessionReset(false);
+    }
     if (!deepLinkOpen) consumeDeepLink();
     // 在切换 sessionId 之前处理草稿归属：旧版无归属草稿据此判断
     // 是否属于另一个会话
@@ -5184,13 +5216,21 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
+    const preserveComposer = keepPendingReset || deepLinkDraftConflict;
     renderStoredMessages(
       data.messages || [], id, data.profile || '',
-      // 重开当前会话按普通恢复处理：不用旧快照覆盖用户未发送的
-      // 补充信息编辑；只有切换到其它会话或深链恢复才按历史快照回填
-      { restoreContext: deepLinkOpen || !sameSession }
+      preserveComposer
+        ? { restoreContext: false, skipContext: true, skipProfile: true }
+        : {
+          // 重开当前会话按普通恢复处理：不用旧快照覆盖用户未发送的
+          // 补充信息编辑；切换到其它会话或深链恢复才按历史快照回填
+          restoreContext: deepLinkOpen || !sameSession,
+        }
     );
-    if (deepLinkOpen) consumeDeepLink();
+    if (deepLinkOpen) {
+      consumeDeepLink();
+      contextUserEdited = false;
+    }
     setVitals('idle', '历史会诊');
     els.input.focus();
     return true;
@@ -6589,6 +6629,8 @@ function setPendingSessionReset(active) {
   try {
     if (pendingSessionReset && sessionId) {
       safeSessionSet(PENDING_RESET_KEY, sessionId);
+      // 记录设置时间：用于判断深链覆盖与用户换档谁更新的
+      safeSessionSet(PENDING_RESET_AT_KEY, String(Date.now()));
       // 关闭标签页意味着 sessionStorage 全部丢失：同时失效所有
       // 标签页共享的会话指针，冷启动不会再把已放弃的旧档案会话
       // 恢复回来；其它标签页有自己的 sessionStorage 会话，不受影响
@@ -6596,6 +6638,7 @@ function setPendingSessionReset(active) {
       safeStorageRemove(pendingResetStorageKey(sessionId));
     } else {
       safeSessionRemove(PENDING_RESET_KEY);
+      safeSessionRemove(PENDING_RESET_AT_KEY);
       if (sessionId) {
         safeStorageRemove(pendingResetStorageKey(sessionId));
       }
@@ -20572,6 +20615,18 @@ async function send(question) {
   try {
     const sid = await ensureSession(controller.signal);
 
+    // 流式期间刷新/页面被系统回收时服务端会取消任务、问答不落库：
+    // 主诉先写入会话存储，重启后由 restoreInflightQuestion 恢复
+    try {
+      safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
+        sessionId: sid || sessionId || '',
+        question,
+        at: Date.now(),
+      }));
+    } catch {
+      // 隐私模式忽略
+    }
+
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -20801,6 +20856,11 @@ async function send(question) {
     }
   } finally {
     clearInterval(elapsedTimer);
+    try {
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    } catch {
+      // 忽略
+    }
     busy = false;
     activeController = null;
     els.stop.hidden = true;
@@ -21696,6 +21756,35 @@ ${current}`;
   autoGrow();
   saveDraft();
 }
+
+function restoreInflightQuestion() {
+  // 流式会诊期间刷新/被系统回收：服务端取消后问答不落库，把未完成
+  // 的主诉恢复到输入框，避免整段描述丢失
+  let raw = null;
+  try {
+    raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (!raw) return;
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    const data = JSON.parse(raw);
+    const question = String((data && data.question) || '').trim();
+    const owner = String((data && data.sessionId) || '');
+    if (!question) return;
+    // 其它标签页/其它会话的问题不填进本页
+    if (owner && sessionId && owner !== sessionId) return;
+    if (els.input.value.trim()) return;
+    restoreComposer(question);
+    setVitals('warn', '上次会诊未完成，主诉已恢复到输入框');
+  } catch {
+    // 数据损坏/隐私模式：忽略
+  }
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!busy) return;
+  // 会诊进行中离开页面会中断生成：让浏览器弹出确认
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 function loadDraft() {
   try {
@@ -23483,6 +23572,7 @@ initTheme();
 renderEcg();
 loadSavedContext();
 loadDraft();
+restoreInflightQuestion();
 initProfiles().finally(() => {
   restoreCurrentSession();
   handleLaunchAction();

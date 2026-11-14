@@ -2166,6 +2166,59 @@ def _forwarded_client_address(request: Request) -> str:
     return first
 
 
+def _forwarded_appended_address(request: Request) -> str:
+    """代理追加写入的最右地址（客户端不可控制的部分）。
+
+    仅用于令牌失败预锁定：最右项必须是可解析、非信任跳的 IP，说明
+    它是最后一跳代理写入的真实客户端地址（单跳 $remote_addr 覆盖或
+    append 场景），客户端无法伪造。多级本机代理会把信任跳追加在最右，
+    更左项可能来自客户端，此时返回空串，不用于预锁定。
+    """
+    allowed_source = _allowed_proxy_address_source()
+    if allowed_source == "none":
+        return ""
+    trusted_peers = _trusted_proxy_peers()
+
+    def _usable(candidate: str) -> str:
+        if (
+            candidate
+            and not _is_loopback_address(candidate)
+            and candidate not in trusted_peers
+        ):
+            return candidate
+        return ""
+
+    if allowed_source in ("", "x-forwarded-for"):
+        forwarded_for = ",".join(
+            _proxy_header_values(request, "x-forwarded-for")
+        ).strip()
+        if forwarded_for:
+            parts = [
+                part.strip()
+                for part in forwarded_for.split(",")
+                if part.strip()
+            ]
+            if parts:
+                return _usable(_normalize_forwarded_address(parts[-1]))
+    if allowed_source in ("", "x-real-ip"):
+        real_values = _proxy_header_values(request, "x-real-ip")
+        if real_values:
+            if len(set(real_values)) > 1:
+                return ""
+            return _usable(
+                _normalize_forwarded_address(real_values[-1])
+            )
+    if allowed_source in ("", "forwarded"):
+        header = ",".join(
+            _proxy_header_values(request, "forwarded")
+        ).strip()
+        if header:
+            values = _forwarded_for_values(header)
+            if values:
+                return _usable(values[-1] or "")
+    return ""
+
+
 def _is_loopback_address(host: str) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -2453,24 +2506,29 @@ async def require_access_token(request: Request, call_next):
             _is_trusted_proxy_peer(peer_host)
             and _client_ip_key(request) == loopback_bucket_key
         )
-        # 受信代理已解析出真实客户端地址时，键来自客户端可影响的
-        # 转发头：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
-        # 把正确令牌用户锁死）。这类请求的失败仍会按地址计数并在
-        # 失败路径 429，共享回环桶也继续累计错误尝试
+        # 受信代理已解析出真实客户端地址时，键可能来自客户端可影响的
+        # 更左转发项：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
+        # 把正确令牌用户锁死）。只有代理追加写入的最右地址可用于预锁定
         forwarded_resolved = bool(
             _trust_proxy_headers()
             and _is_trusted_proxy_peer(peer_host)
             and _forwarded_client_address(request)
+        )
+        appended_address = (
+            _forwarded_appended_address(request)
+            if (
+                _trust_proxy_headers()
+                and _is_trusted_proxy_peer(peer_host)
+            )
+            else ""
         )
         if (
             not _is_loopback_client(request)
             and not shared_bucket
             and not forwarded_resolved
         ):
-            # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
-            # 降低猜测速率（而不是只把 401 改成 429）。
-            # 拿不到真实客户端地址（只有 X-Forwarded-Proto 等）时所有
-            # 用户共用一个键，不能因某个人的错误尝试把全家 429
+            # 直连远程来源：前置检查已锁定的来源不再执行令牌比较，
+            # 限流才真正降低猜测速率（而不是只把 401 改成 429）
             blocked, retry_after = auth_failure_limiter.is_blocked(
                 _client_ip_key(request)
             )
@@ -2488,6 +2546,37 @@ async def require_access_token(request: Request, call_next):
                         )
                     },
                 ))
+        elif appended_address:
+            # 受信代理追加写入的真实客户端地址：预锁定其自身桶，
+            # 命中后不再逐次比较令牌，在线猜解被真正降速
+            blocked, retry_after = auth_failure_limiter.is_blocked(
+                f"ip:{appended_address}"
+            )
+            if blocked:
+                return add_security_headers(JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "code": "auth_rate_limited",
+                        "retry_after": round(retry_after, 1),
+                    },
+                    headers={
+                        "Retry-After": str(
+                            max(1, math.ceil(retry_after))
+                        )
+                    },
+                ))
+        else:
+            # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
+            # 预锁定共享键，否则任何人的错误尝试都会误锁全家；持续
+            # 失败时给每次请求加固定延迟，限制比较速率而不拒绝正确令牌
+            shared_hot, _shared_retry = (
+                auth_failure_limiter_loopback.is_blocked(
+                    loopback_bucket_key
+                )
+            )
+            if shared_hot:
+                await asyncio.sleep(0.2)
         if not is_authorized(request):
             loopback_source = _is_loopback_client(request)
             limiter = (
@@ -4971,44 +5060,56 @@ async def create_appointment_reminder(appointment_id: SafeIntPath):
     from memory import get_session_store
 
     store = get_session_store()
-    item = await asyncio.to_thread(store.get_appointment, appointment_id)
-    if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    if item.get("status") != "upcoming":
-        raise HTTPException(status_code=400, detail="只能为待就诊预约创建提醒")
-    scheduled = str(item.get("scheduled_at") or "")
-    try:
-        scheduled_dt = datetime.fromisoformat(scheduled)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="就诊时间格式不正确")
-    today = datetime.now().date()
-    try:
-        reminder_date = scheduled_dt.date() - timedelta(days=1)
-    except OverflowError:
-        reminder_date = today
-    due_at = max(reminder_date, today).strftime("%Y-%m-%d")
-    title = f"就诊：{item.get('title') or '就诊'}"[:120]
-    detail_parts = [
-        scheduled.replace("T", " ")[:16],
-        item.get("department") or "",
-        item.get("doctor") or "",
-        item.get("location") or "",
-    ]
-    note = " ".join(part for part in detail_parts if part)[:300]
 
-    reminder, created = await asyncio.to_thread(
-        store.ensure_reminder,
-        title,
-        due_at,
-        note,
-        "",
-        item.get("profile") or "",
-        0,
-        0,
-        0,
-        int(appointment_id),
-        False,
-    )
+    def _create_locked():
+        # 与取消/改期/删除预约共用排程锁：否则状态校验通过后、提醒插入
+        # 前预约可能已被取消，留下挂在已取消预约上的待办提醒
+        with _VISIT_FOLLOWUP_LOCK:
+            item = store.get_appointment(appointment_id)
+            if item is None:
+                return "missing", None, False
+            if item.get("status") != "upcoming":
+                return "status", None, False
+            scheduled = str(item.get("scheduled_at") or "")
+            try:
+                scheduled_dt = datetime.fromisoformat(scheduled)
+            except ValueError:
+                return "bad_date", None, False
+            today = datetime.now().date()
+            try:
+                reminder_date = scheduled_dt.date() - timedelta(days=1)
+            except OverflowError:
+                reminder_date = today
+            due_at = max(reminder_date, today).strftime("%Y-%m-%d")
+            title = f"就诊：{item.get('title') or '就诊'}"[:120]
+            detail_parts = [
+                scheduled.replace("T", " ")[:16],
+                item.get("department") or "",
+                item.get("doctor") or "",
+                item.get("location") or "",
+            ]
+            note = " ".join(part for part in detail_parts if part)[:300]
+            reminder, created = store.ensure_reminder(
+                title,
+                due_at,
+                note,
+                "",
+                item.get("profile") or "",
+                0,
+                0,
+                0,
+                int(appointment_id),
+                False,
+            )
+            return "ok", reminder, created
+
+    state, reminder, created = await asyncio.to_thread(_create_locked)
+    if state == "missing":
+        raise HTTPException(status_code=404, detail="记录不存在")
+    if state == "status":
+        raise HTTPException(status_code=400, detail="只能为待就诊预约创建提醒")
+    if state == "bad_date":
+        raise HTTPException(status_code=400, detail="就诊时间格式不正确")
     if reminder is None:
         raise HTTPException(status_code=400, detail="提醒日期格式不正确")
     if created:
@@ -7232,6 +7333,7 @@ async def _weekly_report_impl(
     ]
     severe_items = []
     seen_severe = set()
+    family_severe_scope = profile is None
     for item in sorted(
         symptoms,
         key=lambda row: (
@@ -7241,9 +7343,13 @@ async def _weekly_report_impl(
     ):
         severity = int(item.get("severity") or 0)
         name = str(item.get("symptom") or "")
-        if severity < 7 or not name or name in seen_severe:
+        dedupe_key = (
+            (str(item.get("profile") or ""), name)
+            if family_severe_scope else name
+        )
+        if severity < 7 or not name or dedupe_key in seen_severe:
             continue
-        seen_severe.add(name)
+        seen_severe.add(dedupe_key)
         severe_items.append({
             "symptom": name,
             "severity": severity,
@@ -18076,6 +18182,11 @@ def main():
         help="未设置访问令牌时仍允许绑定非本机地址（仅限完全可信的内网）",
     )
     args = parser.parse_args()
+
+    if args.allow_insecure_lan:
+        # 请求中间件只读环境变量：命令行开关必须同步写入，否则绑定
+        # 放行后所有非本机请求仍会被 403 insecure_lan_rejected
+        os.environ[INSECURE_LAN_ENV] = "1"
 
     if not str(args.host or "").strip():
         parser.error("--host 不能为空")

@@ -574,8 +574,10 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?:多)?(?:前|以来)?)?"
     r"\s*(?:我|本人|现在|目前)?\s*"
     r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
-    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停掉|已停)"
-    r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗))"
+    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停掉|已停"
+    # 药名后的完成体否定同样是停药：「华法林我不吃了」
+    r"|不吃了|不再吃了|不用吃了)"
+    r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
 )
 #: 「想/打算/准备停用华法林」是意图，当前仍在用药
 _INTENT_STOP_PREFIX = re.compile(
@@ -645,6 +647,22 @@ _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
     r"(?:stopped|discontinued)\s+"
     r"(?:(?:\d+\s*)?(?:days?|weeks?)\s+ago|yesterday|today)",
+    re.IGNORECASE,
+)
+#: 英文药名前的停药表述：「I stopped warfarin two years ago」
+_STOPPED_USE_PREFIX_EN = re.compile(
+    r"(?:i\s+|he\s+|she\s+|they\s+|patient\s+)?"
+    r"(?:have\s+|had\s+|has\s+)?"
+    r"(?:stopped|discontinued|quit|ceased)\s+"
+    r"(?:taking\s+|using\s+)?$"
+    r"|(?:i\s+am\s+|i'm\s+)?off\s+$",
+    re.IGNORECASE,
+)
+#: 英文近期停药（天/周内）仍有抗凝作用：按当前用药处理
+_RECENT_STOP_CONTEXT_EN = re.compile(
+    r"(?:stopped|discontinued)\s+(?:\w+\s+){0,2}"
+    r"(?:(?:\d+|a|an|one|two|three|few)\s+)?(?:days?|weeks?)\s+ago"
+    r"|(?:stopped|discontinued)\s+(?:\w+\s+){0,2}(?:yesterday|today)",
     re.IGNORECASE,
 )
 #: 英文明确未用药：「I do not take warfarin」
@@ -733,6 +751,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _RECENT_STOP_SUFFIX.search(suffix)
                 or _RECENT_STOP_SUFFIX_EN.search(suffix)
                 or _RECENT_STOP_CONTEXT.search(prefix + suffix)
+                or _RECENT_STOP_CONTEXT_EN.search(prefix + suffix)
             ):
                 return True
             if (
@@ -740,6 +759,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
                 or _STOPPED_USE_SUFFIX.search(suffix)
                 or _STOPPED_USE_SUFFIX_EN.search(suffix)
+                or _STOPPED_USE_PREFIX_EN.search(prefix)
                 or _NEGATED_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX_EN.search(prefix)
