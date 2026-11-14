@@ -417,6 +417,8 @@ def test_non_loopback_proxy_uses_shared_bucket(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "get_session_store", lambda: session_store)
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", token)
     monkeypatch.delenv("MEDIX_TRUST_PROXY_HEADERS", raising=False)
+    # 非 loopback 反代必须显式声明对端地址，才被视为共享代理桶
+    monkeypatch.setenv("MEDIX_TRUSTED_PROXY_ADDRS", "172.18.0.2")
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
@@ -585,9 +587,7 @@ def test_frontend_round42_guards():
     ]
     assert "reassignDraftToCurrentSession();" in start_block
 
-    # 跨标签页待重置标记只在独立 PWA 重开时采信
-    pending_block = app_js[
-        app_js.index("const pendingFor = safeSessionGet(PENDING_RESET_KEY);"):
-        app_js.index("let busy = false;")
-    ]
-    assert "display-mode: standalone" in pending_block
+    # 待重置标记不再写入跨标签页共享的 localStorage：只保留本标签页
+    # sessionStorage 标记，并失效共享会话指针避免冷启动恢复旧档案
+    assert "safeStorageSet(pendingResetStorageKey(sessionId), '1')" not in app_js
+    assert "safeStorageRemove('medix.session')" in app_js

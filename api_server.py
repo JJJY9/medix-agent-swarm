@@ -1906,11 +1906,12 @@ def _proxy_header_values(request: Request, name: str) -> List[str]:
 
 
 def _has_forwarded_address_header(request: Request) -> bool:
-    """请求是否带了「可采信」的客户端地址类代理头。
+    """请求是否带了部署声明的客户端地址类代理头。
 
-    与 _forwarded_client_address 同源：MEDIX_PROXY_CLIENT_IP_HEADER=none
-    时不采信任何客户端自带地址头（返回 False，回到共享限流桶）；指定
-    具体头时只认该头，unknown/空 for 等归一化后为空的值视为无地址。
+    与 _forwarded_client_address 配合：MEDIX_PROXY_CLIENT_IP_HEADER=none
+    时一律返回 False（不采信客户端自带地址头，回到共享限流桶）；声明
+    了具体头时，只要该头部出现非空值就算「有地址头」——值本身解析
+    失败（unknown/矛盾）时按 fail closed 预锁定，不能变成免限流。
     """
     source = _allowed_proxy_address_source()
     if source == "none":
@@ -1921,10 +1922,7 @@ def _has_forwarded_address_header(request: Request) -> bool:
     )
     for name in names:
         for value in _proxy_header_values(request, name):
-            if name == "forwarded":
-                if _parse_forwarded_header(value):
-                    return True
-            elif _normalize_forwarded_address(value):
+            if str(value).strip():
                 return True
     return False
 
@@ -1948,6 +1946,22 @@ def _has_proxy_headers(request: Request) -> bool:
 
 def _trust_proxy_headers() -> bool:
     return (os.getenv("MEDIX_TRUST_PROXY_HEADERS") or "").strip() == "1"
+
+
+def _trusted_proxy_peers() -> set:
+    """显式声明的受信反向代理对端地址（非 loopback 反代需配置）。"""
+    return {
+        value.strip()
+        for value in os.getenv(
+            "MEDIX_TRUSTED_PROXY_ADDRS", ""
+        ).split(",")
+        if value.strip()
+    }
+
+
+def _is_trusted_proxy_peer(host: str) -> bool:
+    """TCP 对端是否可证明是本机/显式声明的反向代理。"""
+    return _is_loopback_address(host) or host in _trusted_proxy_peers()
 
 
 def _normalize_forwarded_address(value: str) -> str:
@@ -2409,12 +2423,15 @@ async def require_access_token(request: Request, call_next):
     ):
         _warn_if_short_access_token()
         peer_host = request.client.host if request.client else ""
-        # 只有真正按客户端地址分桶时才做按来源的预锁定；拿不到
-        # 可用地址（无地址头、未声明头名、非 loopback 代理等）时
-        # 所有客户端共用一个键，不能因某个人的错误尝试把全家 429
+        # 共享桶 = 可证明的代理对端（loopback 或显式声明的代理地址）
+        # + 请求没带可用的地址头：此时所有用户共用一个键，不能因
+        # 某个人的错误尝试把全家 429。直连远程客户端伪造
+        # X-Forwarded-* 不满足对端条件，仍按自身地址预锁定；声明了
+        # 地址头却解析失败（unknown/矛盾）同样继续预锁定
         shared_bucket = (
-            _has_proxy_headers(request)
-            and _client_ip_key(request) == f"ip:{peer_host or 'unknown'}"
+            _is_trusted_proxy_peer(peer_host)
+            and _has_proxy_headers(request)
+            and not _has_forwarded_address_header(request)
         )
         if not _is_loopback_client(request) and not shared_bucket:
             # 前置检查：已锁定的来源不再执行令牌比较，限流才真正
@@ -4788,13 +4805,17 @@ async def update_appointment(
     from memory import get_session_store
 
     store = get_session_store()
-    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖
+    payload = _patch_payload(request)
+    # 读-改-写放在存储层事务内完成，避免两个标签页同时编辑时互相覆盖；
+    # 与「安排复诊」共用锁，避免链接写回与取消/删除交错
+    def _locked_update():
+        with _VISIT_FOLLOWUP_LOCK:
+            return store.update_appointment_partial(
+                appointment_id, **payload
+            )
+
     try:
-        item = await asyncio.to_thread(
-            store.update_appointment_partial,
-            appointment_id,
-            **_patch_payload(request),
-        )
+        item = await asyncio.to_thread(_locked_update)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if item is None:
@@ -4809,12 +4830,14 @@ async def delete_appointment(appointment_id: SafeIntPath):
     from memory import get_session_store
 
     store = get_session_store()
-    item = await asyncio.to_thread(
-        store.get_appointment, appointment_id
-    )
-    if item is None:
-        raise HTTPException(status_code=404, detail="记录不存在")
-    ok = await asyncio.to_thread(store.delete_appointment, appointment_id)
+
+    def _locked_delete():
+        with _VISIT_FOLLOWUP_LOCK:
+            if store.get_appointment(appointment_id) is None:
+                return False
+            return store.delete_appointment(appointment_id)
+
+    ok = await asyncio.to_thread(_locked_delete)
     if not ok:
         raise HTTPException(status_code=404, detail="记录不存在")
     await record_audit("appointment.delete", str(appointment_id))
@@ -10045,116 +10068,158 @@ async def health_bp_monitoring(
         if start_key <= str(item.get("measured_at") or "")[:10] <= end_key
     ]
 
-    slots: Dict[str, set] = {}
-    per_day_counts: Dict[str, int] = {}
-    morning: List[Tuple[float, float]] = []
-    evening: List[Tuple[float, float]] = []
-    all_values: List[Tuple[float, float]] = []
-    unlabeled = 0
-    for item in records:
-        day = str(item.get("measured_at") or "")[:10]
-        try:
-            systolic = float(item.get("value1"))
-            raw_diastolic = item.get("value2")
-            diastolic = (
-                float(raw_diastolic)
-                if raw_diastolic is not None else 0.0
-            )
-        except (TypeError, ValueError, OverflowError):
-            continue
-        per_day_counts[day] = per_day_counts.get(day, 0) + 1
-        all_values.append((systolic, diastolic))
-        context = str(item.get("context") or "").strip().lower()
-        if context == "morning":
-            morning.append((systolic, diastolic))
-            slots.setdefault(day, set()).add("morning")
-        elif context == "evening":
-            evening.append((systolic, diastolic))
-            slots.setdefault(day, set()).add("evening")
-        else:
-            unlabeled += 1
+    def _analyze(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        slots: Dict[str, set] = {}
+        per_day_counts: Dict[str, int] = {}
+        morning: List[Tuple[float, float]] = []
+        evening: List[Tuple[float, float]] = []
+        all_values: List[Tuple[float, float]] = []
+        unlabeled = 0
+        for item in rows:
+            day = str(item.get("measured_at") or "")[:10]
+            try:
+                systolic = float(item.get("value1"))
+                raw_diastolic = item.get("value2")
+                diastolic = (
+                    float(raw_diastolic)
+                    if raw_diastolic is not None else 0.0
+                )
+            except (TypeError, ValueError, OverflowError):
+                continue
+            per_day_counts[day] = per_day_counts.get(day, 0) + 1
+            all_values.append((systolic, diastolic))
+            context = str(item.get("context") or "").strip().lower()
+            if context == "morning":
+                morning.append((systolic, diastolic))
+                slots.setdefault(day, set()).add("morning")
+            elif context == "evening":
+                evening.append((systolic, diastolic))
+                slots.setdefault(day, set()).add("evening")
+            else:
+                unlabeled += 1
 
-    labels = {"morning": "晨起", "evening": "睡前"}
-    daily: List[Dict[str, Any]] = []
-    missing: List[Dict[str, Any]] = []
-    completed_slots = 0
-    expected_slots = 0
-    current = start_date
-    while current <= end_date:
-        key = current.isoformat()
-        done = slots.get(key, set())
-        expected_slots += 2
-        completed_slots += len(done)
-        missing_contexts = [
-            context for context in ("morning", "evening")
-            if context not in done
-        ]
-        daily.append({
-            "date": key,
-            "morning": "morning" in done,
-            "evening": "evening" in done,
-            "readings": per_day_counts.get(key, 0),
-        })
-        if missing_contexts:
-            missing.append({
+        labels = {"morning": "晨起", "evening": "睡前"}
+        daily: List[Dict[str, Any]] = []
+        missing: List[Dict[str, Any]] = []
+        completed_slots = 0
+        expected_slots = 0
+        current = start_date
+        while current <= end_date:
+            key = current.isoformat()
+            done = slots.get(key, set())
+            expected_slots += 2
+            completed_slots += len(done)
+            missing_contexts = [
+                context for context in ("morning", "evening")
+                if context not in done
+            ]
+            daily.append({
                 "date": key,
-                "missing": missing_contexts,
-                "labels": [labels[context] for context in missing_contexts],
+                "morning": "morning" in done,
+                "evening": "evening" in done,
+                "readings": per_day_counts.get(key, 0),
             })
-        current += timedelta(days=1)
+            if missing_contexts:
+                missing.append({
+                    "date": key,
+                    "missing": missing_contexts,
+                    "labels": [
+                        labels[context] for context in missing_contexts
+                    ],
+                })
+            current += timedelta(days=1)
 
-    def _average(rows: List[Tuple[float, float]]) -> Dict[str, Any]:
-        if not rows:
+        def _average(rows_in: List[Tuple[float, float]]) -> Dict[str, Any]:
+            if not rows_in:
+                return {
+                    "count": 0,
+                    "avg_systolic": None,
+                    "avg_diastolic": None,
+                }
             return {
-                "count": 0,
-                "avg_systolic": None,
-                "avg_diastolic": None,
+                "count": len(rows_in),
+                "avg_systolic": round(
+                    sum(row[0] for row in rows_in) / len(rows_in), 1
+                ),
+                "avg_diastolic": round(
+                    sum(row[1] for row in rows_in) / len(rows_in), 1
+                ),
             }
+
+        diff = None
+        if morning and evening:
+            raw_morning = sum(row[0] for row in morning) / len(morning)
+            raw_evening = sum(row[0] for row in evening) / len(evening)
+            diff = round(raw_morning - raw_evening + 1e-9, 1)
         return {
-            "count": len(rows),
-            "avg_systolic": round(
-                sum(row[0] for row in rows) / len(rows), 1
+            "expected_slots": expected_slots,
+            "completed_slots": completed_slots,
+            "completion_rate": (
+                round(
+                    completed_slots / expected_slots * 100 + 1e-9
+                )
+                if expected_slots else 0
             ),
-            "avg_diastolic": round(
-                sum(row[1] for row in rows) / len(rows), 1
+            "days_completed": sum(
+                1 for row in daily
+                if row["morning"] and row["evening"]
             ),
+            "readings": len(rows),
+            "unlabeled": unlabeled,
+            "average": _average(all_values),
+            "morning": _average(morning),
+            "evening": _average(evening),
+            "morning_evening_systolic_diff": diff,
+            "daily": daily,
+            "missing": missing,
         }
 
-    overall = _average(all_values)
-    morning_stats = _average(morning)
-    evening_stats = _average(evening)
-    diff = None
-    if morning and evening:
-        raw_morning = sum(row[0] for row in morning) / len(morning)
-        raw_evening = sum(row[0] for row in evening) / len(evening)
-        diff = round(raw_morning - raw_evening + 1e-9, 1)
-    return {
+    analysis = _analyze(records)
+    result: Dict[str, Any] = {
         "profile": profile or "",
         "start": start_key,
         "end": end_key,
         "days": days,
         "planned_end": planned_end.isoformat(),
         "is_future_plan": planned_end > today,
-        "expected_slots": expected_slots,
-        "completed_slots": completed_slots,
-        "completion_rate": (
-            round(
-                completed_slots / expected_slots * 100 + 1e-9
-            )
-            if expected_slots else 0
-        ),
-        "days_completed": sum(
-            1 for row in daily if row["morning"] and row["evening"]
-        ),
-        "readings": len(records),
-        "unlabeled": unlabeled,
-        "average": overall,
-        "morning": morning_stats,
-        "evening": evening_stats,
-        "morning_evening_systolic_diff": diff,
-        "daily": daily,
-        "missing": missing,
+        **analysis,
     }
+    if profile is None:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in records:
+            grouped.setdefault(
+                str(item.get("profile") or ""), []
+            ).append(item)
+        members = []
+        for member_key in sorted(grouped):
+            stats = _analyze(grouped[member_key])
+            members.append({
+                "profile": member_key,
+                "display_name": member_key or "未指定档案",
+                "readings": stats["readings"],
+                "completed_slots": stats["completed_slots"],
+                "expected_slots": stats["expected_slots"],
+                "completion_rate": stats["completion_rate"],
+                "days_completed": stats["days_completed"],
+                "average": stats["average"],
+                "morning": stats["morning"],
+                "evening": stats["evening"],
+                "morning_evening_systolic_diff": stats[
+                    "morning_evening_systolic_diff"
+                ],
+            })
+        result["members"] = members
+        if len(members) > 1:
+            # 家庭范围按成员分别判定：不能把一位成员的晨起收缩压
+            # 减去另一位成员的睡前收缩压
+            result["morning"] = {
+                "count": 0, "avg_systolic": None, "avg_diastolic": None,
+            }
+            result["evening"] = {
+                "count": 0, "avg_systolic": None, "avg_diastolic": None,
+            }
+            result["morning_evening_systolic_diff"] = None
+    return result
 
 
 @app.get("/api/health/calendar")
@@ -10908,6 +10973,16 @@ async def delete_profile(name: str):
     from memory.session_store import _normalize_profile_name
 
     store = get_session_store()
+    # 删除前先收集该档案的会话 ID：旧版本把摘要写进共享命名空间
+    # （medix_user/medix_local/medix_session_<原始ID>），只有按会话
+    # 精确删除才能兑现「删除档案时清理长期记忆」的承诺
+    profile_sessions = await asyncio.to_thread(
+        store.list_sessions, 100000, "", 0, False, 0, None, None, name
+    )
+    profile_session_ids = [
+        str(item.get("id") or "") for item in profile_sessions
+        if item.get("id")
+    ]
     ok = await asyncio.to_thread(store.delete_profile, name)
     if not ok:
         raise HTTPException(status_code=404, detail="档案不存在")
@@ -10924,7 +10999,9 @@ async def delete_profile(name: str):
             _PROFILE_CLAIMS.pop(session_key, None)
     # 档案作用域是档案名的哈希；删除档案必须清空对应命名空间，
     # 否则重建同名档案会召回旧患者的病史对话
-    cleanup_entries = [(name, "")]
+    cleanup_entries = [(name, "")] + [
+        (name, session_id) for session_id in profile_session_ids
+    ]
     await asyncio.to_thread(
         store.queue_memory_cleanup, cleanup_entries
     )
@@ -10959,6 +11036,17 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     from memory import get_session_store
     from memory.session_store import _normalize_profile_name
 
+    # 改名会把这些会话的 profile 迁到新名字：旧版共享命名空间里的
+    # 摘要只能按会话 ID 精确清理，先收集 ID
+    renaming_store = get_session_store()
+    old_profile_sessions = await asyncio.to_thread(
+        renaming_store.list_sessions,
+        100000, "", 0, False, 0, None, None, name,
+    )
+    old_profile_session_ids = [
+        str(item.get("id") or "") for item in old_profile_sessions
+        if item.get("id")
+    ]
     try:
         new_name = await asyncio.to_thread(
             get_session_store().rename_profile, name, request.new_name
@@ -10970,7 +11058,10 @@ async def rename_profile(name: str, request: ProfileRenameRequest):
     # 路径里的旧名称可能含多余空格；只有规范化后确实改名才清理旧命名空间
     if new_name != _normalize_profile_name(name):
         # 旧命名空间无法原地改名；删除它，避免旧患者病史在新名字下被召回
-        cleanup_entries = [(name, "")]
+        cleanup_entries = [(name, "")] + [
+            (name, session_id)
+            for session_id in old_profile_session_ids
+        ]
         await asyncio.to_thread(
             get_session_store().queue_memory_cleanup,
             cleanup_entries,

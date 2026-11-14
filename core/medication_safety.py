@@ -594,13 +594,41 @@ _NEGATED_STOP_SUFFIX = re.compile(
     r"^[^，。；,.!?！？\n]{0,4}(?:不能|不可|不宜|不让|不应|不要|别|"
     r"未|没有|没)\s*(?:停用|停药|停服|停止服用)"
 )
-#: 既往用药：「我以前吃阿司匹林」「以前吃过华法林」「十年前用过」
+#: 既往用药：「我以前吃阿司匹林」「以前吃过华法林」「十年前用过」。
+#: 数字时长分支必须带完成体（过/了），「两年前开始吃」仍是当前用药
 _PAST_USE_PREFIX = re.compile(
-    r"(?:以前|之前|曾经|曾|既往|过去|"
-    r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)前)"
+    r"(?:以前|之前|曾经|曾|既往|过去)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)"
     r"(?:过|了|过几次|过几次了)?\s*(?:的)?\s*$"
+    r"|[0-9一二两三四五六七八九十半几]+\s*(?:天|周|个月|月|年)前"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)"
+    r"(?:过|了|过几次|过几次了)\s*(?:的)?\s*$"
+)
+#: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理
+_RECENT_STOP_PREFIX = re.compile(
+    r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
+    r"[^，。；,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
+    r"(?:停用|停药|停了|停服|停止服用)\s*$"
+)
+_RECENT_STOP_SUFFIX = re.compile(
+    r"^\s*(?:停用|停药|停了|停服|停止服用)"
+    r"[^，。；,.!?！？\n]{0,4}"
+    r"(?:今天|昨天|前天|几天|几天前|一周|两周|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周))"
+)
+_RECENT_STOP_PREFIX_EN = re.compile(
+    r"(?:just|recently|yesterday|today)\s+"
+    r"(?:stopped|discontinued)\s*$",
+    re.IGNORECASE,
+)
+_RECENT_STOP_SUFFIX_EN = re.compile(
+    r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
+    r"(?:stopped|discontinued)"
+    r"[^.!?]{0,12}(?:ago|days?|weeks?)",
+    re.IGNORECASE,
 )
 #: 持续用药：「过去半年每天吃」「既往长期服用」不是既往用药
 _CONTINUOUS_USE_PREFIX = re.compile(
@@ -674,6 +702,10 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
                 or _RESTART_USE_SUFFIX.search(suffix)
                 or _RESTART_USE_SUFFIX_EN.search(suffix)
+                or _RECENT_STOP_PREFIX.search(prefix)
+                or _RECENT_STOP_PREFIX_EN.search(prefix)
+                or _RECENT_STOP_SUFFIX.search(suffix)
+                or _RECENT_STOP_SUFFIX_EN.search(suffix)
             ):
                 return True
             if (
@@ -705,6 +737,8 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
             or _RESTART_USE_SUFFIX.search(long_suffix)
+            or _RECENT_STOP_PREFIX.search(prefix)
+            or _RECENT_STOP_SUFFIX.search(suffix)
         ):
             return True
         if (

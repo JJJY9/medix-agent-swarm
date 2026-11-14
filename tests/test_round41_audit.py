@@ -533,7 +533,9 @@ def test_proxy_address_source_defaults_to_fail_closed(monkeypatch):
     assert api_server._has_forwarded_address_header(request) is False
     unknown = FakeRequest({"x-forwarded-for": "unknown"})
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
-    assert api_server._has_forwarded_address_header(unknown) is False
+    # 声明了地址头但值不可解析：仍算「有地址头」，按 fail closed
+    # 继续预锁定，而不是退回免限流的共享桶
+    assert api_server._has_forwarded_address_header(unknown) is True
 
 
 def test_forwarded_header_skips_loopback_trust_hop(monkeypatch):
