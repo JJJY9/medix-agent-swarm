@@ -3953,7 +3953,7 @@ class SessionStore:
         if since_day:
             day_clause = " AND substr(m.created_at, 1, 10) >= ?"
             params.append(str(since_day)[:10])
-        limit = max(1, min(int(per_profile or 50), 100))
+        limit = max(1, min(int(per_profile or 200), 500))
         sql = f"""
             WITH ranked AS (
                 SELECT s.profile AS profile,
@@ -5173,8 +5173,14 @@ class SessionStore:
             )
             if fingerprint == current:
                 return False
+            current_created = str(created_at_value or "")
             return any(
-                other_id != raw_id and contents == fingerprint
+                other_id != raw_id
+                and contents == fingerprint
+                and (
+                    not backup_created
+                    or backup_created.get(other_id) == current_created
+                )
                 for other_id, contents in backup_contents.items()
             )
 
@@ -5630,6 +5636,7 @@ class SessionStore:
                     if (
                         backup_group_size <= 1
                         and len(candidates) == 1
+                        and not _content_owned_by_other(min(candidates))
                         and (
                             _same_backup_origin()
                             or _candidate_edited(min(candidates))
@@ -5764,7 +5771,14 @@ class SessionStore:
             ):
                 values.append(f"{float(value):.10g}")
             else:
-                values.append(" ".join(str(value).split()))
+                text = " ".join(str(value).split())
+                try:
+                    # IFNULL 默认值是字符串形式的数字（如 -1e308）：
+                    # 必须与 DB 侧 float 格式化口径一致
+                    text = f"{float(text):.10g}"
+                except ValueError:
+                    pass
+                values.append(text)
         return tuple(values)
 
     @staticmethod
@@ -7781,6 +7795,9 @@ class SessionStore:
 
             visit_records_imported = 0
             visit_link_updates: List[Tuple[int, int, int, int, bool]] = []
+            #: 备份原始就诊 id → 本地就诊 id（含判重命中的行），用于
+            #: 重写预约备注里的「由就诊记录 #N 自动创建」标记
+            visit_raw_local_map: Dict[int, int] = {}
             visit_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_visit_records, list):
                 visit_pre_ids = self._existing_ids_locked("visit_records")
@@ -7942,6 +7959,11 @@ class SessionStore:
                         # 本地已有该就诊：仍要记录 id 映射，供预约备注
                         # 归属标记改写与缺失的复诊链接回填
                         existing_visit_id = _safe_db_id(duplicate["id"])
+                        raw_visit_key = _safe_db_id(raw.get("id"))
+                        if raw_visit_key and existing_visit_id:
+                            visit_raw_local_map[raw_visit_key] = (
+                                existing_visit_id
+                            )
                         if existing_visit_id and (
                             mapped_followup_appointment_id
                             or raw_followup_reminder
@@ -7981,6 +8003,9 @@ class SessionStore:
                         ),
                     )
                     new_visit_id = int(cursor.lastrowid or 0)
+                    raw_visit_key = _safe_db_id(raw.get("id"))
+                    if raw_visit_key and new_visit_id:
+                        visit_raw_local_map[raw_visit_key] = new_visit_id
                     if new_visit_id and (
                         mapped_followup_appointment_id
                         or raw_followup_reminder
@@ -8128,6 +8153,38 @@ class SessionStore:
                         ),
                     )
                     conditions_imported += 1
+
+            if visit_raw_local_map:
+                # 预约的备注标记可能在备份就诊没有复诊链接时留下旧库
+                # 就诊 id：无条件按映射重写，映射不到则移除片段，
+                # 避免改期时命中目标库同号无关就诊
+                marker_rows = self._conn.execute(
+                    "SELECT id, note FROM appointments"
+                    " WHERE note LIKE '%由就诊记录 #%'"
+                ).fetchall()
+                marker_pattern = re.compile(
+                    r"由就诊记录 #(\d+) 自动创建"
+                )
+
+                def _remap_visit_marker(match) -> str:
+                    raw_visit = _safe_db_id(match.group(1))
+                    local_visit = visit_raw_local_map.get(raw_visit)
+                    return (
+                        f"由就诊记录 #{local_visit} 自动创建"
+                        if local_visit else ""
+                    )
+
+                for marker_row in marker_rows:
+                    note_text = str(marker_row["note"] or "")
+                    new_note = marker_pattern.sub(
+                        _remap_visit_marker, note_text
+                    ).strip()
+                    if new_note != note_text:
+                        self._conn.execute(
+                            "UPDATE appointments SET note = ?,"
+                            " updated_at = ? WHERE id = ?",
+                            (new_note[:300], now, int(marker_row["id"])),
+                        )
 
             reminders_imported = 0
             imported_reminder_ids: set = set()
@@ -8471,14 +8528,14 @@ class SessionStore:
                 if not followup_appointment_id and not followup_reminder_id:
                     continue
                 visit_row = self._conn.execute(
-                    "SELECT followup_appointment_id,"
+                    "SELECT profile, followup_appointment_id,"
                     " next_followup_date FROM visit_records"
                     " WHERE id = ?",
                     (int(visit_id),),
                 ).fetchone()
                 appt_row = (
                     self._conn.execute(
-                        "SELECT status, scheduled_at"
+                        "SELECT profile, status, scheduled_at"
                         " FROM appointments WHERE id = ?",
                         (int(followup_appointment_id),),
                     ).fetchone()
@@ -8502,6 +8559,12 @@ class SessionStore:
                         and visit_followup_date
                         and str(appt_row["scheduled_at"] or "")[:10]
                         == visit_followup_date[:10]
+                        and _normalize_profile_name(
+                            str(appt_row["profile"] or "")
+                        ) == _normalize_profile_name(
+                            str(visit_row["profile"] or "")
+                            if visit_row is not None else ""
+                        )
                     )
                 if visit_is_new:
                     apply_links = bool(
@@ -10301,7 +10364,7 @@ class SessionStore:
                     if visit_target:
                         # 复诊日期在取消期间被改过时不能把链接挂回旧日期
                         # 的预约，否则后续“安排复诊”会误报已安排
-                        self._conn.execute(
+                        link_cursor = self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_appointment_id = ?,"
                             " followup_reminder_id = ?, updated_at = ?"
@@ -10321,6 +10384,23 @@ class SessionStore:
                                 normalized["scheduled_at"],
                             ),
                         )
+                        if link_cursor.rowcount == 0:
+                            # 就诊复诊日期为空/已变更：链接没有写回，
+                            # 不能继续保留自动归属与备注标记
+                            self._conn.execute(
+                                "UPDATE appointments"
+                                " SET owner_visit_id = 0, note = ?,"
+                                " updated_at = ? WHERE id = ?",
+                                (
+                                    re.sub(
+                                        r"由就诊记录 #\d+ 自动创建",
+                                        "",
+                                        str(previous["note"] or ""),
+                                    ).strip()[:300],
+                                    now,
+                                    int(appointment_id),
+                                ),
+                            )
             # 自动复诊预约被改期后，把新日期同步回就诊记录：否则就诊
             # 仍显示旧日期，再次“安排复诊”会按旧日期新建第二条预约
             if (
@@ -10344,6 +10424,20 @@ class SessionStore:
                     ).fetchone()
                     if linked is not None:
                         visit_target = int(linked["id"])
+                if visit_target:
+                    # 就诊已链接另一条待就诊预约时，本预约的改期不能
+                    # 静默改写该就诊的复诊日期（否则产生错配链接）
+                    link_row = self._conn.execute(
+                        "SELECT followup_appointment_id FROM visit_records"
+                        " WHERE id = ?",
+                        (visit_target,),
+                    ).fetchone()
+                    linked_existing = (
+                        int(link_row["followup_appointment_id"] or 0)
+                        if link_row is not None else 0
+                    )
+                    if linked_existing not in (0, int(appointment_id)):
+                        visit_target = 0
                 if visit_target:
                     self._conn.execute(
                         "UPDATE visit_records"
@@ -14222,6 +14316,29 @@ class SessionStore:
                 "SELECT id FROM appointments WHERE status = 'upcoming')",
                 (reminder_id,),
             )
+            reminder_row = self._conn.execute(
+                "SELECT appointment_id FROM reminders WHERE id = ?",
+                (reminder_id,),
+            ).fetchone()
+            linked_appointment = (
+                int(reminder_row["appointment_id"] or 0)
+                if reminder_row is not None else 0
+            )
+            if linked_appointment:
+                duplicate_pending = self._conn.execute(
+                    "SELECT 1 FROM reminders"
+                    " WHERE appointment_id = ? AND done = 0 AND id != ?"
+                    " LIMIT 1",
+                    (linked_appointment, reminder_id),
+                ).fetchone()
+                if duplicate_pending is not None:
+                    # 该预约已有新的待办（改期重建）：旧提醒恢复为独立
+                    # 提醒，避免同一预约出现两条（其中一条日期过期）
+                    self._conn.execute(
+                        "UPDATE reminders SET appointment_id = 0"
+                        " WHERE id = ?",
+                        (reminder_id,),
+                    )
             rows = self._conn.execute(
                 """
                 WITH RECURSIVE chain(id) AS (

@@ -302,5 +302,6 @@ def test_bulk_requests_are_chunked():
 def test_family_display_prefers_daily_total():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "profile.display_name || profile.name" in app_js
-    assert "${hasDaily ? '今日 ' : ''}" in app_js
+    assert "function familyMetricValue(item)" in app_js
     assert "今日 ${formatStatNumber(item.daily_total)}" in app_js
+    assert "daily_judged_total" in app_js

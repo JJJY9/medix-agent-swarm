@@ -549,6 +549,10 @@ _NEGATED_USE_PREFIX = re.compile(
     r"(?:没有|没吃|没喝|未用|未服|未|否认|并非|无需|不用|不要|避免|不需要|不必|无)"
     r"[^，。；,.!?！？\n]{0,4}$"
 )
+#: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
+_ADHERENCE_USE_PREFIX = re.compile(
+    r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
+)
 #: 「没有停用」「不要停药」表示仍在用药，不能当作未用药
 _NEGATED_STOP_PREFIX = re.compile(
     r"(?:没有|没|未|无|不要|不用|不必|不需要|无需|避免|并非"
@@ -752,6 +756,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
             or _RECENT_STOP_CONTEXT.search(prefix + suffix)
+            or (
+                _ADHERENCE_USE_PREFIX.search(prefix)
+                and _NEGATED_USE_PREFIX.search(prefix)
+            )
         ):
             return True
         if (

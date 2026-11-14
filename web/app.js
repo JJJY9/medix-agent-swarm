@@ -9590,6 +9590,23 @@ function familyContextText(context) {
   return parts.join(' · ');
 }
 
+function familyMetricValue(item) {
+  // 每日累计指标：今日有记录显示今日累计；今天没记录但判定用了
+  // 某日累计时，显示该日累计而不是最新单条读数（两者可能不同）
+  if (item.daily_total !== null && item.daily_total !== undefined) {
+    return `今日 ${formatStatNumber(item.daily_total)}`;
+  }
+  if (
+    item.daily_judged_total !== null
+    && item.daily_judged_total !== undefined
+  ) {
+    const day = String(item.daily_judged_day || '').slice(5);
+    return `${day ? `${day} ` : ''}累计 `
+      + formatStatNumber(item.daily_judged_total);
+  }
+  return String(item.value ?? '');
+}
+
 function familyChip(text, extraClass) {
   const chip = document.createElement('span');
   chip.className = 'family-chip' + (extraClass ? ` ${extraClass}` : '');
@@ -9657,13 +9674,8 @@ function renderFamilyOverview(data) {
       const unit = item.unit ? ` ${item.unit}` : '';
       const critical = Array.isArray(item.critical_alerts)
         && item.critical_alerts.length > 0;
-      const hasDaily = item.daily_total !== null
-        && item.daily_total !== undefined;
-      const shownValue = hasDaily
-        ? formatStatNumber(item.daily_total)
-        : item.value;
       chips.appendChild(familyChip(
-        `${item.label} ${hasDaily ? '今日 ' : ''}${shownValue}${unit}`
+        `${item.label} ${familyMetricValue(item)}${unit}`
         + (
           critical ? ' 危急'
             : item.over_target
@@ -9856,12 +9868,7 @@ function familyOverviewText(data) {
     const metrics = (profile.metrics || []).slice(0, 3);
     if (metrics.length) {
       parts.push(metrics.map((item) => (
-        `${item.label} `
-        + (
-          item.daily_total !== null && item.daily_total !== undefined
-            ? `今日 ${formatStatNumber(item.daily_total)}`
-            : item.value
-        )
+        `${item.label} ${familyMetricValue(item)}`
         + `${item.unit ? ` ${item.unit}` : ''}`
         + (
           Array.isArray(item.critical_alerts)
@@ -21566,6 +21573,27 @@ function saveDraft() {
   }, 200);
 }
 
+function flushDraftNow() {
+  // 刷新/关闭/PWA 被杀时定时器不会执行：同步落盘当前草稿
+  clearTimeout(draftTimer);
+  try {
+    if (els.input.value.trim()) {
+      safeSessionSet(DRAFT_KEY, els.input.value);
+      safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
+    } else {
+      safeSessionRemove(DRAFT_KEY);
+      safeSessionRemove(DRAFT_OWNER_KEY);
+    }
+  } catch {
+    // 隐私模式忽略
+  }
+}
+
+window.addEventListener('pagehide', flushDraftNow);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushDraftNow();
+});
+
 function reassignDraftToCurrentSession() {
   // 新建/切换会话后输入框里的草稿仍属于当前页面：归属改到新会话，
   // 否则刷新时会被当成「上一会话的草稿」静默删除。先取消尚在
@@ -21623,10 +21651,19 @@ function settleDraftForSession(targetId) {
 
 function restoreComposer(question) {
   // send 早退（深链未恢复/发送锁）时把主诉放回输入框与草稿，
-  // 不能让 submit 的预清空静默丢掉用户文本
+  // 不能让 submit 的预清空静默丢掉用户文本。输入框已有内容时
+  // 追加保留而不是直接丢弃（两段文本用户都可再编辑）
   const text = String(question || '');
-  if (!text || els.input.value.trim()) return;
-  els.input.value = text;
+  if (!text) return;
+  const current = els.input.value;
+  if (current.trim()) {
+    if (current.includes(text)) return;
+    els.input.value = `${text}
+
+${current}`;
+  } else {
+    els.input.value = text;
+  }
   autoGrow();
   saveDraft();
 }
@@ -23392,6 +23429,11 @@ function addCustomStarter() {
 els.starters.addEventListener('click', (e) => {
   const btn = e.target.closest('.starter');
   if (!btn) return;
+  if (sendInFlight) {
+    // 深链预恢复中：常用主诉不能绕过发送锁挤掉正在恢复的问题
+    setVitals('warn', '正在打开会诊记录，请稍候');
+    return;
+  }
   els.empty.hidden = true;
   send(btn.dataset.q);
 });

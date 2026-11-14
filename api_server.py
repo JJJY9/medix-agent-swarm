@@ -1668,6 +1668,9 @@ KNOWLEDGE_WRITE_PATHS = {
 chat_limiter = SlidingWindowLimiter(get_rate_limit())
 # 访问令牌错误尝试限制，避免局域网内暴力猜测
 auth_failure_limiter = SlidingWindowLimiter(10, window=300)
+#: 回环来源（含 ssh -R/socat 透明隧道）的令牌失败桶：不能完全豁免，
+#: 否则隧道外的远程攻击者可无限在线猜解；阈值高于局域网以避免误伤
+auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
 _short_access_token_warned = False
 
 
@@ -1976,12 +1979,20 @@ def _normalize_forwarded_address(value: str) -> str:
     if text.startswith("["):
         end = text.find("]")
         if end != -1:
-            return text[1:end].strip()
+            text = text[1:end].strip()
     if text.count(":") == 1:
         host, _sep, port = text.partition(":")
         if port.strip().isdigit():
-            return host.strip()
-    return text
+            text = host.strip()
+    text = text.strip()
+    if text.lower() == "localhost":
+        return text
+    try:
+        # RFC 7239 的混淆标识符（for=_hidden）、unknown 变体等都不是
+        # 地址：只有合法 IP 才可用于本机判定与限流分桶
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return ""
 
 
 def _forwarded_for_values(header: str) -> List[Optional[str]]:
@@ -2432,7 +2443,6 @@ async def require_access_token(request: Request, call_next):
         # 地址头却解析失败（unknown/矛盾）同样继续预锁定
         shared_bucket = (
             _is_trusted_proxy_peer(peer_host)
-            and _has_proxy_headers(request)
             and _client_ip_key(request) == f"ip:{peer_host or 'unknown'}"
         )
         if not _is_loopback_client(request) and not shared_bucket:
@@ -2458,24 +2468,28 @@ async def require_access_token(request: Request, call_next):
                     },
                 ))
         if not is_authorized(request):
-            if not _is_loopback_client(request):
-                allowed, retry_after = auth_failure_limiter.check(
-                    _client_ip_key(request)
-                )
-                if not allowed:
-                    return add_security_headers(JSONResponse(
-                        status_code=429,
-                        content={
-                            "detail": "访问令牌错误次数过多，请稍后再试。",
-                            "code": "auth_rate_limited",
-                            "retry_after": round(retry_after, 1),
-                        },
-                        headers={
-                            "Retry-After": str(
-                                max(1, math.ceil(retry_after))
-                            )
-                        },
-                    ))
+            limiter = (
+                auth_failure_limiter_loopback
+                if _is_loopback_client(request)
+                else auth_failure_limiter
+            )
+            allowed, retry_after = limiter.check(
+                _client_ip_key(request)
+            )
+            if not allowed:
+                return add_security_headers(JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "code": "auth_rate_limited",
+                        "retry_after": round(retry_after, 1),
+                    },
+                    headers={
+                        "Retry-After": str(
+                            max(1, math.ceil(retry_after))
+                        )
+                    },
+                ))
             return add_security_headers(JSONResponse(
                 status_code=401,
                 content={"detail": "需要访问令牌", "code": "auth_required"},
@@ -4274,7 +4288,12 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
             })
     if not family_alerts:
         return None
-    return {"level": "warning", "alerts": family_alerts[:5]}
+    return {
+        "level": "warning",
+        "alerts": family_alerts[:5],
+        # 展示只截前 5 条，但总数必须是全部成员的告警数
+        "count": len(family_alerts),
+    }
 
 
 @app.post("/api/medications")
@@ -7772,6 +7791,7 @@ def _build_health_insights(
         and safety.get("alerts")
     ):
         alerts = safety.get("alerts") or []
+        total_alerts = int(safety.get("count") or len(alerts))
         source_labels = (
             ("lab", "化验"),
             ("condition", "慢病用药"),
@@ -7794,7 +7814,7 @@ def _build_health_insights(
         insights.append(_health_insight(
             "medication_safety",
             "warning",
-            f"在用药物存在 {len(alerts)} 条安全提示",
+            f"在用药物存在 {total_alerts} 条安全提示",
             (summary + (f"；{titles}" if titles else ""))[:200],
             "请让医生或药师确认后再调整用药。",
             "medication",
@@ -8243,8 +8263,10 @@ def _build_health_insights(
         detail_parts = []
         for item in critical_labs[:5]:
             prefix = ""
-            if not scope_profile and item.get("profile"):
-                prefix = f"{item.get('profile')}："
+            if not scope_profile:
+                # 家庭范围逐项标注成员；未指定档案也要显式标注，
+                # 不能让它拼在某个成员项后面被误读
+                prefix = f"{item.get('profile') or '未指定档案'}："
             text = (
                 f"{prefix}{item.get('item', '')} "
                 f"{_health_search_number(item.get('value'))}"
@@ -8265,8 +8287,8 @@ def _build_health_insights(
         items = labs.get("items") or []
         detail = "、".join(
             (
-                f"{item.get('profile')}："
-                if family_scope and item.get("profile") else ""
+                f"{item.get('profile') or '未指定档案'}："
+                if family_scope else ""
             )
             + f"{item.get('item', '')} "
             f"{_health_search_number(item.get('value'))}"
@@ -12038,7 +12060,7 @@ async def export_family_overview_csv(days: int = 7):
             unit = metric.get("unit") or ""
             direction = metric.get("target_direction")
             suffix = ""
-            if metric.get("over_target") is not None:
+            if metric.get("over_target"):
                 suffix = (
                     "（低于目标）" if direction == "low" else "（超标）"
                 )

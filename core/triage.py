@@ -162,7 +162,8 @@ PREGNANCY_TERMS = (
 )
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
-    r"(?<![避备不待])(?:怀)?孕\s*\d+\s*(?:周|个月|月)"
+    r"(?<![避备不待])(?:怀)?孕\s*\d+\s*(?:[+＋]\s*\d+)?\s*"
+    r"(?:周|个月|月)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -190,7 +191,8 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"|(?:孕妇|产妇|孕产妇|怀孕|孕期|产前|产后|早孕|孕[早中晚]期"
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
     r"|胎停育?|稽留流产"
-    r"|孕\s*[0-9一二两三四五六七八九十]+\s*(?:周|个月|月))"
+    r"|孕\s*[0-9一二两三四五六七八九十]+"
+    r"\s*(?:[+＋]\s*\d+)?\s*(?:周|个月|月))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
@@ -207,10 +209,13 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         bleed_body = re.sub(
             r"(?:出血|流血|见红)\s*$", "", span
         )
+        internal_body = re.sub(
+            r"(?:阴道|产道|下体)\s*$", "", bleed_body
+        )
         if re.search(
             r"(?:没有|没|无|未|不|否认|非)"
             r"(?:(?:明显|任何|见|见到|出现|发现)\s*)*$",
-            bleed_body,
+            internal_body,
         ) is not None:
             continue
         # 部位明确的匹配（阴道出血/产道出血）只看匹配片段本身：
@@ -309,11 +314,11 @@ def _generic_bleeding_positive(text: str) -> bool:
     return False
 
 
-#: 病史里的既往产科史（不再代表当前妊娠）
+#: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
+#: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
 _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:曾经|以前|去年|前年|多年前|既往|已流产|已结束|"
-    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|妊娠期糖尿病|"
-    r"产后抑郁|已控制|已治愈)"
+    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|产后抑郁)"
 )
 
 
@@ -646,8 +651,15 @@ def _is_red_flag_text(text: str) -> bool:
     return any(term in text for term in HEAD_TRAUMA_TERMS)
 
 
-def _clean_complaint_clause(clause: str) -> str:
-    """清洗单个分句：有患者语境的保留；纯定义问句丢弃。"""
+def _clean_complaint_clause(
+    clause: str, patient_context_seen: bool = False
+) -> str:
+    """清洗单个分句：有患者语境的保留；纯定义问句丢弃。
+
+    patient_context_seen 表示前面已有明确患者主语的症状分句
+    （「宝宝发烧，抽搐是什么病」）：此时后置定义问句的前缀是
+    患者本人的新症状，不能当成纯定义丢弃。
+    """
     educational = _EDUCATIONAL_PREFIX_RE.match(clause)
     if educational:
         if _HEARSAY_PREFIX_RE.match(clause):
@@ -657,7 +669,7 @@ def _clean_complaint_clause(clause: str) -> str:
             return ""
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
-        return _clean_complaint_clause(rest)
+        return _clean_complaint_clause(rest, patient_context_seen)
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         return clause
     if any(marker in clause for marker in EDUCATIONAL_MARKERS):
@@ -707,6 +719,9 @@ def _clean_complaint_clause(clause: str) -> str:
                     "闷痛", "绞痛", "刀割",
                 )
             )
+            # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
+            # 单一红旗症状也按真实主诉保留
+            or (patient_context_seen and _is_red_flag_text(prefix))
         ):
             # 带病程/时间线索或多症状的定义问句通常是在描述当前症状
             return prefix
@@ -730,10 +745,19 @@ def patient_complaint_text(text: str) -> str:
     # 咳嗽、胸痛」）依赖整组顿号在同一分句内，不能在此拆开重拼
     clauses = re.split(r"[。；;！!？?\n，,]", text)
     kept = []
+    context_seen = False
     for clause in clauses:
-        cleaned = _clean_complaint_clause(clause.strip())
+        cleaned = _clean_complaint_clause(
+            clause.strip(), context_seen
+        )
         if cleaned:
             kept.append(cleaned)
+            if (
+                any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS)
+                or _is_red_flag_text(clause)
+            ):
+                # 已有患者本人的症状分句：后续定义问句按新症状保留
+                context_seen = True
     return "，".join(kept)
 
 

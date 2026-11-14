@@ -96,7 +96,6 @@ def test_past_obstetric_history_does_not_trigger():
 
     for history in (
         "慢病：产后抑郁（管理中）",
-        "慢病：妊娠期糖尿病（已控制）",
         "产后三年",
         "曾经怀孕，已流产",
         "去年孕早期出血",
@@ -104,6 +103,15 @@ def test_past_obstetric_history_does_not_trigger():
         assert detect_red_flags(
             "今天阴道出血", {"history": history}
         )["level"] == "none", history
+
+    # 妊娠期合并症是当前妊娠的常见诊断：不能因「已控制」整句丢弃
+    for history in (
+        "慢病：妊娠期糖尿病（已控制）",
+        "妊娠期高血压（2026-10-01，管理中）",
+    ):
+        assert detect_red_flags(
+            "今天阴道出血", {"history": history}
+        )["level"] == "emergency", history
 
 
 # ---------------------------------------------------------------- 用药

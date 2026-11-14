@@ -203,9 +203,6 @@ def test_blocked_ip_skips_token_comparison(monkeypatch):
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(2, window=300),
     )
-    monkeypatch.setattr(
-        api_server, "_is_loopback_client", lambda request: False
-    )
     comparisons = {"count": 0}
     original = api_server.is_authorized
 
@@ -214,7 +211,11 @@ def test_blocked_ip_skips_token_comparison(monkeypatch):
         return original(request)
 
     monkeypatch.setattr(api_server, "is_authorized", counting)
-    client = TestClient(api_server.app)
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("203.0.113.9", 50000),
+    )
     wrong = {"X-Medix-Token": "bad-guess"}
 
     assert client.get("/api/sessions", headers=wrong).status_code == 401
