@@ -166,7 +166,7 @@ PREGNANCY_WEEK_PATTERN = re.compile(
     # 「孕12+周」（12 周多）、「孕12-14周」（筛查孕周范围）、「孕20w」
     r"(?:[+＋]\s*\d*)?"
     r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
-    r"\s*(?:周|[wW]|个?月)"
+    r"\s*(?:周|[wW]|个?月|天)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -197,7 +197,7 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"|孕\s*[0-9一二两三四五六七八九十]+"
     r"\s*(?:[+＋]\s*\d*)?"
     r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
-    r"\s*(?:周|[wW]|个?月))"
+    r"\s*(?:周|[wW]|个?月|天))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
@@ -206,7 +206,7 @@ _PREGNANCY_BLEEDING_RE = re.compile(
 #: 口语出血表述：「阴道流了一点血」「有少量血」「内裤上有点血」
 #: 「擦到血」「血丝」；排除血常规/血压/血糖等非出血词
 _COLLOQUIAL_BLEEDING_RE = re.compile(
-    r"(?:阴道|产道|下体|内裤上?|护垫|擦拭?)"
+    r"(?:阴道|产道|下体|下面|下身|内裤上?|护垫|卫生巾上?|纸巾上?|擦拭?)"
     r"[^，。；,;！!？?\n]{0,6}"
     r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友)"
     r"|(?:流了?|出了?|带有?|擦到|看到|见到|有点|有些|少量|少许)"
@@ -347,7 +347,9 @@ def _colloquial_bleeding_positive(text: str) -> bool:
         # 才能看见紧贴其前的否定（阴道没有出血/阴道没有流血）
         body = re.sub(r"(?:出|流|见|了)+$", "", body)
         body = re.sub(
-            r"(?:阴道|产道|下体|内裤上?|护垫|擦拭?)\s*$", "", body
+            r"(?:阴道|产道|下体|下面|下身|内裤上?|护垫|卫生巾上?|"
+            r"纸巾上?|擦拭?)\s*$",
+            "", body,
         )
         if re.search(
             r"(?:没有|没|无|未|不|否认|非)"
@@ -744,9 +746,18 @@ def _clean_complaint_clause(
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
         return _clean_complaint_clause(rest, patient_context_seen)
-    if _DEFINITION_PREFIX_RE.match(clause):
-        # 句首定义引导词（什么是/什么叫/啥叫…）整句按科普丢弃，
-        # 即使分句后面带有「持续/今天」等时间词
+    definition_lead = _DEFINITION_PREFIX_RE.match(clause)
+    if definition_lead:
+        # 句首定义引导词（什么是/什么叫/请解释一下…）：剥掉前缀后
+        # 若剩余内容含患者主体或病程线索，按真实主诉继续判断
+        rest = clause[definition_lead.end():].strip(" ，,、")
+        if not rest:
+            return ""
+        if _has_patient_subject(rest):
+            # 只有明确的患者主体（我/宝宝/孩子…）才说明在描述本人；
+            # 「什么是持续性胸痛」仍是术语解释
+            return _clean_complaint_clause(rest, patient_context_seen)
+        # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         return clause
@@ -970,10 +981,18 @@ IMMUNOSUPPRESSION_TERMS = (
     "化疗", "放疗", "免疫抑制", "器官移植", "骨髓移植", "造血干细胞移植",
     "艾滋病", "hiv", "长期激素", "长期使用激素", "甲氨蝶呤", "环孢素",
     "他克莫司", "吗替麦考酚酯", "生物制剂",
+    # 英文表述（输入在 _active_medical_text 中已转小写）
+    "chemotherapy", "chemo", "immunosuppression",
+    "immunosuppressed", "organ transplant", "stem cell transplant",
+    "methotrexate", "cyclosporine", "tacrolimus", "mycophenolate",
+    "biologic",
 )
 ANTICOAGULANT_TERMS = (
     "华法林", "利伐沙班", "阿哌沙班", "达比加群", "艾多沙班",
     "肝素", "低分子肝素", "抗凝",
+    # 英文药名（输入在 _active_medical_text 中已转小写）
+    "warfarin", "rivaroxaban", "apixaban", "dabigatran",
+    "edoxaban", "heparin", "enoxaparin", "anticoagulant",
 )
 #: 纯跌倒本身不等于头部外伤；只有确实撞到/碰到头才按头部外伤处理
 HEAD_TRAUMA_TERMS = (
@@ -1213,9 +1232,22 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            clause = _strip_family_narration(clause).strip()
-            if not clause or any(
-                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            stripped = _strip_family_narration(clause).strip()
+            if stripped and not any(
+                marker in stripped for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                clause = stripped
+            elif _has_patient_subject(clause):
+                # 「我和我爸都吃华法林/都在化疗」：患者是并列主语，
+                # 不能因为家属称谓整句丢弃
+                pass
+            else:
+                continue
+            # 家属宾语剥离后的「买/拿/取/配 + 药名」是替家人购药，
+            # 不能当作患者本人在用
+            if re.match(
+                r"^\s*(?:去?药[店房])?(?:买|购买|拿|取|配|代买|帮买|购)",
+                clause,
             ):
                 continue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
@@ -1368,10 +1400,15 @@ def _patient_term_mention(text: str, term: str) -> bool:
         if not clause:
             continue
         if any(marker in clause for marker in _FAMILY_HISTORY_MARKERS):
-            clause = _strip_family_narration(clause)
-            if not clause or any(
-                marker in clause for marker in _FAMILY_HISTORY_MARKERS
+            stripped = _strip_family_narration(clause)
+            if stripped and not any(
+                marker in stripped for marker in _FAMILY_HISTORY_MARKERS
             ):
+                clause = stripped
+            elif _has_patient_subject(clause):
+                # 「我和我爸都撞到头」：患者是并列主语
+                pass
+            else:
                 continue
         if _positive_mention(clause, term):
             return True

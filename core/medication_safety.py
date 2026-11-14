@@ -550,6 +550,11 @@ _NEGATED_USE_PREFIX = re.compile(
     r"不要|避免|不需要|不必|无|不吃|不服用|不再吃|不在吃|没吃了?)"
     r"[^，。；,.!?！？\n]{0,4}$"
 )
+#: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
+_USE_DOUBLE_NEGATION = re.compile(
+    r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
+    r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?\s*$"
+)
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
     r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
@@ -791,7 +796,8 @@ def _alias_matches(text: str, alias: str) -> bool:
         # 允许向后多看一段，句号仍截断
         long_suffix = text[end:right + 25]
         if (
-            _NEGATED_STOP_PREFIX.search(prefix)
+            _USE_DOUBLE_NEGATION.search(prefix)
+            or _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_PREFIX.search(prefix)

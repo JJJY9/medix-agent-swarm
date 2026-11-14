@@ -1677,6 +1677,26 @@ auth_failure_limiter = SlidingWindowLimiter(10, window=300)
 #: 回环来源（含 ssh -R/socat 透明隧道）的令牌失败桶：不能完全豁免，
 #: 否则隧道外的远程攻击者可无限在线猜解；阈值高于局域网以避免误伤
 auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
+#: 无法证明客户端地址时的令牌比较闸门：同一键按固定间隔排队，
+#: 并发请求不能并行比较令牌（每次猜测仍会计入失败桶）
+_AUTH_COMPARE_GATE_SECONDS = 0.2
+_AUTH_COMPARE_GATE_MAX_KEYS = 4096
+_auth_compare_gates: Dict[str, float] = {}
+_auth_compare_gates_lock = threading.Lock()
+
+
+def _auth_compare_wait_seconds(key: str) -> float:
+    """返回本次令牌比较前需要等待的秒数（同键串行化）。"""
+    now = time.monotonic()
+    with _auth_compare_gates_lock:
+        if len(_auth_compare_gates) > _AUTH_COMPARE_GATE_MAX_KEYS:
+            _auth_compare_gates.clear()
+        ready_at = _auth_compare_gates.get(key, 0.0)
+        if ready_at <= now:
+            _auth_compare_gates[key] = now + _AUTH_COMPARE_GATE_SECONDS
+            return 0.0
+        _auth_compare_gates[key] = ready_at + _AUTH_COMPARE_GATE_SECONDS
+        return min(ready_at - now, 2.0)
 _short_access_token_warned = False
 
 
@@ -2092,6 +2112,14 @@ def _same_forwarded_address(first: str, second: str) -> bool:
         return first == second
 
 
+def _proxy_single_hop() -> bool:
+    """部署显式声明「最后一跳代理覆盖/追加真实客户端地址」。
+
+    多元素地址头默认不做令牌预锁定；声明单跳后信任最右元素。
+    """
+    return (os.getenv("MEDIX_PROXY_SINGLE_HOP") or "").strip() == "1"
+
+
 def _allowed_proxy_address_source() -> str:
     """部署声明代理实际覆盖/追加的地址头。
 
@@ -2218,8 +2246,8 @@ def _forwarded_appended_address(request: Request) -> str:
             ]
             if parts:
                 # 多级代理下最右项可能是上一跳代理（全家共用）：
-                # 只有单元素时才能证明是最后一跳写入的真实客户端
-                if len(parts) != 1:
+                # 只有单元素或显式声明单跳时才能证明是真实客户端
+                if len(parts) != 1 and not _proxy_single_hop():
                     return ""
                 return _usable(_normalize_forwarded_address(parts[-1]))
     if allowed_source in ("", "x-real-ip"):
@@ -2237,7 +2265,7 @@ def _forwarded_appended_address(request: Request) -> str:
         if header:
             values = _forwarded_for_values(header)
             if values:
-                if len(values) != 1:
+                if len(values) != 1 and not _proxy_single_hop():
                     return ""
                 return _usable(values[-1] or "")
     return ""
@@ -2274,6 +2302,17 @@ def _is_loopback_client(request: Request) -> bool:
     return _is_loopback_address(peer)
 
 
+def _bucket_address(address: str) -> str:
+    """限流桶地址：IPv6 按 /64 聚合，避免同一前缀内轮换地址绕开限流。"""
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if parsed.version == 6:
+        return str(ipaddress.ip_network(f"{parsed}/64", strict=False))
+    return str(parsed)
+
+
 def _client_ip_key(request: Request) -> str:
     """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
 
@@ -2286,8 +2325,8 @@ def _client_ip_key(request: Request) -> str:
     if _trust_proxy_headers() and _is_trusted_proxy_peer(peer):
         forwarded = _forwarded_client_address(request)
         if forwarded:
-            return f"ip:{forwarded}"
-    return f"ip:{peer or 'unknown'}"
+            return f"ip:{_bucket_address(forwarded)}"
+    return f"ip:{_bucket_address(peer or 'unknown')}"
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -2574,7 +2613,7 @@ async def require_access_token(request: Request, call_next):
             # 受信代理追加写入的真实客户端地址：预锁定其自身桶，
             # 命中后不再逐次比较令牌，在线猜解被真正降速
             blocked, retry_after = auth_failure_limiter.is_blocked(
-                f"ip:{appended_address}"
+                f"ip:{_bucket_address(appended_address)}"
             )
             if blocked:
                 return add_security_headers(JSONResponse(
@@ -2592,15 +2631,12 @@ async def require_access_token(request: Request, call_next):
                 ))
         else:
             # 无法证明客户端地址（本机直连/共享桶/多级代理）：不能
-            # 预锁定共享键，否则任何人的错误尝试都会误锁全家；持续
-            # 失败时给每次请求加固定延迟，限制比较速率而不拒绝正确令牌
-            shared_hot, _shared_retry = (
-                auth_failure_limiter_loopback.is_blocked(
-                    loopback_bucket_key
-                )
-            )
-            if shared_hot:
-                await asyncio.sleep(0.2)
+            # 预锁定共享键，否则任何人的错误尝试都会误锁全家；改为
+            # 同键串行闸门——并发请求按 0.2s 间隔排队比较，在线猜解
+            # 被真正限速，但正确令牌只是稍慢、不会被拒绝
+            gate_wait = _auth_compare_wait_seconds(loopback_bucket_key)
+            if gate_wait > 0:
+                await asyncio.sleep(gate_wait)
         if not is_authorized(request):
             loopback_source = _is_loopback_client(request)
             trusted_proxy_request = bool(
@@ -2617,11 +2653,29 @@ async def require_access_token(request: Request, call_next):
                 # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
                 # 新桶：回环来源的失败统一按代理对端计数
                 limiter_key = loopback_bucket_key
+            allowed, retry_after = limiter.check(limiter_key)
+            if not allowed:
+                return add_security_headers(JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "访问令牌错误次数过多，请稍后再试。",
+                        "code": "auth_rate_limited",
+                        "retry_after": round(retry_after, 1),
+                    },
+                    headers={
+                        "Retry-After": str(
+                            max(1, math.ceil(retry_after))
+                        )
+                    },
+                ))
             if (
                 limiter is not auth_failure_limiter_loopback
                 and _trust_proxy_headers()
                 and _is_trusted_proxy_peer(peer_host)
             ):
+                # 共享桶只统计「尚未被自身限流挡住」的失败：攻击者
+                # 单键满载后不再继续累积共享桶，避免拖慢本机用户；
+                # 轮换地址的攻击每个新键仍会为共享桶计数
                 shared_allowed, shared_retry = (
                     auth_failure_limiter_loopback.check(
                         loopback_bucket_key
@@ -2641,21 +2695,6 @@ async def require_access_token(request: Request, call_next):
                             )
                         },
                     ))
-            allowed, retry_after = limiter.check(limiter_key)
-            if not allowed:
-                return add_security_headers(JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "访问令牌错误次数过多，请稍后再试。",
-                        "code": "auth_rate_limited",
-                        "retry_after": round(retry_after, 1),
-                    },
-                    headers={
-                        "Retry-After": str(
-                            max(1, math.ceil(retry_after))
-                        )
-                    },
-                ))
             return add_security_headers(JSONResponse(
                 status_code=401,
                 content={"detail": "需要访问令牌", "code": "auth_required"},
@@ -4416,7 +4455,11 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
 
     lab_rows: List[Dict[str, Any]] = []
     condition_rows: List[Dict[str, Any]] = []
-    if active:
+    has_context_medications = any(
+        _context_medication_names(context)
+        for context in contexts.values()
+    )
+    if active or has_context_medications:
         lab_rows = await asyncio.to_thread(
             store.list_lab_results, None, None, None, 180, 100000, 0
         )
@@ -7760,7 +7803,17 @@ async def _weekly_report_impl(
     # 只有不指定档案（None）才是家庭范围；profile="" 是「未指定档案」
     # 这一独立视图，不能套用家庭成员文案与家庭专属逻辑
     family_scope = profile is None
+    from core.lab_values import STALE_AFTER_DAYS
+
+    stale_cutoff = (now - timedelta(days=STALE_AFTER_DAYS)).strftime(
+        "%Y-%m-%d"
+    )
     for item in metrics:
+        measured_day = str(item.get("measured_at") or "")[:10]
+        if measured_day and measured_day < stale_cutoff:
+            # 超过有效期的陈旧读数不能当作当前危急值（与家庭总览/
+            # 化验「结果较旧」口径一致）
+            continue
         alerts = critical_metric_alerts(
             item.get("metric"), item.get("value1"), item.get("value2")
         )
@@ -8833,6 +8886,9 @@ def _build_health_insights(
             + int((report.get("care_plan") or {}).get("due_in_period") or 0)
             + int((report.get("vaccinations") or {}).get("count") or 0)
             + int((report.get("medications") or {}).get("active") or 0)
+            + int((report.get("medications") or {}).get("doses") or 0)
+            + int((report.get("medications") or {}).get("skips") or 0)
+            + int((report.get("care_plan") or {}).get("completed") or 0)
             + int((report.get("reminders") or {}).get("pending") or 0)
             + int((report.get("consultations") or {}).get("count") or 0)
         )
@@ -11880,12 +11936,6 @@ async def family_overview(days: int = 7):
     medication_names_by_profile: Dict[str, List[str]] = {}
     for item in medications:
         profile = item.get("profile") or ""
-        if not item.get("active"):
-            continue
-        if item.get("name"):
-            medication_names_by_profile.setdefault(
-                profile, []
-            ).append(str(item["name"]))
         entry = medications_by_profile.setdefault(profile, {
             "active": 0,
             "taken_today": 0,
@@ -11900,9 +11950,23 @@ async def family_overview(days: int = 7):
             "expired": 0,
             "stock_alerts": [],
         })
-        entry["active"] += 1
+        # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
+        # 今天的健康记录（与 recorded_today/streak 口径一致）
         entry["taken_today"] += int(item.get("today_count") or 0)
         entry["skipped_today"] += int(item.get("skipped_today") or 0)
+        last_taken = str(item.get("last_taken_at") or "")
+        if last_taken > entry["last_taken_at"]:
+            entry["last_taken_at"] = last_taken
+        last_skip = str(item.get("last_skip_at") or "")
+        if last_skip > entry["last_skip_at"]:
+            entry["last_skip_at"] = last_skip
+        if not item.get("active"):
+            continue
+        if item.get("name"):
+            medication_names_by_profile.setdefault(
+                profile, []
+            ).append(str(item["name"]))
+        entry["active"] += 1
         if item.get("low_stock"):
             entry["low_stock"] += 1
         if item.get("expired"):
@@ -11923,12 +11987,6 @@ async def family_overview(days: int = 7):
         entry["expected_week_doses"] += expected_week
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
-        last_taken = str(item.get("last_taken_at") or "")
-        if last_taken > entry["last_taken_at"]:
-            entry["last_taken_at"] = last_taken
-        last_skip = str(item.get("last_skip_at") or "")
-        if last_skip > entry["last_skip_at"]:
-            entry["last_skip_at"] = last_skip
 
     for entry in medications_by_profile.values():
         expected = entry.pop("expected_week_doses")
