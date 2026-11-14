@@ -558,7 +558,8 @@ _ADHERENCE_USE_PREFIX = re.compile(
 _NEGATED_STOP_PREFIX = re.compile(
     r"(?:没有|没|未|无|不要|不用|不必|不需要|无需|避免|并非"
     r"|不能|不可|不宜|不让|不应|不准|别)"
-    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停服|停止服用|不再服用)\s*$"
+    # 裸「停」也要覆盖：「没有停华法林」「不要停」都是仍在用药
+    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停服|停止服用|不再服用|停)\s*$"
 )
 #: 明确停药/停服的表述才算当前未用药
 _STOPPED_USE_PREFIX = re.compile(
@@ -640,13 +641,22 @@ _RECENT_STOP_CONTEXT = re.compile(
 )
 _RECENT_STOP_PREFIX_EN = re.compile(
     r"(?:just|recently|yesterday|today)\s+"
-    r"(?:stopped|discontinued)\s*$",
+    r"(?:stopped|discontinued|quit|ceased)\s*$",
     re.IGNORECASE,
 )
 _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
-    r"(?:stopped|discontinued)\s+"
+    r"(?:stopped|discontinued|quit|ceased)\s+"
     r"(?:(?:\d+\s*)?(?:days?|weeks?)\s+ago|yesterday|today)",
+    re.IGNORECASE,
+)
+#: 英文否定停药：「I have not stopped warfarin」「never stopped」
+#: 「I am not off warfarin」都表示仍在用药
+_NEGATED_STOP_PREFIX_EN = re.compile(
+    r"(?:not|never|n't|no\s+longer)\s+"
+    r"(?:yet\s+|ever\s+|really\s+)?"
+    r"(?:stopped|discontinued|quit|ceased)\b"
+    r"|(?:not|never)\s+off\b",
     re.IGNORECASE,
 )
 #: 英文药名前的停药表述：「I stopped warfarin two years ago」
@@ -660,9 +670,10 @@ _STOPPED_USE_PREFIX_EN = re.compile(
 )
 #: 英文近期停药（天/周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_CONTEXT_EN = re.compile(
-    r"(?:stopped|discontinued)\s+(?:\w+\s+){0,2}"
+    r"(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:(?:\d+|a|an|one|two|three|few)\s+)?(?:days?|weeks?)\s+ago"
-    r"|(?:stopped|discontinued)\s+(?:\w+\s+){0,2}(?:yesterday|today)",
+    r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
+    r"(?:yesterday|today)",
     re.IGNORECASE,
 )
 #: 英文明确未用药：「I do not take warfarin」
@@ -738,7 +749,8 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # 「没有停用」= 仍在服用
                 return True
             if (
-                _INTENT_STOP_PREFIX.search(prefix)
+                _NEGATED_STOP_PREFIX_EN.search(prefix)
+                or _INTENT_STOP_PREFIX.search(prefix)
                 or _INTENT_STOP_SUFFIX.search(suffix)
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)

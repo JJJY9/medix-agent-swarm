@@ -5468,6 +5468,16 @@ class SessionStore:
                     str(values[0])
                     if columns and columns[0] == "profile" else ""
                 )
+                if (
+                    not row_profile
+                    and match_where is not None
+                    and str(match_where[0]).strip().lower().startswith(
+                        "profile"
+                    )
+                ):
+                    # 提醒等身份列不含档案：跨档案候选同样需要编辑
+                    # 证据，未编辑的另一成员同秒同内容行不能被认领
+                    row_profile = str(match_where[1][0])
                 candidates = []
                 for row in rows:
                     candidate = int(row["id"])
@@ -5726,8 +5736,14 @@ class SessionStore:
             soft = {int(row["id"]) for row in soft_rows}
             if soft:
                 # 软字段命中：备份组只有一行，或该软字段在备份组内
-                # 唯一时才能认领；同秒同名孪生仍不可区分
-                if backup_group_size <= 1 or backup_soft_size == 1:
+                # 唯一时才能认领；同秒同名孪生仍不可区分。本地存活
+                # 行数已不少于备份行数时，说明每条备份行都有存活版本
+                # （只是被编辑过），应继续认领而不是补回旧版本
+                if (
+                    backup_group_size <= 1
+                    or backup_soft_size == 1
+                    or local_group_size >= backup_group_size
+                ):
                     candidates = soft
                 else:
                     return _ambiguous()
@@ -8568,11 +8584,14 @@ class SessionStore:
                     )
                     if not appointment_id and raw_appointment_id > 0:
                         appt_row = self._conn.execute(
-                            "SELECT id, profile FROM appointments WHERE id = ?",
+                            "SELECT id, profile, status FROM appointments"
+                            " WHERE id = ?",
                             (raw_appointment_id,),
                         ).fetchone()
                         if (
                             appt_row is not None
+                            and str(appt_row["status"] or "")
+                            == "upcoming"
                             and _normalize_profile_name(appt_row["profile"])
                             == profile
                         ):
@@ -9954,6 +9973,21 @@ class SessionStore:
         if metric in DAILY_ACCUMULATING_METRICS and value1 is not None:
             # 每日累计指标按条均值的「较上期」会被记录频次误导
             value1["prev_avg"] = None
+            if profile is not None and days > 0:
+                # 平均/最低/最高同样按自然日合计：同日 4000+5000 不能
+                # 显示成「平均 4500」而当日累计 9000
+                daily_series = self.metric_daily_series(
+                    profile, metric, days
+                )
+                daily_totals = [
+                    float(entry["total"]) for entry in daily_series
+                ]
+                if daily_totals:
+                    value1["avg"] = round(
+                        sum(daily_totals) / len(daily_totals), 1
+                    )
+                    value1["min"] = round(min(daily_totals), 1)
+                    value1["max"] = round(max(daily_totals), 1)
         value2 = None
         if metric == "bp":
             value2 = build(
@@ -10567,8 +10601,17 @@ class SessionStore:
                     )
                     if updated.rowcount == 0:
                         # 该预约唯一的提醒已被勾选完成：改期后必须重建
-                        # 待办，否则复诊前没有任何提醒
-                        rebuilt_id = _create_reminder()
+                        # 待办，否则复诊前没有任何提醒。从未创建或已被
+                        # 用户删除的提醒不能因改期复活
+                        had_reminder = self._conn.execute(
+                            "SELECT 1 FROM reminders"
+                            " WHERE appointment_id = ? LIMIT 1",
+                            (int(appointment_id),),
+                        ).fetchone()
+                        rebuilt_id = (
+                            _create_reminder()
+                            if had_reminder is not None else 0
+                        )
                         if rebuilt_id:
                             self._conn.execute(
                                 "UPDATE visit_records"

@@ -1547,6 +1547,12 @@ def _attachment_dir() -> Path:
 #: 避免两个标签页同时操作生成重复预约/计划
 _TEMPLATE_APPLY_LOCK = threading.Lock()
 _VISIT_FOLLOWUP_LOCK = threading.Lock()
+
+
+def _import_data_locked(store: Any, payload: Any) -> Any:
+    """导入与复诊排程/预约写操作串行，避免覆盖导入写回的复诊链接。"""
+    with _VISIT_FOLLOWUP_LOCK:
+        return store.import_data(payload)
 MAX_ATTACHMENT_UPLOAD_BYTES = 10 * 1024 * 1024
 # 图片在浏览器中解码后才占内存；限制像素规模，避免小文件解压炸弹
 MAX_ATTACHMENT_PIXELS = 40_000_000
@@ -1952,14 +1958,21 @@ def _trust_proxy_headers() -> bool:
 
 
 def _trusted_proxy_peers() -> set:
-    """显式声明的受信反向代理对端地址（非 loopback 反代需配置）。"""
-    return {
-        value.strip()
-        for value in os.getenv(
-            "MEDIX_TRUSTED_PROXY_ADDRS", ""
-        ).split(",")
-        if value.strip()
-    }
+    """显式声明的受信反向代理对端地址（非 loopback 反代需配置）。
+
+    IPv6/端口写法经 ipaddress 归一化，避免同一个代理因写法不同
+    被当成两个地址。
+    """
+    peers = set()
+    for value in os.getenv("MEDIX_TRUSTED_PROXY_ADDRS", "").split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            peers.add(str(ipaddress.ip_address(value)))
+        except ValueError:
+            peers.add(value.lower())
+    return peers
 
 
 def _is_trusted_proxy_peer(host: str) -> bool:
@@ -2058,7 +2071,8 @@ def _parse_forwarded_header(header: str) -> str:
     rightmost = values[-1]
     if not rightmost:
         return ""
-    if _is_loopback_address(rightmost):
+    trusted_hops = _trusted_proxy_peers()
+    if _is_loopback_address(rightmost) or rightmost in trusted_hops:
         for value in reversed(values[:-1]):
             if value is None:
                 # 该元素没有 for 参数（如只有 proto=https），跳过
@@ -2066,7 +2080,7 @@ def _parse_forwarded_header(header: str) -> str:
             if not value:
                 # 显式 for=unknown/不可解析：无地址不等于本机
                 return ""
-            if not _is_loopback_address(value):
+            if not (_is_loopback_address(value) or value in trusted_hops):
                 return value
     return rightmost
 
@@ -2125,14 +2139,18 @@ def _forwarded_client_address(request: Request) -> str:
             # 只有最右项是本机信任跳时才继续向左找真实客户端；
             # append 型代理追加的真实非本机地址不能被客户端自带的
             # 更左项覆盖，否则伪造前缀即可轮换限流桶
-            if _is_loopback_address(rightmost):
+            trusted_hops = _trusted_proxy_peers()
+            if _is_loopback_address(rightmost) or rightmost in trusted_hops:
                 for part in reversed(parts[:-1]):
                     candidate = _normalize_forwarded_address(part)
                     if not candidate:
                         # 信任跳左侧是 unknown/无法解析的客户端条目：
                         # 无地址不能等同于本机，fail closed 按远端处理
                         return ""
-                    if not _is_loopback_address(candidate):
+                    if not (
+                        _is_loopback_address(candidate)
+                        or candidate in trusted_hops
+                    ):
                         xff_value = candidate
                         break
     real_values = [
@@ -2199,6 +2217,10 @@ def _forwarded_appended_address(request: Request) -> str:
                 if part.strip()
             ]
             if parts:
+                # 多级代理下最右项可能是上一跳代理（全家共用）：
+                # 只有单元素时才能证明是最后一跳写入的真实客户端
+                if len(parts) != 1:
+                    return ""
                 return _usable(_normalize_forwarded_address(parts[-1]))
     if allowed_source in ("", "x-real-ip"):
         real_values = _proxy_header_values(request, "x-real-ip")
@@ -2215,6 +2237,8 @@ def _forwarded_appended_address(request: Request) -> str:
         if header:
             values = _forwarded_for_values(header)
             if values:
+                if len(values) != 1:
+                    return ""
                 return _usable(values[-1] or "")
     return ""
 
@@ -2579,11 +2603,20 @@ async def require_access_token(request: Request, call_next):
                 await asyncio.sleep(0.2)
         if not is_authorized(request):
             loopback_source = _is_loopback_client(request)
+            trusted_proxy_request = bool(
+                _trust_proxy_headers()
+                and _is_trusted_proxy_peer(peer_host)
+            )
             limiter = (
                 auth_failure_limiter_loopback
                 if loopback_source
                 else auth_failure_limiter
             )
+            limiter_key = _client_ip_key(request)
+            if loopback_source and trusted_proxy_request:
+                # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
+                # 新桶：回环来源的失败统一按代理对端计数
+                limiter_key = loopback_bucket_key
             if (
                 limiter is not auth_failure_limiter_loopback
                 and _trust_proxy_headers()
@@ -2608,9 +2641,7 @@ async def require_access_token(request: Request, call_next):
                             )
                         },
                     ))
-            allowed, retry_after = limiter.check(
-                _client_ip_key(request)
-            )
+            allowed, retry_after = limiter.check(limiter_key)
             if not allowed:
                 return add_security_headers(JSONResponse(
                     status_code=429,
@@ -3360,7 +3391,7 @@ async def import_sessions(request: ImportSessionsRequest):
     payload = request.model_dump(exclude_unset=True)
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, payload
+            _import_data_locked, get_session_store(), payload
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3700,7 +3731,7 @@ async def restore_local_backup(name: str, request: ConfirmRequest):
 
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, payload
+            _import_data_locked, get_session_store(), payload
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4202,7 +4233,7 @@ async def import_medications_csv(request: Request, file: UploadFile = File(...))
 
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"medications": records}
+            _import_data_locked, get_session_store(), {"medications": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4267,6 +4298,21 @@ def _evaluate_medication_safety(
     return safety
 
 
+def _context_medication_names(context: Any) -> List[str]:
+    """从档案补充信息的「正在使用的药物」提取可检查的药名片段。"""
+    from core.context import medication_context_text
+
+    text = medication_context_text(context)
+    if not text:
+        return []
+    names = []
+    for part in re.split(r"[；;，,、/\n]+", text):
+        part = part.strip()
+        if part and part not in names:
+            names.append(part)
+    return names[:50]
+
+
 async def _medication_safety_for_profile(
     store: Any, profile: str
 ) -> Dict[str, Any]:
@@ -4301,6 +4347,9 @@ async def _medication_safety_for_profile(
                 allergy_parts.append(context_allergies)
             context_age = str(saved_context.get("age") or "")
             context_sex = str(saved_context.get("sex") or "")
+            for name in _context_medication_names(saved_context):
+                if name not in names:
+                    names.append(name)
             break
     lab_rows = []
     if names:
@@ -4403,6 +4452,9 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
             for item in meds_by.get(name, [])
             if item.get("name")
         ]
+        for medication_name in _context_medication_names(context):
+            if medication_name not in names:
+                names.append(medication_name)
         member_safety = _evaluate_medication_safety(
             names,
             allergy_parts,
@@ -5369,7 +5421,7 @@ async def import_lab_results_csv(
         )
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"lab_results": records}
+            _import_data_locked, get_session_store(), {"lab_results": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5621,7 +5673,7 @@ async def import_allergies_csv(
         )
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"allergies": records}
+            _import_data_locked, get_session_store(), {"allergies": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -6686,7 +6738,7 @@ async def import_symptoms_csv(request: Request, file: UploadFile = File(...)):
 
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"symptoms": records}
+            _import_data_locked, get_session_store(), {"symptoms": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -7245,6 +7297,7 @@ async def _weekly_report_impl(
                 daily["count"] += 1
 
     latest_daily: dict = {}
+    daily_metric_stats: dict = {}
     for metric, days_map in daily_metric_days.items():
         if not days_map:
             continue
@@ -7255,21 +7308,62 @@ async def _weekly_report_impl(
             "count": days_map[latest_day]["count"],
         }
 
+    # 步数/饮水的平均/最高/最低按自然日合计口径：同日 4000+5000
+    # 不能显示成「平均 4500」而当日累计 9000
+    for metric, days_map in daily_metric_days.items():
+        totals = [entry["total"] for entry in days_map.values()]
+        if not totals:
+            continue
+        latest_day = max(days_map)
+        daily_metric_stats[metric] = {
+            "avg": round(sum(totals) / len(totals), 2),
+            "max": round(max(totals), 1),
+            "latest": {
+                "value1": round(days_map[latest_day]["total"], 1),
+                "value2": None,
+                "measured_at": latest_day,
+            },
+        }
+
     metric_rows = [
         {
             "metric": entry["metric"],
             "unit": entry["unit"],
             "count": entry["count"],
-            "avg_value1": round(entry["sum1"] / entry["count"], 2),
-            "avg_value2": (
-                round(entry["sum2"] / entry["with_second"], 2)
-                if entry["with_second"] else None
+            "avg_value1": (
+                daily_metric_stats[entry["metric"]]["avg"]
+                if entry["metric"] in daily_metric_stats
+                else round(entry["sum1"] / entry["count"], 2)
             ),
-            "max_value1": entry["max1"],
-            "max_value2": entry["max2"],
-            "peak": entry["peak"],
-            "peak2": entry["peak2"],
-            "latest": entry["latest"],
+            "avg_value2": (
+                None if entry["metric"] in daily_metric_stats
+                else (
+                    round(entry["sum2"] / entry["with_second"], 2)
+                    if entry["with_second"] else None
+                )
+            ),
+            "max_value1": (
+                daily_metric_stats[entry["metric"]]["max"]
+                if entry["metric"] in daily_metric_stats
+                else entry["max1"]
+            ),
+            "max_value2": (
+                None if entry["metric"] in daily_metric_stats
+                else entry["max2"]
+            ),
+            "peak": (
+                None if entry["metric"] in daily_metric_stats
+                else entry["peak"]
+            ),
+            "peak2": (
+                None if entry["metric"] in daily_metric_stats
+                else entry["peak2"]
+            ),
+            "latest": (
+                daily_metric_stats[entry["metric"]]["latest"]
+                if entry["metric"] in daily_metric_stats
+                else entry["latest"]
+            ),
             "earliest": entry["earliest"],
             "target": entry["target"],
             "within_target": (
@@ -8072,6 +8166,7 @@ def _build_health_insights(
                     metric=metric,
                 ))
             continue
+        target_alert_emitted = False
         if (
             target
             and within is not None
@@ -8079,6 +8174,7 @@ def _build_health_insights(
         ):
             over = count - int(within)
             if over > 0:
+                target_alert_emitted = True
                 target_text = f"{float(target['value1']):g}"
                 if target.get("value2") is not None:
                     target_text += f"/{float(target['value2']):g}"
@@ -8115,7 +8211,7 @@ def _build_health_insights(
                     "metric",
                     metric=metric,
                 ))
-        elif metric == "bp":
+        if metric == "bp" and not target_alert_emitted:
             def _bp_peak_reading(peaks):
                 """单次血压峰值判定：收缩压优先，舒张压补充。"""
                 sys_peak = peaks.get("peak") or {}
@@ -11109,7 +11205,7 @@ async def import_metrics_csv(
 
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"health_metrics": records}
+            _import_data_locked, get_session_store(), {"health_metrics": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -11975,8 +12071,18 @@ async def family_overview(days: int = 7):
     from core.condition_drug_safety import check_condition_drug_safety
     from core.medication_safety import check_medication_safety
 
+    # 档案补充信息里的「正在使用的药物」与用药清单同等参与检查
+    safety_names_by_profile: Dict[str, List[str]] = {
+        profile: list(names)
+        for profile, names in medication_names_by_profile.items()
+    }
+    for profile, context in contexts.items():
+        for medication_name in _context_medication_names(context):
+            bucket = safety_names_by_profile.setdefault(profile, [])
+            if medication_name not in bucket:
+                bucket.append(medication_name)
     medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
-    for profile, med_names in medication_names_by_profile.items():
+    for profile, med_names in safety_names_by_profile.items():
         base_safety = check_medication_safety(
             "、".join(med_names),
             {
@@ -15807,7 +15913,7 @@ async def import_reminders_csv(request: Request, file: UploadFile = File(...)):
 
     try:
         result = await asyncio.to_thread(
-            get_session_store().import_data, {"reminders": records}
+            _import_data_locked, get_session_store(), {"reminders": records}
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -16996,13 +17102,28 @@ def _memory_scope(patient_profile: str, session_id: str) -> str:
     return session_memory_scope(session_id)
 
 
+def _legacy_memory_cleanup_enabled() -> bool:
+    """是否允许向 Mem0 发送旧版可读命名空间（含档案姓名/原始会话 ID）。
+
+    默认关闭：新版只写 SHA-256 哈希命名空间，常规删除不应把患者
+    姓名原文发给外部记忆服务。只有从旧版本升级、确需清理云端遗留
+    条目时，显式设置 MEDIX_MEM0_LEGACY_CLEANUP=1 才执行。
+    """
+    return (
+        os.getenv("MEDIX_MEM0_LEGACY_CLEANUP") or ""
+    ).strip() == "1"
+
+
 def _legacy_memory_scopes(profile: str, session_id: str) -> List[str]:
     """旧版本写入过的可读命名空间，删除会话时需一并清理。
 
     会话作用域哈希之前，摘要写入 medix_user / medix_local 或可读的
     medix_profile_<原名>、medix_session_<原始ID>，metadata.session_id
     也是原始会话 ID；只按新命名空间删除会永远漏掉这些云端数据。
+    默认不发送明文作用域，需显式开启旧数据清理。
     """
+    if not _legacy_memory_cleanup_enabled():
+        return []
     scopes = ["medix_user", "medix_local"]
     if profile:
         scopes.append(f"medix_profile_{profile}"[:120])
@@ -17156,9 +17277,13 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
                 session_id, user_id=_memory_scope(profile, session_id)
             )):
                 all_ok = False
-            if not profile and not _retry(
-                lambda: memory.delete_session_summary(
-                    session_id, user_id="medix_local"
+            if (
+                not profile
+                and _legacy_memory_cleanup_enabled()
+                and not _retry(
+                    lambda: memory.delete_session_summary(
+                        session_id, user_id="medix_local"
+                    )
                 )
             ):
                 # 旧版本单科会诊可能把摘要写入共享的 medix_local：
@@ -17179,10 +17304,13 @@ def _erase_long_term_entries(entries: List[Any]) -> bool:
             )):
                 all_ok = False
             # 旧版可读档案命名空间（medix_profile_<原名>）中的病史
-            # 摘要也必须随档案删除，否则删除承诺未兑现
-            if not _retry(lambda: memory.delete_scope(
-                f"medix_profile_{profile}"[:120]
-            )):
+            # 摘要也必须随档案删除；但发送明文姓名属于旧数据迁移，
+            # 需显式开启
+            if _legacy_memory_cleanup_enabled() and not _retry(
+                lambda: memory.delete_scope(
+                    f"medix_profile_{profile}"[:120]
+                )
+            ):
                 all_ok = False
     return all_ok
 
@@ -17253,11 +17381,13 @@ def _erase_long_term_before(
             _memory_scope(profile, ""), cutoff
         )):
             all_ok = False
-        # 旧版可读档案命名空间按时间窗清理（目标已重建时保留新数据）
-        if not _retry(lambda: memory.delete_scope_before(
-            f"medix_profile_{profile}"[:120], cutoff
-        )):
-            all_ok = False
+        # 旧版可读档案命名空间按时间窗清理（目标已重建时保留新数据；
+        # 发送明文姓名需显式开启旧数据清理）
+        if _legacy_memory_cleanup_enabled():
+            if not _retry(lambda: memory.delete_scope_before(
+                f"medix_profile_{profile}"[:120], cutoff
+            )):
+                all_ok = False
     return all_ok
 
 
