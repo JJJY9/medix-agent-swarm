@@ -6514,7 +6514,12 @@ async function purgeOldSessions() {
         );
         if (check.ok) {
           const info = await check.json().catch(() => ({}));
-          purged = Array.isArray(info.messages) && info.messages.length === 0;
+          // 首轮会诊尚未落库时消息列表同样为空：清理期间用户提交了
+          // 新会诊时，不能把仍在流式的会话当成「已被清理」清空界面
+          purged = Array.isArray(info.messages)
+            && info.messages.length === 0
+            && !busy
+            && !sendInFlight;
         } else if (check.status === 404) {
           // 删除墓碑：会话同样已不存在，必须清空当前界面
           purged = true;
@@ -6522,7 +6527,9 @@ async function purgeOldSessions() {
       } catch {
         purged = false;
       }
-      if (purged && sessionId === current) clearCurrentSession();
+      if (purged && sessionId === current && !busy && !sendInFlight) {
+        clearCurrentSession();
+      }
     }
   } catch (err) {
     setDiagStatus(`清理失败：${err.message || err}`, true);
@@ -9942,11 +9949,17 @@ function renderFamilyOverview(data) {
       const latestVaccine = vaccination.latest || {};
       const vaccineName = latestVaccine.vaccine_name || '';
       const dose = Number(latestVaccine.dose_number) || 0;
+      const latestVaccineDate = String(
+        latestVaccine.vaccinated_at || ''
+      ).slice(0, 10);
+      // 后端 vaccinations.count 是不限窗口的历史累计剂数：
+      // 不能写成「近 N 天」，否则一年前的接种会被描述成近期刚接种
       chips.appendChild(familyChip(
-        `疫苗 近 ${days} 天 ${Number(vaccination.count) || 0} 剂`
+        `疫苗 累计 ${Number(vaccination.count) || 0} 剂`
         + (
           vaccineName
             ? ` · ${vaccineName}${dose ? ` 第${dose}剂` : ''}`
+              + (latestVaccineDate ? `（${latestVaccineDate}）` : '')
             : ''
         )
         + (vaccination.overdue ? ` · 逾期 ${vaccination.overdue} 剂` : ''),
@@ -20600,10 +20613,40 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       clearDraft();
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
     }
+    // 启动恢复没有 expectedQuestion：若刷新恰逢服务端落库，INFLIGHT
+    // 主诉已被 restoreInflightQuestion 填回输入框，而服务端消息里本轮
+    // 问答已完整落库。不清空的话回车就会把同一主诉再会诊一次
+    let inflightReconciled = false;
+    if (!expectedQuestion && !pendingReset && els.input.value.trim()) {
+      const composerText = els.input.value.trim();
+      let lastUserIndex = -1;
+      for (let i = messages.length - 1; i >= 0; i -= 1) {
+        if (messages[i].role === 'user') {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      const answered = lastUserIndex >= 0 && messages
+        .slice(lastUserIndex + 1)
+        .some((message) => message.role === 'assistant');
+      if (
+        answered
+        && String(messages[lastUserIndex].content || '').trim()
+          === composerText
+      ) {
+        els.input.value = '';
+        autoGrow();
+        clearDraft();
+        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        inflightReconciled = true;
+      }
+    }
     if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
       setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
+    } else if (inflightReconciled) {
+      setVitals('idle', '上次会诊已完成，答复已载入');
     } else {
       setVitals('idle', '已恢复上次会诊');
     }
@@ -20842,6 +20885,16 @@ async function send(question) {
       // 隐私模式忽略
     }
 
+    // 上下文组装期间档案下拉仍可切换：请求体必须使用发送时刻
+    // 的档案快照（sendProfile），否则 A 的主诉+上下文会被挂到
+    // B 档案名下落库；组装后档案已变化则中止本轮
+    const consultContext = await buildConsultContext(controller.signal);
+    if ((els.profileSelect.value || '') !== (sendProfile || '')) {
+      throw Object.assign(
+        new Error('档案已切换，本轮会诊未提交'),
+        { profileChanged: true }
+      );
+    }
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -20849,8 +20902,8 @@ async function send(question) {
         question,
         session_id: sid,
         enable_swarm: !els.ctxSingle.checked,
-        context: await buildConsultContext(controller.signal),
-        patient_profile: els.profileSelect.value || '',
+        context: consultContext,
+        patient_profile: sendProfile,
       }),
       signal: controller.signal,
     });
@@ -20858,11 +20911,28 @@ async function send(question) {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       const detail = data.detail;
-      const message = (
-        detail && typeof detail === 'object'
-          ? (detail.message || detail.code)
-          : detail
-      ) || `服务返回 ${res.status}`;
+      let message = '';
+      if (Array.isArray(detail)) {
+        // FastAPI 请求校验失败时 detail 是数组：直接读 message/code
+        // 只会显示「服务返回 422」，用户不知道哪个字段需要修改
+        message = detail
+          .map((item) => {
+            if (!item || typeof item !== 'object') {
+              return String(item || '');
+            }
+            const loc = Array.isArray(item.loc)
+              ? item.loc.filter((part) => part !== 'body').join('.')
+              : '';
+            return `${loc ? `${loc}：` : ''}${item.msg || ''}`;
+          })
+          .filter(Boolean)
+          .join('；');
+      } else if (detail && typeof detail === 'object') {
+        message = detail.message || detail.code || '';
+      } else if (detail) {
+        message = String(detail);
+      }
+      message = message || `服务返回 ${res.status}`;
       const error = new Error(message);
       if (
         res.status === 404
@@ -21029,7 +21099,23 @@ async function send(question) {
     }
     working.remove();
 
-    if (err.name === 'AbortError') {
+    if (err.profileChanged) {
+      // 等待上下文期间用户换档：本轮从未发给服务端，主诉放回
+      // 输入框并保留发送时的档案归属，提示用户确认后重新发送
+      if (askTurn) askTurn.remove();
+      try {
+        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      } catch {
+        // 忽略
+      }
+      restoreComposer(question);
+      preserveDraftProfile(sendProfile, question);
+      renderError('档案已切换，本轮会诊未提交，主诉已放回输入框。');
+      AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
+      els.readout.mode.textContent = '未提交';
+      logStep('档案切换，本轮会诊已取消', false);
+      setVitals('warn', '档案已切换，请确认后重新发送');
+    } else if (err.name === 'AbortError') {
       announceChat('已停止生成');
       // 本轮未落库时主诉不能只留在卡片闭包里：刷新/新建会诊后
       // 那份描述将无法恢复
@@ -21829,6 +21915,10 @@ async function applySelectedProfile() {
     return;
   }
 
+  // 换档前先快照输入框里的旧患者草稿：随后的任何键入/粘贴都不能
+  // 把这段主诉的档案归属改成新患者
+  noteComposerSwitchSnapshot();
+
   const hasTurns = (
     els.thread.querySelectorAll('.turn').length > 0
     || sessionRestoreInFlight
@@ -21958,12 +22048,65 @@ let restoredDraftProfileTimer = null;
 //: 用户编辑时的草稿档案归属：防抖/翻页落盘必须原样持久化它，
 //: 不能改成落盘瞬间的当前档案（换档后刷新会把旧患者文本改记到新档案）
 let draftProfileMemory = null;
+//: 换档时输入框里可能有上一位患者未发送的主诉：记录当时的文本，
+//: 在文本被整体替换之前，input 监听器不能把草稿归属改写成新档案
+let switchDraftSnapshot = null;
 const DELETED_DRAFT_PROFILE = '已删除档案';
 let draftTimer = null;
 
 function draftProfileSnapshot() {
   if (draftProfileMemory !== null) return draftProfileMemory;
   return safeSessionGet(DRAFT_PROFILE_KEY) || '';
+}
+
+function noteComposerSwitchSnapshot() {
+  // 换档瞬间输入框非空：记下文本与归属，输入监听据此判断
+  // 「这是上一位患者的草稿」还是「用户已开始写新问题」
+  switchDraftSnapshot = null;
+  try {
+    const text = els.input.value || '';
+    if (!text.trim()) return;
+    switchDraftSnapshot = { owner: draftProfileSnapshot(), text };
+  } catch {
+    switchDraftSnapshot = null;
+  }
+}
+
+function composerKeepsSwitchOwner() {
+  // 输入框仍包含换档前文本的主体内容（补标点/改错别字/少量删改）
+  // 时，草稿归属保持原档案；整体替换或清空后才改为当前档案。
+  // 否则换档后任意一次键入都会把旧患者主诉改记成新患者草稿
+  if (!switchDraftSnapshot) return false;
+  const current = els.input.value || '';
+  if (!current.trim()) {
+    switchDraftSnapshot = null;
+    return false;
+  }
+  const original = switchDraftSnapshot.text;
+  if (current.includes(original)) return true;
+  if (original.includes(current)) {
+    const kept = current.trim().length;
+    const total = original.trim().length;
+    if (kept >= Math.max(2, Math.ceil(total * 0.5))) return true;
+  }
+  let prefix = 0;
+  const minLen = Math.min(current.length, original.length);
+  while (prefix < minLen && current[prefix] === original[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < minLen - prefix
+    && current[current.length - 1 - suffix]
+      === original[original.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  if (prefix + suffix >= Math.max(4, Math.ceil(minLen * 0.5))) {
+    return true;
+  }
+  switchDraftSnapshot = null;
+  return false;
 }
 
 function composerIsDetached() {
@@ -22122,14 +22265,21 @@ function restoreComposer(question) {
   const text = String(question || '');
   if (!text) return;
   const current = els.input.value;
+  let merged = text;
   if (current.trim()) {
     if (current.includes(text)) return;
-    els.input.value = `${text}
+    merged = `${text}
 
 ${current}`;
-  } else {
-    els.input.value = text;
   }
+  // 程序赋值不受 textarea maxlength 限制：超过服务端 2000 字上限的
+  // 输入提交必然 422，失败后又被原样放回，形成无法自助恢复的死循环
+  const limit = 2000;
+  if (merged.length > limit) {
+    merged = merged.slice(0, limit);
+    setVitals('warn', '输入内容超过 2000 字，已截断，请确认后发送');
+  }
+  els.input.value = merged;
   autoGrow();
   saveDraft();
 }
@@ -22370,11 +22520,14 @@ els.input.addEventListener('input', () => {
   // 归属不能把全新的问题误判成旧患者草稿
   try {
     if (els.input.value.trim()) {
-      draftProfileMemory = (
-        activeProfileName || readStoredProfile() || ''
-      );
-      safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
+      if (!composerKeepsSwitchOwner()) {
+        draftProfileMemory = (
+          activeProfileName || readStoredProfile() || ''
+        );
+        safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
+      }
     } else {
+      switchDraftSnapshot = null;
       draftProfileMemory = null;
     }
   } catch {

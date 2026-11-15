@@ -5489,12 +5489,16 @@ class SessionStore:
                 1 for mine, want in zip(local, expected) if mine == want
             )
 
-        def _tail_prefers_sibling(candidate: int) -> bool:
-            """候选尾字段更像同组另一条同内容孪生备份行。
+        def _tail_prefers_sibling(
+            candidate: int, cross_profile: bool = False
+        ) -> bool:
+            """候选尾字段更像另一条同内容孪生备份行。
 
             「被删的是靠前那条、存活并编辑的是靠后那条」时，先处理行
             不能凭「存活行被编辑过」把属于兄弟行的候选认领走，否则被
             删记录的启停/停药等尾字段永久丢失、存活行被复制。
+            cross_profile=True 时把改挂到其他成员的同秒孪生行也纳入
+            比较：尾字段精确命中另一条备份记录的候选属于那条记录。
             """
             if not backup_tails or not backup_contents or tail_where is None:
                 return False
@@ -5519,7 +5523,8 @@ class SessionStore:
                 ):
                     continue
                 if (
-                    wanted_profile is not None
+                    not cross_profile
+                    and wanted_profile is not None
                     and backup_profiles
                     and _normalize_profile_name(
                         backup_profiles.get(other_id) or ""
@@ -5766,6 +5771,46 @@ class SessionStore:
                 if contents == fingerprint:
                     return True
             return False
+
+        def _same_profile_exact_candidate(exclude: int) -> Optional[int]:
+            """同档案里软字段/内容/尾字段全部命中本行的候选。
+
+            跨档案改挂分支认领前要先看它：本行可能另有正常的同档案
+            存活行（重复导入时被上一次恢复补插），改挂候选其实是
+            兄弟备份行的存活版本，抢先认领会把对方复制成两条。
+            """
+            if soft_where is None or not row_profile:
+                return None
+            created_key = str(created_at_value or "")
+            if not created_key:
+                return None
+            fragment, extra = soft_where
+            try:
+                rows = self._conn.execute(
+                    f"SELECT id FROM {table}"
+                    f" WHERE created_at = ? AND profile = ?"
+                    f" AND {fragment} AND id != ?",
+                    (created_key, row_profile, exclude),
+                ).fetchall()
+            except sqlite3.Error:
+                return None
+            for row in rows:
+                candidate = int(row["id"])
+                if candidate in moved or candidate in matched:
+                    continue
+                if (
+                    pre_existing_ids is not None
+                    and candidate not in pre_existing_ids
+                ):
+                    continue
+                if content_where and not (
+                    _candidate_content_matches_backup(candidate)
+                ):
+                    continue
+                if tail_where is not None and not _tail_matches(candidate):
+                    continue
+                return candidate
+            return None
 
         def _orphan_edited_candidate() -> Optional[int]:
             """软字段被本地改名后与本行对应的唯一编辑候选。
@@ -6232,6 +6277,26 @@ class SessionStore:
                             if candidate in tail_ids
                         ]
                     candidates = filtered_candidates
+                if len(candidates) > 1 and tail_where is not None:
+                    # 同内容孪生（同秒两条相同症状/提醒）：尾字段精确
+                    # 命中本行的唯一候选是本行的存活版本（可能已改挂
+                    # 到其他成员）；其余候选的尾字段更像兄弟备份行时
+                    # 交给那条记录认领。不先把改挂行挑出来的话，两条
+                    # 候选互相抵消，本行会按「缺行」把旧版本补插成重复
+                    own_tail = [
+                        candidate for candidate in candidates
+                        if _tail_matches(candidate)
+                    ]
+                    if len(own_tail) == 1:
+                        others = [
+                            candidate for candidate in candidates
+                            if candidate != own_tail[0]
+                        ]
+                        if all(
+                            _tail_prefers_sibling(candidate)
+                            for candidate in others
+                        ):
+                            candidates = own_tail
                 if (
                     not candidates
                     and local_group_size >= backup_group_size
@@ -6244,6 +6309,14 @@ class SessionStore:
                 if len(candidates) == 1:
                     sole = min(candidates)
                     skip_sole = False
+                    if not _tail_matches(sole) and _tail_prefers_sibling(
+                        sole, cross_profile=True
+                    ) and not _tail_prefers_sibling(sole):
+                        # 候选尾字段精确命中另一条同秒同内容但不同档案
+                        # 的备份记录：它是那条记录被改挂后的存活版本
+                        # （如兄弟提醒被移入本成员名下），本行按被删
+                        # 记录补回，否则对方记录永远无法恢复、本行被复制
+                        return _ambiguous()
                     if not _tail_matches(sole) and _tail_prefers_sibling(
                         sole
                     ):
@@ -6327,7 +6400,13 @@ class SessionStore:
                 ):
                     continue
                 moved_candidates.append(candidate)
-            if len(moved_candidates) == 1:
+            if len(moved_candidates) == 1 and (
+                _same_profile_exact_candidate(moved_candidates[0])
+                is None
+            ):
+                # 同档案里若已有软/内容/尾字段全部命中的存活行，它
+                # 才是本行的版本；改挂候选属于兄弟备份行，留到下面
+                # 按正常配对认领，否则兄弟行会被复制成两条
                 return _claim(moved_candidates[0], mark_moved=True)
 
         if content_where:
@@ -6749,12 +6828,13 @@ class SessionStore:
                 # 内容列（如提醒到期日）与备份行不同、又没有任何编辑
                 # 证据：它是同秒另一条记录，本行必须按被删补插
                 return _ambiguous()
-            if _tail_prefers_sibling(candidate) and not _tail_matches(
-                candidate
-            ):
-                # 候选的非内容字段更像同组另一条同内容孪生备份行：
-                # 交给那条记录认领，本行按被删记录补插（否则「恢复的
-                # 已完成孪生被在用孪生吞掉」或反方向都可能发生）
+            if _tail_prefers_sibling(
+                candidate, cross_profile=True
+            ) and not _tail_matches(candidate):
+                # 候选的非内容字段更像另一条同内容孪生备份行（包括被
+                # 改挂到其他成员的行）：交给那条记录认领，本行按被删
+                # 记录补插（否则「恢复的已完成孪生被在用孪生吞掉」
+                # 或反方向、以及跨档案改挂兄弟行被抢占都可能发生）
                 return _ambiguous()
             if (
                 soft_where is not None
@@ -12274,6 +12354,41 @@ class SessionStore:
                     "SELECT id FROM visit_records WHERE profile = ?)",
                     (int(appointment_id), normalized["profile"]),
                 )
+                # 备注里的「由就诊记录 #N 自动创建」标记若指向其他
+                # 成员（或已不存在）的就诊，一并剥离：否则该就诊之后
+                # 改/删档案时会按标记把这条预约再抢走、甚至级联删除
+                # 新成员的预约与提醒
+                note_text = str(normalized["note"] or "")
+                marker_hits = list(
+                    re.finditer(r"由就诊记录 #(\d+) 自动创建", note_text)
+                )
+                if marker_hits:
+                    cleaned_note = note_text
+                    for match in marker_hits:
+                        marker_visit = _safe_db_id(match.group(1))
+                        marker_owner = (
+                            self._conn.execute(
+                                "SELECT profile FROM visit_records"
+                                " WHERE id = ?",
+                                (marker_visit,),
+                            ).fetchone()
+                            if marker_visit else None
+                        )
+                        if marker_owner is None or (
+                            _normalize_profile_name(
+                                str(marker_owner["profile"] or "")
+                            )
+                            != normalized["profile"]
+                        ):
+                            cleaned_note = cleaned_note.replace(
+                                match.group(0), ""
+                            )
+                    cleaned_note = " ".join(cleaned_note.split())[:300]
+                    if cleaned_note != note_text:
+                        self._conn.execute(
+                            "UPDATE appointments SET note = ? WHERE id = ?",
+                            (cleaned_note, int(appointment_id)),
+                        )
             # 取消/完成时去掉待办提醒；只有改期或状态变化才重算提醒时间，
             # 只改备注/医生不能把用户手动推迟的提醒拨回原日期
             reminder_due = ""
@@ -14005,20 +14120,31 @@ class SessionStore:
                 # 预约同样跟随改档案：否则旧档案保留别人的待办，新档案
                 # 安排复诊时看不到它而再建一条，形成跨档案重复复诊
                 marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
+                old_profile = str(old_row["profile"] or "")
+                # 只迁移仍在本就诊旧档案名下的自动预约：预约被改到
+                # 其他成员后 owner 已清 0、备注标记可能残留，不能因为
+                # 标记指向本就诊就把别人的预约再搬一次、甚至级联删除
                 self._conn.execute(
                     "UPDATE appointments SET profile = ?, updated_at = ?"
-                    " WHERE status = 'upcoming' AND (owner_visit_id = ?"
-                    "        OR note LIKE ?)",
+                    " WHERE status = 'upcoming' AND profile = ?"
+                    "   AND (owner_visit_id = ? OR note LIKE ?)",
                     (
-                        normalized["profile"], now, int(visit_id),
-                        f"%{marker_text}%",
+                        normalized["profile"], now, old_profile,
+                        int(visit_id), f"%{marker_text}%",
                     ),
                 )
+                # 提醒子查询与预约迁移保持同一集合：导入恢复留下的
+                # 「只有备注标记、owner=0」的自动预约及其待办提醒
+                # 一起跟随改档案，避免旧成员名下残留别人的复诊待办
                 self._conn.execute(
                     "UPDATE reminders SET profile = ?, updated_at = ?"
                     " WHERE appointment_id IN (SELECT id FROM appointments"
-                    "   WHERE status = 'upcoming' AND owner_visit_id = ?)",
-                    (normalized["profile"], now, int(visit_id)),
+                    "   WHERE status = 'upcoming' AND profile = ?"
+                    "     AND (owner_visit_id = ? OR note LIKE ?))",
+                    (
+                        normalized["profile"], now, normalized["profile"],
+                        int(visit_id), f"%{marker_text}%",
+                    ),
                 )
             # 复诊日期变化后撤销旧的自动预约/提醒：只清关联编号会留下
             # 幽灵预约和仍会到期的旧提醒，再次安排时两套并存

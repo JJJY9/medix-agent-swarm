@@ -161,8 +161,13 @@ PREGNANCY_TERMS = (
     # 产科急症高风险场景
     "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
     "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
-    # 「剖宫产术后N天」是近期产科状态：术后出血属于产后出血
-    "剖宫产", "剖腹产",
+)
+#: 「剖宫产术后N天/刚做完剖宫产」是近期产科状态；「剖宫产5年了」是
+#: 既往史，不算当前妊娠
+_CAESAREAN_RECENT_RE = re.compile(
+    r"(?:剖宫产|剖腹产)(?:术后)?\s*"
+    r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
+    r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
 #: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
@@ -210,7 +215,6 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
     r"|(?:孕妇|产妇|孕产妇|怀孕|孕期|产前|产后|早孕|孕[早中晚]期"
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
-    r"|剖宫产|剖腹产"
     r"|胎停育?|稽留流产"
     r"|孕\s*[0-9一二两三四五六七八九十]+"
     r"\s*(?:[+＋]\s*\d*)?"
@@ -804,6 +808,28 @@ def _is_red_flag_text(text: str) -> bool:
     return _has_pregnancy_bleeding(text)
 
 
+def _definition_multi_symptom(prefix: str) -> bool:
+    """定义问句前缀是否含≥2 个不同症状词（无标点并写）。"""
+    tokens = set()
+    for phrase, _label in RED_FLAG_PHRASES:
+        tokens.add(phrase)
+    tokens.update(FEVER_TERMS)
+    tokens.update(_NEGATED_SYMPTOM_TERMS)
+    tokens.update(_COLLOQUIAL_SYMPTOM_WORDS)
+    tokens.update(("白沫", "口唇发紫", "口唇青紫", "发绀", "吐白沫"))
+    matched: list = []
+    for token in sorted(
+        (t for t in tokens if len(t) >= 2 and t in prefix),
+        key=len,
+        reverse=True,
+    ):
+        if all(token not in chosen for chosen in matched):
+            matched.append(token)
+            if len(matched) >= 2:
+                return True
+    return False
+
+
 def _clean_complaint_clause(
     clause: str, patient_context_seen: bool = False
 ) -> str:
@@ -907,12 +933,17 @@ def _clean_complaint_clause(
                     "放射", "压榨", "撕裂", "大汗", "冷汗", "冒汗",
                     "难忍", "濒死", "躺不平", "不能平卧", "端坐呼吸",
                     "闷痛", "绞痛", "刀割",
+                    "左侧", "右侧", "左边", "右边", "左胸", "右胸",
+                    "左肩", "右肩", "胸前区",
                 )
             )
             # 枚举/后置阳性线索（越来越/加剧/恶化…）与场景修饰
             # （活动后/夜间/走路时…）同样说明是在描述真实主诉
             or any(word in prefix for word in _POST_POSITIVE_CUES)
             or any(word in prefix for word in _DEFINITION_KEEP_CUES)
+            # 无标点并写的多症状（「发热胸痛」「抽搐吐白沫」）是真实
+            # 主诉，不是单一术语解释
+            or _definition_multi_symptom(prefix)
             # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
             # 单一红旗症状也按真实主诉保留
             or (
@@ -1231,7 +1262,8 @@ HEAD_TRAUMA_TERMS = (
     "磕到脑袋", "撞到脑袋", "碰到脑袋", "磕了一下头", "头磕了一下",
     "头撞了一下", "头碰了一下", "头被撞", "头被磕", "头被碰",
     "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
-    "头上磕了个包",
+    "头上磕了个包", "头皮血肿", "头部血肿", "头皮下血肿",
+    "头流血", "头上流血", "头出血", "头上出血",
     "撞了一下头", "撞了下头", "撞到了头", "磕到了头", "碰了一下头",
     "磕了下头", "头部撞了一下", "头部被撞", "撞了一下脑袋",
     "脑袋被撞", "脑袋被磕", "脑袋被碰",
@@ -1274,6 +1306,16 @@ _HEAD_TRAUMA_RE = re.compile(
 )
 
 
+#: 头部起包/血肿的语序（「头上起了个大包」没有撞击动词，但同样
+#: 是头部外伤证据）
+_HEAD_SWELLING_RE = re.compile(
+    r"(?<![枕骨头脚趾指])"
+    r"(?:头上|头部|头皮|脑袋上?|额头|头顶|后脑勺)"
+    r"(?:起了?|肿了?|鼓了?)(?:个|一个)?(?:大)?(?:包|肿包|血肿)"
+    r"|(?:头皮|头部|头皮下)血肿"
+)
+
+
 def _has_head_trauma(text: str) -> bool:
     for term in HEAD_TRAUMA_TERMS:
         start = text.find(term)
@@ -1285,7 +1327,10 @@ def _has_head_trauma(text: str) -> bool:
             ):
                 return True
             start = text.find(term, start + len(term))
-    return _HEAD_TRAUMA_RE.search(text) is not None
+    return (
+        _HEAD_TRAUMA_RE.search(text) is not None
+        or _HEAD_SWELLING_RE.search(text) is not None
+    )
 
 
 #: 家族史/他人病史不能当作患者本人的当前状态
@@ -1381,7 +1426,8 @@ _RESTART_TEXT_RE = re.compile(
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
-    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐)"
+    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别))"
 )
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
@@ -1389,7 +1435,8 @@ _RESTART_OBJECT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
-    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐)"
+    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别))"
     r"(?:了)?\s*([一-龥A-Za-z0-9]{1,10})"
 )
@@ -1433,12 +1480,24 @@ _CHEMO_ENDED_RE = re.compile(
     r"|[0-9一二两三四五六七八九十半几]+\s*(?:年|个月)\s*前"
     r"(?:(?!开始|至今|一直)[^，。；]){0,6}?"
     r"(?:化疗|放疗)(?:过|了)"
+    # 「五年前做过/结束/做完化疗」：完成动词在名词之前
+    r"|[0-9一二两三四五六七八九十半几]+\s*(?:年|个月)\s*前"
+    r"(?:(?!开始|至今|一直)[^，。；]){0,4}?"
+    r"(?:做过|接受过|进行过|打完|做完|完成|结束|停止|停用)(?:了|过)?"
+    r"[^，。；]{0,2}?(?:化疗|放疗)"
 )
 #: 刚结束不久的化疗（结束才一周/结束后一个月）：免疫抑制仍可能存在
 _CHEMO_RECENT_END_RE = re.compile(
     r"(?:结束|完成|做完)(?:才|刚|不到|后)?\s*"
     r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*"
     r"(?:天|周|个?月)"
+)
+#: 时间词写在完成动词之前（上周化疗结束/昨天化疗结束/两周前化疗结束）
+_CHEMO_RECENT_END_LEAD_RE = re.compile(
+    r"(?:今天|昨天|前天|上周|本周|这周|最近|前几天|刚|刚刚"
+    r"|[一二两三四五六1-6]\s*(?:天|周|个月)\s*前)"
+    r"[^，。；]{0,6}?(?:化疗|放疗|靶向治疗|免疫治疗)(?:已经?|已)?\s*"
+    r"(?:结束|完成|做完|停止)"
 )
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
@@ -1669,7 +1728,9 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             clause
         ) and not re.search(
             r"(?:刚|刚刚|最近|这两天|这几天)\s*(?:结束|完成|做完)", clause
-        ) and not _CHEMO_RECENT_END_RE.search(clause):
+        ) and not _CHEMO_RECENT_END_RE.search(clause) and not (
+            _CHEMO_RECENT_END_LEAD_RE.search(clause)
+        ):
             # 「化疗结束5年了/化疗已经结束了」不是当前免疫抑制；
             # 只剥离结束短语，同分句的其它当前状态（每天吃华法林/
             # 怀孕/长期激素）继续参与判断
@@ -1724,6 +1785,7 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
                 _RESTART_TEXT_RE.search(clause)
                 or _RESTART_TEXT_RE.search(restart_window)
                 or _CHEMO_RECENT_END_RE.search(clause)
+                or _CHEMO_RECENT_END_LEAD_RE.search(clause)
             ):
                 # 「停了半年，最近又吃上了」：跨分句续用线索；
                 # 「化疗结束后一周」：结束后仍处免疫抑制窗口
@@ -1815,7 +1877,22 @@ def _strip_family_narration(
     return clause
 
 
-def _patient_only_text(text: str) -> str:
+def _context_child_patient(context: Any) -> bool:
+    """当前档案是否是儿童/婴幼儿（家属称谓在此语境下指患者本人）。
+
+    档案未填年龄时按未知处理：宁可把「我儿子发烧」算到患者头上
+    触发安全网，也不能在患儿档案下静默丢弃急症描述；明确成年
+    （≥18 岁）的档案仍保持「我爸/我妈」等家属分句的排除口径。
+    """
+    if not isinstance(context, dict):
+        return True
+    months = _parse_age_months(context.get("age"))
+    return months is None or months < 216
+
+
+def _patient_only_text(
+    text: str, child_patient: bool = False
+) -> str:
     """拼接只属于患者本人的分句（家属作主语的分句丢弃）。"""
     kept = []
     # 小数点不是分句边界：「38.5度」不能被拆成「38」「5度」，
@@ -1850,6 +1927,12 @@ def _patient_only_text(text: str) -> str:
             elif _has_patient_subject(clause):
                 # 「我妈说宝宝发烧」「我和我爸都发烧」：句中有明确的
                 # 患者主体，不能因为家属称谓整句丢弃
+                pass
+            elif child_patient and any(
+                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+            ):
+                # 患儿档案下家长口述「我儿子今天发烧」：儿子/女儿
+                # 指的就是当前患者本人
                 pass
             else:
                 continue
@@ -1914,7 +1997,9 @@ def _patient_pattern_mention(text: str, pattern) -> bool:
     return False
 
 
-def _patient_head_trauma_mention(text: str) -> bool:
+def _patient_head_trauma_mention(
+    text: str, child_patient: bool = False
+) -> bool:
     """患者本人的头部外伤：词表按词边界（排除脚趾头/手指头）与否定过滤。"""
     for clause in re.split(r"[，。；;,.!?！？\n]", text):
         if not clause:
@@ -1927,8 +2012,18 @@ def _patient_head_trauma_mention(text: str) -> bool:
                 clause = stripped
             elif _has_patient_subject(clause):
                 pass
+            elif child_patient and any(
+                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+            ):
+                pass
             else:
                 continue
+        swell = _HEAD_SWELLING_RE.search(clause)
+        if swell is not None:
+            prefix = _clause_prefix(clause, swell.start())
+            suffix = _clause_suffix(clause, swell.end())
+            if not _is_negated(prefix, suffix):
+                return True
         for term in HEAD_TRAUMA_TERMS:
             start = clause.find(term)
             while start != -1:
@@ -1977,7 +2072,8 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
         return []
 
     flags: List[Tuple[str, str]] = []
-    patient_text = _patient_only_text(text)
+    child_patient = _context_child_patient(context)
+    patient_text = _patient_only_text(text, child_patient)
     age_months = _parse_age_months(context.get("age"))
     if age_months is not None and age_months < 3 and _has_fever(patient_text):
         flags.append((
@@ -2012,7 +2108,7 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             _active_term_mention(anticoag_text, term)
             for term in ANTICOAGULANT_TERMS
         )
-        and _patient_head_trauma_mention(text)
+        and _patient_head_trauma_mention(text, child_patient)
     ):
         flags.append((
             "抗凝治疗期间头部外伤",
@@ -2097,6 +2193,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
             for term in PREGNANCY_TERMS
         )
         or _PREGNANCY_EVIDENCE_RE.search(pregnancy_text) is not None
+        or _CAESAREAN_RECENT_RE.search(pregnancy_text) is not None
     )
     if (
         pregnancy_mentioned

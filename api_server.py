@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import hashlib
+import hmac
 import secrets
 import ipaddress
 import uuid
@@ -1630,14 +1631,45 @@ def reminder_audit_target(reminder: Dict[str, Any]) -> str:
     return str(reminder.get("id") or "")
 
 
+def _audit_profile_salt() -> str:
+    """每安装独立的审计哈希盐，持久化在 app_state（不参与导出）。"""
+    cached = str(getattr(state, "audit_profile_salt", "") or "")
+    if cached:
+        return cached
+    stored = ""
+    try:
+        from memory import get_session_store
+
+        store = get_session_store()
+        stored = str(store.get_app_state("audit_profile_salt") or "")
+        if not stored:
+            stored = secrets.token_hex(32)
+            store.set_app_state("audit_profile_salt", stored)
+    except Exception:  # noqa: BLE001
+        # 存储不可用时退回进程内随机盐：审计哈希仍不可反查，
+        # 只是重启后同安装的摘要会变化
+        stored = stored or secrets.token_hex(32)
+    state.audit_profile_salt = stored
+    return stored
+
+
 def _profile_audit_key(profile: str) -> str:
-    """档案审计目标用短哈希，导出的审计/备份不包含患者姓名。"""
+    """档案审计目标用带盐短哈希：既不含姓名，也无法被字典反查。
+
+    无盐 SHA-256 对中文姓名可离线穷举（家庭成员候选名有限），
+    拿到导出文件即可还原姓名与对应操作；改用每安装独立随机盐，
+    同一姓名在所有安装的摘要互不相同，导出间也无法关联。
+    """
     from memory.session_store import _normalize_profile_name
 
     normalized = _normalize_profile_name(profile)
     if not normalized:
         return "未指定"
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    digest = hmac.new(
+        _audit_profile_salt().encode("utf-8"),
+        normalized.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:16]
     return f"profile:{digest}"
 
 
@@ -2510,6 +2542,19 @@ def _is_ipv6_aggregate_key(key: str) -> bool:
     )
 
 
+def _is_ipv6_source_key(key: str) -> bool:
+    """限流键是否来自 IPv6 来源（/64 聚合桶或 NAT64 单地址桶）。
+
+    NAT64（64:ff9b::/96）按单地址分桶避免跨用户误锁，但它同样是
+    IPv6 来源：必须计入不按前缀分桶的全局失败预算，否则轮换
+    NAT64 映射地址就能成倍放大在线令牌猜解。
+    """
+    text = str(key or "")
+    if not text.startswith("ip:"):
+        return False
+    return ":" in text[3:]
+
+
 def _client_ip_key(request: Request) -> str:
     """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
 
@@ -2895,6 +2940,26 @@ async def require_access_token(request: Request, call_next):
             else:
                 # 直连远程来源：前置检查已锁定的来源不再执行令牌比较，
                 # 限流才真正降低猜测速率（而不是只把 401 改成 429）
+                if _is_ipv6_source_key(prelock_key):
+                    # NAT64 等单地址 IPv6 桶：保留每键硬预锁定，同时
+                    # 受全局失败预算约束，轮换映射地址不能绕过
+                    global_blocked, global_retry = (
+                        auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+                    )
+                    if global_blocked and not known_token:
+                        return add_security_headers(JSONResponse(
+                            status_code=429,
+                            content={
+                                "detail": "访问令牌错误次数过多，请稍后再试。",
+                                "code": "auth_rate_limited",
+                                "retry_after": round(global_retry, 1),
+                            },
+                            headers={
+                                "Retry-After": str(
+                                    max(1, math.ceil(global_retry))
+                                )
+                            },
+                        ))
                 blocked, retry_after = auth_failure_limiter.is_blocked(
                     prelock_key
                 )
@@ -2950,6 +3015,25 @@ async def require_access_token(request: Request, call_next):
                         headers={"Retry-After": "1"},
                     ))
             else:
+                if _is_ipv6_source_key(prelock_key):
+                    # NAT64 单地址桶同样计入全局失败预算（见上）
+                    global_blocked, global_retry = (
+                        auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+                    )
+                    if global_blocked and not known_token:
+                        return add_security_headers(JSONResponse(
+                            status_code=429,
+                            content={
+                                "detail": "访问令牌错误次数过多，请稍后再试。",
+                                "code": "auth_rate_limited",
+                                "retry_after": round(global_retry, 1),
+                            },
+                            headers={
+                                "Retry-After": str(
+                                    max(1, math.ceil(global_retry))
+                                )
+                            },
+                        ))
                 blocked, retry_after = auth_failure_limiter.is_blocked(
                     prelock_key
                 )
@@ -3049,9 +3133,10 @@ async def require_access_token(request: Request, call_next):
                     # 新桶：回环来源的失败统一按代理对端计数
                     limiter_key = loopback_bucket_key
                 allowed, retry_after = limiter.check(limiter_key)
-                if _is_ipv6_aggregate_key(limiter_key):
+                if _is_ipv6_source_key(limiter_key):
                     # 跨 /64 轮换源地址：全局预算同样计数，超过后
-                    # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度
+                    # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度；
+                    # NAT64 单地址桶同样计入，否则轮换映射地址放大猜解
                     auth_failure_limiter_ipv6_global.check("ipv6")
                 if not allowed:
                     return add_security_headers(JSONResponse(
@@ -12685,6 +12770,10 @@ async def family_overview(days: int = 7):
     for item in window_metrics:
         if item.get("metric") != "glucose":
             continue
+        if (item.get("profile") or "", "glucose") in target_map:
+            # 已设置个体化血糖目标：达标情况由目标卡片展示，
+            # 家庭关注不能再用通用阈值标红，与 over_target 口径一致
+            continue
         try:
             value = float(item.get("value1") or 0)
         except (TypeError, ValueError):
@@ -12721,6 +12810,9 @@ async def family_overview(days: int = 7):
     bp_peaks: Dict[str, List[float]] = {}
     for item in window_metrics:
         if item.get("metric") != "bp":
+            continue
+        if (item.get("profile") or "", "bp") in target_map:
+            # 已设置个体化血压目标：家庭关注与目标卡片口径一致
             continue
         try:
             systolic = float(item.get("value1") or 0)
@@ -13401,9 +13493,11 @@ async def export_family_overview_csv(days: int = 7):
             medication_text = (
                 f"近 7 天未服 {int(medications['skipped_week'])} 次"
             )
-            adherence = medications.get("adherence")
-            if adherence:
-                adherence_text = f"{adherence['rate']}%"
+        # 近 7 天依从率与药物启停状态无关：在用药物同样要有该列，
+        # 不能只在已停用分支里赋值
+        adherence = medications.get("adherence")
+        if adherence:
+            adherence_text = f"{adherence['rate']}%"
         reminders = item.get("reminders") or {}
         reminder_text = (
             f"待办 {reminders.get('pending', 0)}，"

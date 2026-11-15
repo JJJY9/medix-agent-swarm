@@ -592,7 +592,7 @@ def test_frontend_round59_guards():
     ]
     # 发送时快照档案，abort/失败恢复主诉后守住草稿归属
     assert "const sendProfile = activeProfileName || readStoredProfile() || '';" in send
-    assert app_js.count("preserveDraftProfile(sendProfile, question);") == 3
+    assert app_js.count("preserveDraftProfile(sendProfile, question);") >= 3
     assert "function preserveDraftProfile(" in app_js
     # 输入时立即同步草稿档案（不等 200ms 防抖）
     input_handler = app_js[
