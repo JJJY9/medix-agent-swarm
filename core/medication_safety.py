@@ -618,6 +618,8 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用"
     r"|没有在吃|没有在服用|没有吃|没有服用|没吃过(?!量)"
     r"|没有用过|没用过|未服用过)"
+    # 「还没吃完/没吃够」表示仍在服用，不是停药
+    r"(?![完够满])"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
 )
 #: 药名之后的既往用药：「阿司匹林以前吃过」「阿司匹林之前用过」。
@@ -928,7 +930,7 @@ def _alias_matches(text: str, alias: str) -> bool:
         long_suffix = text[end:right + 25]
         if (
             _USE_DOUBLE_NEGATION.search(prefix)
-            or _DOSE_MISSED_PREFIX.search(prefix)
+            or _DOSE_MISSED_PREFIX.search(prefix + suffix)
             or _FUTURE_STOP_PREFIX.search(prefix)
             or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
             or _NEGATED_STOP_PREFIX.search(prefix)

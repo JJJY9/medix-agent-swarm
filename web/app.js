@@ -3314,6 +3314,7 @@ async function ensureSession(signal) {
   sessionId = data.session_id;
   persistSessionId(sessionId);
   setSessionUrl(sessionId);
+  markFreshSession(sessionId);
   // 空状态直接点常用主诉/没有会话时的新建：输入框草稿归属到新会话
   reassignDraftToCurrentSession();
   els.readout.session.textContent = shortSession(sessionId);
@@ -3347,6 +3348,7 @@ async function startNewSession() {
     sessionId = data.session_id;
     persistSessionId(sessionId);
     setSessionUrl(sessionId);
+    markFreshSession(sessionId);
     lastServerMessageId = 0;
     safeStorageRemove(pendingResetStorageKey(sessionId));
     consumeDeepLink();
@@ -9947,6 +9949,12 @@ function renderFamilyOverview(data) {
         `化验异常 ${labs.abnormal} 项`
         + (items.length ? ` · ${items.join('；')}` : '')
       ));
+    } else if (labs.count) {
+      // 只有正常范围内化验的成员：不能显示「暂无健康记录」，
+      // 与 CSV/记录数口径一致
+      chips.appendChild(familyChip(
+        `化验 近 ${days} 天 ${labs.count} 条`
+      ));
     }
     const consultations = profile.consultations || {};
     if (consultations.count) {
@@ -10086,6 +10094,14 @@ function familyOverviewText(data) {
     const labs = profile.labs || {};
     if (labs.critical) parts.push(`化验危急值 ${labs.critical} 项`);
     if (labs.abnormal) parts.push(`化验异常 ${labs.abnormal} 项`);
+    if (!labs.critical && !labs.abnormal && labs.count) {
+      // 只有正常范围内化验：不能输出「暂无健康记录」
+      parts.push(`化验 ${labs.count} 条`);
+    }
+    const vaccination = profile.vaccinations || {};
+    if (vaccination.count) {
+      parts.push(`疫苗 累计 ${Number(vaccination.count) || 0} 剂`);
+    }
     const care = profile.care_plan || {};
     if (care.overdue) {
       parts.push(`复查逾期 ${care.overdue} 项`);
@@ -10115,6 +10131,14 @@ function familyOverviewText(data) {
         `会诊 ${consultations.count} 次`
         + (riskLabel ? `（${riskLabel}）` : '')
       );
+    }
+    const attention = profile.attention || {};
+    if (
+      attention.level
+      && attention.level !== 'ok'
+      && attention.label
+    ) {
+      parts.push(`需关注 ${attention.label}`);
     }
     const context = familyContextText(profile.context);
     const name = profile.name || '未指定档案';
@@ -20535,6 +20559,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 拉取期间用户新建/清空/打开了其它会话：晚到的快照不能把
     // 旧患者档案和上下文填回表单
     if (restoreOpenSeq !== openSessionSeq) return false;
+    // 本标签页新建的空会话：baseline=0 不等于「无法证明」
+    const freshSession = isFreshPageSession(expectedSession);
 
     const messages = data.messages || [];
     if (!messages.length) {
@@ -20569,9 +20595,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       (message) => (Number(message.id) || 0) > 0
     );
     if (expectedQuestion) {
-      if (!baselineMessageId) {
+      const freshStart = Boolean(!baselineMessageId && freshSession);
+      if (!baselineMessageId && !freshStart) {
         // 本页从未成功同步过该会话（基线为 0）：同文本的旧问答会被
-        // 误判为本轮已落库，静默吞掉新提问；无法证明时按未落库重发
+        // 误判为本轮已落库，静默吞掉新提问；无法证明时按未落库重发。
+        // 本页新建的空会话例外：创建时没有任何消息，本轮问答可证
         return false;
       }
       if (!hasIds) {
@@ -20586,6 +20614,22 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         }
         const persisted = questionIndex >= 0
           && messages.slice(questionIndex + 1).some(
+            (message) => message.role === 'assistant'
+          );
+        if (!persisted) return false;
+      } else if (freshStart) {
+        // 本标签页新建且创建时为空：只认「最后一条用户消息就是本次
+        // 主诉且其后已有回答」，同会话内重复提问同文本时不误判
+        let lastUserIndex = -1;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i].role === 'user') {
+            lastUserIndex = i;
+            break;
+          }
+        }
+        const persisted = lastUserIndex >= 0
+          && messages[lastUserIndex].content === expectedQuestion
+          && messages.slice(lastUserIndex + 1).some(
             (message) => message.role === 'assistant'
           );
         if (!persisted) return false;
@@ -20655,7 +20699,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       !expectedQuestion
       && !pendingReset
       && inflightText
-      && inflightBaseline > 0
+      && (inflightBaseline > 0 || freshSession)
       && els.input.value.trim() === inflightText
     ) {
       const composerText = els.input.value.trim();
@@ -20668,12 +20712,32 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           : max,
         0
       );
-      const persistedThisRound = hasIds && newestAssistantId > inflightBaseline
-        && messages.some(
-          (message) => message.role === 'user'
-            && String(message.content || '').trim() === composerText
-            && (Number(message.id) || 0) > inflightBaseline
-        );
+      let persistedThisRound = false;
+      if (inflightBaseline > 0) {
+        persistedThisRound = hasIds
+          && newestAssistantId > inflightBaseline
+          && messages.some(
+            (message) => message.role === 'user'
+              && String(message.content || '').trim() === composerText
+              && (Number(message.id) || 0) > inflightBaseline
+          );
+      } else {
+        // 本标签页新建的空会话首轮：最后一条用户消息就是该主诉且
+        // 已有回答时才算本轮落库，早先的同文本问答不误判
+        let lastUserIndex = -1;
+        for (let i = messages.length - 1; i >= 0; i -= 1) {
+          if (messages[i].role === 'user') {
+            lastUserIndex = i;
+            break;
+          }
+        }
+        persistedThisRound = lastUserIndex >= 0
+          && String(messages[lastUserIndex].content || '').trim()
+            === composerText
+          && messages.slice(lastUserIndex + 1).some(
+            (message) => message.role === 'assistant'
+          );
+      }
       if (persistedThisRound) {
         els.input.value = '';
         autoGrow();
@@ -21249,6 +21313,14 @@ async function send(question) {
         safeSessionRemove(INFLIGHT_QUESTION_KEY);
       } catch {
         // 忽略
+      }
+      // 「继续/重试本次会诊」成功后输入框与草稿可能仍保留同一主诉：
+      // 不清掉的话回车会重复提交同一问题（重复问答与重复计费）
+      const leftover = els.input.value.trim();
+      if (leftover && leftover === String(question || '').trim()) {
+        els.input.value = '';
+        autoGrow();
+        clearDraft();
       }
     }
     busy = false;
@@ -22009,7 +22081,7 @@ async function applySelectedProfile() {
       return;
     }
     // 用户手动换档：让仍在途的会话恢复放弃渲染，避免覆盖新选择
-    profileSelectionSeq += 1;
+    const myProfileSeq = ++profileSelectionSeq;
     // 新建等待期间禁止复用旧会话：否则回车会把新患者的问题写进
     // 旧档案的会诊记录（startNewSession 成功后清除标记）
     const hadPendingReset = pendingSessionReset;
@@ -22028,6 +22100,11 @@ async function applySelectedProfile() {
       applyPatientContext({});
     }
     const created = await startNewSession();
+    if (profileSelectionSeq !== myProfileSeq) {
+      // 已有更新的换档调用接管：旧调用的回滚/重建不能覆盖用户
+      // 的新选择（否则新会话按新档案创建、首个问题却落进旧档案）
+      return;
+    }
     if (!created) {
       // startNewSession 自己会递增 openSessionSeq：不能用它判断
       // 是否被 send/openSession 接管，否则创建失败时永远不回滚
@@ -22055,7 +22132,7 @@ async function applySelectedProfile() {
   } else if (sessionId) {
     // 线程为空但 sessionId 仍绑定服务端旧档案（恢复失败/尚未完成）：
     // 换档前必须断开旧会话，否则下一问会被服务端按旧档案回答并落库
-    profileSelectionSeq += 1;
+    const myProfileSeq = ++profileSelectionSeq;
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
     const previousFormContext = readPatientContext();
@@ -22070,6 +22147,10 @@ async function applySelectedProfile() {
       applyPatientContext({});
     }
     const ok = await detachSessionForProfileChange();
+    if (profileSelectionSeq !== myProfileSeq) {
+      // 更新的换档调用已接管：旧调用不得回滚档案与表单
+      return;
+    }
     const takenOver = Boolean(
       busy || sessionId !== attemptSession
     );
@@ -22417,6 +22498,30 @@ function updateInflightQuestionProfile(oldName, newName) {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify(parsed));
   } catch {
     // 隐私模式/损坏记录：忽略
+  }
+}
+
+//: 本标签页新建的空会话标记：首轮提问前服务端不可能存在更早的
+//: 消息，baseline=0 的中止对账仍能证明本轮问答已落库；刷新后保留
+function freshSessionMarkKey(id) {
+  return `medix.newSession.${id || ''}`;
+}
+
+function markFreshSession(id) {
+  if (!id) return;
+  try {
+    safeSessionSet(freshSessionMarkKey(id), '1');
+  } catch {
+    // 隐私模式忽略
+  }
+}
+
+function isFreshPageSession(id) {
+  if (!id) return false;
+  try {
+    return safeSessionGet(freshSessionMarkKey(id)) === '1';
+  } catch {
+    return false;
   }
 }
 

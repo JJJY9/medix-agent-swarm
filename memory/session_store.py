@@ -5568,6 +5568,55 @@ class SessionStore:
                     best_other = other_score
             return best_other > own_score
 
+        def _tail_tied_with_sibling(
+            candidate: int, cross_profile: bool = False
+        ) -> bool:
+            """候选尾字段与同内容孪生兄弟的匹配得分持平。
+
+            得分与本行持平说明备注等尾字段被编辑后已无法判断候选属于
+            哪条孪生：本轮若认领，被删记录会永久丢失（反之补插只会
+            多一条可清理的旧副本）。严格高于兄弟行时（如「已停药」改
+            成「已停药改备注」）仍可确认是本行存活版本。cross_profile
+            把改挂到其他成员的同秒孪生纳入比较（发现5的跨档案场景）。
+            """
+            if not backup_tails or not backup_contents or tail_where is None:
+                return False
+            expected_content = backup_contents.get(raw_id)
+            if expected_content is None:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            best_other = -1
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    not cross_profile
+                    and wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if backup_contents.get(other_id) != expected_content:
+                    continue
+                other_score = _tail_match_score(candidate, other_id)
+                if other_score > best_other:
+                    best_other = other_score
+            return best_other >= 0 and best_other == own_score
+
         def _soft_matches(candidate: int) -> bool:
             if soft_where is None:
                 return True
@@ -5854,6 +5903,31 @@ class SessionStore:
                     return True
             return False
 
+        def _backup_content_shared_cross_profile() -> bool:
+            """内容与同创建时间的另一备份行完全相同（忽略档案）。
+
+            跨成员孪生（如妈妈/爸爸各一条同内容预约）在改挂+删除后，
+            被改挂的存活行尾字段又被编辑得无法归属时，不能仅凭
+            「唯一候选 + 被编辑过」认领：候选更可能是被删记录的版本
+            被改挂过来，本行必须按被删记录补回，否则删除记录永久
+            丢失、旧档案还会复活一条陈旧副本。
+            """
+            expected = (backup_contents or {}).get(raw_id)
+            if expected is None:
+                return False
+            created_key = str(created_at_value or "")
+            for other_id, contents in backup_contents.items():
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if contents == expected:
+                    return True
+            return False
+
         def _sole_may_own_later_sibling(candidate: int) -> bool:
             """唯一候选的内容是否与尚未处理的同身份备份行完全相同。
 
@@ -6025,8 +6099,14 @@ class SessionStore:
                     # 的标题命中兄弟行）：候选属于那条记录，本行必须
                     # 按被删记录补插而不是抢走它
                     continue
-                if tail_where is not None and not _tail_matches(candidate):
+                if _tail_prefers_sibling(candidate, cross_profile=True):
+                    # 尾字段明显更像同秒孪生（如另一成员恰好在同名
+                    # 提醒上完成/停药）：候选属于那条记录，不能被当
+                    # 成本行改名后的孤儿抢走
                     continue
+                # 组已满（本地没有缺行）时，尾字段（备注/状态）被一起
+                # 编辑过的唯一存活行同样是本行的版本：仅凭尾字段不再
+                # 命中本行不能否定它，否则重复导入会补插编辑前旧副本
                 orphan.append(candidate)
             if len(orphan) == 1:
                 return orphan[0]
@@ -6564,6 +6644,24 @@ class SessionStore:
                             and (
                                 _tail_prefers_sibling(sole)
                                 or not _candidate_edited(sole)
+                                # 同内容孪生分属不同档案（改挂后被删）：
+                                # 尾字段被编辑得与本行、兄弟行都持平、
+                                # 无法归属时必须按被删记录补回；尾字段
+                                # 仍明显像本行（完成/停药等本地编辑）
+                                # 时照常认领。仅当本地库可证明与备份同源
+                                # （主键空间未漂移）且候选是兄弟行的主键
+                                # 时成立：此时候选不可能是本行被改挂的行，
+                                # 本行按被删记录补回；主键漂移的库里候选
+                                # 主键无意义，普通编辑仍按内容认领（与
+                                # 第 50/52 轮契约一致）
+                                or (
+                                    _same_backup_origin()
+                                    and sole != raw_id
+                                    and _backup_content_shared_cross_profile()
+                                    and _tail_tied_with_sibling(
+                                        sole, cross_profile=True
+                                    )
+                                )
                             )
                         ):
                             # 最后一行同样核对非内容字段：候选属于更早的
@@ -6828,6 +6926,18 @@ class SessionStore:
                         and _candidate_content_matches_backup(
                             min(candidates)
                         )
+                        # 内容与同秒孪生完全相同、尾字段却对不上本行
+                        # （备注也被编辑）：候选可能是另一条被删记录
+                        # 的存活版本，认领它会让真正被删的孪生永久
+                        # 丢失，必须先按被删记录补回；尾字段明显更像
+                        # 本行（本地完成/停药编辑）时仍正常认领
+                        and (
+                            not _backup_content_shared_with_sibling()
+                            or _tail_matches(min(candidates))
+                            or not _tail_tied_with_sibling(
+                                min(candidates)
+                            )
+                        )
                         and (
                             soft_where is None
                             or _soft_matches(min(candidates))
@@ -6859,6 +6969,11 @@ class SessionStore:
                         _candidate_content_matches_backup(sole)
                         and not _content_owned_by_other(sole)
                         and not _content_prefers_sibling(sole)
+                        and (
+                            not _backup_content_shared_with_sibling()
+                            or _tail_matches(sole)
+                            or not _tail_tied_with_sibling(sole)
+                        )
                         and not (
                             _tail_prefers_sibling(sole)
                             and not _tail_matches(sole)
@@ -14337,7 +14452,19 @@ class SessionStore:
                     " WHERE id = ? AND followup_appointment_id = ?",
                     (int(visit_id), appointment),
                 ).fetchone()
-                auto_created = linked is not None
+                if linked is not None:
+                    if marker_owner in (0, int(visit_id)):
+                        auto_created = True
+                    else:
+                        # 旧版本遗留的共享链接：预约 owner 属于另一条
+                        # 就诊，本次只解除本就诊自己的链接，绝不能把
+                        # 对方的待就诊预约与提醒一起删掉
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = 0"
+                            " WHERE id = ? AND followup_appointment_id = ?",
+                            (int(visit_id), appointment),
+                        )
             # 只有仍未就诊的自动复诊预约才删除；已完成/已取消的是就诊
             # 历史，不能因为修改上一次就诊而复诊日期就消失
             if auto_created and keep_date and (
@@ -14347,6 +14474,14 @@ class SessionStore:
                 # completed 是按时复诊的历史，清链接会重新报逾期
                 return True
             if auto_created and str(row["status"] or "") == "upcoming":
+                doomed_reminders = [
+                    int(pending["id"])
+                    for pending in self._conn.execute(
+                        "SELECT id FROM reminders"
+                        " WHERE done = 0 AND appointment_id = ?",
+                        (appointment,),
+                    ).fetchall()
+                ]
                 self._conn.execute(
                     "DELETE FROM appointments WHERE id = ?",
                     (appointment,),
@@ -14356,6 +14491,18 @@ class SessionStore:
                     " WHERE done = 0 AND appointment_id = ?",
                     (appointment,),
                 )
+                if doomed_reminders:
+                    # 其它就诊遗留指向这些提醒的复诊链接同样解除，
+                    # 否则提醒已删而链接仍指向它，复诊会被永久抑制
+                    placeholders = ",".join(
+                        "?" for _ in doomed_reminders
+                    )
+                    self._conn.execute(
+                        "UPDATE visit_records"
+                        " SET followup_reminder_id = 0"
+                        f" WHERE followup_reminder_id IN ({placeholders})",
+                        tuple(doomed_reminders),
+                    )
                 # 已完成提醒是历史：不能继续指向已删除的预约，否则
                 # 跨设备导入时会被按本地同号预约兜底挂接
                 self._conn.execute(
@@ -14528,13 +14675,17 @@ class SessionStore:
                 # 安排复诊时看不到它而再建一条，形成跨档案重复复诊
                 marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
                 old_profile = str(old_row["profile"] or "")
-                # 只迁移仍在本就诊旧档案名下的自动预约：预约被改到
-                # 其他成员后 owner 已清 0、备注标记可能残留，不能因为
-                # 标记指向本就诊就把别人的预约再搬一次、甚至级联删除
+                # 只迁移 owner 为本就诊（或 owner=0 的标记型）自动
+                # 预约：预约被改到其他成员后 owner 已清 0、备注标记
+                # 可能残留，不能因为标记指向本就诊就把别人的预约再
+                # 搬一次；owner 属于另一条就诊时同样不能迁移（与
+                # _drop_visit_followup_locked / _schedule_followup_sync
+                # 的 owner 校验口径一致）
                 self._conn.execute(
                     "UPDATE appointments SET profile = ?, updated_at = ?"
                     " WHERE status = 'upcoming' AND profile = ?"
-                    "   AND (owner_visit_id = ? OR note LIKE ?)",
+                    "   AND (owner_visit_id = ?"
+                    "        OR (owner_visit_id = 0 AND note LIKE ?))",
                     (
                         normalized["profile"], now, old_profile,
                         int(visit_id), f"%{marker_text}%",
@@ -14547,7 +14698,8 @@ class SessionStore:
                     "UPDATE reminders SET profile = ?, updated_at = ?"
                     " WHERE appointment_id IN (SELECT id FROM appointments"
                     "   WHERE status = 'upcoming' AND profile = ?"
-                    "     AND (owner_visit_id = ? OR note LIKE ?))",
+                    "     AND (owner_visit_id = ?"
+                    "          OR (owner_visit_id = 0 AND note LIKE ?)))",
                     (
                         normalized["profile"], now, normalized["profile"],
                         int(visit_id), f"%{marker_text}%",

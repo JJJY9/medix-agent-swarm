@@ -2193,6 +2193,27 @@ def _trusted_proxy_peers() -> set:
     return peers
 
 
+_WARNED_UNTRUSTED_PROXY_PEERS: set = set()
+_WARNED_UNTRUSTED_PROXY_LOCK = threading.Lock()
+
+
+def _warn_untrusted_proxy_peer(peer_host: str) -> None:
+    """信任代理已开启但对端未声明时告警一次（每个对端）。"""
+    key = _peer_key(peer_host)
+    with _WARNED_UNTRUSTED_PROXY_LOCK:
+        if key in _WARNED_UNTRUSTED_PROXY_PEERS:
+            return
+        if len(_WARNED_UNTRUSTED_PROXY_PEERS) >= 32:
+            return
+        _WARNED_UNTRUSTED_PROXY_PEERS.add(key)
+    logger.warning(
+        f"已开启 MEDIX_TRUST_PROXY_HEADERS，但反向代理对端 {key} 不在 "
+        "MEDIX_TRUSTED_PROXY_ADDRS 中：地址头不会被采信，该对端的"
+        "令牌失败共用一个限流桶。请把代理对端地址加入 "
+        "MEDIX_TRUSTED_PROXY_ADDRS。"
+    )
+
+
 def _is_trusted_proxy_peer(host: str) -> bool:
     """TCP 对端是否可证明是本机/显式声明的反向代理。
 
@@ -2568,13 +2589,20 @@ def _client_ip_key(request: Request) -> str:
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{_bucket_address(forwarded)}"
-    if not _trust_proxy_headers() and any(
-        _proxy_header_values(request, name)
-        for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+    if (
+        not (
+            _trust_proxy_headers()
+            and _is_trusted_proxy_peer(peer)
+        )
+        and any(
+            _proxy_header_values(request, name)
+            for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+        )
     ):
-        # 未信任代理头却带了转发头：request.client 可能已被 uvicorn/
-        # gunicorn 的 proxy_headers 中间件按客户端伪造值改写，不能
-        # 当作可信来源轮换限流桶，统一落 fail-closed 桶
+        # 转发头不可信（未开启信任，或开启了但当前对端不是已声明的
+        # 受信代理）：request.client 可能已被 uvicorn/gunicorn 的
+        # proxy_headers 中间件按客户端伪造值改写，不能当作可信来源
+        # 轮换限流桶，统一落 fail-closed 桶
         return "ip:untrusted-proxy"
     return f"ip:{_bucket_address(peer or 'unknown')}"
 
@@ -2852,12 +2880,27 @@ async def require_access_token(request: Request, call_next):
             f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
         untrusted_forwarded = bool(
-            not _trust_proxy_headers()
+            (
+                not _trust_proxy_headers()
+                # 开启了信任但 TCP 对端不在 MEDIX_TRUSTED_PROXY_ADDRS：
+                # 地址头同样不可信。按共享桶 fail-closed，不能把整个
+                # 代理对端地址当成单个客户端硬预锁定（10 次错误令牌
+                # 就会让经该代理的所有正确令牌用户 429）
+                or not _is_trusted_proxy_peer(peer_host)
+            )
             and any(
                 _proxy_header_values(request, name)
                 for name in ("x-forwarded-for", "forwarded", "x-real-ip")
             )
         )
+        if (
+            _trust_proxy_headers()
+            and peer_host
+            and not _is_trusted_proxy_peer(peer_host)
+            and _has_proxy_headers(request)
+        ):
+            # 常见误配置：开启信任代理但漏设 MEDIX_TRUSTED_PROXY_ADDRS
+            _warn_untrusted_proxy_peer(peer_host)
         shared_bucket = (not peer_host) or untrusted_forwarded or (
             _is_trusted_proxy_peer(peer_host)
             and _client_ip_key(request)
@@ -2892,6 +2935,13 @@ async def require_access_token(request: Request, call_next):
                 and _is_trusted_proxy_peer(peer_host)
             )
             else ""
+        )
+        # 地址只来自客户端可影响的更左转发项（代理追加项为空）：
+        # 该地址无法证明属于请求方，失败计数与预锁定都必须用独立的
+        # spoof 桶，否则任何人可伪造受害者的地址、用错误令牌把它
+        # 的真实地址桶塞满，使其正确令牌也被硬预锁定 429
+        gate_unprovable = bool(
+            forwarded_resolved and not appended_address
         )
         if (
             not _is_loopback_client(request)
@@ -3116,6 +3166,8 @@ async def require_access_token(request: Request, call_next):
                     if pre_loopback and pre_trusted_proxy
                     else _client_ip_key(request)
                 )
+                if gate_unprovable:
+                    pre_key = f"spoof:{loopback_bucket_key}"
                 pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
                 if pre_blocked and pre_retry > 0:
                     # 失败桶已满：先释放比较闸门再退避（最多 5 秒），
@@ -3176,12 +3228,19 @@ async def require_access_token(request: Request, call_next):
                     else auth_failure_limiter
                 )
                 limiter_key = _client_ip_key(request)
+                # IPv6 全局失败预算按解析出的来源地址计：即使失败计数
+                # 落进 spoof/共享桶，轮换 /64 的在线猜解也不能绕过它
+                budget_key = limiter_key
                 if loopback_source and trusted_proxy_request:
                     # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
                     # 新桶：回环来源的失败统一按代理对端计数
                     limiter_key = loopback_bucket_key
+                if gate_unprovable:
+                    # 来源地址不可证明（仅来自客户端可影响的左项）：
+                    # 失败记入独立 spoof 桶，绝不写进被害者真实地址桶
+                    limiter_key = f"spoof:{loopback_bucket_key}"
                 allowed, retry_after = limiter.check(limiter_key)
-                if _is_ipv6_source_key(limiter_key):
+                if _is_ipv6_source_key(budget_key):
                     # 跨 /64 轮换源地址：全局预算同样计数，超过后
                     # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度；
                     # NAT64 单地址桶同样计入，否则轮换映射地址放大猜解
@@ -7627,8 +7686,11 @@ async def _weekly_report_impl(
     previous_sessions = [
         item for item in raw_sessions
         if int(item.get("message_count") or 0) > 0
+        # 上一周期按创建时间归属：续聊旧会话会把 updated_at 刷新到
+        # 本周期，用可变的活动时间归属会事后抹掉上一周期的会诊，
+        # 让「较上期」的环比结论失真
         and prev_start <= str(
-            item.get("updated_at") or item.get("created_at") or ""
+            item.get("created_at") or item.get("updated_at") or ""
         )[:10] < start
     ]
     risk_level = ""
@@ -7832,6 +7894,14 @@ async def _weekly_report_impl(
                 "latest2": None,
             })
         for member, group in sorted(glucose_groups.items()):
+            if family_target_map.get((member, "glucose")) is not None:
+                over_entry = member_groups.get((member, "glucose"))
+                if over_entry is not None and not over_entry["over"]:
+                    # 已设置血糖目标且窗口内全部达标：达标情况由目标
+                    # 卡片展示，通用阈值不能在同一首页再标「偏高」
+                    # （与 family_overview 的 over_target 口径一致）；
+                    # 有超标读数时保留目标告警与通用提示并存
+                    continue
             fasting = group["fasting"]
             postprandial = group["postprandial"]
             if fasting[1] and fasting[0] / fasting[1] >= 7:
@@ -9081,7 +9151,18 @@ def _build_health_insights(
                 if fasting_count else 0.0
             )
             postprandial = contexts.get("postprandial")
-            if fasting_count and fasting_avg >= 7:
+            glucose_target = row.get("target") or None
+            glucose_target_met = bool(
+                glucose_target
+                and within is not None
+                and count - int(within) <= 0
+            )
+            # 已设置个体化血糖目标且窗口内全部达标：与家庭总览
+            # over_target 口径一致，不再按通用阈值提示「偏高」；
+            # 有超标读数时保留目标告警与通用提示并存
+            if glucose_target_met:
+                pass
+            elif fasting_count and fasting_avg >= 7:
                 insights.append(_health_insight(
                     "metric_glucose_fasting",
                     "info",
@@ -14829,9 +14910,10 @@ async def attachment_integrity(profile: Optional[str] = None):
     from memory import get_session_store
     from memory.session_store import _normalize_profile_name
 
-    items = await asyncio.to_thread(
+    all_items = await asyncio.to_thread(
         get_session_store().list_all_attachments
     )
+    items = all_items
     if profile is not None:
         # 档案视图只展示该档案（空串=未指定档案）的附件名，
         # 其他成员的缺失文件名不能出现在当前患者状态行里
@@ -14846,6 +14928,13 @@ async def attachment_integrity(profile: Optional[str] = None):
     db_names = {
         os.path.normcase(str(item.get("stored_name"))): item
         for item in items
+        if item.get("stored_name")
+    }
+    # 孤儿判定必须用未过滤的全量登记：其他成员已登记的文件不是孤儿，
+    # 否则档案视图会显示不存在的孤儿、清理接口又按全量计算而永远 409
+    all_db_names = {
+        os.path.normcase(str(item.get("stored_name"))): item
+        for item in all_items
         if item.get("stored_name")
     }
     files_norm = {os.path.normcase(name): name for name in files}
@@ -14886,7 +14975,7 @@ async def attachment_integrity(profile: Optional[str] = None):
     now = time()
     orphans = []
     for name, info in files.items():
-        if os.path.normcase(name) in db_names:
+        if os.path.normcase(name) in all_db_names:
             continue
         orphans.append({
             "name": name,
@@ -14897,6 +14986,7 @@ async def attachment_integrity(profile: Optional[str] = None):
     orphans.sort(key=lambda item: item["name"])
     return {
         "db_count": len(items),
+        "db_total_count": len(all_items),
         "file_count": len(files),
         "missing_count": len(missing),
         "size_mismatch_count": len(size_mismatch),
