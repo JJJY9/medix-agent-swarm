@@ -2370,13 +2370,26 @@ function buildVisitSummaryHtml({
     } else if (summary.target) {
       targetText = `${summary.within_target}/${summary.count}`;
     }
+    const dailyBasis = DAILY_ACCUMULATING_METRICS.has(metric)
+      && Number(summary.day_count) > 0;
+    const countText = dailyBasis
+      ? `${Number(summary.day_count)} 天（${Number(summary.count) || 0} 条）`
+      : String(Number(summary.count) || 0);
+    const averageText = dailyBasis ? `日均 ${average}` : average;
+    const latestLabel = dailyBasis
+      ? (
+        summary.latest
+          ? `${formatMetricValue(summary.latest)}（最近一日合计）`
+          : '—'
+      )
+      : (
+        summary.latest ? formatMetricValue(summary.latest) : '—'
+      );
     return '<tr>'
       + `<td>${escapeHtml(METRIC_NAMES[metric] || metric)}</td>`
-      + `<td>${Number(summary.count) || 0}</td>`
-      + `<td>${escapeHtml(
-        summary.latest ? formatMetricValue(summary.latest) : '—'
-      )}</td>`
-      + `<td>${escapeHtml(average)}${unit ? ' ' + escapeHtml(unit) : ''}</td>`
+      + `<td>${escapeHtml(countText)}</td>`
+      + `<td>${escapeHtml(latestLabel)}</td>`
+      + `<td>${escapeHtml(averageText)}${unit ? ' ' + escapeHtml(unit) : ''}</td>`
       + `<td>${escapeHtml(range)}</td>`
       + `<td>${escapeHtml(targetText)}</td>`
       + '</tr>';
@@ -9924,6 +9937,22 @@ function renderFamilyOverview(data) {
       }
       chips.appendChild(chip);
     }
+    const vaccination = profile.vaccinations || {};
+    if (vaccination.count || vaccination.latest) {
+      const latestVaccine = vaccination.latest || {};
+      const vaccineName = latestVaccine.vaccine_name || '';
+      const dose = Number(latestVaccine.dose_number) || 0;
+      chips.appendChild(familyChip(
+        `疫苗 近 ${days} 天 ${Number(vaccination.count) || 0} 剂`
+        + (
+          vaccineName
+            ? ` · ${vaccineName}${dose ? ` 第${dose}剂` : ''}`
+            : ''
+        )
+        + (vaccination.overdue ? ` · 逾期 ${vaccination.overdue} 剂` : ''),
+        vaccination.overdue ? 'family-chip-alert' : ''
+      ));
+    }
     const streakDays = Number(profile.streak) || 0;
     if (streakDays >= 2) {
       chips.appendChild(familyChip(`连续 ${streakDays} 天`));
@@ -14764,6 +14793,11 @@ function weeklyMetricText(row) {
     } else if (row.within_target !== null && row.within_target !== undefined) {
       targetText = `，达标 ${row.within_target}/${row.count}`;
     }
+  }
+  if (row.avg_basis === 'day' && Number(row.day_count) > 0) {
+    // 每日累计指标按自然日合计统计：条数会把同一天的多条记录
+    // 算成多次，必须标成「N 天日均」
+    return `${name} ${row.day_count} 天日均 ${average}${change}${targetText}`;
   }
   return `${name} ${row.count} 次，平均 ${average}${change}${targetText}`;
 }
@@ -21921,7 +21955,16 @@ const DRAFT_PROFILE_KEY = 'medix.draft.profile';
 //: 再读就晚了，换档后旧患者的主诉会被按新档案提交
 let pendingComposerProfile = null;
 let restoredDraftProfileTimer = null;
+//: 用户编辑时的草稿档案归属：防抖/翻页落盘必须原样持久化它，
+//: 不能改成落盘瞬间的当前档案（换档后刷新会把旧患者文本改记到新档案）
+let draftProfileMemory = null;
+const DELETED_DRAFT_PROFILE = '已删除档案';
 let draftTimer = null;
+
+function draftProfileSnapshot() {
+  if (draftProfileMemory !== null) return draftProfileMemory;
+  return safeSessionGet(DRAFT_PROFILE_KEY) || '';
+}
 
 function composerIsDetached() {
   // 输入框仍是被接管后放回的原文时不写草稿；用户改动后恢复保存
@@ -21948,10 +21991,7 @@ function saveDraft() {
       if (els.input.value.trim()) {
         safeSessionSet(DRAFT_KEY, els.input.value);
         safeSessionSet(DRAFT_OWNER_KEY, ownerSnapshot);
-        safeSessionSet(
-          DRAFT_PROFILE_KEY,
-          activeProfileName || readStoredProfile() || ''
-        );
+        safeSessionSet(DRAFT_PROFILE_KEY, draftProfileSnapshot());
       } else {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
@@ -21983,10 +22023,7 @@ function flushDraftNow() {
       safeSessionSet(
         DRAFT_OWNER_KEY, pendingSessionReset ? '' : (sessionId || '')
       );
-      safeSessionSet(
-        DRAFT_PROFILE_KEY,
-        activeProfileName || readStoredProfile() || ''
-      );
+      safeSessionSet(DRAFT_PROFILE_KEY, draftProfileSnapshot());
     } else {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
@@ -22017,10 +22054,10 @@ function reassignDraftToCurrentSession() {
       safeSessionSet(DRAFT_KEY, els.input.value);
       safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
       if (!safeSessionGet(DRAFT_PROFILE_KEY)) {
-        safeSessionSet(
-          DRAFT_PROFILE_KEY,
+        draftProfileMemory = (
           activeProfileName || readStoredProfile() || ''
         );
+        safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
       }
     } else {
       safeSessionRemove(DRAFT_KEY);
@@ -22034,6 +22071,7 @@ function reassignDraftToCurrentSession() {
 
 function clearDraft() {
   clearTimeout(draftTimer);
+  draftProfileMemory = null;
   try {
     safeSessionRemove(DRAFT_KEY);
     safeSessionRemove(DRAFT_OWNER_KEY);
@@ -22104,6 +22142,7 @@ function preserveDraftProfile(profile, text) {
   restoredDraftProfileTimer = setTimeout(() => {
     try {
       if (els.input.value.trim() === String(text || '').trim()) {
+        draftProfileMemory = profile;
         safeSessionSet(DRAFT_PROFILE_KEY, profile);
       }
     } catch {
@@ -22114,15 +22153,15 @@ function preserveDraftProfile(profile, text) {
 
 function updateDraftProfile(oldName, newName) {
   // 重命名/删除档案时同步草稿的档案归属：否则输入框里的草稿
-  // 会被误判为旧档案（已不存在）并持续拦截发送
+  // 会被误判为旧档案（已不存在）并持续拦截发送。删除时写哨兵值：
+  // 直接移除会让下一次选档案把旧患者主诉改记成新档案草稿
   try {
     const stored = safeSessionGet(DRAFT_PROFILE_KEY);
-    if (!stored || stored !== oldName) return;
-    if (!newName) {
-      safeSessionRemove(DRAFT_PROFILE_KEY);
-      return;
-    }
-    safeSessionSet(DRAFT_PROFILE_KEY, newName);
+    const memoryMatches = draftProfileMemory === oldName;
+    if ((!stored || stored !== oldName) && !memoryMatches) return;
+    const replacement = newName || DELETED_DRAFT_PROFILE;
+    draftProfileMemory = replacement;
+    safeSessionSet(DRAFT_PROFILE_KEY, replacement);
   } catch {
     // 隐私模式忽略
   }
@@ -22222,6 +22261,7 @@ function loadDraft() {
       return;
     }
     els.input.value = draft;
+    draftProfileMemory = safeSessionGet(DRAFT_PROFILE_KEY);
     autoGrow();
   } catch {
     // 忽略
@@ -22330,10 +22370,12 @@ els.input.addEventListener('input', () => {
   // 归属不能把全新的问题误判成旧患者草稿
   try {
     if (els.input.value.trim()) {
-      safeSessionSet(
-        DRAFT_PROFILE_KEY,
+      draftProfileMemory = (
         activeProfileName || readStoredProfile() || ''
       );
+      safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
+    } else {
+      draftProfileMemory = null;
     }
   } catch {
     // 隐私模式忽略

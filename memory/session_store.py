@@ -5349,7 +5349,9 @@ class SessionStore:
         def _ambiguous() -> Optional[int]:
             """无法区分时按被删记录补回，绝不复制存活行旧版本。"""
             state[identity] = claimed
-            inserted_key = (table, "__ambiguous__", identity)
+            inserted_key = (
+                table, "__ambiguous__", identity, scope_profile
+            )
             state[inserted_key] = (
                 int(state.get(inserted_key, 0)) + 1
             )
@@ -5628,6 +5630,12 @@ class SessionStore:
                 if _normalize_profile_name(other_profile) != wanted:
                     continue
                 if backup_contents.get(other_id) == fingerprint:
+                    if _tail_matches(candidate) and not (
+                        _tail_prefers_sibling(candidate)
+                    ):
+                        # 候选尾字段精确命中本行：它是本行的存活版本，
+                        # 不能被当成兄弟行的存活行放弃认领
+                        continue
                     return True
             return False
 
@@ -6377,7 +6385,8 @@ class SessionStore:
                             )
                             inserted = int(
                                 state.get(
-                                    (table, "__ambiguous__", identity), 0
+                                    (table, "__ambiguous__", identity,
+                                     scope_profile), 0
                                 )
                             )
                             if inserted < missing:
@@ -6523,7 +6532,10 @@ class SessionStore:
                         )
                     ):
                         sole = min(candidates)
-                        if not _content_owned_by_other(sole):
+                        if not _content_owned_by_other(sole) and not (
+                            _tail_prefers_sibling(sole)
+                            and not _tail_matches(sole)
+                        ):
                             return _claim(sole, mark_moved=True)
                     # 同身份组内多条备份行共享同一锚点且本地有缺行：
                     # 只补插缺失条数，补足后剩余备份行认领存活行，
@@ -6532,7 +6544,8 @@ class SessionStore:
                         backup_group_size - local_group_size, 0
                     )
                     inserted_key = (
-                        table, "__anchor_inserted__", identity
+                        table, "__anchor_inserted__", identity,
+                        scope_profile
                     )
                     inserted = int(state.get(inserted_key, 0))
                     if inserted < missing:
@@ -6543,6 +6556,10 @@ class SessionStore:
                         _candidate_content_matches_backup(sole)
                         and not _content_owned_by_other(sole)
                         and not _content_prefers_sibling(sole)
+                        and not (
+                            _tail_prefers_sibling(sole)
+                            and not _tail_matches(sole)
+                        )
                         and (
                             soft_where is None
                             or _soft_matches(sole)
@@ -6701,11 +6718,36 @@ class SessionStore:
                 # 多个软字段命中的同内容孪生：尾字段（停药/完成等）
                 # 精确命中的那条才是本行的存活版本
                 preferred = tail_preferred
+            non_sibling = {
+                candidate for candidate in preferred
+                if not (
+                    _tail_prefers_sibling(candidate)
+                    and not _tail_matches(candidate)
+                )
+            }
+            if non_sibling:
+                preferred = non_sibling
+            else:
+                # 全部候选的尾字段都更像未处理的兄弟备份行：被改名的
+                # 本行存活版本不在软字段候选里，先找编辑孤儿，否则
+                # 按歧义补插，绝不 min() 任意认领兄弟行
+                orphan = _orphan_edited_candidate()
+                if orphan is not None:
+                    return _claim(orphan, mark_moved=True)
+                return _ambiguous()
             candidates = preferred
         if len(candidates) == 1:
             candidate = min(candidates)
             if _content_owned_by_other(candidate):
                 # 候选内容精确对应备份里的另一条记录：按被删记录补回
+                return _ambiguous()
+            if (
+                content_where
+                and not _candidate_content_matches_backup(candidate)
+                and not _candidate_edited(candidate)
+            ):
+                # 内容列（如提醒到期日）与备份行不同、又没有任何编辑
+                # 证据：它是同秒另一条记录，本行必须按被删补插
                 return _ambiguous()
             if _tail_prefers_sibling(candidate) and not _tail_matches(
                 candidate
@@ -10066,6 +10108,7 @@ class SessionStore:
                         ):
                             appointment_id = int(appt_row["id"])
                     done = 1 if raw.get("done") in (1, True, "1") else 0
+                    reminder_dropped = False
                     if appointment_id and not done:
                         appt_status = self._conn.execute(
                             "SELECT status FROM appointments WHERE id = ?",
@@ -10076,7 +10119,14 @@ class SessionStore:
                             or str(appt_status["status"] or "")
                             != "upcoming"
                         ):
+                            if appt_status is not None:
+                                # 同档案预约已取消/完成：备份里的待办提醒
+                                # 已过期，直接跳过；清 0 会把它降级成无主
+                                # 待办并逃过最终的「非待就诊预约」清理
+                                reminder_dropped = True
                             appointment_id = 0
+                    if reminder_dropped:
+                        continue
                     created_at = str(raw.get("created_at") or now)[:40]
                     updated_at = str(raw.get("updated_at") or created_at)[:40]
 
@@ -10285,19 +10335,23 @@ class SessionStore:
                     reminder_owner = int(
                         reminder_row["appointment_id"] or 0
                     ) if reminder_row is not None else -1
+                    owner_matches = (
+                        reminder_owner == int(followup_appointment_id)
+                        if followup_appointment_id else reminder_owner == 0
+                    )
                     if (
                         reminder_row is None
+                        or int(reminder_row["done"] or 0)
+                        or not owner_matches
                         or _normalize_profile_name(
                             reminder_row["profile"] or ""
                         ) != _normalize_profile_name(
                             visit_row["profile"] or ""
                         )
-                        or reminder_owner not in (
-                            0, int(followup_appointment_id or 0)
-                        )
                     ):
-                        # 跨成员提醒、已挂到别的预约或已被清理：
-                        # 不能写回就诊链接，避免悬空/跨患者引用
+                        # 已完成提醒、跨成员提醒、未挂在对应预约上或
+                        # 已被清理：不能写回就诊链接，避免悬空/跨患者
+                        # 引用或无主的重复待办被就诊认领
                         followup_reminder_id = 0
                 appt_row = (
                     self._conn.execute(
@@ -11639,6 +11693,8 @@ class SessionStore:
             row["max1"] if row else None,
             prev_row["avg1"] if prev_row else None,
         )
+        day_count = None
+        latest_daily_entry = None
         if metric in DAILY_ACCUMULATING_METRICS and value1 is not None:
             # 每日累计指标按条均值的「较上期」会被记录频次误导
             value1["prev_avg"] = None
@@ -11658,6 +11714,17 @@ class SessionStore:
                     )
                     value1["min"] = round(min(daily_totals), 1)
                     value1["max"] = round(max(daily_totals), 1)
+                    day_count = len(daily_totals)
+                    daily_latest = max(
+                        daily_series,
+                        key=lambda entry: str(entry.get("day") or ""),
+                    )
+                    latest_daily_entry = {
+                        **(dict(latest_row) if latest_row else {}),
+                        "value1": float(daily_latest["total"]),
+                        "value2": None,
+                        "measured_at": str(daily_latest.get("day") or ""),
+                    }
         value2 = None
         if metric == "bp":
             value2 = build(
@@ -11709,7 +11776,11 @@ class SessionStore:
             "days": days,
             "value1": value1,
             "value2": value2,
-            "latest": dict(latest_row) if latest_row else None,
+            "latest": (
+                latest_daily_entry
+                or (dict(latest_row) if latest_row else None)
+            ),
+            "day_count": day_count,
             "target": None if target_row is None else {
                 "value1": float(target_row["value1"]),
                 "value2": (
@@ -12490,6 +12561,39 @@ class SessionStore:
                         ).fetchone()
                         if linked is not None:
                             visit_target = int(linked["id"])
+                    if not visit_target:
+                        # 归属就诊已改到别的档案：清除跨档案 owner/备注
+                        # 标记，让恢复出的预约成为独立预约，避免再次
+                        # 安排复诊时出现重复预约与提醒
+                        owner_prev = _safe_db_id(previous["owner_visit_id"])
+                        if owner_prev:
+                            owner_row = self._conn.execute(
+                                "SELECT profile FROM visit_records"
+                                " WHERE id = ?",
+                                (owner_prev,),
+                            ).fetchone()
+                            if owner_row is not None and (
+                                _normalize_profile_name(
+                                    owner_row["profile"] or ""
+                                )
+                                != _normalize_profile_name(
+                                    normalized["profile"]
+                                )
+                            ):
+                                self._conn.execute(
+                                    "UPDATE appointments SET owner_visit_id"
+                                    " = 0, note = ?, updated_at = ?"
+                                    " WHERE id = ?",
+                                    (
+                                        re.sub(
+                                            r"由就诊记录 #\d+ 自动创建",
+                                            "",
+                                            str(normalized["note"] or ""),
+                                        ).strip()[:300],
+                                        now,
+                                        int(appointment_id),
+                                    ),
+                                )
                     if visit_target:
                         # 复诊日期在取消期间被改过时不能把链接挂回旧日期
                         # 的预约，否则后续“安排复诊”会误报已安排
@@ -13897,6 +14001,25 @@ class SessionStore:
                         " updated_at = ? WHERE id = ?",
                         (normalized["profile"], now, linked_reminder),
                     )
+                # owner/备注标记指向本就诊但没写回链接的 upcoming 自动
+                # 预约同样跟随改档案：否则旧档案保留别人的待办，新档案
+                # 安排复诊时看不到它而再建一条，形成跨档案重复复诊
+                marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
+                self._conn.execute(
+                    "UPDATE appointments SET profile = ?, updated_at = ?"
+                    " WHERE status = 'upcoming' AND (owner_visit_id = ?"
+                    "        OR note LIKE ?)",
+                    (
+                        normalized["profile"], now, int(visit_id),
+                        f"%{marker_text}%",
+                    ),
+                )
+                self._conn.execute(
+                    "UPDATE reminders SET profile = ?, updated_at = ?"
+                    " WHERE appointment_id IN (SELECT id FROM appointments"
+                    "   WHERE status = 'upcoming' AND owner_visit_id = ?)",
+                    (normalized["profile"], now, int(visit_id)),
+                )
             # 复诊日期变化后撤销旧的自动预约/提醒：只清关联编号会留下
             # 幽灵预约和仍会到期的旧提醒，再次安排时两套并存
             if (

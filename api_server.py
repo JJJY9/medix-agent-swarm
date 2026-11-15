@@ -1400,7 +1400,11 @@ _RISK_NEGATION_PATTERN = re.compile(
 _RISK_PREDICATE_NEGATION = re.compile(
     r"(?:未|没有?|不|无|无法|不能)"
     r"(?:发现|出现|达到|符合|支持|满足|存在)"
-    r"(?:标准|表现|特征|诊断|征象|程度|的情况|的)?\s*$"
+    # 允许「任何/明显」等填充词，但窗口内不能出现其它等级词：
+    # 「未发现任何高危表现」按否定，「不符合低危标准属于高危」仍
+    # 按高危（等级词阻断窗口）
+    r"(?:(?!(?:高危|中危|低危|紧急|风险|等级))"
+    r"[^，。；,;\n]){0,6}$"
 )
 #: 「不排除/不能排除/未排除高危」是双重否定，表示风险仍然存在
 _RISK_RULE_OUT_PATTERN = re.compile(
@@ -2057,7 +2061,10 @@ def _rate_limit_key(request: Request) -> str:
     token = request_token(request) if get_access_token() else None
     if token:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-        return f"token:{digest}"
+        # 部署只有一个全局令牌：只按令牌分键会让全家共享同一份
+        # 额度；错误令牌在鉴权阶段已被拒绝，附加客户端地址不会被
+        # 用来轮换额度
+        return f"token:{digest}:{_client_ip_key(request)}"
     # 与令牌失败限流同源：只有显式信任代理头且对端是本机代理时
     # 才按转发地址分桶，避免代理后全家共用 127.0.0.1 的桶
     return _client_ip_key(request)
@@ -2516,6 +2523,14 @@ def _client_ip_key(request: Request) -> str:
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{_bucket_address(forwarded)}"
+    if not _trust_proxy_headers() and any(
+        _proxy_header_values(request, name)
+        for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+    ):
+        # 未信任代理头却带了转发头：request.client 可能已被 uvicorn/
+        # gunicorn 的 proxy_headers 中间件按客户端伪造值改写，不能
+        # 当作可信来源轮换限流桶，统一落 fail-closed 桶
+        return "ip:untrusted-proxy"
     return f"ip:{_bucket_address(peer or 'unknown')}"
 
 
@@ -2791,7 +2806,14 @@ async def require_access_token(request: Request, call_next):
         loopback_bucket_key = (
             f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
-        shared_bucket = (not peer_host) or (
+        untrusted_forwarded = bool(
+            not _trust_proxy_headers()
+            and any(
+                _proxy_header_values(request, name)
+                for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+            )
+        )
+        shared_bucket = (not peer_host) or untrusted_forwarded or (
             _is_trusted_proxy_peer(peer_host)
             and _client_ip_key(request)
             == f"ip:{_bucket_address(peer_host or 'unknown')}"
@@ -2975,6 +2997,10 @@ async def require_access_token(request: Request, call_next):
         try:
             if gate_handle is not None:
                 pre_loopback = _is_loopback_client(request)
+                pre_trusted_proxy = bool(
+                    _trust_proxy_headers()
+                    and _is_trusted_proxy_peer(peer_host)
+                )
                 pre_limiter = (
                     auth_failure_limiter_loopback
                     if pre_loopback
@@ -2982,7 +3008,7 @@ async def require_access_token(request: Request, call_next):
                 )
                 pre_key = (
                     loopback_bucket_key
-                    if pre_loopback
+                    if pre_loopback and pre_trusted_proxy
                     else _client_ip_key(request)
                 )
                 pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
@@ -7816,6 +7842,7 @@ async def _weekly_report_impl(
         daily_metric_stats[metric] = {
             "avg": round(sum(totals) / len(totals), 2),
             "max": round(max(totals), 1),
+            "day_count": len(totals),
             "latest": {
                 "value1": round(days_map[latest_day]["total"], 1),
                 "value2": None,
@@ -7856,6 +7883,15 @@ async def _weekly_report_impl(
             "peak2": (
                 None if entry["metric"] in daily_metric_stats
                 else entry["peak2"]
+            ),
+            "day_count": (
+                daily_metric_stats[entry["metric"]]["day_count"]
+                if entry["metric"] in daily_metric_stats
+                else None
+            ),
+            "avg_basis": (
+                "day" if entry["metric"] in daily_metric_stats
+                else "record"
             ),
             "latest": (
                 daily_metric_stats[entry["metric"]]["latest"]
@@ -9052,7 +9088,7 @@ def _build_health_insights(
             f"{int(item.get('count') or 0)} 次"
             for item in skip_reasons
         ]
-        if not str(report.get("profile") or ""):
+        if family_scope:
             members = [
                 str(name)
                 for name in medications_report.get("skip_members") or []
@@ -12742,6 +12778,9 @@ async def family_overview(days: int = 7):
         last_skip = str(item.get("last_skip_at") or "")
         if last_skip > entry["last_skip_at"]:
             entry["last_skip_at"] = last_skip
+        # 近 7 天漏服对已停用药物同样聚合：停药当周的历史漏服仍是
+        # 健康记录，与 skipped_today/健康提示口径一致
+        entry["skipped_week"] += int(item.get("skipped_range") or 0)
         if not item.get("active"):
             continue
         if item.get("name"):
@@ -12767,7 +12806,6 @@ async def family_overview(days: int = 7):
         if expected_week > 0:
             entry["week_count"] += int(item.get("week_count") or 0)
         entry["expected_week_doses"] += expected_week
-        entry["skipped_week"] += int(item.get("skipped_range") or 0)
         if expected_week >= 3:
             week_rate = adherence_rate(
                 int(item.get("week_count") or 0), expected_week
@@ -13358,6 +13396,11 @@ async def export_family_overview_csv(days: int = 7):
             skipped_week = int(medications.get("skipped_week") or 0)
             if skipped_week:
                 medication_text += f"，近 7 天未服 {skipped_week} 次"
+        elif int(medications.get("skipped_week") or 0):
+            # 已停用药物：历史漏服同样展示，不能因停药静默
+            medication_text = (
+                f"近 7 天未服 {int(medications['skipped_week'])} 次"
+            )
             adherence = medications.get("adherence")
             if adherence:
                 adherence_text = f"{adherence['rate']}%"
@@ -19269,15 +19312,18 @@ if WEB_DIR.exists():
     app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR)), name="static")
 
 
-if (os.getenv("FORWARDED_ALLOW_IPS") or "").strip():
+if (os.getenv("MEDIX_SERVER_PROXY_HEADERS_DISABLED") or "").strip() != "1":
     # uvicorn/gunicorn 的服务器级代理头信任会先于应用重写
-    # request.client，客户端可借此轮换限流键；应用层无法察觉，
-    # 只能在启动时提示必须关闭服务器级 proxy headers
+    # request.client（uvicorn 默认信任本机代理的 X-Forwarded-For），
+    # 客户端可借此轮换限流键；应用层无法察觉，只能在启动时提示必须
+    # 关闭服务器级 proxy headers。用 python api_server.py 启动时可设置
+    # MEDIX_SERVER_PROXY_HEADERS_DISABLED=1 关闭本提示。
     logger.warning(
-        "检测到 FORWARDED_ALLOW_IPS：uvicorn/gunicorn 可能已按客户端"
-        " X-Forwarded-For 重写 request.client；请使用 --no-proxy-headers"
-        "（gunicorn 设 FORWARDED_ALLOW_IPS=''），代理头信任只由 "
-        "MEDIX_TRUST_PROXY_HEADERS 控制。"
+        "用 uvicorn/gunicorn 直接托管时必须加 --no-proxy-headers"
+        "（gunicorn 设 FORWARDED_ALLOW_IPS=''）：服务器级代理头信任会先于"
+        "应用重写 request.client，客户端可借此轮换限流键；代理头信任只由 "
+        "MEDIX_TRUST_PROXY_HEADERS 控制。python api_server.py 启动可设 "
+        "MEDIX_SERVER_PROXY_HEADERS_DISABLED=1 关闭本提示。"
     )
 
 
