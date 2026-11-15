@@ -493,7 +493,7 @@ def test_frontend_round63_guards():
     # 恢复改写的档案与提交时不同：按草稿冲突中止
     assert "const submitProfile = sendProfile;" in source
     assert (
-        "if (submitProfile && sendProfile && submitProfile !== sendProfile)"
+        "if (submitProfile && submitProfile !== sendProfile)"
         in source
     )
     assert "preserveDraftProfile(submitProfile, question);" in source
