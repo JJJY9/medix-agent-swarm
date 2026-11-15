@@ -440,8 +440,10 @@ def test_risk_answer_skips_uncertain_template(client_and_store):
 # ---------------------------------------------------------------- 前端
 def test_frontend_round55_guards():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-    # baseline=0 不做「同文本旧问答已落库」判定
-    assert "if (!baselineMessageId) {" in app_js
+    # baseline=0 且无法证明会话为空时不做「同文本旧问答已落库」
+    # 判定；第六十五轮起本页新建的空会话允许按最后一条用户消息对账
+    assert "const freshStart = Boolean(!baselineMessageId && freshSession);" in app_js
+    assert "if (!baselineMessageId && !freshStart) {" in app_js
     # 深链预恢复窗口内拒绝切换会话
     open_body = app_js[
         app_js.index("async function openSession"):
