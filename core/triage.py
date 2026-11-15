@@ -162,11 +162,13 @@ PREGNANCY_TERMS = (
     "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
     "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
 )
-#: 「剖宫产术后N天/刚做完剖宫产」是近期产科状态；「剖宫产5年了」是
-#: 既往史，不算当前妊娠
+#: 「剖宫产术后N天/剖宫产术后（无天数）/刚做完剖宫产」都是近期产科
+#: 状态；「剖宫产5年了/剖宫产术后5年」是既往史，不算当前妊娠
 _CAESAREAN_RECENT_RE = re.compile(
     r"(?:剖宫产|剖腹产)(?:术后)?\s*"
     r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
+    r"|(?:剖宫产|剖腹产)\s*(?:手术后|术后|之后|后|刚做完|做完|刚手术)"
+    r"(?!\s*(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
@@ -333,6 +335,15 @@ def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
         for location in ("阴道", "产道", "下体", "见红", "内裤", "护垫")
     ):
         return False
+    # 产科语境（剖宫产术后/产妇/产后/孕期）下的「术后」是分娩状态，
+    # 不是非妊娠部位出血：否则「产妇剖宫产术后流血」会被术后一词否决
+    if any(
+        word in span or word in tail
+        for word in (
+            "剖宫产", "剖腹产", "产妇", "产后", "孕妇", "孕期", "产褥",
+        )
+    ):
+        return False
     return any(
         word in span or word in tail
         for word in _NON_PREG_BLEEDING_WORDS
@@ -425,14 +436,17 @@ def _colloquial_bleeding_positive(text: str) -> bool:
 #: 主诉中带明确年数的产后/流产后表述：已不是当前妊娠，不能据此
 #: 把阴道出血判为孕产期出血（「产后2年，阴道出血」）
 _PAST_OBSTETRIC_YEARS = re.compile(
-    r"(?:产后|流产后|胎停后?|剖宫产后|顺产后|引产后)\s*"
+    r"(?:产后|流产后|胎停后?|顺产后|引产后|"
+    r"剖宫产(?:术后)?|剖腹产(?:术后)?)\s*"
     r"[0-9一二两三四五六七八九十]+\s*年"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
 _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:曾经|以前|去年|前年|多年前|既往|已流产|已结束|"
-    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|产后抑郁)"
+    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|产后抑郁|"
+    r"剖宫产(?:术后|后)?\s*[0-9一二两三四五六七八九十]+\s*年|"
+    r"剖腹产(?:术后|后)?\s*[0-9一二两三四五六七八九十]+\s*年)"
 )
 
 
@@ -830,6 +844,23 @@ def _definition_multi_symptom(prefix: str) -> bool:
     return False
 
 
+#: 第三人称代词主语（他抽搐是什么病/请解释一下她胸痛）：代词在
+#: 分句开头且后接症状时是在描述真实主诉；「他们/其他/他汀/吉他」
+#: 等不是人称主语
+_THIRD_PERSON_SUBJECT_RE = re.compile(
+    r"^\s*(?:一下)?\s*(?:他|她)(?!们|汀|俩|乡|人|处|杀|自己)"
+)
+
+
+def _third_person_symptom_subject(text: str) -> bool:
+    """分句是否以「他/她 + 症状」描述第三方（含患者本人）主诉。"""
+    if _THIRD_PERSON_SUBJECT_RE.match(text) is None:
+        return False
+    return _is_red_flag_text(text) or any(
+        term in text for term in _COLLOQUIAL_SYMPTOM_WORDS
+    )
+
+
 def _clean_complaint_clause(
     clause: str, patient_context_seen: bool = False
 ) -> str:
@@ -868,6 +899,8 @@ def _clean_complaint_clause(
             return ""
         if (
             _has_patient_subject(rest)
+            # 第三人称代词主语 + 症状：描述的是真实患者主诉
+            or _third_person_symptom_subject(rest)
             # 孕产期出血无论是否有主语都是真实急症描述
             or any(term in rest for term in PREGNANCY_BLEEDING_TERMS)
             # 家属语境 + 红旗（请解释一下我爸胸痛是什么原因）
@@ -944,6 +977,9 @@ def _clean_complaint_clause(
             # 无标点并写的多症状（「发热胸痛」「抽搐吐白沫」）是真实
             # 主诉，不是单一术语解释
             or _definition_multi_symptom(prefix)
+            # 第三人称代词主语的症状（「他抽搐是什么病」）同样不是
+            # 纯术语解释
+            or _third_person_symptom_subject(prefix)
             # 前文已明确患者本人（「宝宝发烧，抽搐是什么病」）：
             # 单一红旗症状也按真实主诉保留
             or (
@@ -1464,6 +1500,15 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     obj = re.split(r"[，。；,.!?！？\n和及与、]", match.group(1))[0]
     if not obj or len(obj) < 2:
         return False
+    if re.match(
+        r"^[0-9一二两三四五六七八九十半几]+\s*"
+        r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)",
+        obj,
+        re.IGNORECASE,
+    ):
+        # 「又吃了两片/一片」是剂量宾语，不是换成另一种药：
+        # 仍是同一药物的续用，抗凝状态不能被吞掉
+        return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
         return False
     past = _MED_OBJECT_IN_CLAUSE.search(clause)
@@ -1532,7 +1577,14 @@ _MED_USE_NEGATION_RE = re.compile(
 )
 _MED_USE_STOP_SUFFIX_RE = re.compile(
     r"^[^，。；]{0,3}(?:我|本人)?(?:已经|已|刚|才)?"
-    r"(?:不吃了|不再吃了|不用吃了)"
+    r"(?:不吃了|不再吃了|不用吃了"
+    # 药名后置的否定：「华法林我没在吃」
+    r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用)"
+)
+#: 药名之后的既往用药：「华法林以前吃过」
+_MED_USE_PAST_SUFFIX_RE = re.compile(
+    r"^[^，。；]{0,3}(?:以前|之前|曾经|曾|既往|过去)\s*"
+    r"(?:吃过|服用过|服过|用过)(?!量)"
 )
 
 
@@ -1565,6 +1617,7 @@ def _active_term_mention(text: str, term: str) -> bool:
                 )
                 or _MED_USE_NEGATION_RE.search(prefix) is not None
                 or _MED_USE_STOP_SUFFIX_RE.search(suffix) is not None
+                or _MED_USE_PAST_SUFFIX_RE.search(suffix) is not None
             )
         )
         if not negated:
@@ -1661,7 +1714,9 @@ def _has_fever(text: str) -> bool:
     return False
 
 
-def _active_medical_text(context: Dict[str, Any]) -> str:
+def _active_medical_text(
+    context: Dict[str, Any], child_patient: bool = False
+) -> str:
     """拼接当前仍生效的病史与用药。
 
     按分句过滤家族史、他人病史、否定表述、过敏史以及已结束/已停用的
@@ -1695,6 +1750,12 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             elif _has_patient_subject(clause):
                 # 「我和我爸都吃华法林/都在化疗」：患者是并列主语，
                 # 不能因为家属称谓整句丢弃
+                pass
+            elif child_patient and any(
+                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+            ):
+                # 患儿档案下家长口述「我儿子正在化疗/在吃华法林」：
+                # 儿子/女儿指的就是当前患者本人
                 pass
             else:
                 continue
@@ -2082,10 +2143,12 @@ def _context_flags(text: str, context: Any) -> List[Tuple[str, str]]:
             "请不要自行用药，立即前往医院。",
         ))
 
-    medical_text = _active_medical_text(context)
+    medical_text = _active_medical_text(context, child_patient)
     # 用户可能只在本次主诉里自述化疗/抗凝（档案/用药清单未录入）：
     # 免疫抑制与抗凝判断都并入主诉文本，过滤规则与结构化文本一致
-    complaint_medical = _active_medical_text({"history": text})
+    complaint_medical = _active_medical_text(
+        {"history": text}, child_patient
+    )
     active_text = medical_text
     if complaint_medical:
         active_text = f"{medical_text}；{complaint_medical}"

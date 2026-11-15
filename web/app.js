@@ -778,6 +778,9 @@ const DEEP_LINK_AT_KEY = 'medix.deepLinkAt';
 const DEEP_LINK_EDITED_KEY = 'medix.deepLinkEdited';
 //: 流式会诊进行中的主诉：刷新/被系统回收后恢复到输入框
 const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
+//: 本次加载从 INFLIGHT 记录恢复到输入框的文本：启动对账只在文本
+//: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
+let inflightRestoredText = '';
 //: 首屏会话恢复（initProfiles 之后的 restoreCurrentSession）就绪：
 //: 发送必须等它结束，否则问题会写进上一会话（可能是另一位患者）
 let resolveInitialSessionRestore = () => {};
@@ -20617,7 +20620,16 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 主诉已被 restoreInflightQuestion 填回输入框，而服务端消息里本轮
     // 问答已完整落库。不清空的话回车就会把同一主诉再会诊一次
     let inflightReconciled = false;
-    if (!expectedQuestion && !pendingReset && els.input.value.trim()) {
+    // 只清理确实来自在途记录的文本：用户自己重写的同题草稿不能
+    // 因为「等于上一条提问」就被当成重复提交删掉
+    const inflightText = String(inflightRestoredText || '').trim();
+    inflightRestoredText = '';
+    if (
+      !expectedQuestion
+      && !pendingReset
+      && inflightText
+      && els.input.value.trim() === inflightText
+    ) {
       const composerText = els.input.value.trim();
       let lastUserIndex = -1;
       for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -20682,7 +20694,9 @@ async function send(question) {
   if (!question.trim()) return;
   // 发送时的档案快照：abort/失败恢复主诉时用它守住草稿归属，
   // 换档后旧患者的主诉不能被当成新档案草稿直接放行
-  const sendProfile = activeProfileName || readStoredProfile() || '';
+  let sendProfile = activeProfileName || readStoredProfile() || '';
+  // 用户手动换档才会递增：恢复流程按服务端绑定更新档案不算换档
+  const sendProfileSeq = profileSelectionSeq;
   // 输入框草稿属于另一位档案（换档后未重新输入）：不能按新档案落库
   try {
     const submittedProfile = pendingComposerProfile;
@@ -20813,6 +20827,21 @@ async function send(question) {
       setSessionUrl(null);
     }
   }
+  // 恢复流程（深链/首屏）会按服务端绑定更新当前档案：这是应用户
+  // 请求的恢复，不是换档。用 profileSelectionSeq（仅用户手动换档
+  // 递增）判断是否真的换档，并按恢复后的档案刷新发送快照
+  if (profileSelectionSeq !== sendProfileSeq) {
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    els.input.value = question;
+    detachedComposerText = question;
+    autoGrow();
+    setVitals('warn', '档案已切换，刚才的主诉未提交，请确认后重新发送');
+    return;
+  }
+  sendProfile = (
+    els.profileSelect.value || activeProfileName
+    || readStoredProfile() || ''
+  );
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
   consumeDeepLink();
   if (pendingSessionReset) {
@@ -20889,7 +20918,10 @@ async function send(question) {
     // 的档案快照（sendProfile），否则 A 的主诉+上下文会被挂到
     // B 档案名下落库；组装后档案已变化则中止本轮
     const consultContext = await buildConsultContext(controller.signal);
-    if ((els.profileSelect.value || '') !== (sendProfile || '')) {
+    if (
+      profileSelectionSeq !== sendProfileSeq
+      || (els.profileSelect.value || '') !== (sendProfile || '')
+    ) {
       throw Object.assign(
         new Error('档案已切换，本轮会诊未提交'),
         { profileChanged: true }
@@ -22194,6 +22226,12 @@ function reassignDraftToCurrentSession() {
   clearTimeout(draftTimer);
   try {
     if (els.input.value.trim()) {
+      if (detachedComposerText && els.input.value === detachedComposerText) {
+        // 文本被明确归属到当前会话：不再处于「未确认接管」状态，
+        // 否则 pagehide/切后台时 composerIsDetached 会把刚保存的
+        // 草稿再删掉，PWA 重开后主诉丢失
+        detachedComposerText = '';
+      }
       safeSessionSet(DRAFT_KEY, els.input.value);
       safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
       if (!safeSessionGet(DRAFT_PROFILE_KEY)) {
@@ -22215,6 +22253,7 @@ function reassignDraftToCurrentSession() {
 function clearDraft() {
   clearTimeout(draftTimer);
   draftProfileMemory = null;
+  detachedComposerText = '';
   try {
     safeSessionRemove(DRAFT_KEY);
     safeSessionRemove(DRAFT_OWNER_KEY);
@@ -22369,6 +22408,8 @@ function restoreInflightQuestion() {
       // 按不一致处理：上一位患者的主诉不能进无归属输入框
       return;
     }
+    // 记录来源：启动对账只有该文本确实来自在途记录时才清空
+    inflightRestoredText = question;
     if (els.input.value.includes(question)) {
       // 主诉已在草稿里：只清理在途记录，不重复合并
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
