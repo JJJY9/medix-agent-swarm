@@ -410,8 +410,12 @@ def test_session_flow_guards_are_present():
     assert "setPendingSessionReset(true)" in detach
 
     send_start = app_js.index("async function send(question)")
-    # 首屏恢复等待块让 send 头部变长，窗口相应放宽
-    send_body = app_js[send_start:send_start + 3600]
+    # 取到消费深链之前：send 头部随守卫增加变长，不再用固定窗口
+    send_body = app_js[
+        send_start:app_js.index(
+            "const controller = new AbortController();", send_start
+        )
+    ]
     assert "if (pendingSessionReset)" in send_body
     assert "clearPersistedSessionId()" in send_body
     assert "setPendingSessionReset(false)" in send_body

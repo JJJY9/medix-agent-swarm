@@ -3303,7 +3303,9 @@ async function ensureSession(signal) {
 }
 
 async function startNewSession() {
-  if (busy) {
+  if (busy || sendInFlight) {
+    // sendInFlight：排队等待首屏/深链恢复的主诉还在路上，
+    // 此时新建会话会把已提交的问题挤进新会话
     window.alert('会诊进行中，请先停止当前会诊。');
     return false;
   }
@@ -13743,6 +13745,9 @@ async function saveVisit() {
     resetVisitForm();
     setVisitStatus(editingId ? '已保存修改。' : '已保存就诊记录。');
     await loadVisits();
+    // 修改复诊日期会级联删除自动预约与待办提醒：同步刷新列表与角标
+    loadAppointments();
+    refreshReminderBadge();
     refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
@@ -13801,6 +13806,9 @@ async function deleteVisit(item) {
     if (editingVisitId === item.id) resetVisitForm();
     setVisitStatus('已删除就诊记录。');
     await loadVisits();
+    // 删除就诊会级联撤销自动预约与提醒：同步刷新列表与角标
+    loadAppointments();
+    refreshReminderBadge();
     refreshAttachmentReferences();
     refreshOverview();
   } catch (err) {
@@ -20595,6 +20603,47 @@ async function send(question) {
     return;
   }
   if (!question.trim()) return;
+  // 输入框草稿属于另一位档案（换档后未重新输入）：不能按新档案落库
+  try {
+    const submittedProfile = pendingComposerProfile;
+    pendingComposerProfile = null;
+    const draftProfile = (
+      submittedProfile || safeSessionGet(DRAFT_PROFILE_KEY) || ''
+    );
+    const composerText = (els.input.value || '').trim();
+    const draftText = (safeSessionGet(DRAFT_KEY) || '').trim();
+    const currentProfile = (
+      els.profileSelect.value || activeProfileName
+      || readStoredProfile() || ''
+    );
+    if (
+      (
+        submittedProfile
+        || composerText === question.trim()
+        || draftText === question.trim()
+      )
+      && draftProfile
+      && draftProfile !== currentProfile
+    ) {
+      window.alert(
+        `输入框内容属于档案「${draftProfile}」，`
+        + `当前档案为「${currentProfile || '未指定'}」，`
+        + '请确认后再发送。'
+      );
+      els.input.value = question;
+      autoGrow();
+      // 保留草稿及档案归属：再次回车仍要被拦截，直到用户重新输入
+      try {
+        safeSessionSet(DRAFT_KEY, question);
+        safeSessionSet(DRAFT_PROFILE_KEY, draftProfile);
+      } catch {
+        // 隐私模式忽略
+      }
+      return;
+    }
+  } catch {
+    // 隐私模式忽略
+  }
   // 极早持久化已提交主诉：深链预恢复等待期间刷新/关页也不会丢失
   // （ensureSession 之后会用真实会话 ID 覆盖同一条记录）
   try {
@@ -20651,11 +20700,37 @@ async function send(question) {
   // 采纳上次会话，直接发送会把问题写进上一会话（可能是另一位
   // 患者），且随后的恢复响应会因 busy 被丢弃
   if (!deepLinkedSession) {
+    const restoreSession = sessionId;
+    const restoreSeq = openSessionSeq;
+    let initialRestoreOk = true;
     sendInFlight = true;
     try {
-      await initialSessionRestore;
+      initialRestoreOk = Boolean(await initialSessionRestore);
+      if (!initialRestoreOk && sessionId) {
+        initialRestoreOk = Boolean(await restoreCurrentSession());
+      }
     } finally {
       sendInFlight = false;
+    }
+    const takeover = Boolean(
+      sessionId !== restoreSession || openSessionSeq !== restoreSeq
+    );
+    if (takeover) {
+      // 等待期间用户新建/切换了会话：排队的主诉不能发进新会话
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      els.input.value = question;
+      detachedComposerText = question;
+      autoGrow();
+      setVitals('warn', '会话已切换，刚才的主诉未提交，请确认后重新发送');
+      return;
+    }
+    if (!initialRestoreOk && sessionId) {
+      // 旧会话从未在本页展示且恢复失败：不能把问题写进未知会话，
+      // 清掉残留绑定按新会话处理
+      clearPersistedSessionId();
+      sessionId = null;
+      lastServerMessageId = 0;
+      setSessionUrl(null);
     }
   }
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
@@ -21822,6 +21897,11 @@ const DRAFT_KEY = 'medix.draft';
 let detachedComposerText = '';
 //: 草稿归属的会话：切换/深链打开另一位患者的会话时不能沿用旧草稿
 const DRAFT_OWNER_KEY = 'medix.draft.session';
+//: 草稿归属的档案：换档后旧患者的主诉不能按新档案提交
+const DRAFT_PROFILE_KEY = 'medix.draft.profile';
+//: 提交瞬间的草稿档案快照：submit 会先清空输入与草稿，send 里
+//: 再读就晚了，换档后旧患者的主诉会被按新档案提交
+let pendingComposerProfile = null;
 let draftTimer = null;
 
 function composerIsDetached() {
@@ -21843,14 +21923,20 @@ function saveDraft() {
       if (composerIsDetached()) {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
+        safeSessionRemove(DRAFT_PROFILE_KEY);
         return;
       }
       if (els.input.value.trim()) {
         safeSessionSet(DRAFT_KEY, els.input.value);
         safeSessionSet(DRAFT_OWNER_KEY, ownerSnapshot);
+        safeSessionSet(
+          DRAFT_PROFILE_KEY,
+          activeProfileName || readStoredProfile() || ''
+        );
       } else {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
+        safeSessionRemove(DRAFT_PROFILE_KEY);
         if (!busy && !sendInFlight) {
           // 用户已主动清空主诉：在途记录不能继续保留，否则刷新后
           // 会把被删除的病情描述重新填回输入框
@@ -21870,6 +21956,7 @@ function flushDraftNow() {
     if (composerIsDetached()) {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
+      safeSessionRemove(DRAFT_PROFILE_KEY);
       return;
     }
     if (els.input.value.trim()) {
@@ -21877,9 +21964,14 @@ function flushDraftNow() {
       safeSessionSet(
         DRAFT_OWNER_KEY, pendingSessionReset ? '' : (sessionId || '')
       );
+      safeSessionSet(
+        DRAFT_PROFILE_KEY,
+        activeProfileName || readStoredProfile() || ''
+      );
     } else {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
+      safeSessionRemove(DRAFT_PROFILE_KEY);
       if (!busy && !sendInFlight) {
         // 与 saveDraft 一致：用户清空主诉后立即隐藏/刷新时
         // 也要丢弃在途记录，避免刷新后复活已删除的内容
@@ -21905,9 +21997,16 @@ function reassignDraftToCurrentSession() {
     if (els.input.value.trim()) {
       safeSessionSet(DRAFT_KEY, els.input.value);
       safeSessionSet(DRAFT_OWNER_KEY, sessionId || '');
+      if (!safeSessionGet(DRAFT_PROFILE_KEY)) {
+        safeSessionSet(
+          DRAFT_PROFILE_KEY,
+          activeProfileName || readStoredProfile() || ''
+        );
+      }
     } else {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
+      safeSessionRemove(DRAFT_PROFILE_KEY);
     }
   } catch {
     // 忽略
@@ -21919,6 +22018,7 @@ function clearDraft() {
   try {
     safeSessionRemove(DRAFT_KEY);
     safeSessionRemove(DRAFT_OWNER_KEY);
+    safeSessionRemove(DRAFT_PROFILE_KEY);
   } catch {
     // 忽略
   }
@@ -22200,6 +22300,8 @@ els.composer.addEventListener('submit', (e) => {
   }
   const q = els.input.value.trim();
   if (!q) return;
+  // 先记住草稿的档案归属：清空输入/草稿后 send 无法再判断来源
+  pendingComposerProfile = safeSessionGet(DRAFT_PROFILE_KEY) || '';
   els.input.value = '';
   autoGrow();
   clearDraft();
@@ -23851,8 +23953,8 @@ loadDraft();
 restoreInflightQuestion();
 initProfiles().finally(() => {
   Promise.resolve(restoreCurrentSession())
-    .catch(() => {})
-    .finally(resolveInitialSessionRestore);
+    .then((ok) => resolveInitialSessionRestore(Boolean(ok)))
+    .catch(() => resolveInitialSessionRestore(false));
   handleLaunchAction();
 });
 checkStatus();

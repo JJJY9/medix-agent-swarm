@@ -761,11 +761,11 @@ def test_frontend_round57_guards():
     ]
     # 首屏恢复未完成前必须等待：不能把问题写进上一会话
     assert "const initialSessionRestore = new Promise" in app_js
-    assert "await initialSessionRestore;" in send
-    assert send.index("await initialSessionRestore;") < (
+    assert "await initialSessionRestore" in send
+    assert send.index("await initialSessionRestore") < (
         send.index("consumeDeepLink()")
     )
-    assert ".finally(resolveInitialSessionRestore);" in app_js
+    assert "resolveInitialSessionRestore(Boolean(ok))" in app_js
     # 改名/删除档案同步在途主诉记录
     assert "updateInflightQuestionProfile(name, data.name);" in app_js
     assert "updateInflightQuestionProfile(name, '');" in app_js

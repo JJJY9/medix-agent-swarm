@@ -1371,6 +1371,13 @@ _RISK_NEGATION_PATTERN = re.compile(
     r"(?:不属于|不是|并非|排除|未见|没有|无明显|无|非|不)"
     r"(?:明显|任何|明确|相关|特殊)?\s*$"
 )
+#: 谓词间隔否定：「未发现高危表现」「未达到高危标准」「不符合高危特征」
+#: 「不支持高危诊断」都是安抚表述；「不能排除高危」仍按高危处理
+_RISK_PREDICATE_NEGATION = re.compile(
+    r"(?:未|没有?|不|无|无法|不能)"
+    r"(?:发现|出现|达到|符合|支持|满足|存在)"
+    r"[^，。；,;\n]{0,6}$"
+)
 #: 「不排除/不能排除/未排除高危」是双重否定，表示风险仍然存在
 _RISK_RULE_OUT_PATTERN = re.compile(
     r"(?:不|不能|无法|难以|未能|未|没有?)\s*(?:完全|明确|彻底)?\s*排除\s*$"
@@ -1418,6 +1425,8 @@ def parse_risk_level(text: Any) -> str:
             if _RISK_RULE_OUT_PATTERN.search(prefix):
                 return level
             if _RISK_NEGATION_PATTERN.search(prefix):
+                continue
+            if _RISK_PREDICATE_NEGATION.search(prefix):
                 continue
             return level
     return ""
@@ -1740,7 +1749,12 @@ async def _auth_compare_enter(key: str, source: str = ""):
             return
         with _auth_compare_gates_lock:
             sources = gate.get("sources") or {}
-            sources[source] = max(0, sources.get(source, 1) - 1)
+            remaining = sources.get(source, 1) - 1
+            if remaining > 0:
+                sources[source] = remaining
+            else:
+                # 归零即删除：未认证请求轮换源地址不能无限撑大内存
+                sources.pop(source, None)
 
     try:
         await gate["lock"].acquire()
@@ -1757,10 +1771,11 @@ async def _auth_compare_enter(key: str, source: str = ""):
                     await asyncio.sleep(delay)
                 except BaseException:
                     # 客户端断开/任务取消时 sleep 会被取消：锁已获得，
-                    # 必须释放，否则该来源键的后续请求会永久排队
+                    # 必须释放，否则该来源键的后续请求会永久排队。
+                    # 来源槽位由外层 except 统一释放一次，这里不能
+                    # 重复释放（否则单源 32 槽上限会被绕过）
                     gate["lock"].release()
                     acquired = False
-                    _release_source()
                     raise
         return handle
     except BaseException:
@@ -1792,9 +1807,11 @@ def _auth_compare_exit(handle) -> None:
         if source:
             with _auth_compare_gates_lock:
                 sources = gate.get("sources") or {}
-                sources[source] = max(
-                    0, sources.get(source, 1) - 1
-                )
+                remaining = sources.get(source, 1) - 1
+                if remaining > 0:
+                    sources[source] = remaining
+                else:
+                    sources.pop(source, None)
         with _auth_compare_gates_lock:
             gate["waiting"] = max(0, gate["waiting"] - 1)
 _short_access_token_warned = False
@@ -6422,6 +6439,39 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             f"复诊：{visit.get('diagnosis') or visit.get('department') or '复诊'}"
         )[:120]
         if appointment is None:
+            ownership = (
+                f"由就诊记录 #{int(visit.get('id') or 0)} 自动创建"
+            )
+            owned_upcoming = []
+            for candidate in store.list_appointments(
+                profile, None, False, 100000, 0
+            ):
+                if candidate.get("status") != "upcoming":
+                    continue
+                if (
+                    ownership in str(candidate.get("note") or "")
+                    or int(candidate.get("owner_visit_id") or 0)
+                    == int(visit.get("id") or 0)
+                ):
+                    owned_upcoming.append(candidate)
+            if owned_upcoming:
+                # 导入恢复常留下「owner/备注指向本就诊、但链接未写回、
+                # 日期与复诊日不同」的自动预约：复用并改期，不能新建
+                # 第二条同名预约与待办提醒
+                appointment = sorted(
+                    owned_upcoming,
+                    key=lambda row: str(row.get("scheduled_at") or ""),
+                )[0]
+                if str(
+                    appointment.get("scheduled_at") or ""
+                )[:10] != followup_date:
+                    updated = store.update_appointment_partial(
+                        int(appointment["id"]),
+                        scheduled_at=f"{followup_date}T09:00",
+                    )
+                    if updated:
+                        appointment = updated
+        if appointment is None:
             # 并发重试时复用同一就诊已创建的同名预约：必须校验归属
             # 标记，避免另一条同诊断同日期的就诊共享并连带删除预约
             ownership = (
@@ -8220,6 +8270,11 @@ async def _weekly_report_impl(
                 for item in active_meds
                 if item.get("expired") or item.get("low_stock")
             ][:5],
+            # 同一药物可同时过期且缺货：标题按药种去重计数
+            "stock_alert_count": sum(
+                1 for item in active_meds
+                if item.get("expired") or item.get("low_stock")
+            ),
             "adherence": (
                 {
                     "expected": adherence_expected,
@@ -8929,8 +8984,9 @@ def _build_health_insights(
         ))
 
     medications_stock = report.get("medications") or {}
-    stock_count = int(medications_stock.get("expired") or 0) + int(
-        medications_stock.get("low_stock") or 0
+    stock_count = int(
+        medications_stock.get("stock_alert_count")
+        or medications_stock.get("expired") or 0
     )
     if stock_count:
         stock_items = medications_stock.get("stock_items") or []
@@ -11963,6 +12019,7 @@ def _family_attention(
     appointments: Dict[str, Any],
     visits: Optional[Dict[str, Any]] = None,
     glucose_alert: str = "",
+    bp_alert: Optional[Dict[str, str]] = None,
     metrics: Optional[List[Dict[str, Any]]] = None,
     stale_critical: Optional[List[str]] = None,
 ) -> Dict[str, str]:
@@ -12068,6 +12125,13 @@ def _family_attention(
             "label": "血糖偏高",
             "detail": glucose_alert[:120],
         }
+    if bp_alert and bp_alert.get("level") == "warning":
+        # 无目标设置的 2 级高血压：与健康提示血压分级同口径
+        return {
+            "level": "warning",
+            "label": "血压偏高",
+            "detail": str(bp_alert.get("detail") or "")[:120],
+        }
     if medications.get("expired") or medications.get("low_stock"):
         parts = []
         if medications.get("expired"):
@@ -12105,6 +12169,12 @@ def _family_attention(
             "level": "info",
             "label": f"复查临近 {care['due_soon']} 项",
             "detail": "、".join(care.get("items") or [])[:120],
+        }
+    if bp_alert and bp_alert.get("level") == "info":
+        return {
+            "level": "info",
+            "label": "血压偏高",
+            "detail": str(bp_alert.get("detail") or "")[:120],
         }
     if appointments.get("overdue"):
         return {
@@ -12490,6 +12560,37 @@ async def family_overview(days: int = 7):
                 f"{round(postprandial[0] / postprandial[1], 2):g}"
                 " mmol/L 明显偏高"
             )
+
+    # 未设置目标时的血压分级：与健康提示 _bp_peak_reading 同阈值
+    # （≥160/100 warning、≥140/90 info），家庭关注与健康提示同口径
+    bp_alert_by_profile: Dict[str, Dict[str, str]] = {}
+    bp_peak_by_profile: Dict[str, List[float]] = {}
+    for item in window_metrics:
+        if item.get("metric") != "bp":
+            continue
+        try:
+            systolic = float(item.get("value1") or 0)
+            diastolic = float(item.get("value2") or 0)
+        except (TypeError, ValueError):
+            continue
+        profile_key = item.get("profile") or ""
+        current = bp_peak_by_profile.get(profile_key)
+        if current is None or (systolic, diastolic) > (
+            current[0], current[1]
+        ):
+            bp_peak_by_profile[profile_key] = [systolic, diastolic]
+    for member, peak in bp_peak_by_profile.items():
+        systolic, diastolic = peak
+        if systolic >= 160 or diastolic >= 100:
+            level = "warning"
+        elif systolic >= 140 or diastolic >= 90:
+            level = "info"
+        else:
+            continue
+        bp_alert_by_profile[member] = {
+            "level": level,
+            "detail": f"血压最高 {systolic:g}/{diastolic:g} mmHg",
+        }
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
     medication_names_by_profile: Dict[str, List[str]] = {}
@@ -12953,6 +13054,7 @@ async def family_overview(days: int = 7):
             appointments=appointment,
             visits=visits,
             glucose_alert=glucose_alert_by_profile.get(name, ""),
+            bp_alert=bp_alert_by_profile.get(name),
             metrics=metrics,
             stale_critical=stale_critical_by_profile.get(name, []),
         )
@@ -13036,7 +13138,11 @@ async def family_overview(days: int = 7):
             # 只有可展示的（非未来）最近就诊才算：未来日期的遗留
             # 就诊记录前端不渲染
             return True
-        if int((member.get("appointments") or {}).get("upcoming") or 0):
+        appointment_info = member.get("appointments") or {}
+        if (
+            int(appointment_info.get("upcoming") or 0)
+            or int(appointment_info.get("overdue") or 0)
+        ):
             return True
         if int((member.get("conditions") or {}).get("count") or 0):
             return True

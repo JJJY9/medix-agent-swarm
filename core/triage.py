@@ -162,6 +162,12 @@ PREGNANCY_TERMS = (
     "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
     "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
 )
+#: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；
+#: 「自然流产史」是既往史，不能当作当前妊娠
+_PREGNANCY_EVIDENCE_RE = re.compile(
+    r"(?:验孕(?:棒)?(?:呈|显示)?(?:阳性|两条杠|双杠)|"
+    r"(?:自然|不全|完全)流产(?!史)|流产了)"
+)
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
     r"(?<![避备不待])(?:怀)?孕\s*[0-9一二两三四五六七八九十]+\s*"
@@ -738,7 +744,8 @@ _DEFINITION_SUFFIX_RE = re.compile(
 #: 口语化「提问前缀」：去掉后按剩余内容重新判断，避免「我想知道什么是
 #: 咯血」因含「我」被当成患者主诉而触发急症横幅
 _EDUCATIONAL_PREFIX_RE = re.compile(
-    r"^(?:请问(?:一下)?|我想知道|我想问(?:一下)?|想问(?:一下)?|"
+    r"^(?:请问(?:一下)?|我想知道|我想问下|我想问(?:一下)?|想问(?:一下)?|"
+    r"问下|咨询(?:一下)?|想咨询(?:一下)?|"
     r"我想了解(?:一下|下)?|想了解(?:一下)?|了解一下|听说|我听说|据说)"
 )
 #: 传闻式语句整句按科普处理，不构成患者本人当前主诉
@@ -913,9 +920,11 @@ def _clean_complaint_clause(
 
 #: 科普/寒暄式铺垫：即使带时间词也不建立患者语境
 _COURSE_CONTEXT_BLOCKERS = (
-    "查", "资料", "学习", "了解", "问问", "问一下", "搜索", "网上",
-    "听说", "据说", "请问", "科普", "看了", "文章", "视频", "新闻",
-    "百科", "帖子",
+    "查", "资料", "学习", "了解", "问问", "问一下", "问下", "咨询",
+    "搜索", "网上", "听说", "据说", "请问", "科普", "看了", "文章",
+    "视频", "新闻", "百科", "帖子",
+    # 寒暄/致谢分句不能为后面的定义问句背书
+    "你好", "您好", "谢谢", "好的", "在吗", "麻烦", "打扰",
 )
 
 #: 明确的科普/检索语境：即使分句含「我/今天」也不按患者主诉保留
@@ -1007,7 +1016,8 @@ def patient_complaint_text(text: str) -> str:
                 # 定义问句在描述患者本人；查资料/问问等科普铺垫除外
                 context_seen = True
             elif (
-                not any(
+                len(clause.strip()) >= 2
+                and not any(
                     word in clause for word in _EDUCATION_BLOCKERS_STRONG
                 )
                 and not any(
@@ -1250,7 +1260,9 @@ _TRIAGE_DOUBLE_NEGATION = re.compile(
 _DOSE_MISSED_PATTERN = re.compile(
     r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
     r"前晚|刚才|这次|这一顿|这顿)"
-    r"[^，。；,.!?！？\n]{0,8}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
+    r"[^，。；,.!?！？\n]{0,8}"
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
+    r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
 )
 #: 未来停药计划（明天就停/下周就不吃了/等这盒吃完就停）：当前仍在用药
 _FUTURE_STOP_PATTERN = re.compile(
@@ -1259,7 +1271,8 @@ _FUTURE_STOP_PATTERN = re.compile(
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*(?:后|以后)|"
     r"等[^，。；]{0,12}(?:就|再))"
     r"[^，。；]{0,6}"
-    r"(?:停用|停药|停服|停了|停掉|停止服用|不吃|不再吃|不用吃|不服|不喝)"
+    r"(?:停用|停药|停服|停了|停掉|停止服用|不吃|不再吃|不用吃|不服|"
+    r"不喝|不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)"
 )
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
 _NEGATED_STOP_PATTERN = re.compile(
@@ -1267,10 +1280,12 @@ _NEGATED_STOP_PATTERN = re.compile(
     r"并非|不想|不打算|不准备)"
     r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用)"
 )
-#: 「打算/准备停用华法林」是意图，当前仍在用药
+#: 「打算/准备停用华法林」「打算不吃华法林」都是意图，当前仍在用药
 _STOP_INTENT_PATTERN = re.compile(
     r"(?:想|打算|准备|计划|考虑|要不要|是否)"
-    r"[^，。；]{0,6}(?:停用|停药|停服|停了|停止服用)"
+    r"[^，。；]{0,6}"
+    r"(?:停用|停药|停服|停了|停止服用|不吃|不再吃|不用吃|不服|不喝|"
+    r"不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)"
 )
 #: 「华法林停用可以吗」是询问，不能按已停药处理
 _STOP_QUESTION_PATTERN = re.compile(
@@ -1391,12 +1406,16 @@ def _active_term_mention(text: str, term: str) -> bool:
     while start != -1:
         prefix = _clause_prefix(text, start)
         suffix = text[start + len(term):start + len(term) + 16]
-        # 单次漏服（我今天没吃 X）与未来停药计划（下周就不吃 X 了）
-        # 仍处于用药状态：不能被「没吃/不吃」当作否定
+        # 单次漏服（我今天没吃 X）、未来停药计划（下周就不吃 X 了）
+        # 与意图停药（打算不吃 X/准备不再化疗）仍处于用药状态：
+        # 不能被「没吃/不吃/不再」当作否定
+        window = text[max(0, start - 12):start + len(term) + 4]
         continued_use = (
             _DOSE_MISSED_PATTERN.search(prefix) is not None
             or _FUTURE_STOP_PATTERN.search(prefix) is not None
             or _FUTURE_STOP_PATTERN.search(suffix) is not None
+            or _FUTURE_STOP_PATTERN.search(window) is not None
+            or _STOP_INTENT_PATTERN.search(window) is not None
         )
         negated = (
             not _TRIAGE_DOUBLE_NEGATION.search(prefix)
@@ -1548,12 +1567,25 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
                 clause,
             ):
                 continue
-        if re.search(r"(?<!抗)过敏", clause) and not re.search(
-            r"(?:吃|服用|口服|服|用|注射|打|喝)", clause
-        ):
+        if re.search(r"(?<!抗)过敏", clause):
             # 「肝素过敏/对华法林过敏」是过敏陈述，不是正在用药；
-            # 「抗过敏药」不算（保留该分句里的用药信息）
-            continue
+            # 只剥离过敏短语本身：同一分句里的其它状态（华法林每天
+            # 一片/化疗期间/怀孕中期）继续参与判断，不能整句丢弃
+            residue = re.sub(
+                r"对[^，。；]{0,10}?(?:过敏|过敏史|过敏原|过敏反应)",
+                "",
+                clause,
+            )
+            if residue == clause:
+                residue = re.sub(
+                    r"[^，。；]{0,6}?(?:过敏|过敏史|过敏原|过敏反应)",
+                    "",
+                    clause,
+                )
+            residue = residue.strip(" ，,；")
+            if not residue:
+                continue
+            clause = residue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
         # 家属用药或换用其它药物的分句不能复活本句的既往药：
         # 「以前吃华法林，我爸还在吃华法林」「…现在还在吃阿司匹林」
@@ -1971,6 +2003,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
             _positive_mention(pregnancy_text, term)
             for term in PREGNANCY_TERMS
         )
+        or _PREGNANCY_EVIDENCE_RE.search(pregnancy_text) is not None
     )
     if (
         pregnancy_mentioned

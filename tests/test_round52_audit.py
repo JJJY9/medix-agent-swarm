@@ -471,9 +471,11 @@ def test_frontend_round52_guards():
     ]
     assert "const beforeSession = sessionId;" in detach
     assert "if (!takenOver) {" in detach
+    send_start = app_js.index("async function send(question)")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 1600
+        send_start:app_js.index(
+            "const controller = new AbortController();", send_start
+        )
     ]
     assert "els.empty && !els.thread.querySelector('.turn')" in send
     assert "expectedQuestion\n      && els.input.value.trim()" in app_js
