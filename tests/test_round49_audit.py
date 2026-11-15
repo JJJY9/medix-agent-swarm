@@ -359,7 +359,9 @@ def test_bp_peak_alert_not_suppressed_by_target(client_and_store):
     ).json()
     insights = {item["key"]: item for item in data["insights"]}
     assert "metric_bp_single" in insights
-    assert "175/115" in insights["metric_bp_single"]["title"]
+    # 第六十三轮起分别展示最高收缩压与最高舒张压
+    assert "最高收缩压 175" in insights["metric_bp_single"]["title"]
+    assert "最高舒张压 115" in insights["metric_bp_single"]["title"]
 
 
 def test_daily_metric_stats_use_daily_totals(store):

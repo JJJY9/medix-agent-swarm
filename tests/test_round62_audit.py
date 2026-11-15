@@ -242,8 +242,8 @@ def test_moved_appointment_restored_without_stealing_twin(store):
     doomed = next(r for r in rows if r[2] == "复诊1")
     store.update_appointment_partial(movable[0], profile="爸爸")
     store.delete_appointment(doomed[0])
-    # 改挂行与「同秒被编辑成同内容」的兄弟行无法区分：按补回被删
-    # 记录优先，可能留下一条旧版本副本，但被删的复诊1 必须恢复
+    # 同秒孪生无法区分改挂与改名同化：按归属优先补回被删的复诊1，
+    # 改挂行可能保留一条旧版本副本（宁重复勿丢记录）
     assert store.import_data(backup).get("appointments") == 2
     final = _appointment_rows(store)
     titles = sorted((r[1], r[2], r[3]) for r in final)
@@ -536,10 +536,16 @@ def test_profile_bp_single_warning_survives_target_alert(client_and_store):
         "/api/health/insights",
         params={"days": 30, "profile": "妈妈"},
     ).json()["insights"]
+    # 第六十三轮起：已设个体化目标时不再输出通用阈值告警，
+    # 重度峰值由目标告警升级为 warning（175/105 超目标且 ≥160/100）
     bp_single = [
         item for item in insights if item["key"] == "metric_bp_single"
     ]
-    assert bp_single and bp_single[0]["level"] == "warning"
+    assert not bp_single
+    target_alert = [
+        item for item in insights if item["key"] == "metric_bp"
+    ]
+    assert target_alert and target_alert[0]["level"] == "warning"
 
 
 def test_stopped_medication_skips_keep_member_card(client_and_store):

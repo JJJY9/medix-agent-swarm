@@ -217,6 +217,21 @@ IMPORT_SOFT_COLUMNS = {
     "reminders": ("title",),
 }
 
+#: 各表中代表「记录身份」的内容列：这些列不同说明候选是另一条记录，
+#: 仅时间/数值列不同则可能是同一记录被本地编辑
+IMPORT_IDENTITY_NAME_COLUMNS = {
+    "symptoms": ("symptom",),
+    "medications": ("name",),
+    "vaccinations": ("vaccine_name",),
+    "appointments": ("title",),
+    "lab_results": ("panel", "item"),
+    "allergies": ("substance",),
+    "care_items": ("title",),
+    "visit_records": ("diagnosis",),
+    "conditions": ("name",),
+    "reminders": ("title",),
+}
+
 IMPORT_LIST_LIMITS = {
     "profiles": 100000,
     "health_metrics": 100000,
@@ -5659,6 +5674,105 @@ class SessionStore:
                     return True
             return False
 
+        import_identity_names = IMPORT_IDENTITY_NAME_COLUMNS.get(table, ())
+
+        def _candidate_diff_hits_identity(candidate: int) -> bool:
+            """候选内容与当前行的差异是否落在药名/标题/症状等标识列。"""
+            if not import_identity_names:
+                return False
+            expected = (backup_contents or {}).get(raw_id)
+            if expected is None or not content_columns:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            local = self._db_content_fingerprint(row, content_columns)
+            for index, (mine, want) in enumerate(zip(local, expected)):
+                if mine == want:
+                    continue
+                column = content_columns[index]
+                expr = re.match(r"IFNULL\(\s*(\w+)", column)
+                name = expr.group(1) if expr else column
+                if name in import_identity_names:
+                    return True
+            return False
+
+        def _candidate_diff_claimable(candidate: int) -> bool:
+            """差异是否只落在同一记录的可编辑取值（时间或数值）上。"""
+            expected = (backup_contents or {}).get(raw_id)
+            if expected is None or not content_columns:
+                return True
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            local = self._db_content_fingerprint(row, content_columns)
+            identity_names = IMPORT_IDENTITY_NAME_COLUMNS.get(table, ())
+            kinds = set()
+            for index, (mine, want) in enumerate(zip(local, expected)):
+                if mine == want:
+                    continue
+                column = content_columns[index]
+                expr = re.match(r"IFNULL\(\s*(\w+)", column)
+                name = expr.group(1) if expr else column
+                if name in identity_names:
+                    return False
+                if re.search(
+                    r"(?:^|_)(?:at|date|time)$|date|time", name
+                ):
+                    kinds.add("temporal")
+                elif name.startswith("value"):
+                    kinds.add("value")
+                else:
+                    return False
+            return len(kinds) <= 1
+
+        def _candidate_diff_is_temporal(candidate: int) -> bool:
+            """候选内容与当前行的差异是否只落在时间类列上。
+
+            时间列（recorded_at/due_at/scheduled_at…）是可编辑数据，
+            只差时间说明候选是本行被改期后的存活版本；差异含药名/
+            标题/症状等标识列时更可能是另一条同秒记录。
+            """
+            expected = (backup_contents or {}).get(raw_id)
+            if expected is None or not content_columns:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            local = self._db_content_fingerprint(row, content_columns)
+            for index, (mine, want) in enumerate(zip(local, expected)):
+                if mine == want:
+                    continue
+                column = content_columns[index]
+                expr = re.match(r"IFNULL\(\s*(\w+)", column)
+                name = expr.group(1) if expr else column
+                if not re.search(
+                    r"(?:^|_)(?:at|date|time)$|date|time", name
+                ):
+                    return False
+            return True
+
         def _candidate_attributable_to_profile_sibling(
             candidate: int, candidate_profile: str
         ) -> bool:
@@ -5988,10 +6102,6 @@ class SessionStore:
             """
             if not backup_profiles or not backup_created:
                 return False
-            if candidate in seen_raw_ids:
-                # 那条备份记录本次已经处理过：它的存活行（若有）已被
-                # 认领或按被删记录补回，本候选可以归当前行
-                return True
             profile_key = backup_profiles.get(candidate)
             created_key = backup_created.get(candidate)
             if profile_key is None or not created_key:
@@ -6196,7 +6306,10 @@ class SessionStore:
                         and not _candidate_owned_by_profile_sibling(
                             candidate, candidate_profile
                         )
+                        and not _candidate_soft_owned_by_other(candidate)
                     ):
+                        # 候选软字段命中同档案另一条同秒备份记录时
+                        # 留给那条记录认领，本行按漂移/内容配对
                         return _claim(candidate, mark_moved=True)
 
             # 跨库/合并恢复导致主键漂移后，改挂不能只靠主键相等识别：
@@ -6600,12 +6713,27 @@ class SessionStore:
                     filtered_candidates.add(candidate_idx)
                     continue
                 candidate_meta = self._conn.execute(
-                    f"SELECT profile FROM {table} WHERE id = ?",
+                    f"SELECT profile, {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
                     (candidate_idx,),
                 ).fetchone()
                 if candidate_meta is None or _normalize_profile_name(
                     candidate_meta["profile"] or ""
                 ) != expected_profile:
+                    filtered_candidates.add(candidate_idx)
+                    continue
+                expected_contents = (backup_contents or {}).get(
+                    candidate_idx
+                )
+                if (
+                    expected_contents is not None
+                    and content_columns
+                    and self._db_content_fingerprint(
+                        candidate_meta, content_columns
+                    ) != expected_contents
+                ):
+                    # 主键数值与另一条备份记录相同、但内容其实是当前行
+                    # 被编辑后的存活版本：不能按撞号判给那条记录
                     filtered_candidates.add(candidate_idx)
             candidates = filtered_candidates
         if (
@@ -6764,9 +6892,19 @@ class SessionStore:
                     }
                 if soft_where is None:
                     if (
-                        backup_group_size <= 1
-                        and len(candidates) == 1
+                        len(candidates) == 1
                         and not _content_owned_by_other(min(candidates))
+                        and (
+                            backup_group_size <= 1
+                            # 组内有缺行但候选只改了时间列（recorded_at/
+                            # due_at 等）：它是本行被改期的存活版本
+                            or (
+                                local_group_size < backup_group_size
+                                and _candidate_diff_claimable(
+                                    min(candidates)
+                                )
+                            )
+                        )
                         and (
                             _same_backup_origin()
                             or _candidate_edited(min(candidates))
@@ -6940,10 +7078,18 @@ class SessionStore:
             if (
                 content_where
                 and not _candidate_content_matches_backup(candidate)
-                and not _candidate_edited(candidate)
+                and (
+                    not _candidate_edited(candidate)
+                    or (
+                        local_group_size < backup_group_size
+                        and not _backup_content_shared_with_sibling()
+                        and _candidate_diff_hits_identity(candidate)
+                    )
+                )
             ):
-                # 内容列（如提醒到期日）与备份行不同、又没有任何编辑
-                # 证据：它是同秒另一条记录，本行必须按被删补插
+                # 内容列（如提醒到期日/症状时间）与备份行不同：没有
+                # 编辑证据，或组内确有缺行且同秒记录内容不同（编辑
+                # 证据可能来自另一条记录）时，本行必须按被删补插
                 return _ambiguous()
             if not _tail_matches(candidate) and (
                 _tail_prefers_sibling(candidate)
@@ -9980,6 +10126,21 @@ class SessionStore:
                                 # 备注已被剥空：悬空标记不能复活
                                 return ""
                             return match.group(0)
+                        owner_row = self._conn.execute(
+                            "SELECT owner_visit_id FROM appointments"
+                            " WHERE id = ?",
+                            (int(appt_key),),
+                        ).fetchone()
+                        owner_visit = (
+                            int(owner_row["owner_visit_id"] or 0)
+                            if owner_row is not None else 0
+                        )
+                        if owner_visit and owner_visit != int(local_visit):
+                            # 预约已归属另一条本地就诊（备份中的就诊
+                            # 因内容编辑被补插成新记录）：保持原标记，
+                            # 不能改指重复就诊，否则编辑/删除它会级联
+                            # 删除原就诊的复诊预约与提醒
+                            return match.group(0)
                         return f"由就诊记录 #{local_visit} 自动创建"
 
                     # 备注被剥空时从备份原始 note 重建标记；否则只在
@@ -10822,17 +10983,30 @@ class SessionStore:
                     # 重映射备注，否则陈旧 #N 会让恢复/改期挂到错误的
                     # 就诊并产生重复预约
                     appointment_row = self._conn.execute(
-                        "SELECT note FROM appointments WHERE id = ?",
+                        "SELECT note, owner_visit_id FROM appointments"
+                        " WHERE id = ?",
                         (int(followup_appointment_id),),
                     ).fetchone()
                     if appointment_row is not None:
+                        owner_visit = int(
+                            appointment_row["owner_visit_id"] or 0
+                        )
+                        if owner_visit and owner_visit != int(visit_id):
+                            # 预约已归属另一条（本地未编辑的）就诊：
+                            # 不能把备注标记改指到本次补插的重复就诊，
+                            # 否则编辑/删除该就诊会级联删除原预约与
+                            # 提醒
+                            note_text = ""
+                        else:
+                            note_text = str(
+                                appointment_row["note"] or ""
+                            )
                         old_marker = (
                             f"由就诊记录 #{int(raw_visit_id)} 自动创建"
                         )
                         new_marker = (
                             f"由就诊记录 #{int(visit_id)} 自动创建"
                         )
-                        note_text = str(appointment_row["note"] or "")
                         if old_marker in note_text:
                             self._conn.execute(
                                 "UPDATE appointments SET note = ?,"
@@ -12513,11 +12687,16 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return None
-            # 预约改档案时提醒跟随，避免提醒留在旧成员名下
+            # 预约改档案时提醒跟随；档案未变时不刷新 updated_at，
+            # 否则已完成提醒的时间戳会晚于删除墓碑，改期重建会把
+            # 用户已删除的提醒复活
             self._conn.execute(
                 "UPDATE reminders SET profile = ?, updated_at = ?"
-                " WHERE appointment_id = ?",
-                (normalized["profile"], now, int(appointment_id)),
+                " WHERE appointment_id = ? AND profile != ?",
+                (
+                    normalized["profile"], now, int(appointment_id),
+                    normalized["profile"],
+                ),
             )
             profile_changed = (
                 _normalize_profile_name(str(previous["profile"] or ""))
@@ -14111,7 +14290,13 @@ class SessionStore:
                 and _normalize_profile_name(row["profile"] or "")
                 == _normalize_profile_name(visit_row["profile"] or "")
             )
+            marker_owner = (
+                int(row["owner_visit_id"] or 0)
+                if row is not None else 0
+            )
             auto_created = same_profile and (
+                marker_owner in (0, int(visit_id))
+            ) and (
                 f"由就诊记录 #{int(visit_id)} 自动创建"
                 in str(row["note"] or "")
             )

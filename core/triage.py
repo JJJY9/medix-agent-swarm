@@ -167,8 +167,10 @@ PREGNANCY_TERMS = (
 _CAESAREAN_RECENT_RE = re.compile(
     r"(?:剖宫产|剖腹产)(?:术后)?\s*"
     r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
-    r"|(?:剖宫产|剖腹产)\s*(?:手术后|术后|之后|后|刚做完|做完|刚手术)"
-    r"(?!\s*(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
+    r"|(?:剖宫产|剖腹产)\s*(?:手术)?\s*"
+    r"(?:之后|以后|术后|后|刚做完|做完|刚手术)"
+    r"(?!\s*(?:已|已经|都|快|近|将近|已有?)"
+    r"\s*(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
@@ -437,7 +439,8 @@ def _colloquial_bleeding_positive(text: str) -> bool:
 #: 把阴道出血判为孕产期出血（「产后2年，阴道出血」）
 _PAST_OBSTETRIC_YEARS = re.compile(
     r"(?:产后|流产后|胎停后?|顺产后|引产后|"
-    r"剖宫产(?:术后)?|剖腹产(?:术后)?)\s*"
+    r"剖宫产(?:手术)?(?:术后|之后|以后)?|"
+    r"剖腹产(?:手术)?(?:术后|之后|以后)?)\s*"
     r"[0-9一二两三四五六七八九十]+\s*年"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
@@ -915,6 +918,26 @@ def _clean_complaint_clause(
             return _clean_complaint_clause(rest, patient_context_seen)
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
+    if any(word in clause for word in _EDUCATION_BLOCKERS_STRONG):
+        # 引用科普/文章/网上内容的叙述不是患者当前主诉：忽略
+        # 「我在网上看到胸痛要重视」这类分句，避免把科普当急症；
+        # 同一分句仍明确描述当前病程（今天/持续/越来越重）或
+        # 家属急症时保留
+        current_course = (
+            _COURSE_MARKER_RE.search(clause) is not None
+            or any(marker in clause for marker in _COURSE_MARKERS)
+            or any(word in clause for word in _POST_POSITIVE_CUES)
+        )
+        family_redflag = any(
+            marker in clause for marker in _FAMILY_HISTORY_MARKERS
+        ) and _is_red_flag_text(clause)
+        mentions_symptom = _is_red_flag_text(clause) or any(
+            term in clause for term in _COLLOQUIAL_SYMPTOM_WORDS
+        )
+        if not (current_course or family_redflag) and mentions_symptom:
+            # 只丢弃把症状写进科普/文章引用的分句；「我在网上查了
+            # 资料」这类无症状的铺垫保持原样
+            return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         if not any(
             word in clause for word in _EDUCATION_BLOCKERS_STRONG
@@ -1391,10 +1414,12 @@ _TRIAGE_DOUBLE_NEGATION = re.compile(
     r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
     r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?"
 )
-#: 单次漏服（今天没吃/漏服了一次）仍处于用药/抗凝状态
+#: 单次漏服（今天没吃/漏服了一次/N 天没吃）仍处于用药/抗凝状态
 _DOSE_MISSED_PATTERN = re.compile(
     r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
-    r"前晚|刚才|这次|这一顿|这顿)"
+    r"前晚|刚才|这次|这一顿|这顿|"
+    r"[0-9一二两三四五六七八九十]+(?:天|日)来?|几天|数天|两三天|"
+    r"[0-9一二两三四五六七八九十]+周来?|几周)"
     r"[^，。；,.!?！？\n]{0,8}"
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
     r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
@@ -1473,7 +1498,11 @@ _RESTART_OBJECT_RE = re.compile(
     r"|仍在吃|仍在服用|仍然服用"
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
-    r"|又服用了|又用了(?!别))"
+    r"|又服用了|又用了(?!别)"
+    r"|(?:每天|每日|天天|一直|持续|规律|长期|常年)"
+    r"(?:都|也|还|在|坚持)?"
+    r"(?:吃|服用|口服|服|用)"
+    r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面))"
     r"(?:了)?\s*([一-龥A-Za-z0-9]{1,10})"
 )
 #: 代词/泛称宾语（还在吃这个/那种药）仍指同一药物
@@ -1562,6 +1591,14 @@ _CONTINUOUS_MEDICATION_PATTERN = re.compile(
 _CURRENT_MEDICATION_CUE = re.compile(
     r"(?:现在|目前|还在|仍在|仍|继续|改为|换成)"
 )
+#: 「以前吃过，现在每天吃/目前一直服用」：药名之后的持续用药表述。
+#: 吃饭类宾语排除；明确的其它药名由 _restart_names_other_medication 处理
+_CONTINUATION_AFTER_PAST = re.compile(
+    r"(?:每天|每日|天天|一直|持续|规律|长期|常年)"
+    r"(?:都|也|还|在|坚持|按医嘱|遵医嘱|按时)?"
+    r"(?:吃|服用|口服|服|用)"
+    r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面)"
+)
 
 #: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
 _NEGATIVE_TEST_SUFFIX = re.compile(
@@ -1598,12 +1635,25 @@ def _active_term_mention(text: str, term: str) -> bool:
         # 与意图停药（打算不吃 X/准备不再化疗）仍处于用药状态：
         # 不能被「没吃/不吃/不再」当作否定
         window = text[max(0, start - 12):start + len(term) + 4]
+        # 「华法林以前吃过，现在还在吃/每天吃」：药名之后的续用/持续
+        # 用药分句说明仍是当前用药，不能被「以前吃过」判为既往
+        continuation_window = text[start:start + len(term) + 40]
+        continuation = bool(
+            _RESTART_TEXT_RE.search(continuation_window)
+            or _CONTINUATION_AFTER_PAST.search(continuation_window)
+        )
+        if continuation and _restart_names_other_medication(
+            continuation_window, text[max(0, start - 30):start]
+        ):
+            # 续用线索指向另一种药（以前吃华法林，现在每天吃阿司匹林）
+            continuation = False
         continued_use = (
             _DOSE_MISSED_PATTERN.search(prefix) is not None
             or _FUTURE_STOP_PATTERN.search(prefix) is not None
             or _FUTURE_STOP_PATTERN.search(suffix) is not None
             or _FUTURE_STOP_PATTERN.search(window) is not None
             or _STOP_INTENT_PATTERN.search(window) is not None
+            or continuation
         )
         negated = (
             not _TRIAGE_DOUBLE_NEGATION.search(prefix)
@@ -1865,10 +1915,13 @@ def _active_medical_text(
             and not _CURRENT_MEDICATION_CUE.search(clause)
         ):
             # 「以前吃华法林」是既往用药；含近期时长、「现在还在吃」
-            # 或后续分句出现续用线索时仍属当前用药
+            # 或后续分句出现续用/持续用药线索（现在每天吃）时仍属
+            # 当前用药
             if (
                 _RESTART_TEXT_RE.search(clause)
                 or _RESTART_TEXT_RE.search(restart_window)
+                or _CONTINUATION_AFTER_PAST.search(clause)
+                or _CONTINUATION_AFTER_PAST.search(restart_window)
             ):
                 kept.append(clause)
             continue
@@ -2035,7 +2088,9 @@ def _has_patient_subject(clause: str) -> bool:
     ) is not None
 
 
-def _patient_pattern_mention(text: str, pattern) -> bool:
+def _patient_pattern_mention(
+    text: str, pattern, child_patient: bool = False
+) -> bool:
     """正则版本的患者本人匹配：分句过滤家属叙述后按正则判断。"""
     for clause in re.split(r"[，。；;,.!?！？\n]", text):
         if not clause:
@@ -2047,6 +2102,11 @@ def _patient_pattern_mention(text: str, pattern) -> bool:
             ):
                 clause = stripped
             elif _has_patient_subject(clause):
+                pass
+            elif child_patient and any(
+                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+            ):
+                # 患儿档案下家长口述「我儿子头被门撞了」指患者本人
                 pass
             else:
                 continue
@@ -2100,7 +2160,9 @@ def _patient_head_trauma_mention(
                     if not _is_negated(prefix, suffix):
                         return True
                 start = clause.find(term, start + len(term))
-    return _patient_pattern_mention(text, _HEAD_TRAUMA_RE)
+    return _patient_pattern_mention(
+        text, _HEAD_TRAUMA_RE, child_patient
+    )
 
 
 def _patient_term_mention(text: str, term: str) -> bool:
@@ -2224,7 +2286,9 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
     if isinstance(context, dict):
         try:
             history_text = _current_history_text(
-                _active_medical_text(context)
+                _active_medical_text(
+                    context, _context_child_patient(context)
+                )
             )
         except Exception:
             history_text = ""

@@ -132,6 +132,9 @@ def _med(raw_id, profile, name, dose):
 
 
 def test_cross_profile_content_assimilated_not_claimed(store):
+    # 同秒孪生无法区分「改挂」与「本地改名同化」：按归属优先处理，
+    # 被删记录必须按原内容补回；另一条记录可能因此保留一条旧版本
+    # 副本（宁重复勿串档），重复导入保持幂等。
     store.save_profile("妈妈", {})
     store.save_profile("爸爸", {})
     store.add_medication("爸爸", "本地药", "1mg")
@@ -148,21 +151,25 @@ def test_cross_profile_content_assimilated_not_claimed(store):
     )
     store.delete_medication(mom["id"])
     store.update_medication(dad_ib["id"], name="阿司匹林", dose="100mg")
-    store.import_data(backup)
+    assert store.import_data(backup)["medications"] == 2
     rows = store.list_medications(limit=100)
+    # 被删的妈妈阿司匹林按原内容补回
     assert len([
         r for r in rows
         if r["profile"] == "妈妈" and r["name"] == "阿司匹林"
     ]) == 1
+    # 爸爸改名后的阿司匹林保留
     assert len([
         r for r in rows
         if r["profile"] == "爸爸" and r["name"] == "阿司匹林"
     ]) == 1
-    # 不再把对方记录复制一份旧版本
-    assert not [
+    # 爸爸的布洛芬同样按原内容补回（数据完整优先）
+    assert len([
         r for r in rows
         if r["profile"] == "爸爸" and r["name"] == "布洛芬"
-    ]
+    ]) == 1
+    # 重复导入保持幂等
+    assert store.import_data(backup)["medications"] == 0
 
 
 def test_same_content_twin_keeps_non_content_fields(store):

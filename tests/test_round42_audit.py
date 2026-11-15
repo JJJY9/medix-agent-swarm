@@ -468,10 +468,16 @@ def test_family_bp_insights_are_per_member(client_and_store):
         item["title"] for item in data["insights"]
         if item["key"] == "metric_bp_single"
     ]
-    assert any("爸爸" in title and "165/70" in title
-               for title in bp_titles)
-    assert any("妈妈" in title and "150/105" in title
-               for title in bp_titles)
+    assert any(
+        "爸爸" in title and "最高收缩压 165" in title
+        and "最高舒张压 70" in title
+        for title in bp_titles
+    )
+    assert any(
+        "妈妈" in title and "最高收缩压 150" in title
+        and "最高舒张压 105" in title
+        for title in bp_titles
+    )
 
 
 def test_stale_daily_metric_not_marked_over_target(client_and_store):

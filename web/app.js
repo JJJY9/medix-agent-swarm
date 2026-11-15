@@ -781,6 +781,8 @@ const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
 //: 本次加载从 INFLIGHT 记录恢复到输入框的文本：启动对账只在文本
 //: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
 let inflightRestoredText = '';
+//: 在途记录的发送前最后消息 id：只有比它更新的问答才算本轮落库
+let inflightRestoredBaseline = 0;
 //: 首屏会话恢复（initProfiles 之后的 restoreCurrentSession）就绪：
 //: 发送必须等它结束，否则问题会写进上一会话（可能是另一位患者）
 let resolveInitialSessionRestore = () => {};
@@ -5282,16 +5284,32 @@ async function openSession(id) {
   } catch (err) {
     if (seq !== openSessionSeq || busy) return false;
     closeHistory();
+    const failedCurrent = id === (sessionId || '');
     if (err && err.sessionDeleted) {
       // 深链/旧标签页指向已删会话：清除持久化会话，否则后续提问
       // 会被删除墓碑静默丢弃（界面却正常显示答案）
       if (!clearDeletedSession(id, '该会诊已删除，已为你开启新会话。')) {
-        renderError('该会诊已删除。');
+        if (failedCurrent) {
+          renderError('该会诊已删除。');
+        } else {
+          // 失败目标是另一条历史会诊：错误不能插进当前会话线程，
+          // 否则会被误读成当前会诊已删除
+          els.historyActionStatus.textContent =
+            '该会诊已删除，已从列表移除';
+          setVitals('warn', '该会诊已删除');
+          await loadHistory(els.historySearch.value.trim());
+        }
       }
       els.input.focus();
       return false;
     }
-    renderError(`读取会诊记录失败：${err.message || err}`);
+    if (failedCurrent) {
+      renderError(`读取会诊记录失败：${err.message || err}`);
+    } else {
+      els.historyActionStatus.textContent =
+        `打开会诊失败：${err.message || err}`;
+      setVitals('warn', '打开历史会诊失败');
+    }
     els.input.focus();
     return false;
   }
@@ -20623,29 +20641,33 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 只清理确实来自在途记录的文本：用户自己重写的同题草稿不能
     // 因为「等于上一条提问」就被当成重复提交删掉
     const inflightText = String(inflightRestoredText || '').trim();
+    const inflightBaseline = Number(inflightRestoredBaseline || 0);
     inflightRestoredText = '';
+    inflightRestoredBaseline = 0;
     if (
       !expectedQuestion
       && !pendingReset
       && inflightText
+      && inflightBaseline > 0
       && els.input.value.trim() === inflightText
     ) {
       const composerText = els.input.value.trim();
-      let lastUserIndex = -1;
-      for (let i = messages.length - 1; i >= 0; i -= 1) {
-        if (messages[i].role === 'user') {
-          lastUserIndex = i;
-          break;
-        }
-      }
-      const answered = lastUserIndex >= 0 && messages
-        .slice(lastUserIndex + 1)
-        .some((message) => message.role === 'assistant');
-      if (
-        answered
-        && String(messages[lastUserIndex].content || '').trim()
-          === composerText
-      ) {
+      const hasIds = messages.some(
+        (message) => (Number(message.id) || 0) > 0
+      );
+      const newestAssistantId = messages.reduce(
+        (max, message) => message.role === 'assistant'
+          ? Math.max(max, Number(message.id) || 0)
+          : max,
+        0
+      );
+      const persistedThisRound = hasIds && newestAssistantId > inflightBaseline
+        && messages.some(
+          (message) => message.role === 'user'
+            && String(message.content || '').trim() === composerText
+            && (Number(message.id) || 0) > inflightBaseline
+        );
+      if (persistedThisRound) {
         els.input.value = '';
         autoGrow();
         clearDraft();
@@ -20830,6 +20852,7 @@ async function send(question) {
   // 恢复流程（深链/首屏）会按服务端绑定更新当前档案：这是应用户
   // 请求的恢复，不是换档。用 profileSelectionSeq（仅用户手动换档
   // 递增）判断是否真的换档，并按恢复后的档案刷新发送快照
+  const submitProfile = sendProfile;
   if (profileSelectionSeq !== sendProfileSeq) {
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
     els.input.value = question;
@@ -20842,6 +20865,17 @@ async function send(question) {
     els.profileSelect.value || activeProfileName
     || readStoredProfile() || ''
   );
+  if (submitProfile && sendProfile && submitProfile !== sendProfile) {
+    // 主诉是在另一患者档案下输入的，恢复出的会话绑定不同档案：
+    // 不能静默改挂，按草稿冲突把主诉放回并提示确认
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    els.input.value = question;
+    detachedComposerText = question;
+    autoGrow();
+    preserveDraftProfile(submitProfile, question);
+    setVitals('warn', '档案已切换，本轮会诊未提交，请确认后重新发送');
+    return;
+  }
   // 用户已开始新的会诊：深链快照不再适用于后续对账恢复
   consumeDeepLink();
   if (pendingSessionReset) {
@@ -20908,6 +20942,9 @@ async function send(question) {
         sessionId: sid || sessionId || '',
         profile: activeProfileName || '',
         question,
+        // 发送前最后一条消息 id：启动对账只认比它更新的已落库问答，
+        // 避免同文本的旧问答把中止后的重问误判为已完成
+        baseline: baselineMessageId,
         at: Date.now(),
       }));
     } catch {
@@ -22410,6 +22447,7 @@ function restoreInflightQuestion() {
     }
     // 记录来源：启动对账只有该文本确实来自在途记录时才清空
     inflightRestoredText = question;
+    inflightRestoredBaseline = Number((data && data.baseline) || 0) || 0;
     if (els.input.value.includes(question)) {
       // 主诉已在草稿里：只清理在途记录，不重复合并
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
