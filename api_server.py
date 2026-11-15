@@ -6673,10 +6673,18 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             ):
                 if candidate.get("status") != "upcoming":
                     continue
+                candidate_owner = int(
+                    candidate.get("owner_visit_id") or 0
+                )
+                if candidate_owner not in (
+                    0, int(visit.get("id") or 0)
+                ):
+                    # 备注标记可能残留指向本就诊、但预约已归属另一条
+                    # 就诊：不能把它改期/共享给两条就诊
+                    continue
                 if (
                     ownership in str(candidate.get("note") or "")
-                    or int(candidate.get("owner_visit_id") or 0)
-                    == int(visit.get("id") or 0)
+                    or candidate_owner == int(visit.get("id") or 0)
                 ):
                     owned_upcoming.append(candidate)
             if owned_upcoming:
@@ -6713,10 +6721,16 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     or candidate.get("status") != "upcoming"
                 ):
                     continue
+                candidate_owner = int(
+                    candidate.get("owner_visit_id") or 0
+                )
+                if candidate_owner not in (
+                    0, int(visit.get("id") or 0)
+                ):
+                    continue
                 if (
                     ownership in str(candidate.get("note") or "")
-                    or int(candidate.get("owner_visit_id") or 0)
-                    == int(visit.get("id") or 0)
+                    or candidate_owner == int(visit.get("id") or 0)
                 ):
                     appointment = candidate
                     break
@@ -12956,7 +12970,8 @@ async def family_overview(days: int = 7):
     target_peaks: Dict[str, Dict[str, float]] = {}
     for item in window_metrics:
         metric = str(item.get("metric") or "")
-        if metric not in ("bp", "glucose"):
+        if not metric or metric in DAILY_ACCUMULATING_METRICS:
+            # 步数/饮水按自然日累计另行判定
             continue
         profile_key = item.get("profile") or ""
         target = target_map.get((profile_key, metric))
@@ -12979,16 +12994,34 @@ async def family_overview(days: int = 7):
             peak["bp_sys"] = max(peak.get("bp_sys", 0.0), value1)
             peak["bp_dia"] = max(peak.get("bp_dia", 0.0), value2 or 0.0)
         else:
-            peak["glucose"] = max(peak.get("glucose", 0.0), value1)
+            peak_key = f"m:{metric}"
+            peak[peak_key] = max(peak.get(peak_key, 0.0), value1)
     for member, counts in target_over_counts.items():
         peak = target_peaks.get(member) or {}
         parts = []
+        details = []
         total_over = sum(counts.values())
         level = "info"
-        if counts.get("bp"):
-            parts.append(f"血压 {counts['bp']} 次超出目标")
-        if counts.get("glucose"):
-            parts.append(f"血糖 {counts['glucose']} 次超出目标")
+        for metric, over_count in sorted(counts.items()):
+            label, default_unit, _ = METRIC_TYPES.get(
+                metric, (metric, "", (0, 0))
+            )
+            lower = metric in LOWER_BOUND_TARGET_METRICS
+            short = {"bp": "血压", "glucose": "血糖"}.get(metric, label)
+            parts.append(
+                f"{short} {over_count} 次"
+                + ("低于目标" if lower else "超出目标")
+            )
+            if metric == "bp":
+                details.append(
+                    f"最高收缩压 {peak['bp_sys']:g}、"
+                    f"最高舒张压 {peak['bp_dia']:g} mmHg"
+                )
+            else:
+                peak_value = peak.get(f"m:{metric}")
+                if peak_value is not None:
+                    unit_text = f" {default_unit}" if default_unit else ""
+                    details.append(f"最高 {peak_value:g}{unit_text}")
         if total_over >= 2 or (
             peak.get("bp_sys", 0.0) >= 160
             or peak.get("bp_dia", 0.0) >= 100
@@ -12997,12 +13030,8 @@ async def family_overview(days: int = 7):
             # 峰值按 warning 展示，不因最新一条正常而降级
             level = "warning"
         detail = "、".join(parts)
-        if peak.get("bp_sys"):
-            detail += (
-                f"（最高 {peak['bp_sys']:g}/{peak['bp_dia']:g} mmHg）"
-            )
-        elif peak.get("glucose"):
-            detail += f"（最高 {peak['glucose']:g} mmol/L）"
+        if details:
+            detail += "（" + "；".join(details) + "）"
         target_alert_by_profile[member] = {
             "level": level,
             "label": "、".join(parts) if parts else "指标超出目标",
@@ -13557,12 +13586,12 @@ async def family_overview(days: int = 7):
         if int((member.get("symptoms") or {}).get("count") or 0):
             return True
         vaccination = member.get("vaccinations") or {}
-        if member.get("name") != "" and (
+        if (
             int(vaccination.get("count") or 0)
             or int(vaccination.get("overdue") or 0)
         ):
-            # 具名成员的疫苗记录会随卡片/CSV 展示；未指定成员的
-            # 疫苗不单独生成空白「未指定」卡
+            # 疫苗记录会随卡片疫苗 chip 与 CSV 展示（含未指定档案），
+            # 逾期疫苗不能因为未选档案而从家庭页消失
             return True
         if int((member.get("labs") or {}).get("count") or 0):
             return True
@@ -14793,15 +14822,26 @@ async def bulk_delete_attachments(request: BulkIdsRequest):
 
 
 @app.get("/api/attachments/integrity")
-async def attachment_integrity():
+async def attachment_integrity(profile: Optional[str] = None):
     """检查附件登记与本地文件是否一致：缺失、孤儿与大小不一致。"""
     from time import time
 
     from memory import get_session_store
+    from memory.session_store import _normalize_profile_name
 
     items = await asyncio.to_thread(
         get_session_store().list_all_attachments
     )
+    if profile is not None:
+        # 档案视图只展示该档案（空串=未指定档案）的附件名，
+        # 其他成员的缺失文件名不能出现在当前患者状态行里
+        wanted_profile = _normalize_profile_name(profile)
+        items = [
+            item for item in items
+            if _normalize_profile_name(
+                str(item.get("profile") or "")
+            ) == wanted_profile
+        ]
     files = await asyncio.to_thread(_attachment_dir_files)
     db_names = {
         os.path.normcase(str(item.get("stored_name"))): item

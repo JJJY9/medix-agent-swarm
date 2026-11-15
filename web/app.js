@@ -15460,7 +15460,14 @@ async function checkAttachmentIntegrity(prefix = '', force = false) {
   const requestSeq = ++attachmentIntegrityRequestSeq;
   setAttachmentIntegrityStatus('正在检查附件文件…');
   try {
-    const res = await fetch('/api/attachments/integrity');
+    const integrityProfile = els.metricProfile
+      ? els.metricProfile.value || ''
+      : null;
+    const integrityUrl = integrityProfile === null
+      ? '/api/attachments/integrity'
+      : '/api/attachments/integrity?profile='
+        + encodeURIComponent(integrityProfile);
+    const res = await fetch(integrityUrl);
     const data = await res.json().catch(() => ({}));
     if (requestSeq !== attachmentIntegrityRequestSeq) return;
     if (!res.ok) {
@@ -20865,9 +20872,10 @@ async function send(question) {
     els.profileSelect.value || activeProfileName
     || readStoredProfile() || ''
   );
-  if (submitProfile && sendProfile && submitProfile !== sendProfile) {
-    // 主诉是在另一患者档案下输入的，恢复出的会话绑定不同档案：
-    // 不能静默改挂，按草稿冲突把主诉放回并提示确认
+  if (submitProfile && submitProfile !== sendProfile) {
+    // 主诉是在另一患者档案下输入的，恢复出的会话绑定不同档案
+    //（或未绑定档案、被清空）：不能静默改挂，按草稿冲突把主诉
+    // 放回并提示确认
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
     els.input.value = question;
     detachedComposerText = question;
@@ -22444,6 +22452,18 @@ function restoreInflightQuestion() {
       // 记录带档案而当前没有档案（如流式中「清空补充信息」）同样
       // 按不一致处理：上一位患者的主诉不能进无归属输入框
       return;
+    }
+    // 恢复的主诉保留原档案归属：草稿归属为空时换档会被改记成
+    // 新档案，旧患者的主诉就能被按新档案提交
+    if (profile) {
+      try {
+        if (!safeSessionGet(DRAFT_PROFILE_KEY)) {
+          draftProfileMemory = profile;
+          safeSessionSet(DRAFT_PROFILE_KEY, profile);
+        }
+      } catch {
+        // 隐私模式忽略
+      }
     }
     // 记录来源：启动对账只有该文本确实来自在途记录时才清空
     inflightRestoredText = question;

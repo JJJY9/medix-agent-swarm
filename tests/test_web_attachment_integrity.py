@@ -17,7 +17,7 @@ def test_integrity_controls_exist():
 
 def test_integrity_fetches_and_renders_counts():
     assert "checkAttachmentIntegrity" in SCRIPT
-    assert "fetch('/api/attachments/integrity')" in SCRIPT
+    assert "/api/attachments/integrity?profile=" in SCRIPT
     assert "attachmentIntegrityRequestSeq" in SCRIPT
     assert "requestSeq !== attachmentIntegrityRequestSeq" in SCRIPT
     assert "缺失 ${missing} 份" in SCRIPT

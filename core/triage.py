@@ -169,8 +169,8 @@ _CAESAREAN_RECENT_RE = re.compile(
     r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
     r"|(?:剖宫产|剖腹产)\s*(?:手术)?\s*"
     r"(?:之后|以后|术后|后|刚做完|做完|刚手术)"
-    r"(?!\s*(?:已|已经|都|快|近|将近|已有?)"
-    r"\s*(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
+    r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
+    r"(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
@@ -439,17 +439,19 @@ def _colloquial_bleeding_positive(text: str) -> bool:
 #: 把阴道出血判为孕产期出血（「产后2年，阴道出血」）
 _PAST_OBSTETRIC_YEARS = re.compile(
     r"(?:产后|流产后|胎停后?|顺产后|引产后|"
-    r"剖宫产(?:手术)?(?:术后|之后|以后)?|"
-    r"剖腹产(?:手术)?(?:术后|之后|以后)?)\s*"
-    r"[0-9一二两三四五六七八九十]+\s*年"
+    r"剖宫产(?:手术)?(?:术后|之后|以后|后)?|"
+    r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
+    r"(?:[0-9一二两三四五六七八九十]+\s*年|多年)"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
 _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:曾经|以前|去年|前年|多年前|既往|已流产|已结束|"
     r"产后\s*[0-9一二两三四五六七八九十]+\s*年|产后抑郁|"
-    r"剖宫产(?:术后|后)?\s*[0-9一二两三四五六七八九十]+\s*年|"
-    r"剖腹产(?:术后|后)?\s*[0-9一二两三四五六七八九十]+\s*年)"
+    r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
+    r"(?:[0-9一二两三四五六七八九十]+\s*年|多年)|"
+    r"剖腹产(?:手术)?(?:术后|之后|以后|后)?\s*"
+    r"(?:[0-9一二两三四五六七八九十]+\s*年|多年))"
 )
 
 
@@ -927,6 +929,12 @@ def _clean_complaint_clause(
             _COURSE_MARKER_RE.search(clause) is not None
             or any(marker in clause for marker in _COURSE_MARKERS)
             or any(word in clause for word in _POST_POSITIVE_CUES)
+            # 「网上买的药吃了胸痛/跟着视频跳操后胸痛」：本人服药的
+            # 动作线索说明这不是科普引用
+            or any(cue in clause for cue in _EDUCATION_CURRENT_CUES)
+            # 「网上看到胸痛要重视我现在胸痛」：引用之后同分句仍在
+            # 描述本人当前症状
+            or _EDUCATION_CURRENT_RE.search(clause) is not None
         )
         family_redflag = any(
             marker in clause for marker in _FAMILY_HISTORY_MARKERS
@@ -1042,6 +1050,16 @@ _COURSE_CONTEXT_BLOCKERS = (
 _EDUCATION_BLOCKERS_STRONG = (
     "网上", "查资料", "查了资料", "科普", "文章", "视频", "新闻",
     "帖子", "百科", "听说", "据说", "搜了", "搜索",
+)
+#: 引用词之后仍属患者本人的动作/时间线索（网购药、跟视频运动等）
+_EDUCATION_CURRENT_CUES = (
+    "买了", "买的", "吃完", "吃了", "服用", "喝了", "跳操", "运动",
+    "锻炼", "跟着", "教程", "现在", "刚刚", "刚才", "突然", "这时",
+)
+#: 引用之后同分句「我+症状」：真实主诉被连写在同一分句里
+_EDUCATION_CURRENT_RE = re.compile(
+    r"我(?:现在|刚刚|刚|也|正|又)?(?:胸痛|胸疼|头痛|头晕|呼吸困难|"
+    r"喘|疼|痛|发热|发烧|恶心|呕吐|心慌|胸闷)"
 )
 
 
@@ -1439,7 +1457,7 @@ _FUTURE_STOP_PATTERN = re.compile(
 _NEGATED_STOP_PATTERN = re.compile(
     r"(?:未|没|没有|不能|不可|不宜|不让|不应|不要|别|无需|不必|"
     r"并非|不想|不打算|不准备)"
-    r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用)"
+    r"[^，。；]{0,4}(?:停用|停药|停服|停了|停止服用|停过|间断|中断)"
 )
 #: 「打算/准备停用华法林」「打算不吃华法林」都是意图，当前仍在用药
 _STOP_INTENT_PATTERN = re.compile(
@@ -1480,7 +1498,9 @@ _LONG_STOP_PATTERN = re.compile(
     r"(?:停用|停药|停了|停服|停止服用)"
 )
 #: 停药动词：只有真正的停药表述才做「无时长保守保留」
-_STOP_VERB_PATTERN = re.compile(r"(?:停用|停药|停了|停服|停止服用|已停)")
+_STOP_VERB_PATTERN = re.compile(
+    r"(?:停用|停药|停了|停服|停止服用|已停|停过|间断|中断)"
+)
 #: 停药后又重新服用（可跨一个分句）：抗凝状态仍然成立
 _RESTART_TEXT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
@@ -1527,16 +1547,16 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     if match is None:
         return False
     obj = re.split(r"[，。；,.!?！？\n和及与、]", match.group(1))[0]
-    if not obj or len(obj) < 2:
-        return False
-    if re.match(
+    # 先剥离数量+单位再看宾语：「每天吃一片阿司匹林」是换药，
+    # 「又吃了两片」才是同一药物的剂量续用
+    obj = re.sub(
         r"^[0-9一二两三四五六七八九十半几]+\s*"
-        r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)",
+        r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)\s*",
+        "",
         obj,
-        re.IGNORECASE,
-    ):
-        # 「又吃了两片/一片」是剂量宾语，不是换成另一种药：
-        # 仍是同一药物的续用，抗凝状态不能被吞掉
+        flags=re.IGNORECASE,
+    )
+    if not obj or len(obj) < 2:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
         return False
@@ -1615,8 +1635,10 @@ _MED_USE_NEGATION_RE = re.compile(
 _MED_USE_STOP_SUFFIX_RE = re.compile(
     r"^[^，。；]{0,3}(?:我|本人)?(?:已经|已|刚|才)?"
     r"(?:不吃了|不再吃了|不用吃了"
-    # 药名后置的否定：「华法林我没在吃」
-    r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用)"
+    # 药名后置的否定：「华法林我没在吃/我没有在吃/没吃过」
+    r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用"
+    r"|没有在吃|没有在服用|没有吃|没有服用|没吃过(?!量)"
+    r"|没有用过|没用过|未服用过)"
 )
 #: 药名之后的既往用药：「华法林以前吃过」
 _MED_USE_PAST_SUFFIX_RE = re.compile(
