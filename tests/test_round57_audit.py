@@ -755,9 +755,11 @@ def test_displayable_ignores_inactive_medication_logs(client_and_store):
 # ---------------------------------------------------------------- 前端
 def test_frontend_round57_guards():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    send_start = app_js.index("async function send(question)")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 4200
+        send_start:app_js.index(
+            "const controller = new AbortController();", send_start
+        )
     ]
     # 首屏恢复未完成前必须等待：不能把问题写进上一会话
     assert "const initialSessionRestore = new Promise" in app_js

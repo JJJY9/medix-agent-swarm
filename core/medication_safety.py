@@ -611,8 +611,16 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
     r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停掉|已停"
     # 药名后的完成体否定同样是停药：「华法林我不吃了」
-    r"|不吃了|不再吃了|不用吃了)"
+    r"|不吃了|不再吃了|不用吃了"
+    # 药名后置的否定：「阿司匹林我没在吃」
+    r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用)"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
+)
+#: 药名之后的既往用药：「阿司匹林以前吃过」「阿司匹林之前用过」。
+#: 必须带明确的既往时间词：裸「吃过了」是今天已服药（依从），不是停药
+_PAST_USE_SUFFIX = re.compile(
+    r"^(?:\s*(?:我|本人))?\s*(?:以前|之前|曾经|曾|既往|过去)\s*"
+    r"(?:吃过|服用过|服过|用过)(?!量)"
 )
 #: 「想/打算/准备停用华法林」「打算不吃华法林」是意图，当前仍在用药
 _INTENT_STOP_PREFIX = re.compile(
@@ -857,6 +865,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
                 or _STOPPED_USE_SUFFIX.search(suffix)
+                or _PAST_USE_SUFFIX.search(suffix)
                 or _STOPPED_USE_SUFFIX_EN.search(suffix)
                 or _STOPPED_USE_PREFIX_EN.search(prefix)
                 or _NEGATED_USE_PREFIX.search(prefix)
@@ -901,6 +910,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)
+            or _PAST_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
             or _PAST_USE_PREFIX.search(prefix)
         ):

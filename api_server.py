@@ -3059,6 +3059,27 @@ async def require_access_token(request: Request, call_next):
             # 按已解析的真实客户端地址计；地址不可解析时只保留总
             # 队列上限，攻击者占满自己的槽位不能把全家挡在 429
             if not known_token:
+                if _is_ipv6_source_key(_client_ip_key(request)):
+                    # 闸门分支同样受「不按前缀分桶」的 IPv6 全局失败
+                    # 预算约束：多级/多元素代理头下轮换 /64 不能靠每次
+                    # 新桶绕过硬上限；正确令牌仍直通
+                    global_blocked, global_retry = (
+                        auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+                    )
+                    if global_blocked:
+                        return add_security_headers(JSONResponse(
+                            status_code=429,
+                            content={
+                                "detail": "访问令牌错误次数过多，请稍后再试。",
+                                "code": "auth_rate_limited",
+                                "retry_after": round(global_retry, 1),
+                            },
+                            headers={
+                                "Retry-After": str(
+                                    max(1, math.ceil(global_retry))
+                                )
+                            },
+                        ))
                 gate_source = ""
                 if forwarded_resolved:
                     gate_source = _peer_key(
@@ -3113,6 +3134,33 @@ async def require_access_token(request: Request, call_next):
                         headers={
                             "Retry-After": str(
                                 max(1, math.ceil(pre_retry))
+                            )
+                        },
+                    ))
+            if (
+                not known_token
+                and _trust_proxy_headers()
+                and _is_trusted_proxy_peer(peer_host)
+            ):
+                # 共享回环桶已满时直接 429，不再执行令牌比较：桶满
+                # 之后比较仍会继续，轮换地址按请求速率在线猜解的
+                # 成本不升反降（.check 的计数留在比较之后）
+                shared_blocked, shared_retry = (
+                    auth_failure_limiter_loopback.is_blocked(
+                        loopback_bucket_key
+                    )
+                )
+                if shared_blocked:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(shared_retry, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(shared_retry))
                             )
                         },
                     ))
@@ -8833,6 +8881,7 @@ def _build_health_insights(
                 ))
             continue
         target_alert_emitted = False
+        target_alert_level = ""
         if (
             target
             and within is not None
@@ -8841,6 +8890,7 @@ def _build_health_insights(
             over = count - int(within)
             if over > 0:
                 target_alert_emitted = True
+                target_alert_level = "warning" if over >= 2 else "info"
                 target_text = f"{float(target['value1']):g}"
                 if target.get("value2") is not None:
                     target_text += f"/{float(target['value2']):g}"
@@ -8877,7 +8927,11 @@ def _build_health_insights(
                     "metric",
                     metric=metric,
                 ))
-        if metric == "bp" and not target_alert_emitted:
+        if metric == "bp" and not (
+            target_alert_emitted and target_alert_level == "warning"
+        ):
+            # 目标告警只有 info（1 次超标）时仍要按单次峰值定级：
+            # 一条 175/105 不能被降级成「提示」
             def _bp_peak_reading(peaks):
                 """单次血压峰值判定：收缩压优先，舒张压补充。"""
                 sys_peak = peaks.get("peak") or {}
@@ -12230,6 +12284,7 @@ def _family_attention(
     visits: Optional[Dict[str, Any]] = None,
     glucose_alert: str = "",
     bp_alert: Optional[Dict[str, str]] = None,
+    target_alert: Optional[Dict[str, str]] = None,
     metrics: Optional[List[Dict[str, Any]]] = None,
     stale_critical: Optional[List[str]] = None,
 ) -> Dict[str, str]:
@@ -12341,6 +12396,15 @@ def _family_attention(
             "level": "warning",
             "label": "血压偏高",
             "detail": str(bp_alert.get("detail") or "")[:120],
+        }
+    if target_alert:
+        # 已配置个体化目标的成员：窗口内更早的超标读数同样要提示，
+        # 不能只看最新一条（两天前的 165/100 不能被今天的正常读数
+        # 掩盖成「暂无需要关注」）
+        return {
+            "level": str(target_alert.get("level") or "info"),
+            "label": str(target_alert.get("label") or "指标超出目标"),
+            "detail": str(target_alert.get("detail") or "")[:120],
         }
     if medications.get("expired") or medications.get("low_stock"):
         parts = []
@@ -12840,6 +12904,64 @@ async def family_overview(days: int = 7):
             ),
         }
 
+    # 已设置个体化目标的成员：家庭关注不能只看最新一条读数（上面
+    # 已把这类成员从通用阈值告警整体排除），窗口内更早的超标读数
+    # 按目标逐条统计，避免被今天正常的读数掩盖
+    target_alert_by_profile: Dict[str, Dict[str, str]] = {}
+    target_over_counts: Dict[str, Dict[str, int]] = {}
+    target_peaks: Dict[str, Dict[str, float]] = {}
+    for item in window_metrics:
+        metric = str(item.get("metric") or "")
+        if metric not in ("bp", "glucose"):
+            continue
+        profile_key = item.get("profile") or ""
+        target = target_map.get((profile_key, metric))
+        if target is None:
+            continue
+        try:
+            value1 = float(item.get("value1") or 0)
+            value2 = (
+                float(item["value2"])
+                if item.get("value2") is not None else None
+            )
+        except (TypeError, ValueError):
+            continue
+        if not metric_over_target(metric, value1, value2, target):
+            continue
+        counts = target_over_counts.setdefault(profile_key, {})
+        counts[metric] = counts.get(metric, 0) + 1
+        peak = target_peaks.setdefault(profile_key, {})
+        if metric == "bp":
+            peak["bp_sys"] = max(peak.get("bp_sys", 0.0), value1)
+            peak["bp_dia"] = max(peak.get("bp_dia", 0.0), value2 or 0.0)
+        else:
+            peak["glucose"] = max(peak.get("glucose", 0.0), value1)
+    for member, counts in target_over_counts.items():
+        peak = target_peaks.get(member) or {}
+        parts = []
+        level = "info"
+        if counts.get("bp"):
+            parts.append(f"血压 {counts['bp']} 次超出目标")
+            if (
+                peak.get("bp_sys", 0.0) >= 160
+                or peak.get("bp_dia", 0.0) >= 100
+            ):
+                level = "warning"
+        if counts.get("glucose"):
+            parts.append(f"血糖 {counts['glucose']} 次超出目标")
+        detail = "、".join(parts)
+        if peak.get("bp_sys"):
+            detail += (
+                f"（最高 {peak['bp_sys']:g}/{peak['bp_dia']:g} mmHg）"
+            )
+        elif peak.get("glucose"):
+            detail += f"（最高 {peak['glucose']:g} mmol/L）"
+        target_alert_by_profile[member] = {
+            "level": level,
+            "label": "、".join(parts) if parts else "指标超出目标",
+            "detail": detail,
+        }
+
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
     medication_names_by_profile: Dict[str, List[str]] = {}
     for item in medications:
@@ -13319,6 +13441,7 @@ async def family_overview(days: int = 7):
             visits=visits,
             glucose_alert=glucose_alert_by_profile.get(name, ""),
             bp_alert=bp_alert_by_profile.get(name),
+            target_alert=target_alert_by_profile.get(name),
             metrics=metrics,
             stale_critical=stale_critical_by_profile.get(name, []),
         )
@@ -13368,9 +13491,14 @@ async def family_overview(days: int = 7):
         if member.get("metrics"):
             return True
         med = member.get("medications") or {}
-        if int(med.get("active") or 0) or med.get("names"):
-            # 停用药物的当日打卡前端/CSV 都不渲染，不能据此生成
-            # 空白遗留成员卡
+        if (
+            int(med.get("active") or 0)
+            or med.get("names")
+            # 停用药物的近 7 天漏服会在家庭关注与 CSV 展示，
+            # 不能生成空白卡时把这条警告一起过滤掉
+            or int(med.get("skipped_week") or 0)
+            or int(med.get("skipped_today") or 0)
+        ):
             return True
         reminder = member.get("reminders") or {}
         if (
