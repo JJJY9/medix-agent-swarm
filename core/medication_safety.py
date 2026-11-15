@@ -571,7 +571,9 @@ _USE_DOUBLE_NEGATION = re.compile(
 _DOSE_MISSED_PREFIX = re.compile(
     r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
     r"前晚|刚才|这次|这一顿|这顿)"
-    r"[^，。；,.!?！？\n]{0,6}(?:没吃|未吃|没有吃|漏服|忘吃|忘记吃|少吃)"
+    r"[^，。；,.!?！？\n]{0,6}"
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
+    r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
 )
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
@@ -606,18 +608,20 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"|不吃了|不再吃了|不用吃了)"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
 )
-#: 「想/打算/准备停用华法林」是意图，当前仍在用药
+#: 「想/打算/准备停用华法林」「打算不吃华法林」是意图，当前仍在用药
 _INTENT_STOP_PREFIX = re.compile(
     r"(?:想|打算|准备|计划|考虑|要不要|是否|让|叫我|建议|嘱咐|叮嘱|要求|医嘱)"
     r"[^，。；,.!?！？\n]{0,4}"
-    r"(?:停用|停药|停服|停了|停掉)\s*$"
+    r"(?:停用|停药|停服|停了|停掉|不吃了|不吃|不再吃|不用吃了|不用吃|"
+    r"不服|不喝|不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)\s*$"
 )
 #: 「准备停药/能停药吗」是意向或疑问，不能当作已停药
 _INTENT_STOP_SUFFIX = re.compile(
     r"^[^，。；,.!?！？\n]{0,4}"
     r"(?:准备|打算|计划|想要|想|考虑|能|能否|能不能|可以|可否|"
     r"是否|要不要|该不该|何时|什么时候)\s*"
-    r"(?:停用|停药|停服|停了|停掉)"
+    r"(?:停用|停药|停服|停了|停掉|不吃了|不吃|不再吃|不用吃了|"
+    r"不做化疗|不化疗|不再化疗)"
 )
 #: 药名之前带时长的停药表述：「我已经停用两个月的华法林」
 _STOPPED_USE_PREFIX_LONG = re.compile(
@@ -812,6 +816,11 @@ def _alias_matches(text: str, alias: str) -> bool:
                 return True
             if (
                 _DOSE_MISSED_PREFIX_EN.search(prefix + suffix)
+                # 中文时间/停药表述作用于整段文本，与药名语言无关：
+                # 「我今天没吃 warfarin」「下周就不吃 warfarin 了」
+                or _DOSE_MISSED_PREFIX.search(prefix + suffix)
+                or _FUTURE_STOP_PREFIX.search(prefix)
+                or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
                 or _NEGATED_STOP_PREFIX_EN.search(prefix)
                 or _INTENT_STOP_PREFIX.search(prefix)
                 or _INTENT_STOP_SUFFIX.search(suffix)

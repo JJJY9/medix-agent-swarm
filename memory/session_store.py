@@ -5759,6 +5759,46 @@ class SessionStore:
                     return True
             return False
 
+        def _orphan_edited_candidate() -> Optional[int]:
+            """软字段被本地改名后与本行对应的唯一编辑候选。
+
+            「rem1 被改名」这类场景：本行软字段值在本地已找不到，
+            漂移候选只剩兄弟行的未编辑存活行；组内没有缺行时，唯一
+            被编辑且软字段不匹配、尾字段与本行一致的候选才是本行的
+            存活版本，不能把它当成兄弟行补插旧版本。
+            """
+            if soft_where is None:
+                return None
+            if local_group_size < backup_group_size:
+                return None
+            pool = [
+                candidate for candidate in claimed
+                if candidate not in moved and candidate not in matched
+            ]
+            # 本行仍有「软字段与尾字段都命中」的正常存活行时，必须
+            # 走常规认领，不能被另一个改名行的编辑证据抢走
+            for candidate in pool:
+                if _soft_matches(candidate) and (
+                    tail_where is None or _tail_matches(candidate)
+                ):
+                    return None
+            orphan = []
+            for candidate in pool:
+                if not _candidate_edited(candidate):
+                    continue
+                if _soft_matches(candidate):
+                    continue
+                if _content_owned_by_other(candidate):
+                    # 内容对应备份里另一条记录（如跨成员改挂后的行）：
+                    # 它属于那条记录的存活版本，不能当本行的孤儿
+                    continue
+                if tail_where is not None and not _tail_matches(candidate):
+                    continue
+                orphan.append(candidate)
+            if len(orphan) == 1:
+                return orphan[0]
+            return None
+
         def _other_backup_row_survives(candidate: int) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
@@ -6125,49 +6165,66 @@ class SessionStore:
                             if candidate in tail_ids
                         ]
                     candidates = filtered_candidates
+                if (
+                    not candidates
+                    and local_group_size >= backup_group_size
+                ):
+                    orphan = _orphan_edited_candidate()
+                    if orphan is not None:
+                        # 软字段被本地编辑（改名提醒/改药名过敏）、组内
+                        # 无缺行：唯一的编辑孤儿就是本行存活版本
+                        return _claim(orphan, mark_moved=True)
                 if len(candidates) == 1:
                     sole = min(candidates)
+                    skip_sole = False
                     if not _tail_matches(sole) and _tail_prefers_sibling(
                         sole
                     ):
-                        # 候选尾字段更像同组另一条同内容孪生备份行：
-                        # 无论本地行数是否足够，都不能认领给本行；
-                        # 本地同秒无关行会虚增组大小，不能据此抢兄弟行
-                        return _ambiguous()
-                    if (
-                        not is_group_last
-                        and backup_group_size > 1
-                        and local_group_size < backup_group_size
-                        and _sole_may_own_later_sibling(sole)
-                    ):
-                        # 同档案同秒的孪生组里，先处理行的唯一候选
-                        # 可能是后面那行内容相同、仅非内容字段不同的
-                        # 存活行：非内容字段与本行一致时它就是本行
-                        # 的存活版本；存活行被编辑过（备注等尾字段已
-                        # 变）时若尾字段更像同组另一条备份行，候选属于
-                        # 兄弟行，必须先补回本行
-                        if not _tail_matches(sole) and (
-                            _tail_prefers_sibling(sole)
-                            or not _candidate_edited(sole)
-                        ):
+                        # 候选尾字段更像同组另一条同内容孪生备份行
+                        if local_group_size < backup_group_size:
+                            # 组内确有缺行：本行按被删记录补插
                             return _ambiguous()
-                    if (
-                        is_group_last
-                        and tail_where is not None
-                        and not _tail_matches(sole)
-                        and (
-                            _tail_prefers_sibling(sole)
-                            or not _candidate_edited(sole)
-                        )
-                    ):
-                        # 最后一行同样核对非内容字段：候选属于更早的
-                        # 兄弟行时必须补插本行（停药/完成状态等）。
-                        # 存活行被编辑过且尾字段不再指向兄弟行时仍按
-                        # 本行认领
-                        return _ambiguous()
-                    if _content_owned_by_other(sole):
-                        return _ambiguous()
-                    return _claim(sole, mark_moved=True)
+                        # 组已满：候选属于兄弟行，跳过漂移认领，
+                        # 交给后面的软字段/尾字段分支选对本行版本
+                        skip_sole = True
+                        orphan = _orphan_edited_candidate()
+                        if orphan is not None:
+                            return _claim(orphan, mark_moved=True)
+                    if not skip_sole:
+                        if (
+                            not is_group_last
+                            and backup_group_size > 1
+                            and local_group_size < backup_group_size
+                            and _sole_may_own_later_sibling(sole)
+                        ):
+                            # 同档案同秒的孪生组里，先处理行的唯一候选
+                            # 可能是后面那行内容相同、仅非内容字段不同的
+                            # 存活行：非内容字段与本行一致时它就是本行
+                            # 的存活版本；存活行被编辑过（备注等尾字段已
+                            # 变）时若尾字段更像同组另一条备份行，候选属于
+                            # 兄弟行，必须先补回本行
+                            if not _tail_matches(sole) and (
+                                _tail_prefers_sibling(sole)
+                                or not _candidate_edited(sole)
+                            ):
+                                return _ambiguous()
+                        if (
+                            is_group_last
+                            and tail_where is not None
+                            and not _tail_matches(sole)
+                            and (
+                                _tail_prefers_sibling(sole)
+                                or not _candidate_edited(sole)
+                            )
+                        ):
+                            # 最后一行同样核对非内容字段：候选属于更早的
+                            # 兄弟行时必须补插本行（停药/完成状态等）。
+                            # 存活行被编辑过且尾字段不再指向兄弟行时仍按
+                            # 本行认领
+                            return _ambiguous()
+                        if _content_owned_by_other(sole):
+                            return _ambiguous()
+                        return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
             # 改挂到其他成员并编辑内容列、且主键漂移时，身份组里
             # 找不到存活行；created_at + 软字段（不限档案）+ 编辑
@@ -6479,6 +6536,15 @@ class SessionStore:
                     backup_group_size <= 1
                     or backup_soft_size == 1
                     or local_group_size >= backup_group_size
+                    # 唯一软字段命中且尾字段与本行一致：内容列被本地
+                    # 编辑过的真孪生（当前行内容与兄弟备份行相同），
+                    # 它就是本行存活版本，不能因为组未满就补插旧版本；
+                    # 内容不同的同秒记录（不同剂量）仍各自补回
+                    or (
+                        len(soft) == 1
+                        and _backup_content_shared_with_sibling()
+                        and _tail_matches(min(soft))
+                    )
                 ):
                     candidates = soft
                 elif (
@@ -6521,9 +6587,28 @@ class SessionStore:
                 if fresh:
                     if not _same_backup_origin():
                         # 未编辑的同身份行在非同源库中更可能对应
-                        # 备份里的另一条记录：按被删记录补回
-                        return _ambiguous()
-                    candidates = fresh
+                        # 备份里的另一条记录。组内已无缺行（本地行数
+                        # 够）时不能补插旧版本：内容列被编辑的候选
+                        # 才是本行存活版本（它已不在漂移候选中）
+                        if local_group_size >= backup_group_size:
+                            edited = [
+                                candidate for candidate in candidates
+                                if _candidate_edited(candidate)
+                                and not _soft_matches(candidate)
+                            ]
+                            tail_edited = [
+                                candidate for candidate in edited
+                                if _tail_matches(candidate)
+                            ]
+                            if tail_edited:
+                                edited = tail_edited
+                            if not edited:
+                                return _ambiguous()
+                            candidates = {min(edited)}
+                        else:
+                            return _ambiguous()
+                    else:
+                        candidates = fresh
                 # 组内只剩唯一候选：软字段已被本地编辑（改名/改标题），
                 # 它仍是这条备份行的存活版本，不能把旧版本再插一份
         if len(candidates) > 1:
@@ -13969,6 +14054,31 @@ class SessionStore:
             ).fetchone()
             if row is not None:
                 # 删除就诊记录时一并撤销它自动创建的复诊预约与提醒
+                linked_id = _safe_db_id(row["followup_appointment_id"])
+                marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
+                # 导入恢复可能只回填了 owner/备注标记而没有写回链接：
+                # 这些 upcoming 自动预约同样是本就诊创建的，必须一并
+                # 撤销，否则待办提醒会照常到期触发
+                extra_ids: List[int] = []
+                for extra in self._conn.execute(
+                    "SELECT id, owner_visit_id, note FROM appointments"
+                    " WHERE status = 'upcoming' AND (owner_visit_id = ?"
+                    "        OR note LIKE ?)",
+                    (int(visit_id), f"%{marker_text}%"),
+                ).fetchall():
+                    candidate_id = int(extra["id"])
+                    if candidate_id == linked_id:
+                        continue
+                    if (
+                        int(extra["owner_visit_id"] or 0)
+                        == int(visit_id)
+                        or marker_text in str(extra["note"] or "")
+                    ):
+                        extra_ids.append(candidate_id)
+                for extra_id in extra_ids:
+                    self._drop_visit_followup_locked(
+                        int(visit_id), extra_id, 0
+                    )
                 self._drop_visit_followup_locked(
                     int(visit_id),
                     row["followup_appointment_id"],

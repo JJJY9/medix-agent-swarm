@@ -1203,7 +1203,15 @@ class SwarmCoordinator:
                 start_time=start_time,
                 end_time=end_time
             )
-            if await self._is_session_deleted(session_id):
+            if degraded or not str(final_answer or "").strip():
+                # 兜底道歉/空答复不会创建会话行：总结文件会变成含主诉
+                # 却无会话可清理的孤儿（删除/按天清理都无法触达），
+                # 与 Mem0 分支一样直接跳过落盘
+                logger.info(
+                    "Degraded or empty answer, skip session summary "
+                    f"(session={session_id})"
+                )
+            elif await self._is_session_deleted(session_id):
                 # 会话已删除，不再落盘包含主诉的总结文件
                 logger.info(
                     f"Session deleted, skip session summary (session={session_id})"

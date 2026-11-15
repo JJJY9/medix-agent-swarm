@@ -385,7 +385,10 @@ def test_frontend_round51_guards():
     assert "safeSessionGet(DEEP_LINK_EDITED_KEY) === sessionId" in app_js
     send_src = app_js[
         app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 1200
+        app_js.index(
+            "consumeDeepLink();",
+            app_js.index("async function send(question)"),
+        )
     ]
     assert "safeSessionRemove(INFLIGHT_QUESTION_KEY);" in send_src
     assert "if (sendPersisted) {" in app_js
