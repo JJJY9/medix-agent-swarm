@@ -564,8 +564,9 @@ def test_frontend_round60_guards():
     # 删除档案写哨兵值，不直接移除归属
     assert "const DELETED_DRAFT_PROFILE = '已删除档案';" in app_js
     assert "const replacement = newName || DELETED_DRAFT_PROFILE;" in app_js
-    # 家庭卡片渲染疫苗
-    assert "疫苗 近 ${days} 天" in app_js
+    # 家庭卡片渲染疫苗（第六十一轮改为历史累计口径 + 最近接种日期）
+    assert "疫苗 累计" in app_js
+    assert "latestVaccineDate" in app_js
     # 日均口径
     assert "row.avg_basis === 'day'" in app_js
     assert "最近一日合计" in app_js
