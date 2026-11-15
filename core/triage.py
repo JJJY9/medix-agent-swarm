@@ -162,11 +162,14 @@ PREGNANCY_TERMS = (
     "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
     "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
 )
-#: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；
-#: 「自然流产史」是既往史，不能当作当前妊娠
+#: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
+#: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
 _PREGNANCY_EVIDENCE_RE = re.compile(
-    r"(?:验孕(?:棒)?(?:呈|显示)?(?:阳性|两条杠|双杠)|"
-    r"(?:自然|不全|完全)流产(?!史)|流产了)"
+    r"(?:验孕(?:棒|试纸)?(?:呈|显示)?"
+    r"(?:阳性|弱阳性|浅阳性|两条杠|两道杠|双杠|一深一浅)|"
+    r"(?:血|血清|尿|β-?|b-?)?\s*hcg\s*(?:呈|显示|为)?\s*(?:阳性|升高)|"
+    r"(?:自然|不全|完全)流产(?!史)|流产了)",
+    re.IGNORECASE,
 )
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
@@ -516,10 +519,16 @@ def _clause_prefix(text: str, start: int, lookback: int = 24) -> str:
     return text[max(boundary, start - lookback):start]
 
 
-#: 短语之后的阳性修饰：枚举否定不能吞掉「胸痛加重/伴大汗/放射…」
+#: 短语之后的阳性修饰：枚举否定不能吞掉「胸痛加重/伴大汗/放射…」。
+#: 持续时间同样是阳性证据：「无发热、胸痛已持续2小时」是真实胸痛
 _POST_POSITIVE_CUES = (
     "加重", "加剧", "恶化", "难忍", "剧痛", "大汗", "出汗",
     "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
+)
+_POST_DURATION_RE = re.compile(
+    r"(?:已|已经|有)?\s*(?:持续|发作|反复)?\s*"
+    r"[0-9一二两三四五六七八九十半几]+\s*"
+    r"(?:分钟|小时|天|日|周|个?月|年)"
 )
 
 
@@ -535,7 +544,9 @@ def _clause_suffix(text: str, start: int, lookahead: int = 12) -> str:
 
 
 def _post_modifier_positive(suffix: str) -> bool:
-    return any(cue in suffix for cue in _POST_POSITIVE_CUES)
+    return any(cue in suffix for cue in _POST_POSITIVE_CUES) or (
+        _POST_DURATION_RE.search(suffix) is not None
+    )
 
 
 def _enum_negated(prefix: str) -> bool:
@@ -939,6 +950,27 @@ _NEGATED_CONTEXT_LEAD = re.compile(
     r"^\s*(?:今天|昨天|最近|目前|现在|我|本人)?\s*"
     r"(?:没有|没再|未见|未出现|否认|并非|不是|无(?!力|精神|食欲|胃口))"
 )
+#: 口语症状词：已保留分句需含症状样证据才建立患者语境，
+#: 寒暄/称呼（早上好、医生、嗯嗯…）不能为后置定义问句背书
+_COLLOQUIAL_SYMPTOM_WORDS = (
+    "发麻", "麻木", "闷痛", "酸痛", "胀痛", "刺痛", "绞痛", "隐痛",
+    "乏力", "没劲", "无力", "头晕", "头疼", "头痛", "恶心", "呕吐",
+    "咳嗽", "气喘", "胸闷", "心慌", "腹痛", "肚子疼", "腹泻", "便秘",
+    "发烧", "发热", "抽搐", "咯血", "出血", "皮疹", "水肿", "疼", "痛",
+)
+
+
+def _symptom_context_clause(clause: str) -> bool:
+    """已保留分句是否含症状样证据（用于建立患者语境）。"""
+    text = str(clause or "")
+    if not text:
+        return False
+    return (
+        _is_red_flag_text(text)
+        or _colloquial_bleeding_positive(text)
+        or any(term in text for term in _NEGATED_SYMPTOM_TERMS)
+        or any(word in text for word in _COLLOQUIAL_SYMPTOM_WORDS)
+    )
 
 
 def _course_context_clause(clause: str) -> bool:
@@ -1024,6 +1056,7 @@ def patient_complaint_text(text: str) -> str:
                     word in clause for word in _COURSE_CONTEXT_BLOCKERS
                 )
                 and _NEGATED_CONTEXT_LEAD.match(clause) is None
+                and _symptom_context_clause(clause)
             ):
                 # 词表外的口语症状（「手脚发麻」「胸口闷痛」）同样是
                 # 真实主诉：已保留的普通分句也建立患者语境，
@@ -1272,7 +1305,8 @@ _FUTURE_STOP_PATTERN = re.compile(
     r"等[^，。；]{0,12}(?:就|再))"
     r"[^，。；]{0,6}"
     r"(?:停用|停药|停服|停了|停掉|停止服用|不吃|不再吃|不用吃|不服|"
-    r"不喝|不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)"
+    r"不喝|不服用|不再服用|不用服用|不再服|不口服|"
+    r"不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)"
 )
 #: 「未停用/不能停药」表示仍在用药，不能按“已停用”过滤
 _NEGATED_STOP_PATTERN = re.compile(
@@ -1285,6 +1319,7 @@ _STOP_INTENT_PATTERN = re.compile(
     r"(?:想|打算|准备|计划|考虑|要不要|是否)"
     r"[^，。；]{0,6}"
     r"(?:停用|停药|停服|停了|停止服用|不吃|不再吃|不用吃|不服|不喝|"
+    r"不服用|不再服用|不用服用|不再服|不口服|"
     r"不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)"
 )
 #: 「华法林停用可以吗」是询问，不能按已停药处理
@@ -1363,6 +1398,13 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     if past_obj and (past_obj in obj or obj in past_obj):
         return False
     return True
+#: 已结束的肿瘤治疗（化疗/放疗）：结束多年不再是当前免疫抑制
+_CHEMO_ENDED_RE = re.compile(
+    r"(?:化疗|放疗|靶向治疗|免疫治疗)(?:已经?|已)?\s*"
+    r"(?:结束|完成|做完|停止)(?:了|后)?"
+    r"|[0-9一二两三四五六七八九十半几]+\s*(?:年|个月)\s*前"
+    r"[^，。；]{0,6}(?:化疗|放疗)(?:过|了)?"
+)
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
     r"(?:以前|之前|曾经|曾|既往|过去)"
@@ -1586,6 +1628,14 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             if not residue:
                 continue
             clause = residue
+        if _CHEMO_ENDED_RE.search(clause) and not _CURRENT_MEDICATION_CUE.search(
+            clause
+        ) and not re.search(
+            r"(?:刚|刚刚|最近|这两天|这几天)\s*(?:结束|完成|做完)", clause
+        ):
+            # 「化疗结束5年了/化疗已经结束了」不是当前免疫抑制；
+            # 「还在/正在化疗」「刚结束化疗」等当前线索仍保留
+            continue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
         # 家属用药或换用其它药物的分句不能复活本句的既往药：
         # 「以前吃华法林，我爸还在吃华法林」「…现在还在吃阿司匹林」

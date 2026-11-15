@@ -20603,6 +20603,9 @@ async function send(question) {
     return;
   }
   if (!question.trim()) return;
+  // 发送时的档案快照：abort/失败恢复主诉时用它守住草稿归属，
+  // 换档后旧患者的主诉不能被当成新档案草稿直接放行
+  const sendProfile = activeProfileName || readStoredProfile() || '';
   // 输入框草稿属于另一位档案（换档后未重新输入）：不能按新档案落库
   try {
     const submittedProfile = pendingComposerProfile;
@@ -20997,6 +21000,7 @@ async function send(question) {
       // 本轮未落库时主诉不能只留在卡片闭包里：刷新/新建会诊后
       // 那份描述将无法恢复
       restoreComposer(question);
+      preserveDraftProfile(sendProfile, question);
       renderStopped({ question, askTurn, baselineMessageId });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
@@ -21012,6 +21016,7 @@ async function send(question) {
       );
       if (!cleared) renderError('该会诊已被删除，请开启新会话后重试。');
       restoreComposer(question);
+      preserveDraftProfile(sendProfile, question);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '已失效';
       logStep('会诊已在其它设备删除', false);
@@ -21028,6 +21033,7 @@ async function send(question) {
       announceChat('会诊中断');
       // 失败轮次可能从未落库：把主诉放回输入框与草稿
       restoreComposer(question);
+      preserveDraftProfile(sendProfile, question);
       renderError(
         err.message || String(err),
         { question, askTurn, baselineMessageId }
@@ -21291,7 +21297,7 @@ const CONTEXT_CLEARED_KEY = 'medix.contextCleared';
 const SINGLE_MODE_KEY = 'medix.singleMode';
 const PROFILES_STORAGE_KEY = 'medix.profiles';
 const PROFILE_STORAGE_KEY = 'medix.activeProfile';
-let profilesCache = {};
+let profilesCache = Object.create(null);
 let activeProfileName = '';
 
 function readPatientContext() {
@@ -21489,7 +21495,7 @@ function readProfiles() {
 }
 
 function setProfiles(profiles) {
-  profilesCache = {};
+  profilesCache = Object.create(null);
   for (const profile of profiles || []) {
     if (profile && profile.name) profilesCache[profile.name] = profile;
   }
@@ -21718,6 +21724,7 @@ async function renamePatientProfile() {
     // 在途主诉记录的是提交时的档案名：改名后同步，否则刷新恢复
     // 会因档案名不符把整段主诉静默丢弃
     updateInflightQuestionProfile(name, data.name);
+    updateDraftProfile(name, data.name);
     await initProfiles();
     setActiveProfile(data.name);
     // 家庭概览缓存仍保留旧档案名，重命名后立即刷新
@@ -21745,10 +21752,21 @@ async function deletePatientProfile() {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
+    // 路由未命中（如含路径分隔符的旧档案名）同样返回 404：必须
+    // 重新确认档案确实消失，否则个人资料会静默残留
+    const listing = await fetch('/api/profiles');
+    const listingData = await listing.json().catch(() => ({}));
+    const remaining = (listingData.profiles || []).map(
+      (item) => item.name
+    );
+    if (listing.ok && remaining.includes(name)) {
+      throw new Error('档案未能删除，请刷新页面后重试');
+    }
     const wasSelected = els.profileSelect.value === name;
     delete profilesCache[name];
     // 删除档案后旧主诉不再属于任何患者：清理在途记录
     updateInflightQuestionProfile(name, '');
+    updateDraftProfile(name, '');
     refreshProfileOptions('');
     loadFamilyOverview();
     loadHomeGlance();
@@ -21902,6 +21920,7 @@ const DRAFT_PROFILE_KEY = 'medix.draft.profile';
 //: 提交瞬间的草稿档案快照：submit 会先清空输入与草稿，send 里
 //: 再读就晚了，换档后旧患者的主诉会被按新档案提交
 let pendingComposerProfile = null;
+let restoredDraftProfileTimer = null;
 let draftTimer = null;
 
 function composerIsDetached() {
@@ -22075,6 +22094,38 @@ ${current}`;
   }
   autoGrow();
   saveDraft();
+}
+
+function preserveDraftProfile(profile, text) {
+  // restoreComposer 触发的 saveDraft 会用当前档案重写草稿归属：
+  // 稍后把发送时的档案写回，换档/改名后旧患者的主诉仍会被拦截
+  if (!profile) return;
+  clearTimeout(restoredDraftProfileTimer);
+  restoredDraftProfileTimer = setTimeout(() => {
+    try {
+      if (els.input.value.trim() === String(text || '').trim()) {
+        safeSessionSet(DRAFT_PROFILE_KEY, profile);
+      }
+    } catch {
+      // 隐私模式忽略
+    }
+  }, 260);
+}
+
+function updateDraftProfile(oldName, newName) {
+  // 重命名/删除档案时同步草稿的档案归属：否则输入框里的草稿
+  // 会被误判为旧档案（已不存在）并持续拦截发送
+  try {
+    const stored = safeSessionGet(DRAFT_PROFILE_KEY);
+    if (!stored || stored !== oldName) return;
+    if (!newName) {
+      safeSessionRemove(DRAFT_PROFILE_KEY);
+      return;
+    }
+    safeSessionSet(DRAFT_PROFILE_KEY, newName);
+  } catch {
+    // 隐私模式忽略
+  }
 }
 
 function updateInflightQuestionProfile(oldName, newName) {
@@ -22275,6 +22326,18 @@ function toggleVoice() {
 
 els.input.addEventListener('input', () => {
   autoGrow();
+  // 草稿档案同步更新：换档后立即输入并回车时，防抖里的旧档案
+  // 归属不能把全新的问题误判成旧患者草稿
+  try {
+    if (els.input.value.trim()) {
+      safeSessionSet(
+        DRAFT_PROFILE_KEY,
+        activeProfileName || readStoredProfile() || ''
+      );
+    }
+  } catch {
+    // 隐私模式忽略
+  }
   saveDraft();
 });
 
