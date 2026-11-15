@@ -567,6 +567,12 @@ _USE_DOUBLE_NEGATION = re.compile(
     r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
     r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?\s*$"
 )
+#: 英文双重否定：「can't stop taking warfarin」
+_USE_DOUBLE_NEGATION_EN = re.compile(
+    r"(?:can'?t|cannot|can not|won'?t|will not|unable to)\s+"
+    r"(?:stop|quit|cease)\s+(?:taking|using)\s*$",
+    re.IGNORECASE,
+)
 #: 单次漏服（今天没吃/漏服了一次）仍属当前用药，不是未用药
 _DOSE_MISSED_PREFIX = re.compile(
     r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
@@ -613,7 +619,8 @@ _INTENT_STOP_PREFIX = re.compile(
     r"(?:想|打算|准备|计划|考虑|要不要|是否|让|叫我|建议|嘱咐|叮嘱|要求|医嘱)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:停用|停药|停服|停了|停掉|不吃了|不吃|不再吃|不用吃了|不用吃|"
-    r"不服|不喝|不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)\s*$"
+    r"不服|不喝|不服用|不再服用|不用服用|不再服|不口服|"
+    r"不做化疗|不化疗|不再化疗|停止化疗|暂停化疗)\s*$"
 )
 #: 「准备停药/能停药吗」是意向或疑问，不能当作已停药
 _INTENT_STOP_SUFFIX = re.compile(
@@ -621,6 +628,7 @@ _INTENT_STOP_SUFFIX = re.compile(
     r"(?:准备|打算|计划|想要|想|考虑|能|能否|能不能|可以|可否|"
     r"是否|要不要|该不该|何时|什么时候)\s*"
     r"(?:停用|停药|停服|停了|停掉|不吃了|不吃|不再吃|不用吃了|"
+    r"不服用|不再服用|不用服用|不再服|"
     r"不做化疗|不化疗|不再化疗)"
 )
 #: 药名之前带时长的停药表述：「我已经停用两个月的华法林」
@@ -653,7 +661,7 @@ _FUTURE_STOP_PREFIX = re.compile(
     r"等[^，。；,.!?！？\n]{0,10}(?:就|再))"
     r"[^，。；,.!?！？\n]{0,10}"
     r"(?:停用|停药|停服|停了|停掉|不吃了?|不再吃|不用吃(?:了)?|"
-    r"不吃|不服|不喝)\s*$"
+    r"不吃|不服|不喝|不服用|不再服用|不用服用)\s*$"
 )
 #: 未来停药的任意语序（「下周就不吃华法林了」「华法林下周就不吃了」）：
 #: 停药计划落实之前仍按当前用药处理
@@ -663,7 +671,8 @@ _FUTURE_STOP_CONTEXT = re.compile(
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周|个月|月|年)\s*(?:后|以后)|"
     r"等[^，。；,.!?！？\n]{0,12}(?:就|再))"
     r"[^，。；,.!?！？\n]{0,6}"
-    r"(?:停用|停药|停服|停了|停掉|不吃|不再吃|不用吃|不服|不喝)"
+    r"(?:停用|停药|停服|停了|停掉|不吃|不再吃|不用吃|不服|不喝|"
+    r"不服用|不再服用|不用服用)"
 )
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_PREFIX = re.compile(
@@ -815,7 +824,9 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # 「没有停用」= 仍在服用
                 return True
             if (
-                _DOSE_MISSED_PREFIX_EN.search(prefix + suffix)
+                _USE_DOUBLE_NEGATION.search(prefix)
+                or _USE_DOUBLE_NEGATION_EN.search(prefix)
+                or _DOSE_MISSED_PREFIX_EN.search(prefix + suffix)
                 # 中文时间/停药表述作用于整段文本，与药名语言无关：
                 # 「我今天没吃 warfarin」「下周就不吃 warfarin 了」
                 or _DOSE_MISSED_PREFIX.search(prefix + suffix)

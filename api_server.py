@@ -317,6 +317,20 @@ class FeedbackRequest(StrictRequestModel):
     comment: str = Field("", max_length=500, description="可选反馈备注")
 
 
+def _validate_profile_name_value(value: str) -> str:
+    """档案名不能含路径分隔符/控制字符：'/' 会让删除、改名路由
+    无法匹配，档案永久残留且界面删除被 404 当成成功。"""
+    name = str(value or "").strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or any(ch in name for ch in "/\\")
+        or any(ord(ch) < 32 for ch in name)
+    ):
+        raise ValueError("档案名称不能包含路径分隔符或控制字符")
+    return name
+
+
 class ProfileRequest(StrictRequestModel):
     name: str = Field(..., min_length=1, max_length=40, description="档案名称")
     context: Dict[str, Any] = Field(
@@ -324,9 +338,19 @@ class ProfileRequest(StrictRequestModel):
         description="年龄、性别、病程、既往史、用药与过敏史",
     )
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, value: str) -> str:
+        return _validate_profile_name_value(value)
+
 
 class ProfileRenameRequest(StrictRequestModel):
     new_name: str = Field(..., min_length=1, max_length=40)
+
+    @field_validator("new_name")
+    @classmethod
+    def _check_new_name(cls, value: str) -> str:
+        return _validate_profile_name_value(value)
 
 
 class ReminderRequest(StrictRequestModel):
@@ -1376,7 +1400,7 @@ _RISK_NEGATION_PATTERN = re.compile(
 _RISK_PREDICATE_NEGATION = re.compile(
     r"(?:未|没有?|不|无|无法|不能)"
     r"(?:发现|出现|达到|符合|支持|满足|存在)"
-    r"[^，。；,;\n]{0,6}$"
+    r"(?:标准|表现|特征|诊断|征象|程度|的情况|的)?\s*$"
 )
 #: 「不排除/不能排除/未排除高危」是双重否定，表示风险仍然存在
 _RISK_RULE_OUT_PATTERN = re.compile(
@@ -1706,6 +1730,10 @@ auth_failure_limiter = SlidingWindowLimiter(10, window=300)
 #: 回环来源（含 ssh -R/socat 透明隧道）的令牌失败桶：不能完全豁免，
 #: 否则隧道外的远程攻击者可无限在线猜解；阈值高于局域网以避免误伤
 auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
+#: IPv6 /64 轮换会把每 /64 的失败预算成倍放大（控制 /48 可获得
+#: 数百个独立桶与独立闸门）：再加一道不按前缀分桶的全局预算，
+#: 把在线猜解总数压回设计量级
+auth_failure_limiter_ipv6_global = SlidingWindowLimiter(60, window=300)
 #: 无法证明客户端地址时的令牌比较闸门：同一键用互斥锁真正串行，
 #: 并发请求不能并行比较令牌；排队过深直接拒绝，避免锁被当 DoS 放大器
 _AUTH_COMPARE_GATE_SECONDS = 0.2
@@ -2808,6 +2836,23 @@ async def require_access_token(request: Request, call_next):
                 # IPv6 /64 常由同一家庭/局域网共享：聚合桶不做硬
                 # 预锁定（否则一人输错令牌全家正确令牌也 429），
                 # 改用同键闸门串行比较并限制单源占槽，正确令牌仍可通过
+                global_blocked, global_retry = (
+                    auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+                )
+                if global_blocked and not known_token:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(global_retry, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(global_retry))
+                            )
+                        },
+                    ))
                 if not known_token:
                     gate_handle = await _auth_compare_enter(
                         prelock_key,
@@ -2850,6 +2895,23 @@ async def require_access_token(request: Request, call_next):
             # 命中后不再逐次比较令牌，在线猜解被真正降速
             prelock_key = f"ip:{_bucket_address(appended_address)}"
             if _is_ipv6_aggregate_key(prelock_key):
+                global_blocked, global_retry = (
+                    auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+                )
+                if global_blocked and not known_token:
+                    return add_security_headers(JSONResponse(
+                        status_code=429,
+                        content={
+                            "detail": "访问令牌错误次数过多，请稍后再试。",
+                            "code": "auth_rate_limited",
+                            "retry_after": round(global_retry, 1),
+                        },
+                        headers={
+                            "Retry-After": str(
+                                max(1, math.ceil(global_retry))
+                            )
+                        },
+                    ))
                 if not known_token:
                     gate_handle = await _auth_compare_enter(
                         prelock_key,
@@ -2961,6 +3023,10 @@ async def require_access_token(request: Request, call_next):
                     # 新桶：回环来源的失败统一按代理对端计数
                     limiter_key = loopback_bucket_key
                 allowed, retry_after = limiter.check(limiter_key)
+                if _is_ipv6_aggregate_key(limiter_key):
+                    # 跨 /64 轮换源地址：全局预算同样计数，超过后
+                    # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度
+                    auth_failure_limiter_ipv6_global.check("ipv6")
                 if not allowed:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -6598,8 +6664,27 @@ async def schedule_visit_followup(visit_id: SafeIntPath):
     """按就诊记录的下次复诊日期创建预约，并生成提前 1 天提醒。"""
     from memory import get_session_store
 
+    store = get_session_store()
+    visit = await asyncio.to_thread(store.get_visit_record, int(visit_id))
+    if visit is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    followup_date = str(visit.get("next_followup_date") or "")[:10]
+    if followup_date:
+        try:
+            followup_day = datetime.strptime(
+                followup_date, "%Y-%m-%d"
+            ).date()
+        except ValueError:
+            followup_day = None
+        if followup_day is not None and followup_day < datetime.now().date():
+            # 过去日期的「待就诊」预约不会出现在待就诊列表，却会
+            # 抑制逾期复诊提示：先请用户更新复诊日期
+            raise HTTPException(
+                status_code=400,
+                detail="下次复诊日期已过期，请先更新复诊日期",
+            )
     result = await asyncio.to_thread(
-        _schedule_followup_sync, get_session_store(), int(visit_id)
+        _schedule_followup_sync, store, int(visit_id)
     )
     await record_audit("visit.followup", str(visit_id))
     return {"ok": True, **result}
@@ -8906,39 +8991,43 @@ def _build_health_insights(
         ))
 
     adherence = (report.get("medications") or {}).get("adherence") or {}
-    if family_scope:
-        # 家庭范围不能用合并后的依从率：个别成员漏服会被其他成员稀释
-        worst = None
-        for row in (report.get("medications") or {}).get(
-            "by_medication"
-        ) or []:
-            expected = row.get("expected")
-            rate = row.get("rate")
-            if expected and expected >= 3 and rate is not None:
-                if worst is None or rate < worst[0]:
-                    worst = (rate, row)
-        if worst is not None and worst[0] < 60:
-            rate = int(worst[0])
-            row = worst[1]
-            member = row.get("profile") or ""
+    # 合并依从率会把一种从未打卡的药稀释到 60% 以上：家庭与单档案
+    # 都按「每种药单独判断」取最差打卡率
+    worst = None
+    for row in (report.get("medications") or {}).get(
+        "by_medication"
+    ) or []:
+        expected = row.get("expected")
+        rate = row.get("rate")
+        if expected and expected >= 3 and rate is not None:
+            if worst is None or rate < worst[0]:
+                worst = (rate, row)
+    if worst is not None and worst[0] < 60:
+        rate = int(worst[0])
+        row = worst[1]
+        member = row.get("profile") or ""
+        if family_scope:
             label = "·".join(
                 part for part in (
                     member, row.get("name") or ""
                 ) if part
             ) or "药物"
-            if family_scope and not member:
+            if not member:
                 label = f"未指定档案 · {row.get('name') or '药物'}"
-            insights.append(_health_insight(
-                "adherence",
-                "warning" if rate < 40 else "info",
-                f"{label} 近 {days} 天打卡 {rate}%",
-                f"应服 {row.get('expected')} 次，"
-                f"已打卡 {row.get('doses')} 次。",
-                "漏服较多时可调整用药提醒或与医生确认服药方案。",
-                "medication",
-            ))
+        else:
+            label = row.get("name") or "药物"
+        insights.append(_health_insight(
+            "adherence",
+            "warning" if rate < 40 else "info",
+            f"{label} 近 {days} 天打卡 {rate}%",
+            f"应服 {row.get('expected')} 次，"
+            f"已打卡 {row.get('doses')} 次。",
+            "漏服较多时可调整用药提醒或与医生确认服药方案。",
+            "medication",
+        ))
     elif (
-        adherence.get("expected", 0) >= 3
+        not family_scope
+        and adherence.get("expected", 0) >= 3
         and adherence.get("rate", 100) < 60
     ):
         rate = int(adherence.get("rate") or 0)
@@ -12143,11 +12232,40 @@ def _family_attention(
             "label": "用药库存提醒",
             "detail": "、".join(parts),
         }
+    skipped_week = int(medications.get("skipped_week") or 0)
+    if skipped_week >= 3:
+        # 与健康提示 medication_skips 同阈值：近 7 天多次漏服
+        return {
+            "level": "warning",
+            "label": f"近 7 天漏服 {skipped_week} 次",
+            "detail": "",
+        }
     adherence = medications.get("adherence") or {}
-    if adherence.get("expected", 0) >= 3 and adherence.get("rate", 100) < 60:
+    worst_rate = medications.get("worst_rate")
+    if (
+        (
+            worst_rate is not None
+            and worst_rate < 60
+        )
+        or (
+            worst_rate is None
+            and adherence.get("expected", 0) >= 3
+            and adherence.get("rate", 100) < 60
+        )
+    ):
+        shown_rate = (
+            worst_rate if worst_rate is not None
+            else adherence.get("rate", 0)
+        )
         return {
             "level": "info",
-            "label": f"用药打卡 {int(adherence['rate'])}%",
+            "label": f"用药打卡 {int(shown_rate)}%",
+            "detail": "",
+        }
+    if 1 <= skipped_week < 3:
+        return {
+            "level": "info",
+            "label": f"近 7 天漏服 {skipped_week} 次",
             "detail": "",
         }
     if vaccinations.get("overdue"):
@@ -12564,7 +12682,7 @@ async def family_overview(days: int = 7):
     # 未设置目标时的血压分级：与健康提示 _bp_peak_reading 同阈值
     # （≥160/100 warning、≥140/90 info），家庭关注与健康提示同口径
     bp_alert_by_profile: Dict[str, Dict[str, str]] = {}
-    bp_peak_by_profile: Dict[str, List[float]] = {}
+    bp_peaks: Dict[str, List[float]] = {}
     for item in window_metrics:
         if item.get("metric") != "bp":
             continue
@@ -12574,12 +12692,12 @@ async def family_overview(days: int = 7):
         except (TypeError, ValueError):
             continue
         profile_key = item.get("profile") or ""
-        current = bp_peak_by_profile.get(profile_key)
-        if current is None or (systolic, diastolic) > (
-            current[0], current[1]
-        ):
-            bp_peak_by_profile[profile_key] = [systolic, diastolic]
-    for member, peak in bp_peak_by_profile.items():
+        peak = bp_peaks.setdefault(profile_key, [0.0, 0.0])
+        # 与健康提示 _bp_peak_reading 同口径：分别取最高收缩压与
+        # 最高舒张压，孤立舒张压≥100 不能被更高收缩压的读数掩盖
+        peak[0] = max(peak[0], systolic)
+        peak[1] = max(peak[1], diastolic)
+    for member, peak in bp_peaks.items():
         systolic, diastolic = peak
         if systolic >= 160 or diastolic >= 100:
             level = "warning"
@@ -12589,7 +12707,9 @@ async def family_overview(days: int = 7):
             continue
         bp_alert_by_profile[member] = {
             "level": level,
-            "detail": f"血压最高 {systolic:g}/{diastolic:g} mmHg",
+            "detail": (
+                f"最高收缩压 {systolic:g}、最高舒张压 {diastolic:g} mmHg"
+            ),
         }
 
     medications_by_profile: Dict[str, Dict[str, Any]] = {}
@@ -12609,6 +12729,8 @@ async def family_overview(days: int = 7):
             "expiring": 0,
             "expired": 0,
             "stock_alerts": [],
+            "skipped_week": 0,
+            "worst_rate": None,
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
@@ -12645,6 +12767,18 @@ async def family_overview(days: int = 7):
         if expected_week > 0:
             entry["week_count"] += int(item.get("week_count") or 0)
         entry["expected_week_doses"] += expected_week
+        entry["skipped_week"] += int(item.get("skipped_range") or 0)
+        if expected_week >= 3:
+            week_rate = adherence_rate(
+                int(item.get("week_count") or 0), expected_week
+            )
+            if week_rate is not None and (
+                entry["worst_rate"] is None
+                or week_rate < entry["worst_rate"]
+            ):
+                # 家庭/单成员卡片都用单药最差打卡率：一种药完全
+                # 没吃不能被其它药的高打卡率稀释成「正常」
+                entry["worst_rate"] = week_rate
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
 
@@ -13221,6 +13355,9 @@ async def export_family_overview_csv(days: int = 7):
                 f"{medications['active']} 种，"
                 f"今日 {medications.get('taken_today', 0)} 次"
             )
+            skipped_week = int(medications.get("skipped_week") or 0)
+            if skipped_week:
+                medication_text += f"，近 7 天未服 {skipped_week} 次"
             adherence = medications.get("adherence")
             if adherence:
                 adherence_text = f"{adherence['rate']}%"

@@ -525,9 +525,11 @@ def test_frontend_round53_guards():
     assert "safeSessionRemove(INFLIGHT_QUESTION_KEY);" in app_js
     assert "if (!busy && !sendInFlight) {" in app_js
     # 深链被接管：不写成当前会话草稿
+    send_start = app_js.index("async function send(question)")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 2600
+        send_start:app_js.index(
+            "const controller = new AbortController();", send_start
+        )
     ]
     assert "els.input.value = question;" in send
     assert "会诊已切换，刚才的主诉未提交" in send

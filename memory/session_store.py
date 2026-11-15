@@ -5799,6 +5799,65 @@ class SessionStore:
                 return orphan[0]
             return None
 
+        def _content_score(candidate: int, target_raw_id: int) -> int:
+            """候选与某条备份记录的逐内容列匹配数（-1 无法比较）。"""
+            if not backup_contents or not content_columns:
+                return -1
+            expected = backup_contents.get(target_raw_id)
+            if expected is None:
+                return -1
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return -1
+            if row is None:
+                return -1
+            local = self._db_content_fingerprint(row, content_columns)
+            return sum(
+                1 for mine, want in zip(local, expected) if mine == want
+            )
+
+        def _content_prefers_sibling(candidate: int) -> bool:
+            """候选的内容更接近同组另一条同秒备份行（而非本行）。
+
+            同秒孪生的 created_at 全相同，「主键未漂移」判定在源库删过
+            记录时形同虚设；候选若只在 note 等单个内容列上不同、且更
+            像兄弟备份行，就不能凭 raw id + 编辑证据自认领。
+            """
+            own_score = _content_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            best_other = own_score
+            for other_id in backup_contents or {}:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                other_score = _content_score(candidate, other_id)
+                if other_score > best_other:
+                    best_other = other_score
+            return best_other > own_score
+
         def _other_backup_row_survives(candidate: int) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
@@ -6448,6 +6507,7 @@ class SessionStore:
                         raw_id in candidates
                         and _same_backup_origin()
                         and _candidate_edited(raw_id)
+                        and not _content_prefers_sibling(raw_id)
                     ):
                         return _claim(raw_id)
                     if (
@@ -6455,6 +6515,11 @@ class SessionStore:
                         and len(candidates) == 1
                         and _candidate_content_matches_backup(
                             min(candidates)
+                        )
+                        and (
+                            soft_where is None
+                            or _soft_matches(min(candidates))
+                            or _candidate_edited(min(candidates))
                         )
                     ):
                         sole = min(candidates)
@@ -6477,6 +6542,12 @@ class SessionStore:
                     if (
                         _candidate_content_matches_backup(sole)
                         and not _content_owned_by_other(sole)
+                        and not _content_prefers_sibling(sole)
+                        and (
+                            soft_where is None
+                            or _soft_matches(sole)
+                            or _candidate_edited(sole)
+                        )
                     ):
                         return _claim(sole, mark_moved=True)
                     return _ambiguous()
@@ -6612,13 +6683,12 @@ class SessionStore:
                 # 组内只剩唯一候选：软字段已被本地编辑（改名/改标题），
                 # 它仍是这条备份行的存活版本，不能把旧版本再插一份
         if len(candidates) > 1:
-            # 多候选里只保留对本行有证据的版本（软字段命中、尾字段
-            # 命中或确实被编辑过）；同秒无关行不能因为「本地行数
-            # 足够」被随机认领，否则被删记录不恢复、无关行被吞掉
+            # 多候选里只保留对本行有证据的版本（软字段命中或确实被
+            # 编辑过）。尾字段命中单独不算证据：同秒但标题不同的
+            # 跨来源提醒不能被当成本行的存活版本吞掉
             preferred = {
                 candidate for candidate in candidates
                 if _soft_matches(candidate)
-                or _tail_matches(candidate)
                 or _candidate_edited(candidate)
             }
             if not preferred:
@@ -7206,6 +7276,17 @@ class SessionStore:
                     name = " ".join(
                         str(raw.get("name") or "").split()
                     )[:MAX_PROFILE_NAME_LENGTH]
+                    if (
+                        not name
+                        or name in {".", ".."}
+                        or "/" in name
+                        or "\\" in name
+                        or any(ord(ch) < 32 for ch in name)
+                    ):
+                        # 路径分隔符让 /api/profiles/{name} 无法匹配，
+                        # 档案将无法删除或改名：导入时直接判为非法
+                        invalid += 1
+                        continue
                     cleaned = _normalize_profile_context(raw.get("context"))
                     if not name or cleaned is None:
                         invalid += 1
@@ -12434,7 +12515,9 @@ class SessionStore:
                         )
                         if link_cursor.rowcount == 0:
                             # 就诊复诊日期为空/已变更：链接没有写回，
-                            # 不能继续保留自动归属与备注标记
+                            # 不能继续保留自动归属与备注标记。备注以
+                            # 本次提交为基底：同一 PATCH 里的新备注
+                            # 不能被旧备注覆盖
                             self._conn.execute(
                                 "UPDATE appointments"
                                 " SET owner_visit_id = 0, note = ?,"
@@ -12443,7 +12526,7 @@ class SessionStore:
                                     re.sub(
                                         r"由就诊记录 #\d+ 自动创建",
                                         "",
-                                        str(previous["note"] or ""),
+                                        str(normalized["note"] or ""),
                                     ).strip()[:300],
                                     now,
                                     int(appointment_id),
@@ -12507,7 +12590,7 @@ class SessionStore:
                                 re.sub(
                                     r"由就诊记录 #\d+ 自动创建",
                                     "",
-                                    str(previous["note"] or ""),
+                                    str(normalized["note"] or ""),
                                 ).strip()[:300],
                                 now,
                                 int(appointment_id),
@@ -13821,6 +13904,28 @@ class SessionStore:
                 and str(old_row["next_followup_date"] or "")
                 != normalized["next_followup_date"]
             ):
+                # 导入恢复可能只回填了 owner/备注标记而没有写回链接：
+                # 这些 upcoming 自动预约与待办提醒同样属于旧复诊安排，
+                # 必须随复诊日期变化一起清理（日期等于新日期的保留）
+                linked_id = _safe_db_id(
+                    old_row["followup_appointment_id"]
+                )
+                marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
+                for extra in self._conn.execute(
+                    "SELECT id FROM appointments"
+                    " WHERE status = 'upcoming' AND (owner_visit_id = ?"
+                    "        OR note LIKE ?)",
+                    (int(visit_id), f"%{marker_text}%"),
+                ).fetchall():
+                    extra_id = int(extra["id"])
+                    if extra_id == linked_id:
+                        continue
+                    self._drop_visit_followup_locked(
+                        int(visit_id),
+                        extra_id,
+                        0,
+                        keep_date=normalized["next_followup_date"],
+                    )
                 kept = self._drop_visit_followup_locked(
                     int(visit_id),
                     old_row["followup_appointment_id"],

@@ -285,7 +285,24 @@ def test_insights_followup_overdue_respects_scheduled(client_and_store):
         item["key"] for item in before["insights"]
     ]
 
-    client.post(f"/api/visits/{visit['id']}/schedule-followup")
+    # 逾期复诊不能直接安排到过去日期：拒绝后仍提示逾期
+    rejected = client.post(f"/api/visits/{visit['id']}/schedule-followup")
+    assert rejected.status_code == 400
+    still = client.get(
+        "/api/health/insights", params={"profile": "妈妈"}
+    ).json()
+    assert "followup_overdue" in [
+        item["key"] for item in still["insights"]
+    ]
+
+    # 更新到未来日期后再安排：逾期提示消失
+    client.patch(f"/api/visits/{visit['id']}", json={
+        "next_followup_date": _date(7),
+    })
+    scheduled = client.post(
+        f"/api/visits/{visit['id']}/schedule-followup"
+    )
+    assert scheduled.status_code == 200
     after = client.get(
         "/api/health/insights", params={"profile": "妈妈"}
     ).json()
