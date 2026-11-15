@@ -576,7 +576,9 @@ _USE_DOUBLE_NEGATION_EN = re.compile(
 #: 单次漏服（今天没吃/漏服了一次）仍属当前用药，不是未用药
 _DOSE_MISSED_PREFIX = re.compile(
     r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|"
-    r"前晚|刚才|这次|这一顿|这顿)"
+    r"前晚|刚才|这次|这一顿|这顿|"
+    r"[0-9一二两三四五六七八九十]+(?:天|日)来?|几天|数天|两三天|"
+    r"[0-9一二两三四五六七八九十]+周来?|几周)"
     r"[^，。；,.!?！？\n]{0,6}"
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
     r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
@@ -796,6 +798,32 @@ _RESTART_USE_SUFFIX_EN = re.compile(
     r"|continuing (?:it|to take))\b",
     re.IGNORECASE,
 )
+#: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；
+#: 宾语是另一种药（每天吃阿司匹林）时不算本药续用
+_CONTINUOUS_USE_AFTER_RE = re.compile(
+    r"(?:每天|每日|天天|一直|持续|规律|长期|常年)"
+    r"(?:都|也|还|在|坚持)?(?:吃|服用|口服|服|用)"
+    r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面)"
+    r"\s*([一-龥A-Za-z0-9]{0,12})"
+)
+
+
+def _continuous_restart_matches(follow: str, alias_lower: str) -> bool:
+    """持续用药分句是否指当前药（空/数量/同药宾语）。"""
+    for match in _CONTINUOUS_USE_AFTER_RE.finditer(follow or ""):
+        obj = re.split(
+            r"[，。；,.!?！？\n和及与、]", match.group(1) or ""
+        )[0].strip()
+        if not obj:
+            return True
+        if re.match(r"^[0-9一二两三四五六七八九十半几]+", obj):
+            return True
+        obj_lower = obj.lower()
+        if alias_lower and (
+            alias_lower in obj_lower or obj_lower in alias_lower
+        ):
+            return True
+    return False
 _PAST_USE_PREFIX_EN = re.compile(
     r"(?:used to|previously|formerly)\s+(?:take|taking|use|using)?\s*$",
     re.IGNORECASE,
@@ -850,6 +878,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
                 or _RESTART_USE_SUFFIX.search(long_suffix)
+                or _continuous_restart_matches(long_suffix, alias_lower)
                 or _RESTART_USE_SUFFIX_EN.search(long_suffix)
                 or _ADHERENCE_USE_PREFIX.search(prefix)
                 and _NEGATED_USE_PREFIX.search(prefix)
@@ -897,6 +926,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
             or _RESTART_USE_SUFFIX.search(long_suffix)
+            or _continuous_restart_matches(long_suffix, alias_lower)
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
             or _RECENT_STOP_CONTEXT.search(prefix + suffix)

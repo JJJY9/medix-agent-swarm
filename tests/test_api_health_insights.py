@@ -212,7 +212,9 @@ def test_insights_no_target_single_high_reading(client_and_store):
         item for item in data["insights"] if item["key"] == "metric_bp_single"
     )
     assert bp["level"] == "warning"
-    assert "170/100" in bp["title"]
+    # 第六十三轮起分别展示最高收缩压与最高舒张压
+    assert "最高收缩压 170" in bp["title"]
+    assert "最高舒张压 100" in bp["title"]
     assert "all_clear" not in [
         item["key"] for item in data["insights"]
     ]
@@ -236,9 +238,10 @@ def test_insights_bp_single_high_quotes_real_reading(client_and_store):
         item for item in data["insights"] if item["key"] == "metric_bp_single"
     )
 
-    # 收缩压与舒张压的最高值来自不同读数，不能拼成 180/110
-    assert "180/95" in bp["title"]
-    assert "180/110" not in bp["title"]
+    # 收缩压与舒张压的最高值来自不同读数：分别展示两个峰值，
+    # 既不能拼成 180/110，也不能只报 180/95 而隐藏 110 的舒张压
+    assert "最高收缩压 180" in bp["title"]
+    assert "最高舒张压 110" in bp["title"]
 
 
 def test_insights_glucose_context_thresholds(client_and_store):
@@ -811,10 +814,16 @@ def test_family_insights_label_members_and_avoid_family_average(
         item["title"] for item in data["insights"]
         if item["key"] == "metric_bp_single"
     ]
-    assert any("妈妈" in title and "190/130" in title
-               for title in bp_titles)
-    assert any("爸爸" in title and "185/125" in title
-               for title in bp_titles)
+    assert any(
+        "妈妈" in title and "最高收缩压 190" in title
+        and "最高舒张压 130" in title
+        for title in bp_titles
+    )
+    assert any(
+        "爸爸" in title and "最高收缩压 185" in title
+        and "最高舒张压 125" in title
+        for title in bp_titles
+    )
     assert all("平均" not in item["detail"] for item in data["insights"]
                if item["key"] == "metric_bp_single")
 

@@ -7722,9 +7722,21 @@ async def _weekly_report_impl(
                     {
                         "count": 0, "over": 0,
                         "target": target, "latest": item,
+                        "peak1": 0.0, "peak2": 0.0,
                     },
                 )
                 entry["count"] += 1
+                try:
+                    peak1 = float(item.get("value1") or 0)
+                except (TypeError, ValueError):
+                    peak1 = 0.0
+                entry["peak1"] = max(entry["peak1"], peak1)
+                if item.get("value2") is not None:
+                    try:
+                        peak2 = float(item["value2"])
+                    except (TypeError, ValueError):
+                        peak2 = 0.0
+                    entry["peak2"] = max(entry["peak2"], peak2)
                 try:
                     over_target = metric_over_target(
                         metric, item.get("value1"),
@@ -7768,6 +7780,8 @@ async def _weekly_report_impl(
                 "unit": latest.get("unit") or default_unit,
                 "latest1": latest.get("value1"),
                 "latest2": latest.get("value2"),
+                "peak1": entry.get("peak1"),
+                "peak2": entry.get("peak2"),
                 "target1": target.get("value1"),
                 "target2": target.get("value2"),
             })
@@ -8891,6 +8905,18 @@ def _build_health_insights(
             if over > 0:
                 target_alert_emitted = True
                 target_alert_level = "warning" if over >= 2 else "info"
+                if metric == "bp":
+                    # 单次重度峰值（≥160/100）即使只超目标一次也按
+                    # warning 提示，与家庭范围目标提醒同口径
+                    peak_row = row.get("peak") or {}
+                    peak2_row = row.get("peak2") or {}
+                    try:
+                        peak_sys = float(peak_row.get("value1") or 0)
+                        peak_dia = float(peak2_row.get("value2") or 0)
+                    except (TypeError, ValueError):
+                        peak_sys = peak_dia = 0.0
+                    if peak_sys >= 160 or peak_dia >= 100:
+                        target_alert_level = "warning"
                 target_text = f"{float(target['value1']):g}"
                 if target.get("value2") is not None:
                     target_text += f"/{float(target['value2']):g}"
@@ -8908,7 +8934,7 @@ def _build_health_insights(
                         )
                 insights.append(_health_insight(
                     f"metric_{metric}",
-                    "warning" if over >= 2 else "info",
+                    target_alert_level or "info",
                     f"{label} {over} 次"
                     + ("低于目标" if metric in LOWER_BOUND_TARGET_METRICS
                        else "超出目标")
@@ -8933,7 +8959,11 @@ def _build_health_insights(
             # 目标告警只有 info（1 次超标）时仍要按单次峰值定级：
             # 一条 175/105 不能被降级成「提示」
             def _bp_peak_reading(peaks):
-                """单次血压峰值判定：收缩压优先，舒张压补充。"""
+                """血压峰值判定：分别取最高收缩压与最高舒张压。
+
+                两个峰值可能来自不同记录，展示时不能拼成一条「最高
+                X/Y」读数，否则数字低于实际记录甚至漏掉更严重的分量。
+                """
                 sys_peak = peaks.get("peak") or {}
                 dia_peak = peaks.get("peak2") or {}
                 sys_high = float(sys_peak.get("value1") or 0)
@@ -8942,18 +8972,23 @@ def _build_health_insights(
                     if sys_peak.get("value2") is not None else 0.0
                 )
                 dia_high = (
-                    float(dia_peak["value1"])
+                    float(dia_peak.get("value1"))
                     if dia_peak.get("value1") is not None else 0.0
                 )
                 dia_low = float(dia_peak.get("value2") or 0)
-                for high_limit, low_limit, level in (
+                level = None
+                for high_limit, low_limit, grade in (
                     (160, 100, "warning"), (140, 90, "info"),
                 ):
                     if sys_high >= high_limit or sys_low >= low_limit:
-                        return level, sys_high, sys_low
+                        level = grade
+                        break
                     if dia_high >= high_limit or dia_low >= low_limit:
-                        return level, dia_high, dia_low
-                return None
+                        level = grade
+                        break
+                if level is None:
+                    return None
+                return level, sys_high, dia_low
 
             member_peaks = (
                 report.get("member_bp_peaks") if family_scope else None
@@ -8971,10 +9006,11 @@ def _build_health_insights(
                         "metric_bp_single",
                         level,
                         (
-                            f"{member}血压最高 {high:g}/{low:g} mmHg"
+                            f"{member}最高收缩压 {high:g}、"
+                            f"最高舒张压 {low:g} mmHg"
                             if level == "warning"
-                            else f"{member}有血压读数达到 "
-                            f"{high:g}/{low:g} mmHg"
+                            else f"{member}有血压读数达到收缩压 "
+                            f"{high:g}、舒张压 {low:g} mmHg"
                         ),
                         f"家庭范围内该成员近 {days} 天的单次最高读数。",
                         (
@@ -8993,9 +9029,11 @@ def _build_health_insights(
                         "metric_bp_single",
                         level,
                         (
-                            f"单次血压最高 {high:g}/{low:g} mmHg"
+                            f"最高收缩压 {high:g}、最高舒张压 "
+                            f"{low:g} mmHg"
                             if level == "warning"
-                            else f"有血压读数达到 {high:g}/{low:g} mmHg"
+                            else f"有血压读数达到收缩压 {high:g}、"
+                            f"舒张压 {low:g} mmHg"
                         ),
                         f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。",
                         (
@@ -9542,9 +9580,14 @@ def _build_health_insights(
         member = str(alert.get("profile") or "") or "未指定档案"
         over = int(alert.get("over") or 0)
         lower = metric in LOWER_BOUND_TARGET_METRICS
+        peak1 = float(alert.get("peak1") or 0)
+        peak2 = float(alert.get("peak2") or 0)
+        severe = (
+            metric == "bp" and (peak1 >= 160 or peak2 >= 100)
+        )
         insights.append(_health_insight(
             f"metric_{metric}",
-            "warning" if over >= 2 else "info",
+            "warning" if (over >= 2 or severe) else "info",
             f"{member}的{label} {over} 次"
             + ("低于目标" if lower else "超出目标")
             + f"（共 {int(alert.get('count') or 0)} 次）",
@@ -12397,15 +12440,6 @@ def _family_attention(
             "label": "血压偏高",
             "detail": str(bp_alert.get("detail") or "")[:120],
         }
-    if target_alert:
-        # 已配置个体化目标的成员：窗口内更早的超标读数同样要提示，
-        # 不能只看最新一条（两天前的 165/100 不能被今天的正常读数
-        # 掩盖成「暂无需要关注」）
-        return {
-            "level": str(target_alert.get("level") or "info"),
-            "label": str(target_alert.get("label") or "指标超出目标"),
-            "detail": str(target_alert.get("detail") or "")[:120],
-        }
     if medications.get("expired") or medications.get("low_stock"):
         parts = []
         if medications.get("expired"):
@@ -12424,6 +12458,16 @@ def _family_attention(
             "level": "warning",
             "label": f"近 7 天漏服 {skipped_week} 次",
             "detail": "",
+        }
+    if target_alert:
+        # 已配置个体化目标的成员：窗口内更早的超标读数同样要提示，
+        # 不能只看最新一条（两天前的 165/100 不能被今天的正常读数
+        # 掩盖成「暂无需要关注」）。放在 warning 级检查之后：
+        # info 级目标提示不能盖掉库存/漏服等 warning
+        return {
+            "level": str(target_alert.get("level") or "info"),
+            "label": str(target_alert.get("label") or "指标超出目标"),
+            "detail": str(target_alert.get("detail") or "")[:120],
         }
     adherence = medications.get("adherence") or {}
     worst_rate = medications.get("worst_rate")
@@ -12939,16 +12983,19 @@ async def family_overview(days: int = 7):
     for member, counts in target_over_counts.items():
         peak = target_peaks.get(member) or {}
         parts = []
+        total_over = sum(counts.values())
         level = "info"
         if counts.get("bp"):
             parts.append(f"血压 {counts['bp']} 次超出目标")
-            if (
-                peak.get("bp_sys", 0.0) >= 160
-                or peak.get("bp_dia", 0.0) >= 100
-            ):
-                level = "warning"
         if counts.get("glucose"):
             parts.append(f"血糖 {counts['glucose']} 次超出目标")
+        if total_over >= 2 or (
+            peak.get("bp_sys", 0.0) >= 160
+            or peak.get("bp_dia", 0.0) >= 100
+        ):
+            # 与健康提示 member_metric_alerts 同口径：多次超标或重度
+            # 峰值按 warning 展示，不因最新一条正常而降级
+            level = "warning"
         detail = "、".join(parts)
         if peak.get("bp_sys"):
             detail += (
