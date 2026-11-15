@@ -161,6 +161,8 @@ PREGNANCY_TERMS = (
     # 产科急症高风险场景
     "宫外孕", "异位妊娠", "孕吐", "孕检", "产检", "葡萄胎",
     "难免流产", "先兆流产", "胎停", "胎停育", "稽留流产",
+    # 「剖宫产术后N天」是近期产科状态：术后出血属于产后出血
+    "剖宫产", "剖腹产",
 )
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
 #: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
@@ -196,6 +198,9 @@ PREGNANCY_BLEEDING_TERMS = (
     "下体出血", "下面出血", "下面流血", "下身出血", "下身流血",
     "见红", "早孕出血", "孕早期出血", "孕中期出血",
     "孕晚期出血", "产前出血", "孕妇出血",
+    # 与 RED_FLAG_PHRASES 对齐：这些短语以「是什么病」出现时同样
+    # 不能被定义问句过滤
+    "孕期出血", "怀孕出血", "产后出血",
 )
 #: 量词插入「阴道」与「出血」之间（阴道少量出血/阴道有点流血）仍属
 #: 孕产期出血；牙龈/鼻/皮肤出血没有这些部位词，不会命中。妊娠词分支
@@ -205,6 +210,7 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红)"
     r"|(?:孕妇|产妇|孕产妇|怀孕|孕期|产前|产后|早孕|孕[早中晚]期"
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
+    r"|剖宫产|剖腹产"
     r"|胎停育?|稽留流产"
     r"|孕\s*[0-9一二两三四五六七八九十]+"
     r"\s*(?:[+＋]\s*\d*)?"
@@ -270,7 +276,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             continue
         if _non_pregnancy_bleeding_site(span, prefix):
             continue
-        if not _is_negated(prefix):
+        if not _is_negated(prefix, _clause_suffix(text, match.end())):
             return True
     location_terms = (
         "阴道出血", "阴道流血", "阴道大量出血", "产道出血", "下体出血",
@@ -293,7 +299,9 @@ def _has_pregnancy_bleeding(text: str) -> bool:
                         "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
                     )
                 )
-            if not gum_hit and not _is_negated(prefix):
+            if not gum_hit and not _is_negated(
+                prefix, _clause_suffix(text, start + len(term))
+            ):
                 return True
             start = text.find(term, start + len(term))
     if _colloquial_bleeding_positive(text):
@@ -345,14 +353,14 @@ def _generic_bleeding_positive(text: str) -> bool:
         while start != -1:
             prefix = _clause_prefix(text, start)
 
-            def _bleeding_negated(value: str) -> bool:
+            def _bleeding_negated(value: str, suffix: str = "") -> bool:
                 return (
                     re.search(
                         r"(?:没有|没|无|未|不|否认|非)"
                         r"(?:(?:明显|任何|见|见到|出现|发现)\s*)*$",
                         value,
                     ) is not None
-                    or _is_negated(value)
+                    or _is_negated(value, suffix)
                 )
 
             location_stripped = re.sub(
@@ -361,7 +369,9 @@ def _generic_bleeding_positive(text: str) -> bool:
             if (
                 any(word in prefix[-6:] for word in _GUM_BLEEDING_WORDS)
                 or _non_pregnancy_bleeding_site(term, prefix)
-                or _bleeding_negated(prefix)
+                or _bleeding_negated(
+                    prefix, _clause_suffix(text, start + len(term))
+                )
                 or (
                     location_stripped != prefix
                     and _bleeding_negated(location_stripped)
@@ -403,7 +413,7 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             continue
         if _non_pregnancy_bleeding_site(span, prefix):
             continue
-        if not _is_negated(prefix):
+        if not _is_negated(prefix, _clause_suffix(text, match.end())):
             return True
     return False
 
@@ -960,6 +970,16 @@ _COLLOQUIAL_SYMPTOM_WORDS = (
 )
 
 
+#: 患者状态词：术后/肿瘤治疗/慢病等分句同样说明后置定义问句在
+#: 描述患者本人（「刚做完手术，抽搐是什么病」）
+_PATIENT_STATE_WORDS = (
+    "手术", "术后", "化疗", "放疗", "靶向", "免疫治疗", "住院", "出院",
+    "糖尿病", "高血压", "肾病", "透析", "免疫抑制", "激素", "冠心病",
+    "心脏病", "慢阻肺", "脑梗", "中风", "肿瘤", "癌", "怀孕", "孕期",
+    "产后", "哺乳", "透析", "肝硬化", "移植",
+)
+
+
 def _symptom_context_clause(clause: str) -> bool:
     """已保留分句是否含症状样证据（用于建立患者语境）。"""
     text = str(clause or "")
@@ -970,6 +990,7 @@ def _symptom_context_clause(clause: str) -> bool:
         or _colloquial_bleeding_positive(text)
         or any(term in text for term in _NEGATED_SYMPTOM_TERMS)
         or any(word in text for word in _COLLOQUIAL_SYMPTOM_WORDS)
+        or any(word in text for word in _PATIENT_STATE_WORDS)
     )
 
 
@@ -1358,13 +1379,18 @@ _STOP_VERB_PATTERN = re.compile(r"(?:停用|停药|停了|停服|停止服用|�
 _RESTART_TEXT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
-    r"|仍在吃|仍在服用|仍然服用)"
+    r"|仍在吃|仍在服用|仍然服用"
+    # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
+    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐)"
+    r"|又服用了|又用了(?!别))"
 )
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
 _RESTART_OBJECT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
-    r"|仍在吃|仍在服用|仍然服用)"
+    r"|仍在吃|仍在服用|仍然服用"
+    r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐)"
+    r"|又服用了|又用了(?!别))"
     r"(?:了)?\s*([一-龥A-Za-z0-9]{1,10})"
 )
 #: 代词/泛称宾语（还在吃这个/那种药）仍指同一药物
@@ -1398,12 +1424,21 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     if past_obj and (past_obj in obj or obj in past_obj):
         return False
     return True
-#: 已结束的肿瘤治疗（化疗/放疗）：结束多年不再是当前免疫抑制
+#: 已结束的肿瘤治疗（化疗/放疗）：结束多年不再是当前免疫抑制。
+#: 第二分支必须带完成体（过/了），且间隔里不能出现「开始/至今/一直」：
+#: 「3个月前开始化疗」是进行中的治疗，不能按已结束处理
 _CHEMO_ENDED_RE = re.compile(
     r"(?:化疗|放疗|靶向治疗|免疫治疗)(?:已经?|已)?\s*"
     r"(?:结束|完成|做完|停止)(?:了|后)?"
     r"|[0-9一二两三四五六七八九十半几]+\s*(?:年|个月)\s*前"
-    r"[^，。；]{0,6}(?:化疗|放疗)(?:过|了)?"
+    r"(?:(?!开始|至今|一直)[^，。；]){0,6}?"
+    r"(?:化疗|放疗)(?:过|了)"
+)
+#: 刚结束不久的化疗（结束才一周/结束后一个月）：免疫抑制仍可能存在
+_CHEMO_RECENT_END_RE = re.compile(
+    r"(?:结束|完成|做完)(?:才|刚|不到|后)?\s*"
+    r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*"
+    r"(?:天|周|个?月)"
 )
 #: 既往用药（不含每天/长期等持续线索时）不是当前用药
 _PAST_MEDICATION_PATTERN = re.compile(
@@ -1463,7 +1498,7 @@ def _active_term_mention(text: str, term: str) -> bool:
             not _TRIAGE_DOUBLE_NEGATION.search(prefix)
             and not continued_use
             and (
-                _is_negated(prefix)
+                _is_negated(prefix, suffix)
                 or bool(
                     _NEGATIVE_TEST_SUFFIX.match(
                         text, start + len(term)
@@ -1549,7 +1584,9 @@ def _has_fever(text: str) -> bool:
                     # 「高热量/高热能」不是发热
                     start = text.find(term, start + len(term))
                     continue
-            if not _is_negated(prefix):
+            if not _is_negated(
+                prefix, _clause_suffix(text, start + len(term))
+            ):
                 return True
             start = text.find(term, start + len(term))
 
@@ -1560,7 +1597,7 @@ def _has_fever(text: str) -> bool:
             if any(word in window for word in _NON_BODY_TEMPERATURE_WORDS):
                 continue
         prefix = _clause_prefix(text, match.start(), lookback=8)
-        if not _is_negated(prefix):
+        if not _is_negated(prefix, _clause_suffix(text, match.end())):
             return True
     return False
 
@@ -1632,10 +1669,14 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             clause
         ) and not re.search(
             r"(?:刚|刚刚|最近|这两天|这几天)\s*(?:结束|完成|做完)", clause
-        ):
+        ) and not _CHEMO_RECENT_END_RE.search(clause):
             # 「化疗结束5年了/化疗已经结束了」不是当前免疫抑制；
-            # 「还在/正在化疗」「刚结束化疗」等当前线索仍保留
-            continue
+            # 只剥离结束短语，同分句的其它当前状态（每天吃华法林/
+            # 怀孕/长期激素）继续参与判断
+            residue = _CHEMO_ENDED_RE.sub("", clause).strip(" ，,；")
+            if not residue:
+                continue
+            clause = residue
         # 续用线索可能落在下一个分句（「华法林停了半年，最近又吃上了」）
         # 家属用药或换用其它药物的分句不能复活本句的既往药：
         # 「以前吃华法林，我爸还在吃华法林」「…现在还在吃阿司匹林」
@@ -1682,8 +1723,10 @@ def _active_medical_text(context: Dict[str, Any]) -> str:
             if (
                 _RESTART_TEXT_RE.search(clause)
                 or _RESTART_TEXT_RE.search(restart_window)
+                or _CHEMO_RECENT_END_RE.search(clause)
             ):
-                # 「停了半年，最近又吃上了」：跨分句续用线索
+                # 「停了半年，最近又吃上了」：跨分句续用线索；
+                # 「化疗结束后一周」：结束后仍处免疫抑制窗口
                 kept.append(clause)
                 continue
             if (
