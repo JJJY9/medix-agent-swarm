@@ -432,6 +432,8 @@ def test_extra_address_header_does_not_skip_preblock(
     monkeypatch.setenv("MEDIX_ACCESS_TOKEN", "a-secure-random-token-123")
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    # 第六十六轮：单元素地址头的预锁定需显式声明单跳追加
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),

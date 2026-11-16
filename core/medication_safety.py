@@ -650,6 +650,16 @@ _STOPPED_USE_PREFIX_LONG = re.compile(
     r"(?:已经|已|早就|刚刚|刚)?\s*(?:停用|停药|停服|停止服用|不再服用|停了)"
     r"[^，。；,.!?！？]{0,6}?(?:月|天|周|年)(?:了|多)?\s*的?\s*$"
 )
+#: 明确远期停药（月/年）：即使同句还提到「没吃完」也按已停用
+_LONG_STOP_CONTEXT = re.compile(
+    r"(?:已经|已|早就|早|都|快)?\s*"
+    r"(?:停用|停药|停了|停服|停止服用|不吃了?)"
+    r"[^，。；,.!?！？\n]{0,6}?"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
+    r"\s*(?:前|以来)?[^，。；,.!?！？\n]{0,4}"
+    r"(?:停用|停药|停了|停服|停止服用)"
+)
 #: 药名之后的「不能停药/未停药」= 仍在服用
 _NEGATED_STOP_SUFFIX = re.compile(
     r"^[^，。；,.!?！？\n]{0,4}(?:不能|不可|不宜|不让|不应|不要|别|"
@@ -789,7 +799,9 @@ _STOPPED_USE_SUFFIX_EN = re.compile(
 #: 药名之后跨分句出现的续用/重启表述：「停了半年，最近又吃上了」
 _RESTART_USE_SUFFIX = re.compile(
     r"^[^。；;！!？?\n]{0,24}"
-    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西（含量词）
@@ -798,8 +810,8 @@ _RESTART_USE_SUFFIX = re.compile(
     r"|又服用了|又用了(?!别))"
 )
 _RESTART_USE_SUFFIX_EN = re.compile(
-    r"\b(?:restarted|started (?:it )?again|still taking|still on"
-    r"|continuing (?:it|to take))\b",
+    r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
+    r"|still taking|still on|continuing (?:it|to take))\b",
     re.IGNORECASE,
 )
 #: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；
@@ -904,7 +916,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             ):
                 return True
             if (
-                _STOPPED_USE_PREFIX.search(prefix)
+                _LONG_STOP_CONTEXT.search(
+                    prefix + text[match.end():right + 120]
+                )
+                or _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
                 or _STOPPED_USE_SUFFIX.search(suffix)
                 or _PAST_USE_SUFFIX.search(suffix)
@@ -950,7 +965,11 @@ def _alias_matches(text: str, alias: str) -> bool:
         ):
             return True
         if (
-            _STOPPED_USE_PREFIX.search(prefix)
+            # 「没吃完，……，已经停药一年了」：远期停药覆盖未吃完的
+            # 续用；停药分句可能隔着多段生活描述，按更长的后缀窗口
+            # 扫描（只看药名之后的文本，不会读到别的药名之前）
+            _LONG_STOP_CONTEXT.search(text[end:right + 120])
+            or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)
             or _PAST_USE_SUFFIX.search(suffix)

@@ -355,6 +355,9 @@ def test_trusted_proxy_buckets_by_forwarded_client(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     monkeypatch.setenv("MEDIX_TRUSTED_PROXY_ADDRS", "172.18.0.2")
+    # 第六十六轮：单元素地址头也可能被透传代理原样转发，预锁定
+    # 需要显式声明单跳代理总是覆盖/追加真实地址
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     monkeypatch.setattr(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(2, window=300),

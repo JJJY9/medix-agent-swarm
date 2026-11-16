@@ -400,7 +400,12 @@ def test_appended_forwarded_address_requires_proxy_written_value(
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    monkeypatch.delenv("MEDIX_PROXY_SINGLE_HOP", raising=False)
     single = FakeRequest({"x-forwarded-for": "203.0.113.9"})
+    # 第六十六轮起：单元素也可能被透传代理原样转发，未显式声明
+    # 单跳时不用于令牌预锁定（走 spoof/共享闸门）
+    assert api_server._forwarded_appended_address(single) == ""
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     assert api_server._forwarded_appended_address(single) == "203.0.113.9"
     multihop = FakeRequest({"x-forwarded-for": "203.0.113.9, 127.0.0.1"})
     assert api_server._forwarded_appended_address(multihop) == ""

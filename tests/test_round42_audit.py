@@ -200,7 +200,9 @@ def test_import_restores_completed_followup_link_in_fresh_store(tmp_path):
         source.save_profile("妈妈", {})
         visit = source.add_visit_record(
             "妈妈", visit_date="2026-10-01", diagnosis="高血压",
-            next_followup_date="2026-10-15",
+            # 第六十六轮：排程在锁内拒绝已过期的复诊日期（并发改期
+            # 也不能创建过去日期的待就诊预约），改用未来日期
+            next_followup_date="2026-12-15",
         )
         first = _schedule_followup_sync(source, visit["id"])
         source.update_appointment_partial(

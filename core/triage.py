@@ -449,7 +449,11 @@ _PAST_OBSTETRIC_YEARS = re.compile(
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
 _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:曾经|以前|去年|前年|多年前|既往|已流产|已结束|"
-    r"产后\s*[0-9一二两三四五六七八九十]+\s*年|产后抑郁|"
+    # 产后/流产后/顺产后/引产后/胎停后的多年表述同样是既往史，
+    # 与主诉路径的 _PAST_OBSTETRIC_YEARS 同口径
+    r"(?:产后|流产后|顺产后|引产后|胎停后)\s*"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
+    r"产后抑郁|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?\s*"
@@ -462,6 +466,18 @@ def _current_history_text(history: str) -> str:
     kept = []
     for clause in re.split(r"[，。；;,.!?！？\n]", history):
         if _HISTORY_PAST_OBSTETRIC.search(clause):
+            # 同一分句可能并存当前妊娠（「剖宫产术后3年现在怀孕8周」
+            # 「产后两年又怀孕了」）：只剥离具体的既往产科短语，不能
+            # 整句丢弃，否则同句的当前妊娠证据会一起消失。
+            # 「曾经怀孕/去年孕早期出血/已流产」等泛化既往表述没有
+            # 可剥离的具体短语（residue 不变），仍整句丢弃，避免把
+            # 既往孕史当成当前妊娠
+            residue = _PAST_OBSTETRIC_YEARS.sub("", clause)
+            if residue == clause:
+                continue
+            residue = residue.strip(" ，,；;、")
+            if residue:
+                kept.append(residue)
             continue
         kept.append(clause)
     return "；".join(kept)
@@ -583,9 +599,15 @@ def _clause_suffix(text: str, start: int, lookahead: int = 12) -> str:
 
 
 def _post_modifier_positive(suffix: str) -> bool:
-    return any(cue in suffix for cue in _POST_POSITIVE_CUES) or (
-        _POST_DURATION_RE.search(suffix) is not None
-    )
+    # 「胸痛不明显/不剧烈」：程度词前的否定语缀说明症状被否认，
+    # 不能按阳性后缀处理（枚举否定仍然成立）
+    for cue in _POST_POSITIVE_CUES:
+        for match in re.finditer(re.escape(cue), suffix):
+            start = match.start()
+            if start > 0 and suffix[start - 1] in "不没无未":
+                continue
+            return True
+    return _POST_DURATION_RE.search(suffix) is not None
 
 
 def _enum_negated(prefix: str) -> bool:
@@ -802,7 +824,12 @@ _EDUCATIONAL_PREFIX_RE = re.compile(
 _HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
 #: 病程/数量线索：定义问句前缀含这些词时按真实主诉保留
 _COURSE_MARKER_RE = re.compile(
-    r"[0-9一二两三四五六七八九十半几]+\s*(?:天|日|周|个月|月|小时|年)"
+    # 「十分钟/一个小时/十几分钟/三个月」：中文数字+可选个/来/多
+    # +分钟等短时程单位，与阿拉伯数字写法同口径（急性胸痛/抽搐
+    # 在一小时内最需要急诊，不能因写法不同整句丢弃）
+    r"[0-9一二两三四五六七八九十半几]+\s*"
+    r"(?:个[来多]?|来|多|余)?\s*"
+    r"(?:分钟|小时|钟头|天|日|周|星期|个月|月|年)"
 )
 #: 定义问句前缀里出现这些场景/程度修饰时按真实主诉保留
 #: （「活动后胸痛是什么病」「胸痛越来越重是什么病」「一侧肢体
@@ -821,6 +848,9 @@ _COURSE_MARKERS = (
     "经常", "常常", "时常", "总是", "老是", "一直", "长期", "多年",
     "很久", "好久", "很长时间", "好几天", "数天", "数周", "数月",
     "近来", "这段时间",
+    # 发作/频次形态同样是真实病程线索（胸痛一阵一阵的是什么病）
+    "一阵一阵", "一阵阵", "一阵子", "一段时间", "时好时坏",
+    "反反复复", "好几次", "好几回", "好多次",
 )
 
 
@@ -936,8 +966,16 @@ def _clean_complaint_clause(
             or any(marker in clause for marker in _COURSE_MARKERS)
             or any(word in clause for word in _POST_POSITIVE_CUES)
             # 「网上买的药吃了胸痛/跟着视频跳操后胸痛」：本人服药的
-            # 动作线索说明这不是科普引用
-            or any(cue in clause for cue in _EDUCATION_CURRENT_CUES)
+            # 动作线索说明这不是科普引用；但纯引述内容里的动作词
+            # （网上说吃完药后胸痛）没有患者主语，不能据此保留
+            or (
+                any(cue in clause for cue in _EDUCATION_CURRENT_CUES)
+                and (
+                    _has_patient_subject(clause)
+                    or _EDUCATION_CURRENT_RE.search(clause) is not None
+                    or _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+                )
+            )
             # 「网上看到胸痛要重视我现在胸痛」：引用之后同分句仍在
             # 描述本人当前症状
             or _EDUCATION_CURRENT_RE.search(clause) is not None
@@ -1061,6 +1099,14 @@ _EDUCATION_BLOCKERS_STRONG = (
 _EDUCATION_CURRENT_CUES = (
     "买了", "买的", "吃完", "吃了", "服用", "喝了", "跳操", "运动",
     "锻炼", "跟着", "教程", "现在", "刚刚", "刚才", "突然", "这时",
+)
+#: 引述引导词：其后的动作词属于被引用的科普内容，不是本人行为
+#: （「网上说吃完药后胸痛要马上就医」「文章讲运动后胸痛」）
+_EDUCATION_QUOTE_LEAD_RE = re.compile(
+    r"(?:网上|文章|视频|新闻|帖子|百科|教程|科普|讲座|报道|书上|"
+    r"听说|据说)"
+    r"[^，。；]{0,8}?"
+    r"(?:说|讲|写|提到|指出|介绍|称|教|报道|表示|认为)"
 )
 #: 引用之后同分句「我+症状」：真实主诉被连写在同一分句里
 _EDUCATION_CURRENT_RE = re.compile(
@@ -1382,6 +1428,11 @@ _HEAD_NON_HEAD_PREFIX = "趾指骨枕馒拳舌木砖石车脚"
 _HEAD_TRAUMA_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|头顶|"
     r"后脑勺|枕部)"
+    # 口语方位/副词：后脑勺上磕了个包、头不小心撞到墙、
+    # 头一下子撞到门框（部位与撞击动词之间可插入修饰）
+    r"(?:上|部|后面|后面上)?"
+    r"(?:一不小心|不小心|一下子|突然|直接|重重地?|猛地|猛一?下|"
+    r"当时|今天|昨天|前几天)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
     r"伤|着地|破|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打))"
@@ -1510,13 +1561,42 @@ _LONG_STOP_PATTERN = re.compile(
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
     r"(?:停用|停药|停了|停服|停止服用)"
 )
+#: 明确结束的长期治疗时间线（化疗结束五年/放疗完成多年）：与远期
+#: 停药一样，可以否定同段消息里的「没吃完」
+_LONG_ENDED_TREATMENT_RE = re.compile(
+    r"(?:结束|完成|做完|停止)[^，。；]{0,6}?"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多年)"
+)
+
+
+def _long_stop_near(clauses: List[str], index: int) -> bool:
+    """同段消息是否另有明确远期停药/结束治疗证据。
+
+    「华法林没吃完，最近睡眠不好，胃口也差，已经停药半年了」
+    「甲氨蝶呤没吃完，……，化疗结束五年了」：远期停用说明当前
+    并不在用药，「没吃完」只是回顾剩余药量，不能据此恢复抗凝/
+    免疫抑制语境；即使停药分句离得较远也必须生效（按整段消息
+    扫描，家属用药分句不参与判断）。
+    """
+    for pos, clause in enumerate(clauses):
+        if any(
+            marker in clause for marker in _FAMILY_HISTORY_MARKERS
+        ):
+            continue
+        if _LONG_STOP_PATTERN.search(clause) or (
+            _LONG_ENDED_TREATMENT_RE.search(clause)
+        ):
+            return True
+    return False
 #: 停药动词：只有真正的停药表述才做「无时长保守保留」
 _STOP_VERB_PATTERN = re.compile(
     r"(?:停用|停药|停了|停服|停止服用|已停|停过|间断|中断)"
 )
 #: 停药后又重新服用（可跨一个分句）：抗凝状态仍然成立
 _RESTART_TEXT_RE = re.compile(
-    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
@@ -1526,7 +1606,9 @@ _RESTART_TEXT_RE = re.compile(
 )
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
 _RESTART_OBJECT_RE = re.compile(
-    r"(?:又吃上|又用上|又服上|重新吃|重新服用|重新用|恢复服用|恢复吃"
+    r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
@@ -1932,8 +2014,17 @@ def _active_medical_text(
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
-            if _FINISHED_DOSE_RE.search(clause):
-                # 「华法林还没吃完」说明仍在用药，不是停药
+            if _FINISHED_DOSE_RE.search(clause) and not (
+                _long_stop_near(clauses, index)
+                and not (
+                    _RESTART_TEXT_RE.search(clause)
+                    or _RESTART_TEXT_RE.search(restart_window)
+                )
+            ):
+                # 「华法林还没吃完」说明仍在用药，不是停药；但同段
+                # 消息已明确远期停药/结束治疗（停药半年、化疗结束
+                # 五年）时，「没吃完」只是回顾药量，不能恢复用药语境；
+                # 明确的续用表述（现在又在吃）仍优先保留
                 kept.append(clause)
                 continue
             if (

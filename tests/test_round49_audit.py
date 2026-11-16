@@ -304,8 +304,13 @@ def test_multihop_appended_address_not_prelocked(monkeypatch):
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    monkeypatch.delenv("MEDIX_PROXY_SINGLE_HOP", raising=False)
     single = FakeRequest({"x-forwarded-for": "203.0.113.9"})
+    # 第六十六轮起：未声明单跳代理时单元素头同样不用于预锁定
+    assert api_server._forwarded_appended_address(single) == ""
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     assert api_server._forwarded_appended_address(single) == "203.0.113.9"
+    monkeypatch.delenv("MEDIX_PROXY_SINGLE_HOP", raising=False)
     # 多元素时代理追加的最右项可能是上一跳代理（全家共享）
     multi = FakeRequest({"x-forwarded-for": "10.1.2.3, 172.18.0.1"})
     assert api_server._forwarded_appended_address(multi) == ""
