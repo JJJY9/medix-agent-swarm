@@ -280,7 +280,8 @@ def test_cancelled_then_completed_relinks_visit(store):
     store.save_profile("妈妈", {"sex": "女"})
     visit = store.add_visit_record(
         "妈妈", visit_date="2026-10-01", diagnosis="高血压",
-        next_followup_date="2026-11-05",
+        # 第六十六轮：排程锁内拒绝已过期的复诊日期，改用未来日期
+        next_followup_date="2026-12-05",
     )
     first = _schedule_followup_sync(store, visit["id"])
     appointment_id = first["appointment"]["id"]

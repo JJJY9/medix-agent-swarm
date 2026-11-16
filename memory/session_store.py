@@ -6061,15 +6061,49 @@ class SessionStore:
                 for other_id, values in backup_softs.items()
             )
 
+        def _content_rows_missing_for_orphan() -> bool:
+            """组已满时孤儿认领前：本行或任一同秒备份行的内容是否缺失。
+
+            主键漂移下同秒孪生可能互相顶替：若本行内容在本地已无任何
+            存活行，被编辑的行更可能是兄弟行的改名版本；若有兄弟行的
+            内容已不存在，被编辑行也可能是它的改挂版本。两种情况都应
+            补插被删记录（宁重复勿丢），不能把候选抢走。
+            """
+            if not backup_contents or not content_columns:
+                return False
+            created_key = str(created_at_value or "")
+            try:
+                rows = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)} FROM {table}"
+                    " WHERE created_at = ?",
+                    (created_key,),
+                ).fetchall()
+            except sqlite3.Error:
+                return True
+            fingerprints = [
+                self._db_content_fingerprint(row, content_columns)
+                for row in rows
+            ]
+            for backup_id, expected in backup_contents.items():
+                if (
+                    backup_created
+                    and backup_created.get(backup_id) != created_key
+                ):
+                    continue
+                if expected not in fingerprints:
+                    return True
+            return False
+
         def _orphan_edited_candidate() -> Optional[int]:
             """软字段被本地改名后与本行对应的唯一编辑候选。
 
             「rem1 被改名」这类场景：本行软字段值在本地已找不到，
             漂移候选只剩兄弟行的未编辑存活行；组内没有缺行时，唯一
             被编辑且软字段不匹配、尾字段与本行一致的候选才是本行的
-            存活版本，不能把它当成兄弟行补插旧版本。
+            存活版本，不能把它当成兄弟行补插旧版本。无软字段的表
+            （症状/指标）用尾字段精确命中来认领被改内容列的存活行。
             """
-            if soft_where is None:
+            if _content_rows_missing_for_orphan():
                 return None
             if local_group_size < backup_group_size:
                 return None
@@ -6077,18 +6111,19 @@ class SessionStore:
                 candidate for candidate in claimed
                 if candidate not in moved and candidate not in matched
             ]
-            # 本行仍有「软字段与尾字段都命中」的正常存活行时，必须
-            # 走常规认领，不能被另一个改名行的编辑证据抢走
-            for candidate in pool:
-                if _soft_matches(candidate) and (
-                    tail_where is None or _tail_matches(candidate)
-                ):
-                    return None
+            if soft_where is not None:
+                # 本行仍有「软字段与尾字段都命中」的正常存活行时，
+                # 必须走常规认领，不能被另一个改名行的编辑证据抢走
+                for candidate in pool:
+                    if _soft_matches(candidate) and (
+                        tail_where is None or _tail_matches(candidate)
+                    ):
+                        return None
             orphan = []
             for candidate in pool:
                 if not _candidate_edited(candidate):
                     continue
-                if _soft_matches(candidate):
+                if soft_where is not None and _soft_matches(candidate):
                     continue
                 if _content_owned_by_other(candidate):
                     # 内容对应备份里另一条记录（如跨成员改挂后的行）：
@@ -6786,7 +6821,20 @@ class SessionStore:
             # 改挂到其它档案的记录仍可参与漂移配对
             filtered_candidates = set()
             for candidate_idx in candidates:
-                if candidate_idx == raw_id or candidate_idx not in backup_ids:
+                if candidate_idx == raw_id:
+                    # 漂移库里本地行 id 恰等于本行原始主键只是巧合：
+                    # 若可证明非同源、且软字段/内容都不命中本行，它是
+                    # 备份里另一条同秒记录的改名存活行（如「诊断0」
+                    # 被改成「诊断改」），不能当成本行存活版本吞掉，
+                    # 否则那条被删记录（诊断1）永远无法恢复
+                    if (
+                        _same_backup_origin()
+                        or _soft_matches(candidate_idx)
+                        or _candidate_content_matches_backup(candidate_idx)
+                    ):
+                        filtered_candidates.add(candidate_idx)
+                    continue
+                if candidate_idx not in backup_ids:
                     filtered_candidates.add(candidate_idx)
                     continue
                 expected_profile = (
@@ -7686,6 +7734,19 @@ class SessionStore:
 
                 session_id = str(raw.get("id") or "").strip()[:120]
                 if not session_id:
+                    invalid += 1
+                    continue
+                if (
+                    session_id in (".", "..")
+                    or "/" in session_id
+                    or "\\" in session_id
+                    or "%" in session_id
+                    or any(ord(ch) < 32 for ch in session_id)
+                ):
+                    # 路径分隔符/百分号/控制字符让 /api/sessions/{id}
+                    # 无法匹配（百分比编码的斜杠在 ASGI 层解码后变成
+                    # 路径分隔符），导入的会话将无法打开、改名或逐条
+                    # 删除；与档案导入的规则保持一致，直接判为非法
                     invalid += 1
                     continue
 
@@ -14412,6 +14473,8 @@ class SessionStore:
         改好的预约静默删除。
         """
         appointment = _safe_db_id(appointment_id)
+        # 未提供预约时提醒段落按独立提醒处理（owner 校验不生效）
+        auto_created = False
         if appointment:
             row = self._conn.execute(
                 "SELECT note, status, scheduled_at, owner_visit_id, profile"
@@ -14557,22 +14620,40 @@ class SessionStore:
                     (int(visit_id), reminder),
                 ).fetchone() is not None
             )
+            # 遗留共享链接（预约 owner 属于另一条就诊）时，提醒
+            # 同样不属于本次就诊：不能删除归属就诊唯一的一条待办
+            ownership_ok = bool(auto_created or not appointment)
             if (
                 same_owner
                 and (
                     reminder_appointment == -1
-                    or reminder_appointment == (int(appointment) or 0)
-                    or still_linked
+                    or (
+                        ownership_ok
+                        and (
+                            reminder_appointment
+                            == (int(appointment) or 0)
+                            or still_linked
+                        )
+                    )
                 )
             ):
                 # 已完成的提醒是历史记录，不能随复诊改期删除；
                 # 已移交/脱钩的独立提醒也不能被就诊级联删除。
                 # 但就诊仍把该提醒当作自己的复诊提醒时（完成→重开
                 # 后脱钩），它必须随改期删除，否则留下过期幽灵提醒
-                self._conn.execute(
+                cursor = self._conn.execute(
                     "DELETE FROM reminders WHERE id = ? AND done = 0",
                     (reminder,),
                 )
+                if cursor.rowcount:
+                    # 提醒已删：其它就诊指向它的复诊链接不能悬空，
+                    # 否则复诊会被永久抑制
+                    self._conn.execute(
+                        "UPDATE visit_records"
+                        " SET followup_reminder_id = 0"
+                        " WHERE followup_reminder_id = ?",
+                        (reminder,),
+                    )
         return False
 
     def update_visit_record(

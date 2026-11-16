@@ -766,6 +766,10 @@ let sessionId = initialSessionFromUrl
 // 当前会话已从服务端渲染的最大消息 ID；中止对账用它区分“旧问答”和
 // “本轮新落库的问答”，仅靠问题文本会在重复提问时误判
 let lastServerMessageId = 0;
+//: 本页最近一次成功渲染出的会话：send 的补恢复失败只对「从未在
+//: 本页展示过」的会话解绑，避免冷启动一票否决导致打开历史会话后
+//: 因瞬时网络错误静默换新会话
+let renderedSessionId = '';
 //: 会诊中切换/清空档案后，下一轮提问前必须开启新会话
 const PENDING_RESET_KEY = 'medix.pendingSessionReset';
 // 未消费的深链：首屏恢复失败后整页刷新仍按深链处理，避免退化为
@@ -2916,9 +2920,15 @@ function renderSources(sources) {
   return details;
 }
 
-function renderAnswer(payload, elapsedSeconds, question = '') {
+function renderAnswer(
+  payload, elapsedSeconds, question = '', questionProfile = ''
+) {
   const messageId = Number(payload.assistant_message_id) || 0;
   if (messageId > lastServerMessageId) lastServerMessageId = messageId;
+  // 流式回答正常渲染同样意味着当前会话已在本页展示：记录后，
+  // 下一次补恢复的瞬时失败不会把刚用过的会话静默解绑
+  const answerSession = String(payload.session_id || sessionId || '');
+  if (answerSession) renderedSessionId = answerSession;
   const turn = document.createElement('div');  turn.className = 'turn';
 
   const note = document.createElement('div');
@@ -3071,8 +3081,10 @@ function renderAnswer(payload, elapsedSeconds, question = '') {
     actions.appendChild(makeAction('再次会诊', () => {
       if (busy) return;
       if (pendingSessionReset) {
-        // 档案已切换：旧患者的问题不能写进新档案的会话
+        // 档案已切换：旧患者的问题不能写进新档案的会话；
+        // 同时保留提交时的档案归属，回车时由提交前检查拦截
         restoreComposer(question);
+        preserveDraftProfile(questionProfile, question);
         setVitals('warn', '档案已切换，请确认后再提交');
         return;
       }
@@ -3349,6 +3361,7 @@ async function startNewSession() {
     persistSessionId(sessionId);
     setSessionUrl(sessionId);
     markFreshSession(sessionId);
+    renderedSessionId = '';
     lastServerMessageId = 0;
     safeStorageRemove(pendingResetStorageKey(sessionId));
     consumeDeepLink();
@@ -5080,6 +5093,7 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
   // 打开历史会话/深链前先处理输入框草稿归属：另一位患者的草稿不能
   // 留在这次会话页面上
   settleDraftForSession(activeSessionId);
+  renderedSessionId = activeSessionId || '';
   els.thread.replaceChildren(els.empty);
   els.empty.hidden = messages.length > 0;
   lastServerMessageId = messages.reduce(
@@ -5128,7 +5142,8 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
           historical: true,
         },
         null,
-        question
+        question,
+        profile
       );
       question = '';
       askTurn = null;
@@ -5240,10 +5255,18 @@ async function openSession(id) {
     // 拉取期间用户可能已经发起了新会诊：此时不能再渲染历史，
     // 否则会把流式输出清空并把 sessionId 改回旧会话
     if (seq !== openSessionSeq || busy) return false;
+    // 等待期间用户可能刚编辑了补充信息：与 restoreCurrentSession
+    // 一致，冲突标志必须在响应返回后重新读取，不能在 await 前固化
+    const draftConflictNow = deepLinkOpen && Boolean(
+      contextUserEdited
+      || pendingSessionReset
+      || safeSessionGet(DEEP_LINK_EDITED_KEY) === id
+    );
+    const draftConflict = deepLinkDraftConflict || draftConflictNow;
 
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记
     // 失效；待重置期间重开当前会话或深链草稿冲突时保留现场
-    if (deepLinkDraftConflict) {
+    if (draftConflict) {
       setPendingSessionReset(true);
     } else if (!keepPendingReset) {
       setPendingSessionReset(false);
@@ -5254,7 +5277,7 @@ async function openSession(id) {
     settleDraftForSession(id);
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
-    if (keepPendingReset || deepLinkDraftConflict) {
+    if (keepPendingReset || draftConflict) {
       // 待重置仍要生效：只固定本标签页，不能重新写回共享 localStorage
       // 指针（冷启动/新标签页会复活已放弃的旧档案会话）
       safeSessionSet('medix.session.tab', id);
@@ -5265,7 +5288,7 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
-    const preserveComposer = keepPendingReset || deepLinkDraftConflict;
+    const preserveComposer = keepPendingReset || draftConflict;
     renderStoredMessages(
       data.messages || [], id, data.profile || '',
       preserveComposer
@@ -5475,6 +5498,7 @@ function clearCurrentSession() {
   consumeDeepLink();
   sessionId = null;
   lastServerMessageId = 0;
+  renderedSessionId = '';
   clearPersistedSessionId();
   setSessionUrl(null);
   // 无会话页面的草稿归属空串：刷新时不会被当成其它会话的草稿删除
@@ -5495,6 +5519,7 @@ function clearDeletedSession(id, notice = '') {
   consumeDeepLink();
   sessionId = null;
   lastServerMessageId = 0;
+  renderedSessionId = '';
   clearPersistedSessionId();
   setSessionUrl(null);
   reassignDraftToCurrentSession();
@@ -9879,8 +9904,21 @@ function renderFamilyOverview(data) {
           ? `用药 今日 ${medications.taken_today} 次`
           : `用药 ${medications.active} 种 未打卡`
       );
-      if (medications.adherence && medications.adherence.expected) {
-        chip.textContent += ` · 依从率 ${medications.adherence.rate}%`;
+      // 与家庭关注徽标同口径：单药最差打卡率，一种药完全没吃
+      // 不能被其它药的高打卡率稀释成看起来正常
+      const adherenceRate = (
+        medications.worst_rate !== null
+        && medications.worst_rate !== undefined
+      )
+        ? medications.worst_rate
+        : (medications.adherence && medications.adherence.rate);
+      if (
+        medications.adherence
+        && medications.adherence.expected
+        && adherenceRate !== null
+        && adherenceRate !== undefined
+      ) {
+        chip.textContent += ` · 依从率 ${adherenceRate}%`;
       }
       if (Number(medications.skipped_today) > 0) {
         chip.textContent +=
@@ -9895,6 +9933,22 @@ function renderFamilyOverview(data) {
       }
       if (details.length) chip.title = details.join(' · ');
       chips.appendChild(chip);
+    } else if (
+      Number(medications.taken_today) > 0
+      || Number(medications.skipped_week) > 0
+    ) {
+      // 已停用药物：停药当天的打卡/当周漏服仍是健康记录，
+      // 不能因停药让成员卡落入「暂无健康记录」
+      let stoppedText = (
+        Number(medications.taken_today) > 0
+          ? `用药 今日 ${Number(medications.taken_today)} 次`
+          : '用药 已停用'
+      );
+      if (Number(medications.skipped_week) > 0) {
+        stoppedText +=
+          ` · 近 7 天未服 ${Number(medications.skipped_week)} 次`;
+      }
+      chips.appendChild(familyChip(stoppedText));
     }
     const reminders = profile.reminders || {};
     if (reminders.overdue) {
@@ -10067,14 +10121,39 @@ function familyOverviewText(data) {
     const medications = profile.medications || {};
     if (medications.active) {
       let medText = `用药 今日 ${medications.taken_today || 0} 次`;
-      if (medications.adherence && medications.adherence.expected) {
-        medText += `，依从率 ${medications.adherence.rate}%`;
+      const adherenceRate = (
+        medications.worst_rate !== null
+        && medications.worst_rate !== undefined
+      )
+        ? medications.worst_rate
+        : (medications.adherence && medications.adherence.rate);
+      if (
+        medications.adherence
+        && medications.adherence.expected
+        && adherenceRate !== null
+        && adherenceRate !== undefined
+      ) {
+        medText += `，依从率 ${adherenceRate}%`;
       }
       if (Number(medications.skipped_today) > 0) {
         medText +=
           `，今日未服 ${Number(medications.skipped_today)} 次`;
       }
       parts.push(medText);
+    } else if (
+      Number(medications.taken_today) > 0
+      || Number(medications.skipped_week) > 0
+    ) {
+      let stoppedText = (
+        Number(medications.taken_today) > 0
+          ? `用药 今日 ${Number(medications.taken_today)} 次`
+          : '用药 已停用'
+      );
+      if (Number(medications.skipped_week) > 0) {
+        stoppedText +=
+          `，近 7 天未服 ${Number(medications.skipped_week)} 次`;
+      }
+      parts.push(stoppedText);
     }
     const reminders = profile.reminders || {};
     if (reminders.overdue) {
@@ -20911,9 +20990,14 @@ async function send(question) {
       setVitals('warn', '会话已切换，刚才的主诉未提交，请确认后重新发送');
       return;
     }
-    if (!initialRestoreOk && sessionId) {
+    if (
+      !initialRestoreOk
+      && sessionId
+      && renderedSessionId !== sessionId
+    ) {
       // 旧会话从未在本页展示且恢复失败：不能把问题写进未知会话，
-      // 清掉残留绑定按新会话处理
+      // 清掉残留绑定按新会话处理；已成功渲染过的会话（用户从历史
+      // 面板打开）不能因一次补恢复失败被静默解绑
       clearPersistedSessionId();
       sessionId = null;
       lastServerMessageId = 0;
@@ -21224,7 +21308,10 @@ async function send(question) {
 
     // 最终答复通过独立 live region 播报，避免整页日志被反复朗读
     announceChat('会诊意见已生成');
-    renderAnswer(finalPayload, finalPayload.total_time || elapsed, question);
+    renderAnswer(
+      finalPayload, finalPayload.total_time || elapsed, question,
+      sendProfile
+    );
 
     if (historyOpen) {
       loadHistory(els.historySearch.value.trim());

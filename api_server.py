@@ -2475,15 +2475,21 @@ def _forwarded_appended_address(request: Request) -> str:
                 if part.strip()
             ]
             if parts:
-                # 多级代理下最右项可能是上一跳代理（全家共用）：
-                # 只有单元素或显式声明单跳时才能证明是真实客户端
-                if len(parts) != 1 and not _proxy_single_hop():
+                # 单元素也只代表单跳写法，不证明代理真的覆盖/追加过：
+                # 透传代理（nginx 未配 proxy_set_header X-Forwarded-For）
+                # 会把客户端自带的头原样转发，攻击者可逐请求轮换伪造
+                # 地址绕开预锁定。只有部署显式声明单跳追加时才信任
+                # 最右项，否则与多元素一样按客户端可影响处理
+                if not _proxy_single_hop():
                     return ""
                 return _usable(_normalize_forwarded_address(parts[-1]))
     if allowed_source in ("", "x-real-ip"):
         real_values = _proxy_header_values(request, "x-real-ip")
         if real_values:
             if len(set(real_values)) > 1:
+                return ""
+            # 同 XFF：未声明单跳代理时不采信客户端可自带的单元素头
+            if not _proxy_single_hop():
                 return ""
             return _usable(
                 _normalize_forwarded_address(real_values[-1])
@@ -2495,7 +2501,9 @@ def _forwarded_appended_address(request: Request) -> str:
         if header:
             values = _forwarded_for_values(header)
             if values:
-                if len(values) != 1 and not _proxy_single_hop():
+                # RFC 7239 Forwarded 同样是透传代理可原样转发的内容：
+                # 仅在显式声明单跳时采信
+                if not _proxy_single_hop():
                     return ""
                 return _usable(values[-1] or "")
     return ""
@@ -2906,6 +2914,16 @@ async def require_access_token(request: Request, call_next):
             and _client_ip_key(request)
             == f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
+        if (
+            _trust_proxy_headers()
+            and peer_host
+            and not _is_trusted_proxy_peer(peer_host)
+        ):
+            # 开启了信任代理但对端未声明：该对端可能是 L4/端口映射
+            # 代理，无法区分真实客户端。按共享桶 fail-closed，避免
+            # 10 次错误令牌把这个 TCP 对端的所有正确令牌用户硬预锁定
+            # 5 分钟（正确令牌在共享闸门里直通，不受错误尝试影响）
+            shared_bucket = True
         # 受信代理已解析出真实客户端地址时，键可能来自客户端可影响的
         # 更左转发项：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
         # 把正确令牌用户锁死）。只有代理追加写入的最右地址可用于预锁定
@@ -6701,12 +6719,27 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             raise HTTPException(
                 status_code=400, detail="下次复诊日期超出支持范围"
             )
+        if followup_day < datetime.now().date():
+            # HTTP 预检查在锁外：并发改期可能在预检查之后把复诊日
+            # 改到过去。锁内再校验一次，避免创建过去日期的待就诊
+            # 预约（不出现在待就诊列表，却抑制逾期复诊提示）
+            raise HTTPException(
+                status_code=400,
+                detail="下次复诊日期已过期，请先更新复诊日期",
+            )
 
         appointment = None
         appointment_created = False
         linked_appointment_id = int(visit.get("followup_appointment_id") or 0)
         if linked_appointment_id:
             appointment = store.get_appointment(linked_appointment_id)
+            if appointment and int(
+                appointment.get("owner_visit_id") or 0
+            ) not in (0, int(visit.get("id") or 0)):
+                # 遗留共享链接：预约 owner 属于另一条就诊，不能复用；
+                # 按未安排处理走新建/接管流程。否则后续写链接会因
+                # owner 校验失败，端点误报 404「记录不存在」
+                appointment = None
             if appointment and (
                 appointment.get("status") != "upcoming"
                 or str(appointment.get("scheduled_at") or "")[:10]
@@ -7686,12 +7719,20 @@ async def _weekly_report_impl(
     previous_sessions = [
         item for item in raw_sessions
         if int(item.get("message_count") or 0) > 0
-        # 上一周期按创建时间归属：续聊旧会话会把 updated_at 刷新到
-        # 本周期，用可变的活动时间归属会事后抹掉上一周期的会诊，
-        # 让「较上期」的环比结论失真
-        and prev_start <= str(
-            item.get("created_at") or item.get("updated_at") or ""
-        )[:10] < start
+        # 上一周期归属：创建于上期的会话计入上期；创建更早、仅在
+        # 上期内续聊过的会话同样计入（按本次取数窗口的活动时间），
+        # 否则续聊会被算作凭空新增，环比结论失真
+        and (
+            prev_start <= str(
+                item.get("created_at") or item.get("updated_at") or ""
+            )[:10] < start
+            or (
+                str(item.get("created_at") or "")[:10] < prev_start
+                and prev_start <= str(
+                    item.get("updated_at") or ""
+                )[:10] < start
+            )
+        )
     ]
     risk_level = ""
     risk_profiles: List[Dict[str, str]] = []
@@ -13076,7 +13117,15 @@ async def family_overview(days: int = 7):
             peak["bp_dia"] = max(peak.get("bp_dia", 0.0), value2 or 0.0)
         else:
             peak_key = f"m:{metric}"
-            peak[peak_key] = max(peak.get(peak_key, 0.0), value1)
+            if metric in LOWER_BOUND_TARGET_METRICS:
+                # 睡眠/血氧等「不低于目标」的指标：数值越低越严重，
+                # 详情必须展示最低值，最大值会掩盖最差读数
+                current = peak.get(peak_key)
+                peak[peak_key] = (
+                    value1 if current is None else min(current, value1)
+                )
+            else:
+                peak[peak_key] = max(peak.get(peak_key, 0.0), value1)
     for member, counts in target_over_counts.items():
         peak = target_peaks.get(member) or {}
         parts = []
@@ -13102,7 +13151,10 @@ async def family_overview(days: int = 7):
                 peak_value = peak.get(f"m:{metric}")
                 if peak_value is not None:
                     unit_text = f" {default_unit}" if default_unit else ""
-                    details.append(f"最高 {peak_value:g}{unit_text}")
+                    details.append(
+                        ("最低 " if lower else "最高 ")
+                        + f"{peak_value:g}{unit_text}"
+                    )
         if total_over >= 2 or (
             peak.get("bp_sys", 0.0) >= 160
             or peak.get("bp_dia", 0.0) >= 100
@@ -13655,6 +13707,16 @@ async def family_overview(days: int = 7):
             # 不能生成空白卡时把这条警告一起过滤掉
             or int(med.get("skipped_week") or 0)
             or int(med.get("skipped_today") or 0)
+            # 停药当天的打卡仍是今天的健康记录；仅对未指定档案或
+            # 仍在保存的成员展示（已删档案仅剩停药流水时不复活卡片，
+            # 与 round57 契约一致）
+            or (
+                int(med.get("taken_today") or 0)
+                and (
+                    member.get("name") in saved_name_set
+                    or not member.get("name")
+                )
+            )
         ):
             return True
         reminder = member.get("reminders") or {}
