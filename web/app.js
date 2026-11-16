@@ -20956,6 +20956,7 @@ async function send(question) {
         // 等待期间用户已打开带消息的会话：不能把欢迎空状态插回
         els.empty.hidden = false;
       }
+      preserveDraftProfile(sendProfile, question);
       if (!takenOver) {
         setVitals('warn', '会诊记录尚未打开，请稍后重试');
       }
@@ -22238,8 +22239,10 @@ async function applySelectedProfile() {
       // 更新的换档调用已接管：旧调用不得回滚档案与表单
       return;
     }
+    // 成功断开旧会话本身会换新 sessionId，这不是「被 send/openSession
+    // 接管」：只有失败时 sessionId 变化才说明别的流程改写了当前会话
     const takenOver = Boolean(
-      busy || sessionId !== attemptSession
+      busy || (!ok && sessionId !== attemptSession)
     );
     if (takenOver) {
       // send/openSession 已接管：保留新档案与当前会话，不能回滚
@@ -22543,7 +22546,9 @@ function preserveDraftProfile(profile, text) {
   clearTimeout(restoredDraftProfileTimer);
   restoredDraftProfileTimer = setTimeout(() => {
     try {
-      if (els.input.value.trim() === String(text || '').trim()) {
+      // restoreComposer 会把旧主诉与已有草稿合并：输入框不再与
+      // 主诉精确相等，但文本仍包含它，档案归属同样必须保留
+      if (els.input.value.includes(String(text || '').trim())) {
         draftProfileMemory = profile;
         safeSessionSet(DRAFT_PROFILE_KEY, profile);
       }

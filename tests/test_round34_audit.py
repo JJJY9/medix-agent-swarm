@@ -333,6 +333,8 @@ def test_trusted_proxy_headers_use_forwarded_address(monkeypatch):
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    # 第六十七轮：循环/分桶采信转发地址需显式声明单跳覆盖
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     assert api_server._is_loopback_client(
         FakeRequest({"x-forwarded-for": "203.0.113.9"})
     ) is False

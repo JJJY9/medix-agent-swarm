@@ -21,6 +21,13 @@ RED_FLAG_PHRASES = (
     ("心口疼", "胸痛"),
     ("心前区痛", "胸痛"),
     ("心前区疼痛", "胸痛"),
+    # 常见口语/书面同义写法：直接子串无法由「胸痛」覆盖
+    ("胸部疼痛", "胸痛"),
+    ("胸部疼", "胸痛"),
+    ("胸部痛", "胸痛"),
+    ("胸骨后疼痛", "胸痛"),
+    ("胸前区疼痛", "胸痛"),
+    ("胸前区痛", "胸痛"),
     ("胸口压榨", "胸部压榨感"),
     ("胸部压榨", "胸部压榨感"),
     ("胸骨后压榨", "胸部压榨感"),
@@ -598,13 +605,24 @@ def _clause_suffix(text: str, start: int, lookahead: int = 12) -> str:
     return text[start:min(boundary, start + lookahead)]
 
 
+#: 静态程度描述：被否定时说明症状被否认（胸痛不明显）
+_STATIC_DEGREE_CUES = (
+    "剧烈", "明显", "严重", "厉害", "得很", "得厉害", "难忍",
+)
+
+
 def _post_modifier_positive(suffix: str) -> bool:
-    # 「胸痛不明显/不剧烈」：程度词前的否定语缀说明症状被否认，
-    # 不能按阳性后缀处理（枚举否定仍然成立）
+    # 「胸痛不明显/不剧烈」：静态程度词前的否定说明症状被否认；
+    # 但「胸痛没加重/未恶化」只是否认变化，胸痛本身仍是主诉，
+    # 变化类线索（加重/恶化/放射/大汗…）不受否定语缀影响
     for cue in _POST_POSITIVE_CUES:
         for match in re.finditer(re.escape(cue), suffix):
             start = match.start()
-            if start > 0 and suffix[start - 1] in "不没无未":
+            if (
+                cue in _STATIC_DEGREE_CUES
+                and start > 0
+                and suffix[start - 1] in "不没无未"
+            ):
                 continue
             return True
     return _POST_DURATION_RE.search(suffix) is not None
@@ -952,6 +970,23 @@ def _clean_complaint_clause(
                 )
                 and _is_red_flag_text(rest)
             )
+            # 急性求助/突发修饰/多症状/头外伤：即使没有主语也是
+            # 真实主诉描述（解释一下抽搐怎么办、突发胸痛是什么病、
+            # 抽搐吐白沫是什么病）；纯术语问句（介绍一下呼吸困难、
+            # 什么是持续性胸痛）仍按科普丢弃
+            or re.search(
+                r"(?:怎么办|怎么处理|如何处理|该怎[么样]办|"
+                r"要不要紧|严重吗)", rest
+            ) is not None
+            or any(
+                word in rest
+                for word in (
+                    "突发", "突然", "剧烈", "加重", "无法", "不能",
+                    "大汗", "冷汗", "昏迷", "意识不清", "抽搐",
+                )
+            )
+            or _definition_multi_symptom(rest)
+            or _has_head_trauma(rest)
         ):
             return _clean_complaint_clause(rest, patient_context_seen)
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
@@ -961,7 +996,15 @@ def _clean_complaint_clause(
         # 「我在网上看到胸痛要重视」这类分句，避免把科普当急症；
         # 同一分句仍明确描述当前病程（今天/持续/越来越重）或
         # 家属急症时保留
-        current_course = (
+        # 纯引述内容（网上说/文章讲…）没有患者主语时，其中的
+        # 时长/频次/程度线索属于被引用的科普内容（网上说胸痛持续
+        # 十分钟要就医），不能据此保留分句
+        quote_only = bool(
+            _EDUCATION_QUOTE_LEAD_RE.search(clause) is not None
+            and not _has_patient_subject(clause)
+            and _EDUCATION_CURRENT_RE.search(clause) is None
+        )
+        current_course = (not quote_only) and (
             _COURSE_MARKER_RE.search(clause) is not None
             or any(marker in clause for marker in _COURSE_MARKERS)
             or any(word in clause for word in _POST_POSITIVE_CUES)
@@ -1434,8 +1477,9 @@ _HEAD_TRAUMA_RE = re.compile(
     r"(?:一不小心|不小心|一下子|突然|直接|重重地?|猛地|猛一?下|"
     r"当时|今天|昨天|前几天)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
-    r"伤|着地|破|"
-    r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打))"
+    r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
+    r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
+    r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰)"
     r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
     r"头顶|后脑勺|枕部)"
@@ -1569,6 +1613,34 @@ _LONG_ENDED_TREATMENT_RE = re.compile(
 )
 
 
+#: 停药动词前可忽略的辅助词（不构成药名宾语）
+_LONG_STOP_NEUTRAL_PREFIX = (
+    "已经", "已", "早就", "早", "都", "快", "目前", "现在", "之前",
+    "以前", "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
+)
+
+
+def _stop_clause_names_other_drug(
+    clause: str, current_clause: str
+) -> bool:
+    """远期停药分句是否点名了另一种药（而非当前分句的药）。"""
+    match = re.search(
+        r"([一-龥A-Za-z0-9]{2,10})\s*(?:已经?|已)?\s*"
+        r"(?:停用|停药|停了|停服|停止服用|不吃了?)",
+        clause,
+    )
+    if match is None:
+        return False
+    token = match.group(1)
+    for word in _LONG_STOP_NEUTRAL_PREFIX:
+        if token.startswith(word):
+            token = token[len(word):]
+    token = token.strip()
+    if len(token) < 2:
+        return False
+    return token not in current_clause
+
+
 def _long_stop_near(clauses: List[str], index: int) -> bool:
     """同段消息是否另有明确远期停药/结束治疗证据。
 
@@ -1578,14 +1650,19 @@ def _long_stop_near(clauses: List[str], index: int) -> bool:
     免疫抑制语境；即使停药分句离得较远也必须生效（按整段消息
     扫描，家属用药分句不参与判断）。
     """
+    current_clause = clauses[index] if 0 <= index < len(clauses) else ""
     for pos, clause in enumerate(clauses):
         if any(
             marker in clause for marker in _FAMILY_HISTORY_MARKERS
         ):
             continue
-        if _LONG_STOP_PATTERN.search(clause) or (
-            _LONG_ENDED_TREATMENT_RE.search(clause)
-        ):
+        if _LONG_STOP_PATTERN.search(clause):
+            if _stop_clause_names_other_drug(clause, current_clause):
+                # 「华法林没吃完，阿司匹林停药一年了」：另一种药的
+                # 远期停用不能抹掉本药的抗凝语境
+                continue
+            return True
+        if _LONG_ENDED_TREATMENT_RE.search(clause):
             return True
     return False
 #: 停药动词：只有真正的停药表述才做「无时长保守保留」
@@ -1595,7 +1672,8 @@ _STOP_VERB_PATTERN = re.compile(
 #: 停药后又重新服用（可跨一个分句）：抗凝状态仍然成立
 _RESTART_TEXT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
-    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|恢复用药|"
+    r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
@@ -1607,7 +1685,8 @@ _RESTART_TEXT_RE = re.compile(
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
 _RESTART_OBJECT_RE = re.compile(
     r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
-    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|恢复用药|"
+    r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"

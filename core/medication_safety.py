@@ -800,7 +800,8 @@ _STOPPED_USE_SUFFIX_EN = re.compile(
 _RESTART_USE_SUFFIX = re.compile(
     r"^[^。；;！!？?\n]{0,24}"
     r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
-    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|"
+    r"又重新服用|重新开始吃|重新开始服用|恢复吃了|恢复用药|"
+    r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
@@ -811,7 +812,8 @@ _RESTART_USE_SUFFIX = re.compile(
 )
 _RESTART_USE_SUFFIX_EN = re.compile(
     r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
-    r"|still taking|still on|continuing (?:it|to take))\b",
+    r"|back on (?:it )?(?:again)?|still taking|still on"
+    r"|continuing (?:it|to take))\b",
     re.IGNORECASE,
 )
 #: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；

@@ -330,6 +330,8 @@ def test_declared_proxy_hops_skipped_when_resolving(monkeypatch):
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
     monkeypatch.setenv("MEDIX_TRUSTED_PROXY_ADDRS", "172.18.0.1")
+    # 第六十七轮：按转发地址分桶需显式声明单跳覆盖
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     request = FakeRequest({"x-forwarded-for": "203.0.113.9, 172.18.0.1"})
     assert api_server._forwarded_client_address(request) == "203.0.113.9"
     assert api_server._client_ip_key(request) == "ip:203.0.113.9"
