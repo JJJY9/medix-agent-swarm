@@ -267,6 +267,7 @@ def test_client_ip_key_requires_trusted_loopback_peer(monkeypatch):
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     # 直连 LAN 客户端伪造 XFF 不能更换限流桶。第六十五轮起：开启了
     # 信任代理但该对端未声明的请求按 fail-closed 共享桶计数，避免
     # 10 次错误令牌把整个代理对端的正确令牌用户硬预锁定

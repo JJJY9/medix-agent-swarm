@@ -2533,6 +2533,10 @@ def _is_loopback_client(request: Request) -> bool:
     if _has_proxy_headers(request):
         if not (_trust_proxy_headers() and _is_trusted_proxy_peer(peer)):
             return False
+        if not _proxy_single_hop():
+            # 透传代理可能把客户端自带的 XFF 原样转发（含 127.0.0.1）：
+            # 未显式声明单跳覆盖时不能据此把请求当成本机
+            return False
         forwarded = _forwarded_client_address(request)
         if not forwarded:
             return False
@@ -2584,6 +2588,20 @@ def _is_ipv6_source_key(key: str) -> bool:
     return ":" in text[3:]
 
 
+def _budget_source_key(request: Request) -> str:
+    """IPv6 全局失败预算的来源键：受信代理后的解析地址。
+
+    限流分桶可能因未声明单跳代理而退回共享地址，但轮换 /64 的
+    在线猜解仍必须计入全局失败预算，不能被按 /64 分桶绕过。
+    """
+    peer = request.client.host if request.client else ""
+    if _trust_proxy_headers() and _is_trusted_proxy_peer(peer):
+        forwarded = _forwarded_client_address(request)
+        if forwarded:
+            return f"ip:{_bucket_address(forwarded)}"
+    return _client_ip_key(request)
+
+
 def _client_ip_key(request: Request) -> str:
     """令牌错误尝试必须按来源 IP 计数，不能按猜测值分散。
 
@@ -2593,7 +2611,13 @@ def _client_ip_key(request: Request) -> str:
     peer = request.client.host if request.client else ""
     # 受信代理包括 loopback 与显式声明的非 loopback 对端：这类请求
     # 才可以采信转发地址，让每个真实客户端独立分桶
-    if _trust_proxy_headers() and _is_trusted_proxy_peer(peer):
+    if (
+        _trust_proxy_headers()
+        and _is_trusted_proxy_peer(peer)
+        and _proxy_single_hop()
+    ):
+        # 单跳未声明时不采信转发地址按客户端分桶：透传代理下
+        # 客户端可逐请求轮换自带的 XFF 绕过限流键
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{_bucket_address(forwarded)}"
@@ -3127,7 +3151,7 @@ async def require_access_token(request: Request, call_next):
             # 按已解析的真实客户端地址计；地址不可解析时只保留总
             # 队列上限，攻击者占满自己的槽位不能把全家挡在 429
             if not known_token:
-                if _is_ipv6_source_key(_client_ip_key(request)):
+                if _is_ipv6_source_key(_budget_source_key(request)):
                     # 闸门分支同样受「不按前缀分桶」的 IPv6 全局失败
                     # 预算约束：多级/多元素代理头下轮换 /64 不能靠每次
                     # 新桶绕过硬上限；正确令牌仍直通
@@ -3248,7 +3272,7 @@ async def require_access_token(request: Request, call_next):
                 limiter_key = _client_ip_key(request)
                 # IPv6 全局失败预算按解析出的来源地址计：即使失败计数
                 # 落进 spoof/共享桶，轮换 /64 的在线猜解也不能绕过它
-                budget_key = limiter_key
+                budget_key = _budget_source_key(request)
                 if loopback_source and trusted_proxy_request:
                     # 受信代理改写出的回环别名（127.0.0.2…）不能各自开
                     # 新桶：回环来源的失败统一按代理对端计数
@@ -6881,6 +6905,21 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     reminder = candidate
                     break
         if reminder is None:
+            deleted_marker = ""
+            try:
+                deleted_marker = str(
+                    store.get_app_state(
+                        "reminder_deleted_"
+                        f"{int(appointment['id'])}"
+                    ) or ""
+                )
+            except Exception:
+                deleted_marker = ""
+        if reminder is None and deleted_marker:
+            # 用户主动删除过该预约的提醒：再次安排复诊不能绕过墓碑
+            # 复活（与改期重建的墓碑口径一致），只恢复预约链接
+            pass
+        elif reminder is None:
             today = datetime.now().date()
             reminder_due = max(followup_day - timedelta(days=1), today)
             note = " ".join(
@@ -6906,7 +6945,8 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             reminder_created = True
 
         linked = store.set_visit_followup_links(
-            visit_id, appointment["id"], reminder["id"]
+            visit_id, appointment["id"],
+            reminder["id"] if reminder is not None else 0,
         )
         if not linked:
             # 就诊在安排期间被删除：回滚本次新建的预约/提醒，
@@ -13229,7 +13269,9 @@ async def family_overview(days: int = 7):
         if expected_week > 0:
             entry["week_count"] += int(item.get("week_count") or 0)
         entry["expected_week_doses"] += expected_week
-        if expected_week >= 3:
+        if expected_week > 0:
+            # 每周一次的低频药完全没吃同样是 0%：不能因为
+            # expected_week<3 就被其它药的高打卡率掩盖
             week_rate = adherence_rate(
                 int(item.get("week_count") or 0), expected_week
             )
@@ -13835,16 +13877,28 @@ async def export_family_overview_csv(days: int = 7):
             skipped_week = int(medications.get("skipped_week") or 0)
             if skipped_week:
                 medication_text += f"，近 7 天未服 {skipped_week} 次"
-        elif int(medications.get("skipped_week") or 0):
-            # 已停用药物：历史漏服同样展示，不能因停药静默
-            medication_text = (
-                f"近 7 天未服 {int(medications['skipped_week'])} 次"
-            )
+        elif (
+            int(medications.get("taken_today") or 0) > 0
+            or int(medications.get("skipped_week") or 0)
+        ):
+            # 已停用药物：停药当天的打卡与当周漏服同样是健康记录，
+            # 与卡片/复制文本口径一致
+            stopped_parts = []
+            taken_today = int(medications.get("taken_today") or 0)
+            if taken_today:
+                stopped_parts.append(f"今日 {taken_today} 次")
+            skipped_week = int(medications.get("skipped_week") or 0)
+            if skipped_week:
+                stopped_parts.append(f"近 7 天未服 {skipped_week} 次")
+            medication_text = "已停用，" + "，".join(stopped_parts)
         # 近 7 天依从率与药物启停状态无关：在用药物同样要有该列，
         # 不能只在已停用分支里赋值
         adherence = medications.get("adherence")
         if adherence:
-            adherence_text = f"{adherence['rate']}%"
+            csv_rate = medications.get("worst_rate")
+            if csv_rate is None:
+                csv_rate = adherence["rate"]
+            adherence_text = f"{csv_rate}%"
         reminders = item.get("reminders") or {}
         reminder_text = (
             f"待办 {reminders.get('pending', 0)}，"

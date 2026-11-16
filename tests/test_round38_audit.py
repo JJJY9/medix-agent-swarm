@@ -577,6 +577,8 @@ def test_rate_limit_key_uses_forwarded_address(monkeypatch):
 
     monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
     monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    # 第六十七轮：按转发地址分桶需显式声明单跳覆盖
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
 
     class FakeClient:
         host = "127.0.0.1"
