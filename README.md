@@ -934,6 +934,13 @@ memory.clear_session(session_id)
 
 **作用**：跨会话记忆，通过向量相似度检索历史案例和经验。
 
+**命名空间隐私**：外部记忆服务中以「每安装随机盐 + HMAC-SHA256」的
+`medix_profile_<digest>` / `medix_session_<digest>` 作为 `user_id`，
+不含档案姓名或原始会话 ID，也无法用常见姓名/亲属称谓字典离线还原。
+盐保存在会话库同目录的 `.memory_scope_salt`（可用
+`MEDIX_MEMORY_SCOPE_SALT` 覆盖）；换机迁移时请一并保留该文件，才能延续
+既有长期记忆命名空间。
+
 **配置**：
 ```python
 # 在上一层 config.py 或项目根目录 .env 中配置

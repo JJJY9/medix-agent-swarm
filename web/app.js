@@ -20753,16 +20753,26 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         skipProfile: pendingReset,
       }
     );
-    if (
-      expectedQuestion
-      && els.input.value.trim() === expectedQuestion.trim()
-    ) {
-      // 对账确认本轮问答已落库并渲染：输入框里的同一主诉会让回车
-      // 重复提交同一问题，恢复成功后清空
-      els.input.value = '';
-      autoGrow();
-      clearDraft();
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    if (expectedQuestion) {
+      // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
+      // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
+      const remaining = stripInflightQuestion(
+        els.input.value, expectedQuestion
+      );
+      if (remaining !== null) {
+        els.input.value = remaining;
+        autoGrow();
+        if (remaining.trim()) {
+          try {
+            safeSessionSet(DRAFT_KEY, remaining);
+          } catch {
+            // 隐私模式忽略
+          }
+        } else {
+          clearDraft();
+        }
+        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      }
     }
     // 启动恢复没有 expectedQuestion：若刷新恰逢服务端落库，INFLIGHT
     // 主诉已被 restoreInflightQuestion 填回输入框，而服务端消息里本轮
@@ -20779,9 +20789,9 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       && !pendingReset
       && inflightText
       && (inflightBaseline > 0 || freshSession)
-      && els.input.value.trim() === inflightText
+      && els.input.value.includes(inflightText)
     ) {
-      const composerText = els.input.value.trim();
+      const inflightQuestionText = String(inflightText).trim();
       const hasIds = messages.some(
         (message) => (Number(message.id) || 0) > 0
       );
@@ -20797,7 +20807,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           && newestAssistantId > inflightBaseline
           && messages.some(
             (message) => message.role === 'user'
-              && String(message.content || '').trim() === composerText
+              && String(message.content || '').trim()
+                === inflightQuestionText
               && (Number(message.id) || 0) > inflightBaseline
           );
       } else {
@@ -20812,15 +20823,26 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         }
         persistedThisRound = lastUserIndex >= 0
           && String(messages[lastUserIndex].content || '').trim()
-            === composerText
+            === inflightQuestionText
           && messages.slice(lastUserIndex + 1).some(
             (message) => message.role === 'assistant'
           );
       }
       if (persistedThisRound) {
-        els.input.value = '';
+        const remaining = stripInflightQuestion(
+          els.input.value, inflightText
+        );
+        els.input.value = remaining === null ? '' : remaining;
         autoGrow();
-        clearDraft();
+        if (els.input.value.trim()) {
+          try {
+            safeSessionSet(DRAFT_KEY, els.input.value.trim());
+          } catch {
+            // 隐私模式忽略
+          }
+        } else {
+          clearDraft();
+        }
         safeSessionRemove(INFLIGHT_QUESTION_KEY);
         inflightReconciled = true;
       }
@@ -21011,8 +21033,8 @@ async function send(question) {
   const submitProfile = sendProfile;
   if (profileSelectionSeq !== sendProfileSeq) {
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
-    els.input.value = question;
-    detachedComposerText = question;
+    restoreComposer(question);
+    preserveDraftProfile(sendProfile, question);
     autoGrow();
     setVitals('warn', '档案已切换，刚才的主诉未提交，请确认后重新发送');
     return;
@@ -22161,6 +22183,13 @@ async function applySelectedProfile() {
     || sessionRestoreInFlight
   );
   if (sessionId && hasTurns) {
+    if (busy || sendInFlight) {
+      // 会诊/排队中的主诉尚未提交，换档根本不会开始：不弹确认、
+      // 不递增 profileSelectionSeq，避免排队主诉被误判换档而丢失
+      window.alert('会诊进行中，请先停止当前会诊。');
+      els.profileSelect.value = previous;
+      return;
+    }
     const ok = window.confirm(
       '切换患者档案会开始新的会诊记录，是否继续？'
     );
@@ -22220,6 +22249,11 @@ async function applySelectedProfile() {
   } else if (sessionId) {
     // 线程为空但 sessionId 仍绑定服务端旧档案（恢复失败/尚未完成）：
     // 换档前必须断开旧会话，否则下一问会被服务端按旧档案回答并落库
+    if (busy || sendInFlight) {
+      window.alert('会诊进行中，请先停止当前会诊。');
+      els.profileSelect.value = previous;
+      return;
+    }
     const myProfileSeq = ++profileSelectionSeq;
     const hadPendingReset = pendingSessionReset;
     const attemptSession = sessionId;
@@ -22617,6 +22651,21 @@ function isFreshPageSession(id) {
   }
 }
 
+//: 对账确认落库后，从合并草稿中移除在途主诉、保留用户后续草稿。
+//: 返回 null 表示草稿里没有这段主诉（不属于本次在途记录）。
+function stripInflightQuestion(text, question) {
+  const q = String(question || '').trim();
+  if (!q) return null;
+  const whole = String(text || '');
+  const index = whole.indexOf(q);
+  if (index < 0) return null;
+  const rest = whole.slice(0, index) + whole.slice(index + q.length);
+  return rest
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function restoreInflightQuestion() {
   // 流式会诊期间刷新/被系统回收：服务端取消后问答不落库，把未完成
   // 的主诉恢复到输入框，避免整段描述丢失
@@ -22670,7 +22719,18 @@ function restoreInflightQuestion() {
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
       return;
     }
-    // 输入框可能已有刷新恢复的后续草稿：合并而不是丢弃先提交的主诉
+    if (els.input.value.trim()) {
+      // 输入框已有与在途主诉无关的草稿：不把旧主诉拼回去（否则
+      // 回车会把已答复的旧问题与新草稿一起重复提交），只提示；
+      // 保留在途标记供启动对账判断是否已落库
+      inflightRestoredText = question;
+      inflightRestoredBaseline = Number(
+        (data && data.baseline) || 0
+      ) || 0;
+      setVitals('warn', '上次会诊未完成；当前草稿已保留');
+      return;
+    }
+    // 空输入框：恢复在途主诉
     restoreComposer(question);
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
     setVitals('warn', '上次会诊未完成，主诉已恢复到输入框');

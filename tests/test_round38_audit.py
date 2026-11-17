@@ -452,7 +452,8 @@ def test_family_insights_daily_steps_and_latest_bp(client_and_store):
     ]
     assert steps and "5000" in steps[0]["title"]
 
-    # 最近一次血压取最新读数，而不是最旧的超标读数
+    # 第六十八轮起：与家庭总览同口径，正文展示真正触发告警的
+    # 最高收缩压/舒张压读数，而不是最近一条已达标读数
     client.put("/api/metric-targets", json={
         "profile": "妈妈", "metric": "bp", "value1": 130, "value2": 80,
     })
@@ -464,7 +465,7 @@ def test_family_insights_daily_steps_and_latest_bp(client_and_store):
         })
     data = client.get("/api/health/insights", params={"days": 30}).json()
     bp = [item for item in data["insights"] if item["key"] == "metric_bp"]
-    assert bp and "120/78" in bp[0]["detail"]
+    assert bp and "160" in bp[0]["detail"] and "100" in bp[0]["detail"]
 
 
 def test_family_overview_attention_uses_daily_total(client_and_store):
