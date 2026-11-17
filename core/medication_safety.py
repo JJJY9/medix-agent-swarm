@@ -886,6 +886,14 @@ _RECENT_STOP_SUFFIX = re.compile(
     r"[0-9一二两三四五六七八九十]+\s*天|"
     r"(?:1|[一])\s*周(?:半)?)"
 )
+#: 近期「开始不吃…了」仍按当前用药保守处理（停药 1–2 天内 INR 偏高）
+_RECENT_NO_EAT_CONTEXT = re.compile(
+    r"(?:今天|昨天|前天|刚才|刚刚|今早|昨晚|凌晨|前几天|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前|"
+    r"[0-9一二两三四五六七八九十]+\s*天)"
+    r"[^，。；,.!?！？\n]{0,6}?(?:开始|就|才|已经?)?\s*"
+    r"(?:不吃|不吃了|不再吃|不再服用)"
+)
 #: 近期停药的任意语序（药名前/后的文本拼接后判断）：
 #: 「停了华法林三天了」「华法林昨天停了」「刚把华法林停了」
 _RECENT_STOP_CONTEXT = re.compile(
@@ -1095,6 +1103,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _RECENT_STOP_SUFFIX.search(suffix)
                 or _RECENT_STOP_SUFFIX_EN.search(suffix)
                 or _RECENT_STOP_CONTEXT.search(prefix + suffix)
+                or _RECENT_NO_EAT_CONTEXT.search(prefix + suffix)
                 or _RECENT_STOP_CONTEXT_EN.search(prefix + suffix)
                 or _RECENT_STOP_OFF_EN.search(prefix + suffix)
             ):
@@ -1143,6 +1152,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
             or _RECENT_STOP_CONTEXT.search(prefix + suffix)
+            or _RECENT_NO_EAT_CONTEXT.search(prefix + suffix)
             or (
                 _ADHERENCE_USE_PREFIX.search(prefix)
                 and _NEGATED_USE_PREFIX.search(prefix)
@@ -1390,14 +1400,39 @@ _FAMILY_MARKER_TAIL = (
 
 
 def _patient_self_mentioned(clause: str) -> bool:
-    """分句是否出现指患者本人的「我」（排除「我爸/我妈」等称谓）。"""
-    lowered = clause.lower()
-    for match in re.finditer(r"我", clause):
-        tail = clause[match.end():match.end() + 2]
-        if tail.startswith(_FAMILY_MARKER_TAIL):
+    """分句是否确在描述患者本人的用药/过敏（而非提问框架）。
+
+    「我想问一下我爸吃华法林」「我能吃布洛芬吗」里的「我」只是提问者，
+    不能把家属用药算到患者头上；「我和我爸都吃」「我对青霉素过敏」
+    才是患者本人的描述。
+    """
+    if re.search(r"我对[^，。；;?？]{0,12}过敏", clause):
+        return True
+    for match in re.finditer(
+        r"我(?:和|跟|与|也|都|每天|一直|最近|现在|正在|在|还在|要|得|"
+        r"需要)?[^，。；;?？]{0,8}?(?:吃|服用|服|用|停用|停药|停了)",
+        clause,
+    ):
+        between = clause[match.start() + 1:match.end()]
+        tail = clause[match.end():match.end() + 10]
+        if any(word in between for word in ("问", "想", "咨询", "了解")):
+            continue
+        if re.search(r"(?:吗|么|呢|？|\?)", tail):
+            continue
+        family_inside = any(
+            marker in between for marker in _FAMILY_MEDICATION_MARKERS
+        )
+        parallel = bool(
+            re.search(
+                r"(?:和|跟|与)[^，。；;]{0,6}(?:都|也)|"
+                r"(?:都|也)[^，。；;]{0,6}(?:和|跟|与)",
+                between,
+            )
+        )
+        if family_inside and not parallel:
             continue
         return True
-    if re.search(r"(?:^|[\s,;])i(?:\s|'|,|$)|(?:^|[\s,])i$", lowered):
+    if re.search(r"(?:^|[\s,;])i\s+(?:take|have|use)\b", clause.lower()):
         return True
     return False
 
@@ -1457,7 +1492,10 @@ def _patient_medication_text(text: str, context: Any = None) -> str:
                     ),
                     "",
                 ).strip()
-                if captured:
+                if captured and not any(
+                    captured.startswith(marker)
+                    for marker in _FAMILY_MARKER_TAIL
+                ) and not captured.lower().startswith("my "):
                     kept.append(captured)
                     continue
             drop_next = True

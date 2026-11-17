@@ -2649,11 +2649,21 @@ def _budget_source_key(request: Request) -> str:
     在线猜解仍必须计入全局失败预算，不能被按 /64 分桶绕过。
     """
     peer = request.client.host if request.client else ""
-    if _trust_proxy_headers() and _is_trusted_proxy_peer(peer):
+    if (
+        _trust_proxy_headers()
+        and _is_trusted_proxy_peer(peer)
+        and _proxy_single_hop()
+    ):
         forwarded = _forwarded_client_address(request)
         if forwarded:
             return f"ip:{_bucket_address(forwarded)}"
-    return _client_ip_key(request)
+    key = _client_ip_key(request)
+    if key in ("ip:untrusted-proxy", "ip:unknown"):
+        # 转发头不可信时来源键是哨兵值，不含地址族：全局预算对
+        # IPv6 来源会失效，攻击者加一个地址头即可绕过。退回 TCP
+        # 对端地址聚合，IPv6 对端仍计入全局预算
+        return f"ip:{_bucket_address(peer or 'unknown')}"
+    return key
 
 
 def _client_ip_key(request: Request) -> str:
@@ -7887,20 +7897,20 @@ async def _weekly_report_impl(
             )
         )
     ]
-    # 上一周期真实会诊活动还可能是「创建更早的会话在本期续聊过」：
-    # updated_at 被刷新到本期后 created/updated 判断看不到上期消息，
-    # 按消息日期补一层，避免长期会话每周都被当成凭空新增
-    previous_session_ids = await asyncio.to_thread(
-        store.session_ids_with_messages, prev_start, start, profile
-    )
-    known_previous_ids = {
-        str(item.get("id") or "") for item in previous_sessions
-    }
-    previous_session_ids -= known_previous_ids
-    previous_sessions_extra = [
-        {"id": session_id} for session_id in previous_session_ids
-    ]
-    previous_sessions.extend(previous_sessions_extra)
+    if include_previous:
+        # 上一周期真实会诊活动还可能是「创建更早的会话在本期续聊过」：
+        # updated_at 被刷新到本期后 created/updated 判断看不到上期消息，
+        # 按消息日期补一层，避免长期会话每周都被当成凭空新增
+        previous_session_ids = await asyncio.to_thread(
+            store.session_ids_with_messages, prev_start, start, profile
+        )
+        known_previous_ids = {
+            str(item.get("id") or "") for item in previous_sessions
+        }
+        previous_session_ids -= known_previous_ids
+        previous_sessions.extend(
+            {"id": session_id} for session_id in previous_session_ids
+        )
     risk_level = ""
     risk_profiles: List[Dict[str, str]] = []
     if profile is not None and sessions:
@@ -8989,6 +8999,9 @@ async def _weekly_report_impl(
                 }
                 if latest_visit else None
             ),
+            # 展示列表截断为 5 条，但总数必须完整：健康提示按该计数
+            # 生成「N 项」，不能让第 6 项及之后的成员静默消失
+            "overdue_followup_count": len(overdue_followups),
             "overdue_followups": [
                 {
                     "diagnosis": item.get("diagnosis", ""),
@@ -9840,14 +9853,17 @@ def _build_health_insights(
     visits = report.get("visits") or {}
     followups = visits.get("upcoming_followups") or []
     overdue_followups = visits.get("overdue_followups") or []
+    overdue_total = int(
+        visits.get("overdue_followup_count") or len(overdue_followups)
+    )
     if overdue_followups:
         first = overdue_followups[0]
-        if len(overdue_followups) > 1:
+        if overdue_total > 1:
             # 家庭范围要把每位成员的逾期复诊都列出来：只取第一条会
             # 让其他成员的逾期复诊在任何位置都不可见
             shown = overdue_followups[:5]
             title = (
-                f"{len(overdue_followups)} 项复诊已逾期"
+                f"{overdue_total} 项复诊已逾期"
                 f"（最早 {first.get('next_followup_date')}）"
             )
             detail = "；".join(
@@ -9856,6 +9872,8 @@ def _build_health_insights(
                 f"（{item.get('next_followup_date') or ''}）"
                 for item in shown
             )
+            if overdue_total > len(shown):
+                detail += f" 等 {overdue_total} 项"
         else:
             title = f"复诊已逾期（{first.get('next_followup_date')}）"
             detail = (

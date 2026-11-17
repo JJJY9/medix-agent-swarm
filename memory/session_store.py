@@ -670,15 +670,16 @@ def _parse_tags(raw: Any) -> List[str]:
 
 
 def _normalize_profile_name(value: Any, strict: bool = False) -> str:
-    text = str(value or "")
-    if strict and (
-        "/" in text or "\\" in text
-        or any(ord(char) < 32 for char in text)
+    text = " ".join(str(value or "").split())
+    if strict and text and (
+        text in (".", "..")
+        or "/" in text or "\\" in text
+        or any(not char.isprintable() for char in text)
     ):
-        # 含路径分隔符的档案名无法经 /api/profiles/{name} 删除，
+        # 含路径分隔符/点段的档案名无法经 /api/profiles/{name} 删除，
         # 也永远无法改名：所有记录写入边界统一拒绝
         raise ValueError("档案名不能包含路径分隔符或控制字符")
-    return " ".join(text.split())[:MAX_PROFILE_NAME_LENGTH]
+    return text[:MAX_PROFILE_NAME_LENGTH]
 
 
 def _profile_deletion_key(profile: Any) -> str:
@@ -3313,7 +3314,10 @@ class SessionStore:
     def set_session_profile(self, session_id: str, profile: str) -> bool:
         """把已有会话关联到档案（只在档案为空时生效）；不会创建会话。"""
         session_id = str(session_id or "").strip()
-        profile = _normalize_profile_name(profile)
+        try:
+            profile = _normalize_profile_name(profile, strict=True)
+        except ValueError:
+            return False
         if not session_id or not profile:
             return False
         with self._write_and_checkpoint():
@@ -5467,6 +5471,12 @@ class SessionStore:
             state[inserted_key] = (
                 int(state.get(inserted_key, 0)) + 1
             )
+            # 同一身份组的补插预算：锚点/软字段分支共享该计数，
+            # 每个组最多补插缺失条数，补足后剩余备份行认领存活行
+            budget_key = (
+                table, "__anchor_inserted__", identity, scope_profile
+            )
+            state[budget_key] = int(state.get(budget_key, 0)) + 1
             if raw_id > 0 and backup_contents:
                 expected_content = backup_contents.get(raw_id)
                 if expected_content is not None:
@@ -7369,7 +7379,7 @@ class SessionStore:
                     if inserted < missing and not anchor_full:
                         # 该锚点本地行数已够：预算不能被同组另一锚点
                         # 的缺行消耗后为已齐全的锚点再插一条重复读数
-                        state[inserted_key] = inserted + 1
+                        # （补插计数由 _ambiguous 统一维护）
                         return _ambiguous()
                     sole = min(candidates)
                     if (
@@ -7548,7 +7558,27 @@ class SessionStore:
                     # 组内最后一条备份行：剩余唯一软字段命中的候选
                     candidates = soft
                 else:
-                    return _ambiguous()
+                    # 组内补插预算已用尽（被删记录已补回）：剩余唯一
+                    # 软字段命中且确被本地编辑过的候选就是本行存活版本，
+                    # 不能再次补插编辑前旧副本
+                    soft_inserted = int(state.get(
+                        (table, "__anchor_inserted__", identity,
+                         scope_profile), 0
+                    ))
+                    soft_missing = max(
+                        backup_group_size - local_group_size, 0
+                    )
+                    soft_sole = min(soft) if len(soft) == 1 else 0
+                    if (
+                        soft_sole
+                        and soft_inserted >= soft_missing
+                        and _candidate_edited(soft_sole)
+                        and _candidate_diff_claimable(soft_sole)
+                        and not _content_owned_by_other(soft_sole)
+                    ):
+                        candidates = soft
+                    else:
+                        return _ambiguous()
             else:
                 # 备份组内存在多行同身份记录且本地确有缺行时，唯一
                 # 候选可能是被删记录的孪生兄弟；本地全部存活（只是
@@ -8240,7 +8270,13 @@ class SessionStore:
                     and DELETED_PROFILE_SESSION_TAG not in tags
                 ):
                     tags.append(DELETED_PROFILE_SESSION_TAG)
-                profile = _normalize_profile_name(raw.get("profile"))
+                try:
+                    profile = _normalize_profile_name(
+                        raw.get("profile"), strict=True
+                    )
+                except ValueError:
+                    invalid += 1
+                    continue
 
                 self._conn.execute(
                     """
@@ -8626,7 +8662,13 @@ class SessionStore:
                             continue
                     if metric != "bp":
                         second = None
-                    profile = _normalize_profile_name(raw.get("profile"))
+                    try:
+                        profile = _normalize_profile_name(
+                            raw.get("profile"), strict=True
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
                     exists = self._conn.execute(
                         """
                         SELECT 1 FROM metric_targets
@@ -9109,7 +9151,13 @@ class SessionStore:
                         if not name:
                             invalid += 1
                             continue
-                        profile = _normalize_profile_name(raw.get("profile"))
+                        try:
+                            profile = _normalize_profile_name(
+                                raw.get("profile"), strict=True
+                            )
+                        except ValueError:
+                            invalid += 1
+                            continue
                         dose = " ".join(
                             str(
                                 raw.get("medication_dose")
@@ -11000,6 +11048,12 @@ class SessionStore:
                             + 1
                         )
             def _reminder_import_valid(item):
+                try:
+                    _normalize_profile_name(
+                        item.get("profile"), strict=True
+                    )
+                except ValueError:
+                    return None
                 title_text = " ".join(
                     str(item.get("title") or "").split()
                 )
@@ -11078,7 +11132,13 @@ class SessionStore:
                     note = " ".join(
                         str(raw.get("note") or "").split()
                     )[:MAX_REMINDER_NOTE_LENGTH]
-                    profile = _normalize_profile_name(raw.get("profile"))
+                    try:
+                        profile = _normalize_profile_name(
+                            raw.get("profile"), strict=True
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
                     session_id = str(raw.get("session_id") or "").strip()[:64]
                     try:
                         advance_days = _normalize_reminder_advance(
@@ -11334,6 +11394,8 @@ class SessionStore:
                         identity_key = (
                             title, profile, note, session_id, due_at,
                             advance_days, repeat_days, repeat_until,
+                            done, appointment_id, medication_id,
+                            vaccination_id,
                         )
                         if identity_key not in existing_reminder_counts:
                             count_row = self._conn.execute(
@@ -11344,11 +11406,15 @@ class SessionStore:
                                    AND due_at = ? AND advance_days = ?
                                    AND repeat_days = ?
                                    AND COALESCE(repeat_until, '') = ?
+                                   AND done = ? AND appointment_id = ?
+                                   AND medication_id = ?
+                                   AND vaccination_id = ?
                                 """,
                                 (
                                     title, profile, note, session_id,
                                     due_at, advance_days, repeat_days,
-                                    repeat_until,
+                                    repeat_until, done, appointment_id,
+                                    medication_id, vaccination_id,
                                 ),
                             ).fetchone()
                             existing_reminder_counts[identity_key] = int(
@@ -11372,12 +11438,16 @@ class SessionStore:
                                        AND due_at = ? AND advance_days = ?
                                        AND repeat_days = ?
                                        AND COALESCE(repeat_until, '') = ?
+                                       AND done = ? AND appointment_id = ?
+                                       AND medication_id = ?
+                                       AND vaccination_id = ?
                                      ORDER BY id LIMIT 1
                                     """,
                                     (
                                         title, profile, note, session_id,
                                         due_at, advance_days, repeat_days,
-                                        repeat_until,
+                                        repeat_until, done, appointment_id,
+                                        medication_id, vaccination_id,
                                     ),
                                 ).fetchone()
                                 if existing_row is not None:
@@ -11890,9 +11960,13 @@ class SessionStore:
                     session_id = str(
                         raw.get("session_id") or ""
                     ).strip()[:64]
-                    profile = _normalize_profile_name(
-                        raw.get("profile")
-                    )
+                    try:
+                        profile = _normalize_profile_name(
+                            raw.get("profile"), strict=True
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
                     prompt = _usage_count(raw.get("prompt_tokens"))
                     completion = _usage_count(raw.get("completion_tokens"))
                     total = _usage_count(raw.get("total_tokens"))
@@ -13963,18 +14037,85 @@ class SessionStore:
                             " WHERE followup_appointment_id = ?",
                             (now, int(appointment_id)),
                         )
-                if visit_target:
+                shared_visits = [
+                    int(row["id"]) for row in self._conn.execute(
+                        "SELECT id FROM visit_records"
+                        " WHERE followup_appointment_id = ?",
+                        (int(appointment_id),),
+                    ).fetchall()
+                ]
+                if visit_target and visit_target not in shared_visits:
+                    shared_visits.append(visit_target)
+                synced_visits = 0
+                for shared_visit in shared_visits:
+                    shared_row = self._conn.execute(
+                        "SELECT profile, visit_date, next_followup_date"
+                        " FROM visit_records WHERE id = ?",
+                        (shared_visit,),
+                    ).fetchone()
+                    if shared_row is None:
+                        continue
+                    shared_day = str(
+                        normalized["scheduled_at"] or ""
+                    )[:10]
+                    shared_visit_day = str(
+                        shared_row["visit_date"] or ""
+                    )[:10]
+                    same_shared_profile = (
+                        _normalize_profile_name(
+                            str(shared_row["profile"] or "")
+                        ) == _normalize_profile_name(
+                            normalized["profile"]
+                        )
+                    )
+                    if (
+                        not same_shared_profile
+                        or (
+                            shared_visit_day
+                            and shared_day
+                            and shared_day < shared_visit_day
+                        )
+                        or (shared_day and shared_day < str(now)[:10])
+                    ):
+                        # 共享链接的其它就诊：档案/日期不符时只解除
+                        # 该就诊自己的链接，不能把它留在「已安排复诊」
+                        # 却不上报逾期的悬空状态
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = 0,"
+                            " followup_reminder_id = 0, updated_at = ?"
+                            " WHERE id = ?",
+                            (now, shared_visit),
+                        )
+                        continue
                     self._conn.execute(
                         "UPDATE visit_records"
                         " SET next_followup_date = ?, updated_at = ?"
                         " WHERE id = ? AND profile = ?"
                         " AND next_followup_date != ?",
                         (
-                            str(normalized["scheduled_at"])[:10],
+                            shared_day,
                             now,
-                            visit_target,
+                            shared_visit,
                             normalized["profile"],
-                            str(normalized["scheduled_at"])[:10],
+                            shared_day,
+                        ),
+                    )
+                    synced_visits += 1
+                if not synced_visits:
+                    # 所有共享就诊都无法同步：清除预约归属与备注，
+                    # 避免留下指向已失效复诊安排的半挂接
+                    self._conn.execute(
+                        "UPDATE appointments SET owner_visit_id = 0,"
+                        " note = ?, updated_at = ? WHERE id = ?",
+                        (
+                            re.sub(
+                                r"由就诊记录 #\d+ 自动创建",
+                                "",
+                                str(normalized["note"] or ""),
+                            ).strip()[:300],
+                            now,
+                            int(appointment_id),
                         ),
                     )
             # 提醒的标题/备注是创建时按预约字段生成的快照：改期或改名
@@ -15324,6 +15465,17 @@ class SessionStore:
                         if owner_row is not None else 0
                     )
                     if owner_visit in (0, int(visit_id)):
+                        # 旧版本可能有多条就诊共享该复诊预约：迁移前
+                        # 先解除其它就诊的链接，避免它们继续指向新
+                        # 档案的预约、抑制逾期复诊提示
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = 0,"
+                            " followup_reminder_id = 0, updated_at = ?"
+                            " WHERE followup_appointment_id = ?"
+                            " AND id != ?",
+                            (now, linked_appointment, int(visit_id)),
+                        )
                         self._conn.execute(
                             "UPDATE appointments SET profile = ?,"
                             " updated_at = ? WHERE id = ?",
@@ -17057,7 +17209,12 @@ class SessionStore:
         if size_value <= 0 or size_value > MAX_ATTACHMENT_BYTES:
             return None
         note = " ".join(str(note or "").split())[:300]
-        normalized_profile = _normalize_profile_name(profile)
+        try:
+            normalized_profile = _normalize_profile_name(
+                profile, strict=True
+            )
+        except ValueError:
+            return None
         now = self._now()
         with self._lock, self._conn:
             cursor = self._conn.execute(
@@ -18074,6 +18231,13 @@ class SessionStore:
                 ),
             )
             reminder_id = int(cursor.lastrowid)
+            if appointment_id:
+                # 用户重新为该预约创建提醒：撤销「不再提醒」墓碑，
+                # 否则取消/恢复待就诊会误以为用户仍不想收到提醒
+                self._conn.execute(
+                    "DELETE FROM app_state WHERE key = ?",
+                    (f"reminder_deleted_{int(appointment_id)}",),
+                )
         return {
             "id": reminder_id,
             "title": title,

@@ -20993,28 +20993,34 @@ async function send(question, composerSubmit = false) {
   } catch {
     // 隐私模式忽略
   }
-  // 新建会诊请求在途时先等它落定：否则本轮提问会写进旧会话，
-  // 晚到的新会话响应又因 busy 被静默丢弃
-  if (creatingSessionPromise) {
-    try {
-      await creatingSessionPromise;
-    } catch {
-      // 新建失败：继续按当前会话发送
-    }
-  }
-  // 极早持久化已提交主诉：深链预恢复等待期间刷新/关页也不会丢失
-  // （ensureSession 之后会用真实会话 ID 覆盖同一条记录）
+  // 极早持久化已提交主诉：深链预恢复/建会话等待期间刷新/关页也不会
+  // 丢失（ensureSession 之后会用真实会话 ID 覆盖同一条记录）
   try {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
       // 待重置换档会新建会话：旧 sessionId 会让刷新后的恢复
       // 因「有归属但无会话」被跳过，主诉静默丢失
       sessionId: pendingSessionReset ? '' : (sessionId || ''),
-      profile: activeProfileName || '',
+      // 与本次请求实际携带的档案快照一致：activeProfileName 在首屏
+      // 档案尚未恢复时为空，记录会丢失档案归属
+      profile: sendProfile || '',
       question,
       at: Date.now(),
     }));
   } catch {
     // 隐私模式忽略
+  }
+  // 新建会诊请求在途时先等它落定：否则本轮提问会写进旧会话，
+  // 晚到的新会话响应又因 busy 被静默丢弃。等待期间保持 sendInFlight，
+  // 阻止重复提交，并在离开页面时弹出确认
+  if (creatingSessionPromise) {
+    sendInFlight = true;
+    try {
+      await creatingSessionPromise;
+    } catch {
+      // 新建失败：继续按当前会话发送
+    } finally {
+      sendInFlight = false;
+    }
   }
   // 深链尚未恢复成功时先补一次恢复：否则会把本标签页上一患者的
   // 补充信息发进深链患者的会话（服务端按会话绑定档案落库）
@@ -21102,7 +21108,7 @@ async function send(question, composerSubmit = false) {
   // 是该会话恢复出的「旧主诉（+换行后的后续草稿）」时才做包含式
   // 剥离；程序化发送（再次会诊/常用主诉）与新输入的相似问题不能
   // 被静默截断或吞掉
-  if (composerSubmit && inflightPersistedText) {
+  if (composerSubmit && inflightPersistedText && !pendingSessionReset) {
     const persistedText = inflightPersistedText;
     const persistedOwner = inflightPersistedSession;
     const current = String(question || '');
@@ -21228,7 +21234,7 @@ async function send(question, composerSubmit = false) {
     try {
       safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
         sessionId: sid || sessionId || '',
-        profile: activeProfileName || '',
+        profile: sendProfile || '',
         question,
         // 发送前最后一条消息 id：启动对账只认比它更新的已落库问答，
         // 避免同文本的旧问答把中止后的重问误判为已完成
