@@ -845,6 +845,9 @@ const previousTabSession = safeSessionGet('medix.session.tab');
 const adoptedSharedSession = Boolean(
   sessionId && !initialSessionFromUrl && !previousTabSession
 );
+//: 采纳标记必须持久化：刷新后本标签页已有 session.tab，单靠加载期
+//: 常量会漏掉第二次加载的档案冲突
+const ADOPTED_SESSION_KEY = 'medix.adoptedSession';
 const pendingDeepLinkSession = safeSessionGet(DEEP_LINK_PENDING_KEY);
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
@@ -865,6 +868,7 @@ if (initialSessionFromUrl) {
   // 从共享 localStorage 采纳的会话要固定到本标签页：其它标签页之后
   // 切换会话并写入 localStorage 时，本标签页刷新才不会跟随过去
   safeSessionSet('medix.session.tab', sessionId);
+  safeSessionSet(ADOPTED_SESSION_KEY, sessionId);
 }
 if (
   !deepLinkedSession
@@ -15156,7 +15160,8 @@ function weeklySummaryLines(data) {
     vaccineParts.push(
       `未来 7 天 ${vaccinations.upcoming.map((item) => (
         `${item.vaccine_name || '疫苗'}`
-        + ` 第${Number(item.dose_number) || 1}剂 ${item.next_due || ''}`
+        + ` 第${Number(item.next_dose_number)
+          || (Number(item.dose_number) || 1) + 1}剂 ${item.next_due || ''}`
       )).join('、')}`
     );
   }
@@ -20803,12 +20808,17 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // （有已保存的档案选择且与会话档案不同），既不能用旧快照覆盖
     // 草稿，也不能把旧患者的年龄/既往史/过敏史带进刚采纳的会话；
     // 保留表单与档案选择，下一问新建会话
-    const adoptedProfileConflict = Boolean(
+    const adoptedSession = (
       adoptedSharedSession
+      || safeSessionGet(ADOPTED_SESSION_KEY) === sessionId
+    );
+    const adoptedStoredProfile = readStoredProfile();
+    const adoptedProfileConflict = Boolean(
+      adoptedSession
       && !deepLinkedSession
       && data.profile
-      && readStoredProfile()
-      && readStoredProfile() !== data.profile
+      && (!adoptedStoredProfile
+        || adoptedStoredProfile !== data.profile)
       && safeSessionGet(CONTEXT_STORAGE_KEY)
     );
     if (adoptedProfileConflict) {
@@ -20842,6 +20852,9 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       // 对账确认本轮已落库：无论输入框是否仍含该主诉都要清在途记录，
       // 否则用户改写输入框后，下次加载会把已回答的问题重新并入草稿
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 恢复出的旧主诉已经从输入框剥离：提交守卫不能无限期保留，
+      // 否则用户之后新键入的同题/同前缀内容会被静默截断或吞掉
+      clearInflightPersisted();
       if (remaining !== null) {
         els.input.value = remaining;
         autoGrow();
@@ -20930,6 +20943,9 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         // remaining 为 null：用户已改写/清空输入框，保留其当前编辑，
         // 只清在途记录并标记该问题已落库
         safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        // 对账已完成：清除长期驻留的已落库标记，后续新输入不再被
+        // 当成恢复出的旧主诉截断
+        clearInflightPersisted();
         inflightReconciled = true;
       }
     }

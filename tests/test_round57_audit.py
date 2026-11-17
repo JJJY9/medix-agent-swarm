@@ -643,7 +643,9 @@ def test_gate_source_uses_resolved_client(monkeypatch, tmp_path):
             },
         )
         assert response.status_code == 429
-        assert captured["source"] == api_server._peer_key("203.0.113.9")
+        # 第七十四轮：左项地址可被客户端伪造，闸门单源槽位改按
+        # 可证明的 TCP 对端计，轮换 X-Forwarded-For 不能占满队列
+        assert captured["source"] == api_server._peer_key("127.0.0.1")
         assert captured["key"].startswith("ip:")
     finally:
         store.close()
