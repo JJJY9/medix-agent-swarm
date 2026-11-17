@@ -450,7 +450,9 @@ def test_non_loopback_proxy_uses_shared_bucket(monkeypatch, tmp_path):
         second = client.get("/api/sessions", headers={
             "X-Medix-Token": "bad2", "X-Forwarded-Proto": "https",
         })
-        assert second.status_code == 429
+        # 共享键（不可证明的客户端）按 100 次/5 分钟高阈值计数：
+        # 少量错误令牌不会再锁住整片用户
+        assert second.status_code == 401
     finally:
         session_store.close()
 

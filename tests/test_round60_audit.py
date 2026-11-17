@@ -388,6 +388,8 @@ def test_untrusted_forwarded_headers_fail_closed(monkeypatch, tmp_path):
         )
         assert first.status_code == 401
         # 换一个伪造地址不能换桶：未信任的转发头统一 fail-closed
+        # 到共享键；第七十一轮起共享键按 100 次/5 分钟高阈值计数，
+        # 少量错误令牌仍是 401（不会再因一人输错锁住整片用户）
         second = client.get(
             "/api/sessions",
             headers={
@@ -395,7 +397,7 @@ def test_untrusted_forwarded_headers_fail_closed(monkeypatch, tmp_path):
                 "X-Real-IP": "2.2.2.2",
             },
         )
-        assert second.status_code == 429
+        assert second.status_code == 401
     finally:
         store.close()
     source = (ROOT / "api_server.py").read_text(encoding="utf-8")

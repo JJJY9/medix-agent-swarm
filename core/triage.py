@@ -609,6 +609,13 @@ _POST_POSITIVE_CUES = (
     "偶发", "偶尔", "偶感", "偶见", "间或", "间发", "阵发",
     "好几次", "多次", "反复",
 )
+#: 患者本人当前病程线索：科普引用分支专用，不复用为枚举否定服务的
+#: 偶发/冷汗等阳性词（「文章说偶尔胸痛没事」不是本人病程）
+_CURRENT_COURSE_CUES = (
+    "加重", "加剧", "恶化", "难忍", "剧痛", "大汗", "出汗",
+    "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
+    "剧烈", "明显", "严重", "厉害", "得很", "得厉害",
+)
 _POST_DURATION_RE = re.compile(
     r"(?:已|已经|有)?\s*(?:持续|发作|反复)?\s*"
     r"[0-9一二两三四五六七八九十半几]+\s*"
@@ -919,6 +926,9 @@ _COURSE_MARKERS = (
     "经常", "常常", "时常", "总是", "老是", "一直", "长期", "多年",
     "很久", "好久", "很长时间", "好几天", "数天", "数周", "数月",
     "近来", "这段时间",
+    # 时段词同样是近期病程线索（昨晚/今早/凌晨胸痛是什么病）
+    "昨晚", "昨夜", "今晚", "今早", "今晨", "凌晨", "早晨", "早上",
+    "上午", "中午", "下午", "傍晚", "刚刚", "上周",
     # 发作/频次形态同样是真实病程线索（胸痛一阵一阵的是什么病）
     "一阵一阵", "一阵阵", "一阵子", "一段时间", "时好时坏",
     "反反复复", "好几次", "好几回", "好多次",
@@ -1062,7 +1072,10 @@ def _clean_complaint_clause(
         current_course = (not quote_only) and (
             # 「网上说胸痛持续十分钟」里的时长属于引用内容；只有
             # 明确「我今天/我现在胸痛」才是本人当前病程
-            any(word in clause for word in _POST_POSITIVE_CUES)
+            any(word in clause for word in _CURRENT_COURSE_CUES)
+            # 「我这几天胸痛在网上查了」：症状出现在引用词之前且带
+            # 患者病程线索时，症状本身不是被引用的科普内容
+            or _patient_course_before_quote(clause)
             # 「网上买的药吃了胸痛/跟着视频跳操后胸痛」：本人服药的
             # 动作线索说明这不是科普引用；但纯引述内容里的动作词
             # （网上说吃完药后胸痛）没有患者主语，不能据此保留
@@ -1120,8 +1133,12 @@ def _clean_complaint_clause(
         # 「X是什么病」：X 是带病程的症状描述时按真实主诉保留，
         # 只有单一术语的纯定义问句才整句丢弃
         if prefix and (
-            _COURSE_MARKER_RE.search(prefix) is not None
-            or any(marker in prefix for marker in _COURSE_MARKERS)
+            # 问候语里的「早上/晚上」不是患者病程（早上好胸痛是什么病）
+            not _is_greeting_clause(prefix)
+            and (
+                _COURSE_MARKER_RE.search(prefix) is not None
+                or any(marker in prefix for marker in _COURSE_MARKERS)
+            )
             # 多症状枚举、客观测量值、头外伤或急性修饰都是真实主诉，
             # 不能因为带「是什么病」就整句丢弃；「伴/伴随/合并」
             # 与顿号/和/及/与同属多症状连接词
@@ -1192,7 +1209,19 @@ _COURSE_CONTEXT_BLOCKERS = (
     "视频", "新闻", "百科", "帖子",
     # 寒暄/致谢分句不能为后面的定义问句背书
     "你好", "您好", "谢谢", "好的", "在吗", "麻烦", "打扰",
+    # 「早上好」里的时段词是问候，不是患者病程
+    "早上好", "早安", "晚上好", "晚上好", "午安", "晚安", "哈喽",
 )
+
+def _is_greeting_clause(text: str) -> bool:
+    return any(
+        word in str(text or "")
+        for word in (
+            "早上好", "早安", "晚上好", "午安", "晚安", "哈喽",
+            "你好", "您好",
+        )
+    )
+
 
 #: 明确的科普/检索语境：即使分句含「我/今天」也不按患者主诉保留
 _EDUCATION_BLOCKERS_STRONG = (
@@ -1219,6 +1248,30 @@ _EDUCATION_CURRENT_RE = re.compile(
     r"(?:胸痛|胸疼|头痛|头晕|呼吸困难|"
     r"喘|疼|痛|发热|发烧|恶心|呕吐|心慌|胸闷)"
 )
+#: 引用词之前的症状与病程（「我这几天胸痛在网上查了」）：症状本身
+#: 不是被引用的科普内容，不能因为同分句出现「网上/文章」就丢弃
+_EDUCATION_SYMPTOM_WORDS = (
+    "胸痛", "胸疼", "头晕", "头痛", "呼吸困难", "发热", "发烧",
+    "咳嗽", "咯血", "恶心", "呕吐", "心慌", "胸闷", "抽搐", "疼", "痛",
+)
+
+
+def _patient_course_before_quote(clause: str) -> bool:
+    positions = [
+        clause.find(word)
+        for word in _EDUCATION_BLOCKERS_STRONG
+        if word in clause
+    ]
+    if not positions:
+        return False
+    prefix = clause[:min(positions)]
+    if not any(word in prefix for word in _EDUCATION_SYMPTOM_WORDS):
+        return False
+    return bool(
+        _COURSE_MARKER_RE.search(prefix) is not None
+        or any(marker in prefix for marker in _COURSE_MARKERS)
+        or _EDUCATION_CURRENT_RE.search(prefix) is not None
+    )
 
 
 #: 以否定开头的分句（没有胸痛/无发热/否认咯血）不建立患者语境
@@ -1662,6 +1715,15 @@ _RECENT_STOP_PATTERN = re.compile(
     r"[^，。；;,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
     r"(?:停用|停药|停了|停服|停止服用)"
 )
+#: 近期「开始不吃…了」同样是近期停药（停药 1–2 天内 INR 仍偏高）：
+#: 「昨天开始不吃华法林了」不能整句丢弃。裸「不吃了」仍按已停处理
+_RECENT_NO_EAT_PATTERN = re.compile(
+    r"(?:今天|昨天|前天|刚才|刚刚|今早|昨晚|凌晨|前几天|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前|"
+    r"[0-9一二两三四五六七八九十]+\s*天)"
+    r"[^，。；;,.!?！？\n]{0,6}?(?:开始|就|才|已经?)?\s*"
+    r"(?:不吃|不吃了|不再吃|不再服用)"
+)
 #: 明确远期停药（月/年量级）才按已结束处理；裸「停用/停了」保守
 #: 视为仍有抗凝作用（停药 1–2 天内 INR 仍可能偏高）
 _LONG_STOP_PATTERN = re.compile(
@@ -2064,6 +2126,10 @@ def _active_term_mention(text: str, term: str) -> bool:
             # 「华法林今天没有吃」：漏服时间词写在药名之后同样是
             # 单次漏服，当前抗凝状态仍成立
             or _DOSE_MISSED_PATTERN.search(suffix) is not None
+            # 「昨天开始不吃华法林了」：近期停药仍按当前抗凝状态处理
+            or _RECENT_NO_EAT_PATTERN.search(prefix) is not None
+            or _RECENT_NO_EAT_PATTERN.search(suffix) is not None
+            or _RECENT_NO_EAT_PATTERN.search(window) is not None
             or _FUTURE_STOP_PATTERN.search(prefix) is not None
             or _FUTURE_STOP_PATTERN.search(suffix) is not None
             or _FUTURE_STOP_PATTERN.search(window) is not None
@@ -2287,6 +2353,7 @@ def _active_medical_text(
             or _STOP_QUESTION_PATTERN.search(clause)
             or _SWITCH_MEDICATION_PATTERN.search(clause)
             or _RECENT_STOP_PATTERN.search(clause)
+            or _RECENT_NO_EAT_PATTERN.search(clause)
         ):
             # 「未停用华法林」「打算停用华法林」「停用旧药改用新药」
             # 「昨天停药」都表示当前仍有用药/抗凝作用，不能整句丢弃

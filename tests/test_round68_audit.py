@@ -367,7 +367,8 @@ def test_reminder_endpoints_share_followup_lock():
 def test_frontend_round68_guards():
     source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "function stripInflightQuestion(" in source
-    assert "els.input.value.includes(inflightText)" in source
+    # 第七十一轮起：落库判定与会话绑定，不再要求输入框仍包含主诉
+    assert "notePersistedInflight(inflightQuestionText, sessionId)" in source
     assert "inflightQuestionText" in source
     # 第六十九轮起：无关草稿与在途主诉合并保留（不再只提示丢弃）
     assert "上次会诊未完成，主诉已合并到输入框" in source

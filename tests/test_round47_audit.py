@@ -491,12 +491,13 @@ def test_forwarded_address_cannot_prelock_victim(monkeypatch, tmp_path):
             *spoofed,
         ])
         assert victim.status_code == 200
-        # 但同一伪造地址继续猜令牌仍会被限流
+        # 但同一伪造地址继续猜令牌仍会被限速（共享 spoof 桶按 100 次
+        # 高阈值计数，错误令牌此时仍是 401；比较已被闸门串行）
         attacker = client.get("/api/sessions", headers=[
             ("X-Medix-Token", "bad-more"),
             *spoofed,
         ])
-        assert attacker.status_code == 429
+        assert attacker.status_code == 401
     finally:
         session_store.close()
 

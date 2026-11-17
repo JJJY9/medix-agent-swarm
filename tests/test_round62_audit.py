@@ -613,6 +613,8 @@ def test_frontend_round62_guards():
     # 启动对账只清理来自在途记录的文本
     assert "let inflightRestoredText = '';" in source
     assert "inflightRestoredText = question;" in source
-    # 第六十八轮起：允许在途主诉与后续草稿合并，按主诉本身判定落库
-    assert "els.input.value.includes(inflightText)" in source
+    # 第七十一轮起：落库判定与会话绑定，不再依赖输入框是否仍含主诉
+    # （提交入口清空输入框后对账仍要能识别已落库）
+    assert "notePersistedInflight(inflightQuestionText, sessionId)" in source
+    assert "inflightPersistedSession" in source
     assert "inflightQuestionText" in source

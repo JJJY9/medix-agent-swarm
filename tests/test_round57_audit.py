@@ -538,12 +538,12 @@ def test_loopback_bucket_key_matches_failure_counter(monkeypatch, tmp_path):
         await real_sleep(seconds, *args, **kwargs)
 
     monkeypatch.setattr(api_server.asyncio, "sleep", fake_sleep)
-    limiter, key = _prime_loopback_bucket("ip:::/64")
+    limiter, key = _prime_loopback_bucket("ip:127.0.0.1")
     try:
         client = TestClient(
             api_server.app,
             base_url="http://localhost",
-            client=("::1", 55123),
+            client=("127.0.0.1", 55123),
         )
         response = client.get(
             "/api/sessions", headers={"X-Medix-Token": "bad"}
@@ -760,7 +760,7 @@ def test_displayable_ignores_inactive_medication_logs(client_and_store):
 # ---------------------------------------------------------------- 前端
 def test_frontend_round57_guards():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-    send_start = app_js.index("async function send(question)")
+    send_start = app_js.index("async function send(question, composerSubmit = false)")
     send = app_js[
         send_start:app_js.index(
             "const controller = new AbortController();", send_start

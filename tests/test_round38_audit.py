@@ -621,8 +621,8 @@ def test_appointment_writes_refresh_visits():
 def test_send_waits_for_deep_link_restore():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 6000
+        app_js.index("async function send(question, composerSubmit = false)"):
+        app_js.index("async function send(question, composerSubmit = false)") + 6000
     ]
     assert "if (deepLinkedSession) {" in send
     assert "await restoreCurrentSession();" in send

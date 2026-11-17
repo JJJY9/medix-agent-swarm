@@ -877,10 +877,10 @@ _RECENT_STOP_PREFIX = re.compile(
     r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
     r"[^，。；,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
-    r"(?:停用|停药|停了|停服|停止服用)\s*$"
+    r"(?:停用|停药|停了|停掉|停服|停止服用)\s*$"
 )
 _RECENT_STOP_SUFFIX = re.compile(
-    r"^\s*(?:停用|停药|停了|停服|停止服用)"
+    r"^\s*(?:停用|停药|停了|停掉|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:今天|昨天|前天|几天|几天前|一周|"
     r"[0-9一二两三四五六七八九十]+\s*天|"
@@ -891,8 +891,8 @@ _RECENT_STOP_SUFFIX = re.compile(
 _RECENT_STOP_CONTEXT = re.compile(
     r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前?)"
-    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停服|停止服用)"
-    r"|(?:停用|停药|停了|停服|停止服用)"
+    r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停掉|停服|停止服用)"
+    r"|(?:停用|停药|停了|停掉|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:今天|昨天|前天|几天|一周|"
     r"[0-9一二两三四五六七八九十]+\s*天|"
@@ -1359,22 +1359,70 @@ _FAMILY_MEDICATION_MARKERS = (
     "丈夫", "妻子", "配偶", "哥哥", "姐姐", "弟弟", "妹妹", "儿子", "女儿",
     "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
     "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
+    # 英文家属表述
+    "my father", "my mother", "my dad", "my mom", "my mum",
+    "my husband", "my wife", "my son", "my daughter", "my brother",
+    "my sister", "my grandfather", "my grandmother", "my grandma",
+    "my grandpa", "my parents", "my family",
+)
+#: 患儿档案下这些称谓指患者本人（与 triage 的家属口径一致）
+_CHILD_SELF_MARKERS = (
+    "我儿子", "我女儿", "孩子", "宝宝", "患儿", "小朋友", "我娃",
 )
 #: 紧随家属用药分句的停药/续用分句仍属于该家属
 _FAMILY_STOP_FOLLOW_RE = re.compile(
     r"^(?:已经?|早就|现在|目前|之前|以前)?\s*"
     r"(?:停药|停用|停了|停服|停止服用|不吃了?|又吃|重新吃|重新服用)"
 )
+#: 家属转述患者本人用药（我爸让我吃/我妈建议我吃/my father told me to take）
+_FAMILY_RELAY_RE = re.compile(
+    r"(?:让|叫|劝|说|建议|叮嘱|嘱咐|要求|提醒|吩咐|交代)"
+    r".{0,6}?我(.+)"
+    r"|(?:told|asked|advised|reminded|wants?|wanted)"
+    r"\s+(?:me|us)\s+to\s+(.+)",
+    re.I,
+)
+_FAMILY_MARKER_TAIL = (
+    "爸", "妈", "父亲", "母亲", "儿子", "女儿", "老公", "老婆",
+    "爱人", "爷爷", "奶奶", "外公", "外婆", "岳父", "岳母",
+    "公公", "婆婆", "哥", "姐", "弟", "妹",
+)
 
 
-def _patient_medication_text(text: str) -> str:
+def _patient_self_mentioned(clause: str) -> bool:
+    """分句是否出现指患者本人的「我」（排除「我爸/我妈」等称谓）。"""
+    lowered = clause.lower()
+    for match in re.finditer(r"我", clause):
+        tail = clause[match.end():match.end() + 2]
+        if tail.startswith(_FAMILY_MARKER_TAIL):
+            continue
+        return True
+    if re.search(r"(?:^|[\s,;])i(?:\s|'|,|$)|(?:^|[\s,])i$", lowered):
+        return True
+    return False
+
+
+def _child_patient_context(context: Any) -> bool:
+    """患儿档案（或未填年龄）下「我儿子/我女儿」就是患者本人。"""
+    try:
+        from core.triage import _context_child_patient
+
+        return bool(_context_child_patient(context))
+    except Exception:
+        return True
+
+
+def _patient_medication_text(text: str, context: Any = None) -> str:
     """去掉家属本人的用药/停药/过敏分句，只保留患者本人描述。
 
     「我每天吃华法林，我爸以前也吃华法林，已经停药两年了，我能吃
-    布洛芬吗」：家属分句与其后的停药分句都不能让患者的华法林被判
-    为已停用；「我爸让我吃华法林」这类转述保留患者自己的用药部分。
+    布洛芬吗」：家属分句与其后的停药分句不能让患者的华法林被判为
+    已停用；「我爸让我吃华法林」「我妈建议我吃华法林」保留患者自己
+    的用药；「我和我爸都吃华法林」与患儿档案下的「我儿子在吃」同样
+    算患者本人。
     """
     clauses = re.split(r"[，,。；;！!？?\n]", str(text or ""))
+    child_patient = _child_patient_context(context)
     kept: List[str] = []
     drop_next = False
     for clause in clauses:
@@ -1385,16 +1433,34 @@ def _patient_medication_text(text: str) -> str:
             drop_next = False
             continue
         drop_next = False
+        lowered = current.lower()
         if any(
-            marker in current for marker in _FAMILY_MEDICATION_MARKERS
+            marker in lowered for marker in _FAMILY_MEDICATION_MARKERS
         ):
-            narration = re.search(
-                r"(?:让|叫|劝|说).{0,4}我(.+)", current
-            )
-            if narration is not None and narration.group(1).strip():
-                kept.append(narration.group(1).strip())
-            else:
-                drop_next = True
+            if child_patient and any(
+                marker in current for marker in _CHILD_SELF_MARKERS
+            ):
+                # 患儿档案：孩子就是患者本人，不能当家属过滤
+                kept.append(current)
+                continue
+            if _patient_self_mentioned(current):
+                # 并列主语（我和我爸都吃华法林）：患者本人的用药与
+                # 过敏描述仍在分句里，保守保留整句
+                kept.append(current)
+                continue
+            narration = _FAMILY_RELAY_RE.search(current)
+            if narration is not None:
+                captured = next(
+                    (
+                        group for group in narration.groups()
+                        if group and group.strip()
+                    ),
+                    "",
+                ).strip()
+                if captured:
+                    kept.append(captured)
+                    continue
+            drop_next = True
             continue
         kept.append(current)
     return "，".join(kept)
@@ -1413,7 +1479,7 @@ def check_medication_safety(
         }
     """
     question = _flatten(question).lower()
-    question = _patient_medication_text(question)
+    question = _patient_medication_text(question, context)
     context = context if isinstance(context, dict) else {}
     medications = medication_context_text(context).lower()
     allergies = _allergy_text(context, question)

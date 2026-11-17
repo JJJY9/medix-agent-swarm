@@ -790,6 +790,38 @@ let inflightRestoredBaseline = 0;
 //: 启动对账刚确认已落库的在途主诉：提交入口在首屏恢复完成后据此
 //: 从待发送文本中移除该段，避免把已回答的问题整段重发一次
 let inflightPersistedText = '';
+//: 该标记对应哪个会话、何时被消费：跨会话/重复对账不能重新生效
+let inflightPersistedSession = '';
+let inflightPersistedConsumedAt = 0;
+let inflightPersistedConsumedText = '';
+//: 新建会话请求在途：提交必须等它落定，问题才能写进新会话
+let creatingSessionPromise = null;
+//: 本轮 send 通过 restoreComposer 放回输入框的完整文本快照：
+//: 成功清理只在用户没有继续编辑时才按包含式移除本轮主诉
+let lastRestoredComposerText = '';
+
+function notePersistedInflight(text, owner) {
+  const value = String(text || '').trim();
+  if (!value) return;
+  // 同一次中止对账会在 1.2s/3.5s 各跑一遍：已消费的旧问题不能在
+  // 用户发出下一条消息后被重新置位
+  if (
+    inflightPersistedConsumedAt
+    && value === inflightPersistedConsumedText
+    && Date.now() - inflightPersistedConsumedAt < 15000
+  ) {
+    return;
+  }
+  inflightPersistedText = value;
+  inflightPersistedSession = String(owner || '');
+}
+
+function clearInflightPersisted() {
+  inflightPersistedText = '';
+  inflightPersistedSession = '';
+  inflightPersistedConsumedAt = 0;
+  inflightPersistedConsumedText = '';
+}
 //: 首屏会话恢复（initProfiles 之后的 restoreCurrentSession）就绪：
 //: 发送必须等它结束，否则问题会写进上一会话（可能是另一位患者）
 let resolveInitialSessionRestore = () => {};
@@ -3347,6 +3379,14 @@ async function startNewSession() {
   if (!closeKb()) return false;
   // 作废仍在途的历史会话请求，也用于作废自己的晚到响应
   const seq = ++openSessionSeq;
+  // 新建会话：上一条会话的在途落库标记不再适用于新会话
+  clearInflightPersisted();
+  // 让提交等待建会话落定：否则等待期间回车会把问题写进旧会话
+  let markCreateDone = () => {};
+  const creationPromise = new Promise((resolve) => {
+    markCreateDone = resolve;
+  });
+  creatingSessionPromise = creationPromise;
 
   try {
     const res = await fetch('/api/sessions', { method: 'POST' });
@@ -3385,6 +3425,11 @@ async function startNewSession() {
     setVitals('warn', '新建会诊失败');
     window.alert(`新建会诊失败：${err.message || err}`);
     return false;
+  } finally {
+    markCreateDone();
+    if (creatingSessionPromise === creationPromise) {
+      creatingSessionPromise = null;
+    }
   }
 }
 
@@ -5221,6 +5266,11 @@ async function openSession(id) {
     return false;
   }
   const sameSession = id === sessionId;
+  if (!sameSession) {
+    // 切换到其它会话：上一条会话的「已落库在途主诉」标记不能
+    // 影响新会话的提交文本
+    clearInflightPersisted();
+  }
   // 深链尚未消费时的「同 ID」打开其实还是深链恢复本身：不能提前
   // 消费标记、也不能按普通重开跳过档案快照，否则深链会话会丢失
   // 服务端绑定的患者上下文
@@ -5518,6 +5568,7 @@ function clearDeletedSession(id, notice = '') {
   // 界面却照常流式显示答案（token 照常消耗）。
   if (!id || sessionId !== id) return false;
   openSessionSeq += 1;
+  clearInflightPersisted();
   setPendingSessionReset(false);
   consumeDeepLink();
   sessionId = null;
@@ -20759,7 +20810,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     if (expectedQuestion) {
       // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
       // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
-      inflightPersistedText = String(expectedQuestion).trim();
+      notePersistedInflight(expectedQuestion, sessionId);
       const remaining = stripInflightQuestion(
         els.input.value, expectedQuestion
       );
@@ -20795,7 +20846,6 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       && !pendingReset
       && inflightText
       && (inflightBaseline > 0 || freshSession)
-      && els.input.value.includes(inflightText)
     ) {
       const inflightQuestionText = String(inflightText).trim();
       const hasIds = messages.some(
@@ -20835,21 +20885,25 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           );
       }
       if (persistedThisRound) {
-        inflightPersistedText = inflightQuestionText;
+        notePersistedInflight(inflightQuestionText, sessionId);
         const remaining = stripInflightQuestion(
           els.input.value, inflightText
         );
-        els.input.value = remaining === null ? '' : remaining;
-        autoGrow();
-        if (els.input.value.trim()) {
-          try {
-            safeSessionSet(DRAFT_KEY, els.input.value.trim());
-          } catch {
-            // 隐私模式忽略
+        if (remaining !== null) {
+          els.input.value = remaining;
+          autoGrow();
+          if (els.input.value.trim()) {
+            try {
+              safeSessionSet(DRAFT_KEY, els.input.value.trim());
+            } catch {
+              // 隐私模式忽略
+            }
+          } else {
+            clearDraft();
           }
-        } else {
-          clearDraft();
         }
+        // remaining 为 null：用户已改写/清空输入框，保留其当前编辑，
+        // 只清在途记录并标记该问题已落库
         safeSessionRemove(INFLIGHT_QUESTION_KEY);
         inflightReconciled = true;
       }
@@ -20886,7 +20940,7 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 
 /* ---------- 提交主诉 ---------- */
 
-async function send(question) {
+async function send(question, composerSubmit = false) {
   if (busy || sendInFlight) {
     restoreComposer(question);
     window.alert('会诊进行中，请先停止当前会诊。');
@@ -20938,6 +20992,15 @@ async function send(question) {
     }
   } catch {
     // 隐私模式忽略
+  }
+  // 新建会诊请求在途时先等它落定：否则本轮提问会写进旧会话，
+  // 晚到的新会话响应又因 busy 被静默丢弃
+  if (creatingSessionPromise) {
+    try {
+      await creatingSessionPromise;
+    } catch {
+      // 新建失败：继续按当前会话发送
+    }
   }
   // 极早持久化已提交主诉：深链预恢复等待期间刷新/关页也不会丢失
   // （ensureSession 之后会用真实会话 ID 覆盖同一条记录）
@@ -21035,14 +21098,27 @@ async function send(question) {
       setSessionUrl(null);
     }
   }
-  // 首屏对账已确认在途主诉落库：若待发送文本包含该段（例如用户在
-  // 合并草稿后追加了新内容再回车），只发送剩余部分；整段都是已答复
-  // 的旧问题则放弃本次发送，避免重复会诊与重复计费
-  if (inflightPersistedText) {
+  // 首屏对账已确认在途主诉落库：仅当本次提交来自输入框、且文本确实
+  // 是该会话恢复出的「旧主诉（+换行后的后续草稿）」时才做包含式
+  // 剥离；程序化发送（再次会诊/常用主诉）与新输入的相似问题不能
+  // 被静默截断或吞掉
+  if (composerSubmit && inflightPersistedText) {
     const persistedText = inflightPersistedText;
-    inflightPersistedText = '';
+    const persistedOwner = inflightPersistedSession;
     const current = String(question || '');
-    if (current.includes(persistedText)) {
+    const sessionMatches = (
+      !persistedOwner
+      || persistedOwner === String(sessionId || '')
+    );
+    const mergedStart = (
+      current === persistedText
+      || current.startsWith(persistedText + '\n')
+      || current.startsWith(persistedText + '\r\n')
+    );
+    clearInflightPersisted();
+    if (sessionMatches && mergedStart) {
+      inflightPersistedConsumedAt = Date.now();
+      inflightPersistedConsumedText = persistedText;
       const remainder = stripInflightQuestion(current, persistedText);
       if (remainder === null || !remainder.trim()) {
         try {
@@ -21437,6 +21513,7 @@ async function send(question) {
       announceChat('会诊中断');
       // 失败轮次可能从未落库：把主诉放回输入框与草稿
       restoreComposer(question);
+      lastRestoredComposerText = els.input.value;
       preserveDraftProfile(sendProfile, question);
       renderError(
         err.message || String(err),
@@ -21458,24 +21535,31 @@ async function send(question) {
         // 忽略
       }
       // 「继续/重试本次会诊」成功后输入框与草稿可能仍保留同一主诉：
-      // 停止/失败分支会把主诉合并进用户草稿，合并后不再全等；按包含
-      // 关系只移除本轮主诉，保留后续草稿，避免回车重复提交
-      const remaining = stripInflightQuestion(
-        els.input.value, String(question || '').trim()
-      );
-      if (remaining !== null) {
-        els.input.value = remaining;
-        autoGrow();
-        if (remaining.trim()) {
-          try {
-            safeSessionSet(DRAFT_KEY, remaining);
-          } catch {
-            // 隐私模式忽略
+      // 只有输入框仍是失败分支恢复时的快照（用户没有继续编辑）才
+      // 按包含式移除本轮主诉；流式期间新输入的下一轮草稿不能被
+      // 任意子串删除静默改写
+      if (
+        lastRestoredComposerText
+        && els.input.value === lastRestoredComposerText
+      ) {
+        const remaining = stripInflightQuestion(
+          els.input.value, String(question || '').trim()
+        );
+        if (remaining !== null) {
+          els.input.value = remaining;
+          autoGrow();
+          if (remaining.trim()) {
+            try {
+              safeSessionSet(DRAFT_KEY, remaining);
+            } catch {
+              // 隐私模式忽略
+            }
+          } else {
+            clearDraft();
           }
-        } else {
-          clearDraft();
         }
       }
+      lastRestoredComposerText = '';
     }
     busy = false;
     activeController = null;
@@ -22961,7 +23045,7 @@ els.composer.addEventListener('submit', (e) => {
   els.input.value = '';
   autoGrow();
   clearDraft();
-  send(q);
+  send(q, true);
 });
 
 if (els.voiceToggle) {

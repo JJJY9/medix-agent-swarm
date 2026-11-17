@@ -448,7 +448,7 @@ def test_frontend_round54_guards():
     # 空深链恢复与 openSession 冲突都包含待重置换档
     restore = app_js[
         app_js.index("async function restoreCurrentSession"):
-        app_js.index("async function send(question)")
+        app_js.index("async function send(question, composerSubmit = false)")
     ]
     assert "|| pendingSessionReset" in restore
     open_body = app_js[
