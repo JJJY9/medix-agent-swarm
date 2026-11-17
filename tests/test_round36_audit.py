@@ -628,8 +628,8 @@ def test_shared_bucket_skips_auth_preblock(client_and_store, monkeypatch):
     )
     assert proxied.status_code == 200
 
-    # 直连远程来源仍受限流保护：错误令牌继续 429，但第六十九轮起
-    # 正确令牌经一次常量时间比较后放行（共享桶不再误伤）
+    # 直连远程来源仍受限流保护：预锁定期间不再比较令牌，未持短期
+    # 凭证的正确令牌同样 429（避免锁定后仍可全速猜解）
     plain_wrong = remote.get(
         "/api/sessions", headers={"X-Medix-Token": "bad-guess"}
     )
@@ -638,7 +638,7 @@ def test_shared_bucket_skips_auth_preblock(client_and_store, monkeypatch):
     plain = remote.get(
         "/api/sessions", headers={"X-Medix-Token": token}
     )
-    assert plain.status_code == 200
+    assert plain.status_code == 429
 
 
 # ---------------------------------------------------------------- 前端状态

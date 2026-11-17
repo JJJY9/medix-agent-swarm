@@ -530,11 +530,11 @@ def test_remote_client_cannot_spoof_proxy_header_to_skip_preblock(
             "X-Forwarded-Proto": "https",
         })
         # 直连远程客户端不能被请求头「证明」为代理对端：伪造
-        # X-Forwarded-Proto 仍按自身地址预锁定错误令牌；第六十九轮
-        # 起正确令牌只多做一次常量时间比较即可放行
+        # X-Forwarded-Proto 仍按自身地址预锁定；预锁定期间不再
+        # 比较令牌，未持短期凭证的正确令牌同样 429
         assert first.status_code == 401
         assert second.status_code == 429
-        assert correct.status_code == 200
+        assert correct.status_code == 429
     finally:
         session_store.close()
 

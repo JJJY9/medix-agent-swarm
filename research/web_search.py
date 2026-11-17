@@ -3,9 +3,9 @@
 
 提供医学领域的网络搜索能力，基于 DuckDuckGo Search API (DDGS)
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from loguru import logger
 import asyncio
 import ipaddress
@@ -51,6 +51,36 @@ class UnsafeFetchTarget(ValueError):
     """URL 指向本机/内网或使用了不允许的协议。"""
 
 
+#: 运营商级 NAT / 云元数据所在共享地址段：is_global 在部分版本不排除
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _public_addresses(host: str) -> List[str]:
+    """解析主机并只返回公网地址；含任何非全局地址则整体拒绝。"""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        raise UnsafeFetchTarget("主机名无法解析") from exc
+    addresses: List[str] = []
+    for info in infos:
+        raw = str(info[4][0] or "").split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if (
+            not ip.is_global
+            or ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_multicast or ip.is_unspecified or ip.is_reserved
+            or ip in _SHARED_ADDRESS_SPACE
+        ):
+            raise UnsafeFetchTarget("不允许抓取内网地址")
+        addresses.append(raw)
+    if not addresses:
+        raise UnsafeFetchTarget("主机名无法解析")
+    return addresses
+
+
 def _validate_fetch_target(url: str) -> str:
     """校验待抓取 URL：只允许 http/https 且必须解析到公网地址。
 
@@ -73,22 +103,41 @@ def _validate_fetch_target(url: str) -> str:
         raise UnsafeFetchTarget("缺少主机名")
     if host == "localhost" or host.endswith(".localhost"):
         raise UnsafeFetchTarget("不允许抓取本机地址")
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError as exc:
-        raise UnsafeFetchTarget("主机名无法解析") from exc
-    for info in infos:
-        raw = str(info[4][0] or "").split("%", 1)[0]
-        try:
-            ip = ipaddress.ip_address(raw)
-        except ValueError:
-            continue
-        if (
-            ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_multicast or ip.is_unspecified or ip.is_reserved
-        ):
-            raise UnsafeFetchTarget("不允许抓取内网地址")
+    _public_addresses(host)
     return text
+
+
+def _pin_fetch_target(url: str) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """把已校验的 URL 固定到解析出的 IP 上再发起连接。
+
+    只校验 DNS 结果不连接同一地址会留下重绑定窗口（TTL=0 域名在
+    校验后再解析到 127.0.0.1）；这里直接连接已校验 IP，并用 Host
+    头与 sni_hostname 维持原域名语义（证书仍按原域名校验）。
+    """
+    text = _validate_fetch_target(url)
+    parts = urlsplit(text)
+    host = (parts.hostname or "").strip().lower()
+    address = ipaddress.ip_address(_public_addresses(host)[0])
+    netloc_host = f"[{address}]" if address.version == 6 else str(address)
+    scheme = (parts.scheme or "").lower()
+    default_port = 443 if scheme == "https" else 80
+    try:
+        port = parts.port
+    except ValueError as exc:
+        raise UnsafeFetchTarget("URL 端口无效") from exc
+    netloc = (
+        netloc_host
+        if port is None or port == default_port
+        else f"{netloc_host}:{port}"
+    )
+    pinned = urlunsplit(
+        (scheme, netloc, parts.path or "/", parts.query, "")
+    )
+    host_header = parts.netloc.rsplit("@", 1)[-1]
+    extensions: Dict[str, Any] = {
+        "sni_hostname": host,
+    }
+    return pinned, {"Host": host_header}, extensions
 
 
 def _extract_html_text(
@@ -366,12 +415,23 @@ class WebSearchTool:
             if BeautifulSoup is None:
                 logger.warning("beautifulsoup4 未安装，无法抓取网页正文")
                 return None
-            current = await asyncio.to_thread(_validate_fetch_target, url)
+            current = str(url or "").strip()
+            await asyncio.to_thread(_validate_fetch_target, current)
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False
+                timeout=self.timeout,
+                follow_redirects=False,
+                # 显式 transport 才能让 sni_hostname 扩展真正用于证书校验：
+                # 固定 IP + Host/sni 头连接时仍按原域名验证证书
+                transport=httpx.AsyncHTTPTransport(),
             ) as client:
                 for _hop in range(MAX_FETCH_REDIRECTS):
-                    async with client.stream("GET", current) as response:
+                    pinned, headers, extensions = await asyncio.to_thread(
+                        _pin_fetch_target, current
+                    )
+                    async with client.stream(
+                        "GET", pinned, headers=headers,
+                        extensions=extensions,
+                    ) as response:
                         if response.is_redirect:
                             location = response.headers.get("location")
                             if not location:

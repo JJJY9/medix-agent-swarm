@@ -511,6 +511,7 @@ def test_known_token_bypasses_shared_bucket_prelock(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
     )
+    api_server._known_token_proofs.clear()
     client = TestClient(
         api_server.app,
         base_url="http://localhost",
@@ -518,21 +519,75 @@ def test_known_token_bypasses_shared_bucket_prelock(
     )
     forwarded = {"X-Forwarded-For": "203.0.113.9"}
     try:
+        # 未认证的新来源：错误令牌被预锁定，且期间不再执行令牌比较，
+        # 正确令牌（无短期凭证）同样 429——不能形成全速猜解 oracle
         assert client.get(
             "/api/sessions",
             headers={"X-Medix-Token": "bad", **forwarded},
         ).status_code == 401
-        # 错误令牌继续被预锁定挡住（桶内失败已满）
         assert client.get(
             "/api/sessions",
             headers={"X-Medix-Token": "bad", **forwarded},
         ).status_code == 429
-        # 正确令牌不被共享桶的预锁定误伤
+        assert client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": token, **forwarded},
+        ).status_code == 429
+    finally:
+        api_server._known_token_proofs.clear()
+        session_store.close()
+
+
+def test_authenticated_session_survives_lockout_with_proof(
+    monkeypatch, tmp_path
+):
+    from fastapi.testclient import TestClient
+
+    import api_server
+    import memory
+    from core.ratelimit import SlidingWindowLimiter
+    from memory.session_store import SessionStore
+
+    token = "a-secure-random-token-123"
+    session_store = SessionStore(str(tmp_path / "sessions.db"))
+    monkeypatch.setattr(memory, "get_session_store", lambda: session_store)
+    monkeypatch.setenv("MEDIX_ACCESS_TOKEN", token)
+    monkeypatch.setenv("MEDIX_TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("MEDIX_PROXY_CLIENT_IP_HEADER", "x-forwarded-for")
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
+    monkeypatch.delenv("MEDIX_TRUSTED_PROXY_ADDRS", raising=False)
+    monkeypatch.setattr(
+        api_server, "auth_failure_limiter",
+        SlidingWindowLimiter(1, window=300),
+    )
+    api_server._known_token_proofs.clear()
+    client = TestClient(
+        api_server.app,
+        base_url="http://localhost",
+        client=("127.0.0.1", 50000),
+    )
+    forwarded = {"X-Forwarded-For": "203.0.113.9"}
+    try:
+        # 已认证会话先取得短期凭证；随后共享桶被错误令牌锁满，
+        # 该会话仍凭凭证直通（正确令牌不再每次裸比较、也不再连坐）
+        assert client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": token, **forwarded},
+        ).status_code == 200
+        assert client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "bad", **forwarded},
+        ).status_code == 401
+        assert client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "bad", **forwarded},
+        ).status_code == 429
         assert client.get(
             "/api/sessions",
             headers={"X-Medix-Token": token, **forwarded},
         ).status_code == 200
     finally:
+        api_server._known_token_proofs.clear()
         session_store.close()
 
 

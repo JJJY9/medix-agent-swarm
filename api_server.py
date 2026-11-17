@@ -25,6 +25,7 @@ import hmac
 import secrets
 import ipaddress
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1794,6 +1795,47 @@ _AUTH_COMPARE_GATE_MAX_PER_SOURCE = 32
 _auth_compare_gates: Dict[tuple, Dict[str, Any]] = {}
 _auth_compare_gates_lock = threading.Lock()
 
+#: 认证成功后的短期内存凭证：同一来源 + 同一令牌在有效期内免闸门。
+#: 预锁定/失败桶锁定时只放行持有凭证的会话；新请求必须先经闸门完成
+#: 一次（被限速的）令牌比较，避免「先比较再限流」形成全速在线猜解。
+_KNOWN_TOKEN_PROOF_TTL = 300.0
+_KNOWN_TOKEN_PROOF_MAX = 2048
+_known_token_proofs: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+_known_token_proofs_lock = threading.Lock()
+
+
+def _token_proof_key(request: Request) -> Tuple[str, str]:
+    token = request_token(request) or ""
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return (_budget_source_key(request), digest)
+
+
+def _token_proof_valid(request: Request) -> bool:
+    """该来源最近是否已用同一令牌通过认证。"""
+    if not get_access_token():
+        return False
+    key = _token_proof_key(request)
+    now = time.monotonic()
+    with _known_token_proofs_lock:
+        expiry = _known_token_proofs.get(key)
+        if expiry is None:
+            return False
+        if expiry <= now:
+            _known_token_proofs.pop(key, None)
+            return False
+        _known_token_proofs.move_to_end(key)
+        return True
+
+
+def _remember_token_proof(request: Request) -> None:
+    key = _token_proof_key(request)
+    now = time.monotonic()
+    with _known_token_proofs_lock:
+        _known_token_proofs[key] = now + _KNOWN_TOKEN_PROOF_TTL
+        _known_token_proofs.move_to_end(key)
+        while len(_known_token_proofs) > _KNOWN_TOKEN_PROOF_MAX:
+            _known_token_proofs.popitem(last=False)
+
 
 async def _auth_compare_enter(key: str, source: str = ""):
     """进入同键比较闸门；排队过深返回 None（调用方回 429）。"""
@@ -2967,19 +3009,11 @@ async def require_access_token(request: Request, call_next):
             and _is_trusted_proxy_peer(peer_host)
             and _forwarded_client_address(request)
         )
-        # 与当前令牌一致的请求不是猜测：直通闸门（不占槽位、不被
-        # 失败桶退避拖慢）；错误令牌仍按闸门串行限速
-        known_token = False
-        _expected_token = get_access_token()
-        _supplied_token = request_token(request)
-        if _expected_token and _supplied_token:
-            try:
-                known_token = secrets.compare_digest(
-                    _supplied_token.encode("utf-8"),
-                    _expected_token.encode("utf-8"),
-                )
-            except UnicodeError:
-                known_token = False
+        # 与当前令牌一致的请求不是猜测：只有已通过一次受闸门限制的
+        # 完整比较并取得短期凭证的会话才能直通；绝不能在限流前先做
+        # 原始令牌比较，否则锁定期间每个请求仍比较一次，命中即 200，
+        # 形成按请求速率在线穷举的 oracle
+        known_token = _token_proof_valid(request)
         gate_handle = None
         appended_address = (
             _forwarded_appended_address(request)
@@ -3349,6 +3383,10 @@ async def require_access_token(request: Request, call_next):
                     status_code=401,
                     content={"detail": "需要访问令牌", "code": "auth_required"},
                 ))
+            elif get_access_token():
+                # 认证成功：签发短期内存凭证，后续请求经凭证直通闸门，
+                # 不必每次重复比较原始令牌
+                _remember_token_proof(request)
 
         finally:
             if gate_handle is not None:
@@ -8307,12 +8345,14 @@ async def _weekly_report_impl(
     severe_items = []
     seen_severe = set()
     family_severe_scope = profile is None
+    severe_candidates = []
     for item in sorted(
         symptoms,
         key=lambda row: (
-            -int(row.get("severity") or 0),
+            int(row.get("severity") or 0),
             str(row.get("recorded_at") or ""),
         ),
+        reverse=True,
     ):
         severity = int(item.get("severity") or 0)
         name = str(item.get("symptom") or "")
@@ -8323,13 +8363,25 @@ async def _weekly_report_impl(
         if severity < 7 or not name or dedupe_key in seen_severe:
             continue
         seen_severe.add(dedupe_key)
-        severe_items.append({
+        severe_candidates.append({
             "symptom": name,
             "severity": severity,
             "profile": item.get("profile") or "",
         })
-        if len(severe_items) >= 3:
-            break
+    if family_severe_scope:
+        # 家庭范围先保证每位成员至少一条重度症状，再用剩余按严重度补足：
+        # 单个成员多条重度症状不能挤掉其他成员唯一的一条
+        per_profile = {}
+        for item in severe_candidates:
+            profile_key = str(item.get("profile") or "")
+            per_profile.setdefault(profile_key, item)
+        ordered = list(per_profile.values())
+        for item in severe_candidates:
+            if item not in ordered:
+                ordered.append(item)
+        severe_items = ordered[:3]
+    else:
+        severe_items = severe_candidates[:3]
 
     active_meds = [item for item in medications if item.get("active")]
     meds_by_id = {item["id"]: item for item in medications}
@@ -9227,11 +9279,9 @@ def _build_health_insights(
                         (
                             f"{member}最高收缩压 {high:g}、"
                             f"最高舒张压 {low:g} mmHg"
-                            if level == "warning"
-                            else f"{member}有血压读数达到收缩压 "
-                            f"{high:g}、舒张压 {low:g} mmHg"
                         ),
-                        f"家庭范围内该成员近 {days} 天的单次最高读数。",
+                        f"家庭范围内该成员近 {days} 天的最高收缩压/"
+                        "最高舒张压（可能来自不同测量）。",
                         (
                             "单次明显升高也需要复测；持续偏高请咨询医生。"
                             if level == "warning"
@@ -9250,11 +9300,9 @@ def _build_health_insights(
                         (
                             f"最高收缩压 {high:g}、最高舒张压 "
                             f"{low:g} mmHg"
-                            if level == "warning"
-                            else f"有血压读数达到收缩压 {high:g}、"
-                            f"舒张压 {low:g} mmHg"
                         ),
-                        f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg。",
+                        f"近 {days} 天平均 {avg1:g}/{avg2:g} mmHg；"
+                        "最高收缩压与最高舒张压可能来自不同测量。",
                         (
                             "单次明显升高也需要复测；持续偏高请咨询医生。"
                             if level == "warning"
@@ -9722,14 +9770,31 @@ def _build_health_insights(
     overdue_followups = visits.get("overdue_followups") or []
     if overdue_followups:
         first = overdue_followups[0]
+        if len(overdue_followups) > 1:
+            # 家庭范围要把每位成员的逾期复诊都列出来：只取第一条会
+            # 让其他成员的逾期复诊在任何位置都不可见
+            shown = overdue_followups[:5]
+            title = (
+                f"{len(overdue_followups)} 项复诊已逾期"
+                f"（最早 {first.get('next_followup_date')}）"
+            )
+            detail = "；".join(
+                f"{item.get('profile') or '未指定档案'}："
+                f"{item.get('diagnosis') or '复诊'}"
+                f"（{item.get('next_followup_date') or ''}）"
+                for item in shown
+            )
+        else:
+            title = f"复诊已逾期（{first.get('next_followup_date')}）"
+            detail = (
+                f"{first.get('profile') or '未指定档案'}："
+                if family_scope else ""
+            ) + (first.get("diagnosis") or "")
         insights.append(_health_insight(
             "followup_overdue",
             "warning",
-            f"复诊已逾期（{first.get('next_followup_date')}）",
-            (
-                f"{first.get('profile') or '未指定档案'}："
-                if family_scope else ""
-            ) + (first.get("diagnosis") or ""),
+            title,
+            detail,
             "请尽快联系医院安排复诊。",
             "visit",
         ))

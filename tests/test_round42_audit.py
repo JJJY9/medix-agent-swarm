@@ -433,6 +433,11 @@ def test_non_loopback_proxy_uses_shared_bucket(monkeypatch, tmp_path):
         client=("172.18.0.2", 50000),
     )
     try:
+        # 先认证一次取得短期内存凭证：预锁定期间未持凭证的正确令牌
+        # 也与错误令牌一样被 429（避免锁定后按请求速率全速猜解）
+        assert client.get("/api/sessions", headers={
+            "X-Medix-Token": token, "X-Forwarded-Proto": "https",
+        }).status_code == 200
         wrong = client.get("/api/sessions", headers={
             "X-Medix-Token": "bad", "X-Forwarded-Proto": "https",
         })

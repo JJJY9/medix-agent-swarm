@@ -270,6 +270,12 @@ def test_loopback_alias_cannot_rotate_failure_bucket(
         client=("127.0.0.1", 50000),
     )
     try:
+        # 先认证一次取得短期内存凭证（新口径：未持凭证的正确令牌在
+        # 共享桶锁满后同样 429，避免锁定后全速猜解 oracle）
+        assert client.get("/api/sessions", headers={
+            "X-Medix-Token": token,
+            "X-Forwarded-For": "127.0.0.5",
+        }).status_code == 200
         for alias in ("127.0.0.2", "127.0.0.3"):
             wrong = client.get("/api/sessions", headers={
                 "X-Medix-Token": "bad",

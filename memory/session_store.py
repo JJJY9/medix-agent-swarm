@@ -5385,6 +5385,18 @@ class SessionStore:
             state[inserted_key] = (
                 int(state.get(inserted_key, 0)) + 1
             )
+            if raw_id > 0 and backup_contents:
+                expected_content = backup_contents.get(raw_id)
+                if expected_content is not None:
+                    # 记录本次补插的原始行内容：后续兄弟行判断「已解析」
+                    # 时只能认可确实属于该兄弟的补插，不能把本行补插的
+                    # 旧副本当成兄弟已恢复
+                    ambiguous_key = (table, "__ambiguous_contents__")
+                    ambiguous_map = state.get(ambiguous_key)
+                    if not isinstance(ambiguous_map, dict):
+                        ambiguous_map = {}
+                        state[ambiguous_key] = ambiguous_map
+                    ambiguous_map[raw_id] = expected_content
             return None
 
         def _content_owned_by_other(candidate: int) -> bool:
@@ -5860,24 +5872,40 @@ class SessionStore:
             created_key = str(created_at_value or "")
             group_fingerprints: Optional[set] = None
 
-            def _sibling_resolved(expected: tuple) -> bool:
+            def _sibling_resolved(
+                expected: tuple, sibling_id: int
+            ) -> bool:
                 """兄弟行的内容是否已有本地存活行（前一条补插后即解析）。
 
-                已解析的兄弟行不再构成歧义：否则补插完被删记录后，
-                后一条被编辑的存活行也会被误判为歧义而复制出旧值。
+                本次导入为消除歧义补插的旧副本只有在确实对应这条兄弟
+                备份行时才算解析；否则另一行会把存活行的编辑版本认领
+                走，自己的旧内容永不补插。
                 """
                 nonlocal group_fingerprints
+                ambiguous_map = state.get(
+                    (table, "__ambiguous_contents__")
+                )
+                if (
+                    isinstance(ambiguous_map, dict)
+                    and ambiguous_map.get(sibling_id) == expected
+                ):
+                    return True
                 if group_fingerprints is None:
                     group_fingerprints = set()
                     try:
                         group_rows = self._conn.execute(
-                            f"SELECT {', '.join(content_columns)}"
+                            f"SELECT id, {', '.join(content_columns)}"
                             f" FROM {table} WHERE {where}",
                             values,
                         ).fetchall()
                     except sqlite3.Error:
                         group_rows = []
                     for group_row in group_rows:
+                        if pre_existing_ids is not None and (
+                            int(group_row["id"]) not in pre_existing_ids
+                        ):
+                            # 本次导入刚插入的行不是原有存活行
+                            continue
                         group_fingerprints.add(
                             self._db_content_fingerprint(
                                 group_row, content_columns
@@ -5895,7 +5923,14 @@ class SessionStore:
                     continue
                 if local == expected:
                     continue
-                if _sibling_resolved(expected):
+                if _sibling_resolved(expected, other_id):
+                    # 兄弟已恢复仍要核对候选归属：候选内容明显更像
+                    # 那条兄弟记录（严重度/备注等）时它属于兄弟行，
+                    # 本行仍按被删记录补插
+                    if _content_score(
+                        candidate, other_id
+                    ) > _content_score(candidate, raw_id):
+                        return True
                     continue
                 temporal = True
                 for index, (mine, want) in enumerate(
@@ -7304,7 +7339,12 @@ class SessionStore:
                     tail_ok = bool(sole) and (
                         tail_where is None
                         or _tail_matches(sole)
-                        or not _tail_prefers_sibling(sole)
+                        or (
+                            not _tail_prefers_sibling(sole)
+                            # 兄弟内容被本地改成与本行相同时仍要比较
+                            # 尾字段：候选明显属于兄弟行时不能认领
+                            and not _tail_prefers_sibling_any_content(sole)
+                        )
                     )
                     if (
                         len(candidates) == 1
@@ -7341,6 +7381,27 @@ class SessionStore:
                         )
                     ):
                         return _claim(sole)
+                    if (
+                        len(candidates) > 1
+                        and local_group_size >= backup_group_size
+                        and raw_id > 0
+                    ):
+                        # 组内没有缺行、多条存活行都被编辑过：按内容与
+                        # 尾字段相似度给本行挑唯一最像的候选，不能直接
+                        # 补插编辑前旧值（会复活一条并不存在的旧读数）
+                        scored = sorted(
+                            (
+                                (
+                                    _content_score(candidate, raw_id),
+                                    _tail_match_score(candidate, raw_id),
+                                    -candidate,
+                                )
+                                for candidate in candidates
+                            ),
+                            reverse=True,
+                        )
+                        if scored[0][:2] > scored[1][:2]:
+                            return _claim(-scored[0][2])
                     return _ambiguous()
         if not candidates:
             state[identity] = claimed
@@ -8241,7 +8302,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 metric_backup_meta = self._import_backup_meta(
-                    raw_metrics, IMPORT_LIST_LIMITS["health_metrics"], "health_metrics"
+                    metric_valid_rows, IMPORT_LIST_LIMITS["health_metrics"],
+                    "health_metrics",
                 )
                 for raw in self._import_rows(
                     "health_metrics", raw_metrics,
@@ -8850,17 +8912,27 @@ class SessionStore:
                             SELECT id FROM medications
                              WHERE profile = ? AND name = ? AND dose = ?
                                AND frequency = ?
+                               AND COALESCE(note, '') = ?
                                AND COALESCE(started_at, '') = ?
                                AND COALESCE(stopped_at, '') = ?
                                AND stop_reason = ? AND active = ?
+                               AND IFNULL(stock, -1) = IFNULL(?, -1)
+                               AND COALESCE(stock_unit, '') = ?
+                               AND COALESCE(low_stock_threshold, 0) = ?
+                               AND COALESCE(expiry_date, '') = ?
                             """,
                             (
                                 normalized["profile"], normalized["name"],
                                 normalized["dose"], normalized["frequency"],
+                                normalized["note"],
                                 normalized["started_at"],
                                 normalized["stopped_at"],
                                 normalized["stop_reason"],
                                 normalized["active"],
+                                normalized["stock"],
+                                normalized["stock_unit"],
+                                normalized["low_stock_threshold"],
+                                normalized["expiry_date"],
                             ),
                         ).fetchone()
                     if existing is not None:
@@ -9130,7 +9202,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 vaccination_backup_meta = self._import_backup_meta(
-                    raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"], "vaccinations"
+                    vaccination_valid_rows,
+                    IMPORT_LIST_LIMITS["vaccinations"], "vaccinations",
                 )
                 for raw in self._import_rows(
                     "vaccinations", raw_vaccinations,
@@ -9516,7 +9589,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 lab_backup_meta = self._import_backup_meta(
-                    raw_lab_results, IMPORT_LIST_LIMITS["lab_results"], "lab_results"
+                    lab_valid_rows, IMPORT_LIST_LIMITS["lab_results"],
+                    "lab_results",
                 )
                 for raw in self._import_rows(
                     "lab_results", raw_lab_results,
@@ -9846,6 +9920,7 @@ class SessionStore:
                              WHERE profile = ? AND substance = ?
                                AND kind = ? AND reaction = ?
                                AND severity = ? AND noted_at = ?
+                               AND active = ? AND COALESCE(note, '') = ?
                             """,
                             (
                                 normalized["profile"],
@@ -9854,6 +9929,8 @@ class SessionStore:
                                 normalized["reaction"],
                                 normalized["severity"],
                                 normalized["noted_at"],
+                                normalized["active"],
+                                normalized["note"],
                             ),
                         ).fetchone()
                     if duplicate is not None:
@@ -10096,7 +10173,8 @@ class SessionStore:
                     )
                 )
                 visit_backup_meta = self._import_backup_meta(
-                    raw_visit_records, IMPORT_LIST_LIMITS["visit_records"], "visit_records"
+                    visit_valid_rows, IMPORT_LIST_LIMITS["visit_records"],
+                    "visit_records",
                 )
                 for raw in self._import_rows(
                     "visit_records", raw_visit_records,
@@ -10178,6 +10256,35 @@ class SessionStore:
                     raw_followup_reminder = _safe_db_id(
                         raw.get("followup_reminder_id")
                     )
+                    # 旧备份可能让多条就诊共享同一复诊预约：只有归属
+                    # 就诊（备份 owner_visit_id 或备注 #N 标记）才写链接，
+                    # 否则非归属就诊会抢占预约并覆盖 owner，归属就诊的
+                    # 复诊安排丢失、再次安排复诊会重复建预约
+                    if mapped_followup_appointment_id:
+                        followup_owner_raw = int(
+                            appointment_owner_raw.get(
+                                int(mapped_followup_appointment_id), 0
+                            ) or 0
+                        )
+                        if not followup_owner_raw:
+                            marker = re.search(
+                                r"由就诊记录 #(\d+) 自动创建",
+                                str(appointment_raw_notes.get(
+                                    int(mapped_followup_appointment_id),
+                                    "",
+                                )),
+                            )
+                            if marker is not None:
+                                followup_owner_raw = _safe_db_id(
+                                    marker.group(1)
+                                )
+                        if (
+                            followup_owner_raw
+                            and _safe_db_id(raw.get("id"))
+                            != followup_owner_raw
+                        ):
+                            mapped_followup_appointment_id = 0
+                            raw_followup_reminder = 0
                     created_key = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
@@ -11122,9 +11229,12 @@ class SessionStore:
                                 )
                             continue
                     else:
-                        # CSV 没有创建时间：退回标题/档案/备注/到期日计数判重
+                        # CSV 没有创建时间：按标题/档案/备注/到期日与
+                        # 提醒设置计数判重（提前天数/重复规则不同是
+                        # 两条合法提醒，不能合并）
                         identity_key = (
                             title, profile, note, session_id, due_at,
+                            advance_days, repeat_days, repeat_until,
                         )
                         if identity_key not in existing_reminder_counts:
                             count_row = self._conn.execute(
@@ -11132,11 +11242,14 @@ class SessionStore:
                                 SELECT COUNT(*) AS total FROM reminders
                                  WHERE title = ? AND profile = ?
                                    AND note = ? AND session_id = ?
-                                   AND due_at = ?
+                                   AND due_at = ? AND advance_days = ?
+                                   AND repeat_days = ?
+                                   AND COALESCE(repeat_until, '') = ?
                                 """,
                                 (
                                     title, profile, note, session_id,
-                                    due_at,
+                                    due_at, advance_days, repeat_days,
+                                    repeat_until,
                                 ),
                             ).fetchone()
                             existing_reminder_counts[identity_key] = int(
@@ -11157,12 +11270,15 @@ class SessionStore:
                                     SELECT id FROM reminders
                                      WHERE title = ? AND profile = ?
                                        AND note = ? AND session_id = ?
-                                       AND due_at = ?
+                                       AND due_at = ? AND advance_days = ?
+                                       AND repeat_days = ?
+                                       AND COALESCE(repeat_until, '') = ?
                                      ORDER BY id LIMIT 1
                                     """,
                                     (
                                         title, profile, note, session_id,
-                                        due_at,
+                                        due_at, advance_days, repeat_days,
+                                        repeat_until,
                                     ),
                                 ).fetchone()
                                 if existing_row is not None:
@@ -13569,9 +13685,11 @@ class SessionStore:
                         restored_reminder_id = 0
                     else:
                         restored_reminder_id = _create_reminder()
-                if restored_reminder_id:
+                if normalized["status"] == "upcoming":
                     # 恢复待就诊后把就诊记录的复诊链接写回：否则逾期
-                    # 复诊提示会被抑制、再次安排复诊会产生重复预约
+                    # 复诊提示会被抑制、再次安排复诊会产生重复预约。
+                    # 提醒因用户删除墓碑而不重建时同样要写回
+                    # （followup_reminder_id=0），链接与归属必须一致
                     visit_target = self._appointment_owner_visit(
                         previous["note"],
                         previous["owner_visit_id"],
@@ -15327,7 +15445,21 @@ class SessionStore:
                     (appointment, int(visit_id)),
                 ).fetchone()
                 if other_link is not None:
-                    return False
+                    if owner_visit == int(visit_id):
+                        # 旧版本遗留的共享链接：预约归本就诊所有时，
+                        # 解除其他就诊指向它的悬空链接（只清链接，
+                        # 不动对方的预约与提醒），否则「安排复诊」
+                        # 每次都会因共享校验失败误报 404
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = 0,"
+                            " followup_reminder_id = 0"
+                            " WHERE followup_appointment_id = ?"
+                            " AND id != ?",
+                            (appointment, int(visit_id)),
+                        )
+                    else:
+                        return False
                 followup_date = str(
                     visit_row["next_followup_date"] or ""
                 )[:10]

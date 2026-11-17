@@ -386,12 +386,12 @@ def test_trusted_proxy_buckets_by_forwarded_client(monkeypatch, tmp_path):
             "X-Forwarded-For": "203.0.113.9",
         })
         assert attacker.status_code == 429
-        # 第六十九轮起：正确令牌不被共享桶的预锁定误伤
+        # 预锁定期间不比较令牌：未持短期凭证的正确令牌同样 429
         attacker_known = client.get("/api/sessions", headers={
             "X-Medix-Token": token,
             "X-Forwarded-For": "203.0.113.9",
         })
-        assert attacker_known.status_code == 200
+        assert attacker_known.status_code == 429
     finally:
         session_store.close()
 

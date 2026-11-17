@@ -787,6 +787,9 @@ const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
 let inflightRestoredText = '';
 //: 在途记录的发送前最后消息 id：只有比它更新的问答才算本轮落库
 let inflightRestoredBaseline = 0;
+//: 启动对账刚确认已落库的在途主诉：提交入口在首屏恢复完成后据此
+//: 从待发送文本中移除该段，避免把已回答的问题整段重发一次
+let inflightPersistedText = '';
 //: 首屏会话恢复（initProfiles 之后的 restoreCurrentSession）就绪：
 //: 发送必须等它结束，否则问题会写进上一会话（可能是另一位患者）
 let resolveInitialSessionRestore = () => {};
@@ -20756,9 +20759,13 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     if (expectedQuestion) {
       // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
       // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
+      inflightPersistedText = String(expectedQuestion).trim();
       const remaining = stripInflightQuestion(
         els.input.value, expectedQuestion
       );
+      // 对账确认本轮已落库：无论输入框是否仍含该主诉都要清在途记录，
+      // 否则用户改写输入框后，下次加载会把已回答的问题重新并入草稿
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
       if (remaining !== null) {
         els.input.value = remaining;
         autoGrow();
@@ -20771,7 +20778,6 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         } else {
           clearDraft();
         }
-        safeSessionRemove(INFLIGHT_QUESTION_KEY);
       }
     }
     // 启动恢复没有 expectedQuestion：若刷新恰逢服务端落库，INFLIGHT
@@ -20829,6 +20835,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           );
       }
       if (persistedThisRound) {
+        inflightPersistedText = inflightQuestionText;
         const remaining = stripInflightQuestion(
           els.input.value, inflightText
         );
@@ -21026,6 +21033,32 @@ async function send(question) {
       sessionId = null;
       lastServerMessageId = 0;
       setSessionUrl(null);
+    }
+  }
+  // 首屏对账已确认在途主诉落库：若待发送文本包含该段（例如用户在
+  // 合并草稿后追加了新内容再回车），只发送剩余部分；整段都是已答复
+  // 的旧问题则放弃本次发送，避免重复会诊与重复计费
+  if (inflightPersistedText) {
+    const persistedText = inflightPersistedText;
+    inflightPersistedText = '';
+    const current = String(question || '');
+    if (current.includes(persistedText)) {
+      const remainder = stripInflightQuestion(current, persistedText);
+      if (remainder === null || !remainder.trim()) {
+        try {
+          safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        } catch {
+          // 隐私模式忽略
+        }
+        els.input.value = '';
+        clearDraft();
+        autoGrow();
+        setVitals('warn', '该问题已完成会诊，未重复发送');
+        return;
+      }
+      question = remainder;
+      els.input.value = remainder;
+      autoGrow();
     }
   }
   // 恢复流程（深链/首屏）会按服务端绑定更新当前档案：这是应用户
@@ -21425,12 +21458,23 @@ async function send(question) {
         // 忽略
       }
       // 「继续/重试本次会诊」成功后输入框与草稿可能仍保留同一主诉：
-      // 不清掉的话回车会重复提交同一问题（重复问答与重复计费）
-      const leftover = els.input.value.trim();
-      if (leftover && leftover === String(question || '').trim()) {
-        els.input.value = '';
+      // 停止/失败分支会把主诉合并进用户草稿，合并后不再全等；按包含
+      // 关系只移除本轮主诉，保留后续草稿，避免回车重复提交
+      const remaining = stripInflightQuestion(
+        els.input.value, String(question || '').trim()
+      );
+      if (remaining !== null) {
+        els.input.value = remaining;
         autoGrow();
-        clearDraft();
+        if (remaining.trim()) {
+          try {
+            safeSessionSet(DRAFT_KEY, remaining);
+          } catch {
+            // 隐私模式忽略
+          }
+        } else {
+          clearDraft();
+        }
       }
     }
     busy = false;

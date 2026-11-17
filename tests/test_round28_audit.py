@@ -226,10 +226,10 @@ def test_blocked_ip_skips_token_comparison(monkeypatch):
         "/api/sessions", headers={"X-Medix-Token": token}
     )
 
-    # 第六十九轮起：预锁定只挡错误令牌；正确令牌经一次常量时间
-    # 比较后放行，避免共享桶把正确令牌用户一并 429
-    assert blocked.status_code == 200
-    assert comparisons["count"] == after_lockout + 1
+    # 预锁定期间不再比较令牌：未持短期凭证的正确令牌同样 429，
+    # 避免「先比较再限流」形成全速猜解 oracle
+    assert blocked.status_code == 429
+    assert comparisons["count"] == after_lockout
 
 
 def test_degraded_answer_detection():

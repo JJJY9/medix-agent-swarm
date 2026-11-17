@@ -372,6 +372,16 @@ def test_nat64_source_counted_in_ipv6_global_budget(monkeypatch, tmp_path):
         SlidingWindowLimiter(2, window=300),
     )
     try:
+        rotated = TestClient(
+            api_server.app, base_url="http://localhost",
+            client=("64:ff9b::1.2.3.5", 57001),
+        )
+        # 先认证一次取得短期内存凭证（未持凭证的正确令牌在锁定期间
+        # 同样 429，不能再按请求速率全速比较）
+        assert rotated.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "r61-secret-token-123"},
+        ).status_code == 200
         first = TestClient(
             api_server.app, base_url="http://localhost",
             client=("64:ff9b::1.2.3.4", 57000),
@@ -383,10 +393,6 @@ def test_nat64_source_counted_in_ipv6_global_budget(monkeypatch, tmp_path):
             "/api/sessions", headers={"X-Medix-Token": "bad"}
         ).status_code == 401
         # 换一个 NAT64 映射地址不能绕过全局失败预算
-        rotated = TestClient(
-            api_server.app, base_url="http://localhost",
-            client=("64:ff9b::1.2.3.5", 57001),
-        )
         limited = rotated.get(
             "/api/sessions", headers={"X-Medix-Token": "bad"}
         )
