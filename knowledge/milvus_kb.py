@@ -19,6 +19,8 @@ except ImportError:  # pymilvus 未安装时直接使用本地向量库
 
 from sentence_transformers import SentenceTransformer
 
+from core.fs_permissions import restrict_permissions
+
 from .scoring import hit_to_document
 
 
@@ -123,6 +125,9 @@ class MedicalKnowledgeBase:
 
         # 确保数据目录存在
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        # 上传文档正文会以分块写入向量索引库：目录与库文件必须与
+        # uploads（0700/0600）同级收紧，否则同机其他账号可直接读库
+        restrict_permissions(Path(self.db_path).parent, 0o700)
 
         # 初始化 Embedding 模型（支持本地路径）
         # 优先检查本地缓存路径
@@ -151,8 +156,16 @@ class MedicalKnowledgeBase:
 
         # 创建 collection（如果不存在）
         self._ensure_collection()
+        self._restrict_index_permissions()
 
         self._initialized = True
+
+    def _restrict_index_permissions(self):
+        """收紧向量索引库及其伴生文件（wal/json）的读权限。"""
+        base = Path(self.db_path)
+        for path in base.parent.glob(base.name + "*"):
+            if path.is_file():
+                restrict_permissions(path, 0o600)
 
     def _ensure_collection(self):
         """确保 collection 存在（重建索引后会再次调用）。"""

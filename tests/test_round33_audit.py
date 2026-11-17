@@ -411,7 +411,7 @@ def test_session_flow_guards_are_present():
     detach = app_js[detach_start:detach_start + 900]
     assert "setPendingSessionReset(true)" in detach
 
-    send_start = app_js.index("async function send(question)")
+    send_start = app_js.index("async function send(question, composerSubmit = false)")
     # 取到消费深链之前：send 头部随守卫增加变长，不再用固定窗口
     send_body = app_js[
         send_start:app_js.index(

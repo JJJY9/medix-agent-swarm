@@ -63,6 +63,7 @@ from core.security import (
     configure_server_logging,
     install_log_redaction,
     redact_secrets,
+    redact_url_queries,
     sanitize_base_url,
 )
 install_log_redaction()
@@ -2733,6 +2734,32 @@ async def sanitized_validation_exception_handler(
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
+@app.exception_handler(ValueError)
+async def unsafe_value_error_handler(
+    request: Request, exc: ValueError
+) -> Response:
+    """存储层校验错误（如非法档案名）按 400 返回给用户。
+
+    档案名含路径分隔符/控制字符会让记录挂在无法经 /api/profiles
+    管理的伪成员上：记录写入边界统一抛错，这里转成可读的 400，
+    其余未捕获的 ValueError 保持通用 500，不回显内部细节。
+    """
+    message = str(exc or "")
+    if message.startswith("档案名"):
+        return add_security_headers(JSONResponse(
+            status_code=400,
+            content={
+                "detail": message,
+                "code": "invalid_profile_name",
+            },
+        ))
+    logger.error(f"未处理的 ValueError: {redact_url_queries(message)}")
+    return add_security_headers(JSONResponse(
+        status_code=500,
+        content={"detail": "服务器内部错误"},
+    ))
+
+
 @app.exception_handler(RecursionError)
 async def recursion_error_handler(
     request: Request, exc: RecursionError
@@ -3261,7 +3288,25 @@ async def require_access_token(request: Request, call_next):
                 )
                 if gate_unprovable:
                     pre_key = f"spoof:{loopback_bucket_key}"
-                pre_blocked, pre_retry = pre_limiter.is_blocked(pre_key)
+                # 共享键（共享桶/spoof/IPv6 /64 聚合）不是可证明的
+                # 独立客户端：不能用每来源 10 次桶做比较前硬预锁定，
+                # 否则任何一个人输错 10 次令牌就锁住整片用户；统一按
+                # 回环共享桶的高阈值计数，预锁定检查对聚合键跳过
+                pre_shared = bool(shared_bucket or gate_unprovable)
+                pre_aggregate = _is_ipv6_aggregate_key(pre_key)
+                if pre_shared or pre_aggregate:
+                    pre_limiter = auth_failure_limiter_loopback
+                if pre_shared and not gate_unprovable:
+                    pre_key = (
+                        loopback_bucket_key
+                        if pre_loopback
+                        else _client_ip_key(request)
+                    )
+                pre_blocked, pre_retry = (
+                    (False, 0.0)
+                    if pre_aggregate
+                    else pre_limiter.is_blocked(pre_key)
+                )
                 if pre_blocked and pre_retry > 0:
                     # 失败桶已满：先释放比较闸门再退避（最多 5 秒），
                     # 错误令牌的睡眠不能占着共享锁把全家的请求拖慢；
@@ -3332,6 +3377,19 @@ async def require_access_token(request: Request, call_next):
                     # 来源地址不可证明（仅来自客户端可影响的左项）：
                     # 失败记入独立 spoof 桶，绝不写进被害者真实地址桶
                     limiter_key = f"spoof:{loopback_bucket_key}"
+                # 共享键（共享桶/spoof/IPv6 /64 聚合）不是可证明的
+                # 独立客户端：按 100 次/5 分钟的回环共享桶计数，不用
+                # 每来源 10 次阈值（一人输错就锁整片用户）
+                shared_scope = bool(shared_bucket or gate_unprovable)
+                aggregate_scope = _is_ipv6_aggregate_key(limiter_key)
+                if shared_scope or aggregate_scope:
+                    limiter = auth_failure_limiter_loopback
+                if shared_scope and not gate_unprovable:
+                    limiter_key = (
+                        loopback_bucket_key
+                        if loopback_source
+                        else _client_ip_key(request)
+                    )
                 allowed, retry_after = limiter.check(limiter_key)
                 if _is_ipv6_source_key(budget_key):
                     # 跨 /64 轮换源地址：全局预算同样计数，超过后
@@ -7829,6 +7887,20 @@ async def _weekly_report_impl(
             )
         )
     ]
+    # 上一周期真实会诊活动还可能是「创建更早的会话在本期续聊过」：
+    # updated_at 被刷新到本期后 created/updated 判断看不到上期消息，
+    # 按消息日期补一层，避免长期会话每周都被当成凭空新增
+    previous_session_ids = await asyncio.to_thread(
+        store.session_ids_with_messages, prev_start, start, profile
+    )
+    known_previous_ids = {
+        str(item.get("id") or "") for item in previous_sessions
+    }
+    previous_session_ids -= known_previous_ids
+    previous_sessions_extra = [
+        {"id": session_id} for session_id in previous_session_ids
+    ]
+    previous_sessions.extend(previous_sessions_extra)
     risk_level = ""
     risk_profiles: List[Dict[str, str]] = []
     if profile is not None and sessions:

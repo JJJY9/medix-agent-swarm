@@ -597,8 +597,8 @@ def test_degraded_swarm_summary_skipped():
 def test_frontend_round58_guards():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 5200
+        app_js.index("async function send(question, composerSubmit = false)"):
+        app_js.index("async function send(question, composerSubmit = false)") + 5200
     ]
     # 首屏恢复等待后的会话接管复核与恢复失败处理
     assert "const takeover = Boolean(" in send

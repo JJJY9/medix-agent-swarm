@@ -579,6 +579,10 @@ def _normalize_metric(
     context: str = "",
 ) -> Optional[Dict[str, Any]]:
     """校验一条健康指标记录；无效时返回 None。"""
+    try:
+        profile = _normalize_profile_name(profile, strict=True)
+    except ValueError:
+        return None
     metric = str(metric or "").strip()
     if metric not in METRIC_TYPES:
         return None
@@ -665,8 +669,16 @@ def _parse_tags(raw: Any) -> List[str]:
     return _normalize_tags(value)
 
 
-def _normalize_profile_name(value: Any) -> str:
-    return " ".join(str(value or "").split())[:MAX_PROFILE_NAME_LENGTH]
+def _normalize_profile_name(value: Any, strict: bool = False) -> str:
+    text = str(value or "")
+    if strict and (
+        "/" in text or "\\" in text
+        or any(ord(char) < 32 for char in text)
+    ):
+        # 含路径分隔符的档案名无法经 /api/profiles/{name} 删除，
+        # 也永远无法改名：所有记录写入边界统一拒绝
+        raise ValueError("档案名不能包含路径分隔符或控制字符")
+    return " ".join(text.split())[:MAX_PROFILE_NAME_LENGTH]
 
 
 def _profile_deletion_key(profile: Any) -> str:
@@ -1145,6 +1157,10 @@ def _normalize_medication(
     stop_reason: str = "",
 ) -> Optional[Dict[str, Any]]:
     """校验一条用药记录；无效时返回 None。"""
+    try:
+        profile = _normalize_profile_name(profile, strict=True)
+    except ValueError:
+        return None
     name = " ".join(str(name or "").split())[:MAX_MEDICATION_NAME_LENGTH]
     if not name:
         return None
@@ -1177,7 +1193,7 @@ def _normalize_medication(
     except ValueError:
         return None
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "name": name,
         "dose": " ".join(str(dose or "").split())[:MAX_MEDICATION_TEXT_LENGTH],
         "frequency": " ".join(
@@ -1210,6 +1226,10 @@ def _normalize_symptom(
     note: str,
 ) -> Optional[Dict[str, Any]]:
     """校验一条症状记录；无效时返回 None。"""
+    try:
+        profile = _normalize_profile_name(profile, strict=True)
+    except ValueError:
+        return None
     text = " ".join(str(symptom or "").split())[:MAX_SYMPTOM_LENGTH]
     if not text:
         return None
@@ -1233,7 +1253,7 @@ def _normalize_symptom(
             return None
 
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "symptom": text,
         "severity": level,
         "note": " ".join(str(note or "").split())[:MAX_METRIC_NOTE_LENGTH],
@@ -1286,7 +1306,7 @@ def _normalize_vaccination(
             raise ValueError("下一剂日期不能早于接种日期")
 
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "vaccine_name": name,
         "dose_number": dose,
         "vaccinated_at": vaccinated,
@@ -1321,7 +1341,7 @@ def _normalize_appointment(
     if status_key not in APPOINTMENT_STATUSES:
         raise ValueError("就诊状态应为 upcoming/completed/cancelled")
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "title": name,
         "department": " ".join(str(department or "").split())[
             :MAX_APPOINTMENT_TEXT_LENGTH
@@ -1419,7 +1439,7 @@ def _normalize_lab_result(
         if _is_future_timestamp(tested):
             raise ValueError("检测时间不能晚于当前时间")
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "panel": " ".join(str(panel or "").split())[:MAX_LAB_PANEL_LENGTH],
         "item": item_name,
         "value": round(number, 6),
@@ -1504,7 +1524,7 @@ def _normalize_allergy(
             raise ValueError("发现时间不能晚于当前时间")
         noted = noted[:10]
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "substance": name,
         "reaction": " ".join(str(reaction or "").split())[
             :MAX_ALLERGY_REACTION_LENGTH
@@ -1574,7 +1594,7 @@ def _normalize_care_item(
             "1", "true", "on", "yes"
         } else 0
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "title": name,
         "interval_days": interval,
         "last_done_at": last_done,
@@ -1646,7 +1666,7 @@ def _normalize_visit_record(
         followup = ""
 
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "appointment_id": _safe_db_id(appointment_id),
         "visit_date": visit,
         "department": " ".join(str(department or "").split())[:60],
@@ -1724,7 +1744,7 @@ def _normalize_condition(
             raise ValueError("确诊日期不能晚于当前时间")
         diagnosed = diagnosed[:10]
     return {
-        "profile": _normalize_profile_name(profile),
+        "profile": _normalize_profile_name(profile, strict=True),
         "name": title,
         "icd10": " ".join(str(icd10 or "").split()).upper()[
             :MAX_CONDITION_ICD10_LENGTH
@@ -3011,7 +3031,10 @@ class SessionStore:
     ) -> None:
         """确保会话存在；已有会话不会被覆盖，档案只在为空时补上。"""
         now = self._now()
-        profile = _normalize_profile_name(profile)
+        try:
+            profile = _normalize_profile_name(profile, strict=True)
+        except ValueError:
+            profile = ""
         session_id = str(session_id or "").strip()
         with self._lock, self._conn:
             # 显式重新创建同一编号时解除墓碑（内存 + 持久化）
@@ -3764,7 +3787,12 @@ class SessionStore:
 
         now = self._now()
         title = self._make_title(question)
-        profile_value = _normalize_profile_name(profile)
+        try:
+            profile_value = _normalize_profile_name(
+                profile, strict=True
+            )
+        except ValueError:
+            profile_value = ""
         metadata_json = json.dumps(
             sanitize_json(_clamp_usage_metadata(metadata or {})),
             ensure_ascii=False,
@@ -4178,6 +4206,36 @@ class SessionStore:
             rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def session_ids_with_messages(
+        self,
+        start: str,
+        end: str,
+        profile: Optional[str] = None,
+    ) -> set:
+        """返回在 [start, end) 内有消息的会话 ID（按消息日期归属）。
+
+        会话的 updated_at 只保留最近一次活动：跨周续聊后，上一周期
+        的真实会诊活动会从 created/updated 判断中消失，需要按消息
+        自身的 created_at 统计周期活动。
+        """
+        conditions = [
+            "m.created_at >= ?",
+            "m.created_at < ?",
+            "s.tags NOT LIKE '%__deleted_profile__%'",
+        ]
+        params: List[Any] = [str(start), str(end)]
+        if profile is not None:
+            conditions.append("s.profile = ?")
+            params.append(_normalize_profile_name(profile))
+        sql = (
+            "SELECT DISTINCT m.session_id FROM messages m"
+            " JOIN sessions s ON s.id = m.session_id"
+            f" WHERE {' AND '.join(conditions)}"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return {str(row["session_id"]) for row in rows}
+
     def recorded_days(
         self, profile: Optional[str] = None, days: int = 365
     ) -> List[str]:
@@ -4227,6 +4285,22 @@ class SessionStore:
             f" WHERE {' AND '.join(session_conditions)}"
         )
         params.extend(session_params)
+        # 同一会话跨天续聊：早期消息日期同样算「有记录的一天」，
+        # 不能只取被刷新到今天的 updated_at
+        message_conditions = [
+            "m.created_at >= ?",
+            "s.tags NOT LIKE '%__deleted_profile__%'",
+        ]
+        message_params: List[Any] = [cutoff]
+        if profile is not None:
+            message_conditions.append("s.profile = ?")
+            message_params.append(_normalize_profile_name(profile))
+        parts.append(
+            "SELECT substr(m.created_at, 1, 10) AS day"
+            " FROM sessions s JOIN messages m ON m.session_id = s.id"
+            f" WHERE {' AND '.join(message_conditions)}"
+        )
+        params.extend(message_params)
         sql = (
             "SELECT DISTINCT day FROM ("
             + " UNION ".join(parts)
@@ -4271,6 +4345,14 @@ class SessionStore:
             " AND tags NOT LIKE '%__deleted_profile__%'"
             " AND EXISTS (SELECT 1 FROM messages m"
             " WHERE m.session_id = sessions.id)"
+        )
+        params.append(cutoff)
+        # 同一会话跨天续聊：按每条消息的日期展开，保留早期日期
+        parts.append(
+            "SELECT s.profile, substr(m.created_at, 1, 10) AS day"
+            " FROM sessions s JOIN messages m ON m.session_id = s.id"
+            " WHERE s.profile != '' AND m.created_at >= ?"
+            " AND s.tags NOT LIKE '%__deleted_profile__%'"
         )
         params.append(cutoff)
         sql = (
@@ -7401,7 +7483,17 @@ class SessionStore:
                             reverse=True,
                         )
                         if scored[0][:2] > scored[1][:2]:
-                            return _claim(-scored[0][2])
+                            winner = -scored[0][2]
+                            # 评分只是线索：胜者必须有本地编辑证据且
+                            # 差异仅落在可编辑列，内容不能属于另一条
+                            # 备份记录；否则按被删记录补插，不能把
+                            # 另一来源未编辑的同秒行吞成本行版本
+                            if (
+                                _candidate_edited(winner)
+                                and _candidate_diff_claimable(winner)
+                                and not _content_owned_by_other(winner)
+                            ):
+                                return _claim(winner)
                     return _ambiguous()
         if not candidates:
             state[identity] = claimed
@@ -8606,7 +8698,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 symptom_backup_meta = self._import_backup_meta(
-                    raw_symptoms, IMPORT_LIST_LIMITS["symptoms"], "symptoms"
+                    symptom_valid_rows,
+                    IMPORT_LIST_LIMITS["symptoms"], "symptoms",
                 )
                 for raw in self._import_rows(
                     "symptoms", raw_symptoms,
@@ -8779,7 +8872,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 medication_backup_meta = self._import_backup_meta(
-                    raw_medications, IMPORT_LIST_LIMITS["medications"], "medications"
+                    medication_valid_rows,
+                    IMPORT_LIST_LIMITS["medications"], "medications",
                 )
                 for raw in self._import_rows(
                     "medications", raw_medications,
@@ -9389,7 +9483,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 appointment_backup_meta = self._import_backup_meta(
-                    raw_appointments, IMPORT_LIST_LIMITS["appointments"], "appointments"
+                    appointment_valid_rows,
+                    IMPORT_LIST_LIMITS["appointments"], "appointments",
                 )
                 for raw in self._import_rows(
                     "appointments", raw_appointments,
@@ -9817,7 +9912,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 allergy_backup_meta = self._import_backup_meta(
-                    raw_allergies, IMPORT_LIST_LIMITS["allergies"], "allergies"
+                    allergy_valid_rows,
+                    IMPORT_LIST_LIMITS["allergies"], "allergies",
                 )
                 for raw in self._import_rows(
                     "allergies", raw_allergies,
@@ -9992,7 +10088,8 @@ class SessionStore:
                     )
                 )
                 care_backup_meta = self._import_backup_meta(
-                    raw_care_items, IMPORT_LIST_LIMITS["care_items"], "care_items"
+                    care_valid_rows,
+                    IMPORT_LIST_LIMITS["care_items"], "care_items",
                 )
                 for raw in self._import_rows(
                     "care_items", raw_care_items,
@@ -10474,7 +10571,8 @@ class SessionStore:
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
                 condition_backup_meta = self._import_backup_meta(
-                    raw_conditions, IMPORT_LIST_LIMITS["conditions"], "conditions"
+                    condition_valid_rows,
+                    IMPORT_LIST_LIMITS["conditions"], "conditions",
                 )
                 for raw in self._import_rows(
                     "conditions", raw_conditions,
@@ -10880,9 +10978,6 @@ class SessionStore:
                     "SELECT id FROM reminders"
                 ).fetchall()
             }
-            reminder_backup_meta = self._import_backup_meta(
-                raw_reminders, IMPORT_LIST_LIMITS["reminders"], "reminders"
-            )
             #: 备份中同一预约+标题的未完成提醒条数：日期不同的合法多条
             #: 不能被「同预约+标题」兜底合并掉
             backup_reminder_title_counts: Dict[tuple, int] = {}
@@ -10927,6 +11022,10 @@ class SessionStore:
                 raw_reminders,
                 IMPORT_LIST_LIMITS["reminders"],
                 _reminder_import_valid,
+            )
+            reminder_backup_meta = self._import_backup_meta(
+                reminder_valid_rows,
+                IMPORT_LIST_LIMITS["reminders"], "reminders",
             )
             if isinstance(raw_reminders, list):
                 reminder_group_sizes = self._identity_group_sizes(
@@ -12153,7 +12252,10 @@ class SessionStore:
         self, name: str, context: Any
     ) -> Optional[Dict[str, Any]]:
         """新增或覆盖常用档案；名称或内容无效时返回 None。"""
-        name = " ".join(str(name or "").split())[:MAX_PROFILE_NAME_LENGTH]
+        try:
+            name = _normalize_profile_name(name, strict=True)
+        except ValueError:
+            return None
         cleaned = _normalize_profile_context(context)
         if not name or cleaned is None:
             return None
@@ -14980,8 +15082,27 @@ class SessionStore:
                     (int(visit_id), appointment),
                 ).fetchone()
                 if linked is not None:
-                    if marker_owner in (0, int(visit_id)):
+                    if marker_owner == int(visit_id):
                         auto_created = True
+                    elif marker_owner == 0:
+                        # 旧版无归属预约：没有其它就诊链接时才把本就诊
+                        # 的链接当作自动创建证据；多条就诊共享时只
+                        # 解除本就诊链接，不能删掉对方仍在用的预约
+                        other_link = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_appointment_id = ? AND id != ?"
+                            " LIMIT 1",
+                            (appointment, int(visit_id)),
+                        ).fetchone()
+                        if other_link is None:
+                            auto_created = True
+                        else:
+                            self._conn.execute(
+                                "UPDATE visit_records"
+                                " SET followup_appointment_id = 0"
+                                " WHERE id = ? AND followup_appointment_id = ?",
+                                (int(visit_id), appointment),
+                            )
                     else:
                         # 旧版本遗留的共享链接：预约 owner 属于另一条
                         # 就诊，本次只解除本就诊自己的链接，绝不能把
@@ -15457,6 +15578,29 @@ class SessionStore:
                             " WHERE followup_appointment_id = ?"
                             " AND id != ?",
                             (appointment, int(visit_id)),
+                        )
+                    elif owner_visit == 0:
+                        # 旧版无归属共享预约：本就诊已链接它时按归属
+                        # 就诊处理（幂等），并解除其它就诊的悬空链接
+                        current_link = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE id = ? AND followup_appointment_id = ?",
+                            (int(visit_id), appointment),
+                        ).fetchone()
+                        if current_link is None:
+                            return False
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = 0,"
+                            " followup_reminder_id = 0"
+                            " WHERE followup_appointment_id = ?"
+                            " AND id != ?",
+                            (appointment, int(visit_id)),
+                        )
+                        self._conn.execute(
+                            "UPDATE appointments SET owner_visit_id = ?"
+                            " WHERE id = ?",
+                            (int(visit_id), appointment),
                         )
                     else:
                         return False
@@ -17869,7 +18013,7 @@ class SessionStore:
         due_at = _normalize_reminder_due(due_at)
         note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
         session_id = str(session_id or "").strip()[:64]
-        profile = _normalize_profile_name(profile)
+        profile = _normalize_profile_name(profile, strict=True)
         advance_days = _normalize_reminder_advance(advance_days)
         repeat_days = _normalize_reminder_repeat_days(repeat_days)
         repeat_until = _normalize_reminder_repeat_until(repeat_until)
@@ -18324,7 +18468,9 @@ class SessionStore:
 
         if profile is not None:
             updates.append("profile = ?")
-            params.append(_normalize_profile_name(profile))
+            params.append(
+                _normalize_profile_name(profile, strict=True)
+            )
 
         if repeat_days is not None:
             repeat_days = _normalize_reminder_repeat_days(repeat_days)

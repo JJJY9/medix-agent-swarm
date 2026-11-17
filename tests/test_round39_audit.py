@@ -558,8 +558,8 @@ def test_deep_link_pending_persisted_across_reload():
 def test_send_has_pre_restore_lock_and_session_guard():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 3000
+        app_js.index("async function send(question, composerSubmit = false)"):
+        app_js.index("async function send(question, composerSubmit = false)") + 3000
     ]
     assert "let sendInFlight = false;" in app_js
     assert "if (busy || sendInFlight)" in send

@@ -584,7 +584,7 @@ def test_ipv6_global_failure_budget(monkeypatch, tmp_path):
 # ---------------------------------------------------------------- 前端
 def test_frontend_round59_guards():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-    send_start = app_js.index("async function send(question)")
+    send_start = app_js.index("async function send(question, composerSubmit = false)")
     send = app_js[
         send_start:app_js.index(
             "const controller = new AbortController();", send_start

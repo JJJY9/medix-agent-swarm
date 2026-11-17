@@ -532,7 +532,7 @@ def test_frontend_round53_guards():
     assert "safeSessionRemove(INFLIGHT_QUESTION_KEY);" in app_js
     assert "if (!busy && !sendInFlight) {" in app_js
     # 深链被接管：不写成当前会话草稿
-    send_start = app_js.index("async function send(question)")
+    send_start = app_js.index("async function send(question, composerSubmit = false)")
     send = app_js[
         send_start:app_js.index(
             "const controller = new AbortController();", send_start

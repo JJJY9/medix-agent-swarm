@@ -490,8 +490,8 @@ def test_send_early_exit_restores_composer():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "function restoreComposer(question)" in app_js
     send = app_js[
-        app_js.index("async function send(question)"):
-        app_js.index("async function send(question)") + 3000
+        app_js.index("async function send(question, composerSubmit = false)"):
+        app_js.index("async function send(question, composerSubmit = false)") + 3000
     ]
     assert send.count("restoreComposer(question);") >= 2
 
