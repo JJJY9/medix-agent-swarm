@@ -122,7 +122,8 @@ _UNCERTAIN_QUESTION_RE = re.compile(
 #: 「不是没有/并非没有」是双重否定，实际为阳性
 _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
     r"(?:不是|并非|并非说|并不是说?|不能说|不代表|又不是)"
-    r"[^，。；,.!?！？\n]{0,8}(?:没有|没|无)"
+    r"(?:说|真的|完全|彻底|根本|任何|明显|绝对|会|可能|是)?\s*"
+    r"(?:没有|没|无)"
     rf"(?:{_NEGATION_FILLERS})*\s*$"
 )
 #: 「差点没昏倒」是“几乎发生”，不是否定
@@ -1205,7 +1206,8 @@ def _clean_complaint_clause(
                     # 典型急症修饰：放射/压榨/冷汗等同样说明是真实主诉
                     "放射", "压榨", "撕裂", "大汗", "冷汗", "冒汗",
                     "难忍", "濒死", "躺不平", "不能平卧", "端坐呼吸",
-                    "闷痛", "绞痛", "刀割",
+                    "闷痛", "绞痛", "刀割", "难以忍受", "受不了",
+                    "像石头", "像刀割", "针扎", "压着", "翻白眼",
                     "左侧", "右侧", "左边", "右边", "左胸", "右胸",
                     "左肩", "右肩", "胸前区",
                 )
@@ -1674,6 +1676,8 @@ HEAD_TRAUMA_TERMS = (
     # 跌倒/摔伤语序（后脑勺摔到地上/摔到后脑勺/头摔破）
     "后脑勺摔", "摔到后脑勺", "摔了后脑勺", "头摔破", "摔破头",
     "头摔伤", "摔伤了头", "后脑勺着地", "头着地",
+    "头先着地", "额头先着地", "头先撞", "头先磕", "头朝下着地",
+    "头先碰", "额头先撞", "额头先磕",
 )
 
 #: 头部外伤的复合语序：部位词 + 撞击/外伤动词（可含「被…撞」），
@@ -1686,7 +1690,7 @@ _HEAD_TRAUMA_RE = re.compile(
     # 口语方位/副词：后脑勺上磕了个包、头不小心撞到墙、
     # 头一下子撞到门框（部位与撞击动词之间可插入修饰）
     r"(?:上|部|后面|后面上)?"
-    r"(?:一不小心|不小心|一下子|突然|直接|重重地?|猛地|猛一?下|"
+    r"(?:一不小心|不小心|一下子|突然|直接|先|重重地?|猛地|猛一?下|"
     r"当时|今天|昨天|前几天)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
     r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
@@ -1729,13 +1733,20 @@ def _has_head_trauma(text: str) -> bool:
 #: 药物/过敏原、无宾语或代词宾语才算续用，「我也在吃维生素C」
 #: 「我也有一只猫」「我也有高血压」不能把家属的药名算到患者头上
 _CONTINUATION_USE_RE = re.compile(
-    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
-    r"[^，。；;?？]{0,10}?(?:在|还|一直)?\s*"
+    r"我[^，。；;?？]{0,6}?"
+    r"(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"[^，。；;?？]{0,8}?(?:在|还|一直)?\s*"
     r"(?:吃|服用|服|用)([^，。；;?？]{0,16})"
 )
 _CONTINUATION_ALLERGY_RE = re.compile(
-    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"我[^，。；;?？]{0,6}?"
+    r"(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
     r"[^，。；;?？]{0,12}?(?:对)?([^，。；;?？]{0,12})过敏"
+)
+#: 跨分句否定：「我也没在吃/我最近不吃/我也没服用」不是患者续用
+_CONTINUATION_NEGATED_RE = re.compile(
+    r"(?:没|没有|未|不再|没再|别|不)\s*(?:在|再|继续)?\s*"
+    r"(?:吃|服用|服|用|过敏)"
 )
 _CONTINUATION_SAME_RE = re.compile(
     r"我(?:也|跟他|跟她|跟他们)?一样"
@@ -1748,7 +1759,16 @@ _PRONOUN_OBJECTS = (
 def continuation_object_matches(obj: str, clause: str) -> bool:
     """续用宾语是否指向前一分句中的同一药物/过敏原。"""
     obj = str(obj or "").strip(" 　")
-    if not obj or any(word in obj for word in _PRONOUN_OBJECTS):
+    # 「我也在吃了/我也在吃药」：剥离助词与数量词后无宾语或只剩
+    # 泛指名词，都是对前药的指代
+    obj = re.sub(r"(?:了|啦|着|过|呢|啊|呀|吧|的)+$", "", obj)
+    obj = re.sub(r"^[一两二三四五六七八九十几半]+[片粒袋包支瓶]", "", obj)
+    obj = obj.strip(" 　")
+    if (
+        not obj
+        or obj in ("药", "药物", "这种", "那种", "这些", "那些")
+        or any(word in obj for word in _PRONOUN_OBJECTS)
+    ):
         return True
     tokens = {obj[i:i + 2] for i in range(len(obj) - 1)}
     return any(token in clause for token in tokens if len(token) == 2)
@@ -1756,6 +1776,8 @@ def continuation_object_matches(obj: str, clause: str) -> bool:
 
 def continuation_same_as_clause(follow: str, clause: str) -> bool:
     """续用分句是否描述患者本人的同一药物/过敏原。"""
+    if _CONTINUATION_NEGATED_RE.search(follow):
+        return False
     if _CONTINUATION_SAME_RE.search(follow):
         return True
     for pattern in (_CONTINUATION_USE_RE, _CONTINUATION_ALLERGY_RE):
@@ -2533,14 +2555,18 @@ def _active_medical_text(
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
             diet_match = re.search(
-                r"不吃([^，。；,.!?！？\n]{0,10})", clause
+                r"(?:不吃|没吃|没有吃|未吃|不再吃|没再吃)"
+                r"([^，。；,.!?！？\n]{0,10})",
+                clause,
             )
             diet_object = (
                 diet_match.group(1).strip() if diet_match else ""
             )
             if (
                 diet_object
-                and not diet_object.startswith(("了", "啦", "啊", "呀"))
+                and not diet_object.startswith(
+                    ("了", "啦", "啊", "呀", "完", "够", "满")
+                )
                 and not any(
                     word in diet_object
                     for word in (
@@ -2552,8 +2578,15 @@ def _active_medical_text(
             ):
                 # 「服用华法林期间不吃青菜」：否定的宾语是食物，
                 # 不是药物本身，同句药名仍是当前用药。用「宾语里
-                # 没有已知药名」判定，避免食物白名单永远漏项
-                kept.append(clause)
+                # 没有已知药名」判定，避免食物白名单永远漏项；
+                # 同时剥离饮食限制短语，避免「华法林…没有吃青菜」
+                # 被药名级否定规则当成停用
+                cleaned_diet = (
+                    clause[:diet_match.start()]
+                    + clause[diet_match.end():]
+                ).strip(" ，,；")
+                if cleaned_diet:
+                    kept.append(cleaned_diet)
                 continue
             if _FINISHED_DOSE_RE.search(clause) and not (
                 _long_stop_near(clauses, index)

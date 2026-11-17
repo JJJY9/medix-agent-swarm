@@ -2504,6 +2504,7 @@ class SessionStore:
                     started_at TEXT NOT NULL DEFAULT '',
                     stopped_at TEXT NOT NULL DEFAULT '',
                     stop_reason TEXT NOT NULL DEFAULT '',
+                    resumed_at TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -2947,6 +2948,7 @@ class SessionStore:
                 ("started_at", "TEXT NOT NULL DEFAULT ''"),
                 ("stopped_at", "TEXT NOT NULL DEFAULT ''"),
                 ("stop_reason", "TEXT NOT NULL DEFAULT ''"),
+                ("resumed_at", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in medication_columns:
                     self._conn.execute(
@@ -5346,6 +5348,12 @@ class SessionStore:
             "sessions": exported,
             "audit_log": self.list_audit_log(limit=100000),
             "profiles": self.list_profiles(),
+            "profile_renames": [
+                dict(row) for row in self._conn.execute(
+                    "SELECT old_name, new_name, renamed_at"
+                    " FROM profile_renames ORDER BY id"
+                ).fetchall()
+            ],
             "health_metrics": self.list_metrics(limit=100000),
             "metric_targets": self.list_metric_targets(),
             "reminders": self.list_reminders(include_done=True),
@@ -6181,13 +6189,26 @@ class SessionStore:
                         ).fetchall()
                     except sqlite3.Error:
                         rows = []
-                    if any(
-                        self._db_content_fingerprint(row, content_columns)
-                        == expected
-                        for row in rows
-                    ):
-                        # 该同档案记录另有内容一致的存活行：候选确属
-                        # 当前行（例如成员改挂后内容未变）
+                    sibling_count = 1
+                    for other2, other2_profile in backup_profiles.items():
+                        if other2 in (raw_id, other_id):
+                            continue
+                        if backup_created.get(other2) != created_key:
+                            continue
+                        if _normalize_profile_name(
+                            other2_profile
+                        ) != wanted:
+                            continue
+                        if (backup_contents or {}).get(other2) == expected:
+                            sibling_count += 1
+                    if sum(
+                        1 for row in rows
+                        if self._db_content_fingerprint(
+                            row, content_columns
+                        ) == expected
+                    ) >= sibling_count:
+                        # 每个同指纹兄弟备份行都各有独立存活行：
+                        # 候选确属当前行（例如成员改挂后内容未变）
                         continue
                 return True
             return False
@@ -8209,6 +8230,43 @@ class SessionStore:
                     "备份校验失败，文件可能已损坏或被修改。"
                 )
 
+        # 备份携带的档案改名映射先落库：迁移到新设备后导入改名前的
+        # 旧备份时，旧档案名要能解析到新名称而不是拆成两个档案
+        raw_renames = data.get("profile_renames")
+        if isinstance(raw_renames, list):
+            with self._lock, self._conn:
+                for raw_rename in raw_renames[:100000]:
+                    if not isinstance(raw_rename, dict):
+                        continue
+                    old_name = _normalize_profile_name(
+                        raw_rename.get("old_name")
+                    )
+                    new_name = _normalize_profile_name(
+                        raw_rename.get("new_name")
+                    )
+                    if not old_name or not new_name or old_name == new_name:
+                        continue
+                    exists = self._conn.execute(
+                        "SELECT 1 FROM profile_renames"
+                        " WHERE old_name = ? AND new_name = ?",
+                        (old_name, new_name),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    self._conn.execute(
+                        "INSERT INTO profile_renames("
+                        "profile_hash, old_name, new_name, renamed_at)"
+                        " VALUES (?, ?, ?, ?)",
+                        (
+                            _profile_deletion_key(old_name),
+                            old_name,
+                            new_name,
+                            str(
+                                raw_rename.get("renamed_at")
+                                or self._now()
+                            )[:40],
+                        ),
+                    )
         # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
         # 作为另一个档案重新插入（校验在改写前完成）
         data = self._remap_import_aliases(data)
@@ -11143,6 +11201,7 @@ class SessionStore:
             reminder_links: List[Tuple[int, int]] = []
             raw_reminder_id_map: Dict[int, int] = {}
             existing_reminder_counts: Dict[tuple, int] = {}
+            existing_reminder_done_counts: Dict[tuple, int] = {}
             imported_reminder_counts: Dict[tuple, int] = {}
             reminder_identity_claims: Dict[tuple, set] = {}
             pre_existing_reminder_ids = {
@@ -11426,9 +11485,14 @@ class SessionStore:
                             reminder_note = str(raw.get("note") or "")
                             appt_title = str(appt_row["title"] or "")
                             if not hint_ok and appt_title:
-                                hint_ok = (
-                                    appt_title in reminder_title
-                                    or appt_title in reminder_note
+                                # 只接受完全相等的标题：子串命中的通用词
+                                # （「复诊」）会把提醒挂到无关同号预约，
+                                # 取消该预约时会静默删除这条提醒
+                                hint_ok = bool(
+                                    reminder_title.strip()
+                                    == appt_title.strip()
+                                    or reminder_note.strip()
+                                    == appt_title.strip()
                                 )
                             if hint_ok:
                                 appointment_id = int(appt_row["id"])
@@ -11524,7 +11588,35 @@ class SessionStore:
                             appointment_id, medication_id,
                             vaccination_id,
                         )
-                        if identity_key not in existing_reminder_counts:
+                        if done:
+                            if (
+                                identity_key
+                                not in existing_reminder_done_counts
+                            ):
+                                done_row = self._conn.execute(
+                                    """
+                                    SELECT COUNT(*) AS total FROM reminders
+                                     WHERE title = ? AND profile = ?
+                                       AND note = ? AND session_id = ?
+                                       AND due_at = ? AND advance_days = ?
+                                       AND repeat_days = ?
+                                       AND COALESCE(repeat_until, '') = ?
+                                       AND appointment_id = ?
+                                       AND medication_id = ?
+                                       AND vaccination_id = ?
+                                       AND done = 1
+                                    """,
+                                    (
+                                        title, profile, note, session_id,
+                                        due_at, advance_days, repeat_days,
+                                        repeat_until, appointment_id,
+                                        medication_id, vaccination_id,
+                                    ),
+                                ).fetchone()
+                                existing_reminder_done_counts[
+                                    identity_key
+                                ] = int(done_row["total"] if done_row else 0)
+                        elif identity_key not in existing_reminder_counts:
                             count_row = self._conn.execute(
                                 """
                                 SELECT COUNT(*) AS total FROM reminders
@@ -11555,7 +11647,13 @@ class SessionStore:
                         imported_reminder_counts[(identity_key, done)] = (
                             seen + 1
                         )
-                        known = existing_reminder_counts[identity_key]
+                        known = (
+                            existing_reminder_done_counts.get(
+                                identity_key, 0
+                            )
+                            if done
+                            else existing_reminder_counts[identity_key]
+                        )
                         # 同一文件内的重复行只导入一次；库中已有同身份
                         # 提醒（任何完成状态都算）时整组跳过，避免把
                         # 已完成提醒重新导入成新的待办副本
@@ -11615,12 +11713,32 @@ class SessionStore:
                                 (appointment_id, profile, title),
                             ).fetchone()
                         if existing_pending is not None:
-                            if reminder_id > 0:
-                                raw_reminder_id_map.setdefault(
-                                    reminder_id,
-                                    int(existing_pending["id"]),
-                                )
-                            continue
+                            pending_id = int(existing_pending["id"])
+                            reusable = (
+                                pending_id in pre_existing_reminder_ids
+                                and pending_id not in imported_reminder_ids
+                            )
+                            if reusable and backup_reminder_title_counts.get(
+                                (raw_appointment_id, title), 0
+                            ) > 1:
+                                same_row = self._conn.execute(
+                                    "SELECT 1 FROM reminders WHERE id = ?"
+                                    " AND note = ? AND session_id = ?"
+                                    " AND advance_days = ? AND repeat_days = ?"
+                                    " AND COALESCE(repeat_until, '') = ?",
+                                    (
+                                        pending_id, note, session_id,
+                                        advance_days, repeat_days,
+                                        repeat_until,
+                                    ),
+                                ).fetchone()
+                                reusable = same_row is not None
+                            if reusable:
+                                if reminder_id > 0:
+                                    raw_reminder_id_map.setdefault(
+                                        reminder_id, pending_id,
+                                    )
+                                continue
                     cursor = self._conn.execute(
                         """
                         INSERT INTO reminders(
@@ -13859,11 +13977,26 @@ class SessionStore:
                         )
                         if not linked_id:
                             continue
+                        linked_note = self._conn.execute(
+                            "SELECT note FROM reminders WHERE id = ?"
+                            " AND done = 0 AND appointment_id = 0",
+                            (linked_id,),
+                        ).fetchone()
+                        note_text = (
+                            str(linked_note["note"] or "")
+                            if linked_note is not None else ""
+                        )
+                        refreshed_note = re.sub(
+                            r"^复诊\s*\d{4}-\d{2}-\d{2}",
+                            f"复诊 {str(reminder_due)[:10]}",
+                            note_text,
+                        )
                         cursor = self._conn.execute(
-                            "UPDATE reminders SET due_at = ?, updated_at = ?"
+                            "UPDATE reminders SET due_at = ?, note = ?,"
+                            " updated_at = ?"
                             " WHERE id = ? AND done = 0"
                             " AND appointment_id = 0",
-                            (reminder_due, now, linked_id),
+                            (reminder_due, refreshed_note, now, linked_id),
                         )
                         detached_updated += int(cursor.rowcount or 0)
                     if updated.rowcount == 0 and not detached_updated:
@@ -13936,6 +14069,12 @@ class SessionStore:
                                     rebuild = False
                         rebuilt_id = _create_reminder() if rebuild else 0
                         if rebuilt_id:
+                            # 系统刚按用户意愿重建提醒：删除墓碑必须
+                            # 撤销，否则取消→恢复待就诊时又被墓碑拦住
+                            self._conn.execute(
+                                "DELETE FROM app_state WHERE key = ?",
+                                (f"reminder_deleted_{int(appointment_id)}",),
+                            )
                             self._conn.execute(
                                 "UPDATE visit_records"
                                 " SET followup_reminder_id = ?,"
@@ -14469,6 +14608,22 @@ class SessionStore:
                 "DELETE FROM reminders WHERE done = 0 AND appointment_id = ?",
                 (int(appointment_id),),
             )
+            # 就诊仍链接的脱钩待办（reopen 降级）同样随预约删除，
+            # 否则删除后留下无主幽灵提醒
+            linked_rows = self._conn.execute(
+                "SELECT DISTINCT followup_reminder_id FROM visit_records"
+                " WHERE followup_appointment_id = ?"
+                " AND followup_reminder_id != 0",
+                (int(appointment_id),),
+            ).fetchall()
+            for link_row in linked_rows:
+                linked_id = int(link_row["followup_reminder_id"] or 0)
+                if linked_id:
+                    self._conn.execute(
+                        "DELETE FROM reminders WHERE id = ? AND done = 0"
+                        " AND appointment_id = 0",
+                        (linked_id,),
+                    )
             # 已完成提醒保留历史，但不能继续指向已删除的预约：
             # 否则重新打开会复活一条悬空待办并造成重复提醒
             self._conn.execute(
@@ -16680,7 +16835,7 @@ class SessionStore:
                 f"""
                 SELECT id, profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
-                       started_at, stopped_at, stop_reason,
+                       started_at, stopped_at, stop_reason, resumed_at,
                        created_at, updated_at,
                        (
                            SELECT MAX(taken_at) FROM medication_logs l
@@ -16699,12 +16854,20 @@ class SessionStore:
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
                               AND l.taken_at >= ? AND l.taken_at < ?
+                              AND (
+                                  medications.resumed_at = ''
+                                  OR l.taken_at >= medications.resumed_at
+                              )
                        ) AS week_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
                             WHERE l.medication_id = medications.id
                               AND l.skipped = 0
                               AND l.taken_at >= ? AND l.taken_at < ?
+                              AND (
+                                  medications.resumed_at = ''
+                                  OR l.taken_at >= medications.resumed_at
+                              )
                        ) AS range_count,
                        (
                            SELECT COUNT(*) FROM medication_logs l
@@ -16838,7 +17001,7 @@ class SessionStore:
                 """
                 SELECT profile, name, dose, frequency, note, active,
                        stock, stock_unit, low_stock_threshold, expiry_date,
-                       started_at, stopped_at, stop_reason
+                       started_at, stopped_at, stop_reason, resumed_at
                   FROM medications WHERE id = ?
                 """,
                 (medication_id,),
@@ -16876,16 +17039,13 @@ class SessionStore:
                 # 重新启用：旧停药日期/原因不再适用，否则用药编辑
                 # 表单原样回传的停药日会把在用药物从依从统计里整段
                 # 排除（第七十三轮审查）
-                resume_after_stop = bool(
-                    str(previous["stopped_at"] or "").strip()
-                    or str(previous["stop_reason"] or "").strip()
-                )
                 normalized["stopped_at"] = ""
                 normalized["stop_reason"] = ""
-                if resume_after_stop:
-                    # 停用区间不应计入应服次数：当前疗程从今天重新
-                    # 起算（旧开始/停药仍保留在 medication_history）
-                    normalized["started_at"] = now[:10]
+                normalized["resumed_at"] = now
+                # 停用区间不应计入应服次数：只要发生 停用→启用
+                # （包括列表按钮只发送 active 的场景），当前疗程就
+                # 从今天重新起算（旧记录保留在 medication_history）
+                normalized["started_at"] = now[:10]
             # 只有库存基线实际变化（盘点/换单位）时才清空历史打卡的
             # stock_delta；普通编辑即使回传当前库存也不能破坏历史扣减。
             reset_stock = (
@@ -16899,7 +17059,7 @@ class SessionStore:
                        note = ?, active = ?, stock = ?, stock_unit = ?,
                        low_stock_threshold = ?, expiry_date = ?,
                        started_at = ?, stopped_at = ?, stop_reason = ?,
-                       updated_at = ?
+                       resumed_at = ?, updated_at = ?
                  WHERE id = ?
                 """,
                 (
@@ -16916,6 +17076,7 @@ class SessionStore:
                     normalized["started_at"],
                     normalized["stopped_at"],
                     normalized["stop_reason"],
+                    str(normalized.get("resumed_at") or ""),
                     now,
                     medication_id,
                 ),

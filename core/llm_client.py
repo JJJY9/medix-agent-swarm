@@ -307,9 +307,10 @@ def classify_llm_error(exc: Exception) -> LLMError:
             status_code=status,
         )
 
+    # 未分类错误不把原始消息（可能含患者文本/供应商回显）带给用户
     return LLMError(
         "llm_error",
-        f"模型调用失败：{message[:200]}",
+        "模型调用失败，请稍后重试或联系管理员。",
         retryable=False,
         status_code=status,
     )
@@ -454,7 +455,13 @@ class LLMClient:
         except LLMError:
             raise
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
+            # 供应商错误体可能回显请求内容：只记录异常类型与状态码，
+            # 不把原始消息（可能含患者问诊内容）写进日志
+            logger.error(
+                "LLM call failed: %s status=%s",
+                type(e).__name__,
+                getattr(e, "status_code", None),
+            )
             raise classify_llm_error(e) from e
 
     async def _sleep_before_retry(self, attempt: int) -> None:
@@ -681,7 +688,11 @@ class LLMClient:
         except LLMError:
             raise
         except Exception as e:
-            logger.error(f"LLM stream call failed: {e}")
+            logger.error(
+                "LLM stream call failed: %s status=%s",
+                type(e).__name__,
+                getattr(e, "status_code", None),
+            )
             raise classify_llm_error(e) from e
 
     async def chat_with_tools(
@@ -789,7 +800,11 @@ class LLMClient:
         except LLMError:
             raise
         except Exception as e:
-            logger.error(f"LLM call with tools failed: {e}")
+            logger.error(
+                "LLM call with tools failed: %s status=%s",
+                type(e).__name__,
+                getattr(e, "status_code", None),
+            )
             raise classify_llm_error(e) from e
 
     def create_tool_message(

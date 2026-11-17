@@ -468,4 +468,5 @@ def test_frontend_round54_guards():
         app_js.index("window.addEventListener('pagehide', flushDraftNow);")
     ]
     assert "composerIsDetached()" in flush
-    assert "safeSessionRemove(INFLIGHT_QUESTION_KEY);" in flush
+    # 第七十六轮：清空输入框只丢弃属于当前会话的在途主诉
+    assert "clearInflightForCurrentSession();" in flush

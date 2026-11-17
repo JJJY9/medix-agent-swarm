@@ -3503,11 +3503,16 @@ async def require_access_token(request: Request, call_next):
                 if (
                     shared_scope
                     and not gate_unprovable
-                    # 只有经受信代理的请求才需要单源贡献上限：直连
-                    # 回环/直连来源本身就是可证明的单一客户端，仍按
-                    # 自身桶阈值限流
-                    and _trust_proxy_headers()
-                    and _is_trusted_proxy_peer(peer_host)
+                    # 带地址头而落入共享桶（未受信转发/代理无地址头）
+                    # 时同样需要单源贡献上限：直连且完全无地址头的
+                    # 来源本身可证明，仍按自身桶阈值限流
+                    and (
+                        _has_proxy_headers(request)
+                        or (
+                            _trust_proxy_headers()
+                            and _is_trusted_proxy_peer(peer_host)
+                        )
+                    )
                 ):
                     limiter_key = (
                         loopback_bucket_key
@@ -3555,12 +3560,22 @@ async def require_access_token(request: Request, call_next):
                 ):
                     # 共享桶只统计「尚未被自身限流挡住」的失败：攻击者
                     # 单键满载后不再继续累积共享桶，避免拖慢本机用户；
-                    # 轮换地址的攻击每个新键仍会为共享桶计数
-                    shared_allowed, shared_retry = (
-                        auth_failure_limiter_loopback.check(
-                            loopback_bucket_key
+                    # 轮换地址的攻击每个新键仍会为共享桶计数。
+                    # 单源贡献上限按可证明的 TCP 对端计：轮换伪造
+                    # X-Forwarded-For 不能把共享回环桶填满
+                    source_allowed, _source_retry = (
+                        auth_failure_limiter.check(
+                            f"shared-src:{loopback_bucket_key}"
                         )
                     )
+                    shared_allowed = True
+                    shared_retry = 0.0
+                    if source_allowed:
+                        shared_allowed, shared_retry = (
+                            auth_failure_limiter_loopback.check(
+                                loopback_bucket_key
+                            )
+                        )
                     if not shared_allowed:
                         return add_security_headers(JSONResponse(
                             status_code=429,
@@ -8596,8 +8611,18 @@ async def _weekly_report_impl(
 
     active_meds = [item for item in medications if item.get("active")]
     meds_by_id = {item["id"]: item for item in medications}
+    # 只有重新启用过的药物才需要剔除停用区间的旧打卡；
+    # 普通药物允许补录早于开始日期的打卡
+    med_start_by_id = {
+        item["id"]: str(item.get("resumed_at") or "")[:10]
+        for item in medications
+    }
     doses_by_medication: dict = {}
     for log in taken_logs:
+        start_text = med_start_by_id.get(log["medication_id"], "")
+        if start_text and str(log.get("taken_at") or "")[:10] < start_text:
+            # 旧疗程打卡不计入当前疗程依从率
+            continue
         key = log["medication_id"]
         entry = doses_by_medication.setdefault(key, {
             "medication_id": key,
@@ -8631,8 +8656,12 @@ async def _weekly_report_impl(
     for log in taken_logs:
         # 必要时/无法估算频次的药物只展示打卡，不进入依从率分子，
         # 否则会出现“按时药一次没吃但依从率 100%”的假象
-        if log["medication_id"] in adherence_med_ids:
-            adherence_taken += 1
+        if log["medication_id"] not in adherence_med_ids:
+            continue
+        start_text = med_start_by_id.get(log["medication_id"], "")
+        if start_text and str(log.get("taken_at") or "")[:10] < start_text:
+            continue
+        adherence_taken += 1
     skip_reason_counts: dict = {}
     for log in skip_logs:
         reason = str(log.get("skip_reason") or "other")
@@ -10196,7 +10225,10 @@ def _build_health_insights(
     insights.sort(
         key=lambda item: HEALTH_INSIGHT_LEVEL_ORDER.get(item["level"], 9)
     )
-    return insights[:8]
+    # 家庭范围逐成员告警数量随成员数增长：8 条会把靠后成员的目标/
+    # 血糖告警整体截掉，按成员规模放宽上限
+    limit = 8 if not family_scope else max(8, 8 * 3)
+    return insights[:limit]
 
 
 @app.get("/api/health/insights")
