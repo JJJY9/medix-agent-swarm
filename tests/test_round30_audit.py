@@ -267,7 +267,7 @@ def test_stopped_medication_stops_expected_doses():
     started = (now - timedelta(days=20)).isoformat(timespec="minutes")
     stopped = (now - timedelta(days=1)).isoformat(timespec="minutes")
     expected = expected_doses_for_period(
-        "每日一次", started, now, 7, stopped
+        "每日一次", started, now, 7, stopped, False
     )
     assert expected == 6
 

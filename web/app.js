@@ -839,6 +839,12 @@ let profileSelectionSeq = 0;
 //: 当前是否正在恢复会话（用于切换档案时按“已有会话”处理）
 let sessionRestoreInFlight = false;
 const previousTabSession = safeSessionGet('medix.session.tab');
+//: 本标签页启动时没有自己的会话、从共享 localStorage 采纳了其它
+//: 标签页的会话：本标签页补充信息可能属于另一位患者，恢复时必须
+//: 按档案冲突处理，否则旧患者的病史会随采纳的会话一起提交
+const adoptedSharedSession = Boolean(
+  sessionId && !initialSessionFromUrl && !previousTabSession
+);
 const pendingDeepLinkSession = safeSessionGet(DEEP_LINK_PENDING_KEY);
 if (initialSessionFromUrl) {
   persistSessionId(initialSessionFromUrl);
@@ -20793,6 +20799,25 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     );
     const useDeepLinkContext = deepLinkedSession && !deepLinkEdited;
     const deepLinkDraftConflict = deepLinkedSession && deepLinkEdited;
+    // 采纳其它标签页的会话：本标签页的补充信息若属于另一位档案
+    // （有已保存的档案选择且与会话档案不同），既不能用旧快照覆盖
+    // 草稿，也不能把旧患者的年龄/既往史/过敏史带进刚采纳的会话；
+    // 保留表单与档案选择，下一问新建会话
+    const adoptedProfileConflict = Boolean(
+      adoptedSharedSession
+      && !deepLinkedSession
+      && data.profile
+      && readStoredProfile()
+      && readStoredProfile() !== data.profile
+      && safeSessionGet(CONTEXT_STORAGE_KEY)
+    );
+    if (adoptedProfileConflict) {
+      setPendingSessionReset(true);
+      setVitals(
+        'warn',
+        '已切换到其它标签页的会诊：当前补充信息属于另一位患者，下一问将开启新会诊'
+      );
+    }
     const pendingReset = pendingSessionReset || deepLinkDraftConflict;
     if (deepLinkDraftConflict) {
       // 深链快照与用户草稿冲突：不覆盖草稿，也不把深链档案塞进
@@ -21475,6 +21500,7 @@ async function send(question, composerSubmit = false) {
         // 忽略
       }
       restoreComposer(question);
+      lastRestoredComposerText = els.input.value;
       preserveDraftProfile(sendProfile, question);
       renderError('档案已切换，本轮会诊未提交，主诉已放回输入框。');
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
@@ -21486,6 +21512,10 @@ async function send(question, composerSubmit = false) {
       // 本轮未落库时主诉不能只留在卡片闭包里：刷新/新建会诊后
       // 那份描述将无法恢复
       restoreComposer(question);
+      // 与通用错误分支一致地记录恢复快照：之后「继续本次会诊」
+      // 成功落库时才能剥离输入框/草稿里的同一主诉，避免回车
+      // 重复提交、重复计费（第七十三轮审查）
+      lastRestoredComposerText = els.input.value;
       preserveDraftProfile(sendProfile, question);
       renderStopped({ question, askTurn, baselineMessageId });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
@@ -22711,6 +22741,15 @@ function preserveDraftProfile(profile, text) {
   // restoreComposer 触发的 saveDraft 会用当前档案重写草稿归属：
   // 稍后把发送时的档案写回，换档/改名后旧患者的主诉仍会被拦截
   if (!profile) return;
+  // 归属必须同步写回：提交入口的 clearDraft 已清空草稿归属，若
+  // 只在 260ms 定时器里写，这期间再次回车会读到空归属、跳过跨
+  // 患者拦截，把上一位患者的主诉按新档案发出（第七十三轮审查）
+  try {
+    draftProfileMemory = profile;
+    safeSessionSet(DRAFT_PROFILE_KEY, profile);
+  } catch {
+    // 隐私模式忽略
+  }
   clearTimeout(restoredDraftProfileTimer);
   restoredDraftProfileTimer = setTimeout(() => {
     try {

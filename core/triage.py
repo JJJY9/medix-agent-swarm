@@ -616,6 +616,7 @@ _POST_POSITIVE_CUES = (
 #: 偶发/冷汗等阳性词（「文章说偶尔胸痛没事」不是本人病程）
 _CURRENT_COURSE_CUES = (
     "加重", "加剧", "恶化", "难忍", "剧痛", "大汗", "出汗",
+    "冷汗", "冒冷汗", "虚汗",
     "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
     "剧烈", "明显", "严重", "厉害", "得很", "得厉害",
 )
@@ -707,6 +708,9 @@ def _enum_negated(prefix: str) -> bool:
              "伴有", "伴随", "偶发", "偶尔", "偶感", "偶见", "间或",
              "间发", "阵发", "反复", "多次")
         ):
+            return False
+        if text_item.endswith(("伴", "并", "且")):
+            # 「无发热、咳嗽伴胸痛」：伴发成分是新的阳性描述
             return False
         if any(
             cue in text_item
@@ -988,8 +992,10 @@ def _third_person_symptom_subject(text: str) -> bool:
 
 
 _URGENT_HELP_RE = re.compile(
-    r"(?:怎么办|怎么处理|如何处理|该怎[么样]办|"
-    r"要不要紧|严重吗|要不要去医院|需要去医院吗|要去医院吗)"
+    r"(?:怎么办|怎么办啊|怎么处理|如何处理|该怎[么样]办|我该怎么办|"
+    r"要不要紧|要紧吗|严重吗|严不严重|严重不严重|危险吗|"
+    r"有没有事|会不会有事|要不要去医院|需要去医院吗|要去医院吗|"
+    r"用不用去医院|需要看医生吗|要看医生吗|怎么缓解|怎么治疗)"
 )
 
 
@@ -1077,6 +1083,7 @@ def _clean_complaint_clause(
             )
             or _definition_multi_symptom(rest)
             or _has_head_trauma(rest)
+            or (help_follows and _is_red_flag_text(rest))
         ):
             return _clean_complaint_clause(rest, patient_context_seen, help_follows)
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
@@ -1296,11 +1303,32 @@ def _patient_course_before_quote(clause: str) -> bool:
     prefix = clause[:min(positions)]
     if not any(word in prefix for word in _EDUCATION_SYMPTOM_WORDS):
         return False
-    return bool(
+    if (
         _COURSE_MARKER_RE.search(prefix) is not None
         or any(marker in prefix for marker in _COURSE_MARKERS)
+        or any(word in prefix for word in _CURRENT_COURSE_CUES)
+        or any(word in prefix for word in _POST_POSITIVE_CUES)
         or _EDUCATION_CURRENT_RE.search(prefix) is not None
+    ):
+        return True
+    # 「胸痛剧烈网上查了」「咯血网上查了」：引用词之前只有症状词与
+    # 程度修饰（没有「什么是/介绍」等术语引导），症状本身仍是本人
+    # 主诉，不能因为没写时间词就当成科普引用丢弃（第七十三轮审查）
+    residue = prefix.strip(" ，,、。！？!?…—-~～")
+    for word in sorted(
+        _EDUCATION_SYMPTOM_WORDS
+        + _CURRENT_COURSE_CUES
+        + _POST_POSITIVE_CUES,
+        key=len,
+        reverse=True,
+    ):
+        residue = residue.replace(word, "")
+    residue = re.sub(
+        r"[的了着过是在有又也都很更最太我本人他她它们伴并且和与及无没未否认]",
+        "",
+        residue,
     )
+    return not residue
 
 
 #: 以否定开头的分句（没有胸痛/无发热/否认咯血）不建立患者语境
@@ -1382,7 +1410,7 @@ def patient_complaint_text(text: str) -> str:
             if not text_follow:
                 continue
             help_follows = (
-                _URGENT_HELP_RE.fullmatch(text_follow) is not None
+                _URGENT_HELP_RE.search(text_follow) is not None
             )
             break
         cleaned = _clean_complaint_clause(
@@ -2153,6 +2181,9 @@ def _active_term_mention(text: str, term: str) -> bool:
         continuation = bool(
             _RESTART_TEXT_RE.search(continuation_window)
             or _CONTINUATION_AFTER_PAST.search(continuation_window)
+            # 「华法林，昨天停药了」：近期停药仍有抗凝作用
+            or _RECENT_STOP_PATTERN.search(continuation_window)
+            or _RECENT_NO_EAT_PATTERN.search(continuation_window)
         )
         if continuation and _restart_names_other_medication(
             continuation_window, text[max(0, start - 30):start]
@@ -2450,11 +2481,24 @@ def _active_medical_text(
             # 「以前吃华法林」是既往用药；含近期时长、「现在还在吃」
             # 或后续分句出现续用/持续用药线索（现在每天吃）时仍属
             # 当前用药
+            follow_stop_window = "；".join(
+                candidate.strip()
+                for candidate in clauses[index + 1:index + 3]
+                if candidate.strip()
+                and not any(
+                    marker in candidate
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+            )[:60]
             if (
                 _RESTART_TEXT_RE.search(clause)
                 or _RESTART_TEXT_RE.search(restart_window)
                 or _CONTINUATION_AFTER_PAST.search(clause)
                 or _CONTINUATION_AFTER_PAST.search(restart_window)
+                # 「我之前吃华法林，昨天停药了」：近期停药仍处抗凝状态，
+                # 保留药名分句供 _active_term_mention 关联
+                or _RECENT_STOP_PATTERN.search(follow_stop_window)
+                or _RECENT_NO_EAT_PATTERN.search(follow_stop_window)
             ):
                 kept.append(clause)
             continue

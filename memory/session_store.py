@@ -1093,8 +1093,13 @@ def expected_doses_for_period(
     now: datetime,
     days: int = 7,
     stopped_at: str = "",
+    active: bool = True,
 ) -> Optional[int]:
-    """按频次、用药开始与停止时间、统计天数估算应服次数。"""
+    """按频次、用药开始与停止时间、统计天数估算应服次数。
+
+    停药日只在药物已停用时生效：重新启用的用药若保留历史停药
+    日期，不能被整段截断为 0 次（第七十三轮审查）。
+    """
     per_day = parse_frequency_doses_per_day(frequency)
     if not per_day:
         return None
@@ -1105,7 +1110,7 @@ def expected_doses_for_period(
         created = now.date()
     start = max(created, (now - timedelta(days=days - 1)).date())
     end_date = now.date()
-    stop_text = str(stopped_at or "").strip()[:19]
+    stop_text = str(stopped_at or "").strip()[:19] if not active else ""
     if stop_text:
         try:
             stop_date = datetime.fromisoformat(stop_text).date()
@@ -1122,11 +1127,11 @@ def expected_doses_for_period(
 
 def _expected_week_doses(
     frequency: str, created_at: str, now: datetime,
-    stopped_at: str = "",
+    stopped_at: str = "", active: bool = True,
 ) -> Optional[int]:
     """按频次、开始与停止时间估算近 7 天应服次数。"""
     return expected_doses_for_period(
-        frequency, created_at, now, 7, stopped_at
+        frequency, created_at, now, 7, stopped_at, active
     )
 
 
@@ -4260,6 +4265,10 @@ class SessionStore:
             ("lab_results", "tested_at"),
             ("visit_records", "visit_date"),
             ("vaccinations", "vaccinated_at"),
+            # 完成复查计划同样是一次健康记录：不纳入会让家庭卡在
+            # 完成当天显示「今日未记录」、连续天数不前进，与周报的
+            # 复查完成口径矛盾（第七十三轮审查）
+            ("care_items", "last_done_at"),
         ):
             conditions = [f"substr({column}, 1, 10) >= ?"]
             values: List[Any] = [cutoff]
@@ -4334,6 +4343,7 @@ class SessionStore:
             ("lab_results", "tested_at"),
             ("visit_records", "visit_date"),
             ("vaccinations", "vaccinated_at"),
+            ("care_items", "last_done_at"),
         ):
             parts.append(
                 f"SELECT profile, substr({column}, 1, 10) AS day"
@@ -5028,6 +5038,12 @@ class SessionStore:
         calls = _usage_count(llm_calls)
         if not (prompt or completion or total or calls):
             return
+        try:
+            profile_text = _normalize_profile_name(profile, strict=True)
+        except ValueError:
+            # 失败/中止路径同样拒绝不可打印/路径仿冒的档案名：
+            # usage_events 没有删除接口，注入后长期残留
+            profile_text = ""
         with self._write_and_checkpoint():
             self._conn.execute(
                 """
@@ -5038,7 +5054,7 @@ class SessionStore:
                 """,
                 (
                     str(session_id or "").strip()[:64],
-                    _normalize_profile_name(profile),
+                    profile_text,
                     prompt, completion, total, calls, self._now(),
                 ),
             )
@@ -5491,6 +5507,37 @@ class SessionStore:
                     ambiguous_map[raw_id] = expected_content
             return None
 
+        def _candidate_foreign_backup_row(candidate: int) -> bool:
+            """候选是否其实是另一成员同秒备份行的改挂存活版本。
+
+            同源库里本地 id 与备份主键一一对应：候选主键命中另一档案
+            的备份行、且与当前行主键不同时，它属于那条记录（被改挂），
+            不能被当前成员用「本地编辑过」认领，否则另一成员被删的
+            记录丢失、改挂前的旧副本会在原成员名下复活。
+            """
+            if (
+                not backup_ids
+                or not backup_profiles
+                or raw_id <= 0
+                or candidate == raw_id
+                or candidate not in backup_ids
+            ):
+                return False
+            other_profile = backup_profiles.get(candidate)
+            if other_profile is None:
+                return False
+            current_profile = str(row_profile or "")
+            if not current_profile and columns and columns[0] == "profile":
+                current_profile = str(values[0])
+            if not current_profile:
+                return False
+            if not _same_backup_origin():
+                return False
+            return (
+                _normalize_profile_name(other_profile)
+                != _normalize_profile_name(current_profile)
+            )
+
         def _content_owned_by_other(candidate: int) -> bool:
             """候选内容是否精确等于备份里另一条记录（而非当前行）。
 
@@ -5578,6 +5625,27 @@ class SessionStore:
                     break
             state[cache_key] = result
             return result
+
+        def _local_holes_are_backup_ids() -> bool:
+            """本地缺失的主键是否正好落在备份主键集合里。
+
+            新库导入旧备份后自增 id 会重新编号：若备份主键范围内丢失
+            的本地 id 不在备份集合中，说明 id 空间已经错位，本地
+            id==备份主键的行可能其实是备份里另一条记录，不能据此
+            自认领（否则被删记录丢失、旧副本复活）。
+            """
+            if not backup_ids:
+                return True
+            try:
+                rows = self._conn.execute(
+                    f"SELECT id FROM {table} WHERE id <= ?",
+                    (max(backup_ids),),
+                ).fetchall()
+            except sqlite3.Error:
+                return False
+            local_ids = {int(row["id"]) for row in rows}
+            missing = set(range(1, max(backup_ids) + 1)) - local_ids
+            return missing <= set(backup_ids)
 
         def _candidate_edited(candidate: int) -> bool:
             try:
@@ -7029,6 +7097,10 @@ class SessionStore:
                             return _ambiguous()
                         if _content_owned_by_other(sole):
                             return _ambiguous()
+                        if _candidate_foreign_backup_row(sole):
+                            # 候选是另一成员同秒备份行改挂后的存活
+                            # 版本：本行按被删记录补插
+                            return _ambiguous()
                         if (
                             not _tail_matches(sole)
                             and _tail_prefers_sibling_any_content(sole)
@@ -7230,6 +7302,17 @@ class SessionStore:
             and (
                 backup_group_size <= 1
                 or local_group_size >= backup_group_size
+                # 同源库中本地 id==备份主键且创建时间一致：即使组内
+                # 确有缺行（另一条同秒记录被删），这一行也确定是本行
+                # 的存活版本，编辑后应认领自身而不是补插旧副本
+                or (
+                    _same_backup_origin()
+                    and _local_holes_are_backup_ids()
+                    and (
+                        _edited_after_export()
+                        or _candidate_edited(raw_id)
+                    )
+                )
             )
             and (
                 _soft_or_edited(raw_id)
@@ -7754,7 +7837,10 @@ class SessionStore:
                 return _ambiguous()
         if not candidates:
             return _ambiguous()
-        return _claim(min(candidates))
+        sole = min(candidates)
+        if _candidate_foreign_backup_row(sole):
+            return _ambiguous()
+        return _claim(sole)
 
     @staticmethod
     def _identity_group_sizes(
@@ -8324,18 +8410,17 @@ class SessionStore:
                 for raw in raw_profiles[:IMPORT_LIST_LIMITS["profiles"]]:
                     if not isinstance(raw, dict):
                         continue
-                    name = " ".join(
-                        str(raw.get("name") or "").split()
-                    )[:MAX_PROFILE_NAME_LENGTH]
-                    if (
-                        not name
-                        or name in {".", ".."}
-                        or "/" in name
-                        or "\\" in name
-                        or any(ord(ch) < 32 for ch in name)
-                    ):
-                        # 路径分隔符让 /api/profiles/{name} 无法匹配，
-                        # 档案将无法删除或改名：导入时直接判为非法
+                    try:
+                        # 与写入边界共用 strict 规则：路径分隔符会让
+                        # /api/profiles/{name} 无法匹配，零宽字符还会让
+                        # 该档案之后任何记录都写不进去（第七十三轮审查）
+                        name = _normalize_profile_name(
+                            raw.get("name"), strict=True
+                        )
+                    except ValueError:
+                        invalid += 1
+                        continue
+                    if not name:
                         invalid += 1
                         continue
                     cleaned = _normalize_profile_context(raw.get("context"))
@@ -11390,11 +11475,13 @@ class SessionStore:
                     else:
                         # CSV 没有创建时间：按标题/档案/备注/到期日与
                         # 提醒设置计数判重（提前天数/重复规则不同是
-                        # 两条合法提醒，不能合并）
+                        # 两条合法提醒，不能合并）。done 不参与身份：
+                        # 本地完成后重导入同一备份时同一条提醒已在库，
+                        # 否则会把旧待办无限复制出来（第七十三轮审查）
                         identity_key = (
                             title, profile, note, session_id, due_at,
                             advance_days, repeat_days, repeat_until,
-                            done, appointment_id, medication_id,
+                            appointment_id, medication_id,
                             vaccination_id,
                         )
                         if identity_key not in existing_reminder_counts:
@@ -11406,28 +11493,33 @@ class SessionStore:
                                    AND due_at = ? AND advance_days = ?
                                    AND repeat_days = ?
                                    AND COALESCE(repeat_until, '') = ?
-                                   AND done = ? AND appointment_id = ?
+                                   AND appointment_id = ?
                                    AND medication_id = ?
                                    AND vaccination_id = ?
                                 """,
                                 (
                                     title, profile, note, session_id,
                                     due_at, advance_days, repeat_days,
-                                    repeat_until, done, appointment_id,
+                                    repeat_until, appointment_id,
                                     medication_id, vaccination_id,
                                 ),
                             ).fetchone()
                             existing_reminder_counts[identity_key] = int(
                                 count_row["total"] if count_row else 0
                             )
-                        seen = imported_reminder_counts.get(identity_key, 0)
-                        imported_reminder_counts[identity_key] = seen + 1
-                        # 同一文件内的完全重复行只导入一次；重复导入
-                        # 同一文件时按库中已有数量跳过
-                        skip_existing = (
-                            seen >= 1
-                            or existing_reminder_counts[identity_key] > 0
+                        # 文件内重复只按「身份+完成状态」去重：同一
+                        # 备份里一条待办、一条已完成是两条合法提醒
+                        seen = imported_reminder_counts.get(
+                            (identity_key, done), 0
                         )
+                        imported_reminder_counts[(identity_key, done)] = (
+                            seen + 1
+                        )
+                        known = existing_reminder_counts[identity_key]
+                        # 同一文件内的重复行只导入一次；库中已有同身份
+                        # 提醒（任何完成状态都算）时整组跳过，避免把
+                        # 已完成提醒重新导入成新的待办副本
+                        skip_existing = seen >= 1 or known > 0
                         if skip_existing:
                             if reminder_id > 0:
                                 existing_row = self._conn.execute(
@@ -11438,7 +11530,7 @@ class SessionStore:
                                        AND due_at = ? AND advance_days = ?
                                        AND repeat_days = ?
                                        AND COALESCE(repeat_until, '') = ?
-                                       AND done = ? AND appointment_id = ?
+                                       AND appointment_id = ?
                                        AND medication_id = ?
                                        AND vaccination_id = ?
                                      ORDER BY id LIMIT 1
@@ -11446,7 +11538,7 @@ class SessionStore:
                                     (
                                         title, profile, note, session_id,
                                         due_at, advance_days, repeat_days,
-                                        repeat_until, done, appointment_id,
+                                        repeat_until, appointment_id,
                                         medication_id, vaccination_id,
                                     ),
                                 ).fetchone()
@@ -12420,6 +12512,9 @@ class SessionStore:
         new_name = " ".join(str(new_name or "").split())[:MAX_PROFILE_NAME_LENGTH]
         if not old_name or not new_name:
             raise ValueError("档案名称不能为空")
+        # 与写入边界同一规则：含不可打印字符（零宽连接符等）的新名字
+        # 会让该档案此后所有写入被 strict 规范化拒绝（第七十三轮审查）
+        new_name = _normalize_profile_name(new_name, strict=True)
 
         with self._lock, self._conn:
             def _profile_rows(name: str) -> bool:
@@ -16575,6 +16670,7 @@ class SessionStore:
                     row["started_at"] or row["created_at"],
                     now,
                     row["stopped_at"] or "",
+                    bool(row["active"]),
                 ),
                 "expected_range_doses": expected_doses_for_period(
                     row["frequency"],
@@ -16582,6 +16678,7 @@ class SessionStore:
                     now,
                     days,
                     row["stopped_at"] or "",
+                    bool(row["active"]),
                 ),
             }
             for row in rows
@@ -16673,6 +16770,15 @@ class SessionStore:
             )
             if normalized is None:
                 return None
+            if (
+                bool(int(normalized["active"] or 0))
+                and not int(previous["active"] or 0)
+            ):
+                # 重新启用：旧停药日期/原因不再适用，否则用药编辑
+                # 表单原样回传的停药日会把在用药物从依从统计里整段
+                # 排除（第七十三轮审查）
+                normalized["stopped_at"] = ""
+                normalized["stop_reason"] = ""
             # 只有库存基线实际变化（盘点/换单位）时才清空历史打卡的
             # stock_delta；普通编辑即使回传当前库存也不能破坏历史扣减。
             reset_stock = (
@@ -17828,7 +17934,12 @@ class SessionStore:
             if not (30 <= second <= 200) or first <= second:
                 return None
 
-        profile = _normalize_profile_name(profile)
+        try:
+            # 与写入边界同一 strict 规则：'../evil' 或零宽仿冒名会随
+            # list_used_profile_names 进入档案下拉/家庭档案导出
+            profile = _normalize_profile_name(profile, strict=True)
+        except ValueError:
+            return None
         now = self._now()
         with self._lock, self._conn:
             self._conn.execute(
@@ -18120,6 +18231,13 @@ class SessionStore:
                 """,
                 params,
             ).fetchone()
+            if appointment_key:
+                # 与 add_reminder 一致：重新建立该预约的提醒即撤销
+                # 「不再提醒」墓碑，避免取消/恢复待就诊时提醒消失
+                self._conn.execute(
+                    "DELETE FROM app_state WHERE key = ?",
+                    (f"reminder_deleted_{int(appointment_key)}",),
+                )
             if row is not None:
                 return {**dict(row), "done": False}, False
             cursor = self._conn.execute(
