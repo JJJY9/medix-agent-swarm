@@ -1401,6 +1401,49 @@ _FAMILY_MARKER_TAIL = (
     "爱人", "爷爷", "奶奶", "外公", "外婆", "岳父", "岳母",
     "公公", "婆婆", "哥", "姐", "弟", "妹",
 )
+#: 「我」后紧跟家属称谓时是定语（我爸爸/我妈），不是患者主语
+_FAMILY_AFTER_I = (
+    r"(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|姥爷|姥姥|老公|老婆|"
+    r"爱人|丈夫|妻子|儿子|女儿|儿|女|哥|姐|弟|妹|叔|姨|舅|姑|"
+    r"孩子|宝宝|家人|父亲|母亲)"
+)
+#: 患者在家属用药分句之后的续用/同样表述
+_PATIENT_CONTINUATION_RE = re.compile(
+    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"[^，。；;?？]{0,10}?(?:吃|服用|服|用|过敏|有|一样)"
+)
+
+
+def _drug_alias_set(text: str) -> set:
+    """分句里出现的药物别名集合（用于区分「我也在吃阿司匹林」）。"""
+    found = set()
+    lowered = str(text or "").lower()
+    for group in DRUG_GROUPS.values():
+        for alias, names in group:
+            if any(str(name).lower() in lowered for name in names):
+                found.add(alias)
+    return found
+
+
+def _patient_continuation_follows(
+    clauses: list, index: int, clause: str
+) -> bool:
+    """家属分句后 1-2 句是否为患者本人的同一药物续用/过敏。"""
+    current_aliases = _drug_alias_set(clause)
+    for follow in clauses[index + 1:index + 3]:
+        follow = str(follow or "").strip()
+        if not follow or not _PATIENT_CONTINUATION_RE.search(follow):
+            continue
+        follow_aliases = _drug_alias_set(follow)
+        if (
+            follow_aliases
+            and current_aliases
+            and not (follow_aliases & current_aliases)
+        ):
+            # 「我爸吃华法林，我也在吃阿司匹林」：换的是另一种药
+            continue
+        return True
+    return False
 
 
 def _patient_self_mentioned(clause: str) -> bool:
@@ -1410,6 +1453,20 @@ def _patient_self_mentioned(clause: str) -> bool:
     不能把家属用药算到患者头上；「我和我爸都吃」「我和我爸一起吃」
     「我、我爸都对青霉素过敏」才是患者本人的描述。
     """
+    lowered_clause = clause.lower()
+    family_first = bool(
+        re.search(
+            r"(?:和|跟|与|同|、)\s*我(?!"
+            + _FAMILY_AFTER_I +
+            r")",
+            clause,
+        )
+        and any(cue in clause for cue in ("都", "也", "均", "皆", "一起"))
+        and any(
+            marker in lowered_clause
+            for marker in _FAMILY_MEDICATION_MARKERS
+        )
+    )
     parallel_subject = bool(
         re.search(
             r"我(?:、|和|跟|与|同)[^，。；;?？]{0,12}"
@@ -1419,10 +1476,13 @@ def _patient_self_mentioned(clause: str) -> bool:
         or re.search(
             r"(?:都|也|均|皆)[^，。；;?？]{0,8}我", clause
         )
+        or family_first
         or re.search(
-            r"\b(?:my father|my mother|my husband|my wife|my son|"
-            r"my daughter|my parents|my family)\s+and\s+i\b",
-            clause.lower(),
+            r"\b(?:my father|my mother|my dad|my mom|my mum|"
+            r"my husband|my wife|my son|my daughter|my brother|"
+            r"my sister|my grandfather|my grandmother|my grandma|"
+            r"my grandpa|my parents|my family)\s+and\s+i\b",
+            lowered_clause,
         )
     )
     if parallel_subject:
@@ -1442,9 +1502,7 @@ def _patient_self_mentioned(clause: str) -> bool:
         # 「我爸爸/我妈…过敏」里的「我」是家属定语，不是患者本人；
         # 并列主语（我和我爸都对…过敏）已在上面的分支保留
         family_subject = re.match(
-            r"我(?:自己|本人)?(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|"
-            r"姥爷|姥姥|老公|老婆|爱人|丈夫|妻子|儿子|女儿|儿|女|"
-            r"哥|姐|弟|妹|叔|姨|舅|姑|孩子|宝宝|家人|父亲|母亲)",
+            r"我(?:自己|本人)?" + _FAMILY_AFTER_I,
             segment,
         )
         if not questioning and not family_subject:
@@ -1463,17 +1521,22 @@ def _patient_self_mentioned(clause: str) -> bool:
         family_inside = any(
             marker in between for marker in _FAMILY_MEDICATION_MARKERS
         )
-        parallel = bool(
-            re.search(
-                r"(?:和|跟|与)[^，。；;]{0,6}(?:都|也)|"
-                r"(?:都|也)[^，。；;]{0,6}(?:和|跟|与)",
-                between,
-            )
-        )
-        if family_inside and not parallel:
+        # 并列主语必须包含独立的患者「我」：我爸和我妈都吃华法林
+        # 不能因为「和…都」被当成患者本人用药
+        if family_inside and not parallel_subject:
             continue
         return True
-    if re.search(r"(?:^|[\s,;])i\s+(?:take|have|use)\b", clause.lower()):
+    english = re.sub(
+        r"\b(?:can|should|may|could|would|do|does|did|shall|will)\s+i\b",
+        "",
+        clause.lower(),
+    )
+    if re.search(
+        r"(?:^|[\s,;])i\s*'?(?:m|ve)\b"
+        r"|(?:^|[\s,;])i\s+(?:am|have|had|was|were|on|take|took|"
+        r"use|using|taking)\b",
+        english,
+    ):
         return True
     return False
 
@@ -1501,7 +1564,7 @@ def _patient_medication_text(text: str, context: Any = None) -> str:
     child_patient = _child_patient_context(context)
     kept: List[str] = []
     drop_next = False
-    for clause in clauses:
+    for index, clause in enumerate(clauses):
         current = clause.strip()
         if not current:
             continue
@@ -1539,6 +1602,11 @@ def _patient_medication_text(text: str, context: Any = None) -> str:
                 ) and not captured.lower().startswith("my "):
                     kept.append(captured)
                     continue
+            if _patient_continuation_follows(clauses, index, current):
+                # 「我爸吃华法林，我也在吃」：后一分句是患者本人的
+                # 同一药物/过敏原续用，不能把家属分句整句丢弃
+                kept.append(current)
+                continue
             drop_next = True
             continue
         kept.append(current)

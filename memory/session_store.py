@@ -7419,6 +7419,7 @@ class SessionStore:
                         sole = min(candidates)
                         if (
                             not _content_owned_by_other(sole)
+                            and not _candidate_foreign_backup_row(sole)
                             and not (
                                 _tail_prefers_sibling(sole)
                                 and not _tail_matches(sole)
@@ -7524,6 +7525,9 @@ class SessionStore:
                     if (
                         len(candidates) == 1
                         and not _content_owned_by_other(sole)
+                        # 候选原始主键命中另一成员的备份行：这是改挂
+                        # 过来的存活版本，本行按被删记录补插
+                        and not _candidate_foreign_backup_row(sole)
                         # 同内容孪生：候选尾字段精确命中同组另一条备份
                         # 行且不命中本行时，它是兄弟行的存活版本，本行
                         # 必须按原内容补插
@@ -7764,6 +7768,16 @@ class SessionStore:
                         and _candidate_soft_owned_by_other(
                             candidate, cross_profile=True
                         )
+                    )
+                    # 内容列已不属于本行、软字段又命中另一成员的备份
+                    # 行：即使尾字段恰好与本行相同（note/状态为空），
+                    # 也不能认领改挂行，被删记录必须补回
+                    or (
+                        not soft_owned_same
+                        and _candidate_soft_owned_by_other(
+                            candidate, cross_profile=True
+                        )
+                        and not _candidate_content_matches_backup(candidate)
                     )
                 )
             ):
@@ -13807,34 +13821,36 @@ class SessionStore:
                                 (int(appointment_id),),
                             ).fetchone()
                             rebuild = had_completed is not None
-                            if rebuild:
-                                # 用户主动删除过该预约的提醒（重建后
-                                # 又删）：删除墓碑晚于任何已完成提醒时
-                                # 不再复活
-                                try:
-                                    marker = self.get_app_state(
-                                        "reminder_deleted_"
-                                        f"{int(appointment_id)}"
-                                    )
-                                except sqlite3.Error:
-                                    marker = ""
-                                if marker:
-                                    latest_done = self._conn.execute(
-                                        "SELECT MAX(updated_at) AS latest"
-                                        " FROM reminders"
-                                        " WHERE appointment_id = ?"
-                                        " AND done = 1",
-                                        (int(appointment_id),),
-                                    ).fetchone()
-                                    latest_text = (
-                                        str(latest_done["latest"] or "")
-                                        if latest_done is not None else ""
-                                    )
-                                    if (
-                                        not latest_text
-                                        or latest_text <= marker
-                                    ):
-                                        rebuild = False
+                        if rebuild:
+                            # 用户主动删除过该预约的提醒（重建后又删）：
+                            # 删除墓碑不早于任何已完成提醒时不再复活。
+                            # 该闸门必须覆盖「就诊仍链接到已完成提醒」
+                            # 分支，「提醒」按钮创建的提醒不会回写
+                            # 就诊链接，旧链接不能绕过墓碑
+                            try:
+                                marker = self.get_app_state(
+                                    "reminder_deleted_"
+                                    f"{int(appointment_id)}"
+                                )
+                            except sqlite3.Error:
+                                marker = ""
+                            if marker:
+                                latest_done = self._conn.execute(
+                                    "SELECT MAX(updated_at) AS latest"
+                                    " FROM reminders"
+                                    " WHERE appointment_id = ?"
+                                    " AND done = 1",
+                                    (int(appointment_id),),
+                                ).fetchone()
+                                latest_text = (
+                                    str(latest_done["latest"] or "")
+                                    if latest_done is not None else ""
+                                )
+                                if (
+                                    not latest_text
+                                    or latest_text <= marker
+                                ):
+                                    rebuild = False
                         rebuilt_id = _create_reminder() if rebuild else 0
                         if rebuilt_id:
                             self._conn.execute(

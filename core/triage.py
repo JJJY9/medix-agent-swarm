@@ -1222,8 +1222,11 @@ def _clean_complaint_clause(
                 )
             )
             # 孕产期出血无论是否有前文患者语境都按真实主诉保留：
-            # 「阴道出血是什么病」在孕期档案下同样是急症描述
+            # 「阴道出血是什么病」在孕期档案下同样是急症描述；
+            # 量词插入（阴道有点出血/孕早期少量出血）同样命中
             or any(term in prefix for term in PREGNANCY_BLEEDING_TERMS)
+            or _PREGNANCY_BLEEDING_RE.search(prefix) is not None
+            or _colloquial_bleeding_positive(prefix)
         ):
             # 带病程/时间线索或多症状的定义问句通常是在描述当前症状
             return prefix
@@ -1301,8 +1304,20 @@ def _patient_course_before_quote(clause: str) -> bool:
     if not positions:
         return False
     prefix = clause[:min(positions)]
-    if not any(word in prefix for word in _EDUCATION_SYMPTOM_WORDS):
+    if (
+        not any(word in prefix for word in _EDUCATION_SYMPTOM_WORDS)
+        and not _is_red_flag_text(prefix)
+    ):
         return False
+    # 引用词之前已是完整红旗描述（含复合/伴随症状），且没有
+    # 「什么是/介绍」类术语引导：直接按本人主诉保留，不能被未
+    # 列入白名单的伴随症状（气短/左臂麻木）挡回。只看患者主语
+    # 不够：主语也得带着症状出现在引用词之前才算本人主诉
+    if _is_red_flag_text(prefix) and not (
+        _DEFINITION_PREFIX_RE.search(prefix) is not None
+        or re.search(r"什么|啥|介绍|定义|解释|概念|科普", prefix)
+    ):
+        return True
     if (
         _COURSE_MARKER_RE.search(prefix) is not None
         or any(marker in prefix for marker in _COURSE_MARKERS)
@@ -1699,6 +1714,28 @@ def _has_head_trauma(text: str) -> bool:
     )
 
 
+#: 患者在家属用药分句之后的续用/同样表述：
+#: 「我爸吃华法林，我也在吃」里的药名同时也是患者本人的
+_PATIENT_CONTINUATION_RE = re.compile(
+    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"[^，。；;?？]{0,10}?(?:吃|服用|服|用|过敏|有|一样)"
+)
+
+
+def _patient_continuation_ahead(
+    clauses: list, index: int, clause: str
+) -> bool:
+    """家属分句之后 1-2 句是否出现患者本人的续用/同样表述。"""
+    for follow in clauses[index + 1:index + 3]:
+        follow = str(follow or "").strip()
+        if not follow or not _PATIENT_CONTINUATION_RE.search(follow):
+            continue
+        if _restart_names_other_medication(follow, clause):
+            continue
+        return True
+    return False
+
+
 #: 家族史/他人病史不能当作患者本人的当前状态
 _FAMILY_HISTORY_MARKERS = (
     "父亲", "母亲", "父母", "家人", "家族", "爷爷", "奶奶", "外公", "外婆",
@@ -1714,6 +1751,12 @@ _CONTEXT_INACTIVE_MARKERS = (
     "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
     "没吃", "不吃", "不吃了", "不再吃", "不用吃", "无需吃", "没再吃", "停掉", "停掉了",
     "否认", "未曾", "从未", "过敏史", "过敏原", "过敏反应",
+)
+
+#: 「不吃辛辣/不吃菠菜」是饮食限制，不影响同分句药名的在用状态
+_DIET_RESTRICTION_RE = re.compile(
+    r"不吃(?:辛辣|辣|海鲜|菠菜|柚子|葡萄柚|生冷|油腻|刺激性?|"
+    r"高[钾磷]|含[钾磷]|酒|咖啡|浓茶|牛奶|绿叶菜|豆制品|动物内脏)"
 )
 
 #: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
@@ -2357,6 +2400,10 @@ def _active_medical_text(
                 # 患儿档案下家长口述「我儿子正在化疗/在吃华法林」：
                 # 儿子/女儿指的就是当前患者本人
                 pass
+            elif _patient_continuation_ahead(clauses, index, clause):
+                # 「我爸吃华法林，我也在吃」：后一分句患者本人续用
+                # 同一药物/过敏原，家属分句里的药名不能整句丢弃
+                pass
             else:
                 continue
             # 家属宾语剥离后的「买/拿/取/配 + 药名」是替家人购药，
@@ -2443,6 +2490,13 @@ def _active_medical_text(
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
+            if _DIET_RESTRICTION_RE.search(clause) and not (
+                _STOP_VERB_PATTERN.search(clause)
+            ):
+                # 「服用华法林期间不吃辛辣」：否定的宾语是食物，
+                # 不是药物本身，同句药名仍是当前用药
+                kept.append(clause)
+                continue
             if _FINISHED_DOSE_RE.search(clause) and not (
                 _long_stop_near(clauses, index)
                 and not (

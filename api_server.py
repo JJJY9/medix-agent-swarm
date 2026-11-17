@@ -2147,6 +2147,32 @@ class BodySizeLimitMiddleware:
 app.add_middleware(BodySizeLimitMiddleware)
 
 
+def _auth_global_budget_retry(request: Request) -> float:
+    """闸门取得后复核 IPv6 全局失败预算。
+
+    预算的检查发生在 ``await _auth_compare_enter`` 之前、计数在令牌
+    比较之后：并发请求可以在计数落库前全部通过检查。这里在真正
+    比较前再查一次（同一任务内无 await，检查与比较原子），把并发
+    放大压回预算上限。
+    """
+    if not _is_ipv6_source_key(_budget_source_key(request)):
+        return 0.0
+    blocked, retry = auth_failure_limiter_ipv6_global.is_blocked("ipv6")
+    return retry if blocked else 0.0
+
+
+def _auth_rate_limited_response(retry: float) -> JSONResponse:
+    return add_security_headers(JSONResponse(
+        status_code=429,
+        content={
+            "detail": "访问令牌错误次数过多，请稍后再试。",
+            "code": "auth_rate_limited",
+            "retry_after": round(retry, 1),
+        },
+        headers={"Retry-After": str(max(1, math.ceil(retry)))},
+    ))
+
+
 def add_security_headers(
     response: Response, include_csp: bool = True
 ) -> Response:
@@ -3116,10 +3142,16 @@ async def require_access_token(request: Request, call_next):
                 if not known_token:
                     gate_handle = await _auth_compare_enter(
                         prelock_key,
-                        source=_peer_key(
+                        source=_peer_key(_bucket_address(
                             request.client.host if request.client else ""
-                        ),
+                        )),
                     )
+                    if gate_handle is not None:
+                        global_retry = _auth_global_budget_retry(request)
+                        if global_retry > 0:
+                            _auth_compare_exit(gate_handle)
+                            gate_handle = None
+                            return _auth_rate_limited_response(global_retry)
                 if gate_handle is None and not known_token:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -3198,8 +3230,16 @@ async def require_access_token(request: Request, call_next):
                 if not known_token:
                     gate_handle = await _auth_compare_enter(
                         prelock_key,
-                        source=_peer_key(appended_address),
+                        source=_peer_key(
+                            _bucket_address(appended_address)
+                        ),
                     )
+                    if gate_handle is not None:
+                        global_retry = _auth_global_budget_retry(request)
+                        if global_retry > 0:
+                            _auth_compare_exit(gate_handle)
+                            gate_handle = None
+                            return _auth_rate_limited_response(global_retry)
                 if gate_handle is None and not known_token:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -3281,13 +3321,25 @@ async def require_access_token(request: Request, call_next):
                         ))
                 gate_source = ""
                 if forwarded_resolved:
-                    gate_source = _peer_key(
-                        _forwarded_client_address(request) or ""
-                    )
+                    if gate_unprovable:
+                        # 左项地址可由客户端伪造：槽位按可证明的 TCP
+                        # 对端计，轮换 X-Forwarded-For 不能获得多份
+                        # 单源额度把整条队列占满
+                        gate_source = _peer_key(peer_host or "")
+                    else:
+                        gate_source = _peer_key(_bucket_address(
+                            _forwarded_client_address(request) or ""
+                        ))
                 gate_handle = await _auth_compare_enter(
                     loopback_bucket_key,
                     source=gate_source,
                 )
+                if gate_handle is not None:
+                    global_retry = _auth_global_budget_retry(request)
+                    if global_retry > 0:
+                        _auth_compare_exit(gate_handle)
+                        gate_handle = None
+                        return _auth_rate_limited_response(global_retry)
             if gate_handle is None and not known_token:
                 return add_security_headers(JSONResponse(
                     status_code=429,
@@ -3411,7 +3463,10 @@ async def require_access_token(request: Request, call_next):
                     # 一个客户端 100 次错误令牌即可填满 spoof 桶，经
                     # 同一代理、未持短期凭证的正确令牌用户全部在比较
                     # 前被 429，且可被持续维持（第七十三轮审查）
-                    source_key = f"spoof-src:{budget_key}"
+                    # 来源地址不可证明时 budget_key 仍来自客户端可写
+                    # 的左项：轮换伪造地址即可重置贡献额度。单源额度
+                    # 必须按服务端可证明的对端（代理自身）计
+                    source_key = f"spoof-src:{loopback_bucket_key}"
                     source_allowed, source_retry = (
                         auth_failure_limiter.check(source_key)
                     )
@@ -5782,7 +5837,8 @@ async def create_vaccination_reminder(vaccination_id: SafeIntPath):
         raise HTTPException(status_code=400, detail="请先填写下一剂日期")
     title = (
         f"接种：{item.get('vaccine_name') or '疫苗'}"
-        f"（第{int(item.get('dose_number') or 1)}剂）"
+        # 提醒的是下一剂；dose_number 是已接种的那一剂
+        f"（第{int(item.get('dose_number') or 1) + 1}剂）"
     )[:120]
     reminder, created = await asyncio.to_thread(
         store.ensure_reminder,
@@ -8965,7 +9021,11 @@ async def _weekly_report_impl(
             "upcoming": [
                 {
                     "vaccine_name": item.get("vaccine_name", ""),
+                    # dose_number 是已接种的剂次；即将到期的是下一剂
                     "dose_number": item.get("dose_number"),
+                    "next_dose_number": (
+                        int(item.get("dose_number") or 1) + 1
+                    ),
                     "next_due": item.get("next_due", ""),
                     "profile": item.get("profile", ""),
                 }
@@ -9848,7 +9908,8 @@ def _build_health_insights(
             )
             + f"{first.get('vaccine_name')} 将在 "
             f"{first.get('next_due')} 到期",
-            f"第 {first.get('dose_number') or 1} 剂",
+            # dose_number 是已接种剂次，到期的是下一剂
+            f"第 {int(first.get('dose_number') or 1) + 1} 剂",
             "",
             "vaccination",
         ))
@@ -13778,8 +13839,14 @@ async def family_overview(days: int = 7):
             }
 
     care_by_profile: Dict[str, Dict[str, Any]] = {}
+    care_latest_done: Dict[str, str] = {}
     for item in care_items:
         profile = item.get("profile") or ""
+        done_at = str(item.get("last_done_at") or "")
+        # 完成复查计划同样是一次健康记录：与 recorded_days 口径一致，
+        # 「最近活动」不能漏掉它（停用计划的完成历史也算）
+        if done_at and done_at > care_latest_done.get(profile, ""):
+            care_latest_done[profile] = done_at
         if not item.get("active"):
             continue
         entry = care_by_profile.setdefault(profile, {
@@ -13927,6 +13994,7 @@ async def family_overview(days: int = 7):
             _past_or_today(
                 (visits.get("latest") or {}).get("visit_date") or ""
             ),
+            _past_or_today(care_latest_done.get(name, "")),
         ]
         last_activity = max(activity_candidates)
         # 停药后当天的打卡日志仍属于健康记录，统一按 store 的
