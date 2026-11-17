@@ -180,6 +180,14 @@ _CAESAREAN_RECENT_RE = re.compile(
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
+#: 顺产/自然分娩/月子/生完孩子等近期产后表述：产后出血风险仍高；
+#: 「顺产5年」等明确年数属于既往史，不算当前孕产状态
+_POSTPARTUM_RECENT_RE = re.compile(
+    r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
+    r"坐月子|月子里|月子中|产褥期)"
+    r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
+)
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
 #: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
 _PREGNANCY_EVIDENCE_RE = re.compile(
@@ -1315,7 +1323,10 @@ def _patient_course_before_quote(clause: str) -> bool:
     # 不够：主语也得带着症状出现在引用词之前才算本人主诉
     if _is_red_flag_text(prefix) and not (
         _DEFINITION_PREFIX_RE.search(prefix) is not None
-        or re.search(r"什么|啥|介绍|定义|解释|概念|科普", prefix)
+        or re.search(
+            r"什么|啥|介绍|定义|解释|概念|科普|关于|有关|一篇|讲|写|主题",
+            prefix,
+        )
     ):
         return True
     if (
@@ -1714,25 +1725,56 @@ def _has_head_trauma(text: str) -> bool:
     )
 
 
-#: 患者在家属用药分句之后的续用/同样表述：
-#: 「我爸吃华法林，我也在吃」里的药名同时也是患者本人的
-_PATIENT_CONTINUATION_RE = re.compile(
+#: 患者在家属用药分句之后的续用表述。必须核对宾语：只有同一
+#: 药物/过敏原、无宾语或代词宾语才算续用，「我也在吃维生素C」
+#: 「我也有一只猫」「我也有高血压」不能把家属的药名算到患者头上
+_CONTINUATION_USE_RE = re.compile(
     r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
-    r"[^，。；;?？]{0,10}?(?:吃|服用|服|用|过敏|有|一样)"
+    r"[^，。；;?？]{0,10}?(?:在|还|一直)?\s*"
+    r"(?:吃|服用|服|用)([^，。；;?？]{0,16})"
 )
+_CONTINUATION_ALLERGY_RE = re.compile(
+    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"[^，。；;?？]{0,12}?(?:对)?([^，。；;?？]{0,12})过敏"
+)
+_CONTINUATION_SAME_RE = re.compile(
+    r"我(?:也|跟他|跟她|跟他们)?一样"
+)
+_PRONOUN_OBJECTS = (
+    "这个药", "这种药", "那个药", "那种药", "一样的药", "这个", "那个", "它",
+)
+
+
+def continuation_object_matches(obj: str, clause: str) -> bool:
+    """续用宾语是否指向前一分句中的同一药物/过敏原。"""
+    obj = str(obj or "").strip(" 　")
+    if not obj or any(word in obj for word in _PRONOUN_OBJECTS):
+        return True
+    tokens = {obj[i:i + 2] for i in range(len(obj) - 1)}
+    return any(token in clause for token in tokens if len(token) == 2)
+
+
+def continuation_same_as_clause(follow: str, clause: str) -> bool:
+    """续用分句是否描述患者本人的同一药物/过敏原。"""
+    if _CONTINUATION_SAME_RE.search(follow):
+        return True
+    for pattern in (_CONTINUATION_USE_RE, _CONTINUATION_ALLERGY_RE):
+        match = pattern.search(follow)
+        if match and continuation_object_matches(match.group(1), clause):
+            return True
+    return False
 
 
 def _patient_continuation_ahead(
     clauses: list, index: int, clause: str
 ) -> bool:
-    """家属分句之后 1-2 句是否出现患者本人的续用/同样表述。"""
+    """家属分句之后 1-2 句是否为患者本人的同一药物续用/过敏。"""
     for follow in clauses[index + 1:index + 3]:
         follow = str(follow or "").strip()
-        if not follow or not _PATIENT_CONTINUATION_RE.search(follow):
+        if not follow:
             continue
-        if _restart_names_other_medication(follow, clause):
-            continue
-        return True
+        if continuation_same_as_clause(follow, clause):
+            return True
     return False
 
 
@@ -2490,11 +2532,27 @@ def _active_medical_text(
             kept.append(clause)
             continue
         if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
-            if _DIET_RESTRICTION_RE.search(clause) and not (
-                _STOP_VERB_PATTERN.search(clause)
+            diet_match = re.search(
+                r"不吃([^，。；,.!?！？\n]{0,10})", clause
+            )
+            diet_object = (
+                diet_match.group(1).strip() if diet_match else ""
+            )
+            if (
+                diet_object
+                and not diet_object.startswith(("了", "啦", "啊", "呀"))
+                and not any(
+                    word in diet_object
+                    for word in (
+                        "这个药", "这种药", "那种药", "那个药", "它",
+                        *ANTICOAGULANT_TERMS, *IMMUNOSUPPRESSION_TERMS,
+                    )
+                )
+                and not _STOP_VERB_PATTERN.search(clause)
             ):
-                # 「服用华法林期间不吃辛辣」：否定的宾语是食物，
-                # 不是药物本身，同句药名仍是当前用药
+                # 「服用华法林期间不吃青菜」：否定的宾语是食物，
+                # 不是药物本身，同句药名仍是当前用药。用「宾语里
+                # 没有已知药名」判定，避免食物白名单永远漏项
                 kept.append(clause)
                 continue
             if _FINISHED_DOSE_RE.search(clause) and not (
@@ -2952,6 +3010,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
         )
         or _PREGNANCY_EVIDENCE_RE.search(pregnancy_text) is not None
         or _CAESAREAN_RECENT_RE.search(pregnancy_text) is not None
+        or _POSTPARTUM_RECENT_RE.search(pregnancy_text) is not None
     )
     if (
         pregnancy_mentioned

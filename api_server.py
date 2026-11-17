@@ -3109,8 +3109,18 @@ async def require_access_token(request: Request, call_next):
         # 该地址无法证明属于请求方，失败计数与预锁定都必须用独立的
         # spoof 桶，否则任何人可伪造受害者的地址、用错误令牌把它
         # 的真实地址桶塞满，使其正确令牌也被硬预锁定 429
+        # 声明了地址头却解析失败（未闭合引号/unknown）：来源同样
+        # 不可证明，不能落进无单源上限的共享桶，否则任意客户端
+        # 100 次错误令牌即可锁死全家
+        forwarded_declared = bool(
+            _trust_proxy_headers()
+            and _is_trusted_proxy_peer(peer_host)
+            and not forwarded_resolved
+            and _has_forwarded_address_header(request)
+        )
         gate_unprovable = bool(
-            forwarded_resolved and not appended_address
+            (forwarded_resolved and not appended_address)
+            or forwarded_declared
         )
         if (
             not _is_loopback_client(request)
@@ -3320,16 +3330,14 @@ async def require_access_token(request: Request, call_next):
                             },
                         ))
                 gate_source = ""
-                if forwarded_resolved:
-                    if gate_unprovable:
-                        # 左项地址可由客户端伪造：槽位按可证明的 TCP
-                        # 对端计，轮换 X-Forwarded-For 不能获得多份
-                        # 单源额度把整条队列占满
-                        gate_source = _peer_key(peer_host or "")
-                    else:
-                        gate_source = _peer_key(_bucket_address(
-                            _forwarded_client_address(request) or ""
-                        ))
+                if gate_unprovable:
+                    # 左项地址可由客户端伪造/解析失败：槽位按可证明
+                    # 的 TCP 对端计，轮换地址不能获得多份单源额度
+                    gate_source = _peer_key(peer_host or "")
+                elif forwarded_resolved:
+                    gate_source = _peer_key(_bucket_address(
+                        _forwarded_client_address(request) or ""
+                    ))
                 gate_handle = await _auth_compare_enter(
                     loopback_bucket_key,
                     source=gate_source,
@@ -3491,13 +3499,36 @@ async def require_access_token(request: Request, call_next):
                 aggregate_scope = _is_ipv6_aggregate_key(limiter_key)
                 if shared_scope or aggregate_scope:
                     limiter = auth_failure_limiter_loopback
-                if shared_scope and not gate_unprovable:
+                source_capped = False
+                if (
+                    shared_scope
+                    and not gate_unprovable
+                    # 只有经受信代理的请求才需要单源贡献上限：直连
+                    # 回环/直连来源本身就是可证明的单一客户端，仍按
+                    # 自身桶阈值限流
+                    and _trust_proxy_headers()
+                    and _is_trusted_proxy_peer(peer_host)
+                ):
                     limiter_key = (
                         loopback_bucket_key
                         if loopback_source
                         else _client_ip_key(request)
                     )
-                allowed, retry_after = limiter.check(limiter_key)
+                    # 共享桶同样需要单源贡献上限：受信代理无可用地址
+                    # 头时一个客户端 100 次错误令牌即可填满整桶并
+                    # 持续锁死全家。额度按可证明的代理对端计；用尽后
+                    # 不再向共享桶累计，错误令牌仍按 401 返回（比较
+                    # 经闸门串行限速），正确令牌用户不受影响
+                    source_allowed, _source_retry = (
+                        auth_failure_limiter.check(
+                            f"shared-src:{loopback_bucket_key}"
+                        )
+                    )
+                    source_capped = not source_allowed
+                if source_capped:
+                    allowed, retry_after = True, 0.0
+                else:
+                    allowed, retry_after = limiter.check(limiter_key)
                 if _is_ipv6_source_key(budget_key):
                     # 跨 /64 轮换源地址：全局预算同样计数，超过后
                     # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度；
@@ -8811,6 +8842,7 @@ async def _weekly_report_impl(
         item for item in followup_visits
         if today <= str(item.get("next_followup_date") or "")[:10]
         <= horizon
+        and not item.get("followup_scheduled")
     ]
     overdue_followups = [
         item for item in followup_visits
@@ -13451,8 +13483,23 @@ async def family_overview(days: int = 7):
     target_alert_by_profile: Dict[str, Dict[str, str]] = {}
     target_over_counts: Dict[str, Dict[str, int]] = {}
     target_peaks: Dict[str, Dict[str, float]] = {}
+    #: 血压展示峰值按全部读数统计（与周报/健康提示同口径）；
+    #: 超标计数与预警升级仍只看超标读数
+    bp_show_peaks: Dict[str, Dict[str, float]] = {}
     for item in window_metrics:
         metric = str(item.get("metric") or "")
+        if metric == "bp":
+            show_key = item.get("profile") or ""
+            try:
+                show_sys = float(item.get("value1") or 0)
+                show_dia = float(item.get("value2") or 0)
+            except (TypeError, ValueError):
+                show_sys = show_dia = 0.0
+            show = bp_show_peaks.setdefault(
+                show_key, {"sys": 0.0, "dia": 0.0}
+            )
+            show["sys"] = max(show["sys"], show_sys)
+            show["dia"] = max(show["dia"], show_dia)
         if not metric or metric in DAILY_ACCUMULATING_METRICS:
             # 步数/饮水按自然日累计另行判定
             continue
@@ -13504,9 +13551,10 @@ async def family_overview(days: int = 7):
                 + ("低于目标" if lower else "超出目标")
             )
             if metric == "bp":
+                show = bp_show_peaks.get(member) or {}
                 details.append(
-                    f"最高收缩压 {peak['bp_sys']:g}、"
-                    f"最高舒张压 {peak['bp_dia']:g} mmHg"
+                    f"最高收缩压 {show.get('sys', peak['bp_sys']):g}、"
+                    f"最高舒张压 {show.get('dia', peak['bp_dia']):g} mmHg"
                 )
             else:
                 peak_value = peak.get(f"m:{metric}")

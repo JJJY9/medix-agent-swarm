@@ -1076,6 +1076,9 @@ def _alias_matches(text: str, alias: str) -> bool:
             prefix = text[left:match.start()]
             suffix = text[match.end():right]
             long_suffix = text[match.end():right + 25]
+            # 英文停药分句常以逗号紧邻药名：25 字窗口会截断
+            # "stopped taking it yesterday"，英文模式单独用更宽窗口
+            far_suffix = text[match.end():right + 40]
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
@@ -1106,6 +1109,10 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _RECENT_NO_EAT_CONTEXT.search(prefix + suffix)
                 or _RECENT_STOP_CONTEXT_EN.search(prefix + suffix)
                 or _RECENT_STOP_OFF_EN.search(prefix + suffix)
+                # 英文跨分句近期停药：I used to take warfarin,
+                # stopped yesterday 与中文「之前吃…昨天停药」同义
+                or _RECENT_STOP_CONTEXT_EN.search(far_suffix)
+                or _RECENT_STOP_OFF_EN.search(far_suffix)
             ):
                 return True
             if (
@@ -1407,42 +1414,20 @@ _FAMILY_AFTER_I = (
     r"爱人|丈夫|妻子|儿子|女儿|儿|女|哥|姐|弟|妹|叔|姨|舅|姑|"
     r"孩子|宝宝|家人|父亲|母亲)"
 )
-#: 患者在家属用药分句之后的续用/同样表述
-_PATIENT_CONTINUATION_RE = re.compile(
-    r"我(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
-    r"[^，。；;?？]{0,10}?(?:吃|服用|服|用|过敏|有|一样)"
-)
-
-
-def _drug_alias_set(text: str) -> set:
-    """分句里出现的药物别名集合（用于区分「我也在吃阿司匹林」）。"""
-    found = set()
-    lowered = str(text or "").lower()
-    for group in DRUG_GROUPS.values():
-        for alias, names in group:
-            if any(str(name).lower() in lowered for name in names):
-                found.add(alias)
-    return found
-
-
 def _patient_continuation_follows(
     clauses: list, index: int, clause: str
 ) -> bool:
-    """家属分句后 1-2 句是否为患者本人的同一药物续用/过敏。"""
-    current_aliases = _drug_alias_set(clause)
+    """家属分句后 1-2 句是否为患者本人的同一药物续用/过敏。
+
+    与分诊共用 continuation_same_as_clause：宾语必须指向前一分句
+    的同一药物/过敏原（「我也在吃维生素C」「我也有一只猫」不算）。
+    """
+    from core.triage import continuation_same_as_clause
+
     for follow in clauses[index + 1:index + 3]:
         follow = str(follow or "").strip()
-        if not follow or not _PATIENT_CONTINUATION_RE.search(follow):
-            continue
-        follow_aliases = _drug_alias_set(follow)
-        if (
-            follow_aliases
-            and current_aliases
-            and not (follow_aliases & current_aliases)
-        ):
-            # 「我爸吃华法林，我也在吃阿司匹林」：换的是另一种药
-            continue
-        return True
+        if follow and continuation_same_as_clause(follow, clause):
+            return True
     return False
 
 
