@@ -181,6 +181,15 @@ class ChatRequest(StrictRequestModel):
         "", max_length=40, description="关联的常用患者档案名称"
     )
 
+    @field_validator("patient_profile")
+    @classmethod
+    def _check_patient_profile(cls, value: str) -> str:
+        # 失败/中止路径会把该名字写进用量统计并长期出现在档案
+        # 下拉/家庭档案导出里，必须在入口按同一规则拒绝
+        if not str(value or "").strip():
+            return ""
+        return _validate_profile_name_value(value)
+
     @field_validator("session_id")
     @classmethod
     def _validate_session_id(cls, value):
@@ -328,7 +337,9 @@ def _validate_profile_name_value(value: str) -> str:
         not name
         or name in {".", ".."}
         or any(ch in name for ch in "/\\")
-        or any(ord(ch) < 32 for ch in name)
+        # 与存储层 strict 规范化同一规则：拒绝一切不可打印字符
+        # （零宽连接符/空格、BOM 等会让该档案此后无法写入）
+        or any(not ch.isprintable() for ch in name)
     ):
         raise ValueError("档案名称不能包含路径分隔符或控制字符")
     return name
@@ -872,6 +883,14 @@ class SymptomUpdateRequest(StrictRequestModel):
 
 class MetricTargetRequest(StrictRequestModel):
     profile: str = Field("", max_length=40, description="关联的患者档案名称")
+
+    @field_validator("profile")
+    @classmethod
+    def _check_profile(cls, value: str) -> str:
+        # 与存储层 strict 规范化同一规则；空串表示「未指定档案」
+        if not str(value or "").strip():
+            return ""
+        return _validate_profile_name_value(value)
     metric: Literal[
         "bp", "weight", "glucose", "temperature", "heart_rate", "spo2",
         "waist", "sleep", "steps", "water", "phq9", "gad7", "cat", "ess",
@@ -3387,6 +3406,29 @@ async def require_access_token(request: Request, call_next):
                     # 来源地址不可证明（仅来自客户端可影响的左项）：
                     # 失败记入独立 spoof 桶，绝不写进被害者真实地址桶
                     limiter_key = f"spoof:{loopback_bucket_key}"
+                    # 单源贡献上限：每个不可证明来源同样按自身键计
+                    # 10 次/5 分钟，用尽后不再累计共享 spoof 桶。否则
+                    # 一个客户端 100 次错误令牌即可填满 spoof 桶，经
+                    # 同一代理、未持短期凭证的正确令牌用户全部在比较
+                    # 前被 429，且可被持续维持（第七十三轮审查）
+                    source_key = f"spoof-src:{budget_key}"
+                    source_allowed, source_retry = (
+                        auth_failure_limiter.check(source_key)
+                    )
+                    if not source_allowed:
+                        return add_security_headers(JSONResponse(
+                            status_code=429,
+                            content={
+                                "detail": "访问令牌错误次数过多，请稍后再试。",
+                                "code": "auth_rate_limited",
+                                "retry_after": round(source_retry, 1),
+                            },
+                            headers={
+                                "Retry-After": str(
+                                    max(1, math.ceil(source_retry))
+                                )
+                            },
+                        ))
                 # 共享键（共享桶/spoof/IPv6 /64 聚合）不是可证明的
                 # 独立客户端：按 100 次/5 分钟的回环共享桶计数，不用
                 # 每来源 10 次阈值（一人输错就锁整片用户）
@@ -13552,7 +13594,10 @@ async def family_overview(days: int = 7):
     for item in vaccinations:
         profile = item.get("profile") or ""
         entry = vaccinations_by_profile.setdefault(profile, {
-            "count": 0, "latest": None, "next_due": "", "overdue": 0,
+            "count": 0, "latest": None, "next_due": "",
+            # 下一剂所属疫苗：各疫苗各自的最新剂里取最早到期日，
+            # 可能与「最近接种」不是同一种疫苗，导出时必须带上名字
+            "next_due_vaccine": "", "overdue": 0,
             "overdue_items": [],
         })
         entry["count"] += 1
@@ -13575,6 +13620,9 @@ async def family_overview(days: int = 7):
                     )
             elif not entry["next_due"] or due < entry["next_due"]:
                 entry["next_due"] = due
+                entry["next_due_vaccine"] = str(
+                    item.get("vaccine_name") or ""
+                )
 
     labs_by_profile: Dict[str, Dict[str, Any]] = {}
     for item in lab_results:
@@ -14156,9 +14204,23 @@ async def export_family_overview_csv(days: int = 7):
                     f"，逾期 {int(vaccinations_info['overdue'])}"
                 )
             elif vaccinations_info.get("next_due"):
-                vaccination_text += (
-                    f"，下一剂 {vaccinations_info['next_due']}"
+                next_due_vaccine = str(
+                    vaccinations_info.get("next_due_vaccine") or ""
                 )
+                latest_name = str(
+                    latest_vaccination.get("vaccine_name") or ""
+                )
+                if next_due_vaccine and next_due_vaccine != latest_name:
+                    # 下一剂属于另一种疫苗：紧跟「最近 X 第n剂」后
+                    # 直接写日期会被误读为 X 的下一剂（第七十三轮）
+                    vaccination_text += (
+                        f"，下一剂 {next_due_vaccine}"
+                        f" {vaccinations_info['next_due']}"
+                    )
+                else:
+                    vaccination_text += (
+                        f"，下一剂 {vaccinations_info['next_due']}"
+                    )
         stock_parts = []
         if medications.get("low_stock"):
             stock_parts.append(f"库存偏低 {medications['low_stock']} 种")

@@ -1153,6 +1153,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _RECENT_STOP_SUFFIX.search(suffix)
             or _RECENT_STOP_CONTEXT.search(prefix + suffix)
             or _RECENT_NO_EAT_CONTEXT.search(prefix + suffix)
+            # 「我之前吃华法林，昨天停药了」：近期停药仍有抗凝作用，
+            # 跨分句绑定到药名
+            or _RECENT_STOP_CONTEXT.search(long_suffix)
+            or _RECENT_NO_EAT_CONTEXT.search(long_suffix)
             or (
                 _ADHERENCE_USE_PREFIX.search(prefix)
                 and _NEGATED_USE_PREFIX.search(prefix)
@@ -1403,11 +1407,48 @@ def _patient_self_mentioned(clause: str) -> bool:
     """分句是否确在描述患者本人的用药/过敏（而非提问框架）。
 
     「我想问一下我爸吃华法林」「我能吃布洛芬吗」里的「我」只是提问者，
-    不能把家属用药算到患者头上；「我和我爸都吃」「我对青霉素过敏」
-    才是患者本人的描述。
+    不能把家属用药算到患者头上；「我和我爸都吃」「我和我爸一起吃」
+    「我、我爸都对青霉素过敏」才是患者本人的描述。
     """
-    if re.search(r"我对[^，。；;?？]{0,12}过敏", clause):
+    parallel_subject = bool(
+        re.search(
+            r"我(?:、|和|跟|与|同)[^，。；;?？]{0,12}"
+            r"(?:都|也|均|皆|一起|每天|一直|正在|在)",
+            clause,
+        )
+        or re.search(
+            r"(?:都|也|均|皆)[^，。；;?？]{0,8}我", clause
+        )
+        or re.search(
+            r"\b(?:my father|my mother|my husband|my wife|my son|"
+            r"my daughter|my parents|my family)\s+and\s+i\b",
+            clause.lower(),
+        )
+    )
+    if parallel_subject:
         return True
+    allergy = re.search(
+        r"我(?:自己|本人)?[^，。；;?？]{0,12}(?:对)?"
+        r"[^，。；;?？]{0,8}过敏",
+        clause,
+    )
+    if allergy:
+        segment = allergy.group(0)
+        # 「我想问一下我爸爸…过敏」是提问框架：中间的家属用药/过敏
+        # 不属于患者本人
+        questioning = any(
+            word in segment for word in ("问", "想", "咨询", "了解")
+        )
+        # 「我爸爸/我妈…过敏」里的「我」是家属定语，不是患者本人；
+        # 并列主语（我和我爸都对…过敏）已在上面的分支保留
+        family_subject = re.match(
+            r"我(?:自己|本人)?(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|"
+            r"姥爷|姥姥|老公|老婆|爱人|丈夫|妻子|儿子|女儿|儿|女|"
+            r"哥|姐|弟|妹|叔|姨|舅|姑|孩子|宝宝|家人|父亲|母亲)",
+            segment,
+        )
+        if not questioning and not family_subject:
+            return True
     for match in re.finditer(
         r"我(?:和|跟|与|也|都|每天|一直|最近|现在|正在|在|还在|要|得|"
         r"需要)?[^，。；;?？]{0,8}?(?:吃|服用|服|用|停用|停药|停了)",
