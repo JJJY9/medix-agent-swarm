@@ -5439,6 +5439,9 @@ class SessionStore:
                     isinstance(cached, set)
                     and cached is not moved
                     and cached is not matched
+                    # __seen_raw__ 保存的是备份原始主键而非本地候选：
+                    # 抹掉会让已处理的兄弟备份行被当成未处理
+                    and cached is not seen_raw_ids
                 ):
                     cached.discard(candidate)
             state[identity] = claimed
@@ -7625,6 +7628,10 @@ class SessionStore:
                         len(soft) == 1
                         and _backup_content_shared_with_sibling()
                         and _tail_matches(min(soft))
+                        # 候选内容差异必须落在可编辑列（时间/数值）：
+                        # 科室/剂量这类差异说明它是另一条同秒记录的
+                        # 存活行，不能用来顶替被删记录
+                        and _candidate_diff_claimable(min(soft))
                     )
                 ):
                     candidates = soft
@@ -7801,14 +7808,33 @@ class SessionStore:
                 # 编辑证据，或组内确有缺行且同秒记录内容不同（编辑
                 # 证据可能来自另一条记录）时，本行必须按被删补插
                 return _ambiguous()
+            soft_full = False
             if (
-                not _tail_matches(candidate)
+                local_group_size >= backup_group_size
+                and soft_where is not None
+            ):
+                soft_fragment, soft_extra = soft_where
+                soft_count_row = self._conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table}"
+                    f" WHERE {where} AND {soft_fragment}",
+                    (*values, *soft_extra),
+                ).fetchone()
+                soft_full = int(
+                    soft_count_row["n"] if soft_count_row else 0
+                ) >= int(backup_soft_size or 1)
+            if (
+                not soft_full
+                and not _tail_matches(candidate)
                 and _tail_prefers_sibling_any_content(candidate)
             ):
                 # 内容列被本地编辑成与本行相同时，尾字段仍可能明确
-                # 属于另一条同秒记录（不同剂量/症状的孪生）
+                # 属于另一条同秒记录（不同剂量/症状的孪生）；组内
+                # 已无缺行时每条备份行都有存活版本，尾字段偏好只会
+                # 制造重复（已停用计划复活/已完成提醒变待办）
                 return _ambiguous()
-            if not _tail_matches(candidate) and (
+            if (not soft_full) and (
+                not _tail_matches(candidate)
+            ) and (
                 _tail_prefers_sibling(candidate)
                 or (
                     not _soft_matches(candidate)
@@ -11665,6 +11691,17 @@ class SessionStore:
                         reminder_owner == int(followup_appointment_id)
                         if followup_appointment_id else reminder_owner == 0
                     )
+                    # reopen 降级后的待办提醒合法地脱钩（appointment_id=0）
+                    # 但就诊仍以 followup_reminder_id 指向它：备份恢复
+                    # 必须保留该链接，否则恢复后改复诊日期会留下幽灵提醒
+                    if (
+                        not owner_matches
+                        and followup_appointment_id
+                        and reminder_owner == 0
+                        and reminder_row is not None
+                        and not int(reminder_row["done"] or 0)
+                    ):
+                        owner_matches = True
                     if (
                         reminder_row is None
                         or int(reminder_row["done"] or 0)
@@ -13248,14 +13285,22 @@ class SessionStore:
                     str(previous["profile"] or "")
                 ) != _normalize_profile_name(normalized["profile"])
             )
-            old_title = (
-                f"接种：{str(previous['vaccine_name'] or '') or '疫苗'}"
-                f"（第{int(previous['dose_number'] or 1)}剂）"[:120]
-                if previous is not None else ""
+            old_titles = (
+                {
+                    f"接种：{str(previous['vaccine_name'] or '') or '疫苗'}"
+                    f"（第{int(previous['dose_number'] or 1) + 1}剂）"[:120],
+                    # 兼容第七十四轮之前按已接种剂次生成的旧标题
+                    f"接种：{str(previous['vaccine_name'] or '') or '疫苗'}"
+                    f"（第{int(previous['dose_number'] or 1)}剂）"[:120],
+                }
+                if previous is not None else set()
             )
             new_title = (
                 f"接种：{normalized['vaccine_name'] or '疫苗'}"
-                f"（第{int(normalized['dose_number'] or 1)}剂）"[:120]
+                f"（第{int(normalized['dose_number'] or 1) + 1}剂）"[:120]
+            )
+            old_title = (
+                next(iter(old_titles)) if old_titles else ""
             )
             if profile_changed or old_title != new_title:
                 reminder_rows = self._conn.execute(
@@ -13271,7 +13316,7 @@ class SessionStore:
                         update_params.append(normalized["profile"])
                     if (
                         old_title != new_title
-                        and str(reminder_row["title"] or "") == old_title
+                        and str(reminder_row["title"] or "") in old_titles
                     ):
                         updates.append("title = ?")
                         update_params.append(new_title)
@@ -13761,6 +13806,22 @@ class SessionStore:
                     " WHERE done = 1 AND appointment_id = ?",
                     (now, int(appointment_id)),
                 )
+                # 就诊仍链接的脱钩待办（reopen 降级后 appointment_id=0）
+                # 随取消/完成一并删除，否则预约取消后仍留下幽灵提醒
+                linked_rows = self._conn.execute(
+                    "SELECT DISTINCT followup_reminder_id FROM visit_records"
+                    " WHERE followup_appointment_id = ?"
+                    " AND followup_reminder_id != 0",
+                    (int(appointment_id),),
+                ).fetchall()
+                for link_row in linked_rows:
+                    linked_id = int(link_row["followup_reminder_id"] or 0)
+                    if linked_id:
+                        self._conn.execute(
+                            "DELETE FROM reminders WHERE id = ? AND done = 0"
+                            " AND appointment_id = 0",
+                            (linked_id,),
+                        )
                 if normalized["status"] == "cancelled":
                     # 取消后已无预约/提醒：清空就诊记录的复诊链接，
                     # 否则逾期复诊提示会被永久抑制
@@ -13783,7 +13844,29 @@ class SessionStore:
                         """,
                         (reminder_due, now, int(appointment_id)),
                     )
-                    if updated.rowcount == 0:
+                    # 就诊仍链接的脱钩待办同样随改期更新日期
+                    detached_updated = 0
+                    linked_rows = self._conn.execute(
+                        "SELECT DISTINCT followup_reminder_id"
+                        " FROM visit_records"
+                        " WHERE followup_appointment_id = ?"
+                        " AND followup_reminder_id != 0",
+                        (int(appointment_id),),
+                    ).fetchall()
+                    for link_row in linked_rows:
+                        linked_id = int(
+                            link_row["followup_reminder_id"] or 0
+                        )
+                        if not linked_id:
+                            continue
+                        cursor = self._conn.execute(
+                            "UPDATE reminders SET due_at = ?, updated_at = ?"
+                            " WHERE id = ? AND done = 0"
+                            " AND appointment_id = 0",
+                            (reminder_due, now, linked_id),
+                        )
+                        detached_updated += int(cursor.rowcount or 0)
+                    if updated.rowcount == 0 and not detached_updated:
                         # 该预约唯一的提醒已被勾选完成：改期后必须重建
                         # 待办，否则复诊前没有任何提醒。从未创建、已被
                         # 用户删除的提醒不能因改期复活：优先按就诊上的
@@ -16793,8 +16876,16 @@ class SessionStore:
                 # 重新启用：旧停药日期/原因不再适用，否则用药编辑
                 # 表单原样回传的停药日会把在用药物从依从统计里整段
                 # 排除（第七十三轮审查）
+                resume_after_stop = bool(
+                    str(previous["stopped_at"] or "").strip()
+                    or str(previous["stop_reason"] or "").strip()
+                )
                 normalized["stopped_at"] = ""
                 normalized["stop_reason"] = ""
+                if resume_after_stop:
+                    # 停用区间不应计入应服次数：当前疗程从今天重新
+                    # 起算（旧开始/停药仍保留在 medication_history）
+                    normalized["started_at"] = now[:10]
             # 只有库存基线实际变化（盘点/换单位）时才清空历史打卡的
             # stock_delta；普通编辑即使回传当前库存也不能破坏历史扣减。
             reset_stock = (

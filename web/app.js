@@ -20852,9 +20852,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       // 对账确认本轮已落库：无论输入框是否仍含该主诉都要清在途记录，
       // 否则用户改写输入框后，下次加载会把已回答的问题重新并入草稿
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
-      // 恢复出的旧主诉已经从输入框剥离：提交守卫不能无限期保留，
-      // 否则用户之后新键入的同题/同前缀内容会被静默截断或吞掉
-      clearInflightPersisted();
+      // 恢复出的旧主诉已经从输入框剥离：没有排队提交时立即清除
+      // 已落库标记，避免后续新输入被旧主诉前缀截断；有排队提交时
+      // 必须保留给 send 的去重守卫消费，否则同一问题会重复会诊
+      if (!sendInFlight) clearInflightPersisted();
       if (remaining !== null) {
         els.input.value = remaining;
         autoGrow();
@@ -20943,9 +20944,10 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         // remaining 为 null：用户已改写/清空输入框，保留其当前编辑，
         // 只清在途记录并标记该问题已落库
         safeSessionRemove(INFLIGHT_QUESTION_KEY);
-        // 对账已完成：清除长期驻留的已落库标记，后续新输入不再被
-        // 当成恢复出的旧主诉截断
-        clearInflightPersisted();
+        // 对账已完成：没有排队提交时清除长期驻留的已落库标记，
+        // 后续新输入不再被当成恢复出的旧主诉截断；排队提交必须
+        // 保留该标记给 send 的去重守卫
+        if (!sendInFlight) clearInflightPersisted();
         inflightReconciled = true;
       }
     }
@@ -21433,7 +21435,10 @@ async function send(question, composerSubmit = false) {
     if (!finalPayload) {
       throw new Error('服务未返回结果');
     }
-    sendPersisted = true;
+    // assistant_message_id 为空表示服务端没有落库（会话删除墓碑/
+    // 保存失败）：不能按成功清掉在途主诉，否则刷新后整轮问答与
+    // 输入都无法恢复
+    sendPersisted = Number(finalPayload.assistant_message_id) > 0;
 
     // 兼容只拿到最终结果的客户端：结果里也带有 triage 字段
     if (finalPayload.triage) {
