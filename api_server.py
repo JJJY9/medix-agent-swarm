@@ -1588,6 +1588,17 @@ _TEMPLATE_APPLY_LOCK = threading.Lock()
 _VISIT_FOLLOWUP_LOCK = threading.Lock()
 
 
+def _with_visit_followup_lock(func, *args, **kwargs):
+    """与「安排复诊」共用排程锁执行提醒写操作。
+
+    排程流程在读取提醒与写回链接之间会复查提醒状态；提醒的完成/
+    删除/改期若不入同一把锁，复查失败会被误判成「就诊不存在」并
+    返回 404，链接也不写回。
+    """
+    with _VISIT_FOLLOWUP_LOCK:
+        return func(*args, **kwargs)
+
+
 def _import_data_locked(store: Any, payload: Any) -> Any:
     """导入与复诊排程/预约写操作串行，避免覆盖导入写回的复诊链接。"""
     with _VISIT_FOLLOWUP_LOCK:
@@ -7880,6 +7891,7 @@ async def _weekly_report_impl(
                         "count": 0, "over": 0,
                         "target": target, "latest": item,
                         "peak1": 0.0, "peak2": 0.0,
+                        "min1": None,
                     },
                 )
                 entry["count"] += 1
@@ -7888,6 +7900,11 @@ async def _weekly_report_impl(
                 except (TypeError, ValueError):
                     peak1 = 0.0
                 entry["peak1"] = max(entry["peak1"], peak1)
+                entry["min1"] = (
+                    peak1
+                    if entry.get("min1") is None
+                    else min(float(entry["min1"]), peak1)
+                )
                 if item.get("value2") is not None:
                     try:
                         peak2 = float(item["value2"])
@@ -7939,6 +7956,7 @@ async def _weekly_report_impl(
                 "latest2": latest.get("value2"),
                 "peak1": entry.get("peak1"),
                 "peak2": entry.get("peak2"),
+                "min1": entry.get("min1"),
                 "target1": target.get("value1"),
                 "target2": target.get("value2"),
             })
@@ -8018,6 +8036,7 @@ async def _weekly_report_impl(
             "max2": None,
             "peak": None,
             "peak2": None,
+            "lowest": None,
             "latest": None,
             "earliest": None,
             "target": None,
@@ -8029,6 +8048,10 @@ async def _weekly_report_impl(
         if entry["max1"] is None or first_value > entry["max1"]:
             entry["max1"] = first_value
             entry["peak"] = item
+        if entry["lowest"] is None or first_value < float(
+            entry["lowest"]["value1"]
+        ):
+            entry["lowest"] = item
         if item.get("value2") is not None:
             second_value = float(item["value2"])
             entry["sum2"] += second_value
@@ -8187,6 +8210,10 @@ async def _weekly_report_impl(
             "max_value2": (
                 None if entry["metric"] in daily_metric_stats
                 else entry["max2"]
+            ),
+            "lowest": (
+                None if entry["metric"] in daily_metric_stats
+                else entry["lowest"]
             ),
             "peak": (
                 None if entry["metric"] in daily_metric_stats
@@ -9085,17 +9112,38 @@ def _build_health_insights(
                 target_text = f"{float(target['value1']):g}"
                 if target.get("value2") is not None:
                     target_text += f"/{float(target['value2']):g}"
-                latest = row.get("latest") or {}
                 latest_text = ""
-                if latest:
-                    latest_text = (
-                        "，最近 "
-                        + _health_search_number(latest.get("value1"))
-                    )
-                    if latest.get("value2") is not None:
-                        latest_text += (
-                            "/"
-                            + _health_search_number(latest.get("value2"))
+                if metric in LOWER_BOUND_TARGET_METRICS:
+                    lowest = row.get("lowest") or {}
+                    if lowest.get("value1") is not None:
+                        latest_text = (
+                            "，最低 "
+                            + _health_search_number(lowest.get("value1"))
+                            + (f" {unit}" if unit else "")
+                        )
+                elif metric == "bp":
+                    peak_row = row.get("peak") or {}
+                    peak2_row = row.get("peak2") or {}
+                    try:
+                        peak_sys = float(peak_row.get("value1") or 0)
+                        peak_dia = float(peak2_row.get("value2") or 0)
+                    except (TypeError, ValueError):
+                        peak_sys = peak_dia = 0.0
+                    if peak_sys or peak_dia:
+                        latest_text = (
+                            "，最高收缩压 "
+                            + _health_search_number(peak_sys)
+                            + "、最高舒张压 "
+                            + _health_search_number(peak_dia)
+                            + " mmHg"
+                        )
+                else:
+                    peak_row = row.get("peak") or {}
+                    if peak_row.get("value1") is not None:
+                        latest_text = (
+                            "，最高 "
+                            + _health_search_number(peak_row.get("value1"))
+                            + (f" {unit}" if unit else "")
                         )
                 insights.append(_health_insight(
                     f"metric_{metric}",
@@ -9388,7 +9436,9 @@ def _build_health_insights(
     ) or []:
         expected = row.get("expected")
         rate = row.get("rate")
-        if expected and expected >= 3 and rate is not None:
+        if expected and expected > 0 and rate is not None:
+            # 每周一次的低频药完全没打卡同样是 0%，不能被 >=3 阈值
+            # 过滤后返回 all_clear
             if worst is None or rate < worst[0]:
                 worst = (rate, row)
     if worst is not None and worst[0] < 60:
@@ -9416,7 +9466,7 @@ def _build_health_insights(
         ))
     elif (
         not family_scope
-        and adherence.get("expected", 0) >= 3
+        and adherence.get("expected", 0) > 0
         and adherence.get("rate", 100) < 60
     ):
         rate = int(adherence.get("rate") or 0)
@@ -9744,15 +9794,6 @@ def _build_health_insights(
         target_text = f"{float(alert.get('target1') or 0):g}"
         if alert.get("target2") is not None:
             target_text += f"/{float(alert['target2']):g}"
-        latest_text = ""
-        if alert.get("latest1") is not None:
-            latest_text = "，最近 " + _health_search_number(
-                alert.get("latest1")
-            )
-            if alert.get("latest2") is not None:
-                latest_text += "/" + _health_search_number(
-                    alert.get("latest2")
-                )
         member = str(alert.get("profile") or "") or "未指定档案"
         over = int(alert.get("over") or 0)
         lower = metric in LOWER_BOUND_TARGET_METRICS
@@ -9761,6 +9802,22 @@ def _build_health_insights(
         severe = (
             metric == "bp" and (peak1 >= 160 or peak2 >= 100)
         )
+        if lower:
+            min1 = alert.get("min1")
+            worst_text = (
+                "，最低 " + _health_search_number(min1) + unit_text
+                if min1 is not None else ""
+            )
+        elif metric == "bp":
+            worst_text = (
+                "，最高收缩压 " + _health_search_number(peak1)
+                + "、最高舒张压 " + _health_search_number(peak2)
+                + " mmHg"
+            )
+        else:
+            worst_text = (
+                "，最高 " + _health_search_number(peak1) + unit_text
+            )
         insights.append(_health_insight(
             f"metric_{metric}",
             "warning" if (over >= 2 or severe) else "info",
@@ -9769,7 +9826,7 @@ def _build_health_insights(
             + f"（共 {int(alert.get('count') or 0)} 次）",
             (
                 ("目标≥" if lower else "目标≤")
-                + f" {target_text}{unit_text}{latest_text}"
+                + f" {target_text}{unit_text}{worst_text}"
             ).strip(),
             (
                 "复测后仍低于目标时，与医生确认是否需要调整方案。"
@@ -17469,7 +17526,9 @@ async def complete_reminder(reminder_id: SafeIntPath):
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
     result = await asyncio.to_thread(
-        store.complete_reminder_with_repeat, reminder_id
+        _with_visit_followup_lock,
+        store.complete_reminder_with_repeat,
+        reminder_id,
     )
     if result is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
@@ -17486,7 +17545,9 @@ async def reopen_reminder(reminder_id: SafeIntPath):
     reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    ok = await asyncio.to_thread(store.reopen_reminder, reminder_id)
+    ok = await asyncio.to_thread(
+        _with_visit_followup_lock, store.reopen_reminder, reminder_id
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
     await record_audit("reminder.reopen", reminder_audit_target(reminder))
@@ -17510,6 +17571,7 @@ async def update_reminder(reminder_id: SafeIntPath, request: ReminderUpdateReque
         raise HTTPException(status_code=400, detail="没有需要修改的字段")
     try:
         reminder = await asyncio.to_thread(
+            _with_visit_followup_lock,
             get_session_store().update_reminder,
             reminder_id,
             request.title,
@@ -17535,7 +17597,8 @@ async def snooze_reminder(reminder_id: SafeIntPath, days: int = 7):
 
     days = max(1, min(int(days or 7), 365))
     reminder = await asyncio.to_thread(
-        get_session_store().snooze_reminder, reminder_id, days
+        _with_visit_followup_lock,
+        get_session_store().snooze_reminder, reminder_id, days,
     )
     if reminder is None:
         raise HTTPException(
@@ -17556,7 +17619,9 @@ async def delete_reminder(reminder_id: SafeIntPath):
     reminder = await asyncio.to_thread(store.get_reminder, reminder_id)
     if reminder is None:
         raise HTTPException(status_code=404, detail="提醒不存在")
-    ok = await asyncio.to_thread(store.delete_reminder, reminder_id)
+    ok = await asyncio.to_thread(
+        _with_visit_followup_lock, store.delete_reminder, reminder_id
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="提醒不存在")
     await asyncio.to_thread(
@@ -17581,7 +17646,8 @@ async def bulk_delete_reminders(request: BulkIdsRequest):
     # 标签页/设备期间恢复（reopen）的提醒不能被「清理已完成」误删
     store = get_session_store()
     deleted_ids = await asyncio.to_thread(
-        store.delete_reminders_bulk_with_ids, request.ids, True
+        _with_visit_followup_lock,
+        store.delete_reminders_bulk_with_ids, request.ids, True,
     )
     for reminder_id in deleted_ids:
         await asyncio.to_thread(

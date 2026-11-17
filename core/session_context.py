@@ -5,8 +5,13 @@ AgentLoop 在执行工具前设置该值，Skill 只查询当前作用域。
 """
 from contextvars import ContextVar, Token
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 import hashlib
+import hmac
+import os
+import secrets
+import threading
 
 _current_memory_scope: ContextVar[str] = ContextVar(
     "medix_memory_scope", default=""
@@ -17,24 +22,63 @@ _current_session_id: ContextVar[str] = ContextVar(
 )
 
 
+_MEMORY_SCOPE_SALT_LOCK = threading.Lock()
+_memory_scope_salt_cache = ""
+
+
+def _memory_scope_salt() -> str:
+    """每安装独立随机盐（持久化在会话库同目录）。
+
+    患者档案名空间很小（妈妈/爸爸/常见中文姓名），无盐 SHA-256
+    可离线穷举还原姓名并与病史摘要关联；加盐后同一姓名在不同
+    安装的命名空间互不相同，导出/云端数据也无法跨安装关联。
+    可由 MEDIX_MEMORY_SCOPE_SALT 显式覆盖；无法落盘时退回进程内
+    随机盐（隐私优先，重启后旧命名空间不再命中）。
+    """
+    global _memory_scope_salt_cache
+    with _MEMORY_SCOPE_SALT_LOCK:
+        if _memory_scope_salt_cache:
+            return _memory_scope_salt_cache
+        salt = (os.environ.get("MEDIX_MEMORY_SCOPE_SALT") or "").strip()
+        if not salt:
+            db_env = (os.environ.get("MEDIX_SESSION_DB") or "").strip()
+            base = Path(db_env).expanduser().parent if db_env else Path("data")
+            path = base / ".memory_scope_salt"
+            try:
+                if path.exists():
+                    salt = path.read_text(encoding="utf-8").strip()
+                if not salt:
+                    salt = secrets.token_hex(32)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(salt, encoding="utf-8")
+            except OSError:
+                salt = secrets.token_hex(32)
+        _memory_scope_salt_cache = salt[:128]
+        return _memory_scope_salt_cache
+
+
+def _scope_digest(value: str) -> str:
+    return hmac.new(
+        _memory_scope_salt().encode("utf-8"),
+        str(value or "").encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+
+
 def session_memory_scope(session_id: str) -> str:
-    """没有患者档案时的会话作用域：只发送不可逆哈希。
+    """没有患者档案时的会话作用域：带盐哈希。
 
     会话 ID 可能由客户端自定义，原文不应进入 Mem0 等外部记忆服务。
     """
-    digest = hashlib.sha256(
-        str(session_id or "").encode("utf-8")
-    ).hexdigest()[:24]
-    return f"medix_session_{digest}"
+    return f"medix_session_{_scope_digest(session_id)}"
 
 
 def profile_memory_scope(profile: str) -> str:
-    """患者档案的长期记忆命名空间（哈希），空档案返回空串。"""
+    """患者档案的长期记忆命名空间（带盐哈希），空档案返回空串。"""
     name = " ".join(str(profile or "").split())
     if not name:
         return ""
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
-    return f"medix_profile_{digest}"
+    return f"medix_profile_{_scope_digest(name)}"
 
 
 def get_memory_scope() -> str:

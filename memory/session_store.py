@@ -5568,6 +5568,46 @@ class SessionStore:
                     best_other = other_score
             return best_other > own_score
 
+        def _tail_prefers_sibling_any_content(candidate: int) -> bool:
+            """候选尾字段是否严格更像同秒任一兄弟备份行（不论内容）。
+
+            存活行的内容列被本地编辑成与被删孪生相同后，尾字段
+            （在用/停药、severity/note 等）仍会精确匹配它原本那条
+            记录：此时把它按内容认领给被删行，会让被删记录的非内容
+            字段永久丢失、并把存活行旧版本复制一份。
+            """
+            if not backup_tails or tail_where is None:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            best_other = own_score
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                other_score = _tail_match_score(candidate, other_id)
+                if other_score > best_other:
+                    best_other = other_score
+            return best_other > own_score
+
         def _tail_tied_with_sibling(
             candidate: int, cross_profile: bool = False
         ) -> bool:
@@ -6738,6 +6778,13 @@ class SessionStore:
                             return _ambiguous()
                         if _content_owned_by_other(sole):
                             return _ambiguous()
+                        if (
+                            not _tail_matches(sole)
+                            and _tail_prefers_sibling_any_content(sole)
+                        ):
+                            # 候选内容是本行的，但尾字段明确属于同秒
+                            # 另一条记录：按被删记录补回
+                            return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
             # 改挂到其他成员并编辑内容列、且主键漂移时，身份组里
@@ -6844,6 +6891,13 @@ class SessionStore:
                             )
                             if inserted < missing:
                                 continue
+                    if (
+                        not _tail_matches(candidate)
+                        and _tail_prefers_sibling_any_content(candidate)
+                    ):
+                        # 内容列被改成与本行相同、但尾字段明确属于
+                        # 另一条同秒记录：不能在此直接认领
+                        continue
                     return _claim(candidate)
         candidates = {
             c for c in claimed if c not in moved and c not in matched
@@ -7025,9 +7079,16 @@ class SessionStore:
                         )
                     ):
                         sole = min(candidates)
-                        if not _content_owned_by_other(sole) and not (
-                            _tail_prefers_sibling(sole)
-                            and not _tail_matches(sole)
+                        if (
+                            not _content_owned_by_other(sole)
+                            and not (
+                                _tail_prefers_sibling(sole)
+                                and not _tail_matches(sole)
+                            )
+                            and not (
+                                not _tail_matches(sole)
+                                and _tail_prefers_sibling_any_content(sole)
+                            )
                         ):
                             return _claim(sole, mark_moved=True)
                     # 同身份组内多条备份行共享同一锚点且本地有缺行：
@@ -7070,6 +7131,10 @@ class SessionStore:
                         _candidate_content_matches_backup(sole)
                         and not _content_owned_by_other(sole)
                         and not _content_prefers_sibling(sole)
+                        and not (
+                            not _tail_matches(sole)
+                            and _tail_prefers_sibling_any_content(sole)
+                        )
                         and (
                             not _backup_content_shared_with_sibling()
                             or _tail_matches(sole)
@@ -7321,6 +7386,13 @@ class SessionStore:
                 # 内容列（如提醒到期日/症状时间）与备份行不同：没有
                 # 编辑证据，或组内确有缺行且同秒记录内容不同（编辑
                 # 证据可能来自另一条记录）时，本行必须按被删补插
+                return _ambiguous()
+            if (
+                not _tail_matches(candidate)
+                and _tail_prefers_sibling_any_content(candidate)
+            ):
+                # 内容列被本地编辑成与本行相同时，尾字段仍可能明确
+                # 属于另一条同秒记录（不同剂量/症状的孪生）
                 return _ambiguous()
             if not _tail_matches(candidate) and (
                 _tail_prefers_sibling(candidate)
@@ -7978,6 +8050,9 @@ class SessionStore:
                     : IMPORT_LIST_LIMITS["health_metrics"]
                 ]:
                     if not isinstance(raw_item, dict):
+                        continue
+                    if not str(raw_item.get("measured_at") or "").strip():
+                        # 空测量时间永远无法导入：不能抬高身份组大小
                         continue
                     try:
                         normalized_item = _normalize_metric(
@@ -8900,6 +8975,10 @@ class SessionStore:
                         ),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
+                vaccination_valid_rows = [
+                    item for item in vaccination_valid_rows
+                    if str(item.get("vaccinated_at") or "").strip()
+                ]
                 vaccination_backup_meta = self._import_backup_meta(
                     raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"], "vaccinations"
                 )
@@ -8923,6 +9002,10 @@ class SessionStore:
                         ),
                     ),
                 ):
+                    if not str(raw.get("vaccinated_at") or "").strip():
+                        # 空接种时间会被填成导入时刻，重复导入逐次复制
+                        invalid += 1
+                        continue
                     try:
                         normalized = _normalize_vaccination(
                             raw.get("profile") or "",
@@ -9278,6 +9361,10 @@ class SessionStore:
                         " ".join(str(item.get("item") or "").split()),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
+                lab_valid_rows = [
+                    item for item in lab_valid_rows
+                    if str(item.get("tested_at") or "").strip()
+                ]
                 lab_backup_meta = self._import_backup_meta(
                     raw_lab_results, IMPORT_LIST_LIMITS["lab_results"], "lab_results"
                 )
@@ -9311,6 +9398,11 @@ class SessionStore:
                     ),
                 ):
                     if not isinstance(raw, dict):
+                        continue
+                    if not str(raw.get("tested_at") or "").strip():
+                        # 空检测时间会被填成每次导入的当前时刻，
+                        # 跨分钟重复导入同一备份产生重复化验
+                        invalid += 1
                         continue
                     try:
                         normalized = _normalize_lab_result(
@@ -9849,6 +9941,10 @@ class SessionStore:
                         ).strip() else None,
                     )
                 )
+                visit_valid_rows = [
+                    item for item in visit_valid_rows
+                    if str(item.get("visit_date") or "").strip()
+                ]
                 visit_backup_meta = self._import_backup_meta(
                     raw_visit_records, IMPORT_LIST_LIMITS["visit_records"], "visit_records"
                 )
@@ -9871,6 +9967,10 @@ class SessionStore:
                         ),
                     ),
                 ):
+                    if not str(raw.get("visit_date") or "").strip():
+                        # 空就诊日期按导入当天填充，跨天重复导入逐日新增
+                        invalid += 1
+                        continue
                     try:
                         normalized = _normalize_visit_record(
                             raw.get("profile") or "",
@@ -14895,6 +14995,20 @@ class SessionStore:
                     "          OR (owner_visit_id = 0 AND note LIKE ?)))",
                     (
                         normalized["profile"], now, normalized["profile"],
+                        int(visit_id), f"%{marker_text}%",
+                    ),
+                )
+                # 已取消/已完成等未迁移的预约仍可能带着本就诊的
+                # owner 与「#N 自动创建」标记：就诊已换档案后必须
+                # 剥离，否则旧档案长期显示指向他人就诊的残留归属
+                self._conn.execute(
+                    "UPDATE appointments SET owner_visit_id = 0,"
+                    " note = TRIM(REPLACE(note, ?, '')), updated_at = ?"
+                    " WHERE profile != ?"
+                    "   AND (owner_visit_id = ?"
+                    "        OR (owner_visit_id = 0 AND note LIKE ?))",
+                    (
+                        marker_text, now, normalized["profile"],
                         int(visit_id), f"%{marker_text}%",
                     ),
                 )

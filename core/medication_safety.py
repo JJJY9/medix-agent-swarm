@@ -650,6 +650,44 @@ _STOPPED_USE_PREFIX_LONG = re.compile(
     r"(?:已经|已|早就|刚刚|刚)?\s*(?:停用|停药|停服|停止服用|不再服用|停了)"
     r"[^，。；,.!?！？]{0,6}?(?:月|天|周|年)(?:了|多)?\s*的?\s*$"
 )
+#: 远期停药分句前的可忽略辅助词/指代词（不构成他药宾语）
+_LONG_STOP_NEUTRAL_PREFIX = (
+    "已经", "已", "早就", "早", "都", "快", "目前", "现在", "之前",
+    "以前", "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
+    "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
+    "抗凝药", "化疗药", "免疫抑制剂", "激素",
+)
+
+
+def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
+    """长窗口里的远期停药是否指向当前药（而不是另一种药）。
+
+    「华法林没吃完，阿司匹林停药一年了」：窗口扫到后一分句的停药，
+    但停药动词前点名的是阿司匹林，不能据此把华法林判为已停用。
+    """
+    window = window or ""
+    for match in _LONG_STOP_CONTEXT.finditer(window):
+        before = re.split(
+            r"[，。；;,.!?！？\n]", window[: match.start()]
+        )[-1]
+        token_match = re.search(r"([一-龥A-Za-z0-9]{2,10})\s*$", before)
+        token = token_match.group(1) if token_match else ""
+        for word in _LONG_STOP_NEUTRAL_PREFIX:
+            if token.startswith(word):
+                token = token[len(word):]
+        token = token.strip()
+        if len(token) >= 2 and any(
+            word in token for word in _LONG_STOP_NEUTRAL_PREFIX
+        ):
+            token = ""
+        if not token:
+            return True
+        if token in alias_lower or alias_lower in token:
+            return True
+        continue
+    return False
+
+
 #: 明确远期停药（月/年）：即使同句还提到「没吃完」也按已停用
 _LONG_STOP_CONTEXT = re.compile(
     r"(?:已经|已|早就|早|都|快)?\s*"
@@ -762,6 +800,13 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
     r"|(?:1|a|an|one)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today)",
+    re.IGNORECASE,
+)
+#: 英文「off X for N days/until yesterday」：近期停药仍有抗凝作用
+_RECENT_STOP_OFF_EN = re.compile(
+    r"\boff\s+(?:of\s+)?(?:[\w'-]+\s+){0,3}(?:for\s+)?"
+    r"(?:(?:\d+|one|two|three|four|five|a\s+few|several)"
+    r"\s+(?:days?|weeks?)|yesterday|today)",
     re.IGNORECASE,
 )
 #: 英文单次漏服（today/yesterday + didn't take）仍属当前用药
@@ -915,11 +960,13 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _RECENT_STOP_SUFFIX_EN.search(suffix)
                 or _RECENT_STOP_CONTEXT.search(prefix + suffix)
                 or _RECENT_STOP_CONTEXT_EN.search(prefix + suffix)
+                or _RECENT_STOP_OFF_EN.search(prefix + suffix)
             ):
                 return True
             if (
-                _LONG_STOP_CONTEXT.search(
-                    prefix + text[match.end():right + 120]
+                _long_stop_applies_to_alias(
+                    prefix + text[match.end():right + 120],
+                    alias_lower,
                 )
                 or _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
@@ -969,8 +1016,10 @@ def _alias_matches(text: str, alias: str) -> bool:
         if (
             # 「没吃完，……，已经停药一年了」：远期停药覆盖未吃完的
             # 续用；停药分句可能隔着多段生活描述，按更长的后缀窗口
-            # 扫描（只看药名之后的文本，不会读到别的药名之前）
-            _LONG_STOP_CONTEXT.search(text[end:right + 120])
+            # 扫描，但停药必须指向当前药（他药停药不能误伤）
+            _long_stop_applies_to_alias(
+                text[end:right + 120], alias_lower
+            )
             or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)

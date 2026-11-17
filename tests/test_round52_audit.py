@@ -478,7 +478,8 @@ def test_frontend_round52_guards():
         )
     ]
     assert "els.empty && !els.thread.querySelector('.turn')" in send
-    assert "expectedQuestion\n      && els.input.value.trim()" in app_js
+    # 第六十八轮：合并草稿时按主诉移除，不再要求输入框与主诉全等
+    assert "const remaining = stripInflightQuestion(" in app_js
     api_source = (ROOT / "api_server.py").read_text(encoding="utf-8")
     assert "snapshot=True" in api_source
     assert "100000 if snapshot else 1000" in api_source
