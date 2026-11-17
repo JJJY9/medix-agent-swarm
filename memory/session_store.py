@@ -5453,7 +5453,13 @@ class SessionStore:
                 ).fetchall()
             except sqlite3.Error:
                 rows = []
+            if not rows:
+                # 既有行全部大于备份主键上限（漂移/合并库）：区间为空
+                # 不能当作「所有行都对得上」，只有正面证据才算同源
+                result = False
             for row in rows:
+                if not result:
+                    break
                 local_id = int(row["id"])
                 if local_id not in pre_existing_ids:
                     continue
@@ -5828,6 +5834,86 @@ class SessionStore:
                 else:
                     return False
             return len(kinds) <= 1
+
+        def _candidate_diff_claimable_for_sibling(
+            candidate: int,
+        ) -> bool:
+            """候选内容与某条同秒兄弟备份行仅差时间/数值列。
+
+            组内有缺行时，候选既可能是本行被改期后的存活版本，也可能
+            是兄弟行（同样被改期）的存活版本；两者不可区分时应补插
+            被删记录，而不是认领兄弟行。
+            """
+            if not backup_contents or not content_columns:
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            local = self._db_content_fingerprint(row, content_columns)
+            created_key = str(created_at_value or "")
+            group_fingerprints: Optional[set] = None
+
+            def _sibling_resolved(expected: tuple) -> bool:
+                """兄弟行的内容是否已有本地存活行（前一条补插后即解析）。
+
+                已解析的兄弟行不再构成歧义：否则补插完被删记录后，
+                后一条被编辑的存活行也会被误判为歧义而复制出旧值。
+                """
+                nonlocal group_fingerprints
+                if group_fingerprints is None:
+                    group_fingerprints = set()
+                    try:
+                        group_rows = self._conn.execute(
+                            f"SELECT {', '.join(content_columns)}"
+                            f" FROM {table} WHERE {where}",
+                            values,
+                        ).fetchall()
+                    except sqlite3.Error:
+                        group_rows = []
+                    for group_row in group_rows:
+                        group_fingerprints.add(
+                            self._db_content_fingerprint(
+                                group_row, content_columns
+                            )
+                        )
+                return expected in group_fingerprints
+
+            for other_id, expected in backup_contents.items():
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if local == expected:
+                    continue
+                if _sibling_resolved(expected):
+                    continue
+                temporal = True
+                for index, (mine, want) in enumerate(
+                    zip(local, expected)
+                ):
+                    if mine == want:
+                        continue
+                    column = content_columns[index]
+                    expr = re.match(r"IFNULL\(\s*(\w+)", column)
+                    name = expr.group(1) if expr else column
+                    if not re.search(
+                        r"(?:^|_)(?:at|date|time)$|date|time", name
+                    ):
+                        temporal = False
+                        break
+                if temporal:
+                    return True
+            return False
 
         def _candidate_diff_is_temporal(candidate: int) -> bool:
             """候选内容与当前行的差异是否只落在时间类列上。
@@ -6324,6 +6410,34 @@ class SessionStore:
         content_where = " AND ".join(
             f"{column} = ?" for column in content_columns
         )
+        #: 自动复诊预约（备注带就诊标记）被改挂到其他档案时，原档案的
+        #: 恢复副本必须补插：否则就诊链接被清空，再次导入又会把这行
+        #: 挂回就诊，形成旧副本复活/重复提醒
+        auto_followup_row = bool(
+            table == "appointments"
+            and tail_where is not None
+            and "由就诊记录 #" in str(tail_where[1][1] or "")
+        )
+
+        def _auto_followup_moved_copy(candidate: int) -> bool:
+            """候选是否是自动复诊预约改挂到其他档案后的存活副本。"""
+            if not auto_followup_row or not columns or columns[0] != "profile":
+                return False
+            try:
+                candidate_row = self._conn.execute(
+                    f"SELECT profile FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            return bool(
+                candidate_row is not None
+                and _normalize_profile_name(
+                    str(candidate_row["profile"] or "")
+                )
+                != _normalize_profile_name(str(values[0]))
+            )
+
         if raw_id > 0 and content_where:
             step1_clause = ""
             step1_params: Tuple[Any, ...] = ()
@@ -6419,6 +6533,9 @@ class SessionStore:
                     # 内容列相同但软字段不符且无编辑证据：更像备份里
                     # 另一条同秒记录，交给后续内容/软字段配对
                     claimable = False
+                if claimable and _auto_followup_moved_copy(candidate):
+                    # 自动复诊预约被改挂：原档案补回副本而不是吞掉
+                    claimable = False
                 if claimable:
                     # 同一候选行不能再被任何身份组（目标档案的内容配对
                     # 与兜底）重复认领，否则被删的同秒记录会被当成
@@ -6462,6 +6579,7 @@ class SessionStore:
                             candidate, candidate_profile
                         )
                         and not _candidate_soft_owned_by_other(candidate)
+                        and not _auto_followup_moved_copy(candidate)
                     ):
                         # 候选软字段命中同档案另一条同秒备份记录时
                         # 留给那条记录认领，本行按漂移/内容配对
@@ -6575,6 +6693,12 @@ class SessionStore:
                         row_profile
                         and candidate_profile != row_profile
                     ):
+                        # 自动复诊预约属于原档案的就诊记录：跨档案的
+                        # 存活行只是被用户改挂的副本，不能据此吞掉原
+                        # 档案的恢复副本，否则就诊链接被清空、再次导入
+                        # 时又把这行挂回就诊（旧副本复活）
+                        if _auto_followup_moved_copy(candidate):
+                            continue
                         # 跨档案只认「本地确实改挂/编辑过」的行：
                         # 另一位成员同秒同内容的未编辑记录不能被
                         # 当成已改挂吞掉，否则删除的记录无法恢复
@@ -6813,6 +6937,10 @@ class SessionStore:
                 ) == _normalize_profile_name(row_profile):
                     continue
                 if not _candidate_edited(candidate):
+                    continue
+                if _auto_followup_moved_copy(candidate):
+                    # 自动复诊预约的跨档案副本：原档案应补回自己的
+                    # 恢复副本，不能把改挂行吞成本行版本
                     continue
                 if _content_owned_by_other(candidate):
                     continue
@@ -7192,6 +7320,9 @@ class SessionStore:
                             or (
                                 local_group_size < backup_group_size
                                 and _candidate_diff_claimable(sole)
+                                and not _candidate_diff_claimable_for_sibling(
+                                    sole
+                                )
                             )
                             # 组已满：重复导入时唯一被编辑的候选就是
                             # 本行的存活版本，不能补插旧版本
@@ -7199,6 +7330,9 @@ class SessionStore:
                                 local_group_size >= backup_group_size
                                 and _candidate_edited(sole)
                                 and _candidate_diff_claimable(sole)
+                                and not _candidate_diff_claimable_for_sibling(
+                                    sole
+                                )
                             )
                         )
                         and (
@@ -7421,6 +7555,22 @@ class SessionStore:
             ):
                 # 非同源且看不到任何编辑证据：不能凭撞号认领遗留行
                 return _ambiguous()
+        if len(candidates) > 1:
+            filtered_multi = {
+                candidate for candidate in candidates
+                if not _content_owned_by_other(candidate)
+                and not _candidate_soft_owned_by_other(
+                    candidate, cross_profile=True
+                )
+            }
+            if len(filtered_multi) == 1:
+                candidates = filtered_multi
+            else:
+                # 多条候选互相归属不明：不能 min() 任意认领，按被删
+                # 记录补插（「宁重复勿丢」）
+                return _ambiguous()
+        if not candidates:
+            return _ambiguous()
         return _claim(min(candidates))
 
     @staticmethod
@@ -8957,6 +9107,10 @@ class SessionStore:
                         item.get("note") or "",
                     ),
                 )
+                vaccination_valid_rows = [
+                    item for item in vaccination_valid_rows
+                    if str(item.get("vaccinated_at") or "").strip()
+                ]
                 (
                     vaccination_group_sizes,
                     vaccination_soft_sizes,
@@ -8975,10 +9129,6 @@ class SessionStore:
                         ),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
-                vaccination_valid_rows = [
-                    item for item in vaccination_valid_rows
-                    if str(item.get("vaccinated_at") or "").strip()
-                ]
                 vaccination_backup_meta = self._import_backup_meta(
                     raw_vaccinations, IMPORT_LIST_LIMITS["vaccinations"], "vaccinations"
                 )
@@ -9347,6 +9497,10 @@ class SessionStore:
                         item.get("note") or "",
                     ),
                 )
+                lab_valid_rows = [
+                    item for item in lab_valid_rows
+                    if str(item.get("tested_at") or "").strip()
+                ]
                 lab_group_sizes, lab_soft_sizes = self._identity_group_meta(
                     lab_valid_rows,
                     IMPORT_LIST_LIMITS["lab_results"],
@@ -9361,10 +9515,6 @@ class SessionStore:
                         " ".join(str(item.get("item") or "").split()),
                     ) if str(item.get("created_at") or "").strip() else None,
                 )
-                lab_valid_rows = [
-                    item for item in lab_valid_rows
-                    if str(item.get("tested_at") or "").strip()
-                ]
                 lab_backup_meta = self._import_backup_meta(
                     raw_lab_results, IMPORT_LIST_LIMITS["lab_results"], "lab_results"
                 )
@@ -9919,6 +10069,10 @@ class SessionStore:
                         item.get("note") or "",
                     ),
                 )
+                visit_valid_rows = [
+                    item for item in visit_valid_rows
+                    if str(item.get("visit_date") or "").strip()
+                ]
                 visit_group_sizes, visit_soft_sizes = (
                     self._identity_group_meta(
                         visit_valid_rows,
@@ -9941,10 +10095,6 @@ class SessionStore:
                         ).strip() else None,
                     )
                 )
-                visit_valid_rows = [
-                    item for item in visit_valid_rows
-                    if str(item.get("visit_date") or "").strip()
-                ]
                 visit_backup_meta = self._import_backup_meta(
                     raw_visit_records, IMPORT_LIST_LIMITS["visit_records"], "visit_records"
                 )
@@ -13379,6 +13529,21 @@ class SessionStore:
                 and not was_upcoming
                 and reminder_due
             ):
+                auto_followup = bool(
+                    int(previous["owner_visit_id"] or 0)
+                ) or "由就诊记录 #" in str(previous["note"] or "")
+                scheduled_day = str(
+                    normalized["scheduled_at"] or ""
+                )[:10]
+                today_day = str(now)[:10]
+                if (
+                    auto_followup
+                    and scheduled_day
+                    and scheduled_day < today_day
+                ):
+                    # 过期的自动复诊预约恢复为待就诊会挂回就诊却不在
+                    # 待就诊列表，抑制「复诊已逾期」提示
+                    raise ValueError("预约日期已过期，请先修改日期")
                 existing = self._conn.execute(
                     "SELECT id FROM reminders WHERE done = 0"
                     " AND appointment_id = ? LIMIT 1",
@@ -13388,7 +13553,22 @@ class SessionStore:
                     int(existing["id"]) if existing is not None else 0
                 )
                 if existing is None:
-                    restored_reminder_id = _create_reminder()
+                    deleted_marker = ""
+                    try:
+                        deleted_marker = str(
+                            self.get_app_state(
+                                "reminder_deleted_"
+                                f"{int(appointment_id)}"
+                            ) or ""
+                        )
+                    except sqlite3.Error:
+                        deleted_marker = ""
+                    if deleted_marker:
+                        # 用户主动删除过该预约的提醒：恢复待就诊不能
+                        # 绕过墓碑复活，只恢复预约本身
+                        restored_reminder_id = 0
+                    else:
+                        restored_reminder_id = _create_reminder()
                 if restored_reminder_id:
                     # 恢复待就诊后把就诊记录的复诊链接写回：否则逾期
                     # 复诊提示会被抑制、再次安排复诊会产生重复预约
@@ -13530,11 +13710,15 @@ class SessionStore:
                     )[:10]
                     if linked_existing not in (0, int(appointment_id)):
                         visit_target = 0
-                    elif visit_day and scheduled_day and (
-                        scheduled_day < visit_day
+                    elif (
+                        visit_day and scheduled_day
+                        and scheduled_day < visit_day
+                    ) or (
+                        scheduled_day and scheduled_day < str(now)[:10]
                     ):
-                        # 复诊日期早于就诊日期会违反就诊记录约束：
-                        # 不再写回，并把预约降级为独立预约
+                        # 复诊日期早于就诊日期或已过期：不再写回，
+                        # 并把预约降级为独立预约（避免挂回后抑制
+                        # 逾期复诊提示、又不在待就诊列表）
                         visit_target = 0
                         self._conn.execute(
                             "UPDATE appointments SET owner_visit_id = 0,"

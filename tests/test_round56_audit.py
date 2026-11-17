@@ -5,6 +5,7 @@
 import asyncio
 import time
 from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -318,18 +319,20 @@ def test_completed_appointment_keep_date(store):
     from api_server import _schedule_followup_sync
 
     store.save_profile("妈妈", {"sex": "女"})
+    first_day = (datetime.now() + timedelta(days=20)).strftime("%Y-%m-%d")
+    moved_day = (datetime.now() + timedelta(days=13)).strftime("%Y-%m-%d")
     visit = store.add_visit_record(
         "妈妈", visit_date="2026-10-01", diagnosis="高血压",
-        next_followup_date="2026-11-20",
+        next_followup_date=first_day,
     )
     first = _schedule_followup_sync(store, visit["id"])
     appointment_id = first["appointment"]["id"]
     store.update_appointment_partial(
-        appointment_id, scheduled_at="2026-11-13T09:00"
+        appointment_id, scheduled_at=moved_day + "T09:00"
     )
     store.update_appointment_partial(appointment_id, status="completed")
     store.update_visit_record_partial(
-        visit["id"], next_followup_date="2026-11-13"
+        visit["id"], next_followup_date=moved_day
     )
     row = store.get_visit_record(visit["id"])
     assert int(row.get("followup_appointment_id") or 0) == appointment_id

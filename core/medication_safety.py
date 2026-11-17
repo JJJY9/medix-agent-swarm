@@ -650,13 +650,98 @@ _STOPPED_USE_PREFIX_LONG = re.compile(
     r"(?:已经|已|早就|刚刚|刚)?\s*(?:停用|停药|停服|停止服用|不再服用|停了)"
     r"[^，。；,.!?！？]{0,6}?(?:月|天|周|年)(?:了|多)?\s*的?\s*$"
 )
-#: 远期停药分句前的可忽略辅助词/指代词（不构成他药宾语）
-_LONG_STOP_NEUTRAL_PREFIX = (
-    "已经", "已", "早就", "早", "都", "快", "目前", "现在", "之前",
-    "以前", "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
-    "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
-    "抗凝药", "化疗药", "免疫抑制剂", "激素",
+#: 停药宾语前后的辅助词（剥离后再判断是否点名了他药）
+_LONG_STOP_AUX_SUFFIXES = (
+    "已经", "已", "早就", "现在", "之前", "以前", "目前", "都",
 )
+_LONG_STOP_AUX_PREFIXES = (
+    "已经", "已", "早就", "都", "快", "目前", "现在", "之前", "以前",
+    "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
+    "让", "叫", "劝",
+)
+#: 指代当前药物的宾语
+_LONG_STOP_SELF_REFERENCES = (
+    "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
+)
+#: 药物类别词 → 同类药名线索（只有类别一致才算自指）
+_LONG_STOP_CATEGORY_HINTS = {
+    "抗凝药": (
+        "warfarin", "heparin", "rivaroxaban", "dabigatran",
+        "apixaban", "edoxaban", "enoxaparin", "clopidogrel",
+        "aspirin", "抗凝", "华法林", "肝素", "利伐沙班", "达比加群",
+        "阿哌沙班", "依诺肝素", "氯吡格雷", "阿司匹林",
+    ),
+    "抗凝药物": (
+        "warfarin", "heparin", "rivaroxaban", "dabigatran",
+        "apixaban", "edoxaban", "enoxaparin", "clopidogrel",
+        "aspirin", "抗凝", "华法林", "肝素", "利伐沙班", "达比加群",
+        "阿哌沙班", "依诺肝素", "氯吡格雷", "阿司匹林",
+    ),
+    "化疗药": (
+        "methotrexate", "cisplatin", "fluorouracil", "paclitaxel",
+        "cyclophosphamide", "doxorubicin", "化疗", "甲氨蝶呤", "顺铂",
+        "氟尿嘧啶", "紫杉醇", "环磷酰胺", "多柔比星",
+    ),
+    "化疗药物": (
+        "methotrexate", "cisplatin", "fluorouracil", "paclitaxel",
+        "cyclophosphamide", "doxorubicin", "化疗", "甲氨蝶呤", "顺铂",
+        "氟尿嘧啶", "紫杉醇", "环磷酰胺", "多柔比星",
+    ),
+    "免疫抑制剂": (
+        "methotrexate", "cyclosporine", "tacrolimus", "azathioprine",
+        "免疫抑制", "甲氨蝶呤", "环孢素", "他克莫司", "硫唑嘌呤",
+    ),
+    "激素": (
+        "prednisone", "prednisolone", "dexamethasone",
+        "methylprednisolone", "hydrocortisone", "激素", "泼尼松",
+        "强的松", "地塞米松", "甲泼尼龙", "氢化可的松", "糖皮质激素",
+    ),
+    "糖皮质激素": (
+        "prednisone", "prednisolone", "dexamethasone",
+        "methylprednisolone", "hydrocortisone", "激素", "泼尼松",
+        "强的松", "地塞米松", "甲泼尼龙", "氢化可的松", "糖皮质激素",
+    ),
+}
+
+
+def _normalize_long_stop_token(token: str) -> str:
+    """剥离停药宾语前后的时间/辅助词，保留真正的药名。"""
+    token = str(token or "").strip()
+    changed = True
+    while changed and token:
+        changed = False
+        for word in _LONG_STOP_AUX_SUFFIXES:
+            if token.endswith(word) and len(token) - len(word) >= 2:
+                token = token[: -len(word)]
+                changed = True
+        for word in _LONG_STOP_AUX_PREFIXES:
+            if token.startswith(word) and len(token) - len(word) >= 2:
+                token = token[len(word):]
+                changed = True
+    return token.strip()
+
+
+def _long_stop_token_is_determiner(token: str) -> bool:
+    """宾语是否只是辅助词/代词（没有点名任何药名）。"""
+    token = str(token or "").strip()
+    changed = True
+    while changed and token:
+        changed = False
+        if token in _LONG_STOP_SELF_REFERENCES:
+            return True
+        for word in _LONG_STOP_AUX_SUFFIXES:
+            if token == word:
+                return True
+            if token.endswith(word) and len(token) > len(word):
+                token = token[: -len(word)]
+                changed = True
+        for word in _LONG_STOP_AUX_PREFIXES:
+            if token == word:
+                return True
+            if token.startswith(word) and len(token) > len(word):
+                token = token[len(word):]
+                changed = True
+    return not token or token in _LONG_STOP_SELF_REFERENCES
 
 
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
@@ -666,22 +751,42 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     但停药动词前点名的是阿司匹林，不能据此把华法林判为已停用。
     """
     window = window or ""
+    alias_lower = str(alias_lower or "").lower()
     for match in _LONG_STOP_CONTEXT.finditer(window):
         before = re.split(
             r"[，。；;,.!?！？\n]", window[: match.start()]
         )[-1]
         token_match = re.search(r"([一-龥A-Za-z0-9]{2,10})\s*$", before)
-        token = token_match.group(1) if token_match else ""
-        for word in _LONG_STOP_NEUTRAL_PREFIX:
-            if token.startswith(word):
-                token = token[len(word):]
-        token = token.strip()
-        if len(token) >= 2 and any(
-            word in token for word in _LONG_STOP_NEUTRAL_PREFIX
-        ):
-            token = ""
-        if not token:
+        raw_token = token_match.group(1).strip() if token_match else ""
+        if _long_stop_token_is_determiner(raw_token):
+            # 「已经停药半年」「医生让我停药半年」：没有点名其他药
             return True
+        token = _normalize_long_stop_token(raw_token)
+        if len(token) < 2:
+            # 无药名宾语：就是当前药
+            return True
+        if token in _LONG_STOP_SELF_REFERENCES:
+            return True
+        matched_reference = False
+        for reference in ("这个药", "该药", "此药", "这种药", "那种药"):
+            if reference in token:
+                head = token.split(reference)[0].strip()
+                matched_reference = True
+                if (
+                    not head
+                    or head in alias_lower
+                    or alias_lower in head
+                ):
+                    return True
+                break
+        if matched_reference:
+            continue
+        hints = _LONG_STOP_CATEGORY_HINTS.get(token)
+        if hints is not None:
+            # 「激素停了半年」只有当前药确属激素类才等价于本药
+            if any(hint in alias_lower for hint in hints):
+                return True
+            continue
         if token in alias_lower or alias_lower in token:
             return True
         continue

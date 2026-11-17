@@ -369,7 +369,8 @@ def test_frontend_round68_guards():
     assert "function stripInflightQuestion(" in source
     assert "els.input.value.includes(inflightText)" in source
     assert "inflightQuestionText" in source
-    assert "上次会诊未完成；当前草稿已保留" in source
+    # 第六十九轮起：无关草稿与在途主诉合并保留（不再只提示丢弃）
+    assert "上次会诊未完成，主诉已合并到输入框" in source
     assert source.count("if (busy || sendInFlight) {") >= 4
     apply_block = source[
         source.index("async function applySelectedProfile"):

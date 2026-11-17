@@ -417,16 +417,18 @@ def test_import_rewrites_followup_note_on_visit_id_drift(tmp_path):
 # ---------------------------------------------------------------- 预约恢复
 def test_cancel_then_restore_appointment_relinks_visit(store):
     store.save_profile("妈妈", {"sex": "女"})
+    visit_day = (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d")
+    reminder_day = (datetime.now() + timedelta(days=9)).strftime("%Y-%m-%d")
     visit = store.add_visit_record(
         "妈妈", visit_date="2026-11-01", diagnosis="高血压",
-        next_followup_date="2026-11-10",
+        next_followup_date=visit_day,
     )
     appointment = store.add_appointment(
-        "妈妈", "复诊：高血压", scheduled_at="2026-11-10T09:00",
+        "妈妈", "复诊：高血压", scheduled_at=visit_day + "T09:00",
         note=f"由就诊记录 #{visit['id']} 自动创建",
     )
     reminder = store.add_reminder(
-        "复诊：高血压", "2026-11-09", "", "", "妈妈",
+        "复诊：高血压", reminder_day, "", "", "妈妈",
         0, 0, "", 0, 0, appointment["id"],
     )
     store.set_visit_followup_links(
@@ -626,12 +628,17 @@ def test_shared_bucket_skips_auth_preblock(client_and_store, monkeypatch):
     )
     assert proxied.status_code == 200
 
-    # 直连远程来源仍受限流保护，正确令牌也不会绕过已锁定状态
+    # 直连远程来源仍受限流保护：错误令牌继续 429，但第六十九轮起
+    # 正确令牌经一次常量时间比较后放行（共享桶不再误伤）
+    plain_wrong = remote.get(
+        "/api/sessions", headers={"X-Medix-Token": "bad-guess"}
+    )
+    assert plain_wrong.status_code == 429
+    assert plain_wrong.json()["code"] == "auth_rate_limited"
     plain = remote.get(
         "/api/sessions", headers={"X-Medix-Token": token}
     )
-    assert plain.status_code == 429
-    assert plain.json()["code"] == "auth_rate_limited"
+    assert plain.status_code == 200
 
 
 # ---------------------------------------------------------------- 前端状态

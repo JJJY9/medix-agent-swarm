@@ -242,12 +242,12 @@ _COLLOQUIAL_BLEEDING_RE = re.compile(
     r"(?:阴道|产道|下体|下面|下身|内裤上?|护垫|卫生巾上?|纸巾上?|擦拭?)"
     r"[^，。；,;！!？?\n]{0,6}"
     r"(?<![贫缺])"
-    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿|红|尿)"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿|红蛋白|红素|细胞|尿)"
     r"|(?:有一点|有一些|有点|有些|少量|少许|带有?|擦到|看到|见到|"
     r"流了?|出了?|有)"
     r"[^，。；,;！!？?\n]{0,3}"
     r"(?<![贫缺])"
-    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿|红|尿)"
+    r"血(?!常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿|红蛋白|红素|细胞|尿)"
     r"|血丝"
 )
 
@@ -353,13 +353,25 @@ def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
         )
     )
     if obstetric:
-        # 产科语境下的「术后/伤口」是分娩状态，不能据此否否决怀孕
-        # 产期出血；但便/尿/痰/呕等明确非妊娠部位仍然生效
-        return any(
+        # 会阴/伤口出血（产后常在便溺时发现）仍按孕产期出血处理
+        if any(
             word in span or word in tail
-            for word in _NON_PREG_BLEEDING_WORDS
-            if word not in ("术后", "伤口")
-        )
+            for word in ("伤口", "会阴", "缝线", "缝针")
+        ):
+            return False
+        # 便/尿/痰等只有紧邻出血词时才是「非妊娠部位出血」；
+        # 「产后小便时会阴伤口出血」里的「小便时」只是时机
+        combined = tail + span
+        for word in _NON_PREG_BLEEDING_WORDS:
+            if word in ("术后", "伤口"):
+                continue
+            for match in re.finditer(re.escape(word), combined):
+                after = combined[match.end(): match.end() + 4]
+                if re.match(
+                    r"[^，。；]{0,2}(?:出血|流血|见红|血)", after
+                ):
+                    return True
+        return False
     return any(
         word in span or word in tail
         for word in _NON_PREG_BLEEDING_WORDS
@@ -656,6 +668,21 @@ def _enum_negated(prefix: str) -> bool:
     first_item = re.split(r"、|和|及|与|以及|或|或者", body, maxsplit=1)[0]
     if not any(term in first_item for term in _NEGATED_SYMPTOM_TERMS):
         return False
+    # 显式肯定项（有/偶有/时有/少量/有痰…）或急性修饰（突然/突发）
+    # 会终止否定范围：「无发热、有咯血」「无发热、突然胸痛」不是
+    # 在否认咯血/胸痛；裸症状枚举（无发热、咳嗽、胸痛）仍整体否定
+    items = re.split(r"、|和|及|与|以及|或|或者", body)
+    for item in items[1:]:
+        text_item = item.strip()
+        if not text_item:
+            continue
+        if text_item.startswith(
+            ("有", "偶有", "时有", "稍有", "少量", "有痰", "出现",
+             "伴有", "伴随")
+        ):
+            return False
+        if "突然" in text_item or "突发" in text_item:
+            return False
     # 阳性线索只在剥离否定词与填充词后的枚举正文上判断：
     # 「没有出现胸痛和呼吸困难」里紧跟否定词的「出现」不是阳性线索
     return not any(cue in body for cue in _ENUM_POSITIVE_CUES)
@@ -1212,6 +1239,9 @@ def _course_context_clause(clause: str) -> bool:
     text = str(clause or "").strip()
     if not text or len(text) > 10:
         return False
+    if _NEGATED_CONTEXT_LEAD.match(text):
+        # 「今天没有胸痛」是否定铺垫，不是患者当前主诉语境
+        return False
     if any(word in text for word in _COURSE_CONTEXT_BLOCKERS):
         return False
     return (
@@ -1271,9 +1301,12 @@ def patient_complaint_text(text: str) -> str:
                     positive_flag
                     or symptom_seen
                     or pregnancy_seen
-                    or not any(
-                        word in clause
-                        for word in _EDUCATION_BLOCKERS_STRONG
+                    or (
+                        not any(
+                            word in clause
+                            for word in _EDUCATION_BLOCKERS_STRONG
+                        )
+                        and _NEGATED_CONTEXT_LEAD.match(clause) is None
                     )
                 ):
                     context_seen = True
@@ -1627,14 +1660,89 @@ _LONG_ENDED_TREATMENT_RE = re.compile(
 )
 
 
-#: 停药动词前可忽略的辅助词（不构成药名宾语）
-_LONG_STOP_NEUTRAL_PREFIX = (
-    "已经", "已", "早就", "早", "都", "快", "目前", "现在", "之前",
-    "以前", "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
-    # 指代/类别词指向的就是当前讨论的药：不能当成「另一种药」
-    "这个药", "该药", "此药", "这种药", "那种药", "它",
-    "抗凝药", "化疗药", "免疫抑制剂", "激素", "这个", "该",
+#: 停药宾语前后的辅助词（剥离后再判断是否点名了他药）
+_LONG_STOP_AUX_SUFFIXES = (
+    "已经", "已", "早就", "现在", "之前", "以前", "目前", "都",
 )
+_LONG_STOP_AUX_PREFIXES = (
+    "已经", "已", "早就", "都", "快", "目前", "现在", "之前", "以前",
+    "医生", "医嘱", "自行", "我们", "我", "他", "她", "本人",
+    "让", "叫", "劝",
+)
+#: 指代当前药物的宾语
+_STOP_SELF_REFERENCES = (
+    "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
+)
+#: 药物类别词 → 当前语境中的同类药名线索（类别一致才算自指）
+_STOP_CATEGORY_HINTS = {
+    "抗凝药": (
+        "华法林", "肝素", "利伐沙班", "达比加群", "阿哌沙班",
+        "依诺肝素", "氯吡格雷", "阿司匹林", "抗凝",
+    ),
+    "抗凝药物": (
+        "华法林", "肝素", "利伐沙班", "达比加群", "阿哌沙班",
+        "依诺肝素", "氯吡格雷", "阿司匹林", "抗凝",
+    ),
+    "化疗药": (
+        "甲氨蝶呤", "顺铂", "氟尿嘧啶", "紫杉醇", "环磷酰胺",
+        "多柔比星", "化疗",
+    ),
+    "化疗药物": (
+        "甲氨蝶呤", "顺铂", "氟尿嘧啶", "紫杉醇", "环磷酰胺",
+        "多柔比星", "化疗",
+    ),
+    "免疫抑制剂": (
+        "甲氨蝶呤", "环孢素", "他克莫司", "硫唑嘌呤", "免疫抑制",
+    ),
+    "激素": (
+        "泼尼松", "强的松", "地塞米松", "甲泼尼龙", "氢化可的松",
+        "激素", "糖皮质激素",
+    ),
+    "糖皮质激素": (
+        "泼尼松", "强的松", "地塞米松", "甲泼尼龙", "氢化可的松",
+        "激素", "糖皮质激素",
+    ),
+}
+
+
+def _normalize_stop_token(token: str) -> str:
+    """剥离停药宾语前后的时间/辅助词，保留真正的药名。"""
+    token = str(token or "").strip()
+    changed = True
+    while changed and token:
+        changed = False
+        for word in _LONG_STOP_AUX_SUFFIXES:
+            if token.endswith(word) and len(token) - len(word) >= 2:
+                token = token[: -len(word)]
+                changed = True
+        for word in _LONG_STOP_AUX_PREFIXES:
+            if token.startswith(word) and len(token) - len(word) >= 2:
+                token = token[len(word):]
+                changed = True
+    return token.strip()
+
+
+def _stop_token_is_determiner(token: str) -> bool:
+    """宾语是否只是辅助词/代词（没有点名任何药名）。"""
+    token = str(token or "").strip()
+    changed = True
+    while changed and token:
+        changed = False
+        if token in _STOP_SELF_REFERENCES:
+            return True
+        for word in _LONG_STOP_AUX_SUFFIXES:
+            if token == word:
+                return True
+            if token.endswith(word) and len(token) > len(word):
+                token = token[: -len(word)]
+                changed = True
+        for word in _LONG_STOP_AUX_PREFIXES:
+            if token == word:
+                return True
+            if token.startswith(word) and len(token) > len(word):
+                token = token[len(word):]
+                changed = True
+    return not token or token in _STOP_SELF_REFERENCES
 
 
 def _stop_clause_names_other_drug(
@@ -1648,16 +1756,25 @@ def _stop_clause_names_other_drug(
     )
     if match is None:
         return False
-    token = match.group(1)
-    for word in _LONG_STOP_NEUTRAL_PREFIX:
-        if token.startswith(word):
-            token = token[len(word):]
-    token = token.strip()
+    raw_token = match.group(1).strip()
+    if _stop_token_is_determiner(raw_token):
+        # 「已经停药半年」「医生让我停药半年」：没有点名其他药
+        return False
+    token = _normalize_stop_token(raw_token)
     if len(token) < 2:
         return False
-    if any(word in token for word in _LONG_STOP_NEUTRAL_PREFIX):
-        # 「华法林这个药停了半年」：指代当前药物的宾语不是他药
+    if token in _STOP_SELF_REFERENCES:
         return False
+    # 「华法林这个药停了半年」：指代词前的药名与当前分句一致才算自指；
+    # 「阿司匹林这个药停了半年」点名的是另一种药
+    for reference in ("这个药", "该药", "此药", "这种药", "那种药"):
+        if reference in token:
+            head = token.split(reference)[0].strip()
+            return bool(head) and head not in current_clause
+    hints = _STOP_CATEGORY_HINTS.get(token)
+    if hints is not None:
+        # 「激素停了半年」只有当前语境确属激素类才等价于本药
+        return not any(hint in current_clause for hint in hints)
     return token not in current_clause
 
 

@@ -21009,6 +21009,7 @@ async function send(question) {
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
       els.input.value = question;
       detachedComposerText = question;
+      preserveDraftProfile(sendProfile, question);
       autoGrow();
       setVitals('warn', '会话已切换，刚才的主诉未提交，请确认后重新发送');
       return;
@@ -21048,10 +21049,9 @@ async function send(question) {
     //（或未绑定档案、被清空）：不能静默改挂，按草稿冲突把主诉
     // 放回并提示确认
     safeSessionRemove(INFLIGHT_QUESTION_KEY);
-    els.input.value = question;
-    detachedComposerText = question;
-    autoGrow();
+    restoreComposer(question);
     preserveDraftProfile(submitProfile, question);
+    autoGrow();
     setVitals('warn', '档案已切换，本轮会诊未提交，请确认后重新发送');
     return;
   }
@@ -22720,14 +22720,12 @@ function restoreInflightQuestion() {
       return;
     }
     if (els.input.value.trim()) {
-      // 输入框已有与在途主诉无关的草稿：不把旧主诉拼回去（否则
-      // 回车会把已答复的旧问题与新草稿一起重复提交），只提示；
-      // 保留在途标记供启动对账判断是否已落库
-      inflightRestoredText = question;
-      inflightRestoredBaseline = Number(
-        (data && data.baseline) || 0
-      ) || 0;
-      setVitals('warn', '上次会诊未完成；当前草稿已保留');
+      // 输入框已有后续草稿：合并保留（对账确认落库后只移除旧主诉），
+      // 不能把未提交的主诉永久丢失
+      restoreComposer(question);
+      preserveDraftProfile(profile, question);
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      setVitals('warn', '上次会诊未完成，主诉已合并到输入框');
       return;
     }
     // 空输入框：恢复在途主诉

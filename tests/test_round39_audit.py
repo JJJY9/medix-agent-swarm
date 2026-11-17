@@ -455,6 +455,13 @@ def test_extra_address_header_does_not_skip_preblock(
             headers={"X-Medix-Token": "bad", **contradicting},
         )
         assert first.status_code == 401
+        # 伪造头不能换桶绕过预锁定：错误令牌仍被 429
+        second_bad = client.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "bad", **contradicting},
+        )
+        assert second_bad.status_code == 429
+        # 第六十九轮起：正确令牌不再被共享桶的预锁定误伤
         correct = client.get(
             "/api/sessions",
             headers={
@@ -462,7 +469,7 @@ def test_extra_address_header_does_not_skip_preblock(
                 **contradicting,
             },
         )
-        assert correct.status_code == 429
+        assert correct.status_code == 200
     finally:
         session_store.close()
 

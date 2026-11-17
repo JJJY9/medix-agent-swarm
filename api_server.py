@@ -3066,7 +3066,10 @@ async def require_access_token(request: Request, call_next):
                 blocked, retry_after = auth_failure_limiter.is_blocked(
                     prelock_key
                 )
-                if blocked:
+                if blocked and not known_token:
+                    # 正确令牌只多做一次常量时间比较：预锁定用于挡住
+                    # 错误令牌，不能把共享跳/NAT 后的正确令牌用户
+                    # 一并 429（否则 10 次错误令牌即可全家 DoS）
                     return add_security_headers(JSONResponse(
                         status_code=429,
                         content={
@@ -3140,7 +3143,10 @@ async def require_access_token(request: Request, call_next):
                 blocked, retry_after = auth_failure_limiter.is_blocked(
                     prelock_key
                 )
-                if blocked:
+                if blocked and not known_token:
+                    # 正确令牌只多做一次常量时间比较：预锁定用于挡住
+                    # 错误令牌，不能把共享跳/NAT 后的正确令牌用户
+                    # 一并 429（否则 10 次错误令牌即可全家 DoS）
                     return add_security_headers(JSONResponse(
                         status_code=429,
                         content={

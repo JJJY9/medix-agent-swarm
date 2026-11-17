@@ -143,11 +143,12 @@ def test_remote_wrong_tokens_are_rate_limited(client, monkeypatch):
     assert limited.json()["code"] == "auth_rate_limited"
     assert limited.headers.get("Retry-After")
 
-    # 锁定期间任何令牌都在比较前被拒绝：正确定义不再绕过限流，
-    # 也是暴力猜测真正被降速的前提；本机客户端不受影响
+    # 第六十九轮起：错误令牌仍被预锁定挡住；正确令牌只多做一次
+    # 常量时间比较即可放行，避免共享桶把正确令牌用户一并 429
+    again = remote.get("/api/sessions", headers=wrong)
+    assert again.status_code == 429
     ok = remote.get("/api/sessions", headers={"X-Medix-Token": token})
-    assert ok.status_code == 429
-    assert ok.json()["code"] == "auth_rate_limited"
+    assert ok.status_code == 200
 
 
 def test_short_access_token_warns_once(client, monkeypatch):

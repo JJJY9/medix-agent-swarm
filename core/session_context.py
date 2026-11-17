@@ -12,6 +12,7 @@ import hmac
 import os
 import secrets
 import threading
+import time
 
 _current_memory_scope: ContextVar[str] = ContextVar(
     "medix_memory_scope", default=""
@@ -24,6 +25,57 @@ _current_session_id: ContextVar[str] = ContextVar(
 
 _MEMORY_SCOPE_SALT_LOCK = threading.Lock()
 _memory_scope_salt_cache = ""
+
+
+def _read_or_create_salt(path: Path) -> str:
+    """原子地读取/创建盐文件：多进程首次启动收敛到同一个盐。"""
+    try:
+        if path.exists():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        for _ in range(3):
+            candidate = secrets.token_hex(32)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(
+                    str(path),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+            except FileExistsError:
+                # 并发创建者可能刚建好文件还没写入：短暂等待读回，
+                # 不能把它当成空盐换成进程随机值
+                for _ in range(20):
+                    try:
+                        existing = path.read_text(
+                            encoding="utf-8"
+                        ).strip()
+                    except OSError:
+                        existing = ""
+                    if existing:
+                        return existing
+                    time.sleep(0.01)
+                continue
+            except OSError:
+                return secrets.token_hex(32)
+            try:
+                os.write(fd, candidate.encode("utf-8"))
+            finally:
+                os.close(fd)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            # 读回确认：并发创建时以先写入者的盐为准
+            try:
+                stored = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                stored = ""
+            return stored or candidate
+        return secrets.token_hex(32)
+    except OSError:
+        return secrets.token_hex(32)
 
 
 def _memory_scope_salt() -> str:
@@ -42,17 +94,13 @@ def _memory_scope_salt() -> str:
         salt = (os.environ.get("MEDIX_MEMORY_SCOPE_SALT") or "").strip()
         if not salt:
             db_env = (os.environ.get("MEDIX_SESSION_DB") or "").strip()
-            base = Path(db_env).expanduser().parent if db_env else Path("data")
-            path = base / ".memory_scope_salt"
-            try:
-                if path.exists():
-                    salt = path.read_text(encoding="utf-8").strip()
-                if not salt:
-                    salt = secrets.token_hex(32)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(salt, encoding="utf-8")
-            except OSError:
-                salt = secrets.token_hex(32)
+            if db_env:
+                base = Path(db_env).expanduser().parent
+            else:
+                # 与会话库默认路径同锚（项目 data 目录），不能用进程
+                # CWD：从不同工作目录启动会切换长期记忆命名空间
+                base = Path(__file__).resolve().parent.parent / "data"
+            salt = _read_or_create_salt(base / ".memory_scope_salt")
         _memory_scope_salt_cache = salt[:128]
         return _memory_scope_salt_cache
 
