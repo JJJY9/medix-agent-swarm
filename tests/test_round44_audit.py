@@ -382,10 +382,16 @@ def test_trusted_proxy_buckets_by_forwarded_client(monkeypatch, tmp_path):
         # XFF 最右项是代理追加写入的真实客户端地址（客户端不可伪造），
         # 因此攻击者自己的地址仍会在令牌比较前被预锁定
         attacker = client.get("/api/sessions", headers={
-            "X-Medix-Token": token,
+            "X-Medix-Token": "bad",
             "X-Forwarded-For": "203.0.113.9",
         })
         assert attacker.status_code == 429
+        # 第六十九轮起：正确令牌不被共享桶的预锁定误伤
+        attacker_known = client.get("/api/sessions", headers={
+            "X-Medix-Token": token,
+            "X-Forwarded-For": "203.0.113.9",
+        })
+        assert attacker_known.status_code == 200
     finally:
         session_store.close()
 
