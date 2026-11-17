@@ -397,8 +397,13 @@ def auth_client(tmp_path, monkeypatch):
         session_store.close()
 
 
-def test_gate_branch_enforces_ipv6_global_budget(auth_client):
+def test_gate_branch_enforces_ipv6_global_budget(
+    auth_client, monkeypatch
+):
     TestClient, api_server, _store = auth_client
+    # 第七十二轮起：只在显式声明单跳代理时才采信转发地址做全局
+    # 预算来源；声明后轮换 /64 仍受全局预算约束
+    monkeypatch.setenv("MEDIX_PROXY_SINGLE_HOP", "1")
     # 先认证一次取得短期内存凭证：未持凭证的正确令牌在全局预算
     # 锁定期间同样 429，已认证会话才免比较直通
     authed = TestClient(

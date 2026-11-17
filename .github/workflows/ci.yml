@@ -9,7 +9,9 @@ jobs:
   offline-tests:
     name: 离线单元测试 (${{ matrix.os }} / Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Windows runner 跑全量 pytest 已接近 20 分钟：窗口太短会把
+    # 尚在正常推进的测试任务直接取消（KeyboardInterrupt/operation canceled）
+    timeout-minutes: 40
     env:
       # Windows runner 默认代码页不是 UTF-8，日志里的中文会触发编码错误
       PYTHONUTF8: "1"

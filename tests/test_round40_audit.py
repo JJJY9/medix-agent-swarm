@@ -489,9 +489,13 @@ def test_context_edit_excludes_non_context_fields():
 def test_send_early_exit_restores_composer():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "function restoreComposer(question)" in app_js
+    send_start = app_js.index(
+        "async function send(question, composerSubmit = false)"
+    )
     send = app_js[
-        app_js.index("async function send(question, composerSubmit = false)"):
-        app_js.index("async function send(question, composerSubmit = false)") + 3000
+        send_start:app_js.index(
+            "const controller = new AbortController();", send_start
+        )
     ]
     assert send.count("restoreComposer(question);") >= 2
 
