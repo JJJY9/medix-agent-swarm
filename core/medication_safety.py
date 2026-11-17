@@ -744,6 +744,24 @@ def _long_stop_token_is_determiner(token: str) -> bool:
     return not token or token in _LONG_STOP_SELF_REFERENCES
 
 
+def _segment_ends_with_drug_name(segment: str) -> bool:
+    """分句是否以药名结尾（「阿司匹林，停了半年」）。"""
+    tail = re.sub(
+        r"[（(【「『][^）)】」』]{0,20}[）)】」』]\s*$", "",
+        str(segment or "").strip(),
+    ).rstrip("，,、;； \t")
+    if not tail:
+        return False
+    tail = tail[-16:]
+    for group_items in DRUG_GROUPS.values():
+        for _canonical, aliases in group_items:
+            if any(
+                tail.endswith(alias.lower()) for alias in aliases
+            ):
+                return True
+    return False
+
+
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     """长窗口里的远期停药是否指向当前药（而不是另一种药）。
 
@@ -753,13 +771,26 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     window = window or ""
     alias_lower = str(alias_lower or "").lower()
     for match in _LONG_STOP_CONTEXT.finditer(window):
-        before = re.split(
+        segments = re.split(
             r"[，。；;,.!?！？\n]", window[: match.start()]
-        )[-1]
+        )
+        before = segments[-1]
+        if not before.strip() and len(segments) >= 2:
+            # 「阿司匹林，停了半年」：药名在逗号前的分句；
+            # 「大小便正常，已经停药」里的普通描述不是药名
+            if _segment_ends_with_drug_name(segments[-2]):
+                before = segments[-2]
+        # 药名后带规格括号（阿司匹林（肠溶片）停了）：剥离括号再取药名
+        before = re.sub(
+            r"[（(【「『][^）)】」』]{0,20}[）)】」』]\s*$", "", before
+        )
+        before = before.rstrip("，,、;； \t")
         token_match = re.search(r"([一-龥A-Za-z0-9]{2,10})\s*$", before)
         raw_token = token_match.group(1).strip() if token_match else ""
-        if _long_stop_token_is_determiner(raw_token):
-            # 「已经停药半年」「医生让我停药半年」：没有点名其他药
+        if _long_stop_token_is_determiner(raw_token) or re.match(
+            r"(?:没有|没|未)(?:有)?\s*(?:吃|喝|服|用)", raw_token
+        ):
+            # 「已经停药半年」「没吃完，已经停药」：没有点名其他药
             return True
         token = _normalize_long_stop_token(raw_token)
         if len(token) < 2:
@@ -1322,6 +1353,53 @@ def _dedupe(alerts: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return result
 
 
+#: 家属称谓：家人的服药/停药/过敏不能算到患者本人头上
+_FAMILY_MEDICATION_MARKERS = (
+    "父亲", "母亲", "父母", "家人", "家族", "爷爷", "奶奶", "外公", "外婆",
+    "丈夫", "妻子", "配偶", "哥哥", "姐姐", "弟弟", "妹妹", "儿子", "女儿",
+    "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
+    "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
+)
+#: 紧随家属用药分句的停药/续用分句仍属于该家属
+_FAMILY_STOP_FOLLOW_RE = re.compile(
+    r"^(?:已经?|早就|现在|目前|之前|以前)?\s*"
+    r"(?:停药|停用|停了|停服|停止服用|不吃了?|又吃|重新吃|重新服用)"
+)
+
+
+def _patient_medication_text(text: str) -> str:
+    """去掉家属本人的用药/停药/过敏分句，只保留患者本人描述。
+
+    「我每天吃华法林，我爸以前也吃华法林，已经停药两年了，我能吃
+    布洛芬吗」：家属分句与其后的停药分句都不能让患者的华法林被判
+    为已停用；「我爸让我吃华法林」这类转述保留患者自己的用药部分。
+    """
+    clauses = re.split(r"[，,。；;！!？?\n]", str(text or ""))
+    kept: List[str] = []
+    drop_next = False
+    for clause in clauses:
+        current = clause.strip()
+        if not current:
+            continue
+        if drop_next and _FAMILY_STOP_FOLLOW_RE.match(current):
+            drop_next = False
+            continue
+        drop_next = False
+        if any(
+            marker in current for marker in _FAMILY_MEDICATION_MARKERS
+        ):
+            narration = re.search(
+                r"(?:让|叫|劝|说).{0,4}我(.+)", current
+            )
+            if narration is not None and narration.group(1).strip():
+                kept.append(narration.group(1).strip())
+            else:
+                drop_next = True
+            continue
+        kept.append(current)
+    return "，".join(kept)
+
+
 def check_medication_safety(
     question: str,
     context: Any = None,
@@ -1335,6 +1413,7 @@ def check_medication_safety(
         }
     """
     question = _flatten(question).lower()
+    question = _patient_medication_text(question)
     context = context if isinstance(context, dict) else {}
     medications = medication_context_text(context).lower()
     allergies = _allergy_text(context, question)

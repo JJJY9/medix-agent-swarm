@@ -420,6 +420,11 @@ def test_trusted_proxy_without_headers_uses_shared_bucket(
         client=("172.18.0.2", 50000),
     )
     try:
+        # 先认证一次取得短期内存凭证：预锁定期间未持凭证的正确令牌
+        # 同样 429，已认证会话才直通
+        assert client.get("/api/sessions", headers={
+            "X-Medix-Token": token,
+        }).status_code == 200
         for _ in range(3):
             client.get("/api/sessions", headers={
                 "X-Medix-Token": "bad",

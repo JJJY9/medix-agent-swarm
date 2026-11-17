@@ -574,13 +574,18 @@ def test_known_token_bypasses_blocked_gate(monkeypatch, tmp_path):
         await real_sleep(seconds, *args, **kwargs)
 
     monkeypatch.setattr(api_server.asyncio, "sleep", fake_sleep)
-    limiter, key = _prime_loopback_bucket("ip:127.0.0.1")
     try:
         client = TestClient(
             api_server.app,
             base_url="http://localhost",
             client=("127.0.0.1", 55999),
         )
+        # 先认证一次取得短期内存凭证：失败桶锁满后已认证会话才能
+        # 免比较直通（新请求不再在限流前裸比较令牌）
+        assert client.get(
+            "/api/sessions", headers={"X-Medix-Token": "r57-secret"}
+        ).status_code == 200
+        limiter, key = _prime_loopback_bucket("ip:127.0.0.1")
 
         def _bad_call(_index):
             return client.get(

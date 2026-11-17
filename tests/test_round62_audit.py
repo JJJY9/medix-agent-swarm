@@ -399,6 +399,19 @@ def auth_client(tmp_path, monkeypatch):
 
 def test_gate_branch_enforces_ipv6_global_budget(auth_client):
     TestClient, api_server, _store = auth_client
+    # 先认证一次取得短期内存凭证：未持凭证的正确令牌在全局预算
+    # 锁定期间同样 429，已认证会话才免比较直通
+    authed = TestClient(
+        api_server.app, base_url="http://localhost",
+        client=("127.0.0.1", 57009),
+    )
+    assert authed.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": "r62-secret-token",
+            "X-Forwarded-For": "2001:db8:9::9, 127.0.0.1",
+        },
+    ).status_code == 200
     codes = []
     for index in (1, 2, 3):
         proxy = TestClient(
@@ -416,11 +429,7 @@ def test_gate_branch_enforces_ipv6_global_budget(auth_client):
     assert codes[0] == (401, "auth_required")
     assert codes[1] == (401, "auth_required")
     assert codes[2] == (429, "auth_rate_limited")
-    proxy = TestClient(
-        api_server.app, base_url="http://localhost",
-        client=("127.0.0.1", 57010),
-    )
-    ok = proxy.get(
+    ok = authed.get(
         "/api/sessions",
         headers={
             "X-Medix-Token": "r62-secret-token",
@@ -452,6 +461,20 @@ def test_shared_loopback_bucket_blocks_before_compare(
         return original(request)
 
     monkeypatch.setattr(api_server, "is_authorized", counting_authorized)
+    # 先认证一次取得短期内存凭证（计入一次令牌比较），随后共享桶
+    # 锁满也只有已认证会话能免比较直通
+    authed = TestClient(
+        api_server.app, base_url="http://localhost",
+        client=("127.0.0.1", 57029),
+    )
+    assert authed.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": "r62-secret-token",
+            "X-Forwarded-For": "203.0.113.200",
+        },
+    ).status_code == 200
+    baseline_calls = calls["n"]
     codes = []
     for index in (10, 11, 12, 13):
         proxy = TestClient(
@@ -469,12 +492,8 @@ def test_shared_loopback_bucket_blocks_before_compare(
     assert codes[0][0] == 401 and codes[1][0] == 401
     assert codes[2][0] == 429
     # 共享桶已满后不再执行令牌比较
-    assert calls["n"] == 2, calls["n"]
-    proxy = TestClient(
-        api_server.app, base_url="http://localhost",
-        client=("127.0.0.1", 57030),
-    )
-    ok = proxy.get(
+    assert calls["n"] == baseline_calls + 2, calls["n"]
+    ok = authed.get(
         "/api/sessions",
         headers={
             "X-Medix-Token": "r62-secret-token",

@@ -389,16 +389,21 @@ def test_blocked_bucket_known_token_not_delayed(monkeypatch, tmp_path):
     monkeypatch.setattr(memory, "get_session_store", lambda: store)
     limiter = api_server.auth_failure_limiter_loopback
     key = "ip:127.0.0.1"
-    with limiter._lock:
-        limiter._hits[key] = deque(
-            [time.monotonic()] * limiter.limit
-        )
     try:
         client = TestClient(
             api_server.app,
             base_url="http://localhost",
             client=("127.0.0.1", 59999),
         )
+        # 先认证一次取得短期内存凭证：失败桶锁满后已认证会话免比较
+        # 直通，不必等待闸门退避
+        assert client.get(
+            "/api/sessions", headers={"X-Medix-Token": "r56-secret"}
+        ).status_code == 200
+        with limiter._lock:
+            limiter._hits[key] = deque(
+                [time.monotonic()] * limiter.limit
+            )
         started = time.monotonic()
         response = client.get(
             "/api/sessions", headers={"X-Medix-Token": "r56-secret"}

@@ -436,6 +436,11 @@ def test_shared_bucket_correct_token_still_allowed(monkeypatch, tmp_path):
         client=("127.0.0.1", 50000),
     )
     try:
+        # 先认证一次取得短期内存凭证：共享桶锁满后未持凭证的正确
+        # 令牌同样 429，已认证会话才直通
+        assert client.get(
+            "/api/sessions", headers={"X-Medix-Token": token}
+        ).status_code == 200
         for _ in range(2):
             wrong = client.get(
                 "/api/sessions", headers={"X-Medix-Token": "bad"}

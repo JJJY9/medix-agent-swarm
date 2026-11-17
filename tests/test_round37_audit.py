@@ -584,6 +584,15 @@ def test_shared_bucket_with_address_header_fails_closed(
         api_server, "_is_loopback_client", lambda request: False
     )
 
+    # 先认证一次取得短期内存凭证（未持凭证的正确令牌在共享桶锁满后
+    # 同样 429，避免锁定后按请求速率全速猜解）
+    assert client.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": token,
+            "X-Real-IP": "198.51.100.20",
+        },
+    ).status_code == 200
     wrong = client.get(
         "/api/sessions",
         headers={
@@ -611,6 +620,14 @@ def test_shared_bucket_with_address_header_fails_closed(
         api_server, "auth_failure_limiter",
         SlidingWindowLimiter(1, window=300),
     )
+    # 另一来源先认证取得短期凭证，随后错误令牌只锁自己
+    assert client.get(
+        "/api/sessions",
+        headers={
+            "X-Medix-Token": token,
+            "X-Real-IP": "198.51.100.40",
+        },
+    ).status_code == 200
     blocked = client.get(
         "/api/sessions",
         headers={

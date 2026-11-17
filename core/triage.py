@@ -570,9 +570,9 @@ _ENUM_NEGATION_PATTERN = re.compile(
     r"(?:没有|没|无|未|否认)"
     r"(?:出现|伴有|伴随|感|有|见|见到|任何|明显|明确|特殊|显著)?"
     r"[^，。；！？,.!?;\n但|只就仅]{1,8}?"
-    r"(?:(?:、|和|及|与|以及|或|或者)"
+    r"(?:(?:、|和|及|与|或者|以及|或)"
     r"[^，。；！？,.!?;\n但|只就仅]{0,8}?)*"
-    r"(?:、|和|及|与|以及|或|或者)?\s*$"
+    r"(?:、|和|及|与|或者|以及|或)?\s*$"
 )
 #: 枚举项里出现这些词时按阳性处理（症状修饰/转折/加重）
 _ENUM_POSITIVE_CUES = (
@@ -581,6 +581,7 @@ _ENUM_POSITIVE_CUES = (
     "压榨", "难忍", "明显", "反复",
     # 转折词后的症状是真实主诉（没有呕吐、只是胸痛）
     "只是", "就是", "仅仅", "只为", "仅为", "不过",
+    "冷汗", "冒冷汗", "偶发", "偶尔", "偶感", "偶见", "间或",
 )
 
 
@@ -600,14 +601,23 @@ def _clause_prefix(text: str, start: int, lookback: int = 24) -> str:
 #: 持续时间同样是阳性证据：「无发热、胸痛已持续2小时」是真实胸痛
 _POST_POSITIVE_CUES = (
     "加重", "加剧", "恶化", "难忍", "剧痛", "大汗", "出汗",
+    "冷汗", "冒冷汗", "虚汗",
     "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
     # 常见程度修饰同样是阳性证据（无发热、胸痛剧烈/得厉害）
     "剧烈", "明显", "严重", "厉害", "得很", "得厉害", "难忍",
+    # 偶发/阵发性描述是真实发作而不是否认
+    "偶发", "偶尔", "偶感", "偶见", "间或", "间发", "阵发",
+    "好几次", "多次", "反复",
 )
 _POST_DURATION_RE = re.compile(
     r"(?:已|已经|有)?\s*(?:持续|发作|反复)?\s*"
     r"[0-9一二两三四五六七八九十半几]+\s*"
     r"(?:分钟|小时|天|日|周|个?月|年)"
+)
+#: 出血量/发作次数也是阳性证据（无发热、咯血约50毫升/咯血一口）
+_POST_QUANTITY_RE = re.compile(
+    r"(?:约|大约|差不多)?\s*[0-9一二两三四五六七八九十半几]+"
+    r"(?:\.\d+)?\s*(?:毫升|ml|mL|口|次|阵)"
 )
 
 
@@ -632,6 +642,9 @@ def _post_modifier_positive(suffix: str) -> bool:
     # 「胸痛不明显/不剧烈」：静态程度词前的否定说明症状被否认；
     # 但「胸痛没加重/未恶化」只是否认变化，胸痛本身仍是主诉，
     # 变化类线索（加重/恶化/放射/大汗…）不受否定语缀影响
+    if suffix.lstrip().startswith(("伴", "且")):
+        # 「无发热、胸痛伴冷汗」：伴随/并列成分是新增阳性描述
+        return True
     for cue in _POST_POSITIVE_CUES:
         for match in re.finditer(re.escape(cue), suffix):
             start = match.start()
@@ -642,7 +655,9 @@ def _post_modifier_positive(suffix: str) -> bool:
             ):
                 continue
             return True
-    return _POST_DURATION_RE.search(suffix) is not None
+    if _POST_DURATION_RE.search(suffix) is not None:
+        return True
+    return _POST_QUANTITY_RE.search(suffix) is not None
 
 
 def _enum_negated(prefix: str) -> bool:
@@ -671,17 +686,22 @@ def _enum_negated(prefix: str) -> bool:
     # 显式肯定项（有/偶有/时有/少量/有痰…）或急性修饰（突然/突发）
     # 会终止否定范围：「无发热、有咯血」「无发热、突然胸痛」不是
     # 在否认咯血/胸痛；裸症状枚举（无发热、咳嗽、胸痛）仍整体否定
-    items = re.split(r"、|和|及|与|以及|或|或者", body)
+    items = re.split(r"或者|以及|或|和|及|与|、", body)
     for item in items[1:]:
         text_item = item.strip()
         if not text_item:
             continue
         if text_item.startswith(
             ("有", "偶有", "时有", "稍有", "少量", "有痰", "出现",
-             "伴有", "伴随")
+             "伴有", "伴随", "偶发", "偶尔", "偶感", "偶见", "间或",
+             "间发", "阵发", "反复", "多次")
         ):
             return False
-        if "突然" in text_item or "突发" in text_item:
+        if any(
+            cue in text_item
+            for cue in ("突然", "突发", "偶发", "偶尔", "偶感", "偶见",
+                        "间或", "阵发", "反复发作", "好几次")
+        ):
             return False
     # 阳性线索只在剥离否定词与填充词后的枚举正文上判断：
     # 「没有出现胸痛和呼吸困难」里紧跟否定词的「出现」不是阳性线索
@@ -1040,9 +1060,9 @@ def _clean_complaint_clause(
             and _EDUCATION_CURRENT_RE.search(clause) is None
         )
         current_course = (not quote_only) and (
-            _COURSE_MARKER_RE.search(clause) is not None
-            or any(marker in clause for marker in _COURSE_MARKERS)
-            or any(word in clause for word in _POST_POSITIVE_CUES)
+            # 「网上说胸痛持续十分钟」里的时长属于引用内容；只有
+            # 明确「我今天/我现在胸痛」才是本人当前病程
+            any(word in clause for word in _POST_POSITIVE_CUES)
             # 「网上买的药吃了胸痛/跟着视频跳操后胸痛」：本人服药的
             # 动作线索说明这不是科普引用；但纯引述内容里的动作词
             # （网上说吃完药后胸痛）没有患者主语，不能据此保留
@@ -1109,6 +1129,12 @@ def _clean_complaint_clause(
                 r"[、和及与]|伴|合并|并发", prefix
             ) is not None
             or re.search(r"\d", prefix) is not None
+            # 发作频次（抽搐了两次/咳嗽好几回）是真实病程而非术语解释
+            or re.search(
+                r"(?:[0-9一二两三四五六七八九十半几]+|好|多|数)"
+                r"\s*(?:次|阵|回)",
+                prefix,
+            ) is not None
             or _has_head_trauma(prefix)
             or any(
                 word in prefix
@@ -1188,7 +1214,7 @@ _EDUCATION_QUOTE_LEAD_RE = re.compile(
 )
 #: 引用之后同分句「我+症状」：真实主诉被连写在同一分句里
 _EDUCATION_CURRENT_RE = re.compile(
-    r"我(?:现在|刚刚|刚|也|正|又)?"
+    r"我(?:现在|刚刚|刚|也|正|又|今天|昨天|最近|这两天)?"
     r"(?:有点|有一点|有些|有|稍微|偶尔)?\s*"
     r"(?:胸痛|胸疼|头痛|头晕|呼吸困难|"
     r"喘|疼|痛|发热|发烧|恶心|呕吐|心慌|胸闷)"
@@ -1705,6 +1731,15 @@ _STOP_CATEGORY_HINTS = {
 }
 
 
+#: 停药分句前一分句若以这些药名结尾，归属判定要把两段合看
+_OTHER_STOP_DRUG_TAILS = tuple(ANTICOAGULANT_TERMS) + tuple(
+    IMMUNOSUPPRESSION_TERMS
+) + (
+    "阿司匹林", "布洛芬", "双氯芬酸", "萘普生", "对乙酰氨基酚",
+    "氯吡格雷", "他汀", "激素", "抗凝药", "化疗药", "免疫抑制剂",
+)
+
+
 def _normalize_stop_token(token: str) -> str:
     """剥离停药宾语前后的时间/辅助词，保留真正的药名。"""
     token = str(token or "").strip()
@@ -1749,8 +1784,16 @@ def _stop_clause_names_other_drug(
     clause: str, current_clause: str
 ) -> bool:
     """远期停药分句是否点名了另一种药（而非当前分句的药）。"""
+    clause = re.sub(
+        r"[，,](?=\s*(?:已经?|已|早就)?\s*"
+        r"(?:停用|停药|停了|停服|停止服用|不吃了?))",
+        "",
+        str(clause or ""),
+    )
     match = re.search(
-        r"([一-龥A-Za-z0-9]{2,10})\s*(?:已经?|已)?\s*"
+        r"([一-龥A-Za-z0-9]{2,10})\s*"
+        r"(?:[（(【「『][^）)】」』]{0,20}[）)】」』]\s*)?"
+        r"(?:已经?|已)?\s*"
         r"(?:停用|停药|停了|停服|停止服用|不吃了?)",
         clause,
     )
@@ -1778,6 +1821,21 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
+def _clause_ends_with_drug_name(clause: str) -> bool:
+    """分句是否以药名结尾（「阿司匹林」「阿司匹林（肠溶片）」）。"""
+    tail = re.sub(
+        r"[（(【「『][^）)】」』]{0,20}[）)】」』]\s*$", "",
+        str(clause or "").strip(),
+    ).rstrip("，,、;； \t")
+    if not tail:
+        return False
+    tail = tail[-16:]
+    return any(
+        tail.endswith(term)
+        for term in _OTHER_STOP_DRUG_TAILS
+    )
+
+
 def _long_stop_near(clauses: List[str], index: int) -> bool:
     """同段消息是否另有明确远期停药/结束治疗证据。
 
@@ -1794,7 +1852,26 @@ def _long_stop_near(clauses: List[str], index: int) -> bool:
         ):
             continue
         if _LONG_STOP_PATTERN.search(clause):
-            if _stop_clause_names_other_drug(clause, current_clause):
+            # 「阿司匹林，停了半年」：药名与停药动词落在相邻分句时，
+            # 归属判定要把前一分句一起算上，否则会被当成本药停药
+            attribution_clause = clause
+            if (
+                pos > 0
+                and re.match(
+                    r"^\s*(?:已经?|已|早就)?\s*"
+                    r"(?:停用|停药|停了|停服|停止服用|不吃了?)",
+                    clause,
+                )
+                and not any(
+                    marker in clauses[pos - 1]
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+                and _clause_ends_with_drug_name(clauses[pos - 1])
+            ):
+                attribution_clause = clauses[pos - 1] + "，" + clause
+            if _stop_clause_names_other_drug(
+                attribution_clause, current_clause
+            ):
                 # 「华法林没吃完，阿司匹林停药一年了」：另一种药的
                 # 远期停用不能抹掉本药的抗凝语境
                 continue

@@ -696,8 +696,10 @@ def test_frontend_round65_guards():
     assert source.count("markFreshSession(sessionId);") >= 2
     assert "isFreshPageSession(expectedSession)" in source
     assert "(inflightBaseline > 0 || freshSession)" in source
-    # 继续/重试成功后清除仍等于本次主诉的输入与草稿
-    assert "leftover === String(question || '').trim()" in source
+    # 继续/重试成功后按包含式移除本轮主诉（保留用户后续草稿），
+    # 不再要求输入框与主诉全等
+    assert "leftover === String(question || '').trim()" not in source
+    assert source.count("stripInflightQuestion(") >= 3
     # 只有正常化验记录的成员卡片与复制文本
     assert "`化验 近 ${days} 天 ${labs.count} 条`" in source
     assert "parts.push(`化验 ${labs.count} 条`);" in source

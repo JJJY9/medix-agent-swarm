@@ -329,6 +329,17 @@ def test_ipv6_aggregate_prelock_uses_gate(monkeypatch, tmp_path):
     store = SessionStore(str(tmp_path / "sessions.db"))
     monkeypatch.setattr(memory, "get_session_store", lambda: store)
     try:
+        neighbor = TestClient(
+            api_server.app,
+            base_url="http://[2001:db8:5a::2]",
+            client=("2001:db8:5a::b2", 50000),
+        )
+        # 先认证一次取得短期内存凭证：IPv6 全局预算锁定期间未持凭证
+        # 的正确令牌同样 429，已认证会话才免比较直通
+        assert neighbor.get(
+            "/api/sessions",
+            headers={"X-Medix-Token": "round54-secret"},
+        ).status_code == 200
         attacker = TestClient(
             api_server.app,
             base_url="http://[2001:db8:5a::1]",
@@ -338,11 +349,6 @@ def test_ipv6_aggregate_prelock_uses_gate(monkeypatch, tmp_path):
             attacker.get(
                 "/api/sessions", headers={"X-Medix-Token": "wrong"}
             )
-        neighbor = TestClient(
-            api_server.app,
-            base_url="http://[2001:db8:5a::2]",
-            client=("2001:db8:5a::b2", 50000),
-        )
         response = neighbor.get(
             "/api/sessions",
             headers={"X-Medix-Token": "round54-secret"},

@@ -422,12 +422,16 @@ def test_shared_loopback_bucket_never_blocks_correct_token(
         client=("127.0.0.1", 50000),
     )
     try:
+        # 先认证一次取得短期内存凭证：共享桶锁满后已认证会话才直通
+        assert client.get(
+            "/api/sessions", headers={"X-Medix-Token": token}
+        ).status_code == 200
         for _ in range(2):
             wrong = client.get(
                 "/api/sessions", headers={"X-Medix-Token": "bad"}
             )
             assert wrong.status_code == 401
-        # 共享桶已满：错误令牌 429，但正确令牌不能被预锁定
+        # 共享桶已满：错误令牌 429，但已认证会话不能被预锁定
         limited = client.get(
             "/api/sessions", headers={"X-Medix-Token": "bad-again"}
         )
@@ -470,6 +474,12 @@ def test_forwarded_address_cannot_prelock_victim(monkeypatch, tmp_path):
             ("X-Forwarded-For", "192.168.1.50"),
             ("X-Forwarded-For", "127.0.0.1"),
         ]
+        # 受害者先成功认证取得短期凭证（未持凭证的正确令牌在桶锁满
+        # 后同样 429，避免形成全速猜解 oracle）
+        assert client.get("/api/sessions", headers=[
+            ("X-Medix-Token", token),
+            *spoofed,
+        ]).status_code == 200
         for _ in range(10):
             client.get("/api/sessions", headers=[
                 ("X-Medix-Token", "bad"),
