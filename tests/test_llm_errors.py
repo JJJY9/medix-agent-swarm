@@ -70,7 +70,10 @@ def test_unknown_error_is_wrapped():
 
     assert error.code == "llm_error"
     assert error.retryable is False
-    assert "boom" in error.user_message
+    # 第七十六轮：未分类错误不把原始消息（供应商可能回显患者文本）
+    # 暴露给用户
+    assert "boom" not in error.user_message
+    assert "模型调用失败" in error.user_message
 
 
 def test_existing_llm_error_is_passed_through():

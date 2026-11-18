@@ -22607,15 +22607,31 @@ function saveDraft() {
         safeSessionRemove(DRAFT_OWNER_KEY);
         safeSessionRemove(DRAFT_PROFILE_KEY);
         if (!busy && !sendInFlight) {
-          // 用户已主动清空主诉：在途记录不能继续保留，否则刷新后
-          // 会把被删除的病情描述重新填回输入框
-          safeSessionRemove(INFLIGHT_QUESTION_KEY);
+          // 用户已主动清空主诉：只丢弃属于当前会话的在途记录，
+          // 其它会话的停止/中断主诉保留待恢复
+          clearInflightForCurrentSession();
         }
       }
     } catch {
       // 隐私模式下 sessionStorage 不可用时忽略
     }
   }, 200);
+}
+
+function clearInflightForCurrentSession() {
+  // 在途主诉可能属于本标签页此前停止/中断的另一个会话：清空当前
+  // 输入框不能把它永久删除，必须保留给真正打开该会话的页面
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      const owner = String((data && data.sessionId) || '');
+      if (owner && sessionId && owner !== sessionId) return;
+    }
+  } catch {
+    // 解析失败按无归属处理
+  }
+  safeSessionRemove(INFLIGHT_QUESTION_KEY);
 }
 
 function flushDraftNow() {
@@ -22639,9 +22655,8 @@ function flushDraftNow() {
       safeSessionRemove(DRAFT_OWNER_KEY);
       safeSessionRemove(DRAFT_PROFILE_KEY);
       if (!busy && !sendInFlight) {
-        // 与 saveDraft 一致：用户清空主诉后立即隐藏/刷新时
-        // 也要丢弃在途记录，避免刷新后复活已删除的内容
-        safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        // 与 saveDraft 一致：只丢弃属于当前会话的在途记录
+        clearInflightForCurrentSession();
       }
     }
   } catch {
@@ -24364,6 +24379,11 @@ const onContextPanelEdit = (event) => {
     }
   }
   updateContextSummary();
+  // 用户手动逐个删空补充信息：写入「已清空」标记，刷新/重开当前
+  // 会话时旧答复快照不能把已删除的病史/过敏史填回
+  if (Object.keys(readPatientContext()).length === 0) {
+    markContextCleared();
+  }
 };
 els.contextPanel.addEventListener('input', onContextPanelEdit);
 els.contextPanel.addEventListener('change', onContextPanelEdit);
