@@ -284,9 +284,11 @@ def test_gate_source_uses_provable_peer_for_spoofed_headers(
             )
     finally:
         store.close()
-    # 伪造的左项地址不能换来不同的单源槽位
+    # 伪造的左项地址不能换来不同的单源槽位；地址不可证明时按总队列
+    # 串行比较（第七十八轮：按代理对端计 32 槽等于全家共用，单个
+    # 未认证客户端即可占满）
     assert sources
-    assert set(sources) == {api_server._peer_key("127.0.0.1")}, sources
+    assert set(sources) == {""}, sources
 
 
 # ---------------------------------------------------------------- [10]

@@ -5470,7 +5470,13 @@ class SessionStore:
         local_size_key = (table, "__local_size__", identity, scope_profile)
         local_group_size = state.get(local_size_key)
         if local_group_size is None:
-            if scope_profile and claimed:
+            #: 组大小按「当前备份行档案」过滤：match_where 只有提醒等
+            #: 表才有，其余表以行内档案为参照；否则同源改挂进来的
+            #: 其它成员存活行会把本档案的同秒组提前判为已满（第七十八轮）
+            reference_profile = scope_profile or (
+                _normalize_profile_name(row_profile) if row_profile else ""
+            )
+            if reference_profile and claimed:
                 placeholders = ",".join("?" for _ in claimed)
                 try:
                     size_rows = self._conn.execute(
@@ -5484,7 +5490,7 @@ class SessionStore:
                 for row in size_rows:
                     if _normalize_profile_name(
                         row["profile"] or ""
-                    ) != scope_profile:
+                    ) != reference_profile:
                         continue
                     row_id = int(row["id"])
                     if (
@@ -5495,7 +5501,7 @@ class SessionStore:
                         == str(backup_created.get(row_id) or "")
                         and _normalize_profile_name(
                             backup_profiles.get(row_id) or ""
-                        ) != scope_profile
+                        ) != reference_profile
                     ):
                         # 同源备份中从其它档案改挂进来的行：它对应的
                         # 备份记录属于原档案，不能把当前档案的缺行抵消
@@ -5533,6 +5539,15 @@ class SessionStore:
                         state[ambiguous_key] = ambiguous_map
                     ambiguous_map[raw_id] = expected_content
             return None
+
+        def _group_rows_missing() -> bool:
+            """组内是否仍有未补插的缺行：本次导入已补插的行抵消缺行。"""
+            inserted_total = int(state.get(
+                (table, "__anchor_inserted__", identity, scope_profile), 0
+            ))
+            return (
+                local_group_size + inserted_total < backup_group_size
+            )
 
         def _candidate_foreign_backup_row(candidate: int) -> bool:
             """候选是否其实是另一成员同秒备份行的改挂存活版本。
@@ -6722,8 +6737,12 @@ class SessionStore:
             ):
                 # 主键命中的内容相同孪生行可能属于同组另一条备份记录：
                 # 尾字段更像兄弟行时不能认领，否则被删记录不恢复、
-                # 存活记录被复制
-                if not _tail_prefers_sibling(int(row["id"])):
+                # 存活记录被复制。跨档案也要比较：id 漂移时本地编号
+                # 等于 raw_id 的行可能是另一成员改挂进本档案的存活行
+                # （第七十八轮）
+                if not _tail_prefers_sibling(
+                    int(row["id"]), cross_profile=True
+                ):
                     return _claim(int(row["id"]))
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
@@ -7738,11 +7757,11 @@ class SessionStore:
             else:
                 # 备份组内存在多行同身份记录且本地确有缺行时，唯一
                 # 候选可能是被删记录的孪生兄弟；本地全部存活（只是
-                # 被改名/改标题）时仍按重复导入幂等处理
-                if (
-                    backup_group_size > 1
-                    and local_group_size < backup_group_size
-                ):
+                # 被改名/改标题）时仍按重复导入幂等处理。
+                # 缺行判定要扣掉本次导入已补插的行：被删记录补回后，
+                # 剩余备份行对应的是改名存活行，不能把旧版本再插一条
+                # （第七十八轮）
+                if backup_group_size > 1 and _group_rows_missing():
                     return _ambiguous()
                 try:
                     fresh_rows = self._conn.execute(
@@ -7860,15 +7879,15 @@ class SessionStore:
                 and (
                     not _candidate_edited(candidate)
                     or (
-                        local_group_size < backup_group_size
+                        _group_rows_missing()
                         and not _backup_content_shared_with_sibling()
                         and _candidate_diff_hits_identity(candidate)
                     )
                 )
             ):
                 # 内容列（如提醒到期日/症状时间）与备份行不同：没有
-                # 编辑证据，或组内确有缺行且同秒记录内容不同（编辑
-                # 证据可能来自另一条记录）时，本行必须按被删补插
+                # 编辑证据，或组内确有未补插的缺行且同秒记录内容不同
+                # （编辑证据可能来自另一条记录）时，本行必须按被删补插
                 return _ambiguous()
             soft_full = False
             if (
@@ -8293,6 +8312,7 @@ class SessionStore:
         # 可能已被新主人复用（改名后又重建同名档案），不能再把快照
         # 里存活的同名档案改写到改名目标名下
         raw_renames = data.get("profile_renames")
+        now_stamp = str(self._now())[:40]
         rename_rows = []
         if isinstance(raw_renames, list):
             for raw_rename in raw_renames[:100000]:
@@ -8306,11 +8326,14 @@ class SessionStore:
                 )
                 if not old_name or not new_name or old_name == new_name:
                     continue
-                rename_rows.append((
-                    old_name,
-                    new_name,
-                    str(raw_rename.get("renamed_at") or self._now())[:40],
-                ))
+                renamed_at = str(
+                    raw_rename.get("renamed_at") or now_stamp
+                )[:40]
+                if renamed_at > now_stamp:
+                    # 真实快照不可能包含未来时刻的改名：拒绝伪造/时钟
+                    # 错乱的时间戳，避免永久改写后续恢复的档案归属
+                    continue
+                rename_rows.append((old_name, new_name, renamed_at))
 
         def _store_renames(rows) -> None:
             if not rows:
@@ -8337,15 +8360,14 @@ class SessionStore:
                     )
 
         exported_at = str(data.get("exported_at") or "").strip()[:40]
-        if exported_at:
-            _store_renames([
-                row for row in rename_rows if row[2] > exported_at
-            ])
         # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
-        # 作为另一个档案重新插入（校验在改写前完成）
+        # 作为另一个档案重新插入（校验在改写前完成）。只看本机已有的
+        # 真实改名历史；备份自带的改名表在 remap 之后才作为历史落库，
+        # 不能反过来改写本次数据的档案归属（第七十八轮：伪造
+        # profile_renames 曾可让后续恢复的旧备份串到其它成员名下）
         data = self._remap_import_aliases(data)
         # 快照内已体现的改名在 remap 之后落库：只保留历史，不再
-        # 改写本次快照的数据
+        # 改写本次快照的数据；导出时间之后的改名不属于该快照，丢弃
         _store_renames([
             row for row in rename_rows
             if not exported_at or row[2] <= exported_at
@@ -12077,8 +12099,11 @@ class SessionStore:
                                     int(visit_id),
                                 ),
                             ).fetchone()
+                            # 用当前就诊自己的复诊提醒原始 id：此处曾误用
+                            # 提醒导入循环泄漏的 raw，共享提醒是否保留取决
+                            # 于提醒处理顺序（第七十八轮）
                             raw_reminder_ref = _safe_db_id(
-                                raw.get("id")
+                                raw_followup_reminder_id
                             )
                             shared_in_backup = bool(
                                 raw_reminder_ref

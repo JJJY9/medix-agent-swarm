@@ -102,7 +102,7 @@ NEGATIONS = ("没有", "没", "无", "不", "未", "否认")
 
 #: 否定词与短语之间允许的填充词；普通否定与「排除/除外」双重否定共用
 _NEGATION_FILLERS = (
-    "再|再次|出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
+    "再|再次|再发|出现|伴有|伴随|伴|感|有|见|见到|明显|任何|明确|发生|"
     "诉说|诉|特殊|显著|疑似|表现|是|过|曾经|曾|为|存在|得了|会|"
     "可能|一定|肯定|真的|确实"
 )
@@ -182,13 +182,26 @@ _CAESAREAN_RECENT_RE = re.compile(
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
 #: 顺产/自然分娩/月子/生完孩子等近期产后表述：产后出血风险仍高；
-#: 「顺产5年」等明确年数属于既往史，不算当前孕产状态
-_POSTPARTUM_RECENT_RE = re.compile(
+#: 「顺产5年」等明确年数属于既往史，不算当前孕产状态。
+#: 年数判断用函数逐个匹配触发词，避免可选后缀回溯绕过负向前瞻。
+_POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
     r"坐月子|月子里|月子中|产褥期)"
-    r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
 )
+_POSTPARTUM_YEARS_AFTER_RE = re.compile(
+    r"^\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+)
+
+
+def _postpartum_recent_positive(text: str) -> bool:
+    """是否为近期产后表述（明确年数视为既往史）。"""
+    for match in _POSTPARTUM_TRIGGER_RE.finditer(text):
+        tail = text[match.end():match.end() + 12]
+        if _POSTPARTUM_YEARS_AFTER_RE.search(tail):
+            continue
+        return True
+    return False
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
 #: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
 _PREGNANCY_EVIDENCE_RE = re.compile(
@@ -1708,6 +1721,10 @@ _HEAD_TRAUMA_RE = re.compile(
     r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
     r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰)"
+    r"|(?:撞|磕|碰|砸|打|摔)(?:在|到)(?:了)?"
+    r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
+    r"头顶|后脑勺|枕部)"
+    r"|头(?:部)?在[^，。；,.!?！？\n]{0,6}上?(?:撞|磕|碰|砸)"
     r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
     r"头顶|后脑勺|枕部)"
@@ -1719,7 +1736,8 @@ _HEAD_TRAUMA_RE = re.compile(
 _HEAD_SWELLING_RE = re.compile(
     r"(?<![枕骨头脚趾指])"
     r"(?:头上|头部|头皮|脑袋上?|额头|头顶|后脑勺)"
-    r"(?:起了?|肿了?|鼓了?)(?:个|一个)?(?:大)?(?:包|肿包|血肿)"
+    r"(?:(?:起了?|肿了?|鼓了?)(?:个|一个)?(?:大)?(?:包|肿包|血肿)"
+    r"|有(?:个|一个)?(?:包|肿包|血肿))"
     r"|(?:头皮|头部|头皮下)血肿"
 )
 
@@ -1746,13 +1764,17 @@ def _has_head_trauma(text: str) -> bool:
 #: 「我也有一只猫」「我也有高血压」不能把家属的药名算到患者头上
 _CONTINUATION_USE_RE = re.compile(
     r"我[^，。；;?？]{0,6}?"
-    r"(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"(?:也|同样|都|跟他(?:们)?(?:一样|一起)?|跟她(?:们)?(?:一样|一起)?|"
+    r"和他(?:们)?(?:一样|一起)?|和她(?:们)?(?:一样|一起)?|"
+    r"跟他们一样|跟她们一样)"
     r"[^，。；;?？]{0,8}?(?:在|还|一直)?\s*"
     r"(?:吃|服用|服|用)([^，。；;?？]{0,16})"
 )
 _CONTINUATION_ALLERGY_RE = re.compile(
     r"我[^，。；;?？]{0,6}?"
-    r"(?:也|同样|跟他一样|跟她一样|跟他们一样|也跟他|也跟她)"
+    r"(?:也|同样|都|跟他(?:们)?(?:一样|一起)?|跟她(?:们)?(?:一样|一起)?|"
+    r"和他(?:们)?(?:一样|一起)?|和她(?:们)?(?:一样|一起)?|"
+    r"跟他们一样|跟她们一样)"
     r"[^，。；;?？]{0,12}?(?:对)?([^，。；;?？]{0,12})过敏"
 )
 #: 跨分句否定：「我也没在吃/我最近不吃/我也没服用」不是患者续用
@@ -1793,13 +1815,9 @@ def continuation_same_as_clause(follow: str, clause: str) -> bool:
     """续用分句是否描述患者本人的同一药物/过敏原。"""
     if _CONTINUATION_NEGATED_RE.search(follow):
         return False
-    # 「我妈也吃/我老公也在吃」：家属做主语，不是患者本人的续用
-    if re.match(
-        r"我(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|姥爷|姥姥|老公|老婆|"
-        r"爱人|丈夫|妻子|儿子|女儿|儿|女|哥|姐|弟|妹|叔|姨|舅|姑|"
-        r"孩子|宝宝|家人|父亲|母亲)",
-        follow,
-    ):
+    # 「我妈也吃/我岳母也在吃/我家孩子也吃」：家属做主语，
+    # 不是患者本人的续用。复用 _FAMILY_HISTORY_MARKERS，避免漏称谓
+    if _PATIENT_FAMILY_SUBJECT_RE.match(follow):
         return False
     if _CONTINUATION_SAME_RE.search(follow):
         return True
@@ -1830,6 +1848,16 @@ _FAMILY_HISTORY_MARKERS = (
     # 口语称谓：家人服药不能算患者本人抗凝
     "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
     "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
+)
+
+#: 「我爸也吃/我岳母也在吃/我家孩子也吃」——家属做主语
+_PATIENT_FAMILY_SUBJECT_RE = re.compile(
+    r"我(?:的)?(?:家(?:里)?(?:的)?(?:孩子|宝宝|娃|老人)|"
+    + "|".join(
+        re.escape(marker)
+        for marker in sorted(_FAMILY_HISTORY_MARKERS, key=len, reverse=True)
+    )
+    + r")"
 )
 
 #: 已经结束、停用、否认或仅为过敏的病史/用药不属于当前高危状态
@@ -2077,6 +2105,35 @@ def _stop_clause_names_other_drug(
         # 「激素停了半年」只有当前语境确属激素类才等价于本药
         return not any(hint in current_clause for hint in hints)
     return token not in current_clause
+
+
+#: 明确表示当前仍在用药/仍在治疗：远期停药不能抹掉这些分句
+_LONG_STOP_CURRENT_USE_RE = re.compile(
+    r"(?:现在|目前|当前|正在|仍在|还在|一直在|每天|照常|继续)"
+    r"[^，。；;?？]{0,8}?"
+    r"(?:吃|服用|服|用|注射|打|化疗|放疗|抗凝|免疫抑制|激素)"
+    r"|(?:化疗|放疗|抗凝|激素治疗|免疫抑制治疗)(?:中|期间)"
+    r"|(?:刚|刚刚)(?:做完|结束)?(?:化疗|放疗)"
+)
+#: 结构化用药清单行（name=华法林；active=True）：权威在用数据，
+#: 不按自由文本里的远期停药整行抹掉
+_STRUCTURED_MED_LINE_RE = re.compile(r"(?:name|active|status)\s*=", re.I)
+
+
+def _long_stop_targets_clause(clause: str) -> bool:
+    """紧邻远期停药的前一分句是否就是被停的药。
+
+    「华法林吃了三年，停了一年多了」：停药主体是华法林，药名不能
+    继续算作当前用药。但「怀孕39周」「正在化疗」「现在吃利伐沙班」
+    以及结构化用药清单行不属于停药主体，必须保留（第七十八轮）。
+    """
+    if not any(term in clause for term in _OTHER_STOP_DRUG_TAILS):
+        return False
+    if _STRUCTURED_MED_LINE_RE.search(clause):
+        return False
+    if _LONG_STOP_CURRENT_USE_RE.search(clause):
+        return False
+    return True
 
 
 def _clause_ends_with_drug_name(clause: str) -> bool:
@@ -2411,7 +2468,7 @@ def _has_fever(text: str) -> bool:
             prefix = _clause_prefix(text, start)
             stripped = prefix.rstrip()
             if stripped.endswith(
-                ("不发", "没发", "没有发", "未发", "再发",
+                ("不发", "没发", "没有发", "未发",
                  "也没有发", "也没有再发")
             ):
                 # 「没有发烧，也没有发高烧」：同一分句里对其它发热词
@@ -2675,20 +2732,28 @@ def _active_medical_text(
             ):
                 kept.append(clause)
             continue
+        next_clause = (
+            clauses[index + 1].strip()
+            if index + 1 < len(clauses) else ""
+        )
         if (
-            _long_stop_near(clauses, index)
-            # 只让「停药/停用」类远期停药抹掉药名；「化疗结束5年」
-            # 属于结束治疗，同分句的其它当前用药（每天吃华法林）
-            # 必须保留
-            and any(
-                _LONG_STOP_PATTERN.search(other_clause)
-                for other_clause in clauses
+            next_clause
+            and (
+                _LONG_STOP_PATTERN.search(next_clause)
+                or _LONG_ENDED_TREATMENT_RE.search(next_clause)
             )
+            and not any(
+                marker in next_clause for marker in _FAMILY_HISTORY_MARKERS
+            )
+            and _long_stop_targets_clause(clause)
+            and not _stop_clause_names_other_drug(next_clause, clause)
             and not _RESTART_TEXT_RE.search(clause)
             and not _RESTART_TEXT_RE.search(restart_window)
         ):
-            # 「华法林吃了三年，停了一年多了」：同段已明确远期停药且
-            # 没有续用表述，药名不能继续算作当前用药
+            # 「华法林吃了三年，停了一年多了」：紧邻本句的远期停药
+            # 且本句就是被停的药时，药名不能继续算作当前用药。
+            # 只作用于紧邻停药分句的「药名+时长」前一句，避免把
+            # 孕期/免疫状态/结构化在用药物等无关分句删掉（第七十八轮）
             continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，
@@ -3086,7 +3151,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
         )
         or _PREGNANCY_EVIDENCE_RE.search(pregnancy_text) is not None
         or _CAESAREAN_RECENT_RE.search(pregnancy_text) is not None
-        or _POSTPARTUM_RECENT_RE.search(pregnancy_text) is not None
+        or _postpartum_recent_positive(pregnancy_text)
     )
     if (
         pregnancy_mentioned
