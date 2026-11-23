@@ -403,8 +403,10 @@ def test_frontend_inflight_backup_slot_and_draft_guard():
     assert "const INFLIGHT_QUESTION_OTHER_KEY = 'medix.inflightQuestionOther';" \
         in source
     assert "function readInflightRecordFor(targetId)" in source
-    assert "INFLIGHT_QUESTION_KEY, INFLIGHT_QUESTION_OTHER_KEY," in source
-    assert "safeSessionSet(INFLIGHT_QUESTION_OTHER_KEY, existingRaw);" in source
+    # 第八十轮起备份槽保存多条记录：读取/写入/清理都走数组辅助函数
+    assert "function readOtherInflightRecords()" in source
+    assert "function writeOtherInflightRecords(records)" in source
+    assert "clearOtherSessionInflight(sessionId, question);" in source
     start = source.index("if (composerSubmit && inflightPersistedText")
     end = source.index("const remainder = stripInflightQuestion", start)
     block = source[start:end]

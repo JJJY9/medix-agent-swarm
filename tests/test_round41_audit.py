@@ -319,7 +319,15 @@ def test_completed_followup_restore_rejects_duplicate(store):
     first = _schedule_followup_sync(store, visit["id"])
     appointment_a = first["appointment"]
     store.update_appointment_partial(appointment_a["id"], status="completed")
-    _schedule_followup_sync(store, visit["id"])
+    # 第八十轮起重复安排会复用这条已完成预约；这里手工制造另一条
+    # 待就诊预约且就诊已链接它（其它入口恢复/导入），恢复已完成
+    # 预约仍必须被拒绝
+    other = store.add_appointment(
+        "妈妈", "复诊：高血压",
+        scheduled_at="2026-12-14T09:00",
+        owner_visit_id=visit["id"],
+    )
+    store.set_visit_followup_links(visit["id"], other["id"], 0)
 
     with pytest.raises(ValueError):
         store.update_appointment_partial(

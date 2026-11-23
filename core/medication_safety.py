@@ -1286,6 +1286,19 @@ _ALLERGY_STATEMENT_PATTERNS = (
         r"(?:^|[，。；,.!?！？\n])\s*(?:我|本人|患者)?\s*"
         r"([^，。；,.!?！？\n]{1,20}?)\s*(?<!抗)过敏(?!史|的药|的药物)"
     ),
+    # 英文陈述：「I'm allergic to penicillin」「penicillin allergy」
+    re.compile(
+        r"allergic\s+to\s+([a-z][a-z0-9 \-]{1,24})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"([a-z][a-z0-9 \-]{0,20}?)\s+allerg(?:y|ies)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\ballerg(?:y|ies)\s*[:：]\s*([^\n,.;!?]{1,30})",
+        re.IGNORECASE,
+    ),
 )
 
 #: 检测结果不是过敏原（「阿莫西林阴性」）；阳性仍按过敏处理
@@ -1305,8 +1318,11 @@ def _allergy_mentions_in_question(question: str) -> str:
     parts: List[str] = []
     for pattern in _ALLERGY_STATEMENT_PATTERNS:
         for match in pattern.finditer(question):
-            prefix = question[max(0, match.start() - 10):match.start()]
+            prefix = question[max(0, match.start() - 12):match.start()]
             if _ALLERGY_NEGATION_PATTERN.search(prefix):
+                continue
+            if re.search(r"\b(?:not|no|never|non)\s*$", prefix, re.I):
+                # 「not allergic to penicillin」「no known allergies」
                 continue
             captured = match.group(1) if match.groups() else match.group(0)
             if any(word in captured for word in _ALLERGY_NEGATION_WORDS):
@@ -1383,6 +1399,9 @@ _FAMILY_MEDICATION_MARKERS = (
     "丈夫", "妻子", "配偶", "哥哥", "姐姐", "弟弟", "妹妹", "儿子", "女儿",
     "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
     "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
+    # 主语位置的家属表述（成人档案下不把家属用药算到患者头上）
+    "家里人", "我家孩子", "我家宝宝", "我家娃", "我家老人",
+    "我孩子", "我宝宝", "我娃",
     # 英文家属表述
     "my father", "my mother", "my dad", "my mom", "my mum",
     "my husband", "my wife", "my son", "my daughter", "my brother",
@@ -1413,7 +1432,9 @@ _FAMILY_MARKER_TAIL = (
 )
 #: 「我」后紧跟家属称谓时是定语（我爸爸/我妈），不是患者主语
 _FAMILY_AFTER_I = (
-    r"(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|姥爷|姥姥|老公|老婆|"
+    r"(?:的)?(?:"
+    r"家(?:里)?(?:的)?(?:孩子|宝宝|娃|老人|人)|"
+    r"爸|妈|爹|娘|爷|奶|外公|外婆|姥爷|姥姥|老公|老婆|"
     r"爱人|丈夫|妻子|儿子|女儿|儿|女|哥|姐|弟|妹|叔|姨|舅|姑|"
     r"孩子|宝宝|家人|父亲|母亲)"
 )
@@ -1500,6 +1521,7 @@ def _patient_self_mentioned(clause: str) -> bool:
         r"需要)?[^，。；;?？]{0,8}?(?:吃|服用|服|用|停用|停药|停了)",
         clause,
     ):
+        span = clause[match.start():match.end()]
         between = clause[match.start() + 1:match.end()]
         tail = clause[match.end():match.end() + 10]
         if any(word in between for word in ("问", "想", "咨询", "了解")):
@@ -1507,7 +1529,8 @@ def _patient_self_mentioned(clause: str) -> bool:
         if re.search(r"(?:吗|么|呢|？|\?)", tail):
             continue
         family_inside = any(
-            marker in between for marker in _FAMILY_MEDICATION_MARKERS
+            marker in between or marker in span
+            for marker in _FAMILY_MEDICATION_MARKERS
         )
         # 并列主语必须包含独立的患者「我」：我爸和我妈都吃华法林
         # 不能因为「和…都」被当成患者本人用药

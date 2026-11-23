@@ -94,7 +94,9 @@ def test_reminder_csv_keeps_vaccination_and_appointment_links(
         "scheduled_at": f"{_date(5)}T09:00",
     }).json()["appointment"]
     reminder = client.post("/api/reminders", json={
-        "title": "复查提醒",
+        # 第八十轮起疫苗兜底挂接要求标题/备注含疫苗名或到期日一致：
+        # CSV 跨安装按 id 兜底必须带名称线索，否则宁可不挂
+        "title": "接种：乙肝疫苗 第3剂",
         "due_at": _date(3),
         "note": f"复诊 {_date(5)}",
         "profile": "妈妈",
@@ -114,7 +116,7 @@ def test_reminder_csv_keeps_vaccination_and_appointment_links(
         "/api/reminders", params={"include_done": True}
     ).json()["reminders"]
     restored = next(
-        row for row in rows if row["title"] == "复查提醒"
+        row for row in rows if row["title"].startswith("接种：乙肝疫苗")
     )
     assert restored["vaccination_id"] == vaccination["id"]
     assert restored["appointment_id"] == appointment["id"]
