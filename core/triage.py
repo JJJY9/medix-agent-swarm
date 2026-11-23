@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.context import medication_context_text
 from core.medication_text import (
+    BRAND_DRUG_NAME_RE as _BRAND_DRUG_NAME_RE,
     GENERIC_DRUG_NAME_RE as _GENERIC_DRUG_NAME_RE,
     MED_CATEGORY_RE as _MED_CATEGORY_RE,
     clause_mentions_drug_clause,
@@ -232,6 +233,31 @@ def _postpartum_recent_positive(text: str) -> bool:
             continue
         return True
     return False
+#: 近期停经/月经推迟：妊娠可疑证据（「停经45天，阴道出血」是异位
+#: 妊娠/先兆流产的典型组合）；绝经/停经多年不是妊娠（第八十四轮）
+_AMENORRHEA_BASE_RE = re.compile(
+    r"停经|闭经|月经推迟|月经推后|月经没来|月经未至|没来月经|"
+    r"大姨妈推迟|大姨妈没来|例假推迟|例假没来"
+)
+_AMENORRHEA_YEARS_RE = re.compile(
+    r"^\s*(?:已|已经|都|快|近|将近)?\s*"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?|好?多)\s*年"
+)
+
+
+def _recent_amenorrhea_positive(text: str) -> bool:
+    """是否为近期的停经/月经推迟（明确年数或绝经语境除外）。"""
+    for match in _AMENORRHEA_BASE_RE.finditer(text):
+        tail = text[match.end():match.end() + 10]
+        if _AMENORRHEA_YEARS_RE.match(tail):
+            continue
+        prefix = text[max(0, match.start() - 4):match.start()]
+        if re.search(r"绝经|更年期", prefix):
+            continue
+        return True
+    return False
+
+
 #: 其它明确的妊娠证据：验孕阳性、自然流产/流产了；血/尿 HCG 阳性、
 #: 「两道杠/一深一浅」等口语写法；「自然流产史」是既往史，不算当前妊娠
 _PREGNANCY_EVIDENCE_RE = re.compile(
@@ -987,8 +1013,9 @@ _EDUCATIONAL_PREFIX_RE = re.compile(
 #: 媒体词作为症状发生的时间语境（看视频时胸痛/看了个视频后胸痛）：
 #: 不是被引用的科普内容，不能按科普丢弃（第八十三轮）
 _EDUCATION_MEDIA_TIME_CONTEXT_RE = re.compile(
-    r"(?:看|刷|听|读)(?:了)?(?:个|段|篇|条|一会儿)?\s*"
-    r"(?:视频|文章|新闻|帖子|百科)[^，。；]{0,4}?(?:时|的时候|后|以后|之后)"
+    r"(?:看|刷|听|读|浏览)(?:了|过)?(?:个|段|篇|条|一会儿|会儿)?\s*"
+    r"(?:短视频|小视频|视频|文章|新闻|帖子|百科)"
+    r"[^，。；]{0,6}?(?:的时候|时|以后|之后|后|就|便|即|看得|看着)"
     r"|(?:一边|边)(?:看|刷|听)[^，。；]{0,6}一边"
 )
 
@@ -1216,6 +1243,7 @@ def _clean_complaint_clause(
                 _EDUCATION_MEDIA_TIME_CONTEXT_RE.search(clause)
                 is not None
                 and _is_red_flag_text(clause)
+                and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
             )
         )
         family_redflag = any(
@@ -1377,7 +1405,8 @@ _EDUCATION_QUOTE_LEAD_RE = re.compile(
     r"(?:网上|文章|视频|新闻|帖子|百科|教程|科普|讲座|报道|书上|"
     r"听说|据说)"
     r"[^，。；]{0,8}?"
-    r"(?:说|讲|写|提到|指出|介绍|称|教|报道|表示|认为)"
+    r"(?:说|讲|写|提到|指出|介绍|称|教|报道|表示|认为|"
+    r"看到|刷到|见到|听说)"
 )
 #: 引用之后同分句「我+症状」：真实主诉被连写在同一分句里
 _EDUCATION_CURRENT_RE = re.compile(
@@ -2234,6 +2263,7 @@ def _long_stop_targets_clause(clause: str) -> bool:
         any(term in clause for term in _OTHER_STOP_DRUG_TAILS)
         or _GENERIC_DRUG_NAME_RE.search(clause)
         or _MED_CATEGORY_RE.search(clause)
+        or _BRAND_DRUG_NAME_RE.search(clause)
     ):
         return False
     if _STRUCTURED_MED_LINE_RE.search(clause):
@@ -3395,6 +3425,7 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
             for term in PREGNANCY_TERMS
         )
         or _PREGNANCY_EVIDENCE_RE.search(pregnancy_text) is not None
+        or _recent_amenorrhea_positive(pregnancy_text)
         or _CAESAREAN_RECENT_RE.search(pregnancy_text) is not None
         or _postpartum_recent_positive(pregnancy_text)
     )
