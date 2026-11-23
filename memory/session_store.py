@@ -6951,7 +6951,13 @@ class SessionStore:
                         )
                         and not _candidate_soft_owned_by_other(candidate)
                         and not _auto_followup_moved_copy(candidate)
-                        and not _content_owned_by_other(candidate)
+                        and not (
+                            _content_owned_by_other(candidate)
+                            and not (
+                                _same_backup_origin()
+                                and candidate == raw_id
+                            )
+                        )
                         and not _tail_prefers_sibling(
                             candidate, cross_profile=True
                         )
@@ -7608,6 +7614,17 @@ class SessionStore:
                                 not _tail_matches(sole)
                                 and _tail_prefers_sibling_any_content(sole)
                             )
+                            and not (
+                                not _tail_matches(sole)
+                                and (
+                                    _candidate_soft_owned_by_other(
+                                        sole, cross_profile=True
+                                    )
+                                    or _tail_prefers_sibling(
+                                        sole, cross_profile=True
+                                    )
+                                )
+                            )
                         ):
                             return _claim(sole, mark_moved=True)
                     # 同身份组内多条备份行共享同一锚点且本地有缺行：
@@ -7653,6 +7670,17 @@ class SessionStore:
                         and not (
                             not _tail_matches(sole)
                             and _tail_prefers_sibling_any_content(sole)
+                        )
+                        and not (
+                            not _tail_matches(sole)
+                            and (
+                                _candidate_soft_owned_by_other(
+                                    sole, cross_profile=True
+                                )
+                                or _tail_prefers_sibling(
+                                    sole, cross_profile=True
+                                )
+                            )
                         )
                         and (
                             not _backup_content_shared_with_sibling()
@@ -14371,6 +14399,35 @@ class SessionStore:
                                 (int(appointment_id),),
                             ).fetchone()
                             rebuild = had_completed is not None
+                        if not rebuild:
+                            # 已完成提醒被「清理已完成」删除后：自动
+                            # 复诊预约仍存在、就诊仍安排着，只是没有
+                            # 任何待办提醒——没有 opt-out 墓碑时必须
+                            # 重建，否则「已安排复诊」却永远不会提醒
+                            # （第八十二轮）
+                            auto_owned = bool(
+                                int(previous["owner_visit_id"] or 0)
+                                or re.search(
+                                    r"由就诊记录 #\d+ 自动创建",
+                                    str(previous["note"] or ""),
+                                )
+                            )
+                            pending_row = self._conn.execute(
+                                "SELECT 1 FROM reminders"
+                                " WHERE appointment_id = ? AND done = 0"
+                                " LIMIT 1",
+                                (int(appointment_id),),
+                            ).fetchone()
+                            if auto_owned and pending_row is None:
+                                try:
+                                    auto_marker = self.get_app_state(
+                                        "reminder_deleted_"
+                                        f"{int(appointment_id)}"
+                                    )
+                                except sqlite3.Error:
+                                    auto_marker = ""
+                                if not auto_marker:
+                                    rebuild = True
                         if rebuild:
                             # 用户主动删除过该预约的提醒（重建后又删）：
                             # 删除墓碑不早于任何已完成提醒时不再复活。
@@ -18275,20 +18332,31 @@ class SessionStore:
             for row in rows
         ]
 
-    def count_attachments_by_ref(self, kind: str) -> Dict[int, int]:
-        """按关联记录统计附件数量，仅返回已关联的附件。"""
+    def count_attachments_by_ref(
+        self, kind: str, profile: Optional[str] = None
+    ) -> Dict[int, int]:
+        """按关联记录统计附件数量，仅返回已关联的附件。
+
+        profile 非 None 时与 attachment_kind_stats 同口径只统计该
+        档案的附件，避免档案视图带出其他成员的记录 id（第八十二轮）。
+        """
         kind_key = str(kind or "").strip().lower()
         if kind_key not in ATTACHMENT_KINDS:
             return {}
+        profile_clause = ""
+        params: List[Any] = [kind_key]
+        if profile is not None:
+            profile_clause = " AND profile = ?"
+            params.append(_normalize_profile_name(profile))
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT ref_id, COUNT(*) AS total
                   FROM attachments
-                 WHERE kind = ? AND ref_id > 0
+                 WHERE kind = ? AND ref_id > 0{profile_clause}
                  GROUP BY ref_id
                 """,
-                (kind_key,),
+                tuple(params),
             ).fetchall()
         return {
             int(row["ref_id"]): int(row["total"]) for row in rows
@@ -19317,7 +19385,7 @@ class SessionStore:
     def delete_reminder(self, reminder_id: int) -> bool:
         with self._write_and_checkpoint():
             doomed_row = self._conn.execute(
-                "SELECT appointment_id FROM reminders WHERE id = ?",
+                "SELECT appointment_id, done FROM reminders WHERE id = ?",
                 (int(reminder_id),),
             ).fetchone()
             cursor = self._conn.execute(
@@ -19328,9 +19396,12 @@ class SessionStore:
             if (
                 doomed_row is not None
                 and int(doomed_row["appointment_id"] or 0)
+                and not int(doomed_row["done"] or 0)
             ):
-                # 用户主动删除预约提醒：记录墓碑，之后改期不能凭旧的
-                # 已完成提醒把它复活
+                # 用户主动删除「待办」提醒：记录墓碑，之后改期不能凭
+                # 旧的已完成提醒把它复活。删除已完成的历史提醒（清理
+                # 已完成/单条删除历史）不是 opt-out，不写墓碑
+                # （第八十二轮）
                 try:
                     self.set_app_state(
                         f"reminder_deleted_{int(doomed_row['appointment_id'])}",
@@ -19374,7 +19445,7 @@ class SessionStore:
         condition = " AND done = 1" if only_done else ""
         with self._write_and_checkpoint():
             doomed_rows = self._conn.execute(
-                f"SELECT id, appointment_id FROM reminders"
+                f"SELECT id, appointment_id, done FROM reminders"
                 f" WHERE id IN ({placeholders}){condition}",
                 values,
             ).fetchall()
@@ -19396,6 +19467,10 @@ class SessionStore:
                         doomed_row["appointment_id"] or 0
                     )
                     if not appointment_ref:
+                        continue
+                    if int(doomed_row["done"] or 0):
+                        # 清理已完成的历史提醒不是「不再提醒」：
+                        # 不写墓碑，改期仍应重建待办（第八十二轮）
                         continue
                     try:
                         self.set_app_state(

@@ -765,6 +765,23 @@ def _segment_ends_with_drug_name(segment: str) -> bool:
     return False
 
 
+def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
+    """停药动词前的文本是否点名了另一种药（不是当前药）。"""
+    for segment in re.split(r"[，。；;,.!?！？\n]", str(prefix or "")):
+        lowered = segment.lower()
+        if not lowered.strip():
+            continue
+        for group_items in DRUG_GROUPS.values():
+            for _canonical, aliases in group_items:
+                for alias in aliases:
+                    alias_l = str(alias).lower()
+                    if len(alias_l) < 2 or alias_l in alias_lower:
+                        continue
+                    if alias_l in lowered:
+                        return True
+    return False
+
+
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     """长窗口里的远期停药是否指向当前药（而不是另一种药）。
 
@@ -793,7 +810,13 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
         if _long_stop_token_is_determiner(raw_token) or re.match(
             r"(?:没有|没|未)(?:有)?\s*(?:吃|喝|服|用)", raw_token
         ):
-            # 「已经停药半年」「没吃完，已经停药」：没有点名其他药
+            # 「已经停药半年」「没吃完，已经停药」：没有点名其他药。
+            # 但「华法林没吃完，二甲双胍吃了两年，停了一年多了」的
+            # 停药属于中间那条药名分句，不能归因到当前药（第八十二轮）
+            if _window_mentions_other_drug(
+                window[: match.start()], alias_lower
+            ):
+                continue
             return True
         token = _normalize_long_stop_token(raw_token)
         if len(token) < 2:
@@ -1435,7 +1458,7 @@ _FAMILY_STOP_FOLLOW_RE = re.compile(
     # 「两年前停了」「去年就停药了」：时间前置语序同样属于家属
     r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月|天|周)"
     r"(?:多)?(?:前|以来)?|去年|前年|上个月|上周|多年前|好?多年|"
-    r"最近|当时|那时)\s*(?:就|才)?\s*"
+    r"最近|当时|那时)\s*(?:就|才|已经|已|早就)?\s*"
     r"|已经?|早就|现在|目前|之前|以前|刚刚?)?\s*"
     r"(?:停药|停用|停了|停服|停止服用|不吃了?|又吃|重新吃|重新服用)"
 )

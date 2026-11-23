@@ -386,11 +386,21 @@ def test_frontend_reconciliation_requires_restored_snapshot():
     [
         "华法林吃了三年，胃不舒服，停了一年多了，今天头撞到门框",
         "华法林吃了三年，用着不舒服，停了一年多了，今天头撞到门框",
-        "华法林吃了三年，去年吃中药调理，停了一年多了，今天头撞到门框",
+        "华法林吃了三年，胃不舒服打了点滴，停了一年多了，今天头撞到门框",
     ],
 )
 def test_bare_verb_clause_does_not_block_stop_scan(text):
     assert _red(text)["level"] == "none", text
+
+
+def test_medication_category_clause_blocks_stop_scan():
+    # 第八十二轮：「去年吃中药调理/降压药」是另一条用药分句，
+    # 停药更可能指它，患者抗凝药必须保留
+    for text in (
+        "华法林吃了三年，去年吃中药调理，停了一年多了，今天头撞到门框",
+        "华法林吃了三年，去年吃降压药，停了一年多了，今天头撞到门框",
+    ):
+        assert "抗凝治疗期间头部外伤" in _red(text)["matches"], text
 
 
 # ---------------------------------------------------------------- [15]

@@ -2305,19 +2305,23 @@ def _has_forwarded_address_header(request: Request) -> bool:
 
 
 def _has_proxy_headers(request: Request) -> bool:
+    """请求是否带代理地址/协议头（单次遍历）。
+
+    重复的同名头不能逐名调用 getlist 全表扫描：上千条空 X-Forwarded-*
+    会把无凭证请求放大成 O(H²) 的 CPU 消耗（第八十二轮）。
+    """
     try:
-        names = list(request.headers.keys())
+        items = list(request.headers.items())
     except Exception:
-        names = []
-    for name in names:
+        return False
+    for name, value in items:
         lower = str(name).lower()
         if (
             lower == "forwarded"
             or lower == "x-real-ip"
             or lower.startswith("x-forwarded-")
-        ):
-            if _proxy_header_values(request, name):
-                return True
+        ) and str(value).strip():
+            return True
     return False
 
 
@@ -8418,7 +8422,7 @@ async def _weekly_report_impl(
                 target_value = float(target.get("value1") or 0)
             except (TypeError, ValueError):
                 continue
-            if total >= target_value:
+            if round(total, 1) >= target_value:
                 continue
             label, default_unit, _ = METRIC_TYPES.get(
                 metric, (metric, "", (0, 0))
@@ -8711,7 +8715,9 @@ async def _weekly_report_impl(
                 if entry["metric"] in daily_metric_today else 0
             ),
             "daily_within_target": (
-                daily_metric_today[entry["metric"]]["total"]
+                round(
+                    daily_metric_today[entry["metric"]]["total"], 1
+                )
                 >= float(entry["target"]["value1"])
                 if entry["metric"] in daily_metric_today
                 and daily_metric_today[entry["metric"]]["count"]
@@ -9558,7 +9564,8 @@ def _build_health_insights(
             unit_text = f" {unit}" if unit else ""
             target_text = f"{float(target['value1']):g}"
             gap = float(target["value1"]) - daily_total
-            if row.get("daily_within_target"):
+            if row.get("daily_within_target") or gap <= 0:
+                # 展示用四舍五入后的累计：还差 0 绝不能进未达标分支
                 insights.append(_health_insight(
                     f"metric_{metric}",
                     "ok",
@@ -15494,8 +15501,12 @@ async def attachment_ref_counts(profile: Optional[str] = None):
 
     store = get_session_store()
     visit_counts, lab_counts, kinds = await asyncio.gather(
-        asyncio.to_thread(store.count_attachments_by_ref, "visit"),
-        asyncio.to_thread(store.count_attachments_by_ref, "lab"),
+        asyncio.to_thread(
+            store.count_attachments_by_ref, "visit", profile
+        ),
+        asyncio.to_thread(
+            store.count_attachments_by_ref, "lab", profile
+        ),
         asyncio.to_thread(store.attachment_kind_stats, profile),
     )
     return {
