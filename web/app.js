@@ -9972,9 +9972,23 @@ function renderFamilyOverview(data) {
     }
     const medications = profile.medications || {};
     if (medications.active) {
+      // 「今日 N 次」与依从率并排展示：只统计在用药物，停用药物
+      // 的打卡由停用分支单独展示（第八十轮）
+      const activeTakenToday = Number(
+        medications.taken_today_active !== undefined
+          && medications.taken_today_active !== null
+          ? medications.taken_today_active
+          : (medications.taken_today || 0)
+      );
+      const activeSkippedToday = Number(
+        medications.skipped_today_active !== undefined
+          && medications.skipped_today_active !== null
+          ? medications.skipped_today_active
+          : (medications.skipped_today || 0)
+      );
       const chip = familyChip(
-        medications.taken_today
-          ? `用药 今日 ${medications.taken_today} 次`
+        activeTakenToday
+          ? `用药 今日 ${activeTakenToday} 次`
           : `用药 ${medications.active} 种 未打卡`
       );
       // 与家庭关注徽标同口径：单药最差打卡率，一种药完全没吃
@@ -9993,9 +10007,8 @@ function renderFamilyOverview(data) {
       ) {
         chip.textContent += ` · 依从率 ${adherenceRate}%`;
       }
-      if (Number(medications.skipped_today) > 0) {
-        chip.textContent +=
-          ` · 今日未服 ${Number(medications.skipped_today)} 次`;
+      if (activeSkippedToday > 0) {
+        chip.textContent += ` · 今日未服 ${activeSkippedToday} 次`;
       }
       const details = [];
       if (medications.names && medications.names.length) {
@@ -10193,7 +10206,13 @@ function familyOverviewText(data) {
     }
     const medications = profile.medications || {};
     if (medications.active) {
-      let medText = `用药 今日 ${medications.taken_today || 0} 次`;
+      const activeTakenToday = Number(
+        medications.taken_today_active !== undefined
+          && medications.taken_today_active !== null
+          ? medications.taken_today_active
+          : (medications.taken_today || 0)
+      );
+      let medText = `用药 今日 ${activeTakenToday} 次`;
       const adherenceRate = (
         medications.worst_rate !== null
         && medications.worst_rate !== undefined
@@ -10208,9 +10227,14 @@ function familyOverviewText(data) {
       ) {
         medText += `，依从率 ${adherenceRate}%`;
       }
-      if (Number(medications.skipped_today) > 0) {
-        medText +=
-          `，今日未服 ${Number(medications.skipped_today)} 次`;
+      const activeSkippedToday = Number(
+        medications.skipped_today_active !== undefined
+          && medications.skipped_today_active !== null
+          ? medications.skipped_today_active
+          : (medications.skipped_today || 0)
+      );
+      if (activeSkippedToday > 0) {
+        medText += `，今日未服 ${activeSkippedToday} 次`;
       }
       parts.push(medText);
     } else if (
@@ -21615,6 +21639,9 @@ async function send(question, composerSubmit = false) {
       } catch {
         // 忽略
       }
+      // 从备份槽恢复并重发的同一主诉：成功后同样清掉，否则下次
+      // 打开会话又会被当成「上次中断的主诉」诱发重复会诊
+      clearOtherSessionInflight(sessionId, question);
       // 「继续/重试本次会诊」成功后输入框与草稿可能仍保留同一主诉：
       // 只有输入框仍是失败分支恢复时的快照（用户没有继续编辑）才
       // 按包含式移除本轮主诉；流式期间新输入的下一轮草稿不能被
@@ -22843,21 +22870,39 @@ function updateDraftProfile(oldName, newName) {
 
 function updateInflightQuestionProfile(oldName, newName) {
   // 在途主诉的档案名随改名同步；档案被删除时清理，避免刷新恢复
-  // 时档案名不符把主诉丢弃，或把已删档案的主诉带进别的档案
+  // 时档案名不符把主诉丢弃，或把已删档案的主诉带进别的档案。
+  // 备份槽里的其它会话主诉同样适用（第八十轮）
   try {
     const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (!parsed || parsed.profile !== oldName) return;
-    if (!newName) {
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
-      return;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.profile === oldName) {
+        if (!newName) {
+          safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        } else {
+          parsed.profile = newName;
+          safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify(parsed));
+        }
+      }
     }
-    parsed.profile = newName;
-    safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify(parsed));
   } catch {
     // 隐私模式/损坏记录：忽略
   }
+  const records = readOtherInflightRecords();
+  if (!records.length) return;
+  let changed = false;
+  const next = [];
+  for (const record of records) {
+    if (String(record.profile || '') !== String(oldName || '')) {
+      next.push(record);
+      continue;
+    }
+    changed = true;
+    if (newName) {
+      next.push({ ...record, profile: newName });
+    }
+  }
+  if (changed) writeOtherInflightRecords(next);
 }
 
 //: 本标签页新建的空会话标记：首轮提问前服务端不可能存在更早的
@@ -22899,9 +22944,78 @@ function stripInflightQuestion(text, question) {
     .trim();
 }
 
+function readOtherInflightRecords() {
+  // 备份槽保存多条「其它会话停止/中断未落库」的主诉；兼容旧的
+  // 单条对象格式
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_OTHER_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (item) => item && typeof item === 'object'
+      );
+    }
+    if (parsed && typeof parsed === 'object' && parsed.question) {
+      return [parsed];
+    }
+  } catch {
+    // 损坏记录忽略
+  }
+  return [];
+}
+
+function writeOtherInflightRecords(records) {
+  try {
+    if (records.length) {
+      safeSessionSet(
+        INFLIGHT_QUESTION_OTHER_KEY, JSON.stringify(records.slice(0, 8))
+      );
+    } else {
+      safeSessionRemove(INFLIGHT_QUESTION_OTHER_KEY);
+    }
+  } catch {
+    // 隐私模式忽略
+  }
+}
+
+function clearOtherSessionInflight(sessionId, question) {
+  // 本轮主诉已确认落库：同步清掉备份槽里的同一条记录，避免之后
+  // 重新打开会话又被当成「上次中断的主诉」放回输入框
+  const wantedQuestion = String(question || '').trim();
+  if (!wantedQuestion) return;
+  const records = readOtherInflightRecords().filter(
+    (item) => !(
+      String(item.question || '').trim() === wantedQuestion
+      && (
+        !sessionId
+        || String(item.sessionId || '') === String(sessionId || '')
+      )
+    )
+  );
+  writeOtherInflightRecords(records);
+}
+
+function removeInflightRecord(record) {
+  if (!record) return;
+  if (record.keyName === INFLIGHT_QUESTION_KEY) {
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    return;
+  }
+  const records = readOtherInflightRecords().filter(
+    (item) => !(
+      String(item.sessionId || '') === String(record.data.sessionId || '')
+      && String(item.question || '') === String(record.data.question || '')
+      && Number(item.at || 0) === Number(record.data.at || 0)
+    )
+  );
+  writeOtherInflightRecords(records);
+}
+
 function preserveOtherSessionInflight(targetOwner) {
-  // 现有记录若属于另一个会话（停止/中断未落库）：先转入备份槽，
-  // 否则本次发送会把它永久覆盖（那个会话的草稿已被切换清空）
+  // 现有记录若属于另一个会话（停止/中断未落库）：追加到备份槽，
+  // 否则本次发送会把它永久覆盖（那个会话的草稿已被切换清空）。
+  // 备份槽保存多条：第三个会话的发送不能把更早的记录顶掉
   try {
     const existingRaw = safeSessionGet(INFLIGHT_QUESTION_KEY);
     if (!existingRaw) return;
@@ -22918,7 +23032,15 @@ function preserveOtherSessionInflight(targetOwner) {
       && String((existing && existing.question) || '').trim()
       && existingFresh
     ) {
-      safeSessionSet(INFLIGHT_QUESTION_OTHER_KEY, existingRaw);
+      const records = readOtherInflightRecords().filter(
+        (item) => !(
+          String(item.sessionId || '') === existingOwner
+          && String(item.question || '') === String(existing.question || '')
+          && Number(item.at || 0) === existingAt
+        )
+      );
+      records.unshift(existing);
+      writeOtherInflightRecords(records);
     }
   } catch {
     // 记录损坏/隐私模式：忽略，继续写入本次记录
@@ -22928,21 +23050,25 @@ function preserveOtherSessionInflight(targetOwner) {
 function readInflightRecordFor(targetId) {
   // 主槽不匹配时回退备份槽：切换会话后停在另一会话的未落库主诉
   // 只能保存在备份槽里，打开所属会话时必须能恢复
-  for (const keyName of [
-    INFLIGHT_QUESTION_KEY, INFLIGHT_QUESTION_OTHER_KEY,
-  ]) {
-    let data = null;
-    try {
-      const raw = safeSessionGet(keyName);
-      if (!raw) continue;
-      data = JSON.parse(raw);
-    } catch {
-      continue;
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && typeof data === 'object') {
+        const owner = String(data.sessionId || '');
+        if (!owner || owner === targetId) {
+          return { keyName: INFLIGHT_QUESTION_KEY, data };
+        }
+      }
     }
-    if (!data || typeof data !== 'object') continue;
+  } catch {
+    // 损坏记录忽略
+  }
+  for (const data of readOtherInflightRecords()) {
     const owner = String(data.sessionId || '');
-    if (owner && owner !== targetId) continue;
-    return { keyName, data };
+    if (owner && owner === targetId) {
+      return { keyName: INFLIGHT_QUESTION_OTHER_KEY, data };
+    }
   }
   return null;
 }
@@ -22961,7 +23087,7 @@ function restoreInflightForOpenSession(targetId, messages) {
   const at = Number((data && data.at) || 0);
   if (!question) return;
   if (!at || Date.now() - at > 6 * 60 * 60 * 1000) {
-    safeSessionRemove(recordKey);
+    removeInflightRecord(record);
     return;
   }
   if (owner && owner !== targetId) return;
@@ -23000,22 +23126,20 @@ function restoreInflightForOpenSession(targetId, messages) {
           )
       );
     } else {
-      let lastUserIndex = -1;
-      for (let i = list.length - 1; i >= 0; i -= 1) {
-        if (list[i].role === 'user') {
-          lastUserIndex = i;
-          break;
-        }
-      }
-      persisted = lastUserIndex >= 0
-        && String(list[lastUserIndex].content || '').trim() === question
-        && list.slice(lastUserIndex + 1).some(
-          (inner) => inner.role === 'assistant'
-        );
+      // 新建会话首轮：任何同文本用户消息之后已有回答都说明本轮
+      // 已落库；会话此后的追问不会让「最后一条用户消息」不再等于
+      // 该主诉而把它误判为未落库（第八十轮）
+      persisted = list.some(
+        (message, index) => message.role === 'user'
+          && String(message.content || '').trim() === question
+          && list.slice(index + 1).some(
+            (inner) => inner.role === 'assistant'
+          )
+      );
     }
   }
   if (persisted) {
-    safeSessionRemove(recordKey);
+    removeInflightRecord(record);
     return;
   }
   if (

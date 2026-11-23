@@ -134,7 +134,13 @@ _ALMOST_PATTERN = re.compile(
 #: 描述，实际为阳性，不能被否定填充词误判
 _SUPERLATIVE_NOVELTY_RE = re.compile(
     r"(?:从未有过|从来没有过|从没有过|未曾有过|前所未有|"
-    r"从未出现过|从未像这样|第一次出现)[^，。；]{0,2}的\s*$"
+    r"从未出现过|从未像这样|第一次出现|"
+    # 「从来没出现过的胸痛」「好多年没出现的胸痛又来了」同为
+    # 新发/复发阳性描述，不能被否定填充词吞掉（第八十轮）
+    r"从(?:来)?没(?:有)?(?:再)?出现(?:过)?|"
+    r"没(?:有)?(?:再)?出现(?:过)?|"
+    r"(?:好)?多年(?:没(?:有)?|未见)(?:再)?(?:出现(?:过)?)?|"
+    r"(?:好)?久没(?:有)?(?:再)?出现(?:过)?)[^，。；]{0,2}的\s*$"
 )
 
 #: 「不排除/不能排除 X」表示 X 仍有可能，不能当成否定
@@ -177,7 +183,7 @@ _CAESAREAN_RECENT_RE = re.compile(
     r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
     r"|(?:剖宫产|剖腹产)\s*(?:手术)?\s*"
     r"(?:之后|以后|术后|后|刚做完|做完|刚手术)"
-    r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
+    r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
     r"|(?:刚|刚刚|最近|前两天)\s*(?:做完|做了)?\s*(?:剖宫产|剖腹产)"
 )
@@ -186,10 +192,12 @@ _CAESAREAN_RECENT_RE = re.compile(
 #: 年数判断用函数逐个匹配触发词，避免可选后缀回溯绕过负向前瞻。
 _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
+    r"(?:刚|刚刚)?(?:生产|分娩)(?:完|了|后)?|"
+    r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
 _POSTPARTUM_YEARS_AFTER_RE = re.compile(
-    r"^\s*(?:(?:已|已经|都|快|近|将近|已有?)\s*)?"
+    r"^\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
 )
 
@@ -208,7 +216,10 @@ _PREGNANCY_EVIDENCE_RE = re.compile(
     r"(?:验孕(?:棒|试纸)?(?:呈|显示)?"
     r"(?:阳性|弱阳性|浅阳性|两条杠|两道杠|双杠|一深一浅)|"
     r"(?:血|血清|尿|β-?|b-?)?\s*hcg\s*(?:呈|显示|为)?\s*(?:阳性|升高)|"
-    r"(?:自然|不全|完全)流产(?!史)|流产了)",
+    r"(?:自然|不全|完全)流产(?!史)|流产了|"
+    r"(?:药流|人流|引产)(?:后|完|了)|刚流产|"
+    r"(?<!史)流产(?!史)|"
+    r"怀(?:上)?(?:二胎|二宝|第[二三四]胎))",
     re.IGNORECASE,
 )
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
@@ -217,7 +228,7 @@ PREGNANCY_WEEK_PATTERN = re.compile(
     # 「孕12+周」（12 周多）、「孕12-14周」（筛查孕周范围）、「孕20w」
     r"(?:[+＋]\s*\d*)?"
     r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
-    r"\s*(?:周|[wW]|个?月|天)"
+    r"\s*(?:周|[wW]|个[来多]?月|个半月|月|天)"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -253,7 +264,7 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"|孕\s*[0-9一二两三四五六七八九十]+"
     r"\s*(?:[+＋]\s*\d*)?"
     r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
-    r"\s*(?:周|[wW]|个?月|天))"
+    r"\s*(?:周|[wW]|个[来多]?月|个半月|月|天))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
@@ -490,7 +501,7 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"(?:产后|流产后|胎停后?|顺产后|引产后|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
-    r"(?:(?:已|已经|都|快|近|将近|差不多|满)\s*)?"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
@@ -500,7 +511,7 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     # 产后/流产后/顺产后/引产后/胎停后的多年表述同样是既往史，
     # 与主诉路径的 _PAST_OBSTETRIC_YEARS 同口径
     r"(?:产后|流产后|顺产后|引产后|胎停后)\s*"
-    r"(?:(?:已|已经|都|快|近|将近|差不多|满)\s*)?"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
     r"产后抑郁|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
@@ -1854,6 +1865,9 @@ _FAMILY_HISTORY_MARKERS = (
     # 口语称谓：家人服药不能算患者本人抗凝
     "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
     "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
+    # 主语位置的家属表述（成人档案下不把家属用药算到患者头上）
+    "家里人", "我家孩子", "我家宝宝", "我家娃", "我家老人",
+    "我孩子", "我宝宝", "我娃",
 )
 
 #: 「我爸也吃/我岳母也在吃/我家孩子也吃」——家属做主语
@@ -2117,6 +2131,21 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
+#: 含用药宾语的分句（「二甲双胍吃了两年」「我爸吃阿司匹林」）：
+#: 远期停药扫描遇到它就必须停下，不能把更早的药名当成停药主体
+_MEDICATION_CLAUSE_RE = re.compile(
+    r"(?:吃|服用|口服|服|用|注射|打|滴|含服|喷|输)(?:了|着|过|上|起来)?"
+    r"|用药|服药|吃药|药物|药品|药片|胶囊|颗粒|糖浆|滴剂|喷雾|"
+    r"注射液?|抗生素|降压药|降糖药|抗凝药|激素|中药|西药"
+    r"|(?:^|[；;\s])name\s*="
+)
+#: 常见药名后缀（补 _OTHER_STOP_DRUG_TAILS 未列出的慢性病用药）
+_GENERIC_DRUG_NAME_RE = re.compile(
+    r"[一-龥]{1,6}(?:霉素|西林|沙坦|普利|洛尔|地平|他汀|列汀|列净|"
+    r"康唑|磺脲|双胍|胍|胰岛素)|"
+    r"[一-龥]{2,6}(?:片|胶囊|颗粒)"
+)
+
 #: 明确表示当前仍在用药/仍在治疗：远期停药不能抹掉这些分句
 _LONG_STOP_CURRENT_USE_RE = re.compile(
     r"(?:现在|目前|当前|正在|仍在|还在)"
@@ -2137,7 +2166,10 @@ def _long_stop_targets_clause(clause: str) -> bool:
     继续算作当前用药。但「怀孕39周」「正在化疗」「现在吃利伐沙班」
     以及结构化用药清单行不属于停药主体，必须保留（第七十八轮）。
     """
-    if not any(term in clause for term in _OTHER_STOP_DRUG_TAILS):
+    if not (
+        any(term in clause for term in _OTHER_STOP_DRUG_TAILS)
+        or _GENERIC_DRUG_NAME_RE.search(clause)
+    ):
         return False
     if _STRUCTURED_MED_LINE_RE.search(clause):
         return False
@@ -2219,7 +2251,10 @@ def _long_stop_near(clauses: List[str], index: int) -> bool:
                 continue
             return True
         if _LONG_ENDED_TREATMENT_RE.search(clause):
-            return True
+            # 结束化疗/放疗只能否定化疗/免疫抑制类在用药物：
+            # 「华法林没吃完，化疗结束5年了」的抗凝状态仍成立
+            if _ended_treatment_targets_clause(current_clause):
+                return True
     return False
 #: 停药动词：只有真正的停药表述才做「无时长保守保留」
 _STOP_VERB_PATTERN = re.compile(
@@ -2312,9 +2347,11 @@ _CHEMO_ENDED_RE = re.compile(
 )
 #: 刚结束不久的化疗（结束才一周/结束后一个月）：免疫抑制仍可能存在
 _CHEMO_RECENT_END_RE = re.compile(
-    r"(?:结束|完成|做完)(?:才|刚|不到|后)?\s*"
-    r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*"
-    r"(?:天|周|个?月)"
+    r"(?:结束|完成|做完)(?:才|刚|不到|后|已经?有?)?\s*"
+    # 「结束后第5天」「结束后5-14天」「结束后十来天」：出院宣教常用
+    r"(?:第\s*)?(?:[0-9一二两三四五六七八九十半几]+"
+    r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+)?|几)\s*"
+    r"(?:来|多)?\s*(?:天|日|周|星期|个?月)"
 )
 #: 时间词写在完成动词之前（上周化疗结束/昨天化疗结束/两周前化疗结束）
 _CHEMO_RECENT_END_LEAD_RE = re.compile(
@@ -2571,7 +2608,9 @@ def _active_medical_text(
                 # 不能因为家属称谓整句丢弃
                 pass
             elif child_patient and any(
-                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+                term in clause for term in (
+                    "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                )
             ):
                 # 患儿档案下家长口述「我儿子正在化疗/在吃华法林」：
                 # 儿子/女儿指的就是当前患者本人
@@ -2764,11 +2803,6 @@ def _active_medical_text(
             candidate_clause = clauses[pos].strip()
             if not candidate_clause:
                 continue
-            if any(
-                marker in candidate_clause
-                for marker in _FAMILY_HISTORY_MARKERS
-            ):
-                continue
             if (
                 _LONG_STOP_PATTERN.search(candidate_clause)
                 or _LONG_ENDED_TREATMENT_RE.search(candidate_clause)
@@ -2778,9 +2812,9 @@ def _active_medical_text(
             if any(
                 term in candidate_clause
                 for term in _OTHER_STOP_DRUG_TAILS
-            ):
-                # 中间还有另一条药名分句：远期停药更可能指它，
-                # 本分句必须先于那条记录处理，不能被误抹
+            ) or _MEDICATION_CLAUSE_RE.search(candidate_clause):
+                # 中间还有另一条药名/用药分句（含家属的药分句）：远期
+                # 停药更可能指它，本分句必须先于那条记录处理
                 break
         if next_stop_index:
             stop_clause = clauses[next_stop_index].strip()
@@ -2922,7 +2956,9 @@ def _patient_only_text(
                 # 患者主体，不能因为家属称谓整句丢弃
                 pass
             elif child_patient and any(
-                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+                term in clause for term in (
+                    "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                )
             ):
                 # 患儿档案下家长口述「我儿子今天发烧」：儿子/女儿
                 # 指的就是当前患者本人
@@ -2958,11 +2994,19 @@ def _has_patient_subject(clause: str) -> bool:
                 # 「我爸是化疗患者」：患者一词修饰的是家属
                 start = clause.find(subject, start + len(subject))
                 continue
+            if subject in ("孩子", "宝宝", "娃", "老人") and re.search(
+                r"(?:我|他|她)(?:的)?(?:家(?:里)?(?:的)?)?\s*$",
+                before,
+            ):
+                # 「我家孩子/我家宝宝」是家属，不是档案患者本人
+                start = clause.find(subject, start + len(subject))
+                continue
             return True
     # 裸「我」不能是家属称谓的一部分（我爸/我妈/我儿子…）
     return re.search(
         r"我(?!爸|妈|父母|父|母|爷|奶|外公|外婆|姥姥|姥爷|哥|姐|弟|妹|"
-        r"儿|女|爱人|对象|丈夫|妻子|配偶|老公|老婆|家人|亲)",
+        r"儿|女|爱人|对象|丈夫|妻子|配偶|老公|老婆|家人|亲|"
+        r"家|孩|宝|娃)",
         clause,
     ) is not None
 
@@ -2983,7 +3027,9 @@ def _patient_pattern_mention(
             elif _has_patient_subject(clause):
                 pass
             elif child_patient and any(
-                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+                term in clause for term in (
+                    "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                )
             ):
                 # 患儿档案下家长口述「我儿子头被门撞了」指患者本人
                 pass
@@ -3013,7 +3059,9 @@ def _patient_head_trauma_mention(
             elif _has_patient_subject(clause):
                 pass
             elif child_patient and any(
-                term in clause for term in ("儿子", "女儿", "我儿", "我女")
+                term in clause for term in (
+                    "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                )
             ):
                 pass
             else:

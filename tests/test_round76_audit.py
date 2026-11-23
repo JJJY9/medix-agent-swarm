@@ -318,8 +318,10 @@ def test_reschedule_updates_detached_reminder_note(tmp_path):
     )
     row = store.get_reminder(first["id"])
     store.close()
-    # 自动文案日期与提醒到期日一致（预约日前一天）
-    assert row["note"].startswith("复诊 " + str(row["due_at"])[:10]), row
+    # 备注里的复诊日期是预约日（提醒到期日仍提前一天，第八十轮修正
+    # 与创建/安排路径同口径）
+    assert row["note"].startswith("复诊 " + str(new_day)), row
+    assert str(row["due_at"])[:10] != new_day, row
     assert row["note"] != "复诊 2026-11-28 心内科 王医生", row
 
 

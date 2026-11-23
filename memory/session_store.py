@@ -3447,12 +3447,14 @@ class SessionStore:
                     return True
         return False
 
-    def resolve_profile_alias(self, name: str) -> str:
+    def resolve_profile_alias(self, name: str, after: str = "") -> str:
         """把已改名档案的旧名称解析到当前名称。
 
         只跟随本库记录过的改名链；输入名仍被数据使用时原样返回（可能
         是另一位患者复用了这个名字）。中间名被新档案复用后，只跟随
         「新主人创建之前」产生的改名记录，避免把旧患者解析成新患者。
+        after 非空时只跟随该时间之后的改名（恢复旧备份时用快照导出
+        时间作界：快照内已体现的改名不能再改写快照里的同名档案）。
         """
         name = _normalize_profile_name(name)
         if not name:
@@ -3463,13 +3465,19 @@ class SessionStore:
         visited = {name}
         with self._lock:
             for _ in range(10):
+                alias_query = (
+                    "SELECT new_name, renamed_at FROM profile_renames"
+                    " WHERE old_name = ?"
+                )
+                alias_params: List[Any] = [current]
+                if after:
+                    # 同一秒内的「导出→改名→导入旧备份」也要能解析；
+                    # 快照内已重建的同名档案由调用方按 created_at 拦下
+                    alias_query += " AND renamed_at >= ?"
+                    alias_params.append(after)
+                alias_query += " ORDER BY renamed_at ASC, id ASC"
                 rows = self._conn.execute(
-                    """
-                    SELECT new_name, renamed_at FROM profile_renames
-                     WHERE old_name = ?
-                     ORDER BY renamed_at ASC, id ASC
-                    """,
-                    (current,),
+                    alias_query, tuple(alias_params)
                 ).fetchall()
                 if not rows:
                     break
@@ -6865,6 +6873,13 @@ class SessionStore:
                 if claimable and _auto_followup_moved_copy(candidate):
                     # 自动复诊预约被改挂：原档案补回副本而不是吞掉
                     claimable = False
+                if claimable and _tail_prefers_sibling(
+                    candidate, cross_profile=True
+                ):
+                    # 候选尾字段精确命中同秒同内容另一条备份行：它是
+                    # 那条记录改挂后的存活版本，本行必须按被删记录补插
+                    # （与 step1 同口径，第八十轮）
+                    claimable = False
                 if claimable:
                     # 同一候选行不能再被任何身份组（目标档案的内容配对
                     # 与兜底）重复认领，否则被删的同秒记录会被当成
@@ -6909,6 +6924,9 @@ class SessionStore:
                         )
                         and not _candidate_soft_owned_by_other(candidate)
                         and not _auto_followup_moved_copy(candidate)
+                        and not _tail_prefers_sibling(
+                            candidate, cross_profile=True
+                        )
                     ):
                         # 候选软字段命中同档案另一条同秒备份记录时
                         # 留给那条记录认领，本行按漂移/内容配对
@@ -8288,8 +8306,14 @@ class SessionStore:
         ))
         return [item for _, item in indexed]
 
-    def _remap_import_aliases(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """恢复备份时把已改名档案的旧名称解析到当前名称。"""
+    def _remap_import_aliases(
+        self, data: Dict[str, Any], exported_at: str = ""
+    ) -> Dict[str, Any]:
+        """恢复备份时把已改名档案的旧名称解析到当前名称。
+
+        只跟随快照导出之后发生的改名：快照内已体现的改名不能再改写
+        快照里仍存活的同名档案（可能是改名后重建的另一位成员）。
+        """
         profile_fields = (
             "sessions", "metric_targets", "health_metrics", "symptoms",
             "medications", "medication_logs", "medication_history",
@@ -8298,6 +8322,18 @@ class SessionStore:
             "usage_events",
         )
         cache: Dict[str, str] = {}
+        live_created: Dict[str, str] = {}
+        raw_profiles = data.get("profiles")
+        if isinstance(raw_profiles, list):
+            for item in raw_profiles:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                profile_name = _normalize_profile_name(item.get("name"))
+                created = str(item.get("created_at") or "")[:40]
+                if profile_name and created > live_created.get(
+                    profile_name, ""
+                ):
+                    live_created[profile_name] = created
 
         def mapped(value: Any) -> str:
             name = str(value or "")
@@ -8305,7 +8341,20 @@ class SessionStore:
                 return name
             if name not in cache:
                 try:
-                    cache[name] = self.resolve_profile_alias(name) or name
+                    resolved = self.resolve_profile_alias(
+                        name, after=exported_at
+                    )
+                    if (
+                        exported_at
+                        and resolved != name
+                        and live_created.get(
+                            _normalize_profile_name(name), ""
+                        ) >= exported_at
+                    ):
+                        # 快照内该旧名仍由一位新成员存活（改名后重建）：
+                        # 改名记录已体现在快照里，不能把新成员并过去
+                        resolved = name
+                    cache[name] = resolved or name
                 except Exception:
                     cache[name] = name
             return cache[name]
@@ -8364,9 +8413,10 @@ class SessionStore:
         # 备份自带的 profile_renames 不写入本机改名历史（第七十九轮）：
         # 该表的记录会驱动 resolve_profile_alias，任何可伪造的映射都
         # 能把后续恢复/会话绑定串到其它成员名下（校验和也不覆盖它）。
-        # 恢复改名前的备份时只跟随本机 rename_profile() 产生的真实历史。
-        data = self._remap_import_aliases(data)
+        # 恢复改名前的备份时只跟随本机 rename_profile() 产生的真实
+        # 历史，并且只跟随快照导出之后发生的改名（第八十轮）。
         backup_exported_at = str(data.get("exported_at") or "").strip()[:40]
+        data = self._remap_import_aliases(data, backup_exported_at)
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
@@ -11465,6 +11515,13 @@ class SessionStore:
                     medication_name = " ".join(
                         str(raw.get("medication_name") or "").split()
                     )[:MAX_MEDICATION_NAME_LENGTH]
+                    med_title_hint = ""
+                    if str(raw.get("title") or "").startswith("用药："):
+                        med_title_hint = " ".join(
+                            str(raw.get("title") or "")[
+                                len("用药："):
+                            ].split()
+                        )[:MAX_MEDICATION_NAME_LENGTH]
                     if not medication_id and raw_medication_id > 0:
                         med_row = self._conn.execute(
                             """
@@ -11478,10 +11535,21 @@ class SessionStore:
                             and _normalize_profile_name(med_row["profile"])
                             == profile
                             and (
-                                not medication_name
-                                or str(med_row["name"]) == medication_name
+                                (
+                                    medication_name
+                                    and str(med_row["name"])
+                                    == medication_name
+                                )
+                                or (
+                                    med_title_hint
+                                    and str(med_row["name"])
+                                    == med_title_hint
+                                )
                             )
                         ):
+                            # 必须有点名的药名线索：跨安装同号药物不能
+                            # 被当成备份里的那条，否则删除它会连带
+                            # 删除这条提醒（第八十轮）
                             medication_id = int(med_row["id"])
                     if not medication_id:
                         if medication_name:
@@ -11527,9 +11595,11 @@ class SessionStore:
                         ):
                             vaccination_id = 0
                     if not vaccination_id and raw_vaccination_id > 0:
-                        # CSV 只带疫苗 id：确认同档案后关联到库中已有记录
+                        # CSV 只带疫苗 id：必须有名称或日期线索才关联，
+                        # 跨安装同号疫苗不能被误挂（第八十轮）
                         vac_row = self._conn.execute(
-                            "SELECT id, profile FROM vaccinations WHERE id = ?",
+                            "SELECT id, profile, vaccine_name, next_due"
+                            " FROM vaccinations WHERE id = ?",
                             (raw_vaccination_id,),
                         ).fetchone()
                         if (
@@ -11537,7 +11607,29 @@ class SessionStore:
                             and _normalize_profile_name(vac_row["profile"])
                             == profile
                         ):
-                            vaccination_id = int(vac_row["id"])
+                            vac_name = str(vac_row["vaccine_name"] or "")
+                            reminder_title = str(raw.get("title") or "")
+                            reminder_note = str(raw.get("note") or "")
+                            due_day = str(due_at or "")[:10]
+                            next_due_day = str(
+                                vac_row["next_due"] or ""
+                            )[:10]
+                            clue_ok = bool(
+                                (
+                                    vac_name
+                                    and (
+                                        vac_name in reminder_title
+                                        or vac_name in reminder_note
+                                    )
+                                )
+                                or (
+                                    due_day
+                                    and next_due_day
+                                    and due_day == next_due_day
+                                )
+                            )
+                            if clue_ok:
+                                vaccination_id = int(vac_row["id"])
                     raw_appointment_id = _safe_db_id(
                         raw.get("appointment_id")
                     )
@@ -11623,13 +11715,18 @@ class SessionStore:
                             appointment_id = 0
                     if reminder_dropped:
                         continue
-                    created_at = str(raw.get("created_at") or now)[:40]
-                    updated_at = str(raw.get("updated_at") or created_at)[:40]
-
                     reminder_id = _safe_db_id(raw.get("id"))
                     raw_created = str(
                         raw.get("created_at") or ""
                     ).strip()[:40]
+                    # 落库必须使用与身份匹配相同的去空白时间：带首尾
+                    # 空白的 created_at 原样入库会让重复导入永远查不到
+                    # 旧行，每次再插一条副本（第八十轮）
+                    created_at = raw_created or now
+                    updated_at = (
+                        str(raw.get("updated_at") or "").strip()[:40]
+                        or created_at
+                    )
                     has_created = bool(raw_created)
                     if has_created:
                         # 提醒带创建时间：身份用创建时间、内容用到期日锚定。
@@ -12801,6 +12898,36 @@ class SessionStore:
             self._conn.execute(
                 "DELETE FROM metric_targets WHERE profile = ?", (name,)
             )
+            # 改名历史里的旧姓名同样属于隐私：沿改名链删除相关行，
+            # 避免删除档案后旧姓名仍随导出/备份离开本机（第八十轮）
+            chain_names = {name}
+            frontier = [name]
+            for _ in range(20):
+                if not frontier:
+                    break
+                placeholders = ",".join("?" for _ in frontier)
+                links = self._conn.execute(
+                    "SELECT old_name, new_name FROM profile_renames"
+                    f" WHERE old_name IN ({placeholders})"
+                    f"    OR new_name IN ({placeholders})",
+                    (*frontier, *frontier),
+                ).fetchall()
+                frontier = []
+                for link in links:
+                    for candidate in (
+                        str(link["old_name"] or ""),
+                        str(link["new_name"] or ""),
+                    ):
+                        key = _normalize_profile_name(candidate)
+                        if key and key not in chain_names:
+                            chain_names.add(key)
+                            frontier.append(key)
+            for chain_name in chain_names:
+                self._conn.execute(
+                    "DELETE FROM profile_renames WHERE old_name = ?"
+                    " OR new_name = ?",
+                    (chain_name, chain_name),
+                )
             # 旧会话不再绑定已删除档案：否则继续提问会写回同名命名空间，
             # 重建同名档案后召回已删除患者的病史。打上标记让家庭总览/
             # 报表不再把该成员的会诊算到「未指定」名下
@@ -14133,9 +14260,13 @@ class SessionStore:
                             str(linked_note["note"] or "")
                             if linked_note is not None else ""
                         )
+                        appointment_day = (
+                            str(normalized["scheduled_at"] or "")[:10]
+                            or str(reminder_due)[:10]
+                        )
                         refreshed_note = re.sub(
                             r"^复诊\s*\d{4}-\d{2}-\d{2}",
-                            f"复诊 {str(reminder_due)[:10]}",
+                            f"复诊 {appointment_day}",
                             note_text,
                         )
                         cursor = self._conn.execute(
@@ -14435,6 +14566,58 @@ class SessionStore:
                                     int(appointment_id),
                                 ),
                             )
+            # 已完成预约改期（就诊日期先改、再更正预约日期的顺序）：
+            # 新日期与归属就诊的复诊日期一致时把链接回挂，否则
+            # followup_scheduled 永久为假、逾期提示无法自愈（第八十轮）
+            if (
+                normalized["status"] == "completed"
+                and str(previous["status"] or "") == "completed"
+                and normalized["scheduled_at"]
+                and str(previous["scheduled_at"] or "")
+                != normalized["scheduled_at"]
+            ):
+                completed_visit = self._appointment_owner_visit(
+                    previous["note"],
+                    previous["owner_visit_id"],
+                    normalized["profile"],
+                    normalized["scheduled_at"],
+                    check_date=False,
+                )
+                if completed_visit:
+                    completed_day = str(
+                        normalized["scheduled_at"] or ""
+                    )[:10]
+                    completed_link = self._conn.execute(
+                        "SELECT next_followup_date,"
+                        " followup_appointment_id FROM visit_records"
+                        " WHERE id = ?",
+                        (completed_visit,),
+                    ).fetchone()
+                    completed_linked = (
+                        int(completed_link["followup_appointment_id"] or 0)
+                        if completed_link is not None else 0
+                    )
+                    other_link = self._conn.execute(
+                        "SELECT 1 FROM visit_records"
+                        " WHERE followup_appointment_id = ? AND id != ?"
+                        " LIMIT 1",
+                        (int(appointment_id), completed_visit),
+                    ).fetchone()
+                    if (
+                        completed_link is not None
+                        and completed_day
+                        and str(
+                            completed_link["next_followup_date"] or ""
+                        )[:10] == completed_day
+                        and completed_linked in (0, int(appointment_id))
+                        and other_link is None
+                    ):
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = ?,"
+                            " followup_reminder_id = 0 WHERE id = ?",
+                            (int(appointment_id), completed_visit),
+                        )
             # 自动复诊预约被改期后，把新日期同步回就诊记录：否则就诊
             # 仍显示旧日期，再次“安排复诊”会按旧日期新建第二条预约
             if (
@@ -19166,6 +19349,48 @@ class SessionStore:
                     except sqlite3.Error:
                         pass
             return doomed
+
+    def adopt_orphan_followup_reminder(
+        self,
+        reminder_id: Any,
+        appointment_id: Any,
+        due_at: str,
+        note: str,
+        profile: str,
+    ) -> bool:
+        """把就诊仍链接的脱钩待办接管为指定预约的复诊提醒。
+
+        「仅提醒链接」的导入恢复会留下 appointment_id=0 的待办：
+        再次安排复诊时接管它，不能再建一条同名提醒（第八十轮）。
+        """
+        reminder = _safe_db_id(reminder_id)
+        appointment = _safe_db_id(appointment_id)
+        if not reminder or not appointment:
+            return False
+        due_at = _normalize_reminder_due(due_at)
+        note = " ".join(str(note or "").split())[:MAX_REMINDER_NOTE_LENGTH]
+        now = self._now()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT profile, done, appointment_id FROM reminders"
+                " WHERE id = ?",
+                (int(reminder),),
+            ).fetchone()
+            if (
+                row is None
+                or int(row["done"] or 0)
+                or int(row["appointment_id"] or 0) != 0
+                or _normalize_profile_name(row["profile"] or "")
+                != _normalize_profile_name(profile)
+            ):
+                return False
+            cursor = self._conn.execute(
+                "UPDATE reminders SET appointment_id = ?, due_at = ?,"
+                " note = ?, updated_at = ?"
+                " WHERE id = ? AND done = 0 AND appointment_id = 0",
+                (int(appointment), due_at, note, now, int(reminder)),
+            )
+            return int(cursor.rowcount or 0) > 0
 
     def update_reminder(
         self,

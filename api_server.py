@@ -7145,6 +7145,30 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 # owner 校验失败，端点误报 404「记录不存在」
                 appointment = None
             if appointment and (
+                appointment.get("status") == "completed"
+                and str(appointment.get("scheduled_at") or "")[:10]
+                == followup_date
+                and _normalized_profile_key(
+                    appointment.get("profile") or ""
+                ) == _normalized_profile_key(visit.get("profile") or "")
+            ):
+                # 已完成复诊预约就是这次复诊的历史：再次点击「复诊已
+                # 安排」不能给同一天新建第二条预约（第八十轮）
+                existing_reminder = None
+                linked_reminder_id = int(
+                    visit.get("followup_reminder_id") or 0
+                )
+                if linked_reminder_id:
+                    existing_reminder = store.get_reminder(
+                        linked_reminder_id
+                    )
+                return {
+                    "appointment": appointment,
+                    "appointment_created": False,
+                    "reminder": existing_reminder,
+                    "reminder_created": False,
+                }
+            if appointment and (
                 appointment.get("status") != "upcoming"
                 or str(appointment.get("scheduled_at") or "")[:10]
                 != followup_date
@@ -7295,6 +7319,30 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 )
             except Exception:
                 deleted_marker = ""
+        if reminder is None and not deleted_marker:
+            # 导入恢复的「仅提醒链接」待办（appointment_id=0）：接管它，
+            # 否则会再建一条同名提醒，删就诊后留下幽灵（第八十轮）
+            orphan_id = int(visit.get("followup_reminder_id") or 0)
+            if orphan_id:
+                today = datetime.now().date()
+                orphan_due = max(
+                    followup_day - timedelta(days=1), today
+                )
+                orphan_note = " ".join(
+                    part for part in (
+                        f"复诊 {followup_date}",
+                        visit.get("department") or "",
+                        visit.get("doctor") or "",
+                    ) if part
+                )[:300]
+                if store.adopt_orphan_followup_reminder(
+                    orphan_id,
+                    int(appointment["id"]),
+                    orphan_due.strftime("%Y-%m-%d"),
+                    orphan_note,
+                    profile,
+                ):
+                    reminder = store.get_reminder(orphan_id)
         if reminder is None and deleted_marker:
             # 用户主动删除过该预约的提醒：再次安排复诊不能绕过墓碑
             # 复活（与改期重建的墓碑口径一致），只恢复预约链接
@@ -13080,7 +13128,7 @@ def _family_attention(
         }
     if medication_lab.get("count"):
         return {
-            "level": "warning",
+            "level": str(medication_lab.get("level") or "warning"),
             "label": f"用药安全需核对 {medication_lab['count']} 条",
             "detail": "、".join(
                 str(item.get("title") or "")
@@ -13818,11 +13866,22 @@ async def family_overview(days: int = 7):
             "stock_alerts": [],
             "skipped_week": 0,
             "worst_rate": None,
+            "taken_today_active": 0,
+            "skipped_today_active": 0,
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
         entry["taken_today"] += int(item.get("today_count") or 0)
         entry["skipped_today"] += int(item.get("skipped_today") or 0)
+        if item.get("active"):
+            # 卡片/CSV 的「今日 N 次」与依从率并排展示，只能用在用
+            # 药物的打卡，不能用已停用药物凑数（第八十轮）
+            entry["taken_today_active"] += int(
+                item.get("today_count") or 0
+            )
+            entry["skipped_today_active"] += int(
+                item.get("skipped_today") or 0
+            )
         last_taken = str(item.get("last_taken_at") or "")
         if last_taken > entry["last_taken_at"]:
             entry["last_taken_at"] = last_taken
@@ -14058,12 +14117,18 @@ async def family_overview(days: int = 7):
         ).get("alerts") or []
         combined = base_alerts + lab_safety_alerts + condition_safety_alerts
         if combined:
+            combined_level = "warning" if any(
+                str(alert.get("severity") or "warning") != "info"
+                for alert in combined
+            ) else "info"
             medication_lab_by_profile[profile] = {
                 "count": len(combined),
                 "alerts": combined[:3],
                 "lab_count": len(lab_safety_alerts),
                 "condition_count": len(condition_safety_alerts),
                 "base_count": len(base_alerts),
+                # 与健康提示/用药表单同口径：info 级提示不标成警告
+                "level": combined_level,
             }
 
     conditions_by_profile: Dict[str, Dict[str, Any]] = {}
@@ -14474,9 +14539,12 @@ async def export_family_overview_csv(days: int = 7):
         medication_text = ""
         adherence_text = ""
         if medications.get("active"):
+            active_taken_today = medications.get(
+                "taken_today_active", medications.get("taken_today", 0)
+            )
             medication_text = (
                 f"{medications['active']} 种，"
-                f"今日 {medications.get('taken_today', 0)} 次"
+                f"今日 {active_taken_today} 次"
             )
             skipped_week = int(medications.get("skipped_week") or 0)
             if skipped_week:
@@ -14605,8 +14673,13 @@ async def export_family_overview_csv(days: int = 7):
                 lab_text += "（" + "；".join(names) + "）"
         medication_lab_info = item.get("medication_lab_safety") or {}
         if medication_lab_info.get("count"):
-            lab_text += (
-                f"；用药安全需核对 {int(medication_lab_info['count'])} 条"
+            medication_note = (
+                f"用药安全需核对 {int(medication_lab_info['count'])} 条"
+            )
+            # 没有化验结果时不能留下悬空分隔符，误导为化验异常
+            lab_text = (
+                f"{lab_text}；{medication_note}" if lab_text
+                else medication_note
             )
         critical_info = item.get("critical_alerts") or {}
         critical_text = ""
@@ -18959,6 +19032,16 @@ async def clear_session(session_id: str):
             ["session.tags"], session_id, "tags=redacted",
             "tags=redacted",
         )
+        try:
+            # 旧版批量标签审计把标签原文写在 detail 里且没有单条
+            # target：单条删除同样整体擦除，与批量删除/维护清理一致
+            await asyncio.to_thread(
+                store.redact_audit_targets,
+                ["session.bulk_tags"], "", "tags=redacted",
+                "tags=redacted", True,
+            )
+        except Exception as e:
+            logger.warning(f"清理批量标签审计失败: {e}")
         await record_audit("session.delete", session_id)
     return {"ok": True, "session_id": session_id}
 

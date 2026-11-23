@@ -403,19 +403,18 @@ def test_completed_appointment_not_reused_by_schedule_followup(store):
 
     again = _schedule_followup_sync(store, visit["id"])
 
-    # 已完成的预约不能被复用并挂上新的待办提醒
-    assert again["appointment_created"] is True
-    assert again["appointment"]["id"] != first["appointment"]["id"]
-    assert again["appointment"]["status"] == "upcoming"
+    # 已完成且与当前复诊日一致的预约就是已安排的历史：重复点击不能
+    # 新建同日第二条预约与待办提醒（第八十轮；与第七十九轮的链接
+    # 回挂配套，用户改复诊日期后才能安排下一轮）
+    assert again["appointment_created"] is False
+    assert again["appointment"]["id"] == first["appointment"]["id"]
+    assert again["appointment"]["status"] == "completed"
     upcoming = [
         item for item in store.list_appointments(limit=100)
         if item["status"] == "upcoming"
     ]
-    assert len(upcoming) == 1
-    assert all(
-        item["appointment_id"] != first["appointment"]["id"]
-        for item in store.list_reminders(False, "妈妈")
-    )
+    assert upcoming == []
+    assert store.list_reminders(False, "妈妈") == []
 
 
 def test_restore_cancelled_appointment_after_date_change(store):
