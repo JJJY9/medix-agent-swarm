@@ -1813,6 +1813,30 @@ auth_failure_limiter_loopback = SlidingWindowLimiter(100, window=300)
 #: 数百个独立桶与独立闸门）：再加一道不按前缀分桶的全局预算，
 #: 把在线猜解总数压回设计量级
 auth_failure_limiter_ipv6_global = SlidingWindowLimiter(60, window=300)
+#: 单个来源最多向 IPv6 全局预算贡献的失败数：一个 /64（或 ::1）
+#: 打满自己的份额后不再累计，不能独占整份预算锁死其它 IPv6
+#: 客户端的正确令牌；多源轮换仍受全局 60 次/5 分钟约束（第七十九轮）。
+#: 计数挂在全局限量器实例上：测试替换全局限量器时单源额度同样重置，
+#: 不会因模块级状态跨用例累计而改变计数
+_AUTH_IPV6_SOURCE_BUDGET_LIMIT = 10
+
+
+def _ipv6_source_budget_limiter(global_limiter=None):
+    limiter_obj = (
+        global_limiter
+        if global_limiter is not None
+        else auth_failure_limiter_ipv6_global
+    )
+    budget = getattr(limiter_obj, "_ipv6_source_budget", None)
+    if budget is None:
+        budget = SlidingWindowLimiter(
+            _AUTH_IPV6_SOURCE_BUDGET_LIMIT, window=300
+        )
+        try:
+            limiter_obj._ipv6_source_budget = budget
+        except AttributeError:
+            pass
+    return budget
 #: 无法证明客户端地址时的令牌比较闸门：同一键用互斥锁真正串行，
 #: 并发请求不能并行比较令牌；排队过深直接拒绝，避免锁被当 DoS 放大器
 _AUTH_COMPARE_GATE_SECONDS = 0.2
@@ -2166,7 +2190,10 @@ def _auth_global_budget_retry(request: Request) -> float:
     比较前再查一次（同一任务内无 await，检查与比较原子），把并发
     放大压回预算上限。
     """
-    if not _is_ipv6_source_key(_budget_source_key(request)):
+    if not (
+        _is_ipv6_source_key(_budget_source_key(request))
+        or _forwarded_address_unprovable(request)
+    ):
         return 0.0
     blocked, retry = auth_failure_limiter_ipv6_global.is_blocked("ipv6")
     return retry if blocked else 0.0
@@ -2198,18 +2225,45 @@ def add_security_headers(
     return response
 
 
+def _forwarded_address_unprovable(request: Request) -> bool:
+    """受信代理解析出的地址是否来自客户端可影响的更左转发项。
+
+    只有代理自己追加的最右地址才可证明归属；多级本机代理/L4 隧道
+    下解析到的是客户端自带的左项，可逐请求轮换（第七十九轮）。
+    """
+    peer = request.client.host if request.client else ""
+    return bool(
+        _trust_proxy_headers()
+        and _is_trusted_proxy_peer(peer)
+        and _forwarded_client_address(request)
+        and not _forwarded_appended_address(request)
+    )
+
+
+def _provable_client_key(request: Request) -> str:
+    """限流分桶用的可证明来源键。
+
+    地址不可证明时轮换它不能获得新的限流额度：退回可证明的 TCP
+    对端桶（第七十九轮）。
+    """
+    if _forwarded_address_unprovable(request):
+        peer = request.client.host if request.client else ""
+        return f"ip:{_bucket_address(peer or 'unknown')}"
+    return _client_ip_key(request)
+
+
 def _rate_limit_key(request: Request) -> str:
     """优先按访问令牌限流；匿名请求按可信客户端地址限流。"""
     token = request_token(request) if get_access_token() else None
     if token:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
         # 部署只有一个全局令牌：只按令牌分键会让全家共享同一份
-        # 额度；错误令牌在鉴权阶段已被拒绝，附加客户端地址不会被
-        # 用来轮换额度
-        return f"token:{digest}:{_client_ip_key(request)}"
+        # 额度；错误令牌在鉴权阶段已被拒绝，附加可证明的客户端
+        # 地址不会被用来轮换额度
+        return f"token:{digest}:{_provable_client_key(request)}"
     # 与令牌失败限流同源：只有显式信任代理头且对端是本机代理时
     # 才按转发地址分桶，避免代理后全家共用 127.0.0.1 的桶
-    return _client_ip_key(request)
+    return _provable_client_key(request)
 
 
 _PROXY_HEADER_NAMES = ("x-forwarded-for", "forwarded", "x-real-ip")
@@ -3340,7 +3394,10 @@ async def require_access_token(request: Request, call_next):
             # 按已解析的真实客户端地址计；地址不可解析时只保留总
             # 队列上限，攻击者占满自己的槽位不能把全家挡在 429
             if not known_token:
-                if _is_ipv6_source_key(_budget_source_key(request)):
+                if (
+                    _is_ipv6_source_key(_budget_source_key(request))
+                    or _forwarded_address_unprovable(request)
+                ):
                     # 闸门分支同样受「不按前缀分桶」的 IPv6 全局失败
                     # 预算约束：多级/多元素代理头下轮换 /64 不能靠每次
                     # 新桶绕过硬上限；正确令牌仍直通
@@ -3572,11 +3629,22 @@ async def require_access_token(request: Request, call_next):
                     allowed, retry_after = True, 0.0
                 else:
                     allowed, retry_after = limiter.check(limiter_key)
-                if _is_ipv6_source_key(budget_key):
+                if (
+                    _is_ipv6_source_key(budget_key)
+                    or _forwarded_address_unprovable(request)
+                ):
                     # 跨 /64 轮换源地址：全局预算同样计数，超过后
                     # 整段 IPv6 比较被限速，而不是每 /64 各有一份额度；
-                    # NAT64 单地址桶同样计入，否则轮换映射地址放大猜解
-                    auth_failure_limiter_ipv6_global.check("ipv6")
+                    # NAT64 单地址桶同样计入，否则轮换映射地址放大猜解。
+                    # 单源贡献上限：同一 /64 最多消耗 10 次，不能一家
+                    # 打满整份预算（第七十九轮）
+                    source_budget_ok, _source_retry = (
+                        _ipv6_source_budget_limiter().check(
+                            f"ipv6-src:{budget_key}"
+                        )
+                    )
+                    if source_budget_ok:
+                        auth_failure_limiter_ipv6_global.check("ipv6")
                 if not allowed:
                     return add_security_headers(JSONResponse(
                         status_code=429,
@@ -5446,9 +5514,12 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
             labs_by.get(name, []),
             conditions_by.get(name, []),
         )
-        if member_safety.get("level") != "warning":
+        # info 级告警（如头孢类与酒精）同样属于需要用户核对的
+        # 用药安全提示，不能因为级别被静默丢弃（第七十九轮）
+        member_alerts = member_safety.get("alerts") or []
+        if not member_alerts:
             continue
-        for alert in member_safety.get("alerts") or []:
+        for alert in member_alerts:
             family_alerts.append({
                 **alert,
                 "title": (
@@ -5462,8 +5533,12 @@ async def _family_medication_safety(store: Any) -> Optional[Dict[str, Any]]:
     for alert in family_alerts:
         source_key = str(alert.get("source") or "base")
         by_source[source_key] = by_source.get(source_key, 0) + 1
+    overall_level = "warning" if any(
+        str(alert.get("severity") or "warning") != "info"
+        for alert in family_alerts
+    ) else "info"
     return {
-        "level": "warning",
+        "level": overall_level,
         "alerts": family_alerts[:5],
         # 展示只截前 5 条，但总数与来源计数必须是全部成员的告警
         "count": len(family_alerts),
@@ -9327,11 +9402,7 @@ def _build_health_insights(
             "metric",
         ))
 
-    if (
-        safety
-        and safety.get("level") == "warning"
-        and safety.get("alerts")
-    ):
+    if safety and safety.get("alerts"):
         alerts = safety.get("alerts") or []
         total_alerts = int(safety.get("count") or len(alerts))
         source_labels = (
@@ -9361,7 +9432,7 @@ def _build_health_insights(
         )
         insights.append(_health_insight(
             "medication_safety",
-            "warning",
+            "warning" if safety.get("level") == "warning" else "info",
             f"在用药物存在 {total_alerts} 条安全提示",
             (summary + (f"；{titles}" if titles else ""))[:200],
             "请让医生或药师确认后再调整用药。",

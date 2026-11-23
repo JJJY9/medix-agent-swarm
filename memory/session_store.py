@@ -5480,7 +5480,8 @@ class SessionStore:
                 placeholders = ",".join("?" for _ in claimed)
                 try:
                     size_rows = self._conn.execute(
-                        f"SELECT id, profile, created_at FROM {table}"
+                        f"SELECT id, profile, created_at, updated_at"
+                        f" FROM {table}"
                         f" WHERE id IN ({placeholders})",
                         tuple(claimed),
                     ).fetchall()
@@ -5506,6 +5507,55 @@ class SessionStore:
                         # 同源备份中从其它档案改挂进来的行：它对应的
                         # 备份记录属于原档案，不能把当前档案的缺行抵消
                         continue
+                    if (
+                        backup_contents
+                        and backup_profiles
+                        and content_columns
+                        and str(row["updated_at"] or "")
+                        != str(row["created_at"] or "")
+                    ):
+                        try:
+                            fp_row = self._conn.execute(
+                                f"SELECT {', '.join(content_columns)}"
+                                f" FROM {table} WHERE id = ?",
+                                (row_id,),
+                            ).fetchone()
+                        except sqlite3.Error:
+                            fp_row = None
+                        if fp_row is not None:
+                            fingerprint = self._db_content_fingerprint(
+                                fp_row, content_columns
+                            )
+                            created_key = str(
+                                row["created_at"] or ""
+                            )[:40]
+                            moved_copy = False
+                            twin_of_reference = False
+                            for other_id, other_contents in (
+                                backup_contents.items()
+                            ):
+                                if other_contents != fingerprint:
+                                    continue
+                                if (
+                                    backup_created
+                                    and backup_created.get(other_id)
+                                    != created_key
+                                ):
+                                    continue
+                                other_profile = _normalize_profile_name(
+                                    backup_profiles.get(other_id) or ""
+                                )
+                                if not other_profile:
+                                    continue
+                                if other_profile == reference_profile:
+                                    # 内容也精确等于本档案的备份行：
+                                    # 可能是本档案同内容的另一条记录，
+                                    # 不能据此判定为改挂行
+                                    twin_of_reference = True
+                                    break
+                                moved_copy = True
+                            if moved_copy and not twin_of_reference:
+                                continue
                     local_group_size += 1
             else:
                 local_group_size = len(claimed)
@@ -8311,67 +8361,11 @@ class SessionStore:
         # 用于解析旧备份里的档案名。快照内已经体现的改名，其旧名字
         # 可能已被新主人复用（改名后又重建同名档案），不能再把快照
         # 里存活的同名档案改写到改名目标名下
-        raw_renames = data.get("profile_renames")
-        now_stamp = str(self._now())[:40]
-        rename_rows = []
-        if isinstance(raw_renames, list):
-            for raw_rename in raw_renames[:100000]:
-                if not isinstance(raw_rename, dict):
-                    continue
-                old_name = _normalize_profile_name(
-                    raw_rename.get("old_name")
-                )
-                new_name = _normalize_profile_name(
-                    raw_rename.get("new_name")
-                )
-                if not old_name or not new_name or old_name == new_name:
-                    continue
-                renamed_at = str(
-                    raw_rename.get("renamed_at") or now_stamp
-                )[:40]
-                if renamed_at > now_stamp:
-                    # 真实快照不可能包含未来时刻的改名：拒绝伪造/时钟
-                    # 错乱的时间戳，避免永久改写后续恢复的档案归属
-                    continue
-                rename_rows.append((old_name, new_name, renamed_at))
-
-        def _store_renames(rows) -> None:
-            if not rows:
-                return
-            with self._lock, self._conn:
-                for old_name, new_name, renamed_at in rows:
-                    exists = self._conn.execute(
-                        "SELECT 1 FROM profile_renames"
-                        " WHERE old_name = ? AND new_name = ?",
-                        (old_name, new_name),
-                    ).fetchone()
-                    if exists:
-                        continue
-                    self._conn.execute(
-                        "INSERT INTO profile_renames("
-                        "profile_hash, old_name, new_name, renamed_at)"
-                        " VALUES (?, ?, ?, ?)",
-                        (
-                            _profile_deletion_key(old_name),
-                            old_name,
-                            new_name,
-                            renamed_at,
-                        ),
-                    )
-
-        exported_at = str(data.get("exported_at") or "").strip()[:40]
-        # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
-        # 作为另一个档案重新插入（校验在改写前完成）。只看本机已有的
-        # 真实改名历史；备份自带的改名表在 remap 之后才作为历史落库，
-        # 不能反过来改写本次数据的档案归属（第七十八轮：伪造
-        # profile_renames 曾可让后续恢复的旧备份串到其它成员名下）
+        # 备份自带的 profile_renames 不写入本机改名历史（第七十九轮）：
+        # 该表的记录会驱动 resolve_profile_alias，任何可伪造的映射都
+        # 能把后续恢复/会话绑定串到其它成员名下（校验和也不覆盖它）。
+        # 恢复改名前的备份时只跟随本机 rename_profile() 产生的真实历史。
         data = self._remap_import_aliases(data)
-        # 快照内已体现的改名在 remap 之后落库：只保留历史，不再
-        # 改写本次快照的数据；导出时间之后的改名不属于该快照，丢弃
-        _store_renames([
-            row for row in rename_rows
-            if not exported_at or row[2] <= exported_at
-        ])
         backup_exported_at = str(data.get("exported_at") or "").strip()[:40]
 
         raw_sessions = data.get("sessions")
@@ -10849,7 +10843,10 @@ class SessionStore:
                             normalized["diagnosis"], normalized["advice"],
                             normalized["prescription"],
                             normalized["next_followup_date"],
-                            mapped_followup_appointment_id,
+                            # 预约链接先留空：由 visit_link_updates 校验
+                            # 通过后统一写回，未校验的临时链接会把共享
+                            # 预约误判为“已被另一条就诊占用”（第七十九轮）
+                            0,
                             0,
                             normalized["note"],
                             created_key or now,
@@ -16131,6 +16128,43 @@ class SessionStore:
                         """,
                         (int(visit_id),),
                     )
+                # 已完成（completed）自动预约是就诊历史：改回复诊日期
+                # 或把日期更正为已完成预约的计划日时链接同样回挂，
+                # 否则 followup_scheduled 永久为假、逾期提示无法自愈
+                new_followup_date = str(
+                    normalized["next_followup_date"] or ""
+                )[:10]
+                current_link = self._conn.execute(
+                    "SELECT followup_appointment_id FROM visit_records"
+                    " WHERE id = ?",
+                    (int(visit_id),),
+                ).fetchone()
+                if new_followup_date and (
+                    current_link is None
+                    or int(current_link["followup_appointment_id"] or 0) == 0
+                ):
+                    restored = self._conn.execute(
+                        "SELECT id FROM appointments"
+                        " WHERE status = 'completed'"
+                        "   AND substr(scheduled_at, 1, 10) = ?"
+                        "   AND (owner_visit_id = ? OR note LIKE ?)"
+                        "   AND id NOT IN (SELECT followup_appointment_id"
+                        "     FROM visit_records"
+                        "     WHERE followup_appointment_id != 0"
+                        "       AND id != ?)"
+                        " ORDER BY id LIMIT 1",
+                        (
+                            new_followup_date, int(visit_id),
+                            f"%{marker_text}%", int(visit_id),
+                        ),
+                    ).fetchone()
+                    if restored is not None:
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_appointment_id = ?,"
+                            " followup_reminder_id = 0 WHERE id = ?",
+                            (int(restored["id"]), int(visit_id)),
+                        )
         return self.get_visit_record(visit_id)
 
     def adopt_visit_appointment(
