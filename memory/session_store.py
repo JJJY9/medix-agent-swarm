@@ -5474,17 +5474,33 @@ class SessionStore:
                 placeholders = ",".join("?" for _ in claimed)
                 try:
                     size_rows = self._conn.execute(
-                        f"SELECT profile FROM {table}"
+                        f"SELECT id, profile, created_at FROM {table}"
                         f" WHERE id IN ({placeholders})",
                         tuple(claimed),
                     ).fetchall()
                 except sqlite3.Error:
                     size_rows = []
-                local_group_size = sum(
-                    1 for row in size_rows
-                    if _normalize_profile_name(row["profile"] or "")
-                    == scope_profile
-                )
+                local_group_size = 0
+                for row in size_rows:
+                    if _normalize_profile_name(
+                        row["profile"] or ""
+                    ) != scope_profile:
+                        continue
+                    row_id = int(row["id"])
+                    if (
+                        backup_profiles
+                        and backup_created
+                        and row_id in backup_profiles
+                        and str(row["created_at"] or "")[:40]
+                        == str(backup_created.get(row_id) or "")
+                        and _normalize_profile_name(
+                            backup_profiles.get(row_id) or ""
+                        ) != scope_profile
+                    ):
+                        # 同源备份中从其它档案改挂进来的行：它对应的
+                        # 备份记录属于原档案，不能把当前档案的缺行抵消
+                        continue
+                    local_group_size += 1
             else:
                 local_group_size = len(claimed)
             state[local_size_key] = local_group_size
@@ -5548,6 +5564,24 @@ class SessionStore:
                 _normalize_profile_name(other_profile)
                 != _normalize_profile_name(current_profile)
             )
+
+        def _candidate_owns_unprocessed_backup_row(candidate: int) -> bool:
+            """候选是否其实是另一条尚未处理的同源备份行的存活版本。
+
+            同源库中本地 id 与备份主键一一对应：候选主键命中另一条
+            尚未处理的备份行时，它可能是那条记录（改挂/改名后）的
+            存活版本，不能先被当前行认领，否则那条记录只能补插旧副本。
+            """
+            if (
+                not backup_ids
+                or raw_id <= 0
+                or candidate == raw_id
+                or candidate not in backup_ids
+                or candidate in seen_raw_ids
+                or not _same_backup_origin()
+            ):
+                return False
+            return True
 
         def _content_owned_by_other(candidate: int) -> bool:
             """候选内容是否精确等于备份里另一条记录（而非当前行）。
@@ -6092,6 +6126,13 @@ class SessionStore:
                     and backup_created.get(other_id) != created_key
                 ):
                     continue
+                if scope_profile and backup_profiles:
+                    other_profile = _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    )
+                    if other_profile and other_profile != scope_profile:
+                        # 另一成员的同秒记录不参与本档案的孪生归属
+                        continue
                 if local == expected:
                     continue
                 if _sibling_resolved(expected, other_id):
@@ -7901,6 +7942,23 @@ class SessionStore:
         sole = min(candidates)
         if _candidate_foreign_backup_row(sole):
             return _ambiguous()
+        if (
+            _candidate_owns_unprocessed_backup_row(sole)
+            and not _candidate_content_matches_backup(sole)
+        ):
+            # 候选主键对应另一条尚未处理的备份行（改挂/改名后的存活
+            # 版本）：本行按被删记录补插，把候选留给那条记录
+            return _ambiguous()
+        if (
+            _content_rows_missing_for_orphan()
+            and not _candidate_content_matches_backup(sole)
+            and _candidate_foreign_backup_row(sole)
+        ):
+            # 组内仍有备份内容缺失、候选内容不属于本行，且候选原始
+            # 主键指向另一成员的备份行：它是改挂过来的存活版本，
+            # 本行按被删记录补插（宁重复勿丢）。同档案的改名/改剂量
+            # 仍按本行存活版本认领。
+            return _ambiguous()
         return _claim(sole)
 
     @staticmethod
@@ -8230,22 +8288,35 @@ class SessionStore:
                     "备份校验失败，文件可能已损坏或被修改。"
                 )
 
-        # 备份携带的档案改名映射先落库：迁移到新设备后导入改名前的
-        # 旧备份时，旧档案名要能解析到新名称而不是拆成两个档案
+        # 备份携带的档案改名映射：只有「快照导出之后」发生的改名才能
+        # 用于解析旧备份里的档案名。快照内已经体现的改名，其旧名字
+        # 可能已被新主人复用（改名后又重建同名档案），不能再把快照
+        # 里存活的同名档案改写到改名目标名下
         raw_renames = data.get("profile_renames")
+        rename_rows = []
         if isinstance(raw_renames, list):
+            for raw_rename in raw_renames[:100000]:
+                if not isinstance(raw_rename, dict):
+                    continue
+                old_name = _normalize_profile_name(
+                    raw_rename.get("old_name")
+                )
+                new_name = _normalize_profile_name(
+                    raw_rename.get("new_name")
+                )
+                if not old_name or not new_name or old_name == new_name:
+                    continue
+                rename_rows.append((
+                    old_name,
+                    new_name,
+                    str(raw_rename.get("renamed_at") or self._now())[:40],
+                ))
+
+        def _store_renames(rows) -> None:
+            if not rows:
+                return
             with self._lock, self._conn:
-                for raw_rename in raw_renames[:100000]:
-                    if not isinstance(raw_rename, dict):
-                        continue
-                    old_name = _normalize_profile_name(
-                        raw_rename.get("old_name")
-                    )
-                    new_name = _normalize_profile_name(
-                        raw_rename.get("new_name")
-                    )
-                    if not old_name or not new_name or old_name == new_name:
-                        continue
+                for old_name, new_name, renamed_at in rows:
                     exists = self._conn.execute(
                         "SELECT 1 FROM profile_renames"
                         " WHERE old_name = ? AND new_name = ?",
@@ -8261,15 +8332,24 @@ class SessionStore:
                             _profile_deletion_key(old_name),
                             old_name,
                             new_name,
-                            str(
-                                raw_rename.get("renamed_at")
-                                or self._now()
-                            )[:40],
+                            renamed_at,
                         ),
                     )
+
+        exported_at = str(data.get("exported_at") or "").strip()[:40]
+        if exported_at:
+            _store_renames([
+                row for row in rename_rows if row[2] > exported_at
+            ])
         # 恢复改名前的备份：把旧档案名解析到当前名称，避免整套数据
         # 作为另一个档案重新插入（校验在改写前完成）
         data = self._remap_import_aliases(data)
+        # 快照内已体现的改名在 remap 之后落库：只保留历史，不再
+        # 改写本次快照的数据
+        _store_renames([
+            row for row in rename_rows
+            if not exported_at or row[2] <= exported_at
+        ])
         backup_exported_at = str(data.get("exported_at") or "").strip()[:40]
 
         raw_sessions = data.get("sessions")
@@ -9267,8 +9347,12 @@ class SessionStore:
                                 profile, name, dose, frequency, note, active,
                                 stock, stock_unit, low_stock_threshold,
                                 expiry_date, started_at, stopped_at,
-                                stop_reason, created_at, updated_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                stop_reason, resumed_at, created_at,
+                                updated_at
+                            ) VALUES (
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?
+                            )
                             """,
                             (
                                 normalized["profile"], normalized["name"],
@@ -9281,6 +9365,7 @@ class SessionStore:
                                 normalized["started_at"],
                                 normalized["stopped_at"],
                                 normalized["stop_reason"],
+                                str(raw.get("resumed_at") or "")[:40],
                                 created_at, updated_at,
                             ),
                         )
@@ -11468,32 +11553,35 @@ class SessionStore:
                             # CSV 只带原始预约 ID（跨安装/ID 复用）：必须
                             # 有日期或标题线索与预约一致才挂接，否则
                             # 取消/删除同号无关预约会静默删除这条提醒
-                            hint_ok = False
-                            raw_due = str(raw.get("due_at") or "")[:10]
-                            appt_day = str(
-                                appt_row["scheduled_at"] or ""
-                            )[:10]
-                            if raw_due and appt_day:
-                                try:
-                                    hint_ok = abs((
-                                        datetime.fromisoformat(raw_due)
-                                        - datetime.fromisoformat(appt_day)
-                                    ).days) <= 2
-                                except ValueError:
-                                    hint_ok = False
                             reminder_title = str(raw.get("title") or "")
                             reminder_note = str(raw.get("note") or "")
                             appt_title = str(appt_row["title"] or "")
-                            if not hint_ok and appt_title:
-                                # 只接受完全相等的标题：子串命中的通用词
-                                # （「复诊」）会把提醒挂到无关同号预约，
-                                # 取消该预约时会静默删除这条提醒
-                                hint_ok = bool(
-                                    reminder_title.strip()
-                                    == appt_title.strip()
-                                    or reminder_note.strip()
-                                    == appt_title.strip()
+                            appt_day = str(
+                                appt_row["scheduled_at"] or ""
+                            )[:10]
+                            # 强线索：标题/备注与预约标题完全相等，或备注
+                            # 里的「复诊 YYYY-MM-DD」与预约日精确一致。
+                            # 只凭到期日接近会把提醒挂到同号无关预约
+                            note_day = re.search(
+                                r"复诊\s*(\d{4}-\d{2}-\d{2})",
+                                reminder_note,
+                            )
+                            hint_ok = bool(
+                                (
+                                    appt_title
+                                    and (
+                                        reminder_title.strip()
+                                        == appt_title.strip()
+                                        or reminder_note.strip()
+                                        == appt_title.strip()
+                                    )
                                 )
+                                or (
+                                    note_day
+                                    and appt_day
+                                    and note_day.group(1) == appt_day
+                                )
+                            )
                             if hint_ok:
                                 appointment_id = int(appt_row["id"])
                     done = 1 if raw.get("done") in (1, True, "1") else 0
@@ -11582,15 +11670,23 @@ class SessionStore:
                         # 两条合法提醒，不能合并）。done 不参与身份：
                         # 本地完成后重导入同一备份时同一条提醒已在库，
                         # 否则会把旧待办无限复制出来（第七十三轮审查）
-                        identity_key = (
+                        base_identity = (
                             title, profile, note, session_id, due_at,
                             advance_days, repeat_days, repeat_until,
                             appointment_id, medication_id,
                             vaccination_id,
                         )
+                        # 预约 ID 无法映射时 appointment_id 归 0：同一文件
+                        # 里原本挂不同预约的两条提醒会变成完全相同。
+                        # 用原始 ID 区分文件内出现次数，库内仍按 0 计数
+                        occurrence_extra = (
+                            0 if appointment_id else int(raw_appointment_id)
+                        )
+                        identity_key = base_identity + (occurrence_extra,)
+                        base_for_count = base_identity
                         if done:
                             if (
-                                identity_key
+                                base_for_count
                                 not in existing_reminder_done_counts
                             ):
                                 done_row = self._conn.execute(
@@ -11614,9 +11710,9 @@ class SessionStore:
                                     ),
                                 ).fetchone()
                                 existing_reminder_done_counts[
-                                    identity_key
+                                    base_for_count
                                 ] = int(done_row["total"] if done_row else 0)
-                        elif identity_key not in existing_reminder_counts:
+                        elif base_for_count not in existing_reminder_counts:
                             count_row = self._conn.execute(
                                 """
                                 SELECT COUNT(*) AS total FROM reminders
@@ -11636,7 +11732,7 @@ class SessionStore:
                                     medication_id, vaccination_id,
                                 ),
                             ).fetchone()
-                            existing_reminder_counts[identity_key] = int(
+                            existing_reminder_counts[base_for_count] = int(
                                 count_row["total"] if count_row else 0
                             )
                         # 文件内重复只按「身份+完成状态」去重：同一
@@ -11649,10 +11745,10 @@ class SessionStore:
                         )
                         known = (
                             existing_reminder_done_counts.get(
-                                identity_key, 0
+                                base_for_count, 0
                             )
                             if done
-                            else existing_reminder_counts[identity_key]
+                            else existing_reminder_counts[base_for_count]
                         )
                         # 同一文件内的重复行只导入一次；库中已有同身份
                         # 提醒（任何完成状态都算）时整组跳过，避免把
@@ -11968,13 +12064,42 @@ class SessionStore:
                             in imported_reminder_ids
                         ):
                             # 只删除本次导入新插入的提醒：映射可能命中
-                            # 导入前已存在的待办，不能误删用户在用提醒
-                            self._conn.execute(
-                                "DELETE FROM reminders WHERE id = ?"
-                                " AND done = 0",
-                                (int(followup_reminder_id),),
+                            # 导入前已存在的待办，不能误删用户在用提醒。
+                            # 旧版备份允许一条待办被多条就诊共享：仍有
+                            # 其它就诊引用时必须保留，留给最后一条就诊
+                            # 继续持有链接
+                            shared_ref = self._conn.execute(
+                                "SELECT 1 FROM visit_records"
+                                " WHERE followup_reminder_id = ?"
+                                " AND id != ? LIMIT 1",
+                                (
+                                    int(followup_reminder_id),
+                                    int(visit_id),
+                                ),
+                            ).fetchone()
+                            raw_reminder_ref = _safe_db_id(
+                                raw.get("id")
                             )
-                            followup_reminder_id = 0
+                            shared_in_backup = bool(
+                                raw_reminder_ref
+                                and sum(
+                                    1
+                                    for other_visit in raw_visit_records
+                                    if isinstance(other_visit, dict)
+                                    and _safe_db_id(
+                                        other_visit.get(
+                                            "followup_reminder_id"
+                                        )
+                                    ) == raw_reminder_ref
+                                ) > 1
+                            )
+                            if shared_ref is None and not shared_in_backup:
+                                self._conn.execute(
+                                    "DELETE FROM reminders WHERE id = ?"
+                                    " AND done = 0",
+                                    (int(followup_reminder_id),),
+                                )
+                                followup_reminder_id = 0
                         else:
                             followup_reminder_id = 0
                         self._conn.execute(
@@ -17032,6 +17157,10 @@ class SessionStore:
             )
             if normalized is None:
                 return None
+            # 普通编辑沿用重启标记：只有 停用→启用 才重新写入
+            normalized["resumed_at"] = str(
+                previous["resumed_at"] or ""
+            )
             if (
                 bool(int(normalized["active"] or 0))
                 and not int(previous["active"] or 0)

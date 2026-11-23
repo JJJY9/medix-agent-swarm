@@ -234,6 +234,9 @@ class RenameSessionRequest(StrictRequestModel):
 
 class ImportSessionsRequest(StrictRequestModel):
     version: Optional[int] = None
+    exported_at: Optional[str] = None
+    session_count: Optional[int] = None
+    profile_renames: Optional[List[Dict[str, Any]]] = None
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
     profiles: Optional[List[Dict[str, Any]]] = None
     health_metrics: Optional[List[Dict[str, Any]]] = None
@@ -1402,7 +1405,12 @@ _RISK_TAG_PATTERN = re.compile(
 _RISK_KEYWORD_PATTERNS = (
     (
         "high",
-        re.compile(r"高风险(?!人群|因素)|高度风险(?!人群|因素)|高危(?!人群|因素)"),
+        re.compile(
+            r"高风险(?!人群|因素)"
+            r"|高度风险(?!人群|因素)"
+            r"|高危(?!人群|因素|型|妊娠|儿|药品|操作|筛查|病变|HPV|hpv"
+            r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿)"
+        ),
     ),
     (
         "medium",
@@ -1468,6 +1476,9 @@ def parse_risk_level(text: Any) -> str:
     tagged = _RISK_TAG_PATTERN.search(content)
     if tagged:
         return _RISK_TAG_LEVELS.get(tagged.group(1), "")
+    # 「风险等级：**不确定**」：markdown 粗体不能绕过不确定判定
+    if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
+        return ""
     for level, pattern in _RISK_KEYWORD_PATTERNS:
         for match in pattern.finditer(content):
             prefix = content[max(0, match.start() - 12):match.start()]
@@ -3047,14 +3058,11 @@ async def require_access_token(request: Request, call_next):
             f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
         untrusted_forwarded = bool(
-            (
-                not _trust_proxy_headers()
-                # 开启了信任但 TCP 对端不在 MEDIX_TRUSTED_PROXY_ADDRS：
-                # 地址头同样不可信。按共享桶 fail-closed，不能把整个
-                # 代理对端地址当成单个客户端硬预锁定（10 次错误令牌
-                # 就会让经该代理的所有正确令牌用户 429）
-                or not _is_trusted_proxy_peer(peer_host)
-            )
+            # 只有「开启受信代理、但对端不在白名单」才可能代表反代后的
+            # 共享来源；完全未开启代理时地址头只是客户端伪造的噪音，
+            # 不能借此跳过硬预锁定（否则猜错令牌的速率被抬高百倍）
+            _trust_proxy_headers()
+            and not _is_trusted_proxy_peer(peer_host)
             and any(
                 _proxy_header_values(request, name)
                 for name in ("x-forwarded-for", "forwarded", "x-real-ip")
@@ -3128,6 +3136,16 @@ async def require_access_token(request: Request, call_next):
             and not forwarded_resolved
         ):
             prelock_key = _client_ip_key(request)
+            if (
+                _has_proxy_headers(request)
+                and not (
+                    _trust_proxy_headers()
+                    and _is_trusted_proxy_peer(peer_host)
+                )
+            ):
+                # 未受信代理时地址头不可证明：预锁定按真实 TCP 对端计，
+                # 不能用全局哨兵键把所有人锁在同一个桶里
+                prelock_key = f"ip:{_bucket_address(peer_host or 'unknown')}"
             if _is_ipv6_aggregate_key(prelock_key):
                 # IPv6 /64 常由同一家庭/局域网共享：聚合桶不做硬
                 # 预锁定（否则一人输错令牌全家正确令牌也 429），
@@ -3455,6 +3473,15 @@ async def require_access_token(request: Request, call_next):
                     else auth_failure_limiter
                 )
                 limiter_key = _client_ip_key(request)
+                if (
+                    _has_proxy_headers(request)
+                    and not trusted_proxy_request
+                ):
+                    # 地址头不可信：失败按真实 TCP 对端计数，避免所有
+                    # 带头的客户端共用 ip:untrusted-proxy 哨兵桶
+                    limiter_key = (
+                        f"ip:{_bucket_address(peer_host or 'unknown')}"
+                    )
                 # IPv6 全局失败预算按解析出的来源地址计：即使失败计数
                 # 落进 spoof/共享桶，轮换 /64 的在线猜解也不能绕过它
                 budget_key = _budget_source_key(request)
@@ -8614,14 +8641,15 @@ async def _weekly_report_impl(
     # 只有重新启用过的药物才需要剔除停用区间的旧打卡；
     # 普通药物允许补录早于开始日期的打卡
     med_start_by_id = {
-        item["id"]: str(item.get("resumed_at") or "")[:10]
+        item["id"]: str(item.get("resumed_at") or "")[:40]
         for item in medications
     }
     doses_by_medication: dict = {}
     for log in taken_logs:
         start_text = med_start_by_id.get(log["medication_id"], "")
-        if start_text and str(log.get("taken_at") or "")[:10] < start_text:
-            # 旧疗程打卡不计入当前疗程依从率
+        if start_text and str(log.get("taken_at") or "") < start_text:
+            # 旧疗程打卡不计入当前疗程依从率（完整时间戳，与家庭总览
+            # 的 SQL 口径一致）
             continue
         key = log["medication_id"]
         entry = doses_by_medication.setdefault(key, {
@@ -8659,7 +8687,7 @@ async def _weekly_report_impl(
         if log["medication_id"] not in adherence_med_ids:
             continue
         start_text = med_start_by_id.get(log["medication_id"], "")
-        if start_text and str(log.get("taken_at") or "")[:10] < start_text:
+        if start_text and str(log.get("taken_at") or "") < start_text:
             continue
         adherence_taken += 1
     skip_reason_counts: dict = {}
@@ -8750,8 +8778,17 @@ async def _weekly_report_impl(
         if prev_start <= str(item.get("tested_at") or "")[:10] < start
     ]
     abnormal_labs = [item for item in lab_results if item.get("abnormal")]
+    from core.lab_values import STALE_AFTER_DAYS
+    lab_stale_cutoff = (
+        now - timedelta(days=STALE_AFTER_DAYS)
+    ).strftime("%Y-%m-%d")
     critical_labs = [
-        item for item in lab_results if item.get("critical")
+        item for item in lab_results
+        if item.get("critical")
+        and (
+            not str(item.get("tested_at") or "")[:10]
+            or str(item.get("tested_at") or "")[:10] >= lab_stale_cutoff
+        )
     ]
     previous_abnormal = [
         item for item in previous_labs if item.get("abnormal")

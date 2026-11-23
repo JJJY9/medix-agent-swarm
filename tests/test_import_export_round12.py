@@ -96,6 +96,7 @@ def test_reminder_csv_keeps_vaccination_and_appointment_links(
     reminder = client.post("/api/reminders", json={
         "title": "复查提醒",
         "due_at": _date(3),
+        "note": f"复诊 {_date(5)}",
         "profile": "妈妈",
         "vaccination_id": vaccination["id"],
         "appointment_id": appointment["id"],

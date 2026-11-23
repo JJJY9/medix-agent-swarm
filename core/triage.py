@@ -1331,12 +1331,24 @@ def _patient_course_before_quote(clause: str) -> bool:
         )
     ):
         return True
+    topic_quote = re.search(r"关于|有关|一篇|讲|写|主题", prefix)
+    topic_is_about_symptom = bool(
+        topic_quote
+        and not _is_red_flag_text(prefix[:topic_quote.start()])
+        and not any(
+            word in prefix[:topic_quote.start()]
+            for word in _EDUCATION_SYMPTOM_WORDS
+        )
+    )
     if (
-        _COURSE_MARKER_RE.search(prefix) is not None
-        or any(marker in prefix for marker in _COURSE_MARKERS)
-        or any(word in prefix for word in _CURRENT_COURSE_CUES)
-        or any(word in prefix for word in _POST_POSITIVE_CUES)
-        or _EDUCATION_CURRENT_RE.search(prefix) is not None
+        not topic_is_about_symptom
+        and (
+            _COURSE_MARKER_RE.search(prefix) is not None
+            or any(marker in prefix for marker in _COURSE_MARKERS)
+            or any(word in prefix for word in _CURRENT_COURSE_CUES)
+            or any(word in prefix for word in _POST_POSITIVE_CUES)
+            or _EDUCATION_CURRENT_RE.search(prefix) is not None
+        )
     ):
         return True
     # 「胸痛剧烈网上查了」「咯血网上查了」：引用词之前只有症状词与
@@ -1749,10 +1761,13 @@ _CONTINUATION_NEGATED_RE = re.compile(
     r"(?:吃|服用|服|用|过敏)"
 )
 _CONTINUATION_SAME_RE = re.compile(
-    r"我(?:也|跟他|跟她|跟他们)?一样"
+    r"我(?:也|跟他|跟她|跟他们|和他|和她|和他们)?一样"
+    r"|我也是(?:[，。；;?？]|$)"
 )
 _PRONOUN_OBJECTS = (
-    "这个药", "这种药", "那个药", "那种药", "一样的药", "这个", "那个", "它",
+    "这个药", "这种药", "那个药", "那种药", "一样的药",
+    "同一种药", "同样的药", "相同的药", "同一种", "同样的", "相同的",
+    "这个", "那个", "它",
 )
 
 
@@ -1777,6 +1792,14 @@ def continuation_object_matches(obj: str, clause: str) -> bool:
 def continuation_same_as_clause(follow: str, clause: str) -> bool:
     """续用分句是否描述患者本人的同一药物/过敏原。"""
     if _CONTINUATION_NEGATED_RE.search(follow):
+        return False
+    # 「我妈也吃/我老公也在吃」：家属做主语，不是患者本人的续用
+    if re.match(
+        r"我(?:的)?(?:爸|妈|爹|娘|爷|奶|外公|外婆|姥爷|姥姥|老公|老婆|"
+        r"爱人|丈夫|妻子|儿子|女儿|儿|女|哥|姐|弟|妹|叔|姨|舅|姑|"
+        r"孩子|宝宝|家人|父亲|母亲)",
+        follow,
+    ):
         return False
     if _CONTINUATION_SAME_RE.search(follow):
         return True
@@ -2387,12 +2410,17 @@ def _has_fever(text: str) -> bool:
         while start != -1:
             prefix = _clause_prefix(text, start)
             stripped = prefix.rstrip()
+            if stripped.endswith(
+                ("不发", "没发", "没有发", "未发", "再发",
+                 "也没有发", "也没有再发")
+            ):
+                # 「没有发烧，也没有发高烧」：同一分句里对其它发热词
+                # 的否认同样生效
+                start = text.find(term, start + len(term))
+                continue
             if term == "烧了" and (
                 stripped.endswith("退")
                 or stripped.endswith(("火", "燃烧"))
-                or stripped.endswith(
-                    ("不发", "没发", "没有发", "未发", "再发")
-                )
             ):
                 # 「已经退烧了」「不发烧了」不是发热
                 start = text.find(term, start + len(term))
@@ -2646,6 +2674,21 @@ def _active_medical_text(
                 or _RECENT_NO_EAT_PATTERN.search(follow_stop_window)
             ):
                 kept.append(clause)
+            continue
+        if (
+            _long_stop_near(clauses, index)
+            # 只让「停药/停用」类远期停药抹掉药名；「化疗结束5年」
+            # 属于结束治疗，同分句的其它当前用药（每天吃华法林）
+            # 必须保留
+            and any(
+                _LONG_STOP_PATTERN.search(other_clause)
+                for other_clause in clauses
+            )
+            and not _RESTART_TEXT_RE.search(clause)
+            and not _RESTART_TEXT_RE.search(restart_window)
+        ):
+            # 「华法林吃了三年，停了一年多了」：同段已明确远期停药且
+            # 没有续用表述，药名不能继续算作当前用药
             continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，

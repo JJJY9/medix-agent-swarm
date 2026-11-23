@@ -217,19 +217,45 @@ class _AccessLogQueryFilter(logging.Filter):
                         updated = list(args)
                         updated[2] = redacted
                         record.args = tuple(updated)
+            elif isinstance(args, dict):
+                # gunicorn.access 把请求行/路径放在 atoms 字典里：
+                # 对含查询串的字符串值统一脱敏，避免患者搜索词落日志
+                updated_dict = {}
+                changed = False
+                for key, value in args.items():
+                    if isinstance(value, str) and "?" in value:
+                        redacted = self._redact_path(value)
+                        if redacted != value:
+                            updated_dict[key] = redacted
+                            changed = True
+                            continue
+                    updated_dict[key] = value
+                if changed:
+                    record.args = updated_dict
         except Exception:
             pass
         return True
 
 
 def install_access_log_query_filter() -> None:
-    """给 uvicorn.access 安装查询串脱敏过滤器（可重复调用）。"""
-    try:
-        access_logger = logging.getLogger("uvicorn.access")
-        if not any(
-            isinstance(item, _AccessLogQueryFilter)
-            for item in access_logger.filters
-        ):
-            access_logger.addFilter(_AccessLogQueryFilter())
-    except Exception:
-        pass
+    """给 uvicorn/gunicorn 访问日志安装查询串脱敏过滤器（可重复调用）。
+
+    gunicorn 直托时访问日志器是 ``gunicorn.access``，且 record.args
+    是 dict（atoms）而非 tuple；只挂 uvicorn 会让患者搜索词明文落盘。
+    额外日志器可用 MEDIX_ACCESS_LOG_LOGGERS 逗号分隔补充。
+    """
+    logger_names = ["uvicorn.access", "gunicorn.access"]
+    extra = os.getenv("MEDIX_ACCESS_LOG_LOGGERS", "") or ""
+    logger_names.extend(
+        name.strip() for name in extra.split(",") if name.strip()
+    )
+    for name in logger_names:
+        try:
+            access_logger = logging.getLogger(name)
+            if not any(
+                isinstance(item, _AccessLogQueryFilter)
+                for item in access_logger.filters
+            ):
+                access_logger.addFilter(_AccessLogQueryFilter())
+        except Exception:
+            pass

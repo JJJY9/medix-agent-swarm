@@ -413,7 +413,9 @@ def test_untrusted_forwarded_shared_bucket_has_source_cap(
                     "X-Forwarded-For": "1.2.3.4",
                 },
             ).status_code)
-        assert codes == [401] * 12, codes
+        # 第七十七轮：未开启受信代理时伪造地址头不能跳过自身预锁定
+        assert codes[:10] == [401] * 10, codes
+        assert codes[10:] == [429, 429], codes
         victim = TestClient(
             api_server.app, base_url="http://localhost",
             client=("127.0.0.1", 56402),
