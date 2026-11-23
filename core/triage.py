@@ -490,6 +490,7 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"(?:产后|流产后|胎停后?|顺产后|引产后|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|满)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
@@ -499,6 +500,7 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     # 产后/流产后/顺产后/引产后/胎停后的多年表述同样是既往史，
     # 与主诉路径的 _PAST_OBSTETRIC_YEARS 同口径
     r"(?:产后|流产后|顺产后|引产后|胎停后)\s*"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|满)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
     r"产后抑郁|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
@@ -1722,9 +1724,12 @@ _HEAD_TRAUMA_RE = re.compile(
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
     r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰)"
     r"|(?:撞|磕|碰|砸|打|摔)(?:在|到)(?:了)?"
+    r"(?:我|他|她|患者|宝宝|孩子|本人)?(?:的)?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
     r"头顶|后脑勺|枕部)"
-    r"|头(?:部)?在[^，。；,.!?！？\n]{0,6}上?(?:撞|磕|碰|砸)"
+    r"|(?<![趾指骨枕馒拳舌木砖石车脚])"
+    r"(?:头(?:部)?|脑袋|额头|前额|头顶|后脑勺|枕部)"
+    r"在[^，。；,.!?！？\n]{0,6}上?(?:撞|磕|碰|砸)"
     r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
     r"头顶|后脑勺|枕部)"
@@ -1779,7 +1784,8 @@ _CONTINUATION_ALLERGY_RE = re.compile(
 )
 #: 跨分句否定：「我也没在吃/我最近不吃/我也没服用」不是患者续用
 _CONTINUATION_NEGATED_RE = re.compile(
-    r"(?:没|没有|未|不再|没再|别|不)\s*(?:在|再|继续)?\s*"
+    r"(?:没|没有|未|不再|没再|别|不)\s*"
+    r"(?:敢|想|愿|愿意|能|会|要)?\s*(?:在|再|继续)?\s*"
     r"(?:吃|服用|服|用|过敏)"
 )
 _CONTINUATION_SAME_RE = re.compile(
@@ -1851,12 +1857,16 @@ _FAMILY_HISTORY_MARKERS = (
 )
 
 #: 「我爸也吃/我岳母也在吃/我家孩子也吃」——家属做主语
+_FAMILY_SUBJECT_NAMES = "|".join(
+    re.escape(marker)
+    for marker in sorted(_FAMILY_HISTORY_MARKERS, key=len, reverse=True)
+)
 _PATIENT_FAMILY_SUBJECT_RE = re.compile(
-    r"我(?:的)?(?:家(?:里)?(?:的)?(?:孩子|宝宝|娃|老人)|"
-    + "|".join(
-        re.escape(marker)
-        for marker in sorted(_FAMILY_HISTORY_MARKERS, key=len, reverse=True)
-    )
+    r"我(?:的)?(?:"
+    r"家(?:里)?(?:的)?(?:人|孩子|宝宝|娃|老人|"
+    + _FAMILY_SUBJECT_NAMES
+    + r")|"
+    + _FAMILY_SUBJECT_NAMES
     + r")"
 )
 
@@ -2109,7 +2119,7 @@ def _stop_clause_names_other_drug(
 
 #: 明确表示当前仍在用药/仍在治疗：远期停药不能抹掉这些分句
 _LONG_STOP_CURRENT_USE_RE = re.compile(
-    r"(?:现在|目前|当前|正在|仍在|还在|一直在|每天|照常|继续)"
+    r"(?:现在|目前|当前|正在|仍在|还在)"
     r"[^，。；;?？]{0,8}?"
     r"(?:吃|服用|服|用|注射|打|化疗|放疗|抗凝|免疫抑制|激素)"
     r"|(?:化疗|放疗|抗凝|激素治疗|免疫抑制治疗)(?:中|期间)"
@@ -2134,6 +2144,23 @@ def _long_stop_targets_clause(clause: str) -> bool:
     if _LONG_STOP_CURRENT_USE_RE.search(clause):
         return False
     return True
+
+
+def _ended_treatment_targets_clause(clause: str) -> bool:
+    """「化疗结束N年」是否归因到本分句的药名（化疗/免疫抑制类）。
+
+    结束化疗/放疗只说明该类治疗结束，不能把同段无关的抗凝药等
+    在用药物一起抹掉（第七十九轮）。
+    """
+    if not _long_stop_targets_clause(clause):
+        return False
+    hints = tuple(_STOP_CATEGORY_HINTS.get("化疗药", ())) + tuple(
+        _STOP_CATEGORY_HINTS.get("免疫抑制剂", ())
+    )
+    return (
+        any(term in clause for term in IMMUNOSUPPRESSION_TERMS)
+        or any(hint in clause for hint in hints)
+    )
 
 
 def _clause_ends_with_drug_name(clause: str) -> bool:
@@ -2732,29 +2759,51 @@ def _active_medical_text(
             ):
                 kept.append(clause)
             continue
-        next_clause = (
-            clauses[index + 1].strip()
-            if index + 1 < len(clauses) else ""
-        )
-        if (
-            next_clause
-            and (
-                _LONG_STOP_PATTERN.search(next_clause)
-                or _LONG_ENDED_TREATMENT_RE.search(next_clause)
-            )
-            and not any(
-                marker in next_clause for marker in _FAMILY_HISTORY_MARKERS
-            )
-            and _long_stop_targets_clause(clause)
-            and not _stop_clause_names_other_drug(next_clause, clause)
-            and not _RESTART_TEXT_RE.search(clause)
-            and not _RESTART_TEXT_RE.search(restart_window)
-        ):
-            # 「华法林吃了三年，停了一年多了」：紧邻本句的远期停药
-            # 且本句就是被停的药时，药名不能继续算作当前用药。
-            # 只作用于紧邻停药分句的「药名+时长」前一句，避免把
-            # 孕期/免疫状态/结构化在用药物等无关分句删掉（第七十八轮）
-            continue
+        next_stop_index = 0
+        for pos in range(index + 1, len(clauses)):
+            candidate_clause = clauses[pos].strip()
+            if not candidate_clause:
+                continue
+            if any(
+                marker in candidate_clause
+                for marker in _FAMILY_HISTORY_MARKERS
+            ):
+                continue
+            if (
+                _LONG_STOP_PATTERN.search(candidate_clause)
+                or _LONG_ENDED_TREATMENT_RE.search(candidate_clause)
+            ):
+                next_stop_index = pos
+                break
+            if any(
+                term in candidate_clause
+                for term in _OTHER_STOP_DRUG_TAILS
+            ):
+                # 中间还有另一条药名分句：远期停药更可能指它，
+                # 本分句必须先于那条记录处理，不能被误抹
+                break
+        if next_stop_index:
+            stop_clause = clauses[next_stop_index].strip()
+            if _LONG_STOP_PATTERN.search(stop_clause):
+                attributable = _long_stop_targets_clause(clause)
+            else:
+                # 「化疗结束5年了」只能归因到化疗/免疫抑制类药名，
+                # 华法林等无关在用药物必须保留（第七十九轮）
+                attributable = _ended_treatment_targets_clause(clause)
+            if (
+                attributable
+                and not _stop_clause_names_other_drug(
+                    stop_clause, clause
+                )
+                and not _RESTART_TEXT_RE.search(clause)
+                and not _RESTART_TEXT_RE.search(restart_window)
+            ):
+                # 「华法林吃了三年，去年胃出血，停了一年多了」：本句
+                # 是停药分句之前最近的一条药名分句时，药名不能继续
+                # 算作当前用药。只看最近一条药名分句，避免把孕期/
+                # 免疫状态/结构化在用药物等无关分句删掉（第七十八/
+                # 七十九轮）
+                continue
         kept.append(clause)
     # 用分句标点拼接：术语匹配的前缀不能跨过分句边界，
     # 否则上一个分句结尾的「无」会否定下一段的真实病史

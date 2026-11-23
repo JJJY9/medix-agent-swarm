@@ -782,6 +782,9 @@ const DEEP_LINK_AT_KEY = 'medix.deepLinkAt';
 const DEEP_LINK_EDITED_KEY = 'medix.deepLinkEdited';
 //: 流式会诊进行中的主诉：刷新/被系统回收后恢复到输入框
 const INFLIGHT_QUESTION_KEY = 'medix.inflightQuestion';
+//: 另一会话停止/中断未落库的主诉：只能有一份备份槽，切走会话后
+//: 草稿已清空，不能在别的会话发送时被覆盖
+const INFLIGHT_QUESTION_OTHER_KEY = 'medix.inflightQuestionOther';
 //: 本次加载从 INFLIGHT 记录恢复到输入框的文本：启动对账只在文本
 //: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
 let inflightRestoredText = '';
@@ -21044,6 +21047,9 @@ async function send(question, composerSubmit = false) {
   }
   // 极早持久化已提交主诉：深链预恢复/建会话等待期间刷新/关页也不会
   // 丢失（ensureSession 之后会用真实会话 ID 覆盖同一条记录）
+  preserveOtherSessionInflight(
+    pendingSessionReset ? '' : (sessionId || '')
+  );
   try {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
       // 待重置换档会新建会话：旧 sessionId 会让刷新后的恢复
@@ -21174,6 +21180,16 @@ async function send(question, composerSubmit = false) {
     if (sessionMatches && mergedStart) {
       inflightPersistedConsumedAt = Date.now();
       inflightPersistedConsumedText = persistedText;
+      if (String(els.input.value || '').trim()) {
+        // 首屏恢复尚未完成时用户已开始输入下一条：只清理在途记录，
+        // 不能把新草稿当成「已落库旧主诉」清掉（第七十九轮）
+        try {
+          safeSessionRemove(INFLIGHT_QUESTION_KEY);
+        } catch {
+          // 隐私模式忽略
+        }
+        return;
+      }
       const remainder = stripInflightQuestion(current, persistedText);
       if (remainder === null || !remainder.trim()) {
         try {
@@ -22883,25 +22899,69 @@ function stripInflightQuestion(text, question) {
     .trim();
 }
 
+function preserveOtherSessionInflight(targetOwner) {
+  // 现有记录若属于另一个会话（停止/中断未落库）：先转入备份槽，
+  // 否则本次发送会把它永久覆盖（那个会话的草稿已被切换清空）
+  try {
+    const existingRaw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (!existingRaw) return;
+    const existing = JSON.parse(existingRaw);
+    const existingOwner = String((existing && existing.sessionId) || '');
+    const existingAt = Number((existing && existing.at) || 0);
+    const existingFresh = (
+      !existingAt
+      || Date.now() - existingAt <= 6 * 60 * 60 * 1000
+    );
+    if (
+      existingOwner
+      && existingOwner !== String(targetOwner || '')
+      && String((existing && existing.question) || '').trim()
+      && existingFresh
+    ) {
+      safeSessionSet(INFLIGHT_QUESTION_OTHER_KEY, existingRaw);
+    }
+  } catch {
+    // 记录损坏/隐私模式：忽略，继续写入本次记录
+  }
+}
+
+function readInflightRecordFor(targetId) {
+  // 主槽不匹配时回退备份槽：切换会话后停在另一会话的未落库主诉
+  // 只能保存在备份槽里，打开所属会话时必须能恢复
+  for (const keyName of [
+    INFLIGHT_QUESTION_KEY, INFLIGHT_QUESTION_OTHER_KEY,
+  ]) {
+    let data = null;
+    try {
+      const raw = safeSessionGet(keyName);
+      if (!raw) continue;
+      data = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== 'object') continue;
+    const owner = String(data.sessionId || '');
+    if (owner && owner !== targetId) continue;
+    return { keyName, data };
+  }
+  return null;
+}
+
 function restoreInflightForOpenSession(targetId, messages) {
   // 中断/停止留下的在途主诉：同页重新打开所属会话时也要恢复，
   // 不能只依赖整页刷新；已落库的则只清记录，避免重复提交
   if (!targetId) return;
-  let data = null;
-  try {
-    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
-    if (!raw) return;
-    data = JSON.parse(raw);
-  } catch {
-    return;
-  }
+  const record = readInflightRecordFor(targetId);
+  if (!record) return;
+  const recordKey = record.keyName;
+  const data = record.data;
   const question = String((data && data.question) || '').trim();
   const owner = String((data && data.sessionId) || '');
   const profile = String((data && data.profile) || '');
   const at = Number((data && data.at) || 0);
   if (!question) return;
   if (!at || Date.now() - at > 6 * 60 * 60 * 1000) {
-    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    safeSessionRemove(recordKey);
     return;
   }
   if (owner && owner !== targetId) return;
@@ -22955,7 +23015,7 @@ function restoreInflightForOpenSession(targetId, messages) {
     }
   }
   if (persisted) {
-    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    safeSessionRemove(recordKey);
     return;
   }
   if (

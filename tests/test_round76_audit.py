@@ -225,17 +225,22 @@ def test_csv_import_restores_completed_reminder(tmp_path):
 
 
 # ---------------------------------------------------------------- [11]
-def test_backup_carries_profile_renames(tmp_path):
-    source = _store(tmp_path)
+def test_backup_does_not_import_rename_history(tmp_path):
+    # 第七十九轮：备份自带的 profile_renames 不再写入本机改名历史，
+    # 否则一份伪造备份就能把后续恢复的旧档案改挂到其它成员名下；
+    # 备份数据本身仍按导出时的名称恢复
+    source = SessionStore(str(tmp_path / "source.db"))
     source.save_profile("妈妈", {"age": "60"})
     assert source.rename_profile("妈妈", "母亲")
     backup = source.export_data()
     source.close()
-    target = _store(tmp_path)
+    target = SessionStore(str(tmp_path / "target.db"))
     target.import_data(backup)
+    profiles = {item["name"] for item in target.list_profiles()}
     resolved = target.resolve_profile_alias("妈妈")
     target.close()
-    assert resolved == "母亲", resolved
+    assert "母亲" in profiles, profiles
+    assert resolved == "妈妈", resolved
 
 
 # ---------------------------------------------------------------- [12]

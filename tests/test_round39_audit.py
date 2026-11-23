@@ -557,9 +557,11 @@ def test_deep_link_pending_persisted_across_reload():
 
 def test_send_has_pre_restore_lock_and_session_guard():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    # 函数内新增了在途主诉备份等逻辑：窗口按当前函数长度放宽
+    # （第七十九轮），断言目标不变
     send = app_js[
         app_js.index("async function send(question, composerSubmit = false)"):
-        app_js.index("async function send(question, composerSubmit = false)") + 3000
+        app_js.index("async function send(question, composerSubmit = false)") + 4200
     ]
     assert "let sendInFlight = false;" in app_js
     assert "if (busy || sendInFlight)" in send
