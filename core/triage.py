@@ -196,7 +196,7 @@ _CAESAREAN_RECENT_RE = re.compile(
 _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
     r"(?:刚|刚刚)(?:生产|分娩)(?:完|了)?|"
-    r"(?:生产|分娩)(?:完|了|后)|"
+    r"(?:生产|分娩)(?:完|了|后|时(?!间))|"
     r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
@@ -514,6 +514,9 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    # 「去年/前年/以前/曾经流产过」
+    r"|(?:去年|前年|上年|以前|之前|曾经|既往)[^，。；]{0,6}?"
+    r"(?:流产|胎停|人流|药流|引产)(?:过|了)?"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
@@ -946,7 +949,9 @@ _CAUSE_TAIL_RE = re.compile(
 #: 「X是什么」纯定义问句（含「是什么病/是指什么/是啥」等变体）
 #: 第一组是定义尾巴之前的描述，用于保留「发烧、咳嗽三天了是什么病」
 _DEFINITION_SUFFIX_RE = re.compile(
-    r"^([^，,；;。！？!?\n]*)(?:是什么|啥是|是什么意思|什么意思|"
+    r"^([^，,；;。！？!?\n]*)(?:是什么感觉|什么感觉|是什么样的|"
+    r"是什么样子|是什么症状|有什么症状|会有什么感觉|"
+    r"是什么|啥是|是什么意思|什么意思|"
     r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
     r"\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
 )
@@ -1212,6 +1217,11 @@ def _clean_complaint_clause(
     definition = _DEFINITION_SUFFIX_RE.match(clause)
     if definition:
         prefix = definition.group(1).strip(" ，,、")
+        experiential_definition = re.search(
+            r"(?:是什么感觉|什么感觉|是什么样的|是什么样子|是什么症状|"
+            r"有什么症状|会有什么感觉)\s*[呢呀啊吧嘛吗]?\s*[？?]?\s*$",
+            clause,
+        ) is not None
         if any(word in prefix for word in _EDUCATION_BLOCKERS_STRONG):
             # 「在网上看到胸痛是什么病」引用的是科普内容，不是主诉
             return ""
@@ -1240,7 +1250,7 @@ def _clean_complaint_clause(
             or _has_head_trauma(prefix)
             or _URGENT_HELP_RE.search(prefix) is not None
             or (help_follows and _is_red_flag_text(prefix))
-            or any(
+            or (not experiential_definition and any(
                 word in prefix
                 for word in (
                     "突发", "突然", "剧烈", "加重", "无法", "不能",
@@ -1253,7 +1263,7 @@ def _clean_complaint_clause(
                     "左侧", "右侧", "左边", "右边", "左胸", "右胸",
                     "左肩", "右肩", "胸前区",
                 )
-            )
+            ))
             # 枚举/后置阳性线索（越来越/加剧/恶化…）与场景修饰
             # （活动后/夜间/走路时…）同样说明是在描述真实主诉
             or any(word in prefix for word in _POST_POSITIVE_CUES)
@@ -2147,12 +2157,35 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
+#: 用药类别词：同样是「另一条用药分句」的证据
+_MED_CATEGORY_RE = re.compile(
+    r"(?:降压药|降糖药|降脂药|降尿酸药|止痛药|止疼药|消炎药|抗生素|"
+    r"抗菌药|安眠药|催眠药|抗过敏药|抗抑郁药|抗癫痫药|胃药|退烧药|"
+    r"退热药|中药|西药|激素|免疫抑制剂|抗凝药|心血管药)"
+)
+#: 「用药动作 + 宾语」：奥美拉唑吃了两年/去年吃降压药；裸动词
+#: （胃不舒服/用着不舒服/打了点滴/吃得少）不算
+_MED_ACTION_OBJECT_RE = re.compile(
+    r"(?:吃|服用|口服|注射|打|滴|含服|喷|输)(?:了|着|过|上|起来)?\s*"
+    r"(?!不|别|点|完|饱|好|少|多|了|着|过|得|的|啦|呢)[一-龥a-z]"
+    r"[一-龥a-z0-9\-]{1,12}"
+)
 #: 常见药名后缀（补 _OTHER_STOP_DRUG_TAILS 未列出的慢性病用药）
 _GENERIC_DRUG_NAME_RE = re.compile(
     r"[一-龥]{1,6}(?:霉素|西林|沙坦|普利|洛尔|地平|他汀|列汀|列净|"
     r"康唑|磺脲|双胍|胍|胰岛素)|"
     r"[一-龥]{2,6}(?:片|胶囊|颗粒)"
 )
+
+def _clause_names_other_drug(clause: str) -> bool:
+    """分句是否点名/描述了一条用药（停药归因的「最近药名分句」）。"""
+    return bool(
+        any(term in clause for term in _OTHER_STOP_DRUG_TAILS)
+        or _GENERIC_DRUG_NAME_RE.search(clause)
+        or _MED_CATEGORY_RE.search(clause)
+        or _MED_ACTION_OBJECT_RE.search(clause)
+    )
+
 
 #: 明确表示当前仍在用药/仍在治疗：远期停药不能抹掉这些分句
 _LONG_STOP_CURRENT_USE_RE = re.compile(
@@ -2226,9 +2259,7 @@ def _intervening_other_drug_clause(
         candidate = clauses[pos].strip()
         if not candidate:
             continue
-        if any(term in candidate for term in _OTHER_STOP_DRUG_TAILS):
-            return True
-        if _GENERIC_DRUG_NAME_RE.search(candidate):
+        if _clause_names_other_drug(candidate):
             return True
     return False
 
@@ -2582,6 +2613,15 @@ def _has_fever(text: str) -> bool:
                     # 「高热量/高热能」不是发热
                     start = text.find(term, start + len(term))
                     continue
+            after = text[start + len(term):start + len(term) + 10]
+            if re.match(
+                r"[^，。；！？\n]{0,4}?"
+                r"(?:不到|没到|未到|没有?到|不足|未达|差一点|差点)",
+                after,
+            ):
+                # 「发烧不到38度」「体温没到38度」：词后阈值否定
+                start = text.find(term, start + len(term))
+                continue
             if not _is_negated(
                 prefix, _clause_suffix(text, start + len(term))
             ):
@@ -2593,6 +2633,24 @@ def _has_fever(text: str) -> bool:
         if match.group(0)[:1].isdigit():
             window = text[max(0, match.start() - 8):match.end() + 8]
             if any(word in window for word in _NON_BODY_TEMPERATURE_WORDS):
+                continue
+            recent = text[max(0, match.start() - 6):match.start()]
+            if re.search(
+                r"(?:不到|没到|未到|没有?到|不足|未达|差一点|差点)\s*$",
+                recent,
+            ):
+                # 「没有到38度」：数字前紧跟阈值否定
+                continue
+        else:
+            keyword = re.match(
+                r"(?:体温|发烧|发热|高烧|低烧|烧到)", match.group(0)
+            )
+            bridge = match.group(0)[keyword.end():] if keyword else ""
+            if re.search(
+                r"(?:不到|没到|未到|没有?到|不足|未达|不是|差一点|差点)",
+                bridge,
+            ):
+                # 「体温不到38度」「发烧没到38度」：读数低于发热阈值
                 continue
         prefix = _clause_prefix(text, match.start(), lookback=8)
         if not _is_negated(prefix, _clause_suffix(text, match.end())):
@@ -2839,13 +2897,11 @@ def _active_medical_text(
             ):
                 next_stop_index = pos
                 break
-            if any(
-                term in candidate_clause
-                for term in _OTHER_STOP_DRUG_TAILS
-            ) or _GENERIC_DRUG_NAME_RE.search(candidate_clause):
-                # 中间还有另一条点名药名的分句（含家属的药分句）：远期
-                # 停药更可能指它，本分句必须先于那条记录处理。裸动词
-                # （胃不舒服/打了点滴/用着不舒服）不算（第八十一轮）
+            if _clause_names_other_drug(candidate_clause):
+                # 中间还有另一条用药分句（含家属的药分句/类别词/
+                # 「奥美拉唑吃了两年」式动作宾语）：远期停药更可能指
+                # 它，本分句必须先于那条记录处理。裸动词（胃不舒服/
+                # 打了点滴/用着不舒服）不算（第八十一/八十二轮）
                 break
         if next_stop_index:
             stop_clause = clauses[next_stop_index].strip()

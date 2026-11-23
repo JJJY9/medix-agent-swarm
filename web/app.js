@@ -21210,11 +21210,28 @@ async function send(question, composerSubmit = false) {
       inflightPersistedConsumedText = persistedText;
       if (String(els.input.value || '').trim()) {
         // 首屏恢复尚未完成时用户已开始输入下一条：只清理在途记录，
-        // 不能把新草稿当成「已落库旧主诉」清掉（第七十九轮）
+        // 不能把新草稿当成「已落库旧主诉」清掉（第七十九轮）。
+        // 本次排队提交里「已答复主诉」之后的新文本必须放回输入框，
+        // 不能静默丢弃（第八十二轮）
+        const leftover = stripInflightQuestion(current, persistedText);
         try {
           safeSessionRemove(INFLIGHT_QUESTION_KEY);
         } catch {
           // 隐私模式忽略
+        }
+        if (leftover && leftover.trim()) {
+          els.input.value = (
+            leftover.trim() + '\n' + String(els.input.value || '')
+          );
+          try {
+            safeSessionSet(DRAFT_KEY, els.input.value.trim());
+          } catch {
+            // 隐私模式忽略
+          }
+          autoGrow();
+          setVitals(
+            'warn', '已跳过刚完成的重复问题，其余内容已放回输入框'
+          );
         }
         return;
       }
@@ -23004,9 +23021,14 @@ function clearOtherSessionInflight(sessionId, question) {
   if (!wantedQuestion && !sessionId) return;
   const records = readOtherInflightRecords().filter((item) => {
     const recordQuestion = String(item.question || '').trim();
+    const itemOwner = String(item.sessionId || '');
+    if (itemOwner && sessionId && itemOwner !== String(sessionId)) {
+      // 其它会话停止未落库的主诉是唯一副本：只能由它自己的会话
+      // 发送成功后清理，不能被本会话的相似前缀误删（第八十二轮）
+      return true;
+    }
     const sameSession = Boolean(
-      sessionId
-      && String(item.sessionId || '') === String(sessionId || '')
+      sessionId && itemOwner && itemOwner === String(sessionId || '')
     );
     return !(
       sameSession
@@ -23014,8 +23036,10 @@ function clearOtherSessionInflight(sessionId, question) {
         recordQuestion
         && (
           recordQuestion === wantedQuestion
-          || wantedQuestion.startsWith(recordQuestion)
-          || recordQuestion.startsWith(wantedQuestion)
+          || (wantedQuestion
+            && wantedQuestion.startsWith(recordQuestion))
+          || (wantedQuestion
+            && recordQuestion.startsWith(wantedQuestion))
         )
       )
     );
@@ -23390,10 +23414,24 @@ els.input.addEventListener('input', () => {
   try {
     if (els.input.value.trim()) {
       if (!composerKeepsSwitchOwner()) {
-        draftProfileMemory = (
-          activeProfileName || readStoredProfile() || ''
+        // 删除档案哨兵/切换会话恢复的归属必须粘住：只要输入仍包含
+        // 原草稿主体，用户的小修改不能把归属改写成当前档案，否则
+        // 另一位患者的草稿会按新档案提交（第八十二轮）
+        const existingOwner = (
+          draftProfileMemory || safeSessionGet(DRAFT_PROFILE_KEY) || ''
         );
-        safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
+        const previousDraft = String(safeSessionGet(DRAFT_KEY) || '');
+        const stillEditingOwnDraft = Boolean(
+          existingOwner
+          && previousDraft
+          && els.input.value.includes(previousDraft)
+        );
+        if (!stillEditingOwnDraft) {
+          draftProfileMemory = (
+            activeProfileName || readStoredProfile() || ''
+          );
+          safeSessionSet(DRAFT_PROFILE_KEY, draftProfileMemory);
+        }
       }
     } else {
       switchDraftSnapshot = null;
