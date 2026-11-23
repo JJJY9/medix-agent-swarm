@@ -22908,16 +22908,50 @@ function restoreInflightForOpenSession(targetId, messages) {
   const currentProfile = activeProfileName || readStoredProfile();
   if (profile && currentProfile && profile !== currentProfile) return;
   const list = Array.isArray(messages) ? messages : [];
+  const hasIds = list.some(
+    (message) => (Number(message.id) || 0) > 0
+  );
+  const baseline = Number((data && data.baseline) || 0);
   let persisted = false;
-  for (let i = 0; i < list.length; i += 1) {
-    if (
-      list[i].role === 'user'
-      && String(list[i].content || '').trim() === question
-    ) {
-      persisted = list.slice(i + 1).some(
-        (message) => message.role === 'assistant'
+  // 只有属于本会话的记录才可能已落库；owner 为空（待重置换档/
+  // 建会话失败）的问题从未发进任何会话，不能被目标会话里的旧
+  // 同文本问答误杀。已落库判定按 baseline 区分本轮问答与早先
+  // 陈述，与整页刷新 restoreCurrentSession 的对账口径一致
+  if (owner && owner === targetId) {
+    if (!hasIds) {
+      for (let i = 0; i < list.length; i += 1) {
+        if (
+          list[i].role === 'user'
+          && String(list[i].content || '').trim() === question
+        ) {
+          persisted = list.slice(i + 1).some(
+            (message) => message.role === 'assistant'
+          );
+          if (persisted) break;
+        }
+      }
+    } else if (baseline > 0) {
+      persisted = list.some(
+        (message, index) => message.role === 'user'
+          && String(message.content || '').trim() === question
+          && (Number(message.id) || 0) > baseline
+          && list.slice(index + 1).some(
+            (inner) => inner.role === 'assistant'
+          )
       );
-      if (persisted) break;
+    } else {
+      let lastUserIndex = -1;
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        if (list[i].role === 'user') {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      persisted = lastUserIndex >= 0
+        && String(list[lastUserIndex].content || '').trim() === question
+        && list.slice(lastUserIndex + 1).some(
+          (inner) => inner.role === 'assistant'
+        );
     }
   }
   if (persisted) {
@@ -24430,8 +24464,11 @@ els.contextToggle.addEventListener('click', () => {
 const onContextPanelEdit = (event) => {
   const target = event && event.target;
   const id = target && target.id;
-  // 档案下拉与「仅单科」开关不是补充信息字段，不能触发草稿冲突
-  if (id !== 'profile-select' && id !== 'ctx-single') {
+  // 档案下拉与「仅单科」开关不是补充信息字段：既不触发草稿冲突，
+  // 也不能写入「已清空」标记——它们冒泡到面板监听器时表单可能
+  // 本来就是空的，会让刷新/重连后的深链快照回填被误跳过
+  const isContextField = id !== 'profile-select' && id !== 'ctx-single';
+  if (isContextField) {
     contextUserEdited = true;
     if (deepLinkedSession && sessionId) {
       // 持久化「深链恢复期间编辑过」：刷新后 contextUserEdited 会
@@ -24442,7 +24479,10 @@ const onContextPanelEdit = (event) => {
   updateContextSummary();
   // 用户手动逐个删空补充信息：写入「已清空」标记，刷新/重开当前
   // 会话时旧答复快照不能把已删除的病史/过敏史填回
-  if (Object.keys(readPatientContext()).length === 0) {
+  if (
+    isContextField
+    && Object.keys(readPatientContext()).length === 0
+  ) {
     markContextCleared();
   }
 };

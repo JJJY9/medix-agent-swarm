@@ -3058,14 +3058,28 @@ async def require_access_token(request: Request, call_next):
             f"ip:{_bucket_address(peer_host or 'unknown')}"
         )
         untrusted_forwarded = bool(
-            # 只有「开启受信代理、但对端不在白名单」才可能代表反代后的
-            # 共享来源；完全未开启代理时地址头只是客户端伪造的噪音，
-            # 不能借此跳过硬预锁定（否则猜错令牌的速率被抬高百倍）
-            _trust_proxy_headers()
-            and not _is_trusted_proxy_peer(peer_host)
-            and any(
+            any(
                 _proxy_header_values(request, name)
                 for name in ("x-forwarded-for", "forwarded", "x-real-ip")
+            )
+            and (
+                # 同机反向代理但未开启代理信任：TCP 对端是回环地址，
+                # 远程客户端不可能直连出回环对端，地址头只可能是本机
+                # 代理透传/追加。回退共享桶语义（100 次/5 分钟 + 令牌
+                # 比较闸门），不能按 10 次硬预锁定把全家正确令牌一起
+                # 429（第七十八轮）；开启信任后仍走原有按真实地址
+                # 预锁定/分桶路径
+                (
+                    _is_loopback_address(_peer_key(peer_host or ""))
+                    and not _trust_proxy_headers()
+                )
+                # 开启受信代理但对端不在白名单：该对端可能是反代后的
+                # 共享来源；完全未开启代理时的远程直连伪造成地址头仍
+                # 按自身 TCP 地址预锁定（否则猜错令牌速率被抬高百倍）
+                or (
+                    _trust_proxy_headers()
+                    and not _is_trusted_proxy_peer(peer_host)
+                )
             )
         )
         if (
@@ -3347,18 +3361,15 @@ async def require_access_token(request: Request, call_next):
                                 )
                             },
                         ))
-                gate_source = ""
-                if gate_unprovable:
-                    # 左项地址可由客户端伪造/解析失败：槽位按可证明
-                    # 的 TCP 对端计，轮换地址不能获得多份单源额度
-                    gate_source = _peer_key(peer_host or "")
-                elif forwarded_resolved:
-                    gate_source = _peer_key(_bucket_address(
-                        _forwarded_client_address(request) or ""
-                    ))
+                # 地址不可证明（共享桶/多级代理/解析失败）：分槽键只能
+                # 落到代理对端本身，等于全家共用同一份「单源」额度，
+                # 单个未认证客户端即可占满 32 槽把全家挡在 429。这里
+                # 统一改用总队列（64 槽 + 0.2s 串行间隔）；按真实客户端
+                # 分槽需要 MEDIX_PROXY_CLIENT_IP_HEADER 且代理保证覆盖
+                # 写入（MEDIX_PROXY_SINGLE_HOP）（第七十八轮）
                 gate_handle = await _auth_compare_enter(
                     loopback_bucket_key,
-                    source=gate_source,
+                    source="",
                 )
                 if gate_handle is not None:
                     global_retry = _auth_global_budget_retry(request)
@@ -8222,6 +8233,7 @@ async def _weekly_report_impl(
                     member, {
                         "fasting": [0.0, 0],
                         "postprandial": [0.0, 0],
+                        "random": [0.0, 0],
                     },
                 )
                 try:
@@ -8235,6 +8247,9 @@ async def _weekly_report_impl(
                 elif context == "postprandial":
                     group["postprandial"][0] += value
                     group["postprandial"][1] += 1
+                elif context in ("bedtime", "random"):
+                    group["random"][0] += value
+                    group["random"][1] += 1
         for (member, metric), entry in sorted(member_groups.items()):
             if not entry["over"]:
                 continue
@@ -8300,6 +8315,7 @@ async def _weekly_report_impl(
                     continue
             fasting = group["fasting"]
             postprandial = group["postprandial"]
+            random_group = group["random"]
             if fasting[1] and fasting[0] / fasting[1] >= 7:
                 member_glucose_alerts.append({
                     "profile": member,
@@ -8317,6 +8333,18 @@ async def _weekly_report_impl(
                         postprandial[0] / postprandial[1], 2
                     ),
                     "count": postprandial[1],
+                })
+            elif random_group[1] and (
+                random_group[0] / random_group[1] >= 11.1
+            ):
+                # 随机/睡前血糖同样按通用上限提示，不能静默为 all_clear
+                member_glucose_alerts.append({
+                    "profile": member,
+                    "kind": "random",
+                    "avg": round(
+                        random_group[0] / random_group[1], 2
+                    ),
+                    "count": random_group[1],
                 })
 
     member_bp_peaks: Dict[str, Dict[str, Any]] = {}
@@ -9619,6 +9647,22 @@ def _build_health_insights(
                 if fasting_count else 0.0
             )
             postprandial = contexts.get("postprandial")
+            random_groups = [
+                contexts[key]
+                for key in ("bedtime", "random")
+                if contexts.get(key)
+            ]
+            random_count = sum(
+                int(group.get("count") or 0) for group in random_groups
+            )
+            random_avg = (
+                sum(
+                    float(group.get("avg_value1") or 0)
+                    * int(group.get("count") or 0)
+                    for group in random_groups
+                ) / random_count
+                if random_count else 0.0
+            )
             glucose_target = row.get("target") or None
             glucose_target_met = bool(
                 glucose_target
@@ -9652,6 +9696,17 @@ def _build_health_insights(
                     f"餐后血糖平均 "
                     f"{float(postprandial['avg_value1']):g} mmol/L 明显偏高",
                     f"共 {postprandial.get('count')} 次。",
+                    "如多次偏高，请咨询医生。",
+                    "metric",
+                    metric="glucose",
+                ))
+            elif random_count and random_avg >= 11.1:
+                # 随机/睡前血糖同样有通用上限：11.1 以上不能 all_clear
+                insights.append(_health_insight(
+                    "metric_glucose_random",
+                    "info",
+                    f"随机/睡前血糖平均 {random_avg:g} mmol/L 明显偏高",
+                    f"共 {random_count} 次。",
                     "如多次偏高，请咨询医生。",
                     "metric",
                     metric="glucose",
@@ -10208,6 +10263,16 @@ def _build_health_insights(
                 "metric_glucose_postprandial",
                 "info",
                 f"{member}的餐后血糖平均 {avg:g} mmol/L 明显偏高",
+                f"共 {count} 次。",
+                "如多次偏高，请咨询医生。",
+                "metric",
+                metric="glucose",
+            ))
+        elif alert.get("kind") == "random":
+            insights.append(_health_insight(
+                "metric_glucose_random",
+                "info",
+                f"{member}的随机/睡前血糖平均 {avg:g} mmol/L 明显偏高",
                 f"共 {count} 次。",
                 "如多次偏高，请咨询医生。",
                 "metric",
@@ -13470,7 +13535,7 @@ async def family_overview(days: int = 7):
             )
 
     # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
-    # （空腹/未分情境均值 ≥7、餐后均值 ≥11.1 mmol/L）
+    # （空腹/未分情境均值 ≥7、餐后/随机/睡前均值 ≥11.1 mmol/L）
     glucose_alert_by_profile: Dict[str, str] = {}
     glucose_groups: Dict[str, Dict[str, List[float]]] = {}
     for item in window_metrics:
@@ -13486,7 +13551,8 @@ async def family_overview(days: int = 7):
             continue
         group = glucose_groups.setdefault(
             item.get("profile") or "",
-            {"fasting": [0.0, 0], "postprandial": [0.0, 0]},
+            {"fasting": [0.0, 0], "postprandial": [0.0, 0],
+             "random": [0.0, 0]},
         )
         context = str(item.get("context") or "unspecified")
         if context in ("fasting", "unspecified"):
@@ -13495,9 +13561,14 @@ async def family_overview(days: int = 7):
         elif context == "postprandial":
             group["postprandial"][0] += value
             group["postprandial"][1] += 1
+        elif context in ("bedtime", "random"):
+            # 睡前/随机血糖同样有通用上限：11.1 mmol/L 以上不能静默
+            group["random"][0] += value
+            group["random"][1] += 1
     for member, group in glucose_groups.items():
         fasting = group["fasting"]
         postprandial = group["postprandial"]
+        random_group = group["random"]
         if fasting[1] and fasting[0] / fasting[1] >= 7:
             glucose_alert_by_profile[member] = (
                 "空腹/未分情境血糖平均 "
@@ -13507,6 +13578,14 @@ async def family_overview(days: int = 7):
             glucose_alert_by_profile[member] = (
                 "餐后血糖平均 "
                 f"{round(postprandial[0] / postprandial[1], 2):g}"
+                " mmol/L 明显偏高"
+            )
+        elif random_group[1] and (
+            random_group[0] / random_group[1] >= 11.1
+        ):
+            glucose_alert_by_profile[member] = (
+                "随机/睡前血糖平均 "
+                f"{round(random_group[0] / random_group[1], 2):g}"
                 " mmol/L 明显偏高"
             )
 
@@ -13886,7 +13965,10 @@ async def family_overview(days: int = 7):
             "、".join(med_names),
             {
                 "medications": "、".join(med_names),
-                "allergies": "、".join(
+                # 与 _evaluate_medication_safety/健康提示同口径用「；」：
+                # 补充过敏史里的「无药物过敏/否认X过敏」只能否定它自己
+                # 那一句，不能吞掉前面的结构化过敏原（第七十八轮）
+                "allergies": "；".join(
                     allergy_parts_by_profile.get(profile, [])
                 ),
                 "age": str((contexts.get(profile) or {}).get("age") or ""),

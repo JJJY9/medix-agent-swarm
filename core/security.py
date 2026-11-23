@@ -194,9 +194,11 @@ def configure_server_logging() -> None:
 class _AccessLogQueryFilter(logging.Filter):
     """脱敏 uvicorn 访问日志中的查询串与患者/文档路径片段。"""
 
-    #: 这些路径把患者姓名或文件名放在路径中，必须整体替换
+    #: 这些路径把患者姓名或文件名放在路径中，必须整体替换；
+    #: 路径段在空白处结束（gunicorn request line 形如
+    #: "GET /api/profiles/妈妈 HTTP/1.1"）
     _SENSITIVE_PATH_RE = re.compile(
-        r"(/api/(?:profiles|knowledge/documents)/)[^/?]+"
+        r"(/api/(?:profiles|knowledge/documents)/)[^/?\s]+"
     )
 
     @classmethod
@@ -219,11 +221,13 @@ class _AccessLogQueryFilter(logging.Filter):
                         record.args = tuple(updated)
             elif isinstance(args, dict):
                 # gunicorn.access 把请求行/路径放在 atoms 字典里：
-                # 对含查询串的字符串值统一脱敏，避免患者搜索词落日志
+                # 对字符串值统一脱敏（查询串与敏感路径片段），避免
+                # 患者搜索词/档案名落日志；只处理含「?」的值会漏掉
+                # /api/profiles/<姓名> 这类无查询串的路径（第七十八轮）
                 updated_dict = {}
                 changed = False
                 for key, value in args.items():
-                    if isinstance(value, str) and "?" in value:
+                    if isinstance(value, str):
                         redacted = self._redact_path(value)
                         if redacted != value:
                             updated_dict[key] = redacted
