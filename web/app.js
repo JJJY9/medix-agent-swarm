@@ -22796,6 +22796,17 @@ function settleDraftForSession(targetId) {
   // 待重置期间草稿属于即将新建的会话（owner 为空），不是上一位
   // 患者残留：刷新/中止对账经过这里时不能把用户正在写的草稿清掉
   if (owner === '' && pendingSessionReset) return;
+  if (
+    owner === ''
+    && target
+    && safeSessionGet(ADOPTED_SESSION_KEY) === target
+  ) {
+    // 本页尚无会话时输入的草稿：另一标签页建立共享会话后本页刷新
+    // 采纳了它。草稿仍属于本页用户，不能按「其它会话的草稿」清掉；
+    // 改挂到采纳的会话后，后续对账与提交都按该会话处理（第八十四轮）
+    safeSessionSet(DRAFT_OWNER_KEY, target);
+    return;
+  }
   if (detachedComposerText && els.input.value === detachedComposerText) {
     // 深链接管后放回、等待用户确认的主诉不属于任何会话，不能被清掉
     return;

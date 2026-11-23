@@ -5,10 +5,20 @@ import re
 #: 常见药名后缀（霉素/地平/双胍/拉唑/他定/波糖/卡韦/鲁司特…）
 GENERIC_DRUG_NAME_RE = re.compile(
     r"[一-龥]{1,6}(?:霉素|西林|沙坦|普利|洛尔|地平|他汀|列汀|列净|"
-    r"康唑|磺脲|双胍|胍|拉唑|替丁|必利|司琼|他定|波糖|卡韦|鲁司特|"
+    r"康唑|磺脲|双胍|胍|拉唑|替丁|必利(?!用)|司琼|"
+    r"他定(?!期|义|价|时|位|量|向|性|制|论|语|居|点)|波糖|卡韦|鲁司特|"
     r"甲状腺素|西汀|佐仑|噻嗪|替尼|单抗|环素|沙星|硝唑|肝素|胰岛素)|"
     r"[一-龥]{2,6}(?:片|胶囊|颗粒)"
 )
+
+#: 常见商品名（通用名的别名写法）：同样是「这条分句在说一种药」
+#: 的证据，停用归因与用药安全共用
+BRAND_DRUG_NAMES = (
+    "优甲乐", "波立维", "替格瑞洛", "立普妥", "络活喜", "倍他乐克",
+    "格华止", "拜新同", "波依定", "代文", "科素亚", "安博维",
+    "海捷亚", "施慧达", "欣康", "可定", "来适可", "捷诺维",
+)
+BRAND_DRUG_NAME_RE = re.compile("|".join(BRAND_DRUG_NAMES))
 
 #: 用药类别词：同样是「另一条用药分句」的证据
 MED_CATEGORY_RE = re.compile(
@@ -24,4 +34,5 @@ def clause_mentions_drug_clause(clause: str) -> bool:
     return bool(
         GENERIC_DRUG_NAME_RE.search(text)
         or MED_CATEGORY_RE.search(text)
+        or BRAND_DRUG_NAME_RE.search(text)
     )

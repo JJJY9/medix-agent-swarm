@@ -2675,16 +2675,21 @@ def _forwarded_appended_address(request: Request) -> str:
             if values:
                 return _usable(values[-1] or "")
             # 客户端左侧未闭合引号会让严格解析整体失败：单跳声明下
-            # 代理追加项在末尾，用宽松正则取最右可解析项（第八十三轮）
-            loose = re.findall(
-                r'for\s*=\s*"?([^;,"\s]+)', header
+            # 代理追加项在末尾，只解析最后一个顶层逗号之后的片段。
+            # 该片段没有可解析的 for= 时（For= 大小写、unknown/unix:
+            # 等不可解析值）必须 fail closed，不能向左回退到客户端
+            # 可控的 for=（否则可伪造预锁定地址/绕过 10 次锁定）
+            # （第八十三/八十四轮）
+            last_segment = header.rsplit(",", 1)[-1]
+            loose = re.search(
+                r'for\s*=\s*"?([^;,"\s]+)',
+                last_segment,
+                re.IGNORECASE,
             )
-            for candidate in reversed(loose):
-                usable = _usable(
-                    _normalize_forwarded_address(candidate)
+            if loose is not None:
+                return _usable(
+                    _normalize_forwarded_address(loose.group(1))
                 )
-                if usable:
-                    return usable
     return ""
 
 
@@ -13837,6 +13842,8 @@ async def family_overview(days: int = 7):
             continue
         if (item.get("profile") or "", "bp") in target_map:
             # 已设置个体化血压目标：家庭关注与目标卡片口径一致
+            # （第四十九/六十三轮契约：关注徽标保持目标口径，
+            # 安全底线由健康提示面板呈现）
             continue
         try:
             systolic = float(item.get("value1") or 0)

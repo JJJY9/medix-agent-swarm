@@ -764,12 +764,29 @@ def _segment_ends_with_drug_name(segment: str) -> bool:
     return False
 
 
+#: 当前药自身的剂型后缀（「阿司匹林肠溶片」的「肠溶片」）：窗口从
+#: 药名之后开始，首段残留的剂型词不是第二种药（第八十四轮）
+_DRUG_FORM_SUFFIX_RE = re.compile(
+    r"^(?:肠溶|缓释|控释|分散|咀嚼|泡腾|软|硬)?"
+    r"(?:片剂|胶囊剂|胶囊|颗粒|片|丸|散|口服液|滴剂|喷雾剂|贴剂|"
+    r"注射液|混悬液|糖浆)"
+)
+
+
 def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
     """停药动词前的文本是否点名了另一种药（不是当前药）。"""
-    for segment in re.split(r"[，。；;,.!?！？\n]", str(prefix or "")):
+    segments = re.split(r"[，。；;,.!?！？\n]", str(prefix or ""))
+    for index, segment in enumerate(segments):
         lowered = segment.lower()
         if not lowered.strip():
             continue
+        if index == 0:
+            # 首段紧接当前药别名：剥掉本身的剂型词再判断
+            stripped = _DRUG_FORM_SUFFIX_RE.sub("", segment.strip())
+            if not stripped:
+                continue
+            segment = stripped
+            lowered = segment.lower()
         if clause_mentions_drug_clause(segment):
             return True
         for group_items in DRUG_GROUPS.values():
