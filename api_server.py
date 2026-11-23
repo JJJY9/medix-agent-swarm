@@ -2654,11 +2654,11 @@ def _forwarded_appended_address(request: Request) -> str:
     if allowed_source in ("", "x-real-ip"):
         real_values = _proxy_header_values(request, "x-real-ip")
         if real_values:
-            if len(set(real_values)) > 1:
-                return ""
             # 同 XFF：未声明单跳代理时不采信客户端可自带的单元素头
             if not _proxy_single_hop():
                 return ""
+            # 追加模式下代理最后写入：重复行取最后一行，客户端
+            # 自带的更早行不能把预锁定整体降级（第八十三轮）
             return _usable(
                 _normalize_forwarded_address(real_values[-1])
             )
@@ -2667,13 +2667,24 @@ def _forwarded_appended_address(request: Request) -> str:
             _proxy_header_values(request, "forwarded")
         ).strip()
         if header:
+            # RFC 7239 Forwarded 同样是透传代理可原样转发的内容：
+            # 仅在显式声明单跳时采信
+            if not _proxy_single_hop():
+                return ""
             values = _forwarded_for_values(header)
             if values:
-                # RFC 7239 Forwarded 同样是透传代理可原样转发的内容：
-                # 仅在显式声明单跳时采信
-                if not _proxy_single_hop():
-                    return ""
                 return _usable(values[-1] or "")
+            # 客户端左侧未闭合引号会让严格解析整体失败：单跳声明下
+            # 代理追加项在末尾，用宽松正则取最右可解析项（第八十三轮）
+            loose = re.findall(
+                r'for\s*=\s*"?([^;,"\s]+)', header
+            )
+            for candidate in reversed(loose):
+                usable = _usable(
+                    _normalize_forwarded_address(candidate)
+                )
+                if usable:
+                    return usable
     return ""
 
 
@@ -3148,10 +3159,33 @@ async def require_access_token(request: Request, call_next):
         ):
             # 常见误配置：开启信任代理但漏设 MEDIX_TRUSTED_PROXY_ADDRS
             _warn_untrusted_proxy_peer(peer_host)
-        shared_bucket = (not peer_host) or untrusted_forwarded or (
-            _is_trusted_proxy_peer(peer_host)
-            and _client_ip_key(request)
-            == f"ip:{_bucket_address(peer_host or 'unknown')}"
+        # 受信代理已解析出真实客户端地址时，键可能来自客户端可影响的
+        # 更左转发项：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
+        # 把正确令牌用户锁死）。只有代理追加写入的最右地址可用于预锁定
+        forwarded_resolved = bool(
+            _trust_proxy_headers()
+            and _is_trusted_proxy_peer(peer_host)
+            and _forwarded_client_address(request)
+        )
+        appended_address = (
+            _forwarded_appended_address(request)
+            if (
+                _trust_proxy_headers()
+                and _is_trusted_proxy_peer(peer_host)
+            )
+            else ""
+        )
+        shared_bucket = (
+            # Unix 套接字部署没有对端地址；但若代理追加地址可证明
+            # （单跳声明 + 最右可解析），应按该地址预锁定/分桶，而不是
+            # 因无对端就并入无比较闸门的共享桶（第八十三轮）
+            (not peer_host and not (forwarded_resolved and appended_address))
+            or untrusted_forwarded
+            or (
+                _is_trusted_proxy_peer(peer_host)
+                and _client_ip_key(request)
+                == f"ip:{_bucket_address(peer_host or 'unknown')}"
+            )
         )
         if (
             _trust_proxy_headers()
@@ -3163,28 +3197,12 @@ async def require_access_token(request: Request, call_next):
             # 10 次错误令牌把这个 TCP 对端的所有正确令牌用户硬预锁定
             # 5 分钟（正确令牌在共享闸门里直通，不受错误尝试影响）
             shared_bucket = True
-        # 受信代理已解析出真实客户端地址时，键可能来自客户端可影响的
-        # 更左转发项：不能据此做令牌比较前的预锁定（否则可伪造他人 IP
-        # 把正确令牌用户锁死）。只有代理追加写入的最右地址可用于预锁定
-        forwarded_resolved = bool(
-            _trust_proxy_headers()
-            and _is_trusted_proxy_peer(peer_host)
-            and _forwarded_client_address(request)
-        )
         # 与当前令牌一致的请求不是猜测：只有已通过一次受闸门限制的
         # 完整比较并取得短期凭证的会话才能直通；绝不能在限流前先做
         # 原始令牌比较，否则锁定期间每个请求仍比较一次，命中即 200，
         # 形成按请求速率在线穷举的 oracle
         known_token = _token_proof_valid(request)
         gate_handle = None
-        appended_address = (
-            _forwarded_appended_address(request)
-            if (
-                _trust_proxy_headers()
-                and _is_trusted_proxy_peer(peer_host)
-            )
-            else ""
-        )
         # 地址只来自客户端可影响的更左转发项（代理追加项为空）：
         # 该地址无法证明属于请求方，失败计数与预锁定都必须用独立的
         # spoof 桶，否则任何人可伪造受害者的地址、用错误令牌把它
@@ -3200,7 +3218,9 @@ async def require_access_token(request: Request, call_next):
         )
         gate_unprovable = bool(
             (forwarded_resolved and not appended_address)
-            or forwarded_declared
+            # 严格解析失败但宽松提取到代理追加项（单跳声明）时，
+            # 地址仍可证明，不降级为 spoof 闸门（第八十三轮）
+            or (forwarded_declared and not appended_address)
         )
         if (
             not _is_loopback_client(request)
@@ -3473,6 +3493,13 @@ async def require_access_token(request: Request, call_next):
                 # 回环共享桶的高阈值计数，预锁定检查对聚合键跳过
                 pre_shared = bool(shared_bucket or gate_unprovable)
                 pre_aggregate = _is_ipv6_aggregate_key(pre_key)
+                if appended_address:
+                    # 代理追加地址可证明：失败计数必须落在与预锁定
+                    # 相同的桶与限流器上，不能被共享桶键拆开导致
+                    # 「10 次后仍逐次比较」（第八十三轮）
+                    pre_shared = False
+                    pre_limiter = auth_failure_limiter
+                    pre_key = f"ip:{_bucket_address(appended_address)}"
                 if pre_shared or pre_aggregate:
                     pre_limiter = auth_failure_limiter_loopback
                 if pre_shared and not gate_unprovable:
@@ -3595,6 +3622,13 @@ async def require_access_token(request: Request, call_next):
                 # 独立客户端：按 100 次/5 分钟的回环共享桶计数，不用
                 # 每来源 10 次阈值（一人输错就锁整片用户）
                 shared_scope = bool(shared_bucket or gate_unprovable)
+                if appended_address:
+                    # 代理追加地址可证明：失败必须记入与预锁定相同的
+                    # 独立桶，否则共享桶把计数吞掉，10 次错误令牌后仍
+                    # 逐次比较（第八十三轮 [6]/[11]）
+                    limiter = auth_failure_limiter
+                    limiter_key = f"ip:{_bucket_address(appended_address)}"
+                    shared_scope = False
                 aggregate_scope = _is_ipv6_aggregate_key(limiter_key)
                 if shared_scope or aggregate_scope:
                     limiter = auth_failure_limiter_loopback
@@ -13253,6 +13287,20 @@ def _family_attention(
             "label": f"化验异常 {labs['abnormal']} 项",
             "detail": "、".join(labs.get("items") or [])[:120],
         }
+    if glucose_alert:
+        # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
+        return {
+            "level": "warning",
+            "label": "血糖偏高",
+            "detail": glucose_alert[:120],
+        }
+    if bp_alert and bp_alert.get("level") == "warning":
+        # 无目标设置的 2 级高血压：与健康提示血压分级同口径
+        return {
+            "level": "warning",
+            "label": "血压偏高",
+            "detail": str(bp_alert.get("detail") or "")[:120],
+        }
     over_target = [
         item for item in (metrics or [])
         if item.get("over_target") and not item.get("stale")
@@ -13280,20 +13328,6 @@ def _family_attention(
                 _metric_attention_text(item)
                 for item in over_target[:3]
             )[:120],
-        }
-    if glucose_alert:
-        # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
-        return {
-            "level": "warning",
-            "label": "血糖偏高",
-            "detail": glucose_alert[:120],
-        }
-    if bp_alert and bp_alert.get("level") == "warning":
-        # 无目标设置的 2 级高血压：与健康提示血压分级同口径
-        return {
-            "level": "warning",
-            "label": "血压偏高",
-            "detail": str(bp_alert.get("detail") or "")[:120],
         }
     if medications.get("expired") or medications.get("low_stock"):
         parts = []

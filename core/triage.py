@@ -11,6 +11,11 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.context import medication_context_text
+from core.medication_text import (
+    GENERIC_DRUG_NAME_RE as _GENERIC_DRUG_NAME_RE,
+    MED_CATEGORY_RE as _MED_CATEGORY_RE,
+    clause_mentions_drug_clause,
+)
 
 #: (匹配短语, 展示标签)。同一个标签只保留一次。
 RED_FLAG_PHRASES = (
@@ -196,7 +201,9 @@ _CAESAREAN_RECENT_RE = re.compile(
 _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
     r"(?:刚|刚刚)(?:生产|分娩)(?:完|了)?|"
-    r"(?:生产|分娩)(?:完|了|后|时(?!间))|"
+    r"(?:生产|分娩)(?:的)?(?:时候|时(?!间)|完|了|后)|"
+    r"(?:剖宫产|剖腹产)(?:手术)?(?:时|的时候)|"
+    r"生(?:孩子|宝宝|娃)(?:的)?(?:时候|时(?!间))|"
     r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
@@ -206,9 +213,20 @@ _POSTPARTUM_YEARS_AFTER_RE = re.compile(
 )
 
 
+#: 触发词之前明确年数/去年（「3年前分娩时/去年生孩子的时候」）：
+#: 属于既往产科史，不是当前孕产状态
+_PAST_YEARS_BEFORE_TRIGGER_RE = re.compile(
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年前|去年|前年|"
+    r"多年前|以前|之前)[^，。；]{0,8}$"
+)
+
+
 def _postpartum_recent_positive(text: str) -> bool:
     """是否为近期产后表述（明确年数视为既往史）。"""
     for match in _POSTPARTUM_TRIGGER_RE.finditer(text):
+        prefix = text[:match.start()]
+        if _PAST_YEARS_BEFORE_TRIGGER_RE.search(prefix):
+            continue
         tail = text[match.end():match.end() + 12]
         if _POSTPARTUM_YEARS_AFTER_RE.search(tail):
             continue
@@ -517,6 +535,10 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     # 「去年/前年/以前/曾经流产过」
     r"|(?:去年|前年|上年|以前|之前|曾经|既往)[^，。；]{0,6}?"
     r"(?:流产|胎停|人流|药流|引产)(?:过|了)?"
+    # 「3年前分娩时/去年生孩子的时候」
+    r"|(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年前|去年|前年|"
+    r"多年前|以前|之前)[^，。；]{0,8}?"
+    r"(?:分娩|生产|剖宫产|剖腹产|生孩子)"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
@@ -962,6 +984,14 @@ _EDUCATIONAL_PREFIX_RE = re.compile(
     r"问下|咨询(?:一下)?|想咨询(?:一下)?|"
     r"我想了解(?:一下|下)?|想了解(?:一下)?|了解一下|听说|我听说|据说)"
 )
+#: 媒体词作为症状发生的时间语境（看视频时胸痛/看了个视频后胸痛）：
+#: 不是被引用的科普内容，不能按科普丢弃（第八十三轮）
+_EDUCATION_MEDIA_TIME_CONTEXT_RE = re.compile(
+    r"(?:看|刷|听|读)(?:了)?(?:个|段|篇|条|一会儿)?\s*"
+    r"(?:视频|文章|新闻|帖子|百科)[^，。；]{0,4}?(?:时|的时候|后|以后|之后)"
+    r"|(?:一边|边)(?:看|刷|听)[^，。；]{0,6}一边"
+)
+
 #: 传闻式语句整句按科普处理，不构成患者本人当前主诉
 _HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
 #: 病程/数量线索：定义问句前缀含这些词时按真实主诉保留
@@ -1180,6 +1210,13 @@ def _clean_complaint_clause(
             # 「网上看到胸痛要重视我现在胸痛」：引用之后同分句仍在
             # 描述本人当前症状
             or _EDUCATION_CURRENT_RE.search(clause) is not None
+            # 「看视频时/看了个视频后胸痛」：媒体词只是症状发生的
+            # 时间语境，不是科普引用（第八十三轮）
+            or (
+                _EDUCATION_MEDIA_TIME_CONTEXT_RE.search(clause)
+                is not None
+                and _is_red_flag_text(clause)
+            )
         )
         family_redflag = any(
             marker in clause for marker in _FAMILY_HISTORY_MARKERS
@@ -2157,33 +2194,19 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
-#: 用药类别词：同样是「另一条用药分句」的证据
-_MED_CATEGORY_RE = re.compile(
-    r"(?:降压药|降糖药|降脂药|降尿酸药|止痛药|止疼药|消炎药|抗生素|"
-    r"抗菌药|安眠药|催眠药|抗过敏药|抗抑郁药|抗癫痫药|胃药|退烧药|"
-    r"退热药|中药|西药|激素|免疫抑制剂|抗凝药|心血管药)"
-)
-#: 「用药动作 + 宾语」：奥美拉唑吃了两年/去年吃降压药；裸动词
-#: （胃不舒服/用着不舒服/打了点滴/吃得少）不算
-_MED_ACTION_OBJECT_RE = re.compile(
-    r"(?:吃|服用|口服|注射|打|滴|含服|喷|输)(?:了|着|过|上|起来)?\s*"
-    r"(?!不|别|点|完|饱|好|少|多|了|着|过|得|的|啦|呢)[一-龥a-z]"
-    r"[一-龥a-z0-9\-]{1,12}"
-)
-#: 常见药名后缀（补 _OTHER_STOP_DRUG_TAILS 未列出的慢性病用药）
-_GENERIC_DRUG_NAME_RE = re.compile(
-    r"[一-龥]{1,6}(?:霉素|西林|沙坦|普利|洛尔|地平|他汀|列汀|列净|"
-    r"康唑|磺脲|双胍|胍|胰岛素)|"
-    r"[一-龥]{2,6}(?:片|胶囊|颗粒)"
-)
+#: 见 core/medication_text.py：分诊与用药安全共用同一套药名/类别词
 
 def _clause_names_other_drug(clause: str) -> bool:
-    """分句是否点名/描述了一条用药（停药归因的「最近药名分句」）。"""
+    """分句是否点名/描述了一条用药（停药归因的「最近药名分句」）。
+
+    药名后缀/类别词来自 core/medication_text 共享定义；不再使用
+    「用药动作+任意宾语」判定（「吃药不规律/打了疫苗/吃了两年」
+    不是另一条药，第八十三轮）。
+    """
+    text = str(clause or "")
     return bool(
-        any(term in clause for term in _OTHER_STOP_DRUG_TAILS)
-        or _GENERIC_DRUG_NAME_RE.search(clause)
-        or _MED_CATEGORY_RE.search(clause)
-        or _MED_ACTION_OBJECT_RE.search(clause)
+        any(term in text for term in _OTHER_STOP_DRUG_TAILS)
+        or clause_mentions_drug_clause(text)
     )
 
 
@@ -2210,6 +2233,7 @@ def _long_stop_targets_clause(clause: str) -> bool:
     if not (
         any(term in clause for term in _OTHER_STOP_DRUG_TAILS)
         or _GENERIC_DRUG_NAME_RE.search(clause)
+        or _MED_CATEGORY_RE.search(clause)
     ):
         return False
     if _STRUCTURED_MED_LINE_RE.search(clause):
@@ -2329,6 +2353,8 @@ _RESTART_TEXT_RE = re.compile(
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
+    r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
+    r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -2342,6 +2368,8 @@ _RESTART_OBJECT_RE = re.compile(
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
+    r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
+    r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别)"
@@ -2382,6 +2410,11 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
         obj,
         flags=re.IGNORECASE,
     )
+    # 时间补语/语气助词不是药名宾语：「一直吃到现在/现在还吃着呢」
+    obj = re.sub(
+        r"(?:到现在|到今天|至今|到现在为止|以来|为止|一直)$", "", obj
+    ).strip()
+    obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
     if not obj or len(obj) < 2:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
@@ -2613,15 +2646,30 @@ def _has_fever(text: str) -> bool:
                     # 「高热量/高热能」不是发热
                     start = text.find(term, start + len(term))
                     continue
-            after = text[start + len(term):start + len(term) + 10]
-            if re.match(
+            after = text[start + len(term):start + len(term) + 12]
+            negative_prefix = (
                 r"[^，。；！？\n]{0,4}?"
-                r"(?:不到|没到|未到|没有?到|不足|未达|差一点|差点)",
+                r"(?:不到|没到|未到|没有?到|不足|未达|差一点|差点)"
+            )
+            duration_after = re.match(
+                negative_prefix
+                + r"\s*[0-9一二两三四五六七八九十]+\s*"
+                r"(?:天|日|小时|周|个?月|年)",
                 after,
-            ):
-                # 「发烧不到38度」「体温没到38度」：词后阈值否定
-                start = text.find(term, start + len(term))
-                continue
+            )
+            if not duration_after:
+                low_threshold = re.match(
+                    negative_prefix
+                    + r"\s*(?:3[0-7](?:\.\d+)?|38(?:\.0+)?)"
+                    r"\s*(?:度|℃)?",
+                    after,
+                )
+                if low_threshold:
+                    # 「体温/发烧不到38度」：读数低于发热界才算无发热；
+                    # 「没到39度/不到40度」仍可能是 38.x 的真实发热，
+                    # 「不到一天/48小时」是病程时长（第八十三轮）
+                    start = text.find(term, start + len(term))
+                    continue
             if not _is_negated(
                 prefix, _clause_suffix(text, start + len(term))
             ):
@@ -2639,8 +2687,16 @@ def _has_fever(text: str) -> bool:
                 r"(?:不到|没到|未到|没有?到|不足|未达|差一点|差点)\s*$",
                 recent,
             ):
-                # 「没有到38度」：数字前紧跟阈值否定
-                continue
+                # 「没有到38度」：数字前紧跟阈值否定；读数本身 ≥38
+                # 时（「没到39度」）仍是真实发热，不能跳过
+                try:
+                    reading_value = float(re.match(
+                        r"[0-9]+(?:\.[0-9]+)?", match.group(0)
+                    ).group(0))
+                except (AttributeError, ValueError):
+                    reading_value = 0.0
+                if reading_value <= 38:
+                    continue
         else:
             keyword = re.match(
                 r"(?:体温|发烧|发热|高烧|低烧|烧到)", match.group(0)
@@ -2650,8 +2706,13 @@ def _has_fever(text: str) -> bool:
                 r"(?:不到|没到|未到|没有?到|不足|未达|不是|差一点|差点)",
                 bridge,
             ):
-                # 「体温不到38度」「发烧没到38度」：读数低于发热阈值
-                continue
+                # 「体温不到38度」：读数低于发热阈值才跳过；界限
+                # ≥38（「没到39度」）仍按发热处理（第八十三轮）
+                bridge_values = re.findall(
+                    r"[0-9]+(?:\.[0-9]+)?", bridge
+                )
+                if not bridge_values or float(bridge_values[0]) <= 38:
+                    continue
         prefix = _clause_prefix(text, match.start(), lookback=8)
         if not _is_negated(prefix, _clause_suffix(text, match.end())):
             return True

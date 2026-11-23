@@ -12,7 +12,6 @@ import re
 from typing import Any, Dict, Iterable, List, Tuple
 
 from core.context import medication_context_text
-
 #: 药名 → 组内规范名。别名用于匹配主诉和用药记录里的不同写法。
 DRUG_GROUPS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
     "warfarin": (
@@ -771,6 +770,8 @@ def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
         lowered = segment.lower()
         if not lowered.strip():
             continue
+        if clause_mentions_drug_clause(segment):
+            return True
         for group_items in DRUG_GROUPS.values():
             for _canonical, aliases in group_items:
                 for alias in aliases:
@@ -1020,6 +1021,8 @@ _RESTART_USE_SUFFIX = re.compile(
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
     r"|仍在吃|仍在服用|仍然服用"
+    r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
+    r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西（含量词）
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -1056,6 +1059,11 @@ def _continuous_restart_matches(follow: str, alias_lower: str) -> bool:
             obj,
             flags=re.IGNORECASE,
         )
+        # 时间补语/语气助词不是药名宾语
+        obj = re.sub(
+            r"(?:到现在|到今天|至今|到现在为止|以来|为止|一直)$", "", obj
+        ).strip()
+        obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
         if not obj:
             return True
         if re.match(r"^[0-9一二两三四五六七八九十半几]+", obj):
@@ -1432,6 +1440,8 @@ def _dedupe(alerts: List[Dict[str, str]]) -> List[Dict[str, str]]:
             break
     return result
 
+
+from core.medication_text import clause_mentions_drug_clause
 
 #: 家属称谓：家人的服药/停药/过敏不能算到患者本人头上
 _FAMILY_MEDICATION_MARKERS = (
