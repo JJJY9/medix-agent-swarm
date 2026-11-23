@@ -5603,6 +5603,54 @@ class SessionStore:
                 local_group_size + inserted_total < backup_group_size
             )
 
+        def _candidate_content_matches_profile_sibling(
+            candidate: int, candidate_profile: str
+        ) -> bool:
+            """候选内容是否同时精确等于同秒同档案另一条备份记录。
+
+            内容与兄弟备份行相同（如两条同日复诊、同到期提醒）时，
+            即便候选被当前行认领，兄弟行的内容仍有存活行；反之
+            （改挂行被改名成兄弟行的标题、内容原本不同）认领会
+            让兄弟行的原内容永久缺失，必须按被删记录补插。
+            """
+            if (
+                not backup_contents
+                or not content_columns
+                or not candidate_profile
+            ):
+                return False
+            try:
+                row = self._conn.execute(
+                    f"SELECT {', '.join(content_columns)}"
+                    f" FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            fingerprint = self._db_content_fingerprint(
+                row, content_columns
+            )
+            created_key = str(created_at_value or "")
+            wanted = _normalize_profile_name(candidate_profile)
+            for other_id, contents in backup_contents.items():
+                if other_id == raw_id:
+                    continue
+                if contents != fingerprint:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if backup_profiles and _normalize_profile_name(
+                    backup_profiles.get(other_id) or ""
+                ) != wanted:
+                    continue
+                return True
+            return False
+
         def _candidate_foreign_backup_row(candidate: int) -> bool:
             """候选是否其实是另一成员同秒备份行的改挂存活版本。
 
@@ -6615,10 +6663,14 @@ class SessionStore:
                     # 内容对应备份里另一条记录（如跨成员改挂后的行）：
                     # 它属于那条记录的存活版本，不能当本行的孤儿
                     continue
-                if _candidate_soft_owned_by_other(candidate):
+                if _candidate_soft_owned_by_other(
+                    candidate, cross_profile=True
+                ):
                     # 软字段精确等于另一条同秒备份记录（如被改挂提醒
                     # 的标题命中兄弟行）：候选属于那条记录，本行必须
-                    # 按被删记录补插而不是抢走它
+                    # 按被删记录补插而不是抢走它。改挂会同时改档案，
+                    # 必须跨档案比较，否则兄弟记录的改挂行会被当成
+                    # 本行的改名孤儿（第八十三轮 [4]）
                     continue
                 if _tail_prefers_sibling(candidate, cross_profile=True):
                     # 尾字段明显更像同秒孪生（如另一成员恰好在同名
@@ -6827,7 +6879,12 @@ class SessionStore:
                 # （第七十八轮）
                 if not _tail_prefers_sibling(
                     int(row["id"]), cross_profile=True
+                ) and not _candidate_soft_owned_by_other(
+                    int(row["id"]), cross_profile=True
                 ):
+                    # 尾字段平局时软字段仍能证明候选属于兄弟备份行：
+                    # 备注都为空/相同的同秒孪生不能被当前行抢走
+                    # （第八十三轮 [4]）
                     return _claim(int(row["id"]))
         if raw_id > 0 and content_where and created_at_value:
             # 记录被 PATCH 改挂到另一档案：主键 + 创建时间 + 内容仍能确认
@@ -6899,6 +6956,20 @@ class SessionStore:
                     claimable = False
                 if claimable and _auto_followup_moved_copy(candidate):
                     # 自动复诊预约被改挂：原档案补回副本而不是吞掉
+                    claimable = False
+                if (
+                    claimable
+                    and _candidate_soft_owned_by_other(
+                        candidate, cross_profile=True
+                    )
+                    and _tail_tied_with_sibling(
+                        candidate, cross_profile=True
+                    )
+                ):
+                    # 候选软字段（标题）精确等于同秒另一条备份记录：
+                    # 它是那条记录改挂后的存活行（备注为空/相同的
+                    # 孪生不能靠尾字段区分），本行按被删记录补回
+                    # （第八十三轮 [4]）
                     claimable = False
                 if claimable and _tail_prefers_sibling(
                     candidate, cross_profile=True
@@ -7131,6 +7202,15 @@ class SessionStore:
                         and tail_where is not None
                         and not _backup_content_shared_with_sibling()
                     ):
+                        candidates = [
+                            candidate for candidate in candidates
+                            if not _candidate_soft_owned_by_other(
+                                candidate, cross_profile=True
+                            )
+                        ]
+                        placeholders = ",".join(
+                            "?" for _ in candidates
+                        )
                         # 软字段被本地编辑过（提醒改标题）：回退到满足
                         # 尾字段的漂移候选，避免把改编前旧版本再插一份。
                         # 同内容孪生（如两条同秒同到期日提醒）无法用
@@ -7141,7 +7221,7 @@ class SessionStore:
                             f" WHERE id IN ({placeholders})"
                             f" AND {tail_fragment}",
                             (*candidates, *tail_extra),
-                        ).fetchall()
+                        ).fetchall() if candidates else []
                         tail_ids = {int(row["id"]) for row in tail_rows}
                         filtered_candidates = [
                             candidate for candidate in candidates
@@ -7223,6 +7303,26 @@ class SessionStore:
                     ):
                         # 候选尾字段更像同组另一条同内容孪生备份行
                         if local_group_size < backup_group_size:
+                            tail_exact = [
+                                candidate for candidate in claimed
+                                if candidate not in moved
+                                and candidate not in matched
+                                and candidate != sole
+                                and _tail_matches(candidate)
+                                and _candidate_edited(candidate)
+                                and not _candidate_soft_owned_by_other(
+                                    candidate, cross_profile=True
+                                )
+                                and not _content_owned_by_other(candidate)
+                            ]
+                            if len(tail_exact) == 1:
+                                # 组内缺行是上一次恢复补插的行造成的：
+                                # 本行改名后的存活行尾字段仍精确命中
+                                # 本行，按它认领而不是补插旧版本
+                                # （第八十三轮 [10] 幂等）
+                                return _claim(
+                                    tail_exact[0], mark_moved=True
+                                )
                             # 组内确有缺行：本行按被删记录补插
                             return _ambiguous()
                         # 组已满：候选属于兄弟行，跳过漂移认领，
@@ -7247,7 +7347,12 @@ class SessionStore:
                             if not _tail_matches(sole) and (
                                 _tail_prefers_sibling(sole)
                                 or not _candidate_edited(sole)
+                                or _tail_tied_with_sibling(
+                                    sole, cross_profile=True
+                                )
                             ):
+                                # 尾字段与兄弟行打平（备注被编辑得都
+                                # 不像）：无法归属时宁重复勿丢（第八十三轮）
                                 return _ambiguous()
                         if (
                             is_group_last
@@ -7331,7 +7436,19 @@ class SessionStore:
                     continue
                 if _candidate_attributable_to_profile_sibling(
                     candidate, candidate_profile
+                ) and not (
+                    soft_where is not None
+                    and _soft_matches(candidate)
+                    and _tail_matches(candidate)
+                    and _candidate_content_matches_profile_sibling(
+                        candidate, candidate_profile
+                    )
                 ):
+                    # 软字段与尾字段仍精确命中本行、且内容同时等于
+                    # 同秒兄弟备份行（同日复诊/同到期提醒）时，认领
+                    # 不会丢失兄弟行的任何信息，候选就是本行改挂后
+                    # 的存活版本；尾字段被编辑过或会丢兄弟内容时仍按
+                    # 被删记录补插（第八十三轮）
                     continue
                 moved_candidates.append(candidate)
             if len(moved_candidates) == 1 and (
@@ -7816,6 +7933,16 @@ class SessionStore:
                 (*ordered, *extra),
             ).fetchall()
             soft = {int(row["id"]) for row in soft_rows}
+            if len(soft) > 1:
+                tail_exact = {
+                    candidate for candidate in soft
+                    if _tail_matches(candidate)
+                }
+                if len(tail_exact) == 1:
+                    # 本地改名的存活行尾字段仍与当前备份行精确一致；
+                    # 上一次恢复补插的旧副本尾字段已不符，不能让它
+                    # 改变本次导入的分支（第八十三轮幂等）
+                    soft = tail_exact
             if soft:
                 # 软字段命中：备份组只有一行，或该软字段在备份组内
                 # 唯一时才能认领；同秒同名孪生仍不可区分。本地存活
@@ -8101,6 +8228,15 @@ class SessionStore:
             # 主键指向另一成员的备份行：它是改挂过来的存活版本，
             # 本行按被删记录补插（宁重复勿丢）。同档案的改名/改剂量
             # 仍按本行存活版本认领。
+            return _ambiguous()
+        if (
+            soft_where is not None
+            and not _soft_matches(sole)
+            and _candidate_soft_owned_by_other(sole, cross_profile=True)
+        ):
+            # 候选软字段（标题）对不上本行、却精确等于同秒另一条
+            # 备份记录：它是那条记录改名/改挂后的存活版本，本行按
+            # 被删记录补插，不能抢走兄弟行（第八十三轮 [4]）
             return _ambiguous()
         return _claim(sole)
 
@@ -14458,7 +14594,54 @@ class SessionStore:
                                     or latest_text <= marker
                                 ):
                                     rebuild = False
-                        rebuilt_id = _create_reminder() if rebuild else 0
+                        adopted_id = 0
+                        if rebuild:
+                            # 导入的「仅提醒链接」脱钩待办：恢复/改期时
+                            # 优先接管就诊仍链接的那条提醒，不能再建
+                            # 一条同名提醒（删就诊后旧提醒变幽灵）
+                            # （第八十三轮 [16]）
+                            adopt_visit = self._appointment_owner_visit(
+                                previous["note"],
+                                previous["owner_visit_id"],
+                                normalized["profile"],
+                                normalized["scheduled_at"],
+                                check_date=False,
+                            )
+                            if adopt_visit:
+                                adopt_row = self._conn.execute(
+                                    "SELECT followup_reminder_id"
+                                    " FROM visit_records WHERE id = ?",
+                                    (int(adopt_visit),),
+                                ).fetchone()
+                                adopt_reminder = (
+                                    int(adopt_row["followup_reminder_id"] or 0)
+                                    if adopt_row is not None else 0
+                                )
+                                if adopt_reminder and reminder_due:
+                                    adopt_day = str(
+                                        normalized["scheduled_at"] or ""
+                                    )[:10]
+                                    adopt_note = " ".join(
+                                        part for part in (
+                                            f"复诊 {adopt_day}",
+                                            normalized["department"],
+                                            normalized["doctor"],
+                                        ) if part
+                                    )[:300]
+                                    if adopt_note and (
+                                        self.adopt_orphan_followup_reminder(
+                                            adopt_reminder,
+                                            int(appointment_id),
+                                            reminder_due,
+                                            adopt_note,
+                                            normalized["profile"],
+                                        )
+                                    ):
+                                        adopted_id = adopt_reminder
+                        rebuilt_id = (
+                            adopted_id
+                            or (_create_reminder() if rebuild else 0)
+                        )
                         if rebuilt_id:
                             # 系统刚按用户意愿重建提醒：删除墓碑必须
                             # 撤销，否则取消→恢复待就诊时又被墓碑拦住
@@ -14584,7 +14767,59 @@ class SessionStore:
                         # 绕过墓碑复活，只恢复预约本身
                         restored_reminder_id = 0
                     else:
-                        restored_reminder_id = _create_reminder()
+                        restored_reminder_id = 0
+                        # 导入的「仅提醒链接」脱钩待办：接管它，否则
+                        # 会再建一条同名提醒、删就诊后留下幽灵
+                        # （第八十三轮）
+                        visit_owner = self._appointment_owner_visit(
+                            previous["note"],
+                            previous["owner_visit_id"],
+                            normalized["profile"],
+                            normalized["scheduled_at"],
+                            check_date=False,
+                        )
+                        orphan_id = 0
+                        if visit_owner:
+                            linked_row = self._conn.execute(
+                                "SELECT followup_reminder_id"
+                                " FROM visit_records WHERE id = ?",
+                                (int(visit_owner),),
+                            ).fetchone()
+                            orphan_id = (
+                                int(linked_row["followup_reminder_id"] or 0)
+                                if linked_row is not None else 0
+                            )
+                        if orphan_id and scheduled_day:
+                            try:
+                                due_date = datetime.strptime(
+                                    scheduled_day, "%Y-%m-%d"
+                                ).date() - timedelta(days=1)
+                                today_date = datetime.strptime(
+                                    today_day, "%Y-%m-%d"
+                                ).date()
+                                if due_date < today_date:
+                                    due_date = today_date
+                                adopt_note = " ".join(
+                                    part for part in (
+                                        f"复诊 {scheduled_day}",
+                                        normalized.get("department") or "",
+                                        normalized.get("doctor") or "",
+                                    ) if part
+                                )[:300]
+                            except ValueError:
+                                adopt_note = ""
+                            if adopt_note and (
+                                self.adopt_orphan_followup_reminder(
+                                    orphan_id,
+                                    int(appointment_id),
+                                    due_date.strftime("%Y-%m-%d"),
+                                    adopt_note,
+                                    normalized["profile"],
+                                )
+                            ):
+                                restored_reminder_id = orphan_id
+                        if not restored_reminder_id:
+                            restored_reminder_id = _create_reminder()
                 if normalized["status"] == "upcoming":
                     # 恢复待就诊后把就诊记录的复诊链接写回：否则逾期
                     # 复诊提示会被抑制、再次安排复诊会产生重复预约。

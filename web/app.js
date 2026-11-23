@@ -21250,6 +21250,9 @@ async function send(question, composerSubmit = false) {
       }
       question = remainder;
       els.input.value = remainder;
+      // 成功后按此快照清理输入框：否则刚发送的剩余主诉会留在里面，
+      // 用户回车即重复会诊（第八十三轮）
+      lastRestoredComposerText = remainder;
       autoGrow();
     }
   }
@@ -23283,6 +23286,30 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = '';
 });
 
+function draftTextSimilarity(original, current) {
+  // 编辑后的草稿与原草稿的共同前后缀覆盖率：退格/中间改字/追加都
+  // 仍视为同一草稿，整体替换才返回低相似度（第八十三轮）
+  const a = String(original || '');
+  const b = String(current || '');
+  if (!a || !b) return 0;
+  let prefix = 0;
+  while (
+    prefix < a.length && prefix < b.length
+    && a[prefix] === b[prefix]
+  ) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix
+    && suffix < b.length - prefix
+    && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  return (prefix + suffix) / Math.min(a.length, b.length);
+}
+
 function loadDraft() {
   try {
     const draft = safeSessionGet(DRAFT_KEY);
@@ -23296,9 +23323,12 @@ function loadDraft() {
       || safeSessionGet(PENDING_RESET_KEY) === (sessionId || '')
     );
     if (
-      owner !== null && owner !== (sessionId || '')
+      owner !== null && owner !== '' && owner !== (sessionId || '')
       && !pendingNewSession
     ) {
+      // owner 为空表示「输入时本页还没有会话」：多标签页里另一标签
+      // 建立共享会话后刷新，这段未发送的草稿仍属于本页用户，
+      // 不能静默删除（第八十三轮）；只清理明确属于其它会话的草稿
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
       return;
@@ -23424,7 +23454,10 @@ els.input.addEventListener('input', () => {
         const stillEditingOwnDraft = Boolean(
           existingOwner
           && previousDraft
-          && els.input.value.includes(previousDraft)
+          && (
+            els.input.value.includes(previousDraft)
+            || draftTextSimilarity(previousDraft, els.input.value) >= 0.5
+          )
         );
         if (!stillEditingOwnDraft) {
           draftProfileMemory = (
