@@ -3220,12 +3220,14 @@ function makeFailureRetry(wrap, retry, label = '重试本次会诊') {
     if (pendingSessionReset) {
       // 档案已切换：旧患者的问题不能按新档案自动重发
       restoreComposer(retry.question);
+      preserveDraftProfile(retry.profile, retry.question);
       setVitals('warn', '档案已切换，请确认后再提交');
       return;
     }
     if (sessionId !== retrySession || openSessionSeq !== retrySeq) {
       // 会话已切换：把问题放回输入框，而不是写进另一位患者名下
       restoreComposer(retry.question);
+      preserveDraftProfile(retry.profile, retry.question);
       setVitals('warn', '会话已切换，旧问题已放回输入框');
       return;
     }
@@ -4106,7 +4108,7 @@ async function bulkDelete() {
       '/api/bulk/sessions/delete', 'POST', { ids }
     );
 
-    if (ids.includes(sessionId)) {
+    if (ids.includes(sessionId) && !busy && !sendInFlight) {
       clearCurrentSession();
     }
 
@@ -4805,6 +4807,9 @@ async function importHistoryBackup() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           version: data.version,
+          exported_at: data.exported_at,
+          session_count: data.session_count,
+          profile_renames: data.profile_renames,
           sessions: data.sessions,
           profiles: data.profiles,
           health_metrics: data.health_metrics,
@@ -5362,6 +5367,7 @@ async function openSession(id) {
           restoreContext: deepLinkOpen || !sameSession,
         }
     );
+    restoreInflightForOpenSession(id, data.messages || []);
     if (deepLinkOpen) {
       consumeDeepLink();
       contextUserEdited = false;
@@ -5612,7 +5618,7 @@ async function deleteHistory(item) {
     });
     if (!res.ok) throw new Error(`删除失败（${res.status}）`);
 
-    if (item.id === sessionId) {
+    if (item.id === sessionId && !busy && !sendInFlight) {
       clearCurrentSession();
     }
     await loadHistory(els.historySearch.value.trim());
@@ -21538,7 +21544,9 @@ async function send(question, composerSubmit = false) {
       // 重复提交、重复计费（第七十三轮审查）
       lastRestoredComposerText = els.input.value;
       preserveDraftProfile(sendProfile, question);
-      renderStopped({ question, askTurn, baselineMessageId });
+      renderStopped({
+        question, askTurn, baselineMessageId, profile: sendProfile,
+      });
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '已停止'));
       els.readout.mode.textContent = '已停止';
@@ -21574,7 +21582,7 @@ async function send(question, composerSubmit = false) {
       preserveDraftProfile(sendProfile, question);
       renderError(
         err.message || String(err),
-        { question, askTurn, baselineMessageId }
+        { question, askTurn, baselineMessageId, profile: sendProfile }
       );
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
@@ -22873,6 +22881,59 @@ function stripInflightQuestion(text, question) {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function restoreInflightForOpenSession(targetId, messages) {
+  // 中断/停止留下的在途主诉：同页重新打开所属会话时也要恢复，
+  // 不能只依赖整页刷新；已落库的则只清记录，避免重复提交
+  if (!targetId) return;
+  let data = null;
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (!raw) return;
+    data = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  const question = String((data && data.question) || '').trim();
+  const owner = String((data && data.sessionId) || '');
+  const profile = String((data && data.profile) || '');
+  const at = Number((data && data.at) || 0);
+  if (!question) return;
+  if (!at || Date.now() - at > 6 * 60 * 60 * 1000) {
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    return;
+  }
+  if (owner && owner !== targetId) return;
+  const currentProfile = activeProfileName || readStoredProfile();
+  if (profile && currentProfile && profile !== currentProfile) return;
+  const list = Array.isArray(messages) ? messages : [];
+  let persisted = false;
+  for (let i = 0; i < list.length; i += 1) {
+    if (
+      list[i].role === 'user'
+      && String(list[i].content || '').trim() === question
+    ) {
+      persisted = list.slice(i + 1).some(
+        (message) => message.role === 'assistant'
+      );
+      if (persisted) break;
+    }
+  }
+  if (persisted) {
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    return;
+  }
+  if (
+    els.input.value.trim()
+    && !els.input.value.includes(question)
+  ) {
+    // 用户已经在输入别的内容：不能覆盖正在编辑的草稿
+    return;
+  }
+  restoreComposer(question);
+  preserveDraftProfile(profile, question);
+  setVitals('warn', '上次中断的主诉已放回输入框，请确认后发送');
 }
 
 function restoreInflightQuestion() {

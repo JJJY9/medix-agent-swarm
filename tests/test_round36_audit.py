@@ -354,15 +354,15 @@ def test_import_rewrites_followup_note_on_visit_id_drift(tmp_path):
         source.save_profile("妈妈", {})
         visit = source.add_visit_record(
             "妈妈", visit_date="2026-11-01", diagnosis="高血压",
-            next_followup_date="2026-11-20",
+            next_followup_date="2027-01-20",
         )
         appointment = source.add_appointment(
-            "妈妈", "复诊：高血压", scheduled_at="2026-11-20T09:00",
+            "妈妈", "复诊：高血压", scheduled_at="2027-01-20T09:00",
             status="upcoming",
             note=f"由就诊记录 #{visit['id']} 自动创建",
         )
         reminder = source.add_reminder(
-            "复诊：高血压", "2026-11-19", "", "", "妈妈",
+            "复诊：高血压", "2027-01-19", "", "", "妈妈",
             0, 0, "", 0, 0, appointment["id"],
         )
         source.set_visit_followup_links(
@@ -405,7 +405,7 @@ def test_import_rewrites_followup_note_on_visit_id_drift(tmp_path):
         )
 
         target.update_visit_record_partial(
-            restored["id"], next_followup_date="2026-12-20"
+            restored["id"], next_followup_date="2027-02-20"
         )
         assert target.get_appointment(appointment["id"]) is None
         record = target.get_visit_record(restored["id"])
@@ -459,11 +459,11 @@ def test_schedule_followup_ownership_not_shared_between_visits(store):
     store.save_profile("妈妈", {"sex": "女"})
     first_visit = store.add_visit_record(
         "妈妈", visit_date="2026-11-01", diagnosis="高血压",
-        next_followup_date="2026-11-20",
+        next_followup_date="2027-01-20",
     )
     second_visit = store.add_visit_record(
         "妈妈", visit_date="2026-11-02", diagnosis="高血压",
-        next_followup_date="2026-11-20",
+        next_followup_date="2027-01-20",
     )
 
     first = _schedule_followup_sync(store, first_visit["id"])

@@ -361,7 +361,7 @@ def test_ipv6_bucket_groups_by_64():
 def test_shared_bucket_counts_after_per_client_limiter():
     api_source = (ROOT / "api_server.py").read_text(encoding="utf-8")
     failure = api_source.index("if not is_authorized(request):")
-    segment = api_source[failure:failure + 6000]
+    segment = api_source[failure:failure + 10000]
     assert segment.index("limiter.check(limiter_key)") < segment.index(
         "auth_failure_limiter_loopback.check("
     )

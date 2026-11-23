@@ -424,7 +424,7 @@ def test_restore_cancelled_appointment_after_date_change(store):
     store.save_profile("妈妈", {"sex": "女"})
     visit = store.add_visit_record(
         "妈妈", visit_date="2026-10-01", diagnosis="高血压",
-        next_followup_date="2026-11-19",
+        next_followup_date="2027-01-19",
     )
     first = _schedule_followup_sync(store, visit["id"])
     appointment = first["appointment"]

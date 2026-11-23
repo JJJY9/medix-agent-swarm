@@ -39,7 +39,7 @@ def test_retry_reconciles_before_resending(client):
     assert "retry.baselineMessageId" in app_js
     assert re.search(
         r"renderError\(\s*err\.message \|\| String\(err\),\s*"
-        r"\{ question, askTurn, baselineMessageId \}",
+        r"\{ question, askTurn, baselineMessageId(?:, profile: sendProfile)? \}",
         app_js,
     )
     assert app_js.count("scheduleAbortReconcile(sessionId, question, baselineMessageId);") >= 2
