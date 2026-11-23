@@ -311,7 +311,8 @@ def test_deleted_profile_rename_history_scrubbed(tmp_path):
     backup = store.export_data()
     resolved = store.resolve_profile_alias("张三")
     store.close()
-    assert backup.get("profile_renames") == [], backup.get("profile_renames")
+    # 第八十一轮起导出不再携带 profile_renames（旧姓名为明文死数据）
+    assert not backup.get("profile_renames"), backup.get("profile_renames")
     assert resolved == "张三", resolved
 
 

@@ -140,7 +140,10 @@ _SUPERLATIVE_NOVELTY_RE = re.compile(
     r"从(?:来)?没(?:有)?(?:再)?出现(?:过)?|"
     r"没(?:有)?(?:再)?出现(?:过)?|"
     r"(?:好)?多年(?:没(?:有)?|未见)(?:再)?(?:出现(?:过)?)?|"
-    r"(?:好)?久没(?:有)?(?:再)?出现(?:过)?)[^，。；]{0,2}的\s*$"
+    r"(?:好)?久没(?:有)?(?:再)?出现(?:过)?|"
+    # 「以前没有过的胸痛」「之前没有过的呼吸困难」同为从未有过
+    r"(?:以前|之前|过去|以往|此前|从(?:来)?)?没(?:有)?(?:再)?过)"
+    r"[^，。；]{0,2}的\s*$"
 )
 
 #: 「不排除/不能排除 X」表示 X 仍有可能，不能当成否定
@@ -192,7 +195,8 @@ _CAESAREAN_RECENT_RE = re.compile(
 #: 年数判断用函数逐个匹配触发词，避免可选后缀回溯绕过负向前瞻。
 _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:顺产|自然分娩|生完(?:孩子|宝宝|娃)?|刚生完|生了(?:孩子|宝宝)?|"
-    r"(?:刚|刚刚)?(?:生产|分娩)(?:完|了|后)?|"
+    r"(?:刚|刚刚)(?:生产|分娩)(?:完|了)?|"
+    r"(?:生产|分娩)(?:完|了|后)|"
     r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
@@ -503,6 +507,13 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    # 「三年前流产过」「两年前胎停过一次」「N年前人流」
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
+    r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
+    # 「人流后一年」「药流后两年」
+    r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
 )
 #: 病史里的既往产科史（不再代表当前妊娠）。注意不要包含
 #: 「已控制/妊娠期糖尿病」这类与当前妊娠并存的诊断/治疗状态
@@ -517,6 +528,11 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?\s*"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
+    r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
+    r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
+    r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
 )
 
@@ -2131,14 +2147,6 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
-#: 含用药宾语的分句（「二甲双胍吃了两年」「我爸吃阿司匹林」）：
-#: 远期停药扫描遇到它就必须停下，不能把更早的药名当成停药主体
-_MEDICATION_CLAUSE_RE = re.compile(
-    r"(?:吃|服用|口服|服|用|注射|打|滴|含服|喷|输)(?:了|着|过|上|起来)?"
-    r"|用药|服药|吃药|药物|药品|药片|胶囊|颗粒|糖浆|滴剂|喷雾|"
-    r"注射液?|抗生素|降压药|降糖药|抗凝药|激素|中药|西药"
-    r"|(?:^|[；;\s])name\s*="
-)
 #: 常见药名后缀（补 _OTHER_STOP_DRUG_TAILS 未列出的慢性病用药）
 _GENERIC_DRUG_NAME_RE = re.compile(
     r"[一-龥]{1,6}(?:霉素|西林|沙坦|普利|洛尔|地平|他汀|列汀|列净|"
@@ -2210,6 +2218,21 @@ def _clause_ends_with_drug_name(clause: str) -> bool:
     )
 
 
+def _intervening_other_drug_clause(
+    clauses: List[str], start: int, stop: int
+) -> bool:
+    """停药分句前（start 与 stop 之间）是否还有另一条药名/用药分句。"""
+    for pos in range(start + 1, stop):
+        candidate = clauses[pos].strip()
+        if not candidate:
+            continue
+        if any(term in candidate for term in _OTHER_STOP_DRUG_TAILS):
+            return True
+        if _GENERIC_DRUG_NAME_RE.search(candidate):
+            return True
+    return False
+
+
 def _long_stop_near(clauses: List[str], index: int) -> bool:
     """同段消息是否另有明确远期停药/结束治疗证据。
 
@@ -2226,6 +2249,13 @@ def _long_stop_near(clauses: List[str], index: int) -> bool:
         ):
             continue
         if _LONG_STOP_PATTERN.search(clause):
+            if pos > index and _intervening_other_drug_clause(
+                clauses, index, pos
+            ):
+                # 「华法林没吃完，二甲双胍吃了两年，停了一年多了」/
+                # 「…我爸吃阿司匹林，停了一年多了」：停药更可能指中间
+                # 那条药名分句，不能抹掉本药的抗凝语境（第八十一轮）
+                continue
             # 「阿司匹林，停了半年」：药名与停药动词落在相邻分句时，
             # 归属判定要把前一分句一起算上，否则会被当成本药停药
             attribution_clause = clause
@@ -2812,9 +2842,10 @@ def _active_medical_text(
             if any(
                 term in candidate_clause
                 for term in _OTHER_STOP_DRUG_TAILS
-            ) or _MEDICATION_CLAUSE_RE.search(candidate_clause):
-                # 中间还有另一条药名/用药分句（含家属的药分句）：远期
-                # 停药更可能指它，本分句必须先于那条记录处理
+            ) or _GENERIC_DRUG_NAME_RE.search(candidate_clause):
+                # 中间还有另一条点名药名的分句（含家属的药分句）：远期
+                # 停药更可能指它，本分句必须先于那条记录处理。裸动词
+                # （胃不舒服/打了点滴/用着不舒服）不算（第八十一轮）
                 break
         if next_stop_index:
             stop_clause = clauses[next_stop_index].strip()

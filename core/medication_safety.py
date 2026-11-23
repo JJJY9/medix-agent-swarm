@@ -1287,12 +1287,29 @@ _ALLERGY_STATEMENT_PATTERNS = (
         r"([^，。；,.!?！？\n]{1,20}?)\s*(?<!抗)过敏(?!史|的药|的药物)"
     ),
     # 英文陈述：「I'm allergic to penicillin」「penicillin allergy」
+    # 「Allergy to penicillin」「penicillin allergic」；捕获只取药名
+    # token，遇到 and/but/can/i 等词或标点即止，不能连带吞掉后面的
+    # 在用药物（否则华法林等相互作用提示被静默抹掉，第八十一轮）
     re.compile(
-        r"allergic\s+to\s+([a-z][a-z0-9 \-]{1,24})",
+        r"allergic\s+to\s+([a-z][a-z0-9\-]*(?:\s+[a-z][a-z0-9\-]*){0,2}?)"
+        r"(?=\s*(?:[,.;!?\n，。；！？]|and\b|but\b|can\b|could\b|should\b|"
+        r"may\b|i\b|we\b|$))",
         re.IGNORECASE,
     ),
     re.compile(
-        r"([a-z][a-z0-9 \-]{0,20}?)\s+allerg(?:y|ies)\b",
+        r"\ballerg(?:y|ies)\s+to\s+([a-z][a-z0-9\-]*"
+        r"(?:\s+[a-z][a-z0-9\-]*){0,2}?)"
+        r"(?=\s*(?:[,.;!?\n，。；！？]|and\b|but\b|can\b|could\b|should\b|"
+        r"may\b|i\b|we\b|$))",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"([a-z][a-z0-9\-]{0,20}?)\s+allerg(?:y|ies)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?!i\b|am\b|is\b|are\b|was\b|were\b|be\b|not\b|no\b"
+        r"|never\b)([a-z][a-z0-9\-]{2,20})\s+allergic\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -1414,7 +1431,12 @@ _CHILD_SELF_MARKERS = (
 )
 #: 紧随家属用药分句的停药/续用分句仍属于该家属
 _FAMILY_STOP_FOLLOW_RE = re.compile(
-    r"^(?:已经?|早就|现在|目前|之前|以前)?\s*"
+    r"^(?:"
+    # 「两年前停了」「去年就停药了」：时间前置语序同样属于家属
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月|天|周)"
+    r"(?:多)?(?:前|以来)?|去年|前年|上个月|上周|多年前|好?多年|"
+    r"最近|当时|那时)\s*(?:就|才)?\s*"
+    r"|已经?|早就|现在|目前|之前|以前|刚刚?)?\s*"
     r"(?:停药|停用|停了|停服|停止服用|不吃了?|又吃|重新吃|重新服用)"
 )
 #: 家属转述患者本人用药（我爸让我吃/我妈建议我吃/my father told me to take）

@@ -5356,12 +5356,8 @@ class SessionStore:
             "sessions": exported,
             "audit_log": self.list_audit_log(limit=100000),
             "profiles": self.list_profiles(),
-            "profile_renames": [
-                dict(row) for row in self._conn.execute(
-                    "SELECT old_name, new_name, renamed_at"
-                    " FROM profile_renames ORDER BY id"
-                ).fetchall()
-            ],
+            # 改名历史含旧姓名明文，且自第七十九轮起导入端已不消费：
+            # 不再写入导出/备份，避免改名后旧姓名仍随文件外泄
             "health_metrics": self.list_metrics(limit=100000),
             "metric_targets": self.list_metric_targets(),
             "reminders": self.list_reminders(include_done=True),
@@ -5762,8 +5758,14 @@ class SessionStore:
             except sqlite3.Error:
                 return False
             local_ids = {int(row["id"]) for row in rows}
-            missing = set(range(1, max(backup_ids) + 1)) - local_ids
-            return missing <= set(backup_ids)
+            # 「本地缺失的 id 是否都在备份主键集合里」用计数判断：
+            # 备份 id 由文件提供，物化 set(range(1, max+1)) 会被
+            # 伪造超大 id 放大成内存耗尽（第八十一轮）
+            missing_count = int(max(backup_ids)) - len(local_ids)
+            if missing_count <= 0:
+                return True
+            fillable = len(set(backup_ids) - local_ids)
+            return missing_count <= fillable
 
         def _candidate_edited(candidate: int) -> bool:
             try:
@@ -6325,6 +6327,31 @@ class SessionStore:
                         # 候选确属当前行（例如成员改挂后内容未变）
                         continue
                 return True
+            return False
+
+        def _backup_soft_shared_with_sibling() -> bool:
+            """当前备份行的软字段（药名/标题）是否与同秒兄弟行相同。
+
+            同名/同标题孪生时单凭软字段无法区分候选归属；软字段不同
+            （如「吃药」与「复查」）时命中本行软字段的候选就是本行
+            被编辑过的存活版本，不能按跨档案尾字段偏好判给兄弟。
+            """
+            if soft_where is None or not backup_softs:
+                return False
+            expected = backup_softs.get(raw_id)
+            if expected is None:
+                return False
+            created_key = str(created_at_value or "")
+            for other_id, values in backup_softs.items():
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if values == expected:
+                    return True
             return False
 
         def _backup_content_shared_with_sibling() -> bool:
@@ -6924,6 +6951,7 @@ class SessionStore:
                         )
                         and not _candidate_soft_owned_by_other(candidate)
                         and not _auto_followup_moved_copy(candidate)
+                        and not _content_owned_by_other(candidate)
                         and not _tail_prefers_sibling(
                             candidate, cross_profile=True
                         )
@@ -7174,15 +7202,15 @@ class SessionStore:
                     skip_sole = False
                     if (
                         not _tail_matches(sole)
-                        and not _soft_matches(sole)
+                        and _backup_soft_shared_with_sibling()
                         and _tail_prefers_sibling(sole, cross_profile=True)
                         and not _tail_prefers_sibling(sole)
                     ):
-                        # 候选尾字段精确命中另一条同秒同内容但不同档案
-                        # 的备份记录：它是那条记录被改挂后的存活版本
-                        # （如兄弟提醒被移入本成员名下），本行按被删
-                        # 记录补回。软字段命中本行时（标题一致）它是
-                        # 本行被编辑过的存活版本，不能按歧义补插
+                        # 同名孪生（软字段相同）时软字段命中不能证明
+                        # 候选属于本行：尾字段精确命中另一档案的备份
+                        # 记录时它是那条记录改挂后的存活版本，本行按
+                        # 被删记录补回（第八十一轮）。软字段不同时命中
+                        # 本行软字段的候选仍是本行被编辑的存活版本
                         return _ambiguous()
                     if not _tail_matches(sole) and _tail_prefers_sibling(
                         sole
@@ -11247,6 +11275,16 @@ class SessionStore:
                             " updated_at = ? WHERE id = ?",
                             (new_note[:300], now, int(marker_row["id"])),
                         )
+                raw_visit_days = {}
+                if isinstance(raw_visit_records, list):
+                    for raw_visit in raw_visit_records:
+                        if not isinstance(raw_visit, dict):
+                            continue
+                        raw_visit_key = _safe_db_id(raw_visit.get("id"))
+                        if raw_visit_key:
+                            raw_visit_days[raw_visit_key] = str(
+                                raw_visit.get("next_followup_date") or ""
+                            )[:10]
                 for appointment_key, raw_owner in (
                     appointment_owner_raw.items()
                 ):
@@ -11298,8 +11336,21 @@ class SessionStore:
                         backup_status = appointment_raw_status.get(
                             appointment_key, "upcoming"
                         )
+                        backup_owner_day = raw_visit_days.get(
+                            _safe_db_id(raw_owner), ""
+                        )
+                        backup_owner_consistent = bool(
+                            backup_owner_day
+                            and backup_owner_day
+                            == str(appointment_row["scheduled_at"] or "")[:10]
+                        )
                         if (
                             not (
+                                backup_status in ("cancelled", "completed")
+                                and backup_owner_consistent
+                                and local_owner not in inserted_visit_ids
+                            )
+                            and not (
                                 local_owner in inserted_visit_ids
                                 and backup_status in ("upcoming", "completed")
                             )
@@ -11307,6 +11358,10 @@ class SessionStore:
                                 appointment_row["scheduled_at"] or ""
                             )[:10]
                         ):
+                            # completed/cancelled 历史预约：备份自身一致
+                            # （预约日 == 归属就诊复诊日）时保留归属
+                            # 证据，供改回日期回挂与「恢复待就诊」校验；
+                            # 备份本身已不一致的半挂接仍剥离（round55/57）
                             owner_ok = False
                     if not owner_ok:
                         if appointment_key in imported_appointment_ids:
@@ -12131,6 +12186,7 @@ class SessionStore:
                     if (
                         followup_appointment_id
                         and not appointment_ok
+                        and appt_status == "upcoming"
                         and int(followup_appointment_id)
                         in imported_appointment_ids
                     ):

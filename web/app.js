@@ -20879,9 +20879,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
       // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
       notePersistedInflight(expectedQuestion, sessionId);
-      const remaining = stripInflightQuestion(
-        els.input.value, expectedQuestion
-      );
+      const remaining = inflightInputMatchesRestored(
+        inflightRestoredText || expectedQuestion
+      )
+        ? stripInflightQuestion(els.input.value, expectedQuestion)
+        : null;
       // 对账确认本轮已落库：无论输入框是否仍含该主诉都要清在途记录，
       // 否则用户改写输入框后，下次加载会把已回答的问题重新并入草稿
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
@@ -20958,9 +20960,9 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       }
       if (persistedThisRound) {
         notePersistedInflight(inflightQuestionText, sessionId);
-        const remaining = stripInflightQuestion(
-          els.input.value, inflightText
-        );
+        const remaining = inflightInputMatchesRestored(inflightText)
+          ? stripInflightQuestion(els.input.value, inflightText)
+          : null;
         if (remaining !== null) {
           els.input.value = remaining;
           autoGrow();
@@ -21078,7 +21080,9 @@ async function send(question, composerSubmit = false) {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
       // 待重置换档会新建会话：旧 sessionId 会让刷新后的恢复
       // 因「有归属但无会话」被跳过，主诉静默丢失
-      sessionId: pendingSessionReset ? '' : (sessionId || ''),
+      sessionId: (pendingSessionReset || creatingSessionPromise)
+        ? ''
+        : (sessionId || ''),
       // 与本次请求实际携带的档案快照一致：activeProfileName 在首屏
       // 档案尚未恢复时为空，记录会丢失档案归属
       profile: sendProfile || '',
@@ -22931,6 +22935,19 @@ function isFreshPageSession(id) {
 
 //: 对账确认落库后，从合并草稿中移除在途主诉、保留用户后续草稿。
 //: 返回 null 表示草稿里没有这段主诉（不属于本次在途记录）。
+function inflightInputMatchesRestored(restoredText) {
+  // 对账只允许处理仍来自在途恢复的输入：用户已改写/追加新草稿时
+  // 不能按任意子串剥离，否则会静默删改正在编辑的问题（第八十一轮）
+  const restored = String(restoredText || '').trim();
+  if (!restored) return false;
+  const current = String(els.input.value || '');
+  return (
+    current === restored
+    || current.startsWith(restored + '\n')
+    || current.startsWith(restored + '\r\n')
+  );
+}
+
 function stripInflightQuestion(text, question) {
   const q = String(question || '').trim();
   if (!q) return null;
@@ -22981,18 +22998,28 @@ function writeOtherInflightRecords(records) {
 
 function clearOtherSessionInflight(sessionId, question) {
   // 本轮主诉已确认落库：同步清掉备份槽里的同一条记录，避免之后
-  // 重新打开会话又被当成「上次中断的主诉」放回输入框
+  // 重新打开会话又被当成「上次中断的主诉」放回输入框。用户把
+  // 恢复出的主诉改写/追加后再发送时文本不再相等，按会话归属清理
   const wantedQuestion = String(question || '').trim();
-  if (!wantedQuestion) return;
-  const records = readOtherInflightRecords().filter(
-    (item) => !(
-      String(item.question || '').trim() === wantedQuestion
-      && (
-        !sessionId
-        || String(item.sessionId || '') === String(sessionId || '')
+  if (!wantedQuestion && !sessionId) return;
+  const records = readOtherInflightRecords().filter((item) => {
+    const recordQuestion = String(item.question || '').trim();
+    const sameSession = Boolean(
+      sessionId
+      && String(item.sessionId || '') === String(sessionId || '')
+    );
+    return !(
+      sameSession
+      || (
+        recordQuestion
+        && (
+          recordQuestion === wantedQuestion
+          || wantedQuestion.startsWith(recordQuestion)
+          || recordQuestion.startsWith(wantedQuestion)
+        )
       )
-    )
-  );
+    );
+  });
   writeOtherInflightRecords(records);
 }
 
