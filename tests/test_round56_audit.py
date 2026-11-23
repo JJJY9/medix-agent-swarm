@@ -481,5 +481,7 @@ def test_frontend_round56_guards():
     # 换档失败回滚使用表单快照
     assert "const previousFormContext = readPatientContext();" in app_js
     assert app_js.count("applyPatientContext(previousFormContext);") == 2
-    # 待重置换档提交时 INFLIGHT 记为未归属会话
-    assert "sessionId: pendingSessionReset ? '' : (sessionId || '')," in app_js
+    # 待重置换档/新建会话创建在途时 INFLIGHT 记为未归属会话
+    # （第八十一轮把创建在途也纳入）
+    assert "sessionId: (pendingSessionReset || creatingSessionPromise)" \
+        in app_js

@@ -3117,14 +3117,14 @@ async def require_access_token(request: Request, call_next):
                 for name in ("x-forwarded-for", "forwarded", "x-real-ip")
             )
             and (
-                # 同机反向代理但未开启代理信任：TCP 对端是回环地址，
-                # 远程客户端不可能直连出回环对端，地址头只可能是本机
-                # 代理透传/追加。回退共享桶语义（100 次/5 分钟 + 令牌
-                # 比较闸门），不能按 10 次硬预锁定把全家正确令牌一起
-                # 429（第七十八轮）；开启信任后仍走原有按真实地址
-                # 预锁定/分桶路径
+                # 未开启代理信任但 TCP 对端是可证明的代理（回环地址
+                # 或已写入 MEDIX_TRUSTED_PROXY_ADDRS 的跨机/Docker 反代）：
+                # 地址头只可能由代理透传/追加。回退共享桶语义（100 次/
+                # 5 分钟 + 令牌比较闸门），不能按 10 次硬预锁定把全家
+                # 正确令牌一起 429（第七十八/八十一轮）；开启信任后仍
+                # 走原有按真实地址预锁定/分桶路径
                 (
-                    _is_loopback_address(_peer_key(peer_host or ""))
+                    _is_trusted_proxy_peer(peer_host)
                     and not _trust_proxy_headers()
                 )
                 # 开启受信代理但对端不在白名单：该对端可能是反代后的
@@ -8285,12 +8285,22 @@ async def _weekly_report_impl(
     # 按成员分别与各自目标比较，避免家庭首页显示虚假的 all_clear
     member_metric_alerts: List[Dict[str, Any]] = []
     member_glucose_alerts: List[Dict[str, Any]] = []
+    member_metric_targets: List[Dict[str, Any]] = []
     if profile is None:
         family_target_map = {
             (item.get("profile") or "", item["metric"]): item
             for item in raw_targets
             if isinstance(item, dict) and item.get("metric")
         }
+        member_metric_targets = [
+            {
+                "profile": member,
+                "metric": metric,
+                "value1": target.get("value1"),
+                "value2": target.get("value2"),
+            }
+            for (member, metric), target in family_target_map.items()
+        ]
         member_groups: Dict[tuple, Dict[str, Any]] = {}
         glucose_groups: Dict[str, Dict[str, Any]] = {}
         family_daily: Dict[tuple, Dict[str, list]] = {}
@@ -9169,6 +9179,7 @@ async def _weekly_report_impl(
         "metrics": {"count": len(metrics), "by_metric": metric_rows},
         "member_metric_alerts": member_metric_alerts,
         "member_glucose_alerts": member_glucose_alerts,
+        "member_metric_targets": member_metric_targets,
         "member_bp_peaks": member_bp_peaks,
         "symptoms": {
             "count": len(symptoms),
@@ -9661,6 +9672,26 @@ def _build_health_insights(
         ):
             # 目标告警只有 info（1 次超标）时仍要按单次峰值定级：
             # 一条 175/105 不能被降级成「提示」
+            def _bp_safety_floor(peaks):
+                """个体化目标达标时仍要提示的危急级读数（严格高于标准
+
+                160/100）：宽松目标不能让 165/100、175/115 这类重度
+                读数完全消失在健康提示里（第四十九/六十三轮安全契约），
+                但恰好压在 160/100 内的达标读数不再按通用阈值报警
+                （第八十一轮）。
+                """
+                for row in (
+                    peaks.get("peak") or {}, peaks.get("peak2") or {},
+                ):
+                    try:
+                        value1 = float(row.get("value1") or 0)
+                        value2 = float(row.get("value2") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if value1 > 160 or value2 > 100:
+                        return True
+                return False
+
             def _bp_peak_reading(peaks):
                 """血压峰值判定：分别取最高收缩压与最高舒张压。
 
@@ -9699,7 +9730,28 @@ def _build_health_insights(
             if family_scope and member_peaks:
                 # 家庭范围必须按成员分别判定：某成员更高的收缩压
                 # 不能掩盖另一位成员的高舒张压读数
+                bp_target_members = {
+                    str(item.get("profile") or "")
+                    for item in report.get("member_metric_targets") or []
+                    if str(item.get("metric") or "") == "bp"
+                }
+                bp_over_members = {
+                    str(item.get("profile") or "")
+                    for item in report.get("member_metric_alerts") or []
+                    if str(item.get("metric") or "") == "bp"
+                    and int(item.get("over") or 0) > 0
+                }
                 for member_key in sorted(member_peaks):
+                    if (
+                        member_key in bp_target_members
+                        and member_key not in bp_over_members
+                        and not _bp_safety_floor(member_peaks[member_key])
+                    ):
+                        # 已设个体化血压目标且窗口内全部达标：与家庭
+                        # 总览/目标卡片同口径，不再按通用阈值发
+                        # warning；严格高于标准 160/100 的重度读数
+                        # 仍保留提示（第八十一轮）
+                        continue
                     reading = _bp_peak_reading(member_peaks[member_key])
                     if reading is None:
                         continue
@@ -9723,7 +9775,19 @@ def _build_health_insights(
                         metric="bp",
                     ))
             else:
+                bp_target = row.get("target") or None
+                bp_target_met = bool(
+                    bp_target
+                    and within is not None
+                    and count - int(within) <= 0
+                )
                 reading = _bp_peak_reading(row)
+                if (
+                    reading is not None
+                    and bp_target_met
+                    and not _bp_safety_floor(row)
+                ):
+                    reading = None
                 if reading is not None:
                     level, high, low = reading
                     insights.append(_health_insight(
@@ -13126,7 +13190,9 @@ def _family_attention(
             "label": f"化验危急值 {labs['critical']} 项",
             "detail": "、".join(labs.get("critical_items") or [])[:120],
         }
-    if medication_lab.get("count"):
+    if medication_lab.get("count") and (
+        str(medication_lab.get("level") or "warning") != "info"
+    ):
         return {
             "level": str(medication_lab.get("level") or "warning"),
             "label": f"用药安全需核对 {medication_lab['count']} 条",
@@ -13250,6 +13316,19 @@ def _family_attention(
             "level": str(target_alert.get("level") or "info"),
             "label": str(target_alert.get("label") or "指标超出目标"),
             "detail": str(target_alert.get("detail") or "")[:120],
+        }
+    if medication_lab.get("count"):
+        # info 级用药安全提示（如头孢类与酒精）：延后到高危会诊、
+        # 重度症状、逾期提醒、化验异常、指标未达标等 warning 之后，
+        # 不能抢在最需要关注的位置盖掉警告（第八十一轮）
+        return {
+            "level": "info",
+            "label": f"用药安全需核对 {medication_lab['count']} 条",
+            "detail": "、".join(
+                str(item.get("title") or "")
+                for item in (medication_lab.get("alerts") or [])
+                if item.get("title")
+            )[:120],
         }
     adherence = medications.get("adherence") or {}
     worst_rate = medications.get("worst_rate")
