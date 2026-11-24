@@ -5424,6 +5424,26 @@ _STOP_ANNOTATION_ONLY_RE = re.compile(
 _STOP_ANNOTATION_INLINE_RE = re.compile(
     r"[（(]\s*(?:已停用|已停药|已停服|停用中)\s*[）)]"
 )
+#: 剂量/频次/时间等非药名片段（pop 前跳过）
+_NON_DRUG_SEGMENT_RE = re.compile(
+    r"^(?:"
+    r"[0-9一二两三四五六七八九十半几]+\s*"
+    r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)?"
+    r"|(?:每天|每日|一天|一日|每晚|每早|每周|隔日|qd|bid|tid|qn)"
+    r"(?:一次|两次|三次|1次|2次|3次)?"
+    r"|(?:早上|上午|中午|下午|晚上|睡前|饭前|饭后|随餐|空腹)"
+    r"|[0-9]{4}\s*年(?:[0-9一二]{1,2}\s*月)?"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _pop_last_medication_name(names: List[str]) -> None:
+    """移除最近一个药名片段（跳过剂量/频次/时间等非药名说明）。"""
+    while names:
+        last = str(names.pop()).strip()
+        if last and not _NON_DRUG_SEGMENT_RE.match(last):
+            return
 
 
 def _context_medication_names(context: Any) -> List[str]:
@@ -5432,27 +5452,55 @@ def _context_medication_names(context: Any) -> List[str]:
     档案文本里的停药标注（「X，已停用」「X（已停用）」「已停用的X」）
     必须让被标注的药退出检查名单：否则已停药物仍参与碱基/化验/
     合并症安全通道，家庭总览与健康提示会误报（第九十二轮 [14]）。
+    标注与药名之间可能隔着剂量/频次片段、同一片段里也可能还有
+    其它在用药物，不能整段丢弃（第九十三轮 [3][11][15]）。
     """
     from core.context import medication_context_text
 
     text = medication_context_text(context)
     if not text:
         return []
-    names = []
+    names: List[str] = []
     for part in re.split(r"[；;，,、/\n]+", text):
         part = part.strip()
         if not part:
             continue
         if _STOP_ANNOTATION_ONLY_RE.match(part):
-            # 紧跟药名的纯停药标注：把上一个药名移出在用名单
-            if names:
-                names.pop()
+            # 紧跟药名的纯停药标注：剔除最近的药名（跳过剂量片段）
+            _pop_last_medication_name(names)
             continue
-        if _STOP_ANNOTATION_INLINE_RE.search(part):
-            # 「阿司匹林（已停用）」：整段标注为停药，不进入在用名单
+        inline = _STOP_ANNOTATION_INLINE_RE.search(part)
+        if inline is not None:
+            # 「阿司匹林（已停用）华法林」：只剔除被标注的药名，
+            # 同一片段里的其它在用药名继续进入检查名单
+            head_text = part[: inline.start()]
+            tail_text = part[inline.end():]
+            head_pieces = [
+                piece for piece in re.split(r"[\s和与及]+", head_text)
+                if piece.strip()
+            ]
+            keep_pieces = head_pieces[:-1] if head_pieces else []
+            keep_pieces += [
+                piece for piece in re.split(r"[\s和与及]+", tail_text)
+                if piece.strip()
+            ]
+            for piece in keep_pieces:
+                piece = piece.strip()
+                if not piece or _STOP_ANNOTATION_ONLY_RE.match(piece):
+                    continue
+                if piece not in names:
+                    names.append(piece)
             continue
-        if re.match(r"^(?:已停用|已停药|已停服)的?", part):
-            # 「已停用的阿司匹林」：定语形式，药名已停用
+        prefix_match = re.match(
+            r"^(?:已停用|已停药|已停服|停用中)(.*)$", part
+        )
+        if prefix_match:
+            remainder = prefix_match.group(1).strip()
+            if remainder.startswith("的"):
+                # 「已停用的阿司匹林」：定语形式，整段为停药标注
+                continue
+            # 「已停药两个月/（2025年10月）」：标注带时长，剔除药名
+            _pop_last_medication_name(names)
             continue
         if part not in names:
             names.append(part)

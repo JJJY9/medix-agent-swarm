@@ -498,8 +498,10 @@ def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
 
 _GUM_BLEEDING_WORDS = (
     "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔", "口腔",
-    # 牙科/口唇出血同样不是孕产期出血（第九十二轮 [8]）
-    "牙齿", "牙", "嘴唇", "唇", "舌头", "舌", "口腔黏膜",
+    # 牙科/口唇出血同样不是孕产期出血（第九十二轮 [8]）；
+    # 「唇」不用裸单字，避免「阴唇」被误豁免（第九十三轮 [5]）
+    "牙齿", "牙", "嘴唇", "口唇", "唇部", "唇周", "舌头", "舌",
+    "口腔黏膜",
     # 口腔动作：刷牙/漱口/吐口水带血同样是牙龈或口腔黏膜出血
     "刷牙", "牙刷", "漱口", "吐口水", "剔牙", "牙缝", "泡沫带血",
 )
@@ -1007,6 +1009,9 @@ _PATIENT_CONTEXT_MARKERS = (
     "哥哥", "姐姐", "弟弟", "妹妹", "兄弟", "姐妹",
     "阿姨", "叔叔", "舅舅", "姑姑", "婶婶", "侄子", "外甥",
     "孙子", "孙女",
+    # 常见亲属/口语称谓（第九十三轮 [2]）
+    "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "闺女",
+    "老爷子", "老太太", "娃",
     "最近", "这两天", "今天", "昨天", "前天", "持续", "伴有",
     "突然", "出现", "发作", "测得", "体温", "吃了", "服了", "正在吃",
     "现在", "目前", "这几天",
@@ -1216,6 +1221,7 @@ def _pregnancy_term_positive(text: str, term: str) -> bool:
 def _clean_complaint_clause(
     clause: str, patient_context_seen: bool = False,
     help_follows: bool = False, course_follows: bool = False,
+    symptom_context_seen: bool = False,
 ) -> str:
     """清洗单个分句：有患者语境的保留；纯定义问句丢弃。
 
@@ -1240,14 +1246,14 @@ def _clean_complaint_clause(
             ) or _has_patient_subject(rest) or _course_context_clause(rest):
                 return _clean_complaint_clause(
                     rest, patient_context_seen, help_follows,
-                    course_follows,
+                    course_follows, symptom_context_seen,
                 )
             return ""
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
         return _clean_complaint_clause(
             rest, patient_context_seen, help_follows,
-            course_follows,
+            course_follows, symptom_context_seen,
         )
     definition_lead = _DEFINITION_PREFIX_RE.match(clause)
     if definition_lead:
@@ -1293,7 +1299,7 @@ def _clean_complaint_clause(
         ):
             return _clean_complaint_clause(
                 rest, patient_context_seen, help_follows,
-                course_follows,
+                course_follows, symptom_context_seen,
             )
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
@@ -1402,10 +1408,10 @@ def _clean_complaint_clause(
                 )
                 and _is_red_flag_text(clause)
             )
-            # 「我爸咳嗽三天了，咯血见于什么病」：前文已建立患者语境，
-            # 后置定义问句里的红旗是新症状（与后缀分支同口径，
-            # 第九十二轮 [1]）
-            or (patient_context_seen and _is_red_flag_text(clause))
+            # 「我爸咳嗽三天了，咯血见于什么病」：前文已有症状级
+            # 语境，后置定义问句里的红旗是新症状；仅有主体/生活
+            # 叙述（我正在准备考试）不算（第九十二/九十三轮 [14]）
+            or (symptom_context_seen and _is_red_flag_text(clause))
         )
         if not keep_context:
             return ""
@@ -1536,6 +1542,16 @@ def _clean_complaint_clause(
             or any(term in prefix for term in PREGNANCY_BLEEDING_TERMS)
             or _PREGNANCY_BLEEDING_RE.search(prefix) is not None
             or _colloquial_bleeding_positive(prefix)
+            # 无「我」字的亲属/孕产主诉（岳父胸痛是什么病 / 怀孕了
+            # 抽搐是什么病）同样是真实急症描述（第九十三轮 [2]）
+            or (
+                any(
+                    marker in prefix
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+                and _is_red_flag_text(prefix)
+            )
+            or any(term in prefix for term in PREGNANCY_TERMS)
         ):
             # 带病程/时间线索或多症状的定义问句通常是在描述当前症状
             return prefix
@@ -1560,7 +1576,8 @@ _COURSE_CONTEXT_BLOCKERS = (
     # 与症状无关的生活叙述（最近在准备考试/这两天在减肥）：即使带
     # 时间词也不能把纯定义问句变成患者主诉（第九十二轮 [4]）
     "减肥", "考试", "工作", "加班", "门诊", "聚会", "出差", "旅游",
-    "搬家", "开会", "上课", "作业",
+    "搬家", "开会", "上课", "作业", "婚礼", "装修", "面试", "聚餐",
+    "旅行", "度假", "排练", "比赛", "年会", "约会", "相亲",
     # 「早上好」里的时段词是问候，不是患者病程
     "早上好", "早安", "晚上好", "晚上好", "午安", "晚安", "哈喽",
 )
@@ -1762,6 +1779,7 @@ def patient_complaint_text(text: str) -> str:
     clauses = re.split(r"[。；;！!？?\n，,]", text)
     kept = []
     context_seen = False
+    symptom_context_seen = False
     for position, clause in enumerate(clauses):
         help_follows = False
         for follow in clauses[position + 1:]:
@@ -1783,10 +1801,16 @@ def patient_complaint_text(text: str) -> str:
             )
             break
         cleaned = _clean_complaint_clause(
-            clause.strip(), context_seen, help_follows, course_follows
+            clause.strip(), context_seen, help_follows, course_follows,
+            symptom_context_seen,
         )
         if cleaned:
             kept.append(cleaned)
+            if _symptom_context_clause(clause) or any(
+                _positive_mention(clause, phrase)
+                for phrase, _label in RED_FLAG_PHRASES
+            ):
+                symptom_context_seen = True
             subject_seen = any(
                 marker in clause for marker in _PATIENT_SUBJECT_MARKERS
             )
@@ -2201,7 +2225,7 @@ _PATIENT_FAMILY_SUBJECT_RE = re.compile(
 
 #: 已经结束、停用、否认或仅为过敏的病史/用药不属于当前高危状态
 _CONTEXT_INACTIVE_MARKERS = (
-    "已结束", "结束后", "已停", "停用", "停药", "停了", "已完成",
+    "已结束", "结束后", "已停", "停用", "停药", "停了", "停的", "已完成",
     "不再", "未使用", "没有使用", "未服用", "没有服用", "未吃", "没有吃",
     "没吃", "不吃", "不吃了", "不再吃", "不用吃", "无需吃", "没再吃", "停掉", "停掉了",
     "否认", "未曾", "从未", "过敏史", "过敏原", "过敏反应",
@@ -2215,7 +2239,8 @@ _DIET_RESTRICTION_RE = re.compile(
 
 #: 双重否定表示仍在用药：「不得不吃华法林/不能不吃华法林」
 _TRIAGE_DOUBLE_NEGATION = re.compile(
-    r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不)"
+    r"(?:不得不|不能不|没法不|无法不|忍不住|不是不|并非不|"
+    r"(?:不是|并非|并不是)(?:没|没有|未))"
     r"(?:再|继续)?(?:吃|服用|服|用|口服|注射|打|喝|饮)?"
 )
 #: 「药还没吃完/没有吃完」只是说明剩余药量：仍在用药
@@ -2265,8 +2290,9 @@ _STOP_QUESTION_PATTERN = re.compile(
 )
 #: 换药/续用线索：同一分句里「停用旧药改用新药」仍是当前用药
 _SWITCH_MEDICATION_PATTERN = re.compile(
-    r"(?:改用|换成|改吃|换用|改为|重新吃|又吃上|恢复服用|"
-    r"还在吃|仍在服用|继续服用|仍然服用)"
+    # 只保留真正的换药表述；续用词（还在吃/仍在服用…）交由
+    # _restart_names_other_medication 归属判定（第九十三轮 [13]）
+    r"(?:改用|换成|改吃|换用|改为|重新吃|又吃上|恢复服用)"
 )
 #: 近期停药仍有抗凝作用：「停用两天/昨天停药/刚停用」按当前用药处理
 _RECENT_STOP_PATTERN = re.compile(
@@ -2290,12 +2316,13 @@ _RECENT_NO_EAT_PATTERN = re.compile(
 #: 明确远期停药（月/年量级）才按已结束处理；裸「停用/停了」保守
 #: 视为仍有抗凝作用（停药 1–2 天内 INR 仍可能偏高）
 _LONG_STOP_PATTERN = re.compile(
-    r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用)"
+    r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|"
+    r"停(?!用|药|止|掉|了|的))"
     r"[^，。；;,.!?！？\n]{0,6}"
     r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|半年)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年)"
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
-    r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用)"
+    r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用)"
     # 英文停药表述（warfarin was stopped 2 years ago / no longer
     # taking / discontinued ... for years）
     r"|(?:stopped|discontinued|ceased|quit|been\s+off)\s+"
@@ -2801,7 +2828,12 @@ def _long_stop_near(clauses: List[str], index: int) -> bool:
     return False
 #: 停药动词：只有真正的停药表述才做「无时长保守保留」
 _STOP_VERB_PATTERN = re.compile(
-    r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|已停|停过|间断|中断)"
+    r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|已停|停过|间断|中断|"
+    r"停(?=[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)))"
+)
+#: 时长前的裸「停」（停三年了）：同样进入停药分句判定
+_BARE_STOP_DURATION_RE = re.compile(
+    r"停[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)"
 )
 #: 停药后又重新服用（可跨一个分句）：抗凝状态仍然成立
 _RESTART_TEXT_RE = re.compile(
@@ -3407,6 +3439,9 @@ def _active_medical_text(
             and not _ENGLISH_RESTART_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(restart_window)
             and not _english_stop_continuation(clause)
+            # 跨分句「…stopped, still taking it」：续用分句没有药名，
+            # 但停药分句必须保留（第九十三轮 [1]）
+            and not _english_stop_continuation(restart_window)
             and not _ENGLISH_NEGATED_STOP_RE.search(clause)
         ):
             # 英文远期停药（warfarin was stopped 2 years ago）与
@@ -3444,7 +3479,10 @@ def _active_medical_text(
             # 「下周就不吃华法林了」是未来的停药计划，当前仍在用药
             kept.append(clause)
             continue
-        if any(marker in clause for marker in _CONTEXT_INACTIVE_MARKERS):
+        if any(
+            marker in clause
+            for marker in _CONTEXT_INACTIVE_MARKERS
+        ) or _BARE_STOP_DURATION_RE.search(clause):
             diet_match = re.search(
                 r"(?:不吃|没吃|没有吃|未吃|不再吃|没再吃)"
                 r"([^，。；,.!?！？\n]{0,10})",
@@ -3510,8 +3548,34 @@ def _active_medical_text(
                     fragment = _chinese_restart_known_drug_fragment(
                         clause + "；" + restart_window
                     )
+                    if not fragment:
+                        # 宾语前置（甲氨蝶呤还在服用）：补充提取；
+                        # 仍无法归属时保留原分句，宁可误保留被停药
+                        # 名也不能丢掉仍在服用的药物（第九十三轮 [4]）
+                        before_text = clause + "；" + restart_window
+                        for before in _RESTART_OBJECT_BEFORE_RE.finditer(
+                            before_text
+                        ):
+                            obj = re.sub(
+                                r"(?:这|那|个|种|些|药)+$", "",
+                                before.group(1),
+                            ).strip()
+                            if not obj:
+                                continue
+                            if (
+                                any(
+                                    term in obj
+                                    for term in _OTHER_STOP_DRUG_TAILS
+                                )
+                                or _GENERIC_DRUG_NAME_RE.search(obj)
+                                is not None
+                            ):
+                                fragment = obj
+                                break
                     if fragment:
                         kept.append(fragment)
+                    else:
+                        kept.append(clause)
                     continue
                 kept.append(clause)
                 continue

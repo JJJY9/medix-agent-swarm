@@ -335,7 +335,7 @@ def test_inflight_record_kept_until_reconcile():
     start = source.index("function restoreInflightQuestion(")
     end = source.index("window.addEventListener('beforeunload'", start)
     block = source[start:end]
-    # 只保留「过期记录」与「主诉已在草稿里」两处清理：合并/恢复
-    # 分支必须保留记录到对账确认（第九十二轮 [15]）
-    assert block.count("safeSessionRemove(INFLIGHT_QUESTION_KEY);") == 2
+    # 第九十三轮起仅保留「过期记录」一处清理：所有恢复分支都保留
+    # 在途记录到对账确认或发送成功（第九十二/九十三轮 [15][16]）
+    assert block.count("safeSessionRemove(INFLIGHT_QUESTION_KEY);") == 1
     assert "对账确认落库或发送成功" in block
