@@ -21206,6 +21206,7 @@ async function send(question, composerSubmit = false) {
         }
         els.input.value = restoredText;
         detachedComposerText = restoredText;
+        detachInflightOwnerForDeletedSession();
         autoGrow();
         setVitals('warn', '会诊已切换，刚才的主诉未提交，请确认后重新发送');
       } else {
@@ -21258,6 +21259,7 @@ async function send(question, composerSubmit = false) {
       }
       els.input.value = restoredText;
       detachedComposerText = restoredText;
+      detachInflightOwnerForDeletedSession();
       preserveDraftProfile(sendProfile, restoredText);
       autoGrow();
       setVitals('warn', '会话已切换，刚才的主诉未提交，请确认后重新发送');
@@ -22838,6 +22840,23 @@ function clearInflightForCurrentSession() {
   safeSessionRemove(INFLIGHT_QUESTION_KEY);
 }
 
+function detachInflightOwnerForDeletedSession() {
+  // 接管时原会话已被删除（sessionId 为空）：在途记录改写成无归属，
+  // 否则刷新后「有归属但无会话」的记录会被拒绝恢复，分离态草稿
+  // 又在 pagehide 被删除，整段主诉静默丢失（第九十四轮 [12]）
+  if (sessionId) return;
+  try {
+    const raw = safeSessionGet(INFLIGHT_QUESTION_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return;
+    data.sessionId = '';
+    safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify(data));
+  } catch {
+    // 隐私模式/损坏数据忽略
+  }
+}
+
 function flushDraftNow() {
   // 刷新/关闭/PWA 被杀时定时器不会执行：同步落盘当前草稿
   clearTimeout(draftTimer);
@@ -22941,6 +22960,14 @@ function settleDraftForSession(targetId) {
     return;
   }
   const hasText = Boolean(els.input.value.trim());
+  if (owner === '' && target && hasText) {
+    // 本页尚无会话时输入的主诉：打开历史会话/深链恢复不能静默
+    // 清空，把归属改挂到打开的会话（发送入口的跨档案守卫仍会
+    // 拦截档案不符的草稿），与 ADOPTED 分支同策略
+    // （第九十四轮 [17]）
+    safeSessionSet(DRAFT_OWNER_KEY, target);
+    return;
+  }
   if (!hasText) {
     if (owner !== null && owner !== target) clearDraft();
     return;
@@ -23643,6 +23670,18 @@ els.input.addEventListener('input', () => {
     }
   } catch {
     // 隐私模式忽略
+  }
+  if (
+    inflightRestoredText
+    && els.input.value.trim()
+    && !els.input.value.includes(inflightRestoredText)
+  ) {
+    // 用户已把恢复出的在途主诉删掉：记录不再代表用户意图，
+    // 清除后不再每次刷新把它拼回草稿（第九十四轮 [16]）
+    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    inflightRestoredText = '';
+    inflightRestoredOwnerSession = '';
+    inflightRestoredBaseline = 0;
   }
   saveDraft();
 });
