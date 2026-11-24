@@ -6906,19 +6906,31 @@ class SessionStore:
                 # 等于 raw_id 的行可能是另一成员改挂进本档案的存活行
                 # （第七十八轮）
                 claim_row = int(row["id"])
-                if (
-                    claim_row == raw_id and _same_backup_origin()
-                ) or (
-                    not _tail_prefers_sibling(
-                        claim_row, cross_profile=True
-                    ) and (
-                        _soft_matches(claim_row)
-                        or not _candidate_soft_owned_by_other(
-                            claim_row, cross_profile=True,
-                            require_content=True,
+                if claim_row == raw_id and _same_backup_origin():
+                    claimable_row = True
+                elif claim_row == raw_id:
+                    # 漂移库里本地编号恰等于备份主键只是巧合：必须
+                    # 有尾字段精确命中且软字段不属于兄弟行，才能把
+                    # 它当本行存活版本（第八十七轮）
+                    claimable_row = bool(
+                        _tail_matches(claim_row)
+                        and not _candidate_soft_owned_by_other(
+                            claim_row, cross_profile=True
                         )
                     )
-                ):
+                else:
+                    claimable_row = bool(
+                        not _tail_prefers_sibling(
+                            claim_row, cross_profile=True
+                        ) and (
+                            _soft_matches(claim_row)
+                            or not _candidate_soft_owned_by_other(
+                                claim_row, cross_profile=True,
+                                require_content=True,
+                            )
+                        )
+                    )
+                if claimable_row:
                     # 尾字段平局时，软字段对不上本行、却命中同秒另一条
                     # 备份行（且内容也相同）的候选属于那条记录：本行按
                     # 被删记录补插；软字段命中的合法存活行（同标题孪生）
@@ -7018,6 +7030,15 @@ class SessionStore:
                     # 那条记录改挂后的存活版本，本行必须按被删记录补插
                     # （与 step1 同口径，第八十轮）
                     claimable = False
+                if (
+                    claimable
+                    and candidate == raw_id
+                    and not _same_backup_origin()
+                    and not _tail_matches(candidate)
+                ):
+                    # 漂移库中本地编号恰等于备份主键只是巧合：
+                    # 尾字段对不上时本行按被删记录补插（第八十七轮）
+                    claimable = False
                 if claimable:
                     # 同一候选行不能再被任何身份组（目标档案的内容配对
                     # 与兜底）重复认领，否则被删的同秒记录会被当成
@@ -7072,6 +7093,11 @@ class SessionStore:
                         and not _tail_prefers_sibling(
                             candidate, cross_profile=True
                         )
+                        and not (
+                            candidate == raw_id
+                            and not _same_backup_origin()
+                            and not _tail_matches(candidate)
+                        )
                     ):
                         # 候选软字段命中同档案另一条同秒备份记录时
                         # 留给那条记录认领，本行按漂移/内容配对
@@ -7121,6 +7147,15 @@ class SessionStore:
                     if candidate not in pre_existing_ids:
                         continue
                     if candidate in moved or candidate in matched:
+                        continue
+                    if (
+                        candidate == raw_id
+                        and not _same_backup_origin()
+                        and not _tail_matches(candidate)
+                    ):
+                        # 漂移库中本地编号恰等于本备份主键只是巧合：
+                        # 尾字段对不上时它是同秒另一条记录的存活行，
+                        # 本行按被删记录补插（第八十七轮）
                         continue
                     if (
                         backup_ids
@@ -7483,6 +7518,25 @@ class SessionStore:
                     continue
                 if _content_owned_by_other(candidate):
                     continue
+                if (
+                    _candidate_owns_unprocessed_backup_row(candidate)
+                    or _other_backup_row_survives(candidate)
+                    or _tail_prefers_sibling(
+                        candidate, cross_profile=True
+                    )
+                ) and not (
+                    soft_where is not None
+                    and _soft_matches(candidate)
+                    and _tail_matches(candidate)
+                    and _candidate_content_matches_profile_sibling(
+                        candidate, candidate_profile
+                    )
+                ):
+                    # 候选本地主键命中另一条尚未处理的备份行、或那条
+                    # 备份记录已在本地另有存活行、或尾字段更像兄弟行：
+                    # 候选属于那条记录，本行按被删记录补插
+                    # （第八十七轮）
+                    continue
                 if _candidate_attributable_to_profile_sibling(
                     candidate, candidate_profile
                 ) and not (
@@ -7581,21 +7635,30 @@ class SessionStore:
                         continue
                     if (
                         raw_id <= 0
-                        and _group_rows_missing()
+                        and local_group_size < backup_group_size
                         and not _tail_matches(candidate)
-                        and not _candidate_edited(candidate)
                     ):
                         # 无 id 的备份行没有元数据可用：组内确有缺行、
                         # 候选尾字段又对不上时，先按本行补插完整数据，
-                        # 存活行稍后自行认领，避免被删记录丢失
-                        # （第八十五轮）
+                        # 存活行稍后自行认领，避免被删记录丢失；候选
+                        # 被编辑过也不能作为归属证据（第八十五/八十七轮）
+                        continue
+                    if (
+                        candidate == raw_id
+                        and not _same_backup_origin()
+                        and not _tail_matches(candidate)
+                    ):
+                        # 漂移库中本地编号恰等于备份主键只是巧合：
+                        # 不能延后认领为“本行版本”（第八十七轮）
                         continue
                     if _tail_matches(candidate):
                         return _claim(candidate)
                     if deferred_candidate is None:
                         deferred_candidate = candidate
                     continue
-            if deferred_candidate is not None:
+            if deferred_candidate is not None and (
+                raw_id > 0 or local_group_size >= backup_group_size
+            ):
                 return _claim(deferred_candidate)
         candidates = {
             c for c in claimed if c not in moved and c not in matched
@@ -7853,13 +7916,21 @@ class SessionStore:
                         scope_profile
                     )
                     inserted = int(state.get(inserted_key, 0))
-                    if raw_id <= 0 and soft_where is not None:
+                    if (
+                        raw_id <= 0
+                        and soft_where is not None
+                        and backup_soft_size == 1
+                    ):
                         edited_soft = [
                             candidate for candidate in claimed
                             if candidate not in moved
                             and candidate not in matched
                             and _soft_matches(candidate)
                             and _candidate_edited(candidate)
+                            and not _candidate_soft_owned_by_other(
+                                candidate, cross_profile=True,
+                                require_content=True,
+                            )
                         ]
                         if len(edited_soft) == 1:
                             # 无 id 备份行：软字段唯一命中的被编辑存活行
@@ -8355,6 +8426,15 @@ class SessionStore:
             # 被删记录补插，不能抢走兄弟行（第八十三轮 [4]）
             return _ambiguous()
         if (
+            raw_id <= 0
+            and backup_group_size > 1
+            and not _tail_matches(sole)
+        ):
+            # 无 id 孪生组：候选尾字段对不上本行时无法确认归属，
+            # 按被删记录补插（宁重复勿丢），避免被删记录永久丢失
+            # （第八十七轮）
+            return _ambiguous()
+        if (
             soft_where is not None
             and raw_id <= 0
             and not _soft_matches(sole)
@@ -8371,6 +8451,14 @@ class SessionStore:
             # （被改挂到兄弟档案并编辑内容）：本行必须按被删记录
             # 补插，否则被删记录永久丢失、旧副本在原档案复活
             # （第八十六轮）
+            return _ambiguous()
+        if (
+            sole == raw_id
+            and not _same_backup_origin()
+            and not _tail_matches(sole)
+        ):
+            # 漂移库中本地编号恰等于备份主键只是巧合：尾字段对不上
+            # 时按被删记录补插（第八十七轮）
             return _ambiguous()
         return _claim(sole)
 
@@ -10155,6 +10243,7 @@ class SessionStore:
             #: 本地预约 id → 备份里的原始备注（用于判断本地是否已改写）
             appointment_raw_notes: Dict[int, str] = {}
             appointment_raw_status: Dict[int, str] = {}
+            appointment_raw_scheduled: Dict[int, str] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
                 appointment_pre_ids = self._existing_ids_locked(
@@ -10350,6 +10439,9 @@ class SessionStore:
                         appointment_raw_status[int(appointment_id)] = str(
                             normalized["status"] or "upcoming"
                         )
+                        appointment_raw_scheduled[
+                            int(appointment_id)
+                        ] = str(normalized["scheduled_at"] or "")[:10]
 
             lab_results_imported = 0
             existing_lab_counts: Dict[tuple, int] = {}
@@ -12317,11 +12409,18 @@ class SessionStore:
                             str(appt_row["scheduled_at"] or "")[:10]
                             if appt_row is not None else ""
                         )
+                        # 优先用备份预约本身的计划日：提醒备注可能被
+                        # 用户改写成不含日期，单看备注会漏判旧提醒
+                        # （第八十七轮）
+                        backup_day = appointment_raw_scheduled.get(
+                            int(appointment_id), ""
+                        )
                         marker = re.search(
                             r"复诊\s*(\d{4}-\d{2}-\d{2})",
                             str(note or ""),
                         )
-                        backup_day = marker.group(1) if marker else ""
+                        if not backup_day and marker:
+                            backup_day = marker.group(1)
                         if (
                             local_day
                             and backup_day
@@ -12637,32 +12736,89 @@ class SessionStore:
                         )
                 if apply_links:
                     restored_reminder = followup_reminder_id
-                    if not restored_reminder and visit_row is not None:
-                        local_reminder = int(
+                    old_reminder = 0
+                    if visit_row is not None:
+                        old_reminder = int(
                             visit_row["followup_reminder_id"] or 0
                         )
-                        if local_reminder:
-                            local_row = self._conn.execute(
-                                "SELECT profile, done, appointment_id"
-                                " FROM reminders WHERE id = ?",
-                                (local_reminder,),
+                    old_row = None
+                    if old_reminder:
+                        old_row = self._conn.execute(
+                            "SELECT profile, done, appointment_id"
+                            " FROM reminders WHERE id = ?",
+                            (old_reminder,),
+                        ).fetchone()
+                    old_usable = bool(
+                        old_row is not None
+                        and visit_row is not None
+                        and not int(old_row["done"] or 0)
+                        and int(old_row["appointment_id"] or 0) == 0
+                        and _normalize_profile_name(
+                            old_row["profile"] or ""
+                        ) == _normalize_profile_name(
+                            visit_row["profile"] or ""
+                        )
+                    )
+                    if old_usable and old_reminder != restored_reminder:
+                        if restored_reminder:
+                            # 目标提醒已存在：合并删除旧脱钩待办
+                            # （仍被其它就诊引用时保留）
+                            other_ref = self._conn.execute(
+                                "SELECT 1 FROM visit_records"
+                                " WHERE followup_reminder_id = ?"
+                                " AND id != ? LIMIT 1",
+                                (old_reminder, int(visit_id)),
                             ).fetchone()
-                            if (
-                                local_row is not None
-                                and not int(local_row["done"] or 0)
-                                and int(
-                                    local_row["appointment_id"] or 0
-                                ) == 0
-                                and _normalize_profile_name(
-                                    local_row["profile"] or ""
-                                ) == _normalize_profile_name(
-                                    visit_row["profile"] or ""
+                            if other_ref is None:
+                                self._conn.execute(
+                                    "DELETE FROM reminders WHERE id = ?"
+                                    " AND done = 0 AND appointment_id = 0",
+                                    (old_reminder,),
                                 )
-                            ):
-                                # 本地仍是合法的「仅提醒链接」状态：
-                                # 备份的 fr=0 不能把它覆盖成无引用待办
-                                # （第八十六轮）
-                                restored_reminder = local_reminder
+                        else:
+                            target_pending = None
+                            if followup_appointment_id:
+                                target_pending = self._conn.execute(
+                                    "SELECT id FROM reminders"
+                                    " WHERE appointment_id = ? AND done = 0"
+                                    " ORDER BY id LIMIT 1",
+                                    (int(followup_appointment_id),),
+                                ).fetchone()
+                            if target_pending is not None:
+                                restored_reminder = int(
+                                    target_pending["id"]
+                                )
+                                other_ref = self._conn.execute(
+                                    "SELECT 1 FROM visit_records"
+                                    " WHERE followup_reminder_id = ?"
+                                    " AND id != ? LIMIT 1",
+                                    (old_reminder, int(visit_id)),
+                                ).fetchone()
+                                if other_ref is None:
+                                    self._conn.execute(
+                                        "DELETE FROM reminders"
+                                        " WHERE id = ? AND done = 0"
+                                        " AND appointment_id = 0",
+                                        (old_reminder,),
+                                    )
+                            else:
+                                # 目标预约没有提醒：把旧脱钩待办挂回
+                                # 该预约，避免覆盖成无引用待办
+                                if followup_appointment_id:
+                                    self._conn.execute(
+                                        "UPDATE reminders"
+                                        " SET appointment_id = ?,"
+                                        " updated_at = ?"
+                                        " WHERE id = ? AND done = 0"
+                                        " AND appointment_id = 0",
+                                        (
+                                            int(followup_appointment_id),
+                                            now, old_reminder,
+                                        ),
+                                    )
+                                restored_reminder = old_reminder
+                    elif not restored_reminder and old_usable:
+                        restored_reminder = old_reminder
                     self._conn.execute(
                         """
                         UPDATE visit_records

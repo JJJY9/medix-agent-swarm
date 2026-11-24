@@ -2256,7 +2256,13 @@ def _provable_client_key(request: Request) -> str:
     if _forwarded_address_unprovable(request):
         peer = request.client.host if request.client else ""
         return f"ip:{_bucket_address(peer or 'unknown')}"
-    return _client_ip_key(request)
+    key = _client_ip_key(request)
+    if key in ("ip:untrusted-proxy", "ip:unknown"):
+        # 未受信地址头返回的是全局哨兵键：拿它做端点限流键会让
+        # 同一客户端靠「带/不带地址头」拿到两份额度（第八十七轮）
+        peer = request.client.host if request.client else ""
+        return f"ip:{_bucket_address(peer or 'unknown')}"
+    return key
 
 
 def _rate_limit_key(request: Request) -> str:
@@ -13788,6 +13794,35 @@ async def family_overview(days: int = 7):
     window_metrics = await asyncio.to_thread(
         store.list_metrics, None, None, 100000, days
     )
+    from core.lab_values import STALE_AFTER_DAYS as METRIC_STALE_DAYS
+    fresh_metrics = await asyncio.to_thread(
+        store.list_metrics, None, None, 100000, METRIC_STALE_DAYS
+    )
+    attention_metrics: List[Dict[str, Any]] = []
+    attention_keys: set = set()
+    for item in list(window_metrics) + list(fresh_metrics):
+        key = (
+            item.get("profile") or "",
+            item.get("metric") or "",
+            str(item.get("measured_at") or ""),
+            item.get("value1"),
+            item.get("value2"),
+        )
+        if key in attention_keys:
+            continue
+        measured_day = str(item.get("measured_at") or "")[:10]
+        if measured_day:
+            try:
+                age_days = (
+                    datetime.now().date()
+                    - datetime.strptime(measured_day, "%Y-%m-%d").date()
+                ).days
+            except ValueError:
+                age_days = 0
+            if age_days > METRIC_STALE_DAYS:
+                continue
+        attention_keys.add(key)
+        attention_metrics.append(item)
     latest_metric_keys = {
         (
             item.get("profile") or "",
@@ -13799,7 +13834,7 @@ async def family_overview(days: int = 7):
         for item in latest_metrics
     }
     seen_window_critical: set = set()
-    for item in window_metrics:
+    for item in attention_metrics:
         profile = item.get("profile") or ""
         metric = item.get("metric") or ""
         key = (
@@ -13826,44 +13861,6 @@ async def family_overview(days: int = 7):
             entry["items"].append(
                 f"{label} {format_metric_value(item)}{suffix}"
             )
-
-    # 家庭关注的血压/血糖分级与卡片展示同源：窗口内读数之外，
-    # 窗口外仍在新鲜期内（未到 STALE_AFTER_DAYS）的最新读数也要
-    # 参与分级，否则卡片显示 175/108 却提示「暂无需要关注」
-    # （第八十六轮）
-    window_metric_keys = {
-        (
-            item.get("profile") or "",
-            item.get("metric") or "",
-            str(item.get("measured_at") or ""),
-            item.get("value1"),
-            item.get("value2"),
-        )
-        for item in window_metrics
-    }
-    attention_metrics = list(window_metrics)
-    for item in latest_metrics:
-        key = (
-            item.get("profile") or "",
-            item.get("metric") or "",
-            str(item.get("measured_at") or ""),
-            item.get("value1"),
-            item.get("value2"),
-        )
-        if key in window_metric_keys:
-            continue
-        measured_day = str(item.get("measured_at") or "")[:10]
-        if measured_day:
-            try:
-                age_days = (
-                    datetime.now().date()
-                    - datetime.strptime(measured_day, "%Y-%m-%d").date()
-                ).days
-            except ValueError:
-                age_days = 0
-            if age_days > METRIC_STALE_DAYS:
-                continue
-        attention_metrics.append(item)
 
     # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
     # （空腹/未分情境均值 ≥7、餐后/随机/睡前均值 ≥11.1 mmol/L）
@@ -13967,7 +13964,7 @@ async def family_overview(days: int = 7):
     #: 血压展示峰值按全部读数统计（与周报/健康提示同口径）；
     #: 超标计数与预警升级仍只看超标读数
     bp_show_peaks: Dict[str, Dict[str, float]] = {}
-    for item in window_metrics:
+    for item in attention_metrics:
         metric = str(item.get("metric") or "")
         if metric == "bp":
             show_key = item.get("profile") or ""
