@@ -1829,8 +1829,15 @@ def _ipv6_source_budget_limiter(global_limiter=None):
     )
     budget = getattr(limiter_obj, "_ipv6_source_budget", None)
     if budget is None:
+        # 单源上限至少 10，并随全局阈值缩放为约 1/5：5 个 /64 的
+        # 失败合计能触发全局预算，单个 /64 仍无法独占（第八十五轮）
+        global_limit = getattr(limiter_obj, "limit", 0) or 0
+        budget_limit = max(
+            _AUTH_IPV6_SOURCE_BUDGET_LIMIT,
+            int(math.ceil(global_limit / 5.0)),
+        )
         budget = SlidingWindowLimiter(
-            _AUTH_IPV6_SOURCE_BUDGET_LIMIT, window=300
+            budget_limit, window=300
         )
         try:
             limiter_obj._ipv6_source_budget = budget
@@ -7328,6 +7335,21 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         reminder = None
         reminder_created = False
         linked_reminder_id = int(visit.get("followup_reminder_id") or 0)
+        # 导入保留的「仅提醒链接」脱钩待办：后续无论是本预约已有
+        # 自己的提醒、还是存在删除墓碑，都必须合并/清理它，不能
+        # 让 followup_reminder_id 被覆盖后留下无引用的幽灵（第八十五轮）
+        orphan_reminder = None
+        if linked_reminder_id:
+            orphan_candidate = store.get_reminder(linked_reminder_id)
+            if (
+                orphan_candidate
+                and not orphan_candidate.get("done")
+                and int(orphan_candidate.get("appointment_id") or 0) == 0
+                and _normalized_profile_key(
+                    orphan_candidate.get("profile") or ""
+                ) == _normalized_profile_key(visit.get("profile") or "")
+            ):
+                orphan_reminder = orphan_candidate
         if linked_reminder_id:
             reminder = store.get_reminder(linked_reminder_id)
             if reminder and (
@@ -7351,6 +7373,16 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 ):
                     reminder = candidate
                     break
+        if (
+            orphan_reminder is not None
+            and reminder is not None
+            and int(reminder.get("id") or 0)
+            != int(orphan_reminder["id"])
+        ):
+            # 预约已有自己的待办：合并重复的脱钩旧提醒，避免两条
+            # 同日 pending 与删除就诊后的幽灵
+            store.delete_reminder(int(orphan_reminder["id"]))
+            orphan_reminder = None
         if reminder is None:
             deleted_marker = ""
             try:
@@ -7362,10 +7394,21 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 )
             except Exception:
                 deleted_marker = ""
+        if (
+            reminder is None
+            and orphan_reminder is not None
+            and deleted_marker
+        ):
+            # 用户删除过该预约的提醒：匿名脱钩待办同样不能继续触发
+            store.delete_reminder(int(orphan_reminder["id"]))
+            orphan_reminder = None
         if reminder is None and not deleted_marker:
             # 导入恢复的「仅提醒链接」待办（appointment_id=0）：接管它，
             # 否则会再建一条同名提醒，删就诊后留下幽灵（第八十轮）
-            orphan_id = int(visit.get("followup_reminder_id") or 0)
+            orphan_id = (
+                int(orphan_reminder["id"])
+                if orphan_reminder is not None else 0
+            )
             if orphan_id:
                 today = datetime.now().date()
                 orphan_due = max(
