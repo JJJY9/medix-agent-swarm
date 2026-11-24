@@ -5422,13 +5422,21 @@ _STOP_ANNOTATION_ONLY_RE = re.compile(
 )
 #: 括号形式的停药标注：「X（已停用）」
 _STOP_ANNOTATION_INLINE_RE = re.compile(
-    r"[（(]\s*(?:已停用|已停药|已停服|停用中)\s*[）)]"
+    # 裸「停用/停药/停服」与英文 stopped/discontinued 同样是停药
+    # 标注（第九十五轮 [18]）
+    r"[（(]\s*(?:已停用|已停药|已停服|停用中|已停了|已停止使用|"
+    r"已停止|已停|停药|停服|停用|stopped|discontinued|stopping|"
+    r"no longer (?:taking|on))\s*[）)]",
+    re.IGNORECASE,
 )
 #: 剂量/频次/时间等非药名片段（pop 前跳过）
 _NON_DRUG_SEGMENT_RE = re.compile(
     r"^(?:"
-    r"[0-9一二两三四五六七八九十半几]+\s*"
+    # 小数/分数剂量（0.5g/1／2片）与裸单位同样不是药名
+    r"[0-9一二两三四五六七八九十半几]+(?:\.[0-9]+)?"
+    r"(?:[／/][0-9]+)?\s*"
     r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)?"
+    r"|(?:mg|毫克|g|克|ml|毫升|单位|iu)"
     r"|(?:每天|每日|一天|一日|每晚|每早|每周|隔日|qd|bid|tid|qn)"
     r"(?:一次|两次|三次|1次|2次|3次)?"
     r"|(?:早上|上午|中午|下午|晚上|睡前|饭前|饭后|随餐|空腹)"
@@ -5441,9 +5449,14 @@ _NON_DRUG_SEGMENT_RE = re.compile(
 #: 说明该药已停用，同样剔除但不能 pop 上一条在用药物（第九十四轮）
 _STOP_REMAINDER_TIME_RE = re.compile(
     r"^[（(]?\s*(?:"
-    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    # 快一年/将近半年/约两年/好几年/至今 等修饰时长同样是停药
+    # 说明（第九十五轮 [11][15]）
+    r"(?:快|将近|差不多|大约|约|大概|近|超过|满|已有?|有)?\s*"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
     r"(?:天|日|周|星期|个月|月|年)"
-    r"|半年|多年|数月|几个月|一段时间|很久|好些?天|几天"
+    r"|半年|大半年|多年|好几年|好久|数月|几个月|一段时间|很久|"
+    r"好些?天|几天)"
+    r"|至今|到现在"
     r")"
 )
 
@@ -5471,6 +5484,8 @@ def _context_medication_names(context: Any) -> List[str]:
     if not text:
         return []
     names: List[str] = []
+    # 分数剂量（1/2片、3/4粒）不是药名分隔：先整体保护再切分
+    text = re.sub(r"(?<=[0-9])\s*/\s*(?=[0-9])", "／", text)
     for part in re.split(r"[；;，,、/\n]+", text):
         part = part.strip()
         if not part:
@@ -5523,6 +5538,23 @@ def _context_medication_names(context: Any) -> List[str]:
             remainder = prefix_match.group(1).strip()
             if remainder.startswith("的"):
                 # 「已停用的阿司匹林」：定语形式，整段为停药标注
+                continue
+            switch = re.search(
+                r"(?:改用|换用|换成|改吃|换吃|换服|改为|"
+                r"现在(?:吃|用|服用)|目前(?:吃|用|服用))",
+                remainder,
+            )
+            if switch is not None:
+                # 「已停用阿司匹林改用氯吡格雷」：被停药退出名单，
+                # 换用后的药继续解析，不能整段丢弃（第九十五轮 [5]）
+                switched = remainder[switch.end():].strip(" ，,、")
+                if (
+                    switched
+                    and not _STOP_ANNOTATION_ONLY_RE.match(switched)
+                    and not _NON_DRUG_SEGMENT_RE.match(switched)
+                    and switched not in names
+                ):
+                    names.append(switched)
                 continue
             if (
                 not remainder
