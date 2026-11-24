@@ -5532,7 +5532,8 @@ def _context_medication_names(context: Any) -> List[str]:
                     names.append(piece)
             continue
         prefix_match = re.match(
-            r"^(?:已停用|已停药|已停服|停用中)(.*)$", part
+            r"^(?:已停用|已停药|已停服|停用中|停药|停服|停用)(.*)$",
+            part,
         )
         if prefix_match:
             remainder = prefix_match.group(1).strip()
@@ -5567,6 +5568,29 @@ def _context_medication_names(context: Any) -> List[str]:
             # 余下内容本身是药名（已停用阿司匹林）：该药已停用，
             # 既不能 pop 上一条在用药物，也不能把它加入检查名单
             # （第九十四轮 [5][13]）
+            continue
+        suffix_stop = re.search(
+            r"(?:已停用|已停药|已停服|停药|停用|停服)$", part
+        )
+        if suffix_stop is not None:
+            # 「阿司匹林已停用」：后缀标注同样让该药退出名单；
+            # 同段头部其它药名（华法林 阿司匹林已停用）继续解析
+            # （第九十六轮 [16]）
+            head = part[: suffix_stop.start()].strip(" ，,、")
+            head_pieces = [
+                piece.strip()
+                for piece in re.split(r"[\s和与及]+", head)
+                if piece.strip()
+            ]
+            if head_pieces:
+                head_pieces.pop()
+            for piece in head_pieces:
+                if not piece or _STOP_ANNOTATION_ONLY_RE.match(piece):
+                    continue
+                if _NON_DRUG_SEGMENT_RE.match(piece):
+                    continue
+                if piece not in names:
+                    names.append(piece)
             continue
         if part not in names:
             names.append(part)

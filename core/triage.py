@@ -221,7 +221,9 @@ _POSTPARTUM_TRIGGER_RE = re.compile(
 _POSTPARTUM_YEARS_AFTER_RE = re.compile(
     r"^\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月|"
+    r"十[二三四五六七八九]\s*个?月|"
+    r"[二三四五六七八九]十[一二三四五六七八九]?\s*个?月)"
 )
 
 
@@ -597,7 +599,9 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月|"
+    r"十[二三四五六七八九]\s*个?月|"
+    r"[二三四五六七八九]十[一二三四五六七八九]?\s*个?月)"
     # 「三年前流产过」「两年前胎停过一次」「N年前人流」
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
@@ -702,11 +706,19 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
         # 不能按枚举否定吞掉后续症状
         return False
     # 「这不是胸痛吗/我不是胸痛吗」是反问而非否认：否定词后紧跟
-    # 句尾疑问语气词时按阳性处理（第九十五轮 [1]）
-    if re.search(r"(?:不是|并非|并不是)\s*$", stripped) and re.match(
-        r"[吗么嘛]", suffix.lstrip()
-    ):
-        return False
+    # 句尾疑问语气词时按阳性处理（第九十五轮 [1]）。否定词与短语
+    # 之间允许填充词（不是有/不是明显的），转述框架（说不是/称不是）
+    # 仍是否认（第九十六轮 [4]）
+    rhetorical = re.search(
+        rf"(?:不是|并非|并不是)(?:{_NEGATION_FILLERS})*(?:的)?\s*$",
+        stripped,
+    )
+    if rhetorical is not None and re.match(r"[吗么嘛]", suffix.lstrip()):
+        if re.search(
+            r"(?:说|称|表示|认为|告诉|问)\s*$",
+            stripped[: rhetorical.start()],
+        ) is None:
+            return False
     if _NEGATION_PATTERN.search(prefix):
         return True
     enum_negated = _enum_negated(prefix)
@@ -1324,9 +1336,35 @@ def _clean_complaint_clause(
         # 纯引述内容（网上说/文章讲…）没有患者主语时，其中的
         # 时长/频次/程度线索属于被引用的科普内容（网上说胸痛持续
         # 十分钟要就医），不能据此保留分句
+        quote_lead = _EDUCATION_QUOTE_LEAD_RE.search(clause)
+        # 「我+网上看到/刷到+说」里的「我」是读者（我在网上看到说
+        # 胸痛很严重），不能当作患者主语；照教程吃药等本人动作仍算
+        # 患者语境（第九十六轮 [5]）
+        quote_reader_only = False
+        if quote_lead is not None:
+            before_quote = clause[: quote_lead.start()]
+            after_quote = clause[quote_lead.end():]
+            # 「我」在引述词之前且引述词后没有本人动作（吃药/跳操/运动）
+            # 时只是读者；「我照网上教程吃药后呼吸困难」这类本人动作
+            # 仍按患者语境处理（第九十六轮 [5]）
+            patient_action_after = re.search(
+                r"(?:吃了?|服药|服用|吃药|喝了?|跳操|运动|锻炼|"
+                r"跑步?|走路?|干活|搬东西|洗澡|工作|上班)",
+                after_quote,
+            ) is not None
+            if (
+                re.match(r"\s*(?:我|本人)[^，。；]{0,8}$", before_quote)
+                is not None
+                and not patient_action_after
+            ):
+                quote_reader_only = True
+        quote_subject_region = (
+            clause[quote_lead.end():]
+            if quote_reader_only else clause
+        )
         quote_only = bool(
-            _EDUCATION_QUOTE_LEAD_RE.search(clause) is not None
-            and not _has_patient_subject(clause)
+            quote_lead is not None
+            and not _has_patient_subject(quote_subject_region)
             and _EDUCATION_CURRENT_RE.search(clause) is None
             # 省略主语的「这几天胸痛在网上查了」同样是患者主诉
             and not _patient_course_before_quote(clause)
@@ -1836,9 +1874,19 @@ def patient_complaint_text(text: str) -> str:
             text_follow = follow.strip()
             if not text_follow:
                 continue
-            # 严重度必须落在患者症状叙述上：生活叙述（工作压力很
-            # 严重）、引述（网上说很严重/朋友说很厉害）与疑问句
-            # （会恶化吗）不升级定义问句（第九十五轮 [6][8]）
+            # 严重度必须落在患者症状叙述上：引述（网上说很严重/
+            # 朋友说很厉害）与疑问句（会恶化吗）不升级定义问句；
+            # 客观体征（冷汗/大汗/放射/不缓解）与生活叙述里的
+            # 具体症状（工作的时候疼得厉害）仍是患者证据
+            # （第九十五轮 [6][8]、第九十六轮 [1]）
+            hard_sign = any(
+                sign in text_follow
+                for sign in (
+                    "冷汗", "冒冷汗", "大汗", "虚汗", "出汗",
+                    "放射", "不缓解", "不能缓解", "持续不缓解",
+                    "难忍", "剧痛", "濒死", "躺不平", "端坐呼吸",
+                )
+            )
             severity_follows = bool(
                 (
                     any(cue in text_follow for cue in _POST_POSITIVE_CUES)
@@ -1849,13 +1897,14 @@ def patient_complaint_text(text: str) -> str:
                 )
                 and not any(
                     word in text_follow
-                    for word in _COURSE_CONTEXT_BLOCKERS
+                    for word in _EDUCATION_BLOCKERS_STRONG
                 )
                 and _EDUCATION_QUOTE_LEAD_RE.search(text_follow) is None
                 and re.search(r"[吗么嘛]\s*[？?]?\s*$", text_follow)
                 is None
                 and (
-                    "我" in text_follow
+                    hard_sign
+                    or "我" in text_follow
                     or _is_red_flag_text(text_follow)
                     or any(
                         term in text_follow
@@ -2392,6 +2441,32 @@ def _missed_dose_names_term(text: str, term: str) -> bool:
     if not obj or not term:
         return False
     return term in obj or obj in term
+
+def _missed_dose_high_risk_fragment(text: str) -> str:
+    """同分句有远期停药时，只保留漏服高风险药的片段。
+
+    「甲氨蝶呤停用两年了但华法林没吃三天了」→「华法林没吃三天」：
+    漏服对象是高风险药时保留其用药状态，同时剔除同句远期停药的
+    他药；漏服对象不是高风险药时返回空串（整句丢弃）。
+    """
+    text = str(text or "")
+    match = _DOSE_MISSED_OBJECT_FIRST_RE.search(text)
+    if match is None:
+        return ""
+    obj = (match.group(1) or "").strip()
+    if not obj:
+        obj = _dose_missed_object_before(text)
+    if not obj:
+        return ""
+    if not (
+        any(term in obj for term in ANTICOAGULANT_TERMS)
+        or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
+    ):
+        return ""
+    tail = text[match.start(): match.end()]
+    if obj in tail:
+        tail = tail.replace(obj, "", 1)
+    return f"{obj}{tail}".strip(" ，,、但而")
 #: 未来停药计划（明天就停/下周就不吃了/等这盒吃完就停）：当前仍在用药
 _FUTURE_STOP_PATTERN = re.compile(
     r"(?:明天|后天|下周|下个?月|下星期|明年|月底|年底|"
@@ -3023,9 +3098,10 @@ _RESTART_OBJECT_BEFORE_RE = re.compile(
     r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
     r"(?:还在吃|还在服用|仍在吃|仍在服用|仍然服用|继续吃|继续服用|"
     # 词表与 _RESTART_TEXT_RE / medication_safety 保持一致
-    # （第九十五轮 [14]）
+    # （第九十五轮 [14]、第九十六轮 [14]）
     r"还在用|仍在用|继续用|还用|仍用|仍在使用|一直在用|"
-    r"继续使用|还在使用)"
+    r"继续使用|还在使用|还吃|还服用|仍吃|接着吃|接着服|接着用|"
+    r"仍然用)"
 )
 #: 分句里的用药宾语（以前吃华法林）
 _MED_OBJECT_IN_CLAUSE = re.compile(
@@ -3620,17 +3696,21 @@ def _active_medical_text(
             # 「不吃」子串当作停药
             kept.append(clause)
             continue
-        if _DOSE_MISSED_PATTERN.search(clause) or (
-            _DOSE_MISSED_OBJECT_FIRST_RE.search(clause)
-            and (
-                not _LONG_STOP_PATTERN.search(clause)
-                or _missed_dose_names_high_risk_drug(clause)
-            )
-        ):
+        dose_missed = bool(
+            _DOSE_MISSED_PATTERN.search(clause)
+            or _DOSE_MISSED_OBJECT_FIRST_RE.search(clause)
+        )
+        if dose_missed and _LONG_STOP_PATTERN.search(clause):
+            # 同分句同时有远期停药与漏服：只有漏服对象是高风险药
+            # 才保留，并且只保留漏服片段，不能把同句远期停药的
+            # 他药一起复活（第九十五轮 [16]、第九十六轮 [6][11]）
+            fragment = _missed_dose_high_risk_fragment(clause)
+            if fragment:
+                kept.append(fragment)
+            continue
+        if dose_missed:
             # 「华法林今天没吃」「没吃华法林三天了」是漏服：仍处于
-            # 抗凝状态，不能按「没吃」整句丢弃。同分句里他药漏服
-            # （华法林停用两年了但阿司匹林没吃三天了）不能把整句
-            # 连同远期停药的药名复活（第九十五轮 [16]）
+            # 抗凝状态，不能按「没吃」整句丢弃
             kept.append(clause)
             continue
         if _FUTURE_STOP_PATTERN.search(clause):

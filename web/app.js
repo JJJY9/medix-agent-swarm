@@ -20718,7 +20718,9 @@ async function handleLaunchAction() {
   }
 }
 
-async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 0) {
+async function restoreCurrentSession(
+  expectedQuestion = '', baselineMessageId = 0, restorePending = false
+) {
   if (!sessionId) return false;
   const expectedSession = sessionId;
   const restoreProfileSeq = profileSelectionSeq;
@@ -21035,6 +21037,11 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       }
     }
     inflightReconciledThisRestore = inflightReconciled;
+    if (restorePending && expectedSession) {
+      // 深链/刷新打开会话时同样恢复备份槽里属于本会话的未落库
+      // 主诉，与 openSession 口径一致（第九十六轮 [10]）
+      restoreInflightForOpenSession(expectedSession, messages);
+    }
     if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
@@ -21856,7 +21863,7 @@ async function retryAfterReconnect() {
     await initProfiles();
     await refreshReminderBadge();
     if (els.empty && !els.empty.hidden) {
-      await restoreCurrentSession();
+      await restoreCurrentSession('', 0, true);
     }
   } catch {
     // 单个恢复步骤失败不影响其他数据加载
@@ -23296,7 +23303,10 @@ function readInflightRecordFor(targetId) {
       const data = JSON.parse(raw);
       if (data && typeof data === 'object') {
         const owner = String(data.sessionId || '');
-        if (!owner || owner === targetId) {
+        // 无归属记录不能遮蔽备份槽：它只给整页刷新恢复用，
+        // 打开会话时必须继续找属于该会话的备份记录
+        // （第九十六轮 [15]）
+        if (owner === targetId) {
           return { keyName: INFLIGHT_QUESTION_KEY, data };
         }
       }
@@ -23687,7 +23697,10 @@ els.input.addEventListener('input', () => {
       && !busy
       && !sendInFlight
     ) {
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 以主槽记录自身的会话归属为准：内存归属可能已过期，
+      // 主槽也可能已被后续发送改写成另一会话的在途记录
+      // （第九十六轮 [14]）
+      clearInflightForCurrentSession();
     }
     inflightRestoredText = '';
     inflightRestoredOwnerSession = '';
@@ -25381,7 +25394,7 @@ loadSavedContext();
 loadDraft();
 restoreInflightQuestion();
 initProfiles().finally(() => {
-  Promise.resolve(restoreCurrentSession())
+  Promise.resolve(restoreCurrentSession('', 0, true))
     .then((ok) => resolveInitialSessionRestore(Boolean(ok)))
     .catch(() => resolveInitialSessionRestore(false));
   handleLaunchAction();
