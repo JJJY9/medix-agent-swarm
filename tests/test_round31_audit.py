@@ -280,7 +280,9 @@ def test_apri_uln_uses_unit_conversion():
 def test_open_session_clears_deleted_persisted_id():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     start = app_js.index("async function openSession(id)")
-    body = app_js[start:start + 4200]
+    # 第八十九/九十轮给 openSession 增加了待重置草稿保留逻辑：窗口
+    # 相应放宽，函数尾部（sessionDeleted 清理）仍在切片内
+    body = app_js[start:start + 5600]
     assert "error.sessionDeleted = true" in body
     # 清理逻辑抽到 clearDeletedSession，与启动/深链恢复路径共用
     assert "clearDeletedSession(" in body

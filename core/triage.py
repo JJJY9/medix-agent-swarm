@@ -1213,7 +1213,7 @@ def _pregnancy_term_positive(text: str, term: str) -> bool:
 
 def _clean_complaint_clause(
     clause: str, patient_context_seen: bool = False,
-    help_follows: bool = False,
+    help_follows: bool = False, course_follows: bool = False,
 ) -> str:
     """清洗单个分句：有患者语境的保留；纯定义问句丢弃。
 
@@ -1236,11 +1236,17 @@ def _clean_complaint_clause(
                 )
                 and _is_red_flag_text(rest)
             ) or _has_patient_subject(rest) or _course_context_clause(rest):
-                return _clean_complaint_clause(rest, patient_context_seen, help_follows)
+                return _clean_complaint_clause(
+                    rest, patient_context_seen, help_follows,
+                    course_follows,
+                )
             return ""
         # 去掉「请问/我想知道」后按剩余内容重新判断：「什么是咯血」仍是
         # 纯定义问句，而「胸痛两天了是什么病」仍按病程主诉保留
-        return _clean_complaint_clause(rest, patient_context_seen, help_follows)
+        return _clean_complaint_clause(
+            rest, patient_context_seen, help_follows,
+            course_follows,
+        )
     definition_lead = _DEFINITION_PREFIX_RE.match(clause)
     if definition_lead:
         # 句首定义引导词（什么是/什么叫/请解释一下…）：剥掉前缀后
@@ -1283,7 +1289,10 @@ def _clean_complaint_clause(
             or _has_head_trauma(rest)
             or (help_follows and _is_red_flag_text(rest))
         ):
-            return _clean_complaint_clause(rest, patient_context_seen, help_follows)
+            return _clean_complaint_clause(
+                rest, patient_context_seen, help_follows,
+                course_follows,
+            )
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
     blocker_clause = str(clause).replace("说明书", "")
@@ -1368,17 +1377,41 @@ def _clean_complaint_clause(
             # 只丢弃把症状写进科普/文章引用的分句；「我在网上查了
             # 资料」这类无症状的铺垫保持原样
             return ""
+    lead_q = _DEFINITION_LEAD_Q_RE.match(clause)
+    mid_q = _DEFINITION_MID_RE.search(clause)
     if (
-        (
-            _DEFINITION_LEAD_Q_RE.match(clause) is not None
-            or _DEFINITION_MID_RE.search(clause) is not None
-        )
+        (lead_q is not None or mid_q is not None)
         and not _has_patient_subject(clause)
         and not _course_context_clause(clause)
         and not _has_head_trauma(clause)
     ):
-        # 「什么病会引起胸痛」「咯血见于什么病」「胸痛的原因有哪些」
-        # 是科普提问，不按患者主诉触发急症（第八十九轮）
+        # 「什么病会引起胸痛」「胸痛见于什么病」等科普提问默认整句
+        # 丢弃；但分句含求助语、后续分句有求助/病程线索、或家属+
+        # 红旗时，它是在描述真实主诉：剥掉问句框架保留症状，不能
+        # 把胸痛/咯血急症一并吞掉（第九十轮 [1]）
+        keep_context = bool(
+            _URGENT_HELP_RE.search(clause)
+            or help_follows
+            or course_follows
+            or (
+                any(
+                    marker in clause
+                    for marker in _FAMILY_HISTORY_MARKERS
+                )
+                and _is_red_flag_text(clause)
+            )
+        )
+        if not keep_context:
+            return ""
+        if mid_q is not None:
+            stripped = clause[: mid_q.start()].strip(" ，,、的")
+        else:
+            stripped = clause[lead_q.end():].strip(" ，,、的")
+        if stripped and stripped != clause:
+            return _clean_complaint_clause(
+                stripped, patient_context_seen, help_follows,
+                course_follows,
+            )
         return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         if not any(
@@ -1711,8 +1744,18 @@ def patient_complaint_text(text: str) -> str:
                 _URGENT_HELP_RE.search(text_follow) is not None
             )
             break
+        course_follows = False
+        for follow in clauses[position + 1:]:
+            text_follow = follow.strip()
+            if not text_follow:
+                continue
+            course_follows = bool(
+                _course_context_clause(text_follow)
+                or _COURSE_MARKER_RE.search(text_follow) is not None
+            )
+            break
         cleaned = _clean_complaint_clause(
-            clause.strip(), context_seen, help_follows
+            clause.strip(), context_seen, help_follows, course_follows
         )
         if cleaned:
             kept.append(cleaned)
@@ -2237,10 +2280,29 @@ _LONG_STOP_PATTERN = re.compile(
 )
 #: 英文远期停药分句（warfarin was stopped 2 years ago）与重启线索
 _ENGLISH_STOP_RE = re.compile(
-    r"\b(?:stopped|discontinued|ceased|quit|been\s+off|"
+    r"\b(?:stopped|discontinued|ceased|quit|"
     r"no\s+longer\s+(?:taking|on)|not\s+(?:on|taking))\b",
     re.IGNORECASE,
 )
+#: 「have been off warfarin for two years」：been off 必须指向已知
+#: 药名；「been off work/alcohol」不是停药（第九十轮 [2]）
+_ENGLISH_BEEN_OFF_RE = re.compile(
+    r"\b(?:been|have\s+been|has\s+been|had\s+been)\s+off\s+"
+    r"(?:of\s+)?([A-Za-z][A-Za-z\-]{2,})\b",
+    re.IGNORECASE,
+)
+
+
+def _english_been_off_drug(text: str) -> bool:
+    for match in _ENGLISH_BEEN_OFF_RE.finditer(str(text or "")):
+        obj = match.group(1).lower()
+        if any(
+            obj == term.lower()
+            for term in ANTICOAGULANT_TERMS + IMMUNOSUPPRESSION_TERMS
+            if term.isascii()
+        ):
+            return True
+    return False
 _ENGLISH_RESTART_RE = re.compile(
     r"\b(?:restarted|restarting|started\s+again|back\s+on|"
     r"resumed|currently\s+taking)\b",
@@ -2258,27 +2320,31 @@ _ENGLISH_STOP_CONTINUATION_RE = re.compile(
     r"\b(?:besides|other\s+than|except|anything\s+else)\b",
     re.IGNORECASE,
 )
-#: 「still taking/on X」：宾语是代词或本类药名时才算续用本药；
-#: 宾语点名另一类药（still take amlodipine）是换药（第八十九轮）
+#: 「still taking/on X」：代词宾语直接算续用；具名宾语必须在本
+#: 分句前文出现过（warfarin was stopped … still taking warfarin），
+#: 换用其它药（amlodipine/aspirin/methotrexate/泼尼松）不能复活
+#: 本药（第九十轮 [3][17]）
 _ENGLISH_STILL_RE = re.compile(
     r"\bstill\s+(?:take|taking|on)\s+"
-    r"(?:(it|this|the\s+same)\b|([A-Za-z][A-Za-z\-]{2,}))",
+    r"(?:(it|the\s+same|this)\b|"
+    r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
     re.IGNORECASE,
 )
 
 
 def _english_still_names_self(text: str) -> bool:
-    """「still taking/on X」的宾语是否仍指本类药（而非换药）。"""
-    for match in _ENGLISH_STILL_RE.finditer(str(text or "")):
+    """「still taking/on X」的宾语是否指回本分句正在讨论的药。"""
+    text = str(text or "")
+    for match in _ENGLISH_STILL_RE.finditer(text):
         if (match.group(1) or "").strip():
             return True
-        obj = (match.group(2) or "").lower()
+        obj = (match.group(2) or "").strip()
         if not obj:
             continue
-        if any(
-            obj == term.lower() or obj in term.lower()
-            for term in ANTICOAGULANT_TERMS + IMMUNOSUPPRESSION_TERMS
-            if term.isascii()
+        earlier = text[: match.start()].lower()
+        if re.search(
+            rf"(?<![a-z]){re.escape(obj.lower())}(?![a-z])",
+            earlier,
         ):
             return True
     return False
@@ -2791,7 +2857,9 @@ _CONTINUATION_AFTER_PAST = re.compile(
     # 同样是当前续用；变更词本身可充当动词（第八十八轮）
     r"|(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
     r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
-    r"减到)\s*)?(?:(?:每天|每日)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
+    r"减到)\s*)?"
+    r"(?:(?:每天|每日|一天|一日|每晚|每早)(?:一次|1次)?\s*"
+    r"(?:[，,；;]\s*每次)?\s*)?(?:(?:吃|服用|口服|用)\s*)?"
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
     r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
@@ -3173,7 +3241,10 @@ def _active_medical_text(
             restart_parts.append(follow)
         restart_window = "；".join(restart_parts)[:40]
         if (
-            _ENGLISH_STOP_RE.search(clause)
+            (
+                _ENGLISH_STOP_RE.search(clause) is not None
+                or _english_been_off_drug(clause)
+            )
             and _LONG_STOP_PATTERN.search(clause)
             and _ENGLISH_STOP_DURATION_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(clause)

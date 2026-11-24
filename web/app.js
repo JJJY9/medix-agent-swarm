@@ -5364,6 +5364,14 @@ async function openSession(id) {
       // 待重置仍要生效：只固定本标签页，不能重新写回共享 localStorage
       // 指针（冷启动/新标签页会复活已放弃的旧档案会话）
       safeSessionSet('medix.session.tab', id);
+      if (pendingSessionReset) {
+        // 待重置标记跟随当前会话重新落键：加载块只在标记等于
+        // sessionId 时恢复，否则刷新/冷启动会把标记当作过期丢弃，
+        // 待新建会话的空 owner 草稿又会被静默清空
+        // （第九十轮 [5]）
+        safeSessionSet(PENDING_RESET_KEY, id);
+        safeSessionSet(PENDING_RESET_AT_KEY, String(Date.now()));
+      }
     } else {
       persistSessionId(id);
     }
@@ -22963,6 +22971,24 @@ function preserveDraftProfile(profile, text) {
   // restoreComposer 触发的 saveDraft 会用当前档案重写草稿归属：
   // 稍后把发送时的档案写回，换档/改名后旧患者的主诉仍会被拦截
   if (!profile) return;
+  // 合并前已有另一档案的草稿归属：输入框里混有上一位患者的文本，
+  // 不能整体改挂成本轮档案，否则跨患者拦截会在下一次回车失效
+  // （第九十轮 [13]）
+  let existingOwner = '';
+  try {
+    existingOwner = String(
+      draftProfileMemory || safeSessionGet(DRAFT_PROFILE_KEY) || ''
+    );
+  } catch {
+    existingOwner = '';
+  }
+  if (
+    existingOwner
+    && existingOwner !== profile
+    && els.input.value.includes(String(text || '').trim())
+  ) {
+    return;
+  }
   // 归属必须同步写回：提交入口的 clearDraft 已清空草稿归属，若
   // 只在 260ms 定时器里写，这期间再次回车会读到空归属、跳过跨
   // 患者拦截，把上一位患者的主诉按新档案发出（第七十三轮审查）
