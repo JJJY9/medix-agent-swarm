@@ -217,7 +217,7 @@ _POSTPARTUM_TRIGGER_RE = re.compile(
 _POSTPARTUM_YEARS_AFTER_RE = re.compile(
     r"^\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
 )
 
 
@@ -587,7 +587,7 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
     # 「三年前流产过」「两年前胎停过一次」「N年前人流」
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
@@ -612,14 +612,14 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:产后|流产后|顺产后|引产后|胎停后)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)|"
     r"产后抑郁|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?\s*"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
-    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
     r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
@@ -1319,6 +1319,13 @@ def _clean_complaint_clause(
                     )
                 )
             )
+            # 「宝宝发烧38.5度看了文章」：发热不在红旗表，但婴儿/
+            # 免疫抑制伴发热规则依赖它，未被否定的发热必须保留
+            # （第八十七轮）
+            or (
+                _has_fever(clause)
+                and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+            )
         )
         family_redflag = any(
             marker in clause for marker in _FAMILY_HISTORY_MARKERS
@@ -1467,6 +1474,9 @@ def _is_greeting_clause(text: str) -> bool:
 _EDUCATION_BLOCKERS_STRONG = (
     "网上", "查资料", "查了资料", "科普", "文章", "视频", "新闻",
     "帖子", "百科", "听说", "据说", "搜了", "搜索",
+    # 电视/报道/书上/讲座同样是引述来源：只含引述词的科普问句
+    # 不能按患者主诉触发急症（第八十七轮）
+    "电视", "报道", "报纸", "书上", "讲座", "广播", "收音机",
 )
 #: 引用词之后仍属患者本人的动作/时间线索（网购药、跟视频运动等）
 _EDUCATION_CURRENT_CUES = (
@@ -2178,6 +2188,24 @@ _ENGLISH_RESTART_RE = re.compile(
     r"resumed|currently\s+taking)\b",
     re.IGNORECASE,
 )
+#: 英文停药必须有明确时长才算远期停药（not on/not taking 裸分支不算）
+_ENGLISH_STOP_DURATION_RE = re.compile(
+    r"\b(?:[0-9]+|a|one|two|three|several)\s+(?:years?|months?)\b"
+    r"|\bago\b",
+    re.IGNORECASE,
+)
+#: 「除本药外没吃别的/仍在每天吃」：不是停用本药
+_ENGLISH_STOP_CONTINUATION_RE = re.compile(
+    r"\b(?:besides|other\s+than|except|anything\s+else|"
+    r"still\s+(?:take|taking|on)|every\s+day|daily)\b",
+    re.IGNORECASE,
+)
+#: 英文否定停药（has not been stopped / never discontinued）
+_ENGLISH_NEGATED_STOP_RE = re.compile(
+    r"\b(?:not|never|n't)\s+(?:been\s+|have\s+|has\s+|had\s+|"
+    r"yet\s+)?(?:stopped|discontinued|ceased|quit|off)\b",
+    re.IGNORECASE,
+)
 #: 明确结束的长期治疗时间线（化疗结束五年/放疗完成多年）：与远期
 #: 停药一样，可以否定同段消息里的「没吃完」
 _LONG_ENDED_TREATMENT_RE = re.compile(
@@ -2640,6 +2668,11 @@ _CONTINUATION_AFTER_PAST = re.compile(
     r"(?:都|也|还|在|坚持|按医嘱|遵医嘱|按时)?"
     r"(?:吃|服用|口服|服|用)"
     r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面)"
+    # 「以前吃2mg，现在吃5mg/一片」：剂量变更同样是当前续用
+    r"|(?:现在|目前|如今|改为|换成|调到|改吃)"
+    r"(?:每天|每日|仍|还)?\s*(?:吃|服用|口服|用)"
+    r"\s*(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
+    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片)"
 )
 
 #: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
@@ -2991,11 +3024,15 @@ def _active_medical_text(
         if (
             _ENGLISH_STOP_RE.search(clause)
             and _LONG_STOP_PATTERN.search(clause)
+            and _ENGLISH_STOP_DURATION_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(restart_window)
+            and not _ENGLISH_STOP_CONTINUATION_RE.search(clause)
+            and not _ENGLISH_NEGATED_STOP_RE.search(clause)
         ):
             # 英文远期停药（warfarin was stopped 2 years ago）与
-            # 中文口径一致：不算当前用药（第八十六轮）
+            # 中文口径一致：要求明确时长，且「除华法林外没吃别的」
+            # 「没有停用」仍按当前用药（第八十六/八十七轮）
             continue
         if (
             _NEGATED_STOP_PATTERN.search(clause)

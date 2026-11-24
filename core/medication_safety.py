@@ -898,6 +898,45 @@ _PAST_USE_PREFIX = re.compile(
     r"(?:服用|口服|吃|用|注射|打|含服|滴|喷|喝|饮)"
     r"(?:过|了|过几次|过几次了)\s*(?:的)?\s*$"
 )
+#: 既往用药后的剂量延续（「以前吃2mg，现在吃5mg/一片」）：
+#: 仍是当前用药，不能按既往史跳过药名
+_DOSE_CHANGE_CONTINUATION = re.compile(
+    r"(?:现在|目前|如今|改为|换成|调到|改吃)"
+    r"(?:每天|每日|仍|还)?\s*(?:吃|服用|口服|用)\s*"
+    r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
+    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片)"
+)
+def _mentions_other_drug_alias(text: str, alias_lower: str) -> bool:
+    """文本是否点名了另一种药（用于剂量延续语的归属判断）。"""
+    lowered = normalize_brand_drug_names(str(text or "")).lower()
+    alias_lower = str(alias_lower or "").lower()
+    for group_items in DRUG_GROUPS.values():
+        for _canonical, aliases in group_items:
+            for alias in aliases:
+                alias_text = str(alias).lower()
+                if len(alias_text) < 2 or alias_text in alias_lower:
+                    continue
+                if alias_text in lowered:
+                    return True
+    return False
+
+
+def _dose_continuation_names_other(text: str, alias_lower: str) -> bool:
+    """剂量延续语的直接宾语是否是另一种药。
+
+    「现在每天吃一片阿司匹林」的剂量属于阿司匹林，不能据此把
+    华法林判为仍在用；「现在吃一片，能吃布洛芬吗」中的布洛芬是
+    提问对象，不算剂量宾语。
+    """
+    match = _DOSE_CHANGE_CONTINUATION.search(str(text or ""))
+    if match is None:
+        return False
+    tail = re.split(
+        r"[，。；,.!?！？\n]", str(text)[match.end():], maxsplit=1
+    )[0][:16]
+    return _mentions_other_drug_alias(tail, alias_lower)
+
+
 #: 未来停药意图（明天/下周停用）当前仍在用药
 _FUTURE_STOP_PREFIX = re.compile(
     r"(?:明天|后天|下周|下个?月|下星期|过两天|过几天|以后|将来|"
@@ -1236,7 +1275,25 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _STOPPED_USE_SUFFIX.search(suffix)
             or _PAST_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
-            or _PAST_USE_PREFIX.search(prefix)
+            or (
+                _PAST_USE_PREFIX.search(prefix)
+                and not (
+                    (
+                        _DOSE_CHANGE_CONTINUATION.search(prefix)
+                        or _DOSE_CHANGE_CONTINUATION.search(suffix)
+                        or _DOSE_CHANGE_CONTINUATION.search(long_suffix)
+                    )
+                    and not (
+                        _dose_continuation_names_other(prefix, alias_lower)
+                        or _dose_continuation_names_other(
+                            suffix, alias_lower
+                        )
+                        or _dose_continuation_names_other(
+                            long_suffix, alias_lower
+                        )
+                    )
+                )
+            )
         ):
             start = text.find(alias_lower, end)
             continue

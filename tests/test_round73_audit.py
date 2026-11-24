@@ -347,9 +347,9 @@ def test_frontend_abort_restores_composer_snapshot():
     start = source.index(marker)
     body = source[start:start + 1200]
     assert (
-        "lastRestoredComposerText = restoredNow ? els.input.value "
-        ": ''"
+        "restoredNow || composerText === questionText"
     ) in body
+    assert "lastRestoredComposerQuestion = lastRestoredComposerText" in body
 
 
 # ---------------------------------------------------------------- [14]

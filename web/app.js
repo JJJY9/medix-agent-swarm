@@ -804,6 +804,7 @@ let creatingSessionPromise = null;
 //: 本轮 send 通过 restoreComposer 放回输入框的完整文本快照：
 //: 成功清理只在用户没有继续编辑时才按包含式移除本轮主诉
 let lastRestoredComposerText = '';
+let lastRestoredComposerQuestion = '';
 
 function notePersistedInflight(text, owner) {
   const value = String(text || '').trim();
@@ -21050,6 +21051,9 @@ async function send(question, composerSubmit = false) {
     return;
   }
   if (!question.trim()) return;
+  // 新一轮发送开始：上一轮失败/中断恢复的快照与主诉绑定不再适用
+  lastRestoredComposerText = '';
+  lastRestoredComposerQuestion = '';
   // 发送时的档案快照：abort/失败恢复主诉时用它守住草稿归属，
   // 换档后旧患者的主诉不能被当成新档案草稿直接放行
   let sendProfile = activeProfileName || readStoredProfile() || '';
@@ -21638,7 +21642,13 @@ async function send(question, composerSubmit = false) {
         // 忽略
       }
       const restoredNow = restoreComposer(question);
-      lastRestoredComposerText = restoredNow ? els.input.value : '';
+      const questionText = String(question || '').trim();
+      const composerText = String(els.input.value || '').trim();
+      lastRestoredComposerText = (
+        restoredNow || composerText === questionText
+      ) ? els.input.value : '';
+      lastRestoredComposerQuestion = lastRestoredComposerText
+        ? questionText : '';
       preserveDraftProfile(sendProfile, question);
       renderError('档案已切换，本轮会诊未提交，主诉已放回输入框。');
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
@@ -21655,7 +21665,13 @@ async function send(question, composerSubmit = false) {
       // 重复提交、重复计费（第七十三轮审查）；restoreComposer
       // 因草稿已含主诉而未写入时不记录，避免剥离用户草稿中间
       // 的子串（第八十六轮）
-      lastRestoredComposerText = restoredNow ? els.input.value : '';
+      const questionText = String(question || '').trim();
+      const composerText = String(els.input.value || '').trim();
+      lastRestoredComposerText = (
+        restoredNow || composerText === questionText
+      ) ? els.input.value : '';
+      lastRestoredComposerQuestion = lastRestoredComposerText
+        ? questionText : '';
       preserveDraftProfile(sendProfile, question);
       renderStopped({
         question, askTurn, baselineMessageId, profile: sendProfile,
@@ -21691,7 +21707,13 @@ async function send(question, composerSubmit = false) {
       announceChat('会诊中断');
       // 失败轮次可能从未落库：把主诉放回输入框与草稿
       const restoredNow = restoreComposer(question);
-      lastRestoredComposerText = restoredNow ? els.input.value : '';
+      const questionText = String(question || '').trim();
+      const composerText = String(els.input.value || '').trim();
+      lastRestoredComposerText = (
+        restoredNow || composerText === questionText
+      ) ? els.input.value : '';
+      lastRestoredComposerQuestion = lastRestoredComposerText
+        ? questionText : '';
       preserveDraftProfile(sendProfile, question);
       renderError(
         err.message || String(err),
@@ -21722,6 +21744,7 @@ async function send(question, composerSubmit = false) {
       if (
         lastRestoredComposerText
         && els.input.value === lastRestoredComposerText
+        && String(question || '').trim() === lastRestoredComposerQuestion
       ) {
         const remaining = stripInflightQuestion(
           els.input.value, String(question || '').trim()
@@ -21741,6 +21764,7 @@ async function send(question, composerSubmit = false) {
         }
       }
       lastRestoredComposerText = '';
+      lastRestoredComposerQuestion = '';
     }
     busy = false;
     activeController = null;
