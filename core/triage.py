@@ -1040,9 +1040,26 @@ _DEFINITION_SUFFIX_RE = re.compile(
     r"^([^，,；;。！？!?\n]*)(?:是什么感觉|什么感觉|是什么样的|"
     r"是什么样子|是什么症状|有什么症状|会有什么感觉|"
     r"是什么|啥是|是什么意思|什么意思|"
-    r"是指什么|指什么|是啥|是什么病|是啥病|是什么疾病|是啥疾病)"
+    r"是指什么|指什么|是啥|"
+    r"是什么病的?(?:症状|表现|征兆|前兆|早期症状|早期表现)|"
+    r"是什么(?:病|疾病)(?:引起|导致)的?|"
+    r"是啥病|是什么病|是什么疾病|是啥疾病)"
     r"\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
 )
+#: 疑问词前置的定义问句：「什么病会引起胸痛」「哪些疾病会导致咯血」
+#: 是在问科普，不是患者主诉（第八十九轮）
+_DEFINITION_LEAD_Q_RE = re.compile(
+    r"^(?:请问)?(?:什么病|哪些病|哪些疾病|何种疾病|什么原因|什么情况|"
+    r"哪些原因|哪类疾病)"
+    r"[^，。；]{0,10}?(?:会|能|可以|可能|容易)?\s*"
+    r"(?:引起|导致|造成|诱发|出现)"
+)
+#: 症状在前的科普问句：「X见于什么病」「X的原因有哪些」
+_DEFINITION_MID_RE = re.compile(
+    r"(?:见于|可见于|常见于)\s*(?:哪些|什么|何种)"
+    r"|的(?:原因|病因|诱因)\s*(?:有哪些|是什么|是啥)"
+)
+
 #: 口语化「提问前缀」：去掉后按剩余内容重新判断，避免「我想知道什么是
 #: 咯血」因含「我」被当成患者主诉而触发急症横幅
 _EDUCATIONAL_PREFIX_RE = re.compile(
@@ -1066,8 +1083,10 @@ _EDUCATION_MEDIA_TIME_CONTEXT_RE = re.compile(
 _FEVER_TOPIC_RE = re.compile(
     r"(?:关于|讲|介绍|怎么处理|怎么办|如何|科普)[^，。；]{0,12}?"
     r"(?:发烧|发热)"
-    r"|(?:发烧|发热)[^，。；]{0,6}?的?(?:护理|处理|文章|视频|科普|"
+    r"|(?:发烧|发热)[^，。；]{0,6}?的(?:护理|处理|文章|视频|科普|"
     r"新闻|帖子|百科|内容|问题)"
+    r"|(?:发烧|发热)(?:护理|处理|文章|视频|科普|新闻|帖子|百科|内容|"
+    r"问题)"
 )
 
 #: 媒体名词之后才出现症状：真实伴随症状（「看视频胸痛」）而非
@@ -1349,6 +1368,18 @@ def _clean_complaint_clause(
             # 只丢弃把症状写进科普/文章引用的分句；「我在网上查了
             # 资料」这类无症状的铺垫保持原样
             return ""
+    if (
+        (
+            _DEFINITION_LEAD_Q_RE.match(clause) is not None
+            or _DEFINITION_MID_RE.search(clause) is not None
+        )
+        and not _has_patient_subject(clause)
+        and not _course_context_clause(clause)
+        and not _has_head_trauma(clause)
+    ):
+        # 「什么病会引起胸痛」「咯血见于什么病」「胸痛的原因有哪些」
+        # 是科普提问，不按患者主诉触发急症（第八十九轮）
+        return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         if not any(
             word in clause for word in _EDUCATION_BLOCKERS_STRONG
@@ -1358,10 +1389,20 @@ def _clean_complaint_clause(
         # 「表现为/症状包括」既可能是科普也可能是真实主诉：含红旗
         # 且不是定义问句时必须保留，否则 ACS/呼吸困难会静默漏报
         if (
-            _is_red_flag_text(clause)
-            and not _DEFINITION_PREFIX_RE.match(clause)
-            and not _DEFINITION_SUFFIX_RE.match(clause)
-            and not _FEATURE_QUESTION_RE.search(clause)
+            (
+                _is_red_flag_text(clause)
+                and not _DEFINITION_PREFIX_RE.match(clause)
+                and not _DEFINITION_SUFFIX_RE.match(clause)
+                and not _FEATURE_QUESTION_RE.search(clause)
+            )
+            # 「主要表现是发烧39度」「症状包括发烧38.5度」：发热不在
+            # 红旗表，但婴儿/免疫抑制伴发热规则依赖它，未被否定的
+            # 发热必须保留（第八十九轮，与引述分支同口径）
+            or (
+                _has_fever(clause)
+                and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+                and _FEVER_TOPIC_RE.search(clause) is None
+            )
         ):
             return clause
         return ""
@@ -1489,8 +1530,9 @@ _EDUCATION_BLOCKERS_STRONG = (
     # 电视/报道/报纸/讲座同样是引述来源，但只拦截引述短语：
     # 「看电视时胸痛」是症状时间语境，不能整句丢弃；「说明书上」
     # 也不是科普引用（第八十七/八十八轮）
-    "电视上", "电视里", "报道", "报纸上", "书上说", "书上写",
-    "书上讲", "讲座里", "讲座中", "广播里", "收音机里",
+    "电视上", "电视里", "电视说", "电视里说", "报道", "报纸上",
+    "报纸说", "书上说", "书上写", "书上讲", "讲座里", "讲座中",
+    "讲座上说", "讲座说", "广播里", "广播说", "收音机里", "收音机说",
 )
 #: 引用词之后仍属患者本人的动作/时间线索（网购药、跟视频运动等）
 _EDUCATION_CURRENT_CUES = (
@@ -2185,15 +2227,17 @@ _LONG_STOP_PATTERN = re.compile(
     r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用)"
     # 英文停药表述（warfarin was stopped 2 years ago / no longer
     # taking / discontinued ... for years）
-    r"|(?:stopped|discontinued|ceased|quit)\s+(?:taking\s+|using\s+)?"
+    r"|(?:stopped|discontinued|ceased|quit|been\s+off)\s+"
+    r"(?:taking\s+|using\s+)?"
     r"[^,.;!?\n]{0,24}?"
-    r"(?:[0-9]+\s*(?:years?|months?)|a\s+year|one\s+year)\s*"
-    r"(?:ago)?"
+    r"(?:(?:[0-9]+|a|one|two|three|four|five|several|many|few)"
+    r"\s+(?:years?|months?))\s*"
+    r"(?:ago|for)?"
     r"|(?:not\s+(?:on|taking)|no\s+longer\s+(?:taking|on))"
 )
 #: 英文远期停药分句（warfarin was stopped 2 years ago）与重启线索
 _ENGLISH_STOP_RE = re.compile(
-    r"\b(?:stopped|discontinued|ceased|quit|"
+    r"\b(?:stopped|discontinued|ceased|quit|been\s+off|"
     r"no\s+longer\s+(?:taking|on)|not\s+(?:on|taking))\b",
     re.IGNORECASE,
 )
@@ -2211,10 +2255,40 @@ _ENGLISH_STOP_DURATION_RE = re.compile(
 #: 「除本药外没吃别的」：不是停用本药。裸 daily/every day 可能
 #: 描述别的药或运动，不能取消远期停药（第八十八轮）
 _ENGLISH_STOP_CONTINUATION_RE = re.compile(
-    r"\b(?:besides|other\s+than|except|anything\s+else)\b"
-    r"|\bstill\s+(?:take|taking|on)\s+(?:it|this|the\s+same)\b",
+    r"\b(?:besides|other\s+than|except|anything\s+else)\b",
     re.IGNORECASE,
 )
+#: 「still taking/on X」：宾语是代词或本类药名时才算续用本药；
+#: 宾语点名另一类药（still take amlodipine）是换药（第八十九轮）
+_ENGLISH_STILL_RE = re.compile(
+    r"\bstill\s+(?:take|taking|on)\s+"
+    r"(?:(it|this|the\s+same)\b|([A-Za-z][A-Za-z\-]{2,}))",
+    re.IGNORECASE,
+)
+
+
+def _english_still_names_self(text: str) -> bool:
+    """「still taking/on X」的宾语是否仍指本类药（而非换药）。"""
+    for match in _ENGLISH_STILL_RE.finditer(str(text or "")):
+        if (match.group(1) or "").strip():
+            return True
+        obj = (match.group(2) or "").lower()
+        if not obj:
+            continue
+        if any(
+            obj == term.lower() or obj in term.lower()
+            for term in ANTICOAGULANT_TERMS + IMMUNOSUPPRESSION_TERMS
+            if term.isascii()
+        ):
+            return True
+    return False
+
+
+def _english_stop_continuation(text: str) -> bool:
+    text = str(text or "")
+    return bool(
+        _ENGLISH_STOP_CONTINUATION_RE.search(text)
+    ) or _english_still_names_self(text)
 #: 英文否定停药（has not been stopped / never discontinued）
 _ENGLISH_NEGATED_STOP_RE = re.compile(
     r"\b(?:not|never|n't)\s+(?:been\s+|have\s+|has\s+|had\s+|"
@@ -2586,6 +2660,12 @@ _RESTART_OBJECT_IGNORE = (
     "这个", "那个", "这种", "那种", "这些", "那些", "同样", "原来",
     "之前", "它", "药",
 )
+#: 宾语前置的续用：「阿司匹林还在吃」
+_RESTART_OBJECT_BEFORE_RE = re.compile(
+    r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
+    r"(?:还在吃|还在服用|仍在吃|仍在服用|仍然服用|继续吃|继续服用|"
+    r"还在用)"
+)
 #: 分句里的用药宾语（以前吃华法林）
 _MED_OBJECT_IN_CLAUSE = re.compile(
     r"(?:吃|服用|口服|服|用|注射|打)(?:过|了)?\s*([一-龥A-Za-z0-9]{1,10})"
@@ -2601,7 +2681,31 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     """
     match = _RESTART_OBJECT_RE.search(follow)
     if match is None:
-        return False
+        # 宾语前置：「阿司匹林还在吃」说的是另一种药，不能复活
+        # 既往分句的药（第八十九轮）。只有宾语确为已知药名时才
+        # 算他药：时间/频率副词（现在还在吃/一直还在用）不是药名
+        before = _RESTART_OBJECT_BEFORE_RE.search(follow)
+        if before is None:
+            return False
+        obj = re.split(
+            r"[，。；,.!?！？\n和及与、]", before.group(1)
+        )[0]
+        obj = re.sub(
+            r"(?:这|那|个|种|些|药)+$", "", obj
+        ).strip()
+        if len(obj) < 2:
+            return False
+        drug_terms = [
+            term for term in _OTHER_STOP_DRUG_TAILS if term in obj
+        ]
+        generic = _GENERIC_DRUG_NAME_RE.search(obj)
+        if not drug_terms and generic is None:
+            return False
+        past = _MED_OBJECT_IN_CLAUSE.search(clause)
+        past_obj = past.group(1) if past else ""
+        if past_obj and (past_obj in obj or obj in past_obj):
+            return False
+        return True
     obj = re.split(r"[，。；,.!?！？\n和及与、]", match.group(1))[0]
     # 先剥离数量+单位再看宾语：「每天吃一片阿司匹林」是换药，
     # 「又吃了两片」才是同一药物的剂量续用
@@ -2687,7 +2791,7 @@ _CONTINUATION_AFTER_PAST = re.compile(
     # 同样是当前续用；变更词本身可充当动词（第八十八轮）
     r"|(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
     r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
-    r"减到)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
+    r"减到)\s*)?(?:(?:每天|每日)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
     r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
@@ -2972,7 +3076,9 @@ def _active_medical_text(
             medication_context_text(context).lower(),
         ) if part
     )
-    clauses = re.split(r"[，。；;,.!?！？\n]", raw)
+    # 小数剂量（2.5mg）里的句点不是分句边界：切断后剂量续用
+    # 识别不到单位，会把当前用药误判为既往（第八十九轮）
+    clauses = re.split(r"[，。；;,!?！？\n]|(?<!\d)\.|\.(?!\d)", raw)
     kept = []
     for index, clause in enumerate(clauses):
         clause = clause.strip()
@@ -3072,7 +3178,7 @@ def _active_medical_text(
             and _ENGLISH_STOP_DURATION_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(restart_window)
-            and not _ENGLISH_STOP_CONTINUATION_RE.search(clause)
+            and not _english_stop_continuation(clause)
             and not _ENGLISH_NEGATED_STOP_RE.search(clause)
         ):
             # 英文远期停药（warfarin was stopped 2 years ago）与

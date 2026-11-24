@@ -461,7 +461,11 @@ def test_inflight_restored_text_scoped_to_session():
     end = source.index("let inflightReconciled", start)
     block = source[start:end]
     assert "inflightRestoredOwnerSession === expectedSession" in block
-    assert "restoredForSession || expectedQuestion" in block
+    # 第八十九轮起匹配与剥离使用同一段文本：会话归属仍由
+    # restoredForSession 的 owner 校验守住（restoredForSession 只在
+    # owner 匹配时取内存快照，否则回退 expectedQuestion）
+    assert "inflightInputMatchesRestored(restoredForSession)" in block
+    assert "matchedInflight" in block
 
 
 def test_send_takeover_merges_pending_draft():

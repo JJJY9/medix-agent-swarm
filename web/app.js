@@ -5338,11 +5338,20 @@ async function openSession(id) {
     );
     const draftConflict = deepLinkDraftConflict || draftConflictNow;
 
+    // 待重置期间输入的草稿属于即将新建的会话（owner 为空）：打开
+    // 历史会话前不能先把待重置标记抹掉，否则 settleDraftForSession
+    // 会把它当成其它会话的草稿静默清空（第八十九轮 [13]）
+    const pendingNewDraft = Boolean(
+      pendingSessionReset
+      && safeSessionGet(DRAFT_OWNER_KEY) === ''
+      && els.input.value.trim()
+    );
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记
-    // 失效；待重置期间重开当前会话或深链草稿冲突时保留现场
+    // 失效；待重置期间重开当前会话、深链草稿冲突或存在待新建会话
+    // 草稿时保留现场
     if (draftConflict) {
       setPendingSessionReset(true);
-    } else if (!keepPendingReset) {
+    } else if (!keepPendingReset && !pendingNewDraft) {
       setPendingSessionReset(false);
     }
     if (!deepLinkOpen) consumeDeepLink();
@@ -5351,7 +5360,7 @@ async function openSession(id) {
     settleDraftForSession(id);
     sessionId = id;
     safeStorageRemove(pendingResetStorageKey(id));
-    if (keepPendingReset || draftConflict) {
+    if (keepPendingReset || draftConflict || pendingNewDraft) {
       // 待重置仍要生效：只固定本标签页，不能重新写回共享 localStorage
       // 指针（冷启动/新标签页会复活已放弃的旧档案会话）
       safeSessionSet('medix.session.tab', id);
@@ -5362,7 +5371,9 @@ async function openSession(id) {
     closeHistory();
     resetRail();
     els.readout.session.textContent = shortSession(id);
-    const preserveComposer = keepPendingReset || draftConflict;
+    const preserveComposer = (
+      keepPendingReset || draftConflict || pendingNewDraft
+    );
     renderStoredMessages(
       data.messages || [], id, data.profile || '',
       preserveComposer
@@ -20890,10 +20901,19 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         inflightRestoredOwnerSession
         && inflightRestoredOwnerSession === expectedSession
       ) ? inflightRestoredText : '';
-      const remaining = inflightInputMatchesRestored(
-        restoredForSession || expectedQuestion
-      )
-        ? stripInflightQuestion(els.input.value, expectedQuestion)
+      // 匹配与剥离必须使用同一段文本：restoredForSession 可能
+      // 是残留在内存里的更早主诉，若拿它判定却在输入框里剥离
+      // expectedQuestion，会把草稿中间的这段文本静默删掉
+      // （第八十九轮 [16]）
+      const matchedInflight = (
+        restoredForSession
+        && inflightInputMatchesRestored(restoredForSession)
+      ) ? restoredForSession
+        : (inflightInputMatchesRestored(expectedQuestion)
+          ? expectedQuestion
+          : '');
+      const remaining = matchedInflight
+        ? stripInflightQuestion(els.input.value, matchedInflight)
         : null;
       // 对账确认本轮已落库：无论输入框是否仍含该主诉都要清在途记录，
       // 否则用户改写输入框后，下次加载会把已回答的问题重新并入草稿

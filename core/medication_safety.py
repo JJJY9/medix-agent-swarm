@@ -903,7 +903,7 @@ _PAST_USE_PREFIX = re.compile(
 _DOSE_CHANGE_CONTINUATION = re.compile(
     r"(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
     r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
-    r"减到)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
+    r"减到)\s*)?(?:(?:每天|每日)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
     r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
@@ -1079,7 +1079,8 @@ _STOPPED_USE_SUFFIX_EN = re.compile(
     r"(?:stopped(?!\s*working)|discontinued|no longer taking)",
     re.IGNORECASE,
 )
-#: 药名之后跨分句出现的续用/重启表述：「停了半年，最近又吃上了」
+#: 药名之后跨分句出现的续用/重启表述：「停了半年，最近又吃上了」；
+#: 续用分句点名另一种药（还在吃阿司匹林）不算本药重启（第八十九轮）
 _RESTART_USE_SUFFIX = re.compile(
     r"^[^。；;！!？?\n]{0,24}"
     r"(?:又吃上|又用上|又服上|又在吃|又在服用|又在用|又重新吃|"
@@ -1095,6 +1096,49 @@ _RESTART_USE_SUFFIX = re.compile(
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别))"
 )
+#: 宾语前置的续用：「阿司匹林还在吃」
+_RESTART_OBJECT_BEFORE_RE = re.compile(
+    r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
+    r"(?:还在吃|还在服用|仍在吃|仍在服用|仍然服用|继续吃|继续服用|"
+    r"还在用)"
+)
+
+
+def _restart_names_other_medication(
+    follow: str, alias_lower: str
+) -> bool:
+    """续用分句是否在说另一种药（还在吃阿司匹林/阿司匹林还在吃）。
+
+    续用线索必须指回本药；换用其它药不能把已停用的药复活成当前
+    用药（第八十九轮）。
+    """
+    text = str(follow or "")
+    match = _RESTART_USE_SUFFIX.search(text)
+    if match is not None:
+        tail = re.split(
+            r"[，。；,.!?！？\n]", text[match.end():], maxsplit=1
+        )[0][:12]
+        tail = re.sub(
+            r"^[0-9一二两三四五六七八九十半几]+\s*"
+            r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)\s*",
+            "",
+            tail,
+            flags=re.IGNORECASE,
+        )
+        tail = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", tail).strip()
+        if tail and _mentions_other_drug_alias(tail, alias_lower):
+            return True
+    for before in _RESTART_OBJECT_BEFORE_RE.finditer(text):
+        obj = re.sub(
+            r"(?:这|那|个|种|些|药)+$", "", before.group(1)
+        ).strip()
+        if len(obj) < 2:
+            continue
+        if _mentions_other_drug_alias(obj, alias_lower):
+            return True
+    return False
+
+
 _RESTART_USE_SUFFIX_EN = re.compile(
     r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
     r"|back on (?:it )?(?:again)?|still taking|still on"
@@ -1197,7 +1241,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _INTENT_STOP_SUFFIX.search(suffix)
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
-                or _RESTART_USE_SUFFIX.search(long_suffix)
+                or (
+                    _RESTART_USE_SUFFIX.search(long_suffix)
+                    and not _restart_names_other_medication(
+                        long_suffix, alias_lower
+                    )
+                )
                 or _continuous_restart_matches(long_suffix, alias_lower)
                 or _RESTART_USE_SUFFIX_EN.search(long_suffix)
                 or _ADHERENCE_USE_PREFIX.search(prefix)
@@ -1255,7 +1304,12 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _INTENT_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
-            or _RESTART_USE_SUFFIX.search(long_suffix)
+            or (
+                _RESTART_USE_SUFFIX.search(long_suffix)
+                and not _restart_names_other_medication(
+                    long_suffix, alias_lower
+                )
+            )
             or _continuous_restart_matches(long_suffix, alias_lower)
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
