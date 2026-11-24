@@ -586,6 +586,14 @@ _DOSE_MISSED_PREFIX = re.compile(
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
     r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
 )
+#: 宾语前置的近期漏服（没吃华法林三天了/未服用华法林两周）：时长
+#: 在药名之后同样按当前用药处理（第九十四轮 [7]）
+_DOSE_MISSED_OBJECT_FIRST = re.compile(
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
+    r"没口服|漏服用?|忘(?:记)?服用?)"
+    r"[^，。；,.!?！？\n]{0,12}?"
+    r"[0-9一二两三四五六七八九十]+(?:天|日|周)"
+)
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
     r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
@@ -614,7 +622,10 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?:多)?(?:前|以来)?)?"
     r"\s*(?:我|本人|现在|目前)?\s*"
     r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
-    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了|停的|停掉|已停"
+    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了"
+    # 「停的时间不长/停的时候还没结婚」不是已停药：近期停药仍
+    # 按当前用药检查（第九十四轮 [18]）
+    r"|停的(?!时间|时候|日子|那天|话)|停掉|已停"
     # 药名后的完成体否定同样是停药：「华法林我不吃了」
     r"|不吃了|不再吃了|不用吃了"
     # 药名后置的否定：「阿司匹林我没在吃/我没有在吃/没吃过」
@@ -876,7 +887,10 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
 _LONG_STOP_CONTEXT = re.compile(
     r"(?:已经|已|早就|早|都|快)?\s*"
     r"(?:停用|停药|停了|停的|停服|停止服用|"
-    r"停(?!用|药|止|掉|了|的)|不吃了?)"
+    # 裸「停」只认紧跟时长的形态（停三年了/停两个多月）：
+    # 「停经两个月」是月经史，不是停药（第九十四轮 [6]）
+    r"停(?=\s*[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?(?:年|月))"
+    r"|不吃了?)"
     r"[^，。；,.!?！？\n]{0,6}?"
     r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
@@ -1092,7 +1106,8 @@ _RESTART_USE_SUFFIX = re.compile(
     r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
-    r"|仍在吃|仍在服用|仍然服用"
+    r"|仍在吃|仍在服用|仍然服用|还在用|仍在用|继续用|还用|仍用"
+    r"|一直在用|仍在使用|继续使用|还在使用"
     r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西（含量词）
@@ -1104,7 +1119,7 @@ _RESTART_USE_SUFFIX = re.compile(
 _RESTART_OBJECT_BEFORE_RE = re.compile(
     r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
     r"(?:还在吃|还在服用|仍在吃|仍在服用|仍然服用|继续吃|继续服用|"
-    r"还在用)"
+    r"还在用|仍在用|继续用|还用|仍用)"
 )
 
 
@@ -1171,7 +1186,12 @@ def _english_restart_names_other(
 _RESTART_USE_SUFFIX_EN = re.compile(
     r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
     r"|back on (?:it )?(?:again)?|still taking|still on"
-    r"|continuing (?:it|to take))\b",
+    r"|continuing (?:it|to take)"
+    # kept/continued/continue (to) take/use it：代词宾语续用
+    # （第九十四轮 [2]）
+    r"|(?:kept|keeps?|continued|continues?|have continued"
+    r"|has continued|have kept|has kept)\s+(?:on\s+)?"
+    r"(?:taking|to take|using|to use)?\s*(?:it|the same|this))\b",
     re.IGNORECASE,
 )
 #: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；
@@ -1267,6 +1287,11 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # 中文时间/停药表述作用于整段文本，与药名语言无关：
                 # 「我今天没吃 warfarin」「下周就不吃 warfarin 了」
                 or _DOSE_MISSED_PREFIX.search(prefix + suffix)
+                # 「没吃 warfarin 三天了」：时长在药名之后同样是漏服
+                # （第九十四轮 [7]）
+                or _DOSE_MISSED_OBJECT_FIRST.search(
+                    text[left:right]
+                )
                 or _FUTURE_STOP_PREFIX.search(prefix)
                 or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
                 or _NEGATED_STOP_PREFIX_EN.search(prefix)
@@ -1335,6 +1360,9 @@ def _alias_matches(text: str, alias: str) -> bool:
         if (
             _USE_DOUBLE_NEGATION.search(prefix)
             or _DOSE_MISSED_PREFIX.search(prefix + suffix)
+            # 「没吃华法林三天了」：时长在药名之后同样是漏服
+            # （第九十四轮 [7]）
+            or _DOSE_MISSED_OBJECT_FIRST.search(text[left:right])
             or _FUTURE_STOP_PREFIX.search(prefix)
             or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
             or _NEGATED_STOP_PREFIX.search(prefix)

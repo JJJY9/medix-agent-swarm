@@ -6047,7 +6047,9 @@ class SessionStore:
                     best_other = other_score
             return best_other > own_score
 
-        def _tail_prefers_sibling_any_content(candidate: int) -> bool:
+        def _tail_prefers_sibling_any_content(
+            candidate: int, cross_profile: bool = False
+        ) -> bool:
             """候选尾字段是否严格更像同秒任一兄弟备份行（不论内容）。
 
             存活行的内容列被本地编辑成与被删孪生相同后，尾字段
@@ -6075,7 +6077,8 @@ class SessionStore:
                 ):
                     continue
                 if (
-                    wanted_profile is not None
+                    not cross_profile
+                    and wanted_profile is not None
                     and backup_profiles
                     and _normalize_profile_name(
                         backup_profiles.get(other_id) or ""
@@ -7019,6 +7022,11 @@ class SessionStore:
                 return False
             for other in rows:
                 other_id = int(other["id"])
+                if other_id in moved or other_id in matched:
+                    # 本轮已被其它备份行认领/改挂的行不算本记录的
+                    # 存活证据：同内容孪生记录的恢复副本会被误当
+                    # 成本记录仍存在（第九十四轮 [9]）
+                    continue
                 if backup_ids and other_id in backup_ids:
                     # 只有该兄弟行确实对应备份里另一条「同档案同秒」
                     # 记录时才不能当作本备份记录的存活行证据；
@@ -7649,10 +7657,12 @@ class SessionStore:
                                     moved_id = int(moved_row["id"])
                                     if moved_id in moved or moved_id in matched:
                                         continue
-                                    if (
-                                        moved_id == raw_id
-                                        and not _same_backup_origin()
-                                    ):
+                                    # 同源库里本地主键与备份一一
+                                    # 对应：只有本行自己的主键行才是
+                                    # 合法认领，别条备份记录的存活行
+                                    # 被抢走会让那条被删记录永久丢失
+                                    # （第九十四轮 [3]）
+                                    if moved_id != raw_id:
                                         continue
                                     if not _candidate_edited(moved_id):
                                         continue
@@ -8780,7 +8790,16 @@ class SessionStore:
             return _ambiguous()
         if (
             _candidate_soft_owned_by_other(sole, cross_profile=True)
-            and _tail_prefers_sibling(sole, cross_profile=True)
+            and (
+                _tail_prefers_sibling(sole, cross_profile=True)
+                # 被改挂到兄弟档案且内容（到期日等）同时被编辑时，
+                # 同内容孪生比较不适用：直接按尾字段（备注等）跨
+                # 档案比较，否则被删记录被兄弟行顶替永久丢失
+                # （第九十四轮 [4]）
+                or _tail_prefers_sibling_any_content(
+                    sole, cross_profile=True
+                )
+            )
         ):
             # 候选软字段命中同秒另一条备份行、尾字段也更像那条行
             # （被改挂到兄弟档案并编辑内容）：本行必须按被删记录
@@ -13027,7 +13046,28 @@ class SessionStore:
                                     ) == raw_reminder_ref
                                 ) > 1
                             )
+                            reminder_attached = False
                             if shared_ref is None and not shared_in_backup:
+                                attach_row = self._conn.execute(
+                                    "SELECT appointment_id"
+                                    " FROM reminders WHERE id = ?",
+                                    (int(followup_reminder_id),),
+                                ).fetchone()
+                                reminder_attached = bool(
+                                    attach_row is not None
+                                    and int(
+                                        attach_row["appointment_id"] or 0
+                                    )
+                                )
+                            if (
+                                shared_ref is None
+                                and not shared_in_backup
+                                and not reminder_attached
+                            ):
+                                # 提醒仍挂在被保留的 upcoming 预约上时
+                                # 保留提醒、只解除就诊链接：删掉会在
+                                # 第二次导入时复活，两次恢复结果不同
+                                # （第九十四轮 [10]）
                                 self._conn.execute(
                                     "DELETE FROM reminders WHERE id = ?"
                                     " AND done = 0",
@@ -13069,6 +13109,41 @@ class SessionStore:
                         stale_appointment_ids.append(
                             int(followup_appointment_id)
                         )
+                    if (
+                        not apply_links
+                        and local_link == 0
+                        and followup_reminder_id
+                        and followup_reminder_id in imported_reminder_ids
+                    ):
+                        # 首遍导入拒绝链接时已清理的脱钩提醒，第二次
+                        # 导入重新插入后同样不能留下没有任何就诊
+                        # 引用的 pending 幽灵待办（第九十四轮 [10]）
+                        attach_row = self._conn.execute(
+                            "SELECT appointment_id FROM reminders"
+                            " WHERE id = ?",
+                            (int(followup_reminder_id),),
+                        ).fetchone()
+                        detached = bool(
+                            attach_row is not None
+                            and not int(
+                                attach_row["appointment_id"] or 0
+                            )
+                        )
+                        other_ref = None
+                        if detached:
+                            other_ref = self._conn.execute(
+                                "SELECT 1 FROM visit_records"
+                                " WHERE followup_reminder_id = ?"
+                                " LIMIT 1",
+                                (int(followup_reminder_id),),
+                            ).fetchone()
+                        if detached and other_ref is None:
+                            self._conn.execute(
+                                "DELETE FROM reminders WHERE id = ?"
+                                " AND done = 0 AND appointment_id = 0",
+                                (int(followup_reminder_id),),
+                            )
+                            followup_reminder_id = 0
                     if (
                         not apply_links
                         and followup_reminder_id
@@ -15346,13 +15421,53 @@ class SessionStore:
                     )
             elif schedule_changed:
                 if reminder_due:
-                    updated = self._conn.execute(
-                        """
-                        UPDATE reminders SET due_at = ?, updated_at = ?
-                         WHERE done = 0 AND appointment_id = ?
-                        """,
-                        (reminder_due, now, int(appointment_id)),
-                    )
+                    # 同一预约上可能挂着多条日期不同的 pending 提醒
+                    # （导入层把它当合法数据）：按预约日期变化的天数
+                    # 整体平移，保留各自的独立日期，不能统一钉到
+                    # 新日期前一天（第九十四轮 [15]）
+                    old_day = _schedule_key(
+                        previous["scheduled_at"]
+                    )[:10]
+                    new_day = _schedule_key(
+                        normalized["scheduled_at"]
+                    )[:10]
+                    day_delta = None
+                    if old_day and new_day:
+                        try:
+                            day_delta = (
+                                datetime.fromisoformat(new_day).date()
+                                - datetime.fromisoformat(old_day).date()
+                            ).days
+                        except ValueError:
+                            day_delta = None
+                    pending_due_rows = self._conn.execute(
+                        "SELECT id, due_at FROM reminders"
+                        " WHERE done = 0 AND appointment_id = ?",
+                        (int(appointment_id),),
+                    ).fetchall()
+                    updated_count = 0
+                    for due_row in pending_due_rows:
+                        shifted_due = ""
+                        if day_delta:
+                            raw_due = str(due_row["due_at"] or "")
+                            try:
+                                due_day = datetime.fromisoformat(
+                                    raw_due[:10]
+                                ).date()
+                                shifted_due = (
+                                    due_day + timedelta(days=day_delta)
+                                ).strftime("%Y-%m-%d")
+                            except (ValueError, OverflowError):
+                                shifted_due = ""
+                        due_cursor = self._conn.execute(
+                            "UPDATE reminders SET due_at = ?,"
+                            " updated_at = ? WHERE id = ?",
+                            (
+                                shifted_due or reminder_due, now,
+                                int(due_row["id"]),
+                            ),
+                        )
+                        updated_count += int(due_cursor.rowcount or 0)
                     # 就诊仍链接的脱钩待办同样随改期更新日期
                     detached_updated = 0
                     linked_rows = self._conn.execute(
@@ -15404,7 +15519,7 @@ class SessionStore:
                             (reminder_due, refreshed_note, now, linked_id),
                         )
                         detached_updated += int(cursor.rowcount or 0)
-                    if updated.rowcount == 0 and not detached_updated:
+                    if updated_count == 0 and not detached_updated:
                         # 该预约唯一的提醒已被勾选完成：改期后必须重建
                         # 待办，否则复诊前没有任何提醒。从未创建、已被
                         # 用户删除的提醒不能因改期复活：优先按就诊上的

@@ -5436,6 +5436,16 @@ _NON_DRUG_SEGMENT_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+#: 停药标注后的时长/日期说明（已停药两个月/已停用（2025年10月））：
+#: 余下内容是时长时才剔除前一条药名；余下是药名（已停用阿司匹林）
+#: 说明该药已停用，同样剔除但不能 pop 上一条在用药物（第九十四轮）
+_STOP_REMAINDER_TIME_RE = re.compile(
+    r"^[（(]?\s*(?:"
+    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    r"(?:天|日|周|星期|个月|月|年)"
+    r"|半年|多年|数月|几个月|一段时间|很久|好些?天|几天"
+    r")"
+)
 
 
 def _pop_last_medication_name(names: List[str]) -> None:
@@ -5476,17 +5486,32 @@ def _context_medication_names(context: Any) -> List[str]:
             head_text = part[: inline.start()]
             tail_text = part[inline.end():]
             head_pieces = [
-                piece for piece in re.split(r"[\s和与及]+", head_text)
+                piece.strip()
+                for piece in re.split(r"[\s和与及]+", head_text)
                 if piece.strip()
             ]
-            keep_pieces = head_pieces[:-1] if head_pieces else []
+            # 药名与标注之间可能隔着剂量/频次（阿司匹林 100mg
+            # （已停用））：先从尾部跳过非药名片段，再剔除被标注
+            # 的药名，不能把 100mg 当成被停药物留下药名
+            # （第九十四轮 [11][13]）
+            while head_pieces and _NON_DRUG_SEGMENT_RE.match(
+                head_pieces[-1]
+            ):
+                head_pieces.pop()
+            if head_pieces:
+                head_pieces.pop()
+            keep_pieces = head_pieces
             keep_pieces += [
-                piece for piece in re.split(r"[\s和与及]+", tail_text)
+                piece.strip()
+                for piece in re.split(r"[\s和与及]+", tail_text)
                 if piece.strip()
             ]
             for piece in keep_pieces:
                 piece = piece.strip()
                 if not piece or _STOP_ANNOTATION_ONLY_RE.match(piece):
+                    continue
+                if _NON_DRUG_SEGMENT_RE.match(piece):
+                    # 剂量/频次片段不是药名，不能进入检查名单
                     continue
                 if piece not in names:
                     names.append(piece)
@@ -5499,8 +5524,17 @@ def _context_medication_names(context: Any) -> List[str]:
             if remainder.startswith("的"):
                 # 「已停用的阿司匹林」：定语形式，整段为停药标注
                 continue
-            # 「已停药两个月/（2025年10月）」：标注带时长，剔除药名
-            _pop_last_medication_name(names)
+            if (
+                not remainder
+                or remainder[0] in "了啦啊呀"
+                or _STOP_REMAINDER_TIME_RE.match(remainder)
+            ):
+                # 「已停药两个月/（2025年10月）」：标注带时长，
+                # 剔除前一条药名（pop 会跳过剂量/频次片段）
+                _pop_last_medication_name(names)
+            # 余下内容本身是药名（已停用阿司匹林）：该药已停用，
+            # 既不能 pop 上一条在用药物，也不能把它加入检查名单
+            # （第九十四轮 [5][13]）
             continue
         if part not in names:
             names.append(part)

@@ -384,7 +384,9 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             r"(?:阴道|产道|下体)\s*$", "", bleed_body
         )
         if re.search(
-            r"(?:没有|没|无|未|不|否认|非)"
+            # 「不是/并不是阴道出血」：否认以「是」收尾，单独的「不」
+            # 匹配不完整，必须显式包含（第九十四轮 [8]）
+            r"(?:没有|没|无|未|不是|不|否认|非)"
             r"(?:(?:再|再次|明显|任何|见|见到|出现|发现)\s*)*$",
             internal_body,
         ) is not None:
@@ -1393,6 +1395,22 @@ def _clean_complaint_clause(
         and not _course_context_clause(clause)
         and not _has_head_trauma(clause)
     ):
+        if mid_q is not None:
+            stripped = clause[: mid_q.start()].strip(" ，,、的")
+        else:
+            stripped = clause[lead_q.end():].strip(" ，,、的")
+        if stripped == clause:
+            stripped = ""
+        # 剥掉问句框架后仍带病程/严重度（胸痛持续两小时了见于什么病、
+        # 胸痛剧烈见于什么病）：问句里的症状是真实主诉，不能因整句
+        # 超过 _course_context_clause 的 10 字门槛被当成纯科普丢弃
+        # （第九十四轮 [1]）
+        symptom_course = bool(stripped) and (
+            _COURSE_MARKER_RE.search(stripped) is not None
+            or any(marker in stripped for marker in _COURSE_MARKERS)
+            or _POST_DURATION_RE.search(stripped) is not None
+            or any(cue in stripped for cue in _POST_POSITIVE_CUES)
+        )
         # 「什么病会引起胸痛」「胸痛见于什么病」等科普提问默认整句
         # 丢弃；但分句含求助语、后续分句有求助/病程线索、或家属+
         # 红旗时，它是在描述真实主诉：剥掉问句框架保留症状，不能
@@ -1401,6 +1419,7 @@ def _clean_complaint_clause(
             _URGENT_HELP_RE.search(clause)
             or help_follows
             or course_follows
+            or symptom_course
             or (
                 any(
                     marker in clause
@@ -1415,11 +1434,7 @@ def _clean_complaint_clause(
         )
         if not keep_context:
             return ""
-        if mid_q is not None:
-            stripped = clause[: mid_q.start()].strip(" ，,、的")
-        else:
-            stripped = clause[lead_q.end():].strip(" ，,、的")
-        if stripped and stripped != clause:
+        if stripped:
             return _clean_complaint_clause(
                 stripped, patient_context_seen, help_follows,
                 course_follows,
@@ -1503,6 +1518,9 @@ def _clean_complaint_clause(
             or _has_head_trauma(prefix)
             or _URGENT_HELP_RE.search(prefix) is not None
             or (help_follows and _is_red_flag_text(prefix))
+            # 「胸痛是什么病啊，痛得我直冒冷汗」：后置分句的严重度/
+            # 病程线索说明前一句是真实主诉（第九十四轮 [1]）
+            or (course_follows and _is_red_flag_text(prefix))
             or (not experiential_definition and any(
                 word in prefix
                 for word in (
@@ -1800,8 +1818,24 @@ def patient_complaint_text(text: str) -> str:
                 or _course_context_clause(text_follow)
             )
             break
+        # 「胸痛是什么病啊，痛得我直冒冷汗」：紧随其后带严重度/当前
+        # 病程线索的分句说明前一句是真实主诉而非纯定义问句
+        # （第九十四轮 [1]）
+        severity_follows = False
+        for follow in clauses[position + 1:]:
+            text_follow = follow.strip()
+            if not text_follow:
+                continue
+            severity_follows = bool(
+                any(cue in text_follow for cue in _POST_POSITIVE_CUES)
+                or any(
+                    cue in text_follow for cue in _CURRENT_COURSE_CUES
+                )
+            )
+            break
         cleaned = _clean_complaint_clause(
-            clause.strip(), context_seen, help_follows, course_follows,
+            clause.strip(), context_seen, help_follows,
+            course_follows or severity_follows,
             symptom_context_seen,
         )
         if cleaned:
@@ -2258,6 +2292,14 @@ _DOSE_MISSED_PATTERN = re.compile(
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
     r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
 )
+#: 宾语前置的近期漏服（没吃华法林三天了/未服用华法林两周）：时长
+#: 落在否定动词之后，仍是「仍在用药、抗凝状态成立」（第九十四轮 [7]）
+_DOSE_MISSED_OBJECT_FIRST_RE = re.compile(
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
+    r"没口服|漏服用?|忘(?:记)?服用?)"
+    r"[^，。；,.!?！？\n]{0,12}?"
+    r"[0-9一二两三四五六七八九十]+(?:天|日|周)"
+)
 #: 未来停药计划（明天就停/下周就不吃了/等这盒吃完就停）：当前仍在用药
 _FUTURE_STOP_PATTERN = re.compile(
     r"(?:明天|后天|下周|下个?月|下星期|明年|月底|年底|"
@@ -2317,7 +2359,9 @@ _RECENT_NO_EAT_PATTERN = re.compile(
 #: 视为仍有抗凝作用（停药 1–2 天内 INR 仍可能偏高）
 _LONG_STOP_PATTERN = re.compile(
     r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|"
-    r"停(?!用|药|止|掉|了|的))"
+    # 裸「停」只认紧跟时长的形态（停三年了/停两个多月）：
+    # 「停经两个月」是月经史，不是停药（第九十四轮 [6]）
+    r"停(?=\s*[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?(?:年|月)))"
     r"[^，。；;,.!?！？\n]{0,6}"
     r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|半年)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年)"
@@ -2405,7 +2449,13 @@ def _english_stop_names_drug(text: str) -> bool:
 _ENGLISH_RESTART_RE = re.compile(
     r"\b(?:restarted|restarting|started\s+again|back\s+on|"
     r"resumed|currently\s+taking|"
-    r"(?:take|taking|started)\s+it\s+again|on\s+it\s+again)\b",
+    r"(?:take|taking|started)\s+it\s+again|on\s+it\s+again|"
+    # kept/continued/continue (to) take/use it：代词宾语续用
+    # （第九十四轮 [2]）
+    r"(?:kept|keeps?|kept\s+on|continued|continues?|continuing|"
+    r"have\s+continued|has\s+continued|have\s+kept|has\s+kept)\s+"
+    r"(?:on\s+)?(?:taking|to\s+take|using|to\s+use)?\s*"
+    r"(?:it|the\s+same|this)\b)\b",
     re.IGNORECASE,
 )
 #: 英文停药必须有明确时长才算远期停药（not on/not taking 裸分支不算）
@@ -3131,6 +3181,11 @@ def _active_term_mention(text: str, term: str) -> bool:
             # 「华法林今天没有吃」：漏服时间词写在药名之后同样是
             # 单次漏服，当前抗凝状态仍成立
             or _DOSE_MISSED_PATTERN.search(suffix) is not None
+            # 「没吃华法林三天了」：漏服时长写在药名之后同样是
+            # 单次漏服，当前抗凝状态仍成立（第九十四轮 [7]）
+            or _DOSE_MISSED_OBJECT_FIRST_RE.search(
+                prefix + term + suffix
+            ) is not None
             # 「昨天开始不吃华法林了」：近期停药仍按当前抗凝状态处理
             or _RECENT_NO_EAT_PATTERN.search(prefix) is not None
             or _RECENT_NO_EAT_PATTERN.search(suffix) is not None
@@ -3470,9 +3525,12 @@ def _active_medical_text(
             # 「不吃」子串当作停药
             kept.append(clause)
             continue
-        if _DOSE_MISSED_PATTERN.search(clause):
-            # 「华法林今天没吃」是漏服一次：仍处于抗凝状态，
-            # 不能按「没吃」整句丢弃
+        if (
+            _DOSE_MISSED_PATTERN.search(clause)
+            or _DOSE_MISSED_OBJECT_FIRST_RE.search(clause)
+        ):
+            # 「华法林今天没吃」「没吃华法林三天了」是漏服：仍处于
+            # 抗凝状态，不能按「没吃」整句丢弃
             kept.append(clause)
             continue
         if _FUTURE_STOP_PATTERN.search(clause):
