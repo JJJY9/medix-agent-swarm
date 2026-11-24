@@ -21187,8 +21187,9 @@ async function send(question, composerSubmit = false) {
     );
     if (deepLinkedSession || busy || takenOver) {
       // 恢复失败，或等待期间用户打开了别的会话：不能把这条问题
-      // 发进错误的患者会话；主诉要放回输入框而不是静默丢失
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 发进错误的患者会话；主诉要放回输入框而不是静默丢失。
+      // 在途记录保留：pagehide 会删除分离态草稿，只有该记录能让
+      // 刷新后恢复这段主诉（第九十三轮 [17]）
       if (takenOver) {
         // 会话已切换：只把文本放回输入框，不写成当前会话的草稿，
         // 否则另一位患者的会话会带着前一位病情的草稿被提交；
@@ -21242,8 +21243,9 @@ async function send(question, composerSubmit = false) {
     );
     if (takeover) {
       // 等待期间用户新建/切换了会话：排队的主诉不能发进新会话；
-      // 等待期间继续输入的新草稿也不能被它覆盖（第八十五轮）
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 等待期间继续输入的新草稿也不能被它覆盖（第八十五轮）。
+      // 在途记录保留供刷新后恢复（分离态草稿会在 pagehide 删除，
+      // 第九十三轮 [17]）
       const pendingDraft = String(els.input.value || '');
       let restoredText = question;
       if (pendingDraft.trim() && pendingDraft !== question) {
@@ -23301,7 +23303,10 @@ function restoreInflightForOpenSession(targetId, messages) {
     removeInflightRecord(record);
     return;
   }
-  if (owner && owner !== targetId) return;
+  // owner 为空表示「尚未有任何会话」：打开历史会话时不能把它注入
+  // 另一位患者的会话（settleDraftForSession 已按跨会话规则清空），
+  // 只恢复明确属于本会话的在途主诉（第九十三轮 [12]）
+  if (owner !== targetId) return;
   const currentProfile = activeProfileName || readStoredProfile();
   if (profile && currentProfile && profile !== currentProfile) return;
   const list = Array.isArray(messages) ? messages : [];
@@ -23417,8 +23422,8 @@ function restoreInflightQuestion() {
     );
     inflightRestoredBaseline = Number((data && data.baseline) || 0) || 0;
     if (els.input.value.includes(question)) {
-      // 主诉已在草稿里：只清理在途记录，不重复合并
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 主诉已在草稿里：不重复合并，但保留在途记录到对账确认
+      // （跨刷新对账证据，第九十三轮 [16]）
       return;
     }
     if (els.input.value.trim()) {
