@@ -5527,6 +5527,27 @@ class SessionStore:
                     for other_id in backup_profiles
                 ):
                     continue
+                if any(
+                    other_id != raw_id
+                    and other_id not in seen_raw_ids
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) == twin_profile
+                    and backup_contents.get(other_id) == wanted_content
+                    and (
+                        not backup_created
+                        or backup_created.get(other_id)
+                        == str(created_at_value)
+                    )
+                    and backup_tails
+                    and _tail_match_score(candidate, other_id)
+                    == len(backup_tails.get(other_id) or [])
+                    for other_id in backup_profiles
+                ):
+                    # 候选同时是同秒尚未处理的同档案兄弟备份行的
+                    # 存活版本（内容+尾字段全等）：它属于那条记录，
+                    # 本行不能互换认领（第九十五轮 [3]）
+                    continue
                 twin_pool.append(candidate)
             if len(twin_pool) == 1:
                 return twin_pool[0]
@@ -7658,11 +7679,16 @@ class SessionStore:
                                     if moved_id in moved or moved_id in matched:
                                         continue
                                     # 同源库里本地主键与备份一一
-                                    # 对应：只有本行自己的主键行才是
-                                    # 合法认领，别条备份记录的存活行
-                                    # 被抢走会让那条被删记录永久丢失
-                                    # （第九十四轮 [3]）
-                                    if moved_id != raw_id:
+                                    # 对应：禁止认领主键命中另一条备份
+                                    # 记录的存活行；删除后由导入补插的
+                                    # 恢复副本（id 超出备份主键集合）
+                                    # 凭编辑证据仍可认领，否则其改挂后
+                                    # 第二次导入会复活旧副本
+                                    # （第九十四轮 [3]/第九十五轮 [4]）
+                                    if (
+                                        moved_id != raw_id
+                                        and moved_id in backup_ids
+                                    ):
                                         continue
                                     if not _candidate_edited(moved_id):
                                         continue
@@ -7808,6 +7834,15 @@ class SessionStore:
                     # 恢复副本，不能把改挂行吞成本行版本
                     continue
                 if _content_owned_by_other(candidate):
+                    continue
+                if (
+                    not backup_tails
+                    and tail_where is not None
+                    and not _tail_matches(candidate)
+                ):
+                    # 无 id 备份没有跨行归属元数据：候选尾字段必须
+                    # 命中本行，否则它可能是同秒另一条无 id 备份行
+                    # 的存活版本（第九十五轮 [9]）
                     continue
                 if (
                     _candidate_owns_unprocessed_backup_row(candidate)
@@ -13137,7 +13172,27 @@ class SessionStore:
                                 " LIMIT 1",
                                 (int(followup_reminder_id),),
                             ).fetchone()
-                        if detached and other_ref is None:
+                        raw_reminder_ref = _safe_db_id(
+                            raw_followup_reminder_id
+                        )
+                        shared_in_backup = bool(
+                            raw_reminder_ref
+                            and sum(
+                                1
+                                for other_visit in raw_visit_records
+                                if isinstance(other_visit, dict)
+                                and _safe_db_id(
+                                    other_visit.get(
+                                        "followup_reminder_id"
+                                    )
+                                ) == raw_reminder_ref
+                            ) > 1
+                        )
+                        if (
+                            detached
+                            and other_ref is None
+                            and not shared_in_backup
+                        ):
                             self._conn.execute(
                                 "DELETE FROM reminders WHERE id = ?"
                                 " AND done = 0 AND appointment_id = 0",
@@ -15459,6 +15514,11 @@ class SessionStore:
                                 ).strftime("%Y-%m-%d")
                             except (ValueError, OverflowError):
                                 shifted_due = ""
+                        if shifted_due and shifted_due < str(now)[:10]:
+                            # 平移结果不能早于今天：与其它提醒日期
+                            # 计算路径的 max(…, 今天) 钳制一致
+                            # （第九十五轮 [17]）
+                            shifted_due = reminder_due
                         due_cursor = self._conn.execute(
                             "UPDATE reminders SET due_at = ?,"
                             " updated_at = ? WHERE id = ?",

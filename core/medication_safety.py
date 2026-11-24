@@ -587,13 +587,50 @@ _DOSE_MISSED_PREFIX = re.compile(
     r"没口服|漏服用?|忘(?:记)?服用?|少吃)"
 )
 #: 宾语前置的近期漏服（没吃华法林三天了/未服用华法林两周）：时长
-#: 在药名之后同样按当前用药处理（第九十四轮 [7]）
+#: 在药名之后同样按当前用药处理（第九十四轮 [7]）。中间片段是
+#: 漏服宾语，用于核对漏的是不是本药（第九十五轮 [16]）
 _DOSE_MISSED_OBJECT_FIRST = re.compile(
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|没有服|"
     r"没口服|漏服用?|忘(?:记)?服用?)"
-    r"[^，。；,.!?！？\n]{0,12}?"
+    r"([^，。；,.!?！？\n]{0,12}?)"
     r"[0-9一二两三四五六七八九十]+(?:天|日|周)"
 )
+
+
+def _missed_dose_names_term(text: str, alias_lower: str) -> bool:
+    """宾语前置漏服的对象是否就是本药（阿司匹林没吃三天了→否）。"""
+    text = str(text or "")
+    alias_lower = str(alias_lower or "").lower()
+    if not alias_lower:
+        return False
+    for match in _DOSE_MISSED_OBJECT_FIRST.finditer(text):
+        obj = (match.group(1) or "").strip().lower()
+        if obj and (alias_lower in obj or obj in alias_lower):
+            return True
+        if obj:
+            continue
+        # 「没吃三天了」：宾语在动词之前（华法林没吃三天了）
+        last = re.split(r"[，。；、但而]", text[: match.start()])[-1]
+        last = re.sub(
+            r"(?:已经|已|都|快|近|将近|有|已有)?\s*"
+            r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+            r"(?:天|日|周|个月|月|年))(?:了|多)?$",
+            "",
+            last,
+        ).strip()
+        last = re.sub(r"(?:了|啦|啊|呀)$", "", last).strip()
+        candidate = re.search(
+            r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})$", last
+        )
+        if candidate is None:
+            continue
+        obj = re.sub(
+            r"^(?:也|都|还|仍|和|及|与|但|而)+", "",
+            candidate.group(1),
+        ).strip().lower()
+        if obj and (alias_lower in obj or obj in alias_lower):
+            return True
+    return False
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
     r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
@@ -622,10 +659,18 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?:多)?(?:前|以来)?)?"
     r"\s*(?:我|本人|现在|目前)?\s*"
     r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
-    r"(?:停用了|停用|停药|停服|停止服用|不再服用|停了"
-    # 「停的时间不长/停的时候还没结婚」不是已停药：近期停药仍
-    # 按当前用药检查（第九十四轮 [18]）
-    r"|停的(?!时间|时候|日子|那天|话)|停掉|已停"
+    r"(?:停用了|停用(?!时间|时候|日子|那天|没|不)"
+    r"|停药(?!时间|时候|日子|那天|没|不)"
+    r"|停服(?!时间|时候|日子|那天|没|不)"
+    r"|停止服用(?!时间|时候|日子|那天|没|不)|不再服用|停了"
+    # 「停的时间不长/停药没多久/停药不长时间」不是已停药：近期
+    # 停药仍按当前用药检查（第九十四/九十五轮）
+    r"|停的(?!时间|时候|日子|那天|话)|停掉"
+    r"|已停药(?!时间|时候|日子|那天|没|不)"
+    r"|已停用(?!时间|时候|日子|那天|没|不)"
+    r"|已停服(?!时间|时候|日子|那天|没|不)"
+    r"|已停止(?!时间|时候|日子|那天|没|不)"
+    r"|已停(?!用|药|服|止|时间|时候|日子|那天)"
     # 药名后的完成体否定同样是停药：「华法林我不吃了」
     r"|不吃了|不再吃了|不用吃了"
     # 药名后置的否定：「阿司匹林我没在吃/我没有在吃/没吃过」
@@ -1288,10 +1333,9 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # 「我今天没吃 warfarin」「下周就不吃 warfarin 了」
                 or _DOSE_MISSED_PREFIX.search(prefix + suffix)
                 # 「没吃 warfarin 三天了」：时长在药名之后同样是漏服
-                # （第九十四轮 [7]）
-                or _DOSE_MISSED_OBJECT_FIRST.search(
-                    text[left:right]
-                )
+                # （第九十四轮 [7]）；漏服宾语必须是本药
+                # （第九十五轮 [16]）
+                or _missed_dose_names_term(text[left:right], alias_lower)
                 or _FUTURE_STOP_PREFIX.search(prefix)
                 or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
                 or _NEGATED_STOP_PREFIX_EN.search(prefix)
@@ -1361,8 +1405,9 @@ def _alias_matches(text: str, alias: str) -> bool:
             _USE_DOUBLE_NEGATION.search(prefix)
             or _DOSE_MISSED_PREFIX.search(prefix + suffix)
             # 「没吃华法林三天了」：时长在药名之后同样是漏服
-            # （第九十四轮 [7]）
-            or _DOSE_MISSED_OBJECT_FIRST.search(text[left:right])
+            # （第九十四轮 [7]）；漏服宾语必须是本药
+            # （第九十五轮 [16]）
+            or _missed_dose_names_term(text[left:right], alias_lower)
             or _FUTURE_STOP_PREFIX.search(prefix)
             or _FUTURE_STOP_CONTEXT.search(prefix + suffix)
             or _NEGATED_STOP_PREFIX.search(prefix)

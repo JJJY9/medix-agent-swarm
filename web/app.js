@@ -23677,8 +23677,18 @@ els.input.addEventListener('input', () => {
     && !els.input.value.includes(inflightRestoredText)
   ) {
     // 用户已把恢复出的在途主诉删掉：记录不再代表用户意图，
-    // 清除后不再每次刷新把它拼回草稿（第九十四轮 [16]）
-    safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    // 清除后不再每次刷新把它拼回草稿（第九十四轮 [16]）。
+    // 只清理属于当前会话的记录：其它会话的未落库主诉可能是其
+    // 唯一副本（打开历史会话后首次按键会误删），流式进行中也
+    // 不能清掉本轮在途记录（第九十五轮 [13]）
+    const restoredOwner = inflightRestoredOwnerSession || '';
+    if (
+      (!restoredOwner || restoredOwner === (sessionId || ''))
+      && !busy
+      && !sendInFlight
+    ) {
+      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+    }
     inflightRestoredText = '';
     inflightRestoredOwnerSession = '';
     inflightRestoredBaseline = 0;
