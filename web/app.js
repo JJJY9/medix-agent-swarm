@@ -20740,6 +20740,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         if (
           detail && detail.code === 'session_deleted'
           && sessionId === expectedSession && !busy
+          && restoreOpenSeq === openSessionSeq
         ) {
           // ?session= 深链/恢复的标签页不经过 openSession：同样要
           // 清理持久化会话，否则之后每轮提问都被墓碑静默丢弃
@@ -20898,6 +20899,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         skipProfile: pendingReset,
       }
     );
+    let inflightReconciled = false;
     if (expectedQuestion) {
       // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
       // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
@@ -20943,11 +20945,14 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
           clearDraft();
         }
       }
+      // 本轮主诉已确认落库并处理：scheduleAbortReconcile 据此取消
+      // 3.5s 的第二次对账，避免用户重输同题草稿后被再次清空
+      // （第九十一轮 [13]）
+      inflightReconciled = true;
     }
     // 启动恢复没有 expectedQuestion：若刷新恰逢服务端落库，INFLIGHT
     // 主诉已被 restoreInflightQuestion 填回输入框，而服务端消息里本轮
     // 问答已完整落库。不清空的话回车就会把同一主诉再会诊一次
-    let inflightReconciled = false;
     // 只清理确实来自在途记录的文本：用户自己重写的同题草稿不能
     // 因为「等于上一条提问」就被当成重复提交删掉
     const inflightText = (
@@ -23468,9 +23473,14 @@ function loadDraft() {
     ) {
       // owner 为空表示「输入时本页还没有会话」：多标签页里另一标签
       // 建立共享会话后刷新，这段未发送的草稿仍属于本页用户，
-      // 不能静默删除（第八十三轮）；只清理明确属于其它会话的草稿
+      // 不能静默删除（第八十三轮）；只清理明确属于其它会话的草稿。
+      // 陈旧档案归属必须一并清掉：否则 saveDraft 会把它写回新草稿，
+      // preserveDraftProfile 的早退又让它无法被纠正，合法重发被
+      // 跨档案守卫永久拦截（第九十一轮 [14]）
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
+      safeSessionRemove(DRAFT_PROFILE_KEY);
+      draftProfileMemory = null;
       return;
     }
     els.input.value = draft;

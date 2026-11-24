@@ -463,7 +463,9 @@ def test_inflight_restored_text_scoped_to_session():
     assert "let inflightRestoredOwnerSession = '';" in source
     assert "inflightRestoredOwnerSession = String(" in source
     start = source.index("if (expectedQuestion) {")
-    end = source.index("let inflightReconciled", start)
+    # 第九十一轮把 inflightReconciled 的声明移到该分支之前，切片终点
+    # 改用对账收尾标记，覆盖整个 expectedQuestion 分支
+    end = source.index("inflightReconciledThisRestore", start)
     block = source[start:end]
     assert "inflightRestoredOwnerSession === expectedSession" in block
     # 第八十九轮起匹配与剥离使用同一段文本：会话归属仍由
