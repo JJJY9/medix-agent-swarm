@@ -903,7 +903,9 @@ _PAST_USE_PREFIX = re.compile(
 _DOSE_CHANGE_CONTINUATION = re.compile(
     r"(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
     r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
-    r"减到)\s*)?(?:(?:每天|每日)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
+    r"减到)\s*)?"
+    r"(?:(?:每天|每日|一天|一日|每晚|每早)(?:一次|1次)?\s*"
+    r"(?:[，,；;]\s*每次)?\s*)?(?:(?:吃|服用|口服|用)\s*)?"
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
     r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
@@ -1139,6 +1141,31 @@ def _restart_names_other_medication(
     return False
 
 
+#: 英文续用宾语：「still on aspirin」点名他药时不算本药重启
+_ENGLISH_STILL_OBJ_RE = re.compile(
+    r"\bstill\s+(?:take|taking|on)\s+"
+    r"(?:(it|the\s+same|this)\b|"
+    r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
+    re.IGNORECASE,
+)
+
+
+def _english_restart_names_other(
+    follow: str, alias_lower: str
+) -> bool:
+    """英文续用分句是否点名另一种药（still on aspirin）。"""
+    text = str(follow or "")
+    for match in _ENGLISH_STILL_OBJ_RE.finditer(text):
+        if (match.group(1) or "").strip():
+            continue
+        obj = (match.group(2) or "").strip()
+        if not obj:
+            continue
+        if _mentions_other_drug_alias(obj, alias_lower):
+            return True
+    return False
+
+
 _RESTART_USE_SUFFIX_EN = re.compile(
     r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
     r"|back on (?:it )?(?:again)?|still taking|still on"
@@ -1248,7 +1275,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                     )
                 )
                 or _continuous_restart_matches(long_suffix, alias_lower)
-                or _RESTART_USE_SUFFIX_EN.search(long_suffix)
+                or (
+                    _RESTART_USE_SUFFIX_EN.search(long_suffix)
+                    and not _english_restart_names_other(
+                        long_suffix, alias_lower
+                    )
+                )
                 or _ADHERENCE_USE_PREFIX.search(prefix)
                 and _NEGATED_USE_PREFIX.search(prefix)
                 or _RECENT_STOP_PREFIX.search(prefix)

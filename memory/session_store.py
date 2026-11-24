@@ -5511,6 +5511,10 @@ class SessionStore:
                     continue
                 if not any(
                     other_id != raw_id
+                    #: 属主备份行必须已经处理过：否则这条未编辑的
+                    #: 孪生行还是它的存活版本，本行抢来会让属主
+                    #: 记录永远无法恢复（第九十轮 [4]）
+                    and other_id in seen_raw_ids
                     and _normalize_profile_name(
                         backup_profiles.get(other_id) or ""
                     ) == twin_profile
@@ -8515,6 +8519,28 @@ class SessionStore:
                 # 跨档案维度仅在软字段也不命中本行时生效：标题命中
                 # 说明候选是本行被编辑/完成后的存活版本
                 return _ambiguous()
+            if (
+                local_group_size >= backup_group_size
+                and tail_where is not None
+                and not _candidate_edited(candidate)
+            ):
+                edited_tail = [
+                    other for other in claimed
+                    if other not in moved and other not in matched
+                    and other != candidate
+                    and _candidate_edited(other)
+                    and _tail_matches(other)
+                    and not _content_owned_by_other(other)
+                    and not _candidate_soft_owned_by_other(
+                        other, cross_profile=True, require_content=True
+                    )
+                ]
+                if len(edited_tail) == 1:
+                    # 组内已无缺行：本行的内容列（剂量/时间等）被
+                    # 本地编辑过，被编辑存活行的尾字段仍命中本行，
+                    # 它就是本行版本，不能补插编辑前旧副本
+                    # （第九十轮 [8]）
+                    return _claim(edited_tail[0], mark_moved=True)
             if (
                 soft_where is not None
                 and not _soft_matches(candidate)
@@ -15096,11 +15122,36 @@ class SessionStore:
                 or str(previous["status"] or "") != normalized["status"]
             )
             if normalized["status"] != "upcoming":
-                self._conn.execute(
-                    "DELETE FROM reminders "
-                    "WHERE done = 0 AND appointment_id = ?",
+                # 仍被其它就诊引用的共享提醒只脱钩、不删除，否则
+                # 会删掉别人唯一的复诊待办并留下悬空链接
+                # （第九十轮 [14]）
+                pending_rows = self._conn.execute(
+                    "SELECT id FROM reminders"
+                    " WHERE done = 0 AND appointment_id = ?",
                     (int(appointment_id),),
-                )
+                ).fetchall()
+                for pending_row in pending_rows:
+                    pending_id = int(pending_row["id"] or 0)
+                    if not pending_id:
+                        continue
+                    shared_ref = self._conn.execute(
+                        "SELECT 1 FROM visit_records"
+                        " WHERE followup_reminder_id = ?"
+                        " AND followup_appointment_id != ?"
+                        " LIMIT 1",
+                        (pending_id, int(appointment_id)),
+                    ).fetchone()
+                    if shared_ref is not None:
+                        self._conn.execute(
+                            "UPDATE reminders SET appointment_id = 0,"
+                            " updated_at = ? WHERE id = ?",
+                            (now, pending_id),
+                        )
+                    else:
+                        self._conn.execute(
+                            "DELETE FROM reminders WHERE id = ?",
+                            (pending_id,),
+                        )
                 # 已完成提醒不再指向已取消/已完成的预约，避免被重新
                 # 打开后复活成悬空待办
                 self._conn.execute(
@@ -15122,7 +15173,7 @@ class SessionStore:
                         other_ref = self._conn.execute(
                             "SELECT 1 FROM visit_records"
                             " WHERE followup_reminder_id = ?"
-                            " AND followup_appointment_id NOT IN (0, ?)"
+                            " AND followup_appointment_id != ?"
                             " LIMIT 1",
                             (linked_id, int(appointment_id)),
                         ).fetchone()
@@ -15340,6 +15391,7 @@ class SessionStore:
                                             adopt_note,
                                             normalized["profile"],
                                             _in_transaction=True,
+                                            owner_visit_id=adopt_visit,
                                         )
                                     ):
                                         adopted_id = adopt_reminder
@@ -15440,18 +15492,28 @@ class SessionStore:
                                         normalized["profile"]
                                     )
                                 ):
-                                    self._conn.execute(
-                                        "DELETE FROM reminders"
-                                        " WHERE id = ? AND done = 0"
-                                        " AND appointment_id = 0",
-                                        (stale_reminder,),
-                                    )
-                                    self._conn.execute(
-                                        "UPDATE visit_records"
-                                        " SET followup_reminder_id = 0"
-                                        " WHERE followup_reminder_id = ?",
-                                        (stale_reminder,),
-                                    )
+                                    shared_stale = self._conn.execute(
+                                        "SELECT 1 FROM visit_records"
+                                        " WHERE followup_reminder_id = ?"
+                                        " AND id != ? LIMIT 1",
+                                        (
+                                            stale_reminder,
+                                            int(owner_visit_id),
+                                        ),
+                                    ).fetchone()
+                                    if shared_stale is None:
+                                        self._conn.execute(
+                                            "DELETE FROM reminders"
+                                            " WHERE id = ? AND done = 0"
+                                            " AND appointment_id = 0",
+                                            (stale_reminder,),
+                                        )
+                                        self._conn.execute(
+                                            "UPDATE visit_records"
+                                            " SET followup_reminder_id = 0"
+                                            " WHERE followup_reminder_id = ?",
+                                            (stale_reminder,),
+                                        )
                             self._conn.execute(
                                 "UPDATE visit_records"
                                 " SET followup_appointment_id = ?,"
@@ -15599,6 +15661,7 @@ class SessionStore:
                                     adopt_note,
                                     normalized["profile"],
                                     _in_transaction=True,
+                                    owner_visit_id=visit_owner,
                                 )
                             ):
                                 restored_reminder_id = orphan_id
@@ -16065,11 +16128,35 @@ class SessionStore:
             )
             if cursor.rowcount == 0:
                 return False
-            # 预约提醒随预约删除，避免遗留的待办在之后显示逾期
-            self._conn.execute(
-                "DELETE FROM reminders WHERE done = 0 AND appointment_id = ?",
+            # 预约提醒随预约删除，避免遗留的待办在之后显示逾期；
+            # 仍被其它就诊引用的共享提醒只脱钩（第九十轮 [14]）
+            pending_rows = self._conn.execute(
+                "SELECT id FROM reminders"
+                " WHERE done = 0 AND appointment_id = ?",
                 (int(appointment_id),),
-            )
+            ).fetchall()
+            for pending_row in pending_rows:
+                pending_id = int(pending_row["id"] or 0)
+                if not pending_id:
+                    continue
+                shared_ref = self._conn.execute(
+                    "SELECT 1 FROM visit_records"
+                    " WHERE followup_reminder_id = ?"
+                    " AND followup_appointment_id != ?"
+                    " LIMIT 1",
+                    (pending_id, int(appointment_id)),
+                ).fetchone()
+                if shared_ref is not None:
+                    self._conn.execute(
+                        "UPDATE reminders SET appointment_id = 0,"
+                        " updated_at = ? WHERE id = ?",
+                        (self._now(), pending_id),
+                    )
+                else:
+                    self._conn.execute(
+                        "DELETE FROM reminders WHERE id = ?",
+                        (pending_id,),
+                    )
             # 就诊仍链接的脱钩待办（reopen 降级）同样随预约删除，
             # 否则删除后留下无主幽灵提醒
             linked_rows = self._conn.execute(
@@ -16084,7 +16171,7 @@ class SessionStore:
                     other_ref = self._conn.execute(
                         "SELECT 1 FROM visit_records"
                         " WHERE followup_reminder_id = ?"
-                        " AND followup_appointment_id NOT IN (0, ?)"
+                        " AND followup_appointment_id != ?"
                         " LIMIT 1",
                         (linked_id, int(appointment_id)),
                     ).fetchone()
@@ -17189,6 +17276,16 @@ class SessionStore:
                 # 已移交/脱钩的独立提醒也不能被就诊级联删除。
                 # 但就诊仍把该提醒当作自己的复诊提醒时（完成→重开
                 # 后脱钩），它必须随改期删除，否则留下过期幽灵提醒
+                shared_row = self._conn.execute(
+                    "SELECT 1 FROM visit_records"
+                    " WHERE followup_reminder_id = ? AND id != ? LIMIT 1",
+                    (reminder, int(visit_id)),
+                ).fetchone()
+                if shared_row is not None:
+                    # 其它就诊仍引用这条脱钩提醒：保留提醒，不能随
+                    # 本就诊改期/删除而删掉别人的复诊待办
+                    # （第九十轮 [9]）
+                    return False
                 cursor = self._conn.execute(
                     "DELETE FROM reminders WHERE id = ? AND done = 0",
                     (reminder,),
@@ -20478,6 +20575,21 @@ class SessionStore:
             )
             return True
 
+    def reminder_shared_by_other_visit(
+        self, reminder_id: Any, visit_id: Any
+    ) -> bool:
+        """提醒是否仍被另一条就诊引用（共享脱钩提醒保护）。"""
+        reminder = _safe_db_id(reminder_id)
+        if not reminder:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM visit_records WHERE followup_reminder_id = ?"
+                " AND id != ? LIMIT 1",
+                (int(reminder), int(_safe_db_id(visit_id) or 0)),
+            ).fetchone()
+        return row is not None
+
     def delete_reminders_bulk(
         self, reminder_ids: Any, only_done: bool = False
     ) -> int:
@@ -20549,6 +20661,7 @@ class SessionStore:
         note: str,
         profile: str,
         _in_transaction: bool = False,
+        owner_visit_id: Any = 0,
     ) -> bool:
         """把就诊仍链接的脱钩待办接管为指定预约的复诊提醒。
 
@@ -20577,6 +20690,16 @@ class SessionStore:
                 != _normalize_profile_name(profile)
             ):
                 return False
+            if owner_visit_id:
+                shared_row = self._conn.execute(
+                    "SELECT 1 FROM visit_records"
+                    " WHERE followup_reminder_id = ? AND id != ? LIMIT 1",
+                    (int(reminder), int(owner_visit_id)),
+                ).fetchone()
+                if shared_row is not None:
+                    # 提醒被其它就诊共享：接管会让它们失去待办，
+                    # 由调用方新建一条预约专用提醒（第九十轮 [10]）
+                    return False
             cursor = self._conn.execute(
                 "UPDATE reminders SET appointment_id = ?, due_at = ?,"
                 " note = ?, updated_at = ?"

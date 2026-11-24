@@ -309,10 +309,15 @@ def test_completed_appointment_clears_shared_detached_reminder(
             json={"status": "completed"},
         )
         assert resp.status_code == 200, resp.text
-        assert store.list_reminders(True, "妈妈") == []
-        for visit_id in (1, 2):
-            visit = store.get_visit_record(visit_id)
-            assert int(visit["followup_reminder_id"]) == 0, visit
+        # 第八十九/九十轮起共享脱钩提醒不得因预约完成而删除：就诊 2
+        # 仍以 followup_reminder_id 引用它（复诊待办在它的下次复诊日
+        # 仍要触发）。只解除归属就诊（按备注标记解析为就诊 1）的链接。
+        pending = store.list_reminders(True, "妈妈")
+        assert [int(item["id"]) for item in pending] == [1], pending
+        owner = store.get_visit_record(1)
+        assert int(owner["followup_reminder_id"]) == 0, owner
+        other = store.get_visit_record(2)
+        assert int(other["followup_reminder_id"]) == 1, other
     finally:
         store.close()
 

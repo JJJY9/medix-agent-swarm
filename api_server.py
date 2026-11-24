@@ -2317,6 +2317,24 @@ def _has_forwarded_address_header(request: Request) -> bool:
     return False
 
 
+def _needs_auth_source_cap(request: Request, peer_host: str) -> bool:
+    """共享鉴权桶是否需要对单源贡献封顶。
+
+    封顶场景：带地址头的共享来源（未受信/代理无地址头）、非本机
+    对端（Docker/跨机已声明代理、开启信任但未声明对端），以及开启
+    信任代理且对端受信（含本机反代，第四十五/七十五轮）。只有在
+    「本机对端 + 未开启代理信任 + 无地址头」时保持原有回环高阈值
+    桶契约（第四十五/四十六/六十五轮）：此时同机代理与本地直连
+    无法区分，单源上限会让回环桶永不触发（第九十轮 [12]）。
+    """
+    if _has_proxy_headers(request):
+        return True
+    host = _peer_key(peer_host)
+    if host and not _is_loopback_address(host):
+        return True
+    return bool(_trust_proxy_headers() and _is_trusted_proxy_peer(peer_host))
+
+
 def _has_proxy_headers(request: Request) -> bool:
     """请求是否带代理地址/协议头（单次遍历）。
 
@@ -3659,16 +3677,7 @@ async def require_access_token(request: Request, call_next):
                 if (
                     shared_scope
                     and not gate_unprovable
-                    # 带地址头而落入共享桶（未受信转发/代理无地址头）
-                    # 时同样需要单源贡献上限：直连且完全无地址头的
-                    # 来源本身可证明，仍按自身桶阈值限流
-                    and (
-                        _has_proxy_headers(request)
-                        or (
-                            _trust_proxy_headers()
-                            and _is_trusted_proxy_peer(peer_host)
-                        )
-                    )
+                    and _needs_auth_source_cap(request, peer_host)
                 ):
                     limiter_key = (
                         loopback_bucket_key
@@ -7392,11 +7401,17 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
         ):
             # 预约已有自己的待办：合并重复的脱钩旧提醒，避免两条
             # 同日 pending 与删除就诊后的幽灵。系统合并不是用户
-            # opt-out，不能写「不再提醒」墓碑（第八十九轮 [9]）
-            store.delete_reminder(
-                int(orphan_reminder["id"]), record_tombstone=False
+            # opt-out，不能写「不再提醒」墓碑（第八十九轮 [9]）；
+            # 被其它就诊共享的提醒不能删，否则会丢掉别人的复诊
+            # 待办（第九十轮 [15][16]）
+            shared_orphan = store.reminder_shared_by_other_visit(
+                int(orphan_reminder["id"]), int(visit_id)
             )
-            orphan_reminder = None
+            if not shared_orphan:
+                store.delete_reminder(
+                    int(orphan_reminder["id"]), record_tombstone=False
+                )
+                orphan_reminder = None
         if reminder is None:
             deleted_marker = ""
             try:
@@ -7413,11 +7428,15 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             and orphan_reminder is not None
             and deleted_marker
         ):
-            # 用户删除过该预约的提醒：匿名脱钩待办同样不能继续触发
-            store.delete_reminder(
-                int(orphan_reminder["id"]), record_tombstone=False
-            )
-            orphan_reminder = None
+            # 用户删除过该预约的提醒：匿名脱钩待办同样不能继续触发；
+            # 仍被其它就诊共享时保留（第九十轮 [15]）
+            if not store.reminder_shared_by_other_visit(
+                int(orphan_reminder["id"]), int(visit_id)
+            ):
+                store.delete_reminder(
+                    int(orphan_reminder["id"]), record_tombstone=False
+                )
+                orphan_reminder = None
         if reminder is None and not deleted_marker:
             # 导入恢复的「仅提醒链接」待办（appointment_id=0）：接管它，
             # 否则会再建一条同名提醒，删就诊后留下幽灵（第八十轮）
@@ -7443,6 +7462,7 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     orphan_due.strftime("%Y-%m-%d"),
                     orphan_note,
                     profile,
+                    owner_visit_id=visit_id,
                 ):
                     reminder = store.get_reminder(orphan_id)
         if reminder is None and deleted_marker:
