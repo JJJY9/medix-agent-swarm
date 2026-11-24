@@ -117,13 +117,13 @@ def test_terminal_cards_are_announced(client):
         r"announceChat\('已停止生成'\);"
         # 第七十三轮在恢复输入框时插入了快照记录与注释，
         # 200 字窗口不再够用；只约束顺序不变
-        r"(?:(?!renderStopped)[\s\S]){0,800}"
+        r"(?:(?!renderStopped)[\s\S]){0,1400}"
         r"renderStopped\(",
         app_js,
     )
     assert re.search(
         r"announceChat\('会诊中断'\);"
-        r"(?:(?!renderError)[\s\S]){0,600}"
+        r"(?:(?!renderError)[\s\S]){0,1000}"
         r"renderError\(",
         app_js,
     )

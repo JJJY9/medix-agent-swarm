@@ -5415,8 +5415,24 @@ def _evaluate_medication_safety(
     return safety
 
 
+#: 纯停药标注片段：「华法林，已停用」的「已停用」不是独立药名
+_STOP_ANNOTATION_ONLY_RE = re.compile(
+    r"^(?:已停用|已停药|已停服|停用中|已停了|已停|停药中|"
+    r"已停止使用|已停止|已停用中)$"
+)
+#: 括号形式的停药标注：「X（已停用）」
+_STOP_ANNOTATION_INLINE_RE = re.compile(
+    r"[（(]\s*(?:已停用|已停药|已停服|停用中)\s*[）)]"
+)
+
+
 def _context_medication_names(context: Any) -> List[str]:
-    """从档案补充信息的「正在使用的药物」提取可检查的药名片段。"""
+    """从档案补充信息的「正在使用的药物」提取可检查的药名片段。
+
+    档案文本里的停药标注（「X，已停用」「X（已停用）」「已停用的X」）
+    必须让被标注的药退出检查名单：否则已停药物仍参与碱基/化验/
+    合并症安全通道，家庭总览与健康提示会误报（第九十二轮 [14]）。
+    """
     from core.context import medication_context_text
 
     text = medication_context_text(context)
@@ -5425,7 +5441,20 @@ def _context_medication_names(context: Any) -> List[str]:
     names = []
     for part in re.split(r"[；;，,、/\n]+", text):
         part = part.strip()
-        if part and part not in names:
+        if not part:
+            continue
+        if _STOP_ANNOTATION_ONLY_RE.match(part):
+            # 紧跟药名的纯停药标注：把上一个药名移出在用名单
+            if names:
+                names.pop()
+            continue
+        if _STOP_ANNOTATION_INLINE_RE.search(part):
+            # 「阿司匹林（已停用）」：整段标注为停药，不进入在用名单
+            continue
+        if re.match(r"^(?:已停用|已停药|已停服)的?", part):
+            # 「已停用的阿司匹林」：定语形式，药名已停用
+            continue
+        if part not in names:
             names.append(part)
     return names[:50]
 

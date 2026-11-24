@@ -420,7 +420,12 @@ def test_restore_composer_returns_inserted_flag():
     block = source[start:end]
     assert "return false;" in block
     assert "return true;" in block
-    assert source.count("restoredNow || composerText === questionText") >= 3
+    # 第九十二轮起条件分多行书写（并追加合并形态判定），按多行
+    # 片段统计三个失败/停止分支
+    assert source.count(
+        "restoredNow" + chr(10)
+        + "        || composerText === questionText"
+    ) >= 3
 
 
 # ---------------------------------------------------------------- [14]

@@ -347,8 +347,11 @@ def test_frontend_abort_restores_composer_snapshot():
     start = source.index(marker)
     body = source[start:start + 1200]
     assert (
-        "restoredNow || composerText === questionText"
+        "restoredNow" + chr(10)
+        + "        || composerText === questionText"
     ) in body
+    # 第九十二轮起合并形态（主诉 + 空行 + 草稿）同样记录快照
+    assert 'startsWith(questionText + "' + chr(92) + 'n' + chr(92) + 'n")' in body
     assert "lastRestoredComposerQuestion = lastRestoredComposerText" in body
 
 
