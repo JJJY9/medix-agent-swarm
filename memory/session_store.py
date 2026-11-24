@@ -6636,7 +6636,7 @@ class SessionStore:
             created_key = str(created_at_value or "")
             try:
                 rows = self._conn.execute(
-                    f"SELECT {', '.join(content_columns)} FROM {table}"
+                    f"SELECT id, {', '.join(content_columns)} FROM {table}"
                     " WHERE created_at = ?",
                     (created_key,),
                 ).fetchall()
@@ -6646,13 +6646,52 @@ class SessionStore:
                 self._db_content_fingerprint(row, content_columns)
                 for row in rows
             ]
-            for backup_id, expected in backup_contents.items():
+            missing_ids = [
+                backup_id
+                for backup_id, expected in backup_contents.items()
                 if (
-                    backup_created
-                    and backup_created.get(backup_id) != created_key
-                ):
-                    continue
-                if expected not in fingerprints:
+                    not backup_created
+                    or backup_created.get(backup_id) == created_key
+                )
+                and expected not in fingerprints
+            ]
+            if not missing_ids:
+                return False
+            if local_group_size < backup_group_size:
+                # 组内确有缺行：被删记录先补回，不能把编辑行抢走
+                return True
+            # 组内行数已齐：缺内容也可能只是某条记录被改名/改剂量，
+            # 其存活行仍在。只有同秒某条存活行的尾字段严格更符合该
+            # 备份行（唯一归属）时才视为可解释；否则内容确实缺失，
+            # 仍按被删记录补插（第八十八轮 [9]，兼容第六十六/七十
+            # 四轮「改挂+编辑+删除」契约）
+            if not backup_tails:
+                return True
+            for missing_id in missing_ids:
+                explained = False
+                for row in rows:
+                    candidate = int(row["id"])
+                    own_score = _tail_match_score(candidate, missing_id)
+                    if own_score < 0:
+                        continue
+                    best_other = -1
+                    for other_id in backup_tails:
+                        if other_id == missing_id:
+                            continue
+                        if (
+                            backup_created
+                            and backup_created.get(other_id) != created_key
+                        ):
+                            continue
+                        other_score = _tail_match_score(
+                            candidate, other_id
+                        )
+                        if other_score > best_other:
+                            best_other = other_score
+                    if own_score > best_other:
+                        explained = True
+                        break
+                if not explained:
                     return True
             return False
 
@@ -6677,8 +6716,10 @@ class SessionStore:
                 # 本行仍有「软字段与尾字段都命中」的正常存活行时，
                 # 必须走常规认领，不能被另一个改名行的编辑证据抢走
                 for candidate in pool:
-                    if _soft_matches(candidate) and (
-                        tail_where is None or _tail_matches(candidate)
+                    if (
+                        candidate in candidates
+                        and _soft_matches(candidate)
+                        and (tail_where is None or _tail_matches(candidate))
                     ):
                         return None
             orphan = []
@@ -6704,6 +6745,12 @@ class SessionStore:
                     # 尾字段明显更像同秒孪生（如另一成员恰好在同名
                     # 提醒上完成/停药）：候选属于那条记录，不能被当
                     # 成本行改名后的孤儿抢走
+                    continue
+                if _tail_prefers_sibling_any_content(candidate):
+                    # 尾字段严格命中同秒另一条备份记录（不限内容）：
+                    # 候选是那条记录改名后的存活版本，应留给它认领；
+                    # 否则本行抢走后那条记录只能补插重复行
+                    # （第八十八轮 [9]）
                     continue
                 # 组已满（本地没有缺行）时，尾字段（备注/状态）被一起
                 # 编辑过的唯一存活行同样是本行的版本：仅凭尾字段不再
@@ -8388,11 +8435,27 @@ class SessionStore:
             }
             if len(filtered_multi) == 1:
                 candidates = filtered_multi
+            elif local_group_size >= backup_group_size:
+                # 组内已无缺行：所有备份行都应各认领一条存活行，
+                # 不能再补插副本（重复导入保持幂等；第八十八轮 [8]）
+                candidates = filtered_multi
             else:
                 # 多条候选互相归属不明：不能 min() 任意认领，按被删
                 # 记录补插（「宁重复勿丢」）
                 return _ambiguous()
         if not candidates:
+            if local_group_size >= backup_group_size and soft_where is not None:
+                # 组内已无缺行：本行应认领组内仍未被占用、软字段
+                # 命中的存活行（内容被编辑过），不能补插副本
+                # （重复导入保持幂等；第八十八轮 [8]）
+                pool = [
+                    candidate for candidate in claimed
+                    if candidate not in moved
+                    and candidate not in matched
+                    and _soft_matches(candidate)
+                ]
+                if pool:
+                    return _claim(min(pool), mark_moved=True)
             return _ambiguous()
         sole = min(candidates)
         if _candidate_foreign_backup_row(sole):
@@ -12734,6 +12797,54 @@ class SessionStore:
                         stale_appointment_ids.append(
                             int(followup_appointment_id)
                         )
+                    if (
+                        not apply_links
+                        and followup_reminder_id
+                        and followup_reminder_id in imported_reminder_ids
+                        and local_link
+                    ):
+                        # 本地就诊已挂预约：备份的脱钩提醒不能落成
+                        # 无主 pending；与本地该预约的待办合并，或
+                        # 接管为该预约的提醒（第八十八轮）
+                        other_ref = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_reminder_id = ?"
+                            " AND id != ? LIMIT 1",
+                            (int(followup_reminder_id), int(visit_id)),
+                        ).fetchone()
+                        if other_ref is None:
+                            local_pending = self._conn.execute(
+                                "SELECT id FROM reminders"
+                                " WHERE appointment_id = ? AND done = 0"
+                                " ORDER BY id LIMIT 1",
+                                (int(local_link),),
+                            ).fetchone()
+                            if local_pending is not None:
+                                self._conn.execute(
+                                    "DELETE FROM reminders WHERE id = ?"
+                                    " AND done = 0 AND appointment_id = 0",
+                                    (int(followup_reminder_id),),
+                                )
+                            else:
+                                self._conn.execute(
+                                    "UPDATE reminders SET appointment_id = ?,"
+                                    " updated_at = ?"
+                                    " WHERE id = ? AND done = 0"
+                                    " AND appointment_id = 0",
+                                    (
+                                        int(local_link), now,
+                                        int(followup_reminder_id),
+                                    ),
+                                )
+                                self._conn.execute(
+                                    "UPDATE visit_records"
+                                    " SET followup_reminder_id = ?"
+                                    " WHERE id = ?",
+                                    (
+                                        int(followup_reminder_id),
+                                        int(visit_id),
+                                    ),
+                                )
                 if apply_links:
                     restored_reminder = followup_reminder_id
                     old_reminder = 0
@@ -15192,22 +15303,64 @@ class SessionStore:
                         )
                     except sqlite3.Error:
                         deleted_marker = ""
+                    visit_owner = self._appointment_owner_visit(
+                        previous["note"],
+                        previous["owner_visit_id"],
+                        normalized["profile"],
+                        normalized["scheduled_at"],
+                        check_date=False,
+                    )
                     if deleted_marker:
                         # 用户主动删除过该预约的提醒：恢复待就诊不能
-                        # 绕过墓碑复活，只恢复预约本身
+                        # 绕过墓碑复活，只恢复预约本身；就诊仍链接的
+                        # 脱钩待办随墓碑一并清理，避免无引用幽灵
+                        # （第八十八轮）
                         restored_reminder_id = 0
+                        if visit_owner:
+                            linked_row = self._conn.execute(
+                                "SELECT followup_reminder_id"
+                                " FROM visit_records WHERE id = ?",
+                                (int(visit_owner),),
+                            ).fetchone()
+                            tomb_reminder = (
+                                int(linked_row["followup_reminder_id"] or 0)
+                                if linked_row is not None else 0
+                            )
+                            if tomb_reminder:
+                                tomb_row = self._conn.execute(
+                                    "SELECT profile, done, appointment_id"
+                                    " FROM reminders WHERE id = ?",
+                                    (tomb_reminder,),
+                                ).fetchone()
+                                if (
+                                    tomb_row is not None
+                                    and not int(tomb_row["done"] or 0)
+                                    and int(
+                                        tomb_row["appointment_id"] or 0
+                                    ) == 0
+                                    and _normalize_profile_name(
+                                        tomb_row["profile"] or ""
+                                    ) == _normalize_profile_name(
+                                        normalized["profile"]
+                                    )
+                                ):
+                                    self._conn.execute(
+                                        "DELETE FROM reminders"
+                                        " WHERE id = ? AND done = 0"
+                                        " AND appointment_id = 0",
+                                        (tomb_reminder,),
+                                    )
+                                    self._conn.execute(
+                                        "UPDATE visit_records"
+                                        " SET followup_reminder_id = 0"
+                                        " WHERE followup_reminder_id = ?",
+                                        (tomb_reminder,),
+                                    )
                     else:
                         restored_reminder_id = 0
                         # 导入的「仅提醒链接」脱钩待办：接管它，否则
                         # 会再建一条同名提醒、删就诊后留下幽灵
                         # （第八十三轮）
-                        visit_owner = self._appointment_owner_visit(
-                            previous["note"],
-                            previous["owner_visit_id"],
-                            normalized["profile"],
-                            normalized["scheduled_at"],
-                            check_date=False,
-                        )
                         orphan_id = 0
                         if visit_owner:
                             linked_row = self._conn.execute(
@@ -20063,18 +20216,37 @@ class SessionStore:
                 return False
             if (
                 doomed_row is not None
-                and int(doomed_row["appointment_id"] or 0)
                 and not int(doomed_row["done"] or 0)
             ):
                 # 用户主动删除「待办」提醒：记录墓碑，之后改期不能凭
                 # 旧的已完成提醒把它复活。删除已完成的历史提醒（清理
                 # 已完成/单条删除历史）不是 opt-out，不写墓碑
-                # （第八十二轮）
-                try:
-                    self.set_app_state(
-                        f"reminder_deleted_{int(doomed_row['appointment_id'])}",
-                        self._now(),
+                # （第八十二轮）。脱钩待办（appointment_id=0）按其
+                # 仍被哪些就诊链接，为对应预约写墓碑（第八十八轮）
+                marker_targets = set()
+                doomed_appointment = int(
+                    doomed_row["appointment_id"] or 0
+                )
+                if doomed_appointment:
+                    marker_targets.add(doomed_appointment)
+                else:
+                    linked_targets = self._conn.execute(
+                        "SELECT DISTINCT followup_appointment_id"
+                        " FROM visit_records WHERE followup_reminder_id = ?"
+                        " AND followup_appointment_id != 0",
+                        (int(reminder_id),),
+                    ).fetchall()
+                    marker_targets.update(
+                        int(row["followup_appointment_id"] or 0)
+                        for row in linked_targets
+                        if int(row["followup_appointment_id"] or 0)
                     )
+                try:
+                    for target_id in marker_targets:
+                        self.set_app_state(
+                            f"reminder_deleted_{int(target_id)}",
+                            self._now(),
+                        )
                 except sqlite3.Error:
                     pass
             # 用户主动删除提醒后，就诊上的复诊提醒链接一并解除，

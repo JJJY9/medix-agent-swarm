@@ -13833,6 +13833,13 @@ async def family_overview(days: int = 7):
         )
         for item in latest_metrics
     }
+    # 血糖均值与目标计数使用与健康提示一致的近 max(days, 30) 天读数：
+    # 180 天新鲜读数只参与危急值回溯扫描（必要时也用于血压峰值），
+    # 不能稀释最近的高血糖均值，也不能把旧超标读数算进当前关注，
+    # 否则家庭关注与健康提示结论互相矛盾（第八十八轮 [12]）
+    grade_metrics = await asyncio.to_thread(
+        store.list_metrics, None, None, 100000, max(days, 30)
+    )
     seen_window_critical: set = set()
     for item in attention_metrics:
         profile = item.get("profile") or ""
@@ -13866,7 +13873,7 @@ async def family_overview(days: int = 7):
     # （空腹/未分情境均值 ≥7、餐后/随机/睡前均值 ≥11.1 mmol/L）
     glucose_alert_by_profile: Dict[str, str] = {}
     glucose_groups: Dict[str, Dict[str, List[float]]] = {}
-    for item in attention_metrics:
+    for item in grade_metrics:
         if item.get("metric") != "glucose":
             continue
         if (item.get("profile") or "", "glucose") in target_map:
@@ -13964,7 +13971,7 @@ async def family_overview(days: int = 7):
     #: 血压展示峰值按全部读数统计（与周报/健康提示同口径）；
     #: 超标计数与预警升级仍只看超标读数
     bp_show_peaks: Dict[str, Dict[str, float]] = {}
-    for item in attention_metrics:
+    for item in grade_metrics:
         metric = str(item.get("metric") or "")
         if metric == "bp":
             show_key = item.get("profile") or ""

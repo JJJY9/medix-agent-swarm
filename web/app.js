@@ -21051,9 +21051,13 @@ async function send(question, composerSubmit = false) {
     return;
   }
   if (!question.trim()) return;
-  // 新一轮发送开始：上一轮失败/中断恢复的快照与主诉绑定不再适用
-  lastRestoredComposerText = '';
-  lastRestoredComposerQuestion = '';
+  // 同一主诉的重试/继续必须保留失败分支恢复的快照与主诉绑定：
+  // 成功后 finally 才能剥离输入框里已答复的问题；只有本轮换了问题
+  // 时才丢弃旧快照（第八十八轮 [13]）
+  if (String(question || '').trim() !== lastRestoredComposerQuestion) {
+    lastRestoredComposerText = '';
+    lastRestoredComposerQuestion = '';
+  }
   // 发送时的档案快照：abort/失败恢复主诉时用它守住草稿归属，
   // 换档后旧患者的主诉不能被当成新档案草稿直接放行
   let sendProfile = activeProfileName || readStoredProfile() || '';
@@ -21302,8 +21306,10 @@ async function send(question, composerSubmit = false) {
       question = remainder;
       els.input.value = remainder;
       // 成功后按此快照清理输入框：否则刚发送的剩余主诉会留在里面，
-      // 用户回车即重复会诊（第八十三轮）
+      // 用户回车即重复会诊（第八十三轮）。快照必须同时绑定本轮发送
+      // 的主诉，否则成功清理的主诉一致条件恒假（第八十八轮 [14][16]）
       lastRestoredComposerText = remainder;
+      lastRestoredComposerQuestion = remainder;
       autoGrow();
     }
   }
