@@ -1160,11 +1160,14 @@ _RESTART_USE_SUFFIX = re.compile(
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别))"
 )
-#: 宾语前置的续用：「阿司匹林还在吃」
+#: 宾语前置的续用：「阿司匹林还在吃」。词表与 triage 的
+#: _RESTART_OBJECT_BEFORE_RE 保持同一来源（第九十五/九十六轮）
 _RESTART_OBJECT_BEFORE_RE = re.compile(
     r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
     r"(?:还在吃|还在服用|仍在吃|仍在服用|仍然服用|继续吃|继续服用|"
-    r"还在用|仍在用|继续用|还用|仍用)"
+    r"还在用|仍在用|继续用|还用|仍用|仍在使用|一直在用|"
+    r"继续使用|还在使用|还吃|还服用|仍吃|接着吃|接着服|接着用|"
+    r"仍然用)"
 )
 
 
@@ -1349,7 +1352,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                         long_suffix, alias_lower
                     )
                 )
-                or _continuous_restart_matches(long_suffix, alias_lower)
+                or (
+                    _continuous_restart_matches(long_suffix, alias_lower)
+                    and not _restart_names_other_medication(
+                        long_suffix, alias_lower
+                    )
+                )
                 or (
                     _RESTART_USE_SUFFIX_EN.search(en_suffix)
                     and not _english_restart_names_other(
@@ -1421,7 +1429,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                     long_suffix, alias_lower
                 )
             )
-            or _continuous_restart_matches(long_suffix, alias_lower)
+            or (
+                _continuous_restart_matches(long_suffix, alias_lower)
+                and not _restart_names_other_medication(
+                    long_suffix, alias_lower
+                )
+            )
             or _RECENT_STOP_PREFIX.search(prefix)
             or _RECENT_STOP_SUFFIX.search(suffix)
             or _RECENT_STOP_CONTEXT.search(prefix + suffix)

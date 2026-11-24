@@ -5430,6 +5430,45 @@ class SessionStore:
         )
         if not row_profile and scope_profile:
             row_profile = str(match_where[1][0])
+        if (
+            raw_id <= 0
+            and backup_tails
+            and backup_profiles
+            and created_at_value
+        ):
+            # 无 id 备份行：用档案+创建时间+内容+尾字段在合成元数据
+            # 中定位本行，使尾字段归属比较对无 id 备份同样生效
+            # （第九十六轮 [2][3]）
+            wanted_profile = _normalize_profile_name(row_profile)
+            created_key = str(created_at_value or "").strip()[:40]
+            expected_tail = (
+                tuple(
+                    self._tail_value_key(value)
+                    for value in tail_where[1]
+                )
+                if tail_where is not None else None
+            )
+            for synth_id in backup_tails:
+                if str(backup_created.get(synth_id) or "") != created_key:
+                    continue
+                if _normalize_profile_name(
+                    backup_profiles.get(synth_id) or ""
+                ) != wanted_profile:
+                    continue
+                if expected_tail is not None:
+                    # 备份缺省字段编码（''）与 DB 默认值（'0'）口径
+                    # 不同：只在两侧都有值时逐字段比较
+                    synth_tail = backup_tails.get(synth_id) or ()
+                    mismatch = any(
+                        want and have and want != have
+                        for want, have in zip(
+                            expected_tail, synth_tail
+                        )
+                    )
+                    if mismatch:
+                        continue
+                raw_id = synth_id
+                break
         moved_key = (table, "__moved__")
         moved = state.setdefault(moved_key, set())
         matched = state.setdefault((table, "__matched__"), set())
@@ -7692,7 +7731,13 @@ class SessionStore:
                                         continue
                                     if not _candidate_edited(moved_id):
                                         continue
-                                    if not _tail_matches(moved_id):
+                                    # 本行自己的主键行尾字段被本地编辑
+                                    # 是合法情况：只对其它行的候选要求
+                                    # 尾字段命中（第九十六轮 [7]）
+                                    if (
+                                        moved_id != raw_id
+                                        and not _tail_matches(moved_id)
+                                    ):
                                         continue
                                     if not _soft_matches(moved_id):
                                         continue
@@ -7839,10 +7884,13 @@ class SessionStore:
                     not backup_tails
                     and tail_where is not None
                     and not _tail_matches(candidate)
+                    and _candidate_content_matches_backup(candidate)
                 ):
-                    # 无 id 备份没有跨行归属元数据：候选尾字段必须
-                    # 命中本行，否则它可能是同秒另一条无 id 备份行
-                    # 的存活版本（第九十五轮 [9]）
+                    # 无 id 备份没有跨行归属元数据：候选内容仍等于
+                    # 本行、仅尾字段不符时，它可能是同秒另一条无 id
+                    # 备份行的存活版本，不能认领；内容同时被编辑
+                    # （改挂存活行）时尾字段不再可辨，允许认领
+                    # （第九十五轮 [9]、第九十六轮 [2]）
                     continue
                 if (
                     _candidate_owns_unprocessed_backup_row(candidate)
@@ -7866,11 +7914,36 @@ class SessionStore:
                 if _candidate_attributable_to_profile_sibling(
                     candidate, candidate_profile
                 ) and not (
-                    soft_where is not None
-                    and _soft_matches(candidate)
-                    and _tail_matches(candidate)
-                    and _candidate_content_matches_profile_sibling(
-                        candidate, candidate_profile
+                    (
+                        soft_where is not None
+                        and _soft_matches(candidate)
+                        and _tail_matches(candidate)
+                        and _candidate_content_matches_profile_sibling(
+                            candidate, candidate_profile
+                        )
+                    )
+                    # 内容已被编辑、尾字段仍精确命中本行且不偏向
+                    # 兄弟行：候选是本行改挂后的存活版本，即使兄弟
+                    # 备份行被删除（第九十六轮 [8]）。内容等于本行
+                    # 备份的候选是改名同化行，仍需按被删记录补回
+                    # （第五十三轮口径）
+                    or (
+                        not _candidate_content_matches_backup(candidate)
+                        and _tail_matches(candidate)
+                        and not _tail_prefers_sibling(
+                            candidate, cross_profile=True
+                        )
+                    )
+                    # 无 id 备份的改挂行内容+尾字段同时被编辑：尾
+                    # 字段不偏向任何兄弟行时按本行存活版本认领，
+                    # 否则被删记录只能靠复制旧副本恢复
+                    # （第九十六轮 [2]）
+                    or (
+                        raw_id <= 0
+                        and not _tail_matches(candidate)
+                        and not _tail_prefers_sibling_any_content(
+                            candidate, cross_profile=True
+                        )
                     )
                 ):
                     # 软字段与尾字段仍精确命中本行、且内容同时等于
@@ -7983,8 +8056,18 @@ class SessionStore:
                         deferred_candidate = candidate
                     continue
             if deferred_candidate is not None and (
-                raw_id > 0 or local_group_size >= backup_group_size
+                raw_id > 0
+                or (
+                    local_group_size >= backup_group_size
+                    and (
+                        tail_where is None
+                        or _tail_matches(deferred_candidate)
+                    )
+                )
             ):
+                # 无 id 行在组计数被改挂行抬高时也要核对尾字段，
+                # 否则被删记录会被尾字段不符的候选顶替
+                # （第九十六轮 [3]）
                 return _claim(deferred_candidate)
         candidates = {
             c for c in claimed if c not in moved and c not in matched
@@ -8807,12 +8890,13 @@ class SessionStore:
             return _ambiguous()
         if (
             raw_id <= 0
-            and backup_group_size > 1
+            and tail_where is not None
             and not _tail_matches(sole)
         ):
-            # 无 id 孪生组：候选尾字段对不上本行时无法确认归属，
-            # 按被删记录补插（宁重复勿丢），避免被删记录永久丢失
-            # （第八十七轮）
+            # 无 id 备份行：候选尾字段对不上本行时无法确认归属，
+            # 按被删记录补插（宁重复勿丢），避免被删记录被另一条
+            # 记录的存活行顶替；没有尾字段的表（指标）不受影响
+            # （第八十七轮、第九十六轮 [2][3]）
             return _ambiguous()
         if (
             soft_where is not None
@@ -8981,12 +9065,17 @@ class SessionStore:
                 "ids": ids, "profiles": profiles, "created": created,
                 "contents": contents, "tails": tails, "softs": softs,
             }
+        synth = 0
         for item in raw_items[:limit]:
             if not isinstance(item, dict):
                 continue
             raw_id = _safe_db_id(item.get("id"))
             if raw_id <= 0:
-                continue
+                # 无 id 行（CSV/第三方导出）分配合成负键：只用于
+                # 尾字段/内容的跨行归属比较，不代表任何可认领的
+                # 本地主键（第九十六轮 [2][3]）
+                synth -= 1
+                raw_id = synth
             ids.add(raw_id)
             profiles[raw_id] = _normalize_profile_name(
                 item.get("profile")
@@ -12857,6 +12946,9 @@ class SessionStore:
 
             # 复诊提醒在就诊记录之后导入，回填就诊记录的复诊关联
             stale_appointment_ids: List[int] = []
+            # 拒绝链接的脱钩提醒延后到全部链接写回后再判定是否仍
+            # 有引用（共享就诊可能全部拒绝链接，第九十六轮 [9]）
+            deferred_orphan_reminders: List[int] = []
             for (
                 visit_id,
                 followup_appointment_id,
@@ -13048,65 +13140,24 @@ class SessionStore:
                             and followup_reminder_id
                             in imported_reminder_ids
                         ):
-                            # 只删除本次导入新插入的提醒：映射可能命中
+                            # 只清理本次导入新插入的提醒：映射可能命中
                             # 导入前已存在的待办，不能误删用户在用提醒。
-                            # 旧版备份允许一条待办被多条就诊共享：仍有
-                            # 其它就诊引用时必须保留，留给最后一条就诊
-                            # 继续持有链接
-                            shared_ref = self._conn.execute(
-                                "SELECT 1 FROM visit_records"
-                                " WHERE followup_reminder_id = ?"
-                                " AND id != ? LIMIT 1",
-                                (
-                                    int(followup_reminder_id),
-                                    int(visit_id),
-                                ),
+                            # 提醒仍挂在被保留的 upcoming 预约上时保留，
+                            # 只解除就诊链接（第九十四轮 [10]）；脱钩
+                            # 提醒延后到全部链接写回后再判定引用，共享
+                            # 就诊可能全部拒绝链接（第九十六轮 [9]）
+                            attach_row = self._conn.execute(
+                                "SELECT appointment_id"
+                                " FROM reminders WHERE id = ?",
+                                (int(followup_reminder_id),),
                             ).fetchone()
-                            # 用当前就诊自己的复诊提醒原始 id：此处曾误用
-                            # 提醒导入循环泄漏的 raw，共享提醒是否保留取决
-                            # 于提醒处理顺序（第七十八轮）
-                            raw_reminder_ref = _safe_db_id(
-                                raw_followup_reminder_id
+                            reminder_attached = bool(
+                                attach_row is not None
+                                and int(attach_row["appointment_id"] or 0)
                             )
-                            shared_in_backup = bool(
-                                raw_reminder_ref
-                                and sum(
-                                    1
-                                    for other_visit in raw_visit_records
-                                    if isinstance(other_visit, dict)
-                                    and _safe_db_id(
-                                        other_visit.get(
-                                            "followup_reminder_id"
-                                        )
-                                    ) == raw_reminder_ref
-                                ) > 1
-                            )
-                            reminder_attached = False
-                            if shared_ref is None and not shared_in_backup:
-                                attach_row = self._conn.execute(
-                                    "SELECT appointment_id"
-                                    " FROM reminders WHERE id = ?",
-                                    (int(followup_reminder_id),),
-                                ).fetchone()
-                                reminder_attached = bool(
-                                    attach_row is not None
-                                    and int(
-                                        attach_row["appointment_id"] or 0
-                                    )
-                                )
-                            if (
-                                shared_ref is None
-                                and not shared_in_backup
-                                and not reminder_attached
-                            ):
-                                # 提醒仍挂在被保留的 upcoming 预约上时
-                                # 保留提醒、只解除就诊链接：删掉会在
-                                # 第二次导入时复活，两次恢复结果不同
-                                # （第九十四轮 [10]）
-                                self._conn.execute(
-                                    "DELETE FROM reminders WHERE id = ?"
-                                    " AND done = 0",
-                                    (int(followup_reminder_id),),
+                            if not reminder_attached:
+                                deferred_orphan_reminders.append(
+                                    int(followup_reminder_id)
                                 )
                                 followup_reminder_id = 0
                         else:
@@ -13164,39 +13215,12 @@ class SessionStore:
                                 attach_row["appointment_id"] or 0
                             )
                         )
-                        other_ref = None
                         if detached:
-                            other_ref = self._conn.execute(
-                                "SELECT 1 FROM visit_records"
-                                " WHERE followup_reminder_id = ?"
-                                " LIMIT 1",
-                                (int(followup_reminder_id),),
-                            ).fetchone()
-                        raw_reminder_ref = _safe_db_id(
-                            raw_followup_reminder_id
-                        )
-                        shared_in_backup = bool(
-                            raw_reminder_ref
-                            and sum(
-                                1
-                                for other_visit in raw_visit_records
-                                if isinstance(other_visit, dict)
-                                and _safe_db_id(
-                                    other_visit.get(
-                                        "followup_reminder_id"
-                                    )
-                                ) == raw_reminder_ref
-                            ) > 1
-                        )
-                        if (
-                            detached
-                            and other_ref is None
-                            and not shared_in_backup
-                        ):
-                            self._conn.execute(
-                                "DELETE FROM reminders WHERE id = ?"
-                                " AND done = 0 AND appointment_id = 0",
-                                (int(followup_reminder_id),),
+                            # 脱钩提醒延后到全部链接写回后再判断是否
+                            # 还有引用：共享者可能全部拒绝链接
+                            # （第九十六轮 [9]）
+                            deferred_orphan_reminders.append(
+                                int(followup_reminder_id)
                             )
                             followup_reminder_id = 0
                     if (
@@ -13534,6 +13558,21 @@ class SessionStore:
             # 已取消/已完成预约都不应再有待办提醒（与 update_appointment
             # 的运行时行为一致）；复诊链接只在预约已取消或悬空时清空，
             # 已完成的预约是就诊历史，清链接会让已按时复诊重新报逾期
+            if deferred_orphan_reminders:
+                # 全部就诊链接写回后仍无任何引用的脱钩提醒按无主
+                # pending 清理；仍被引用的保留（第九十六轮 [9]）
+                for deferred_id in set(deferred_orphan_reminders):
+                    deferred_ref = self._conn.execute(
+                        "SELECT 1 FROM visit_records"
+                        " WHERE followup_reminder_id = ? LIMIT 1",
+                        (int(deferred_id),),
+                    ).fetchone()
+                    if deferred_ref is None:
+                        self._conn.execute(
+                            "DELETE FROM reminders WHERE id = ?"
+                            " AND done = 0 AND appointment_id = 0",
+                            (int(deferred_id),),
+                        )
             doomed_pending_rows = self._conn.execute(
                 "SELECT id FROM reminders WHERE done = 0"
                 " AND appointment_id != 0 AND appointment_id NOT IN ("

@@ -453,7 +453,9 @@ def test_web_input_clears_abandoned_inflight_question():
     end = source.index("els.input.addEventListener('keydown'", start)
     block = source[start:end]
     assert "!els.input.value.includes(inflightRestoredText)" in block
-    assert "safeSessionRemove(INFLIGHT_QUESTION_KEY);" in block
+    # 清理走带归属守卫的 clearInflightForCurrentSession（第九十六轮
+    # 改为按主槽记录自身归属判断），不再直接删除主槽键
+    assert "clearInflightForCurrentSession();" in block
 
 
 def test_web_settle_keeps_own_sessionless_draft():
