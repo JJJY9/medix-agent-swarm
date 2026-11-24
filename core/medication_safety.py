@@ -901,10 +901,11 @@ _PAST_USE_PREFIX = re.compile(
 #: 既往用药后的剂量延续（「以前吃2mg，现在吃5mg/一片」）：
 #: 仍是当前用药，不能按既往史跳过药名
 _DOSE_CHANGE_CONTINUATION = re.compile(
-    r"(?:现在|目前|如今|改为|换成|调到|改吃)"
-    r"(?:每天|每日|仍|还)?\s*(?:吃|服用|口服|用)\s*"
+    r"(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
+    r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
+    r"减到)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
-    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片)"
+    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
 def _mentions_other_drug_alias(text: str, alias_lower: str) -> bool:
     """文本是否点名了另一种药（用于剂量延续语的归属判断）。"""
@@ -918,6 +919,13 @@ def _mentions_other_drug_alias(text: str, alias_lower: str) -> bool:
                     continue
                 if alias_text in lowered:
                     return True
+    generic = GENERIC_DRUG_NAME_RE.search(lowered)
+    if (
+        generic is not None
+        and generic.group(0) not in alias_lower
+        and alias_lower not in generic.group(0)
+    ):
+        return True
     return False
 
 
@@ -1522,6 +1530,7 @@ def _dedupe(alerts: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 
 from core.medication_text import (
+    GENERIC_DRUG_NAME_RE,
     clause_mentions_drug_clause,
     normalize_brand_drug_names,
 )

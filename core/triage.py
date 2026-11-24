@@ -1056,16 +1056,26 @@ _EDUCATION_MEDIA_TIME_CONTEXT_RE = re.compile(
     r"(?:看|刷|听|读|浏览)(?:了|过|着)?"
     r"(?:[0-9一二两三四五六七八九十]+)?"
     r"(?:个|段|篇|条|集|一会儿|会儿)?\s*"
-    r"(?:短视频|小视频|视频|文章|新闻|帖子|百科)"
+    r"(?:短视频|小视频|视频|文章|新闻|帖子|百科|电视|报纸|讲座|广播)"
     r"[^，。；]{0,6}?(?:的时候|时|以后|之后|后|就|便|即|看得|看着)"
     r"|(?:一边|边)(?:看|刷|听)[^，。；]{0,6}一边"
+)
+
+#: 发热话题结构（「关于发烧的文章」「发烧的护理」）：被引用的
+#: 内容标题，不是患者本人发热（第八十八轮）
+_FEVER_TOPIC_RE = re.compile(
+    r"(?:关于|讲|介绍|怎么处理|怎么办|如何|科普)[^，。；]{0,12}?"
+    r"(?:发烧|发热)"
+    r"|(?:发烧|发热)[^，。；]{0,6}?的?(?:护理|处理|文章|视频|科普|"
+    r"新闻|帖子|百科|内容|问题)"
 )
 
 #: 媒体名词之后才出现症状：真实伴随症状（「看视频胸痛」）而非
 #: 内容标题（「讲抽搐的视频」「关于胸痛的文章」）
 def _media_then_symptom(clause: str) -> bool:
     noun = re.search(
-        r"(?:短视频|小视频|视频|文章|新闻|帖子|百科)", str(clause or "")
+        r"(?:短视频|小视频|视频|文章|新闻|帖子|百科|电视|报纸|讲座|广播)",
+        str(clause or ""),
     )
     if noun is None:
         return False
@@ -1257,7 +1267,8 @@ def _clean_complaint_clause(
             return _clean_complaint_clause(rest, patient_context_seen, help_follows)
         # 纯术语解释（介绍一下呼吸困难/什么是咯血）仍按科普丢弃
         return ""
-    if any(word in clause for word in _EDUCATION_BLOCKERS_STRONG):
+    blocker_clause = str(clause).replace("说明书", "")
+    if any(word in blocker_clause for word in _EDUCATION_BLOCKERS_STRONG):
         # 引用科普/文章/网上内容的叙述不是患者当前主诉：忽略
         # 「我在网上看到胸痛要重视」这类分句，避免把科普当急症；
         # 同一分句仍明确描述当前病程（今天/持续/越来越重）或
@@ -1325,6 +1336,7 @@ def _clean_complaint_clause(
             or (
                 _has_fever(clause)
                 and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+                and _FEVER_TOPIC_RE.search(clause) is None
             )
         )
         family_redflag = any(
@@ -1474,9 +1486,11 @@ def _is_greeting_clause(text: str) -> bool:
 _EDUCATION_BLOCKERS_STRONG = (
     "网上", "查资料", "查了资料", "科普", "文章", "视频", "新闻",
     "帖子", "百科", "听说", "据说", "搜了", "搜索",
-    # 电视/报道/书上/讲座同样是引述来源：只含引述词的科普问句
-    # 不能按患者主诉触发急症（第八十七轮）
-    "电视", "报道", "报纸", "书上", "讲座", "广播", "收音机",
+    # 电视/报道/报纸/讲座同样是引述来源，但只拦截引述短语：
+    # 「看电视时胸痛」是症状时间语境，不能整句丢弃；「说明书上」
+    # 也不是科普引用（第八十七/八十八轮）
+    "电视上", "电视里", "报道", "报纸上", "书上说", "书上写",
+    "书上讲", "讲座里", "讲座中", "广播里", "收音机里",
 )
 #: 引用词之后仍属患者本人的动作/时间线索（网购药、跟视频运动等）
 _EDUCATION_CURRENT_CUES = (
@@ -1487,7 +1501,7 @@ _EDUCATION_CURRENT_CUES = (
 #: （「网上说吃完药后胸痛要马上就医」「文章讲运动后胸痛」）
 _EDUCATION_QUOTE_LEAD_RE = re.compile(
     r"(?:网上|文章|视频|新闻|帖子|百科|教程|科普|讲座|报道|书上|"
-    r"听说|据说)"
+    r"电视|广播|收音机|报纸|听说|据说)"
     r"[^，。；]{0,8}?"
     r"(?:说|讲|写|提到|指出|介绍|称|教|报道|表示|认为|"
     r"看到|刷到|见到|听说)"
@@ -2194,10 +2208,11 @@ _ENGLISH_STOP_DURATION_RE = re.compile(
     r"|\bago\b",
     re.IGNORECASE,
 )
-#: 「除本药外没吃别的/仍在每天吃」：不是停用本药
+#: 「除本药外没吃别的」：不是停用本药。裸 daily/every day 可能
+#: 描述别的药或运动，不能取消远期停药（第八十八轮）
 _ENGLISH_STOP_CONTINUATION_RE = re.compile(
-    r"\b(?:besides|other\s+than|except|anything\s+else|"
-    r"still\s+(?:take|taking|on)|every\s+day|daily)\b",
+    r"\b(?:besides|other\s+than|except|anything\s+else)\b"
+    r"|\bstill\s+(?:take|taking|on)\s+(?:it|this|the\s+same)\b",
     re.IGNORECASE,
 )
 #: 英文否定停药（has not been stopped / never discontinued）
@@ -2668,12 +2683,42 @@ _CONTINUATION_AFTER_PAST = re.compile(
     r"(?:都|也|还|在|坚持|按医嘱|遵医嘱|按时)?"
     r"(?:吃|服用|口服|服|用)"
     r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面)"
-    # 「以前吃2mg，现在吃5mg/一片」：剂量变更同样是当前续用
-    r"|(?:现在|目前|如今|改为|换成|调到|改吃)"
-    r"(?:每天|每日|仍|还)?\s*(?:吃|服用|口服|用)"
-    r"\s*(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
-    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片)"
+    # 「以前吃2mg，现在吃5mg/一片/改吃5mg/调到5mg」：剂量变更
+    # 同样是当前续用；变更词本身可充当动词（第八十八轮）
+    r"|(?:现在|目前|如今)(?:每天|每日|仍|还)?\s*"
+    r"(?:(?:改吃|改成|改为|改服|换吃|换成|换为|换服|调到|调成|加到|增加到|"
+    r"减到)\s*)?(?:(?:吃|服用|口服|用)\s*)?"
+    r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
+    r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
+
+def _continuation_names_other_drug(
+    text: str, current_clause: str
+) -> bool:
+    """剂量延续语（现在吃5mg…）的宾语是否是另一种药。
+
+    延续语直接指向另一药（「现在吃5mg阿司匹林」）时不能据此把
+    本分句的既往药判为仍在用；宾语是本分句的药名（「现在吃5mg
+    华法林」）时仍算续用。
+    """
+    text = str(text or "")
+    current = str(current_clause or "")
+    for match in _CONTINUATION_AFTER_PAST.finditer(text):
+        tail = re.split(
+            r"[，。；,.!?！？\n]", text[match.end():], maxsplit=1
+        )[0][:16]
+        if not tail.strip():
+            continue
+        tail_terms = [
+            term for term in _OTHER_STOP_DRUG_TAILS if term in tail
+        ]
+        if tail_terms and not any(term in current for term in tail_terms):
+            return True
+        generic = _GENERIC_DRUG_NAME_RE.search(tail)
+        if generic and generic.group(0) not in current:
+            return True
+    return False
+
 
 #: 「HIV 阴性」「艾滋病抗体阴性」是阴性结果，不代表当前免疫抑制
 _NEGATIVE_TEST_SUFFIX = re.compile(
@@ -3145,8 +3190,18 @@ def _active_medical_text(
             if (
                 _RESTART_TEXT_RE.search(clause)
                 or _RESTART_TEXT_RE.search(restart_window)
-                or _CONTINUATION_AFTER_PAST.search(clause)
-                or _CONTINUATION_AFTER_PAST.search(restart_window)
+                or (
+                    _CONTINUATION_AFTER_PAST.search(clause)
+                    and not _continuation_names_other_drug(
+                        clause, clause
+                    )
+                )
+                or (
+                    _CONTINUATION_AFTER_PAST.search(restart_window)
+                    and not _continuation_names_other_drug(
+                        restart_window, clause
+                    )
+                )
                 # 「我之前吃华法林，昨天停药了」：近期停药仍处抗凝状态，
                 # 保留药名分句供 _active_term_mention 关联
                 or _RECENT_STOP_PATTERN.search(follow_stop_window)

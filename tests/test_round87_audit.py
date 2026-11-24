@@ -391,10 +391,14 @@ def test_restored_snapshot_bound_to_question():
         "String(question || '').trim() === lastRestoredComposerQuestion"
         in source
     )
-    # 新一轮发送开始时清空旧快照
+    # 同一主诉的重试保留快照，只有换问题发送时才清空旧快照
+    # （第八十八轮起）
     start = source.index("async function send(question")
     head = source[start:start + 800]
-    assert "lastRestoredComposerQuestion = '';" in head
+    assert (
+        "String(question || '').trim() !== lastRestoredComposerQuestion"
+        in head
+    )
 
 
 # ---------------------------------------------------------------- [15]
