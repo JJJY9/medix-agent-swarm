@@ -5557,8 +5557,13 @@ class SessionStore:
             if reference_profile and claimed:
                 placeholders = ",".join("?" for _ in claimed)
                 try:
+                    size_select = (
+                        "id, profile, created_at, updated_at"
+                    )
+                    if content_columns:
+                        size_select += ", " + ", ".join(content_columns)
                     size_rows = self._conn.execute(
-                        f"SELECT id, profile, created_at, updated_at"
+                        f"SELECT {size_select}"
                         f" FROM {table}"
                         f" WHERE id IN ({placeholders})",
                         tuple(claimed),
@@ -5581,6 +5586,21 @@ class SessionStore:
                         and _normalize_profile_name(
                             backup_profiles.get(row_id) or ""
                         ) != reference_profile
+                        #: 主键数值撞号只是巧合：该行必须内容等于那条
+                        #: 备份记录、且有本地编辑证据（PATCH 改挂会刷新
+                        #: updated_at），才认定它是改挂行并从本档案存活
+                        #: 行里排除；否则漂移库会把本档案的同秒孪生低估
+                        #: 为缺行并补插编辑前旧副本（第九十一轮 [9]）
+                        and str(row["updated_at"] or "")
+                        != str(row["created_at"] or "")
+                        and (
+                            not backup_contents
+                            or not content_columns
+                            or self._db_content_fingerprint(
+                                row, content_columns
+                            )
+                            == backup_contents.get(row_id)
+                        )
                     ):
                         # 同源备份中从其它档案改挂进来的行：它对应的
                         # 备份记录属于原档案，不能把当前档案的缺行抵消
@@ -6819,7 +6839,7 @@ class SessionStore:
                 # 必须走常规认领，不能被另一个改名行的编辑证据抢走
                 for candidate in pool:
                     if (
-                        candidate in candidates
+                        candidate in pool
                         and _soft_matches(candidate)
                         and (tail_where is None or _tail_matches(candidate))
                     ):
@@ -6842,6 +6862,35 @@ class SessionStore:
                     # 按被删记录补插而不是抢走它。改挂会同时改档案，
                     # 必须跨档案比较，否则兄弟记录的改挂行会被当成
                     # 本行的改名孤儿（第八十三轮 [4]）
+                    continue
+                candidate_profile_row = self._conn.execute(
+                    f"SELECT profile FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+                candidate_profile_key = (
+                    _normalize_profile_name(
+                        str(candidate_profile_row["profile"] or "")
+                    )
+                    if candidate_profile_row is not None else ""
+                )
+                if (
+                    candidate_profile_key
+                    and candidate_profile_key
+                    != _normalize_profile_name(row_profile)
+                    and backup_profiles
+                    and backup_created
+                    and any(
+                        other_id not in seen_raw_ids
+                        and _normalize_profile_name(
+                            backup_profiles.get(other_id) or ""
+                        ) == candidate_profile_key
+                        and backup_created.get(other_id)
+                        == str(created_at_value or "")
+                        for other_id in backup_profiles
+                    )
+                ):
+                    # 跨档案孤儿：该候选所属档案还有未处理的备份行，
+                    # 它很可能是那条记录的存活版本（第九十一轮 [11]）
                     continue
                 if _tail_prefers_sibling(candidate, cross_profile=True):
                     # 尾字段明显更像同秒孪生（如另一成员恰好在同名
@@ -8278,10 +8327,20 @@ class SessionStore:
                         len(soft) == 1
                         and _backup_content_shared_with_sibling()
                         and _tail_matches(min(soft))
-                        # 候选内容差异必须落在可编辑列（时间/数值）：
-                        # 科室/剂量这类差异说明它是另一条同秒记录的
-                        # 存活行，不能用来顶替被删记录
-                        and _candidate_diff_claimable(min(soft))
+                        # 候选内容差异必须可归属本行：时间/数值列，
+                        # 或（第九十一轮 [10]）仅剂量等 PATCH 可编辑
+                        # 内容列、尾字段精确命中且不是兄弟行
+                        and (
+                            _candidate_diff_claimable(min(soft))
+                            or (
+                                not _candidate_diff_hits_identity(
+                                    min(soft)
+                                )
+                                and not _candidate_diff_claimable_for_sibling(
+                                    min(soft)
+                                )
+                            )
+                        )
                     )
                 ):
                     candidates = soft
@@ -15606,18 +15665,31 @@ class SessionStore:
                                         normalized["profile"]
                                     )
                                 ):
-                                    self._conn.execute(
-                                        "DELETE FROM reminders"
-                                        " WHERE id = ? AND done = 0"
-                                        " AND appointment_id = 0",
-                                        (tomb_reminder,),
-                                    )
-                                    self._conn.execute(
-                                        "UPDATE visit_records"
-                                        " SET followup_reminder_id = 0"
-                                        " WHERE followup_reminder_id = ?",
-                                        (tomb_reminder,),
-                                    )
+                                    shared_tomb = self._conn.execute(
+                                        "SELECT 1 FROM visit_records"
+                                        " WHERE followup_reminder_id = ?"
+                                        " AND id != ? LIMIT 1",
+                                        (
+                                            tomb_reminder,
+                                            int(visit_owner),
+                                        ),
+                                    ).fetchone()
+                                    if shared_tomb is None:
+                                        # 仅本就诊引用时才随墓碑删除；
+                                        # 仍被其它就诊共享时保留，只让
+                                        # 墓碑对本预约生效（第九十一轮 [5]）
+                                        self._conn.execute(
+                                            "DELETE FROM reminders"
+                                            " WHERE id = ? AND done = 0"
+                                            " AND appointment_id = 0",
+                                            (tomb_reminder,),
+                                        )
+                                        self._conn.execute(
+                                            "UPDATE visit_records"
+                                            " SET followup_reminder_id = 0"
+                                            " WHERE followup_reminder_id = ?",
+                                            (tomb_reminder,),
+                                        )
                     else:
                         restored_reminder_id = 0
                         # 导入的「仅提醒链接」脱钩待办：接管它，否则
@@ -17444,13 +17516,21 @@ class SessionStore:
                         reminder_owner_ok = meta_owner in (
                             0, int(visit_id)
                         )
-                    if reminder_owner_ok:
+                    shared_linked = self._conn.execute(
+                        "SELECT 1 FROM visit_records"
+                        " WHERE followup_reminder_id = ? AND id != ? LIMIT 1",
+                        (linked_reminder, int(visit_id)),
+                    ).fetchone() is not None
+                    if reminder_owner_ok and not shared_linked:
                         self._conn.execute(
                             "UPDATE reminders SET profile = ?,"
                             " updated_at = ? WHERE id = ?",
                             (normalized["profile"], now, linked_reminder),
                         )
                     else:
+                        # 共享脱钩提醒不能随单个就诊改档案：只解除本
+                        # 就诊链接，由之后的「安排复诊」为迁移后的
+                        # 就诊新建专属提醒（第九十一轮 [12]）
                         self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_reminder_id = 0"

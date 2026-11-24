@@ -1701,6 +1701,15 @@ def _symptom_context_clause(clause: str) -> bool:
     )
 
 
+#: 严格病程时长（不含「几天」等模糊生活叙述）：定义问句的后续
+#: 分句只有明确时长/频次才算患者病程线索（第九十一轮 [4]）
+_STRICT_COURSE_DURATION_RE = re.compile(
+    r"[0-9一二两三四五六七八九十半]+\s*"
+    r"(?:个[来多]?|来|多|余)?\s*"
+    r"(?:分钟|小时|钟头|天|日|周|星期|个月|月|年)"
+)
+
+
 def _course_context_clause(clause: str) -> bool:
     """纯病程/时间铺垫分句（最近/两天了/反复发作）建立患者语境。"""
     text = str(clause or "").strip()
@@ -1750,8 +1759,12 @@ def patient_complaint_text(text: str) -> str:
             if not text_follow:
                 continue
             course_follows = bool(
-                _course_context_clause(text_follow)
-                or _COURSE_MARKER_RE.search(text_follow) is not None
+                _URGENT_HELP_RE.search(text_follow) is not None
+                or (
+                    _course_context_clause(text_follow)
+                    and _STRICT_COURSE_DURATION_RE.search(text_follow)
+                    is not None
+                )
             )
             break
         cleaned = _clean_complaint_clause(
@@ -2284,24 +2297,68 @@ _ENGLISH_STOP_RE = re.compile(
     r"no\s+longer\s+(?:taking|on)|not\s+(?:on|taking))\b",
     re.IGNORECASE,
 )
+#: 英文已知抗凝/免疫抑制药名（用于停药/续用的宾语归属判定）
+_ENGLISH_KNOWN_DRUG_TERMS = tuple(
+    term.lower()
+    for term in ANTICOAGULANT_TERMS + IMMUNOSUPPRESSION_TERMS
+    if term.isascii()
+)
 #: 「have been off warfarin for two years」：been off 必须指向已知
-#: 药名；「been off work/alcohol」不是停药（第九十轮 [2]）
+#: 药名；「been off work/alcohol」不是停药。限定词（off my warfarin）
+#: 同样接受（第九十/九十一轮）
 _ENGLISH_BEEN_OFF_RE = re.compile(
     r"\b(?:been|have\s+been|has\s+been|had\s+been)\s+off\s+"
-    r"(?:of\s+)?([A-Za-z][A-Za-z\-]{2,})\b",
+    r"(?:of\s+)?(?:(?:my|his|her|their|the)\s+)?"
+    r"([A-Za-z][A-Za-z\-]{2,})\b",
     re.IGNORECASE,
 )
 
 
+def _english_known_drug(obj: str) -> bool:
+    obj = str(obj or "").lower()
+    if not obj:
+        return False
+    return obj in _ENGLISH_KNOWN_DRUG_TERMS or any(
+        obj in term for term in _ENGLISH_KNOWN_DRUG_TERMS
+    )
+
+
 def _english_been_off_drug(text: str) -> bool:
     for match in _ENGLISH_BEEN_OFF_RE.finditer(str(text or "")):
-        obj = match.group(1).lower()
-        if any(
-            obj == term.lower()
-            for term in ANTICOAGULANT_TERMS + IMMUNOSUPPRESSION_TERMS
-            if term.isascii()
-        ):
+        if _english_known_drug(match.group(1)):
             return True
+    return False
+
+
+#: stopped/discontinued/ceased/quit 的宾语必须是已知药名才算远期
+#: 停药：戒酒/戒烟（stopped drinking alcohol）不能抹掉在用药物
+#: （第九十一轮 [6]）
+_ENGLISH_STOP_ACTIVE_RE = re.compile(
+    r"\b(?:stopped|discontinued|ceased|quit)\s+"
+    r"(?:(?:drinking|smoking|using|taking|the|my|his|her|their)\s+)*"
+    r"([A-Za-z][A-Za-z\-]{2,})\b",
+    re.IGNORECASE,
+)
+_ENGLISH_STOP_PASSIVE_RE = re.compile(
+    r"\b([A-Za-z][A-Za-z\-]{2,})\s+(?:was|is|are|has\s+been|"
+    r"have\s+been|had\s+been|got)\s+"
+    r"(?:stopped|discontinued|ceased|quit)\b",
+    re.IGNORECASE,
+)
+_ENGLISH_NO_LONGER_RE = re.compile(
+    r"\b(?:no\s+longer\s+(?:taking|on)|not\s+(?:on|taking))\b",
+    re.IGNORECASE,
+)
+
+
+def _english_stop_names_drug(text: str) -> bool:
+    text = str(text or "")
+    for pattern in (
+        _ENGLISH_STOP_ACTIVE_RE, _ENGLISH_STOP_PASSIVE_RE,
+    ):
+        for match in pattern.finditer(text):
+            if _english_known_drug(match.group(1)):
+                return True
     return False
 _ENGLISH_RESTART_RE = re.compile(
     r"\b(?:restarted|restarting|started\s+again|back\s+on|"
@@ -2350,11 +2407,54 @@ def _english_still_names_self(text: str) -> bool:
     return False
 
 
+#: 「…and I take warfarin / I am on warfarin」：同一药名复述=续用
+#: （第九十一轮 [7]）
+_ENGLISH_RESUME_OBJ_RE = re.compile(
+    r"\b(?:take|taking|use|using|am\s+on)\s+"
+    r"(?:(?:my|the|his|her|their)\s+)?([A-Za-z][A-Za-z\-]{2,})\b",
+    re.IGNORECASE,
+)
+
+
+def _english_resumes_named_drug(text: str) -> bool:
+    """无 still 的同药复述（…and I take warfarin）是否指回前文的药。"""
+    text = str(text or "")
+    for match in _ENGLISH_RESUME_OBJ_RE.finditer(text):
+        obj = (match.group(1) or "").strip().lower()
+        if not _english_known_drug(obj):
+            continue
+        earlier = text[: match.start()].lower()
+        if re.search(
+            rf"(?<![a-z]){re.escape(obj)}(?![a-z])", earlier
+        ):
+            return True
+    return False
+
+
 def _english_stop_continuation(text: str) -> bool:
     text = str(text or "")
-    return bool(
-        _ENGLISH_STOP_CONTINUATION_RE.search(text)
-    ) or _english_still_names_self(text)
+    return (
+        bool(_ENGLISH_STOP_CONTINUATION_RE.search(text))
+        or _english_still_names_self(text)
+        or _english_resumes_named_drug(text)
+    )
+
+
+def _english_still_known_drug_fragment(text: str) -> str:
+    """提取停药分句里「still taking/on <已知药名>」的药名片段。
+
+    远期停药短语只否定被停的药；同分句点名另一种仍在服用的抗凝/
+    免疫抑制药时，该药必须进入当前用药文本（第九十一轮 [1][2]）。
+    """
+    text = str(text or "")
+    parts = []
+    for match in _ENGLISH_STILL_RE.finditer(text):
+        if (match.group(1) or "").strip():
+            continue
+        obj = (match.group(2) or "").strip()
+        if _english_known_drug(obj):
+            parts.append(f"still taking {obj}")
+    return "；".join(parts)
 #: 英文否定停药（has not been stopped / never discontinued）
 _ENGLISH_NEGATED_STOP_RE = re.compile(
     r"\b(?:not|never|n't)\s+(?:been\s+|have\s+|has\s+|had\s+|"
@@ -3240,11 +3340,20 @@ def _active_medical_text(
                 continue
             restart_parts.append(follow)
         restart_window = "；".join(restart_parts)[:40]
-        if (
-            (
-                _ENGLISH_STOP_RE.search(clause) is not None
-                or _english_been_off_drug(clause)
+        english_stopped = bool(
+            _ENGLISH_NO_LONGER_RE.search(clause) is not None
+            or _english_been_off_drug(clause)
+            or (
+                _ENGLISH_STOP_ACTIVE_RE.search(clause) is not None
+                and _english_stop_names_drug(clause)
             )
+            or (
+                _ENGLISH_STOP_PASSIVE_RE.search(clause) is not None
+                and _english_stop_names_drug(clause)
+            )
+        )
+        if (
+            english_stopped
             and _LONG_STOP_PATTERN.search(clause)
             and _ENGLISH_STOP_DURATION_RE.search(clause)
             and not _ENGLISH_RESTART_RE.search(clause)
@@ -3254,7 +3363,12 @@ def _active_medical_text(
         ):
             # 英文远期停药（warfarin was stopped 2 years ago）与
             # 中文口径一致：要求明确时长，且「除华法林外没吃别的」
-            # 「没有停用」仍按当前用药（第八十六/八十七轮）
+            # 「没有停用」仍按当前用药（第八十六/八十七轮）。停药
+            # 只作用于被停的药：同分句「still taking 另一种在用药」
+            # 的药名必须保留（第九十一轮 [1][2]）
+            preserved = _english_still_known_drug_fragment(clause)
+            if preserved:
+                kept.append(preserved)
             continue
         if (
             _NEGATED_STOP_PATTERN.search(clause)

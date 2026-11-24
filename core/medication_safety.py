@@ -1251,6 +1251,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             # 英文停药分句常以逗号紧邻药名：25 字窗口会截断
             # "stopped taking it yesterday"，英文模式单独用更宽窗口
             far_suffix = text[match.end():right + 40]
+            # 英文续用宾语（"ago, but I am still on aspirin"）可能在
+            # 逗号后更深：判定与归属用固定 90 字窗口，避免截断成
+            # "aspir" 导致他药被判回本药（第九十一轮 [8]）
+            en_suffix = text[match.end():right + 90]
             if _NEGATED_STOP_PREFIX.search(prefix):
                 # 「没有停用」= 仍在服用
                 return True
@@ -1276,9 +1280,9 @@ def _alias_matches(text: str, alias: str) -> bool:
                 )
                 or _continuous_restart_matches(long_suffix, alias_lower)
                 or (
-                    _RESTART_USE_SUFFIX_EN.search(long_suffix)
+                    _RESTART_USE_SUFFIX_EN.search(en_suffix)
                     and not _english_restart_names_other(
-                        long_suffix, alias_lower
+                        en_suffix, alias_lower
                     )
                 )
                 or _ADHERENCE_USE_PREFIX.search(prefix)
