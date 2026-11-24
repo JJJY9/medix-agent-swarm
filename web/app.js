@@ -788,6 +788,7 @@ const INFLIGHT_QUESTION_OTHER_KEY = 'medix.inflightQuestionOther';
 //: 本次加载从 INFLIGHT 记录恢复到输入框的文本：启动对账只在文本
 //: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
 let inflightRestoredText = '';
+let inflightRestoredOwnerSession = '';
 //: 在途记录的发送前最后消息 id：只有比它更新的问答才算本轮落库
 let inflightRestoredBaseline = 0;
 //: 启动对账刚确认已落库的在途主诉：提交入口在首屏恢复完成后据此
@@ -20879,8 +20880,15 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
       // 对账确认本轮问答已落库并渲染：从输入框移除这段主诉（可能
       // 与用户后续草稿合并在一起），保留其它草稿，避免回车重复提交
       notePersistedInflight(expectedQuestion, sessionId);
+      // 恢复文本只在属于本次对账会话时参与比对：启动恢复提前
+      // 返回时该值会跨会话残留，误用会让已落库问题留在输入框
+      // （第八十五轮）
+      const restoredForSession = (
+        inflightRestoredOwnerSession
+        && inflightRestoredOwnerSession === expectedSession
+      ) ? inflightRestoredText : '';
       const remaining = inflightInputMatchesRestored(
-        inflightRestoredText || expectedQuestion
+        restoredForSession || expectedQuestion
       )
         ? stripInflightQuestion(els.input.value, expectedQuestion)
         : null;
@@ -20911,9 +20919,13 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     let inflightReconciled = false;
     // 只清理确实来自在途记录的文本：用户自己重写的同题草稿不能
     // 因为「等于上一条提问」就被当成重复提交删掉
-    const inflightText = String(inflightRestoredText || '').trim();
+    const inflightText = (
+      !inflightRestoredOwnerSession
+      || inflightRestoredOwnerSession === expectedSession
+    ) ? String(inflightRestoredText || '').trim() : '';
     const inflightBaseline = Number(inflightRestoredBaseline || 0);
     inflightRestoredText = '';
+    inflightRestoredOwnerSession = '';
     inflightRestoredBaseline = 0;
     if (
       !expectedQuestion
@@ -21125,9 +21137,16 @@ async function send(question, composerSubmit = false) {
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
       if (takenOver) {
         // 会话已切换：只把文本放回输入框，不写成当前会话的草稿，
-        // 否则另一位患者的会话会带着前一位病情的草稿被提交
-        els.input.value = question;
-        detachedComposerText = question;
+        // 否则另一位患者的会话会带着前一位病情的草稿被提交；
+        // 等待期间的新草稿合并保留（第八十五轮）
+        const pendingDraft = String(els.input.value || '');
+        const restoredText = (
+          pendingDraft.trim()
+          && pendingDraft !== question
+          && !pendingDraft.includes(question)
+        ) ? `${question}\n\n${pendingDraft}` : question;
+        els.input.value = restoredText;
+        detachedComposerText = restoredText;
         autoGrow();
         setVitals('warn', '会诊已切换，刚才的主诉未提交，请确认后重新发送');
       } else {
@@ -21164,11 +21183,18 @@ async function send(question, composerSubmit = false) {
       sessionId !== restoreSession || openSessionSeq !== restoreSeq
     );
     if (takeover) {
-      // 等待期间用户新建/切换了会话：排队的主诉不能发进新会话
+      // 等待期间用户新建/切换了会话：排队的主诉不能发进新会话；
+      // 等待期间继续输入的新草稿也不能被它覆盖（第八十五轮）
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
-      els.input.value = question;
-      detachedComposerText = question;
-      preserveDraftProfile(sendProfile, question);
+      const pendingDraft = String(els.input.value || '');
+      const restoredText = (
+        pendingDraft.trim()
+        && pendingDraft !== question
+        && !pendingDraft.includes(question)
+      ) ? `${question}\n\n${pendingDraft}` : question;
+      els.input.value = restoredText;
+      detachedComposerText = restoredText;
+      preserveDraftProfile(sendProfile, restoredText);
       autoGrow();
       setVitals('warn', '会话已切换，刚才的主诉未提交，请确认后重新发送');
       return;
@@ -23266,6 +23292,9 @@ function restoreInflightQuestion() {
     }
     // 记录来源：启动对账只有该文本确实来自在途记录时才清空
     inflightRestoredText = question;
+    inflightRestoredOwnerSession = String(
+      (data && data.sessionId) || ''
+    );
     inflightRestoredBaseline = Number((data && data.baseline) || 0) || 0;
     if (els.input.value.includes(question)) {
       // 主诉已在草稿里：只清理在途记录，不重复合并

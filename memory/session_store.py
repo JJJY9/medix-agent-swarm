@@ -5670,6 +5670,11 @@ class SessionStore:
             other_profile = backup_profiles.get(candidate)
             if other_profile is None:
                 return False
+            if _other_backup_row_survives(candidate):
+                # 主键对应的备份记录已在本地另有存活行：候选是当前
+                # 行的改挂/漂移版本，可以认领；否则互换档案的两条
+                # 同秒读数会被反复补插（第八十五轮）
+                return False
             current_profile = str(row_profile or "")
             if not current_profile and columns and columns[0] == "profile":
                 current_profile = str(values[0])
@@ -6901,13 +6906,17 @@ class SessionStore:
                 # 等于 raw_id 的行可能是另一成员改挂进本档案的存活行
                 # （第七十八轮）
                 claim_row = int(row["id"])
-                if not _tail_prefers_sibling(
-                    claim_row, cross_profile=True
-                ) and (
-                    _soft_matches(claim_row)
-                    or not _candidate_soft_owned_by_other(
-                        claim_row, cross_profile=True,
-                        require_content=True,
+                if (
+                    claim_row == raw_id and _same_backup_origin()
+                ) or (
+                    not _tail_prefers_sibling(
+                        claim_row, cross_profile=True
+                    ) and (
+                        _soft_matches(claim_row)
+                        or not _candidate_soft_owned_by_other(
+                            claim_row, cross_profile=True,
+                            require_content=True,
+                        )
                     )
                 ):
                     # 尾字段平局时，软字段对不上本行、却命中同秒另一条
@@ -7568,6 +7577,16 @@ class SessionStore:
                         # 内容列被改成与本行相同、但尾字段明确属于
                         # 另一条同秒记录：不能在此直接认领
                         continue
+                    if (
+                        raw_id <= 0
+                        and _group_rows_missing()
+                        and not _tail_matches(candidate)
+                    ):
+                        # 无 id 的备份行没有元数据可用：组内确有缺行、
+                        # 候选尾字段又对不上时，先按本行补插完整数据，
+                        # 存活行稍后自行认领，避免被删记录丢失
+                        # （第八十五轮）
+                        continue
                     return _claim(candidate)
         candidates = {
             c for c in claimed if c not in moved and c not in matched
@@ -7695,9 +7714,13 @@ class SessionStore:
             if same_profile_candidate and _same_backup_origin():
                 # 本地存活行不少于备份行：这条备份行就是本地存活行的
                 # 旧版本，即使内容/软字段都被编辑过也认领自身。
-                # 本地确有缺行时仍走插入，优先补回被删记录
-                if _tail_prefers_sibling(raw_id) and not _tail_matches(
-                    raw_id
+                # 同源库主键不复用，尾字段被编辑得偏向兄弟行时该行
+                # 仍是本行存活版本（第八十五轮）；本地确有缺行时
+                # 仍走插入，优先补回被删记录
+                if (
+                    not (raw_id > 0 and _same_backup_origin())
+                    and _tail_prefers_sibling(raw_id)
+                    and not _tail_matches(raw_id)
                 ):
                     # 本主键上的行其实是同组另一条孪生备份记录的
                     # 存活行：交给那条记录认领，本行按被删补插
@@ -14806,6 +14829,12 @@ class SessionStore:
                                         "DELETE FROM reminders"
                                         " WHERE id = ? AND done = 0"
                                         " AND appointment_id = 0",
+                                        (stale_reminder,),
+                                    )
+                                    self._conn.execute(
+                                        "UPDATE visit_records"
+                                        " SET followup_reminder_id = 0"
+                                        " WHERE followup_reminder_id = ?",
                                         (stale_reminder,),
                                     )
                             self._conn.execute(

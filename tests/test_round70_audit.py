@@ -574,7 +574,7 @@ def test_frontend_draft_cleanup_and_inflight_reconcile():
     first_expected = source.index("if (expectedQuestion) {")
     reconcile = source[
         source.index("if (expectedQuestion) {", first_expected + 1):
-    ][:900]
+    ][:1400]
     assert reconcile.index(
         "safeSessionRemove(INFLIGHT_QUESTION_KEY)"
     ) < reconcile.index("if (remaining !== null)")

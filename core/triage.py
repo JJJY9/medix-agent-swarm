@@ -11,6 +11,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.context import medication_context_text
+from core.medication_safety import DRUG_GROUPS as _DRUG_GROUPS
 from core.medication_text import (
     BRAND_DRUG_NAME_RE as _BRAND_DRUG_NAME_RE,
     GENERIC_DRUG_NAME_RE as _GENERIC_DRUG_NAME_RE,
@@ -205,6 +206,7 @@ _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:生产|分娩)(?:的)?(?:时候|时(?!间)|完|了|后)|"
     r"(?:剖宫产|剖腹产)(?:手术)?(?:时|的时候)|"
     r"生(?:孩子|宝宝|娃)(?:的)?(?:时候|时(?!间))|"
+    r"(?<![花陌医卫学究发])生(?:的)?(?:时候|时(?!间))|"
     r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
@@ -240,14 +242,43 @@ _AMENORRHEA_BASE_RE = re.compile(
     r"大姨妈推迟|大姨妈没来|例假推迟|例假没来"
 )
 _AMENORRHEA_YEARS_RE = re.compile(
-    r"^\s*(?:已|已经|都|快|近|将近)?\s*"
+    r"^\s*(?:已|已经|都|快|近|将近|有|已有|长达)?\s*"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?|好?多)\s*年"
+)
+_AMENORRHEA_NEGATED_RE = re.compile(
+    r"(?:未|没有?|无|不是|否认|排除)\s*$|"
+    r"史\s*[:：]?\s*(?:无|阴性|-)|"
+    r"没有?怀孕|未怀孕|排除怀孕|不是怀孕"
+)
+_AMENORRHEA_PAST_RE = re.compile(
+    r"(?:去年|前年|以前|之前|曾经|过去|多年前)"
 )
 
 
 def _recent_amenorrhea_positive(text: str) -> bool:
-    """是否为近期的停经/月经推迟（明确年数或绝经语境除外）。"""
+    """是否为近期的停经/月经推迟（否定/既往/绝经/未孕除外）。"""
     for match in _AMENORRHEA_BASE_RE.finditer(text):
+        clause_start = max(
+            text.rfind(ch, 0, match.start())
+            for ch in "，。；;,.!?！？\n"
+        ) + 1
+        ends = [
+            pos for pos in (
+                text.find(ch, match.end())
+                for ch in "，。；;,.!?！？\n"
+            ) if pos != -1
+        ]
+        clause_end = min(ends) if ends else len(text)
+        before = text[clause_start:match.start()]
+        after = text[match.end():clause_end]
+        if _AMENORRHEA_NEGATED_RE.search(before):
+            continue
+        if _AMENORRHEA_NEGATED_RE.search(
+            text[clause_start:min(len(text), clause_end + 12)]
+        ):
+            continue
+        if _AMENORRHEA_PAST_RE.search(before[-8:]):
+            continue
         tail = text[match.end():match.end() + 10]
         if _AMENORRHEA_YEARS_RE.match(tail):
             continue
@@ -1013,11 +1044,27 @@ _EDUCATIONAL_PREFIX_RE = re.compile(
 #: 媒体词作为症状发生的时间语境（看视频时胸痛/看了个视频后胸痛）：
 #: 不是被引用的科普内容，不能按科普丢弃（第八十三轮）
 _EDUCATION_MEDIA_TIME_CONTEXT_RE = re.compile(
-    r"(?:看|刷|听|读|浏览)(?:了|过)?(?:个|段|篇|条|一会儿|会儿)?\s*"
+    r"(?:看|刷|听|读|浏览)(?:了|过|着)?"
+    r"(?:[0-9一二两三四五六七八九十]+)?"
+    r"(?:个|段|篇|条|集|一会儿|会儿)?\s*"
     r"(?:短视频|小视频|视频|文章|新闻|帖子|百科)"
     r"[^，。；]{0,6}?(?:的时候|时|以后|之后|后|就|便|即|看得|看着)"
     r"|(?:一边|边)(?:看|刷|听)[^，。；]{0,6}一边"
 )
+
+#: 媒体名词之后才出现症状：真实伴随症状（「看视频胸痛」）而非
+#: 内容标题（「讲抽搐的视频」「关于胸痛的文章」）
+def _media_then_symptom(clause: str) -> bool:
+    noun = re.search(
+        r"(?:短视频|小视频|视频|文章|新闻|帖子|百科)", str(clause or "")
+    )
+    if noun is None:
+        return False
+    rest = str(clause)[noun.end():]
+    return _is_red_flag_text(rest) or any(
+        term in rest for term in _COLLOQUIAL_SYMPTOM_WORDS
+    )
+
 
 #: 传闻式语句整句按科普处理，不构成患者本人当前主诉
 _HEARSAY_PREFIX_RE = re.compile(r"^(?:听说|我听说|据说)")
@@ -1244,6 +1291,24 @@ def _clean_complaint_clause(
                 is not None
                 and _is_red_flag_text(clause)
                 and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+            )
+            # 「我昨天看视频胸痛」「最近刷视频胸痛」「我看视频胸痛
+            # 已经两天了」：媒体词后没有连接词，但时间/病程线索表明
+            # 是本人症状而非科普引用（第八十五轮）
+            or (
+                _is_red_flag_text(clause)
+                and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+                and _media_then_symptom(clause)
+                and (
+                    _COURSE_MARKER_RE.search(clause) is not None
+                    or any(
+                        cue in clause
+                        for cue in (
+                            "昨天", "昨晚", "今天", "最近", "这两天",
+                            "这几天", "刚才", "刚刚", "现在",
+                        )
+                    )
+                )
             )
         )
         family_redflag = any(
@@ -2223,7 +2288,27 @@ def _stop_clause_names_other_drug(
     return token not in current_clause
 
 
-#: 见 core/medication_text.py：分诊与用药安全共用同一套药名/类别词
+#: 见 core/medication_text.py：分诊与用药安全共用同一套药名/类别词；
+#: medication_safety 的 DRUG_GROUPS 还维护着大量非后缀通用名
+#: （呋塞米/格列美脲/螺内酯等），停药归因同样要认出来（第八十五轮）
+_DRUG_GROUP_ALIASES = tuple(sorted(
+    {
+        str(alias).lower()
+        for group, items in _DRUG_GROUPS.items()
+        if group not in ("grapefruit", "contrast", "alcohol")
+        for _canonical, aliases in items
+        for alias in aliases
+        if len(str(alias)) >= 2
+    },
+    key=len,
+    reverse=True,
+))
+
+
+def _names_known_group_drug(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(alias in lowered for alias in _DRUG_GROUP_ALIASES)
+
 
 def _clause_names_other_drug(clause: str) -> bool:
     """分句是否点名/描述了一条用药（停药归因的「最近药名分句」）。
@@ -2236,6 +2321,7 @@ def _clause_names_other_drug(clause: str) -> bool:
     return bool(
         any(term in text for term in _OTHER_STOP_DRUG_TAILS)
         or clause_mentions_drug_clause(text)
+        or _names_known_group_drug(text)
     )
 
 
@@ -2264,6 +2350,7 @@ def _long_stop_targets_clause(clause: str) -> bool:
         or _GENERIC_DRUG_NAME_RE.search(clause)
         or _MED_CATEGORY_RE.search(clause)
         or _BRAND_DRUG_NAME_RE.search(clause)
+        or _names_known_group_drug(clause)
     ):
         return False
     if _STRUCTURED_MED_LINE_RE.search(clause):

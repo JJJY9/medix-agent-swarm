@@ -775,7 +775,10 @@ _DRUG_FORM_SUFFIX_RE = re.compile(
 
 def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
     """停药动词前的文本是否点名了另一种药（不是当前药）。"""
-    segments = re.split(r"[，。；;,.!?！？\n]", str(prefix or ""))
+    segments = re.split(
+        r"[，。；;,.!?！？\n]",
+        normalize_brand_drug_names(str(prefix or "")),
+    )
     for index, segment in enumerate(segments):
         lowered = segment.lower()
         if not lowered.strip():
@@ -1281,6 +1284,7 @@ _TOPICAL_STEROID_MARKERS = (
 
 def _find_drugs(text: str, group: str) -> List[str]:
     """返回文本中命中的组内规范药名（去重、保持定义顺序）。"""
+    text = normalize_brand_drug_names(text)
     if group == "alcohol":
         # 酒类是行为描述而非药名：必须排除「不喝酒」「已戒酒」
         return ["酒精"] if _has_alcohol_use(text) else []
@@ -1313,7 +1317,9 @@ def _find_drugs(text: str, group: str) -> List[str]:
 
 def find_drugs(text: Any, group: str) -> List[str]:
     """按药物组匹配文本中的药名，供化验联动等其他规则复用。"""
-    return _find_drugs(_flatten(text).lower(), group)
+    return _find_drugs(
+        normalize_brand_drug_names(_flatten(text).lower()), group
+    )
 
 
 #: 只从「对X过敏」「X过敏史」这类明确句式提取过敏原
@@ -1458,7 +1464,10 @@ def _dedupe(alerts: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return result
 
 
-from core.medication_text import clause_mentions_drug_clause
+from core.medication_text import (
+    clause_mentions_drug_clause,
+    normalize_brand_drug_names,
+)
 
 #: 家属称谓：家人的服药/停药/过敏不能算到患者本人头上
 _FAMILY_MEDICATION_MARKERS = (
@@ -1708,11 +1717,15 @@ def check_medication_safety(
             "alerts": [{"severity", "title", "detail"}, ...]
         }
     """
-    question = _flatten(question).lower()
+    question = normalize_brand_drug_names(_flatten(question).lower())
     question = _patient_medication_text(question, context)
     context = context if isinstance(context, dict) else {}
-    medications = medication_context_text(context).lower()
-    allergies = _allergy_text(context, question)
+    medications = normalize_brand_drug_names(
+        medication_context_text(context).lower()
+    )
+    allergies = normalize_brand_drug_names(
+        _allergy_text(context, question)
+    )
 
     # 药物相互作用的判断只使用主诉与当前用药，避免把过敏史里的药名当成正在服用。
     drug_text = " ".join(

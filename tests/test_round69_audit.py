@@ -598,8 +598,9 @@ def test_frontend_takeover_and_inflight_merge():
     marker = "会话已切换，刚才的主诉未提交，请确认后重新发送"
     marker_index = source.index(marker)
     takeover = source[max(0, marker_index - 600):marker_index]
-    assert "detachedComposerText = question;" in takeover
-    assert "preserveDraftProfile(sendProfile, question);" in takeover
+    # 第八十五轮：接管时合并等待期间的新草稿，detached 文本取合并结果
+    assert "detachedComposerText = restoredText;" in takeover
+    assert "preserveDraftProfile(sendProfile, restoredText);" in takeover
     # 档案冲突分支与相邻分支一致：合并草稿而不是整段覆盖
     conflict_start = source.index(
         "if (submitProfile && submitProfile !== sendProfile) {"
