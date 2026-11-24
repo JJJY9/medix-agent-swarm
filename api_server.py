@@ -2792,6 +2792,11 @@ def _budget_source_key(request: Request) -> str:
         and _proxy_single_hop()
     ):
         forwarded = _forwarded_client_address(request)
+        if not forwarded:
+            # 严格解析失败但代理追加项可证明（宽松回退）：同样按该
+            # 地址计入全局/单源失败预算，否则畸形引号可绕过预算
+            # （第八十六轮）
+            forwarded = _forwarded_appended_address(request)
         if forwarded:
             return f"ip:{_bucket_address(forwarded)}"
     key = _client_ip_key(request)
@@ -3504,7 +3509,6 @@ async def require_access_token(request: Request, call_next):
                 # 否则任何一个人输错 10 次令牌就锁住整片用户；统一按
                 # 回环共享桶的高阈值计数，预锁定检查对聚合键跳过
                 pre_shared = bool(shared_bucket or gate_unprovable)
-                pre_aggregate = _is_ipv6_aggregate_key(pre_key)
                 if appended_address:
                     # 代理追加地址可证明：失败计数必须落在与预锁定
                     # 相同的桶与限流器上，不能被共享桶键拆开导致
@@ -3512,6 +3516,7 @@ async def require_access_token(request: Request, call_next):
                     pre_shared = False
                     pre_limiter = auth_failure_limiter
                     pre_key = f"ip:{_bucket_address(appended_address)}"
+                pre_aggregate = _is_ipv6_aggregate_key(pre_key)
                 if pre_shared or pre_aggregate:
                     pre_limiter = auth_failure_limiter_loopback
                 if pre_shared and not gate_unprovable:
@@ -13667,6 +13672,7 @@ async def family_overview(days: int = 7):
         for item in latest_metrics
         if str(item.get("metric") or "") in DAILY_ACCUMULATING_METRICS
         and str(item.get("measured_at") or "")[:10]
+        and str(item.get("measured_at") or "")[:10] >= cutoff
         and str(item.get("measured_at") or "")[:10] != today_key
     }
     for day_key in sorted(extra_days):
@@ -13712,12 +13718,12 @@ async def family_overview(days: int = 7):
             )
         over_target: Optional[bool] = None
         if target is not None:
-            if (
-                metric in DAILY_ACCUMULATING_METRICS
-                and day_total is not None
-            ):
-                # 步数/饮水的目标是每日累计，不能拿最新一条记录比较
-                over_target = day_total < float(target["value1"])
+            if metric in DAILY_ACCUMULATING_METRICS:
+                # 步数/饮水的目标是每日累计：窗口内没有该日合计时
+                # 不能拿一条旧记录比较（停记后不再持续报「未达标」）
+                # （第八十六轮）
+                if day_total is not None:
+                    over_target = day_total < float(target["value1"])
             else:
                 over_target = metric_over_target(
                     metric, item.get("value1"), item.get("value2"), target
@@ -13821,11 +13827,49 @@ async def family_overview(days: int = 7):
                 f"{label} {format_metric_value(item)}{suffix}"
             )
 
+    # 家庭关注的血压/血糖分级与卡片展示同源：窗口内读数之外，
+    # 窗口外仍在新鲜期内（未到 STALE_AFTER_DAYS）的最新读数也要
+    # 参与分级，否则卡片显示 175/108 却提示「暂无需要关注」
+    # （第八十六轮）
+    window_metric_keys = {
+        (
+            item.get("profile") or "",
+            item.get("metric") or "",
+            str(item.get("measured_at") or ""),
+            item.get("value1"),
+            item.get("value2"),
+        )
+        for item in window_metrics
+    }
+    attention_metrics = list(window_metrics)
+    for item in latest_metrics:
+        key = (
+            item.get("profile") or "",
+            item.get("metric") or "",
+            str(item.get("measured_at") or ""),
+            item.get("value1"),
+            item.get("value2"),
+        )
+        if key in window_metric_keys:
+            continue
+        measured_day = str(item.get("measured_at") or "")[:10]
+        if measured_day:
+            try:
+                age_days = (
+                    datetime.now().date()
+                    - datetime.strptime(measured_day, "%Y-%m-%d").date()
+                ).days
+            except ValueError:
+                age_days = 0
+            if age_days > METRIC_STALE_DAYS:
+                continue
+        attention_metrics.append(item)
+
     # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
     # （空腹/未分情境均值 ≥7、餐后/随机/睡前均值 ≥11.1 mmol/L）
     glucose_alert_by_profile: Dict[str, str] = {}
     glucose_groups: Dict[str, Dict[str, List[float]]] = {}
-    for item in window_metrics:
+    for item in attention_metrics:
         if item.get("metric") != "glucose":
             continue
         if (item.get("profile") or "", "glucose") in target_map:
@@ -13880,7 +13924,7 @@ async def family_overview(days: int = 7):
     # （≥160/100 warning、≥140/90 info），家庭关注与健康提示同口径
     bp_alert_by_profile: Dict[str, Dict[str, str]] = {}
     bp_peaks: Dict[str, List[float]] = {}
-    for item in window_metrics:
+    for item in attention_metrics:
         if item.get("metric") != "bp":
             continue
         if (item.get("profile") or "", "bp") in target_map:
