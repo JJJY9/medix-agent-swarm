@@ -21684,7 +21684,12 @@ async function send(question, composerSubmit = false) {
       const questionText = String(question || '').trim();
       const composerText = String(els.input.value || '').trim();
       lastRestoredComposerText = (
-        restoredNow || composerText === questionText
+        restoredNow
+        || composerText === questionText
+        // restoreComposer 的固定拼接形态（主诉 + 空行 + 草稿）同样
+        // 视为本次恢复：两次失败/停止后快照仍绑定本轮主诉，成功
+        // 重试后才会被剥离（第九十二轮 [11]）
+        || els.input.value.startsWith(questionText + "\n\n")
       ) ? els.input.value : '';
       lastRestoredComposerQuestion = lastRestoredComposerText
         ? questionText : '';
@@ -21707,7 +21712,12 @@ async function send(question, composerSubmit = false) {
       const questionText = String(question || '').trim();
       const composerText = String(els.input.value || '').trim();
       lastRestoredComposerText = (
-        restoredNow || composerText === questionText
+        restoredNow
+        || composerText === questionText
+        // restoreComposer 的固定拼接形态（主诉 + 空行 + 草稿）同样
+        // 视为本次恢复：两次失败/停止后快照仍绑定本轮主诉，成功
+        // 重试后才会被剥离（第九十二轮 [11]）
+        || els.input.value.startsWith(questionText + "\n\n")
       ) ? els.input.value : '';
       lastRestoredComposerQuestion = lastRestoredComposerText
         ? questionText : '';
@@ -21749,7 +21759,12 @@ async function send(question, composerSubmit = false) {
       const questionText = String(question || '').trim();
       const composerText = String(els.input.value || '').trim();
       lastRestoredComposerText = (
-        restoredNow || composerText === questionText
+        restoredNow
+        || composerText === questionText
+        // restoreComposer 的固定拼接形态（主诉 + 空行 + 草稿）同样
+        // 视为本次恢复：两次失败/停止后快照仍绑定本轮主诉，成功
+        // 重试后才会被剥离（第九十二轮 [11]）
+        || els.input.value.startsWith(questionText + "\n\n")
       ) ? els.input.value : '';
       lastRestoredComposerQuestion = lastRestoredComposerText
         ? questionText : '';
@@ -23411,13 +23426,14 @@ function restoreInflightQuestion() {
       // 不能把未提交的主诉永久丢失
       restoreComposer(question);
       preserveDraftProfile(profile, question);
-      safeSessionRemove(INFLIGHT_QUESTION_KEY);
+      // 在途记录保留到对账确认落库或发送成功：否则本次首屏恢复
+      // 失败后跨刷新无法再对账，已落库主诉会留在输入框重复提交
+      // （第九十二轮 [15]）
       setVitals('warn', '上次会诊未完成，主诉已合并到输入框');
       return;
     }
     // 空输入框：恢复在途主诉
     restoreComposer(question);
-    safeSessionRemove(INFLIGHT_QUESTION_KEY);
     setVitals('warn', '上次会诊未完成，主诉已恢复到输入框');
   } catch {
     // 数据损坏/隐私模式：忽略

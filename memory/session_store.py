@@ -5547,6 +5547,79 @@ class SessionStore:
         is_group_last = group_seen >= max(backup_group_size, 1)
         local_size_key = (table, "__local_size__", identity, scope_profile)
         local_group_size = state.get(local_size_key)
+        def _same_backup_origin() -> bool:
+            """本地库是否可证明就是该备份的来源库（主键空间同源）。
+
+            恢复后本地自增 id 与备份原始主键数值相等可能只是巧合；
+            只有当所有落在备份主键范围内的既有行都在备份主键集合内、
+            且 created_at（不可编辑）与备份一致时，才允许仅凭主键
+            相等或「未编辑的同身份行」认领，否则只能按内容/编辑证据
+            配对，缺行时插入补回。
+            """
+            if not backup_ids or not backup_created or not pre_existing_ids:
+                return True
+            cache_key = (table, "__same_origin__")
+            cached = state.get(cache_key)
+            if cached is not None:
+                return bool(cached)
+            result = True
+            select_columns = "id, created_at, updated_at"
+            if content_columns:
+                select_columns += ", " + ", ".join(content_columns)
+            try:
+                rows = self._conn.execute(
+                    f"SELECT {select_columns} FROM {table} WHERE id <= ?",
+                    (max(backup_ids),),
+                ).fetchall()
+            except sqlite3.Error:
+                rows = []
+            if not rows:
+                # 既有行全部大于备份主键上限（漂移/合并库）：区间为空
+                # 不能当作「所有行都对得上」，只有正面证据才算同源
+                result = False
+            for row in rows:
+                if not result:
+                    break
+                local_id = int(row["id"])
+                if local_id not in pre_existing_ids:
+                    continue
+                if local_id not in backup_ids:
+                    result = False
+                    break
+                expected = backup_created.get(local_id)
+                if expected and str(
+                    row["created_at"] or ""
+                )[:40] != expected:
+                    result = False
+                    break
+                if content_columns and backup_contents:
+                    expected_contents = backup_contents.get(local_id)
+                    #: 未编辑（updated_at == created_at）的同主键行
+                    #: 内容却与备份不符：它是同秒创建、恰好占用同一
+                    #: 低位 id 的无关记录，主键空间不能视为同源，
+                    #: 否则会被无条件认领并复制/丢失孪生（第八十九轮 [2]）。
+                    #: updated_at 只有秒级精度：导出后同一秒内的编辑
+                    #: 也会呈现 updated == created，此时按「不早于导出
+                    #: 时间即视为已编辑」放行（与 _edited_after_export
+                    #: 同口径），避免把刚 snooze/改过日期的行误判为无关行
+                    if (
+                        expected_contents is not None
+                        and str(row["updated_at"] or "")
+                        == str(row["created_at"] or "")
+                        and not (
+                            backup_exported_at
+                            and str(row["updated_at"] or "")
+                            >= str(backup_exported_at)
+                        )
+                        and self._db_content_fingerprint(
+                            row, content_columns
+                        ) != expected_contents
+                    ):
+                        result = False
+                        break
+            state[cache_key] = result
+            return result
+
         if local_group_size is None:
             #: 组大小按「当前备份行档案」过滤：match_where 只有提醒等
             #: 表才有，其余表以行内档案为参照；否则同源改挂进来的
@@ -5586,20 +5659,26 @@ class SessionStore:
                         and _normalize_profile_name(
                             backup_profiles.get(row_id) or ""
                         ) != reference_profile
-                        #: 主键数值撞号只是巧合：该行必须内容等于那条
-                        #: 备份记录、且有本地编辑证据（PATCH 改挂会刷新
-                        #: updated_at），才认定它是改挂行并从本档案存活
-                        #: 行里排除；否则漂移库会把本档案的同秒孪生低估
-                        #: 为缺行并补插编辑前旧副本（第九十一轮 [9]）
-                        and str(row["updated_at"] or "")
-                        != str(row["created_at"] or "")
+                        #: 同源库（本地主键不可能指向别的记录）直接按
+                        #: 主键+创建时间认定改挂行；只有主键空间可能
+                        #: 漂移的库才要求「有编辑证据且内容吻合」，避免
+                        #: 把本档案同秒孪生低估为缺行，也避免把改挂并
+                        #: 编辑过内容的存活行误算作本档案行
+                        #: （第九十一/九十二轮 [2]）
                         and (
-                            not backup_contents
-                            or not content_columns
-                            or self._db_content_fingerprint(
-                                row, content_columns
+                            _same_backup_origin()
+                            or (
+                                str(row["updated_at"] or "")
+                                != str(row["created_at"] or "")
+                                and (
+                                    not backup_contents
+                                    or not content_columns
+                                    or self._db_content_fingerprint(
+                                        row, content_columns
+                                    )
+                                    == backup_contents.get(row_id)
+                                )
                             )
-                            == backup_contents.get(row_id)
                         )
                     ):
                         # 同源备份中从其它档案改挂进来的行：它对应的
@@ -5841,79 +5920,6 @@ class SessionStore:
                 )
                 for other_id, contents in backup_contents.items()
             )
-
-        def _same_backup_origin() -> bool:
-            """本地库是否可证明就是该备份的来源库（主键空间同源）。
-
-            恢复后本地自增 id 与备份原始主键数值相等可能只是巧合；
-            只有当所有落在备份主键范围内的既有行都在备份主键集合内、
-            且 created_at（不可编辑）与备份一致时，才允许仅凭主键
-            相等或「未编辑的同身份行」认领，否则只能按内容/编辑证据
-            配对，缺行时插入补回。
-            """
-            if not backup_ids or not backup_created or not pre_existing_ids:
-                return True
-            cache_key = (table, "__same_origin__")
-            cached = state.get(cache_key)
-            if cached is not None:
-                return bool(cached)
-            result = True
-            select_columns = "id, created_at, updated_at"
-            if content_columns:
-                select_columns += ", " + ", ".join(content_columns)
-            try:
-                rows = self._conn.execute(
-                    f"SELECT {select_columns} FROM {table} WHERE id <= ?",
-                    (max(backup_ids),),
-                ).fetchall()
-            except sqlite3.Error:
-                rows = []
-            if not rows:
-                # 既有行全部大于备份主键上限（漂移/合并库）：区间为空
-                # 不能当作「所有行都对得上」，只有正面证据才算同源
-                result = False
-            for row in rows:
-                if not result:
-                    break
-                local_id = int(row["id"])
-                if local_id not in pre_existing_ids:
-                    continue
-                if local_id not in backup_ids:
-                    result = False
-                    break
-                expected = backup_created.get(local_id)
-                if expected and str(
-                    row["created_at"] or ""
-                )[:40] != expected:
-                    result = False
-                    break
-                if content_columns and backup_contents:
-                    expected_contents = backup_contents.get(local_id)
-                    #: 未编辑（updated_at == created_at）的同主键行
-                    #: 内容却与备份不符：它是同秒创建、恰好占用同一
-                    #: 低位 id 的无关记录，主键空间不能视为同源，
-                    #: 否则会被无条件认领并复制/丢失孪生（第八十九轮 [2]）。
-                    #: updated_at 只有秒级精度：导出后同一秒内的编辑
-                    #: 也会呈现 updated == created，此时按「不早于导出
-                    #: 时间即视为已编辑」放行（与 _edited_after_export
-                    #: 同口径），避免把刚 snooze/改过日期的行误判为无关行
-                    if (
-                        expected_contents is not None
-                        and str(row["updated_at"] or "")
-                        == str(row["created_at"] or "")
-                        and not (
-                            backup_exported_at
-                            and str(row["updated_at"] or "")
-                            >= str(backup_exported_at)
-                        )
-                        and self._db_content_fingerprint(
-                            row, content_columns
-                        ) != expected_contents
-                    ):
-                        result = False
-                        break
-            state[cache_key] = result
-            return result
 
         def _local_holes_are_backup_ids() -> bool:
             """本地缺失的主键是否正好落在备份主键集合里。
@@ -7584,8 +7590,14 @@ class SessionStore:
                                 and candidate != sole
                                 and _tail_matches(candidate)
                                 and _candidate_edited(candidate)
-                                and not _candidate_soft_owned_by_other(
-                                    candidate, cross_profile=True
+                                and (
+                                    (
+                                        candidate == raw_id
+                                        and _same_backup_origin()
+                                    )
+                                    or not _candidate_soft_owned_by_other(
+                                        candidate, cross_profile=True
+                                    )
                                 )
                                 and not _content_owned_by_other(candidate)
                             ]
@@ -15285,6 +15297,16 @@ class SessionStore:
                         )
                         if not linked_id:
                             continue
+                        shared_detached = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_reminder_id = ?"
+                            " AND followup_appointment_id != ? LIMIT 1",
+                            (linked_id, int(appointment_id)),
+                        ).fetchone()
+                        if shared_detached is not None:
+                            # 共享脱钩提醒被其它就诊使用：改期不能把它
+                            # 改到本预约的日期（第九十二轮 [10]）
+                            continue
                         linked_note = self._conn.execute(
                             "SELECT note FROM reminders WHERE id = ?"
                             " AND done = 0 AND appointment_id = 0",
@@ -15475,6 +15497,22 @@ class SessionStore:
                                     int(appointment_id),
                                 ),
                             )
+                            if adopted_id and adopt_visit:
+                                # 归属就诊仅靠 owner/备注标记关联（fa=0）：
+                                # 接管成功后一并写回预约链接，避免
+                                # followup_scheduled 仍为 false
+                                # （第九十二轮 [13]）
+                                self._conn.execute(
+                                    "UPDATE visit_records"
+                                    " SET followup_appointment_id = ?,"
+                                    " updated_at = ?"
+                                    " WHERE id = ?"
+                                    " AND followup_appointment_id = 0",
+                                    (
+                                        int(appointment_id), now,
+                                        int(adopt_visit),
+                                    ),
+                                )
                 else:
                     self._conn.execute(
                         "DELETE FROM reminders "

@@ -443,9 +443,12 @@ def test_frontend_round50_guards():
         app_js.index("window.addEventListener('beforeunload'")
     ]
     assert "if (els.input.value.includes(question)) {" in restore
+    # 第九十二轮起合并/恢复分支保留在途记录到对账确认或发送成功，
+    # 只保留「主诉已在草稿里」与过期记录的清理
+    assert "对账确认落库或发送成功" in restore
     assert (
-        "restoreComposer(question);\n"
-        "    safeSessionRemove(INFLIGHT_QUESTION_KEY);"
+        "restoreComposer(question);" + chr(10)
+        + "      preserveDraftProfile(profile, question);"
     ) in app_js
     assert "if (!busy && !sendInFlight) return;" in app_js
     assert "极早持久化已提交主诉" in app_js

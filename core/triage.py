@@ -498,6 +498,8 @@ def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
 
 _GUM_BLEEDING_WORDS = (
     "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔", "口腔",
+    # 牙科/口唇出血同样不是孕产期出血（第九十二轮 [8]）
+    "牙齿", "牙", "嘴唇", "唇", "舌头", "舌", "口腔黏膜",
     # 口腔动作：刷牙/漱口/吐口水带血同样是牙龈或口腔黏膜出血
     "刷牙", "牙刷", "漱口", "吐口水", "剔牙", "牙缝", "泡沫带血",
 )
@@ -1400,6 +1402,10 @@ def _clean_complaint_clause(
                 )
                 and _is_red_flag_text(clause)
             )
+            # 「我爸咳嗽三天了，咯血见于什么病」：前文已建立患者语境，
+            # 后置定义问句里的红旗是新症状（与后缀分支同口径，
+            # 第九十二轮 [1]）
+            or (patient_context_seen and _is_red_flag_text(clause))
         )
         if not keep_context:
             return ""
@@ -1455,6 +1461,15 @@ def _clean_complaint_clause(
             clause,
         ) is not None
         if any(word in prefix for word in _EDUCATION_BLOCKERS_STRONG):
+            media_time = bool(
+                _EDUCATION_MEDIA_TIME_CONTEXT_RE.search(prefix)
+                and _is_red_flag_text(prefix)
+                and _EDUCATION_QUOTE_LEAD_RE.search(prefix) is None
+            )
+            if media_time:
+                # 「看视频时胸痛是什么病」：媒体词是症状发生的时间
+                # 语境，不是被引用的科普内容（第九十二轮 [7]）
+                return prefix
             # 「在网上看到胸痛是什么病」引用的是科普内容，不是主诉
             return ""
         # 「X是什么病」：X 是带病程的症状描述时按真实主诉保留，
@@ -1542,6 +1557,10 @@ _COURSE_CONTEXT_BLOCKERS = (
     "视频", "新闻", "百科", "帖子",
     # 寒暄/致谢分句不能为后面的定义问句背书
     "你好", "您好", "谢谢", "好的", "在吗", "麻烦", "打扰",
+    # 与症状无关的生活叙述（最近在准备考试/这两天在减肥）：即使带
+    # 时间词也不能把纯定义问句变成患者主诉（第九十二轮 [4]）
+    "减肥", "考试", "工作", "加班", "门诊", "聚会", "出差", "旅游",
+    "搬家", "开会", "上课", "作业",
     # 「早上好」里的时段词是问候，不是患者病程
     "早上好", "早安", "晚上好", "晚上好", "午安", "晚安", "哈喽",
 )
@@ -1760,11 +1779,7 @@ def patient_complaint_text(text: str) -> str:
                 continue
             course_follows = bool(
                 _URGENT_HELP_RE.search(text_follow) is not None
-                or (
-                    _course_context_clause(text_follow)
-                    and _STRICT_COURSE_DURATION_RE.search(text_follow)
-                    is not None
-                )
+                or _course_context_clause(text_follow)
             )
             break
         cleaned = _clean_complaint_clause(
@@ -2340,9 +2355,9 @@ _ENGLISH_STOP_ACTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _ENGLISH_STOP_PASSIVE_RE = re.compile(
-    r"\b([A-Za-z][A-Za-z\-]{2,})\s+(?:was|is|are|has\s+been|"
-    r"have\s+been|had\s+been|got)\s+"
-    r"(?:stopped|discontinued|ceased|quit)\b",
+    r"\b([A-Za-z][A-Za-z\-]{2,})\s+(?:(?:was|is|are|has\s+been|"
+    r"have\s+been|had\s+been|got)\s+)?"
+    r"(?:stopped(?!\s+working)|discontinued|ceased|quit)\b",
     re.IGNORECASE,
 )
 _ENGLISH_NO_LONGER_RE = re.compile(
@@ -2362,7 +2377,8 @@ def _english_stop_names_drug(text: str) -> bool:
     return False
 _ENGLISH_RESTART_RE = re.compile(
     r"\b(?:restarted|restarting|started\s+again|back\s+on|"
-    r"resumed|currently\s+taking)\b",
+    r"resumed|currently\s+taking|"
+    r"(?:take|taking|started)\s+it\s+again|on\s+it\s+again)\b",
     re.IGNORECASE,
 )
 #: 英文停药必须有明确时长才算远期停药（not on/not taking 裸分支不算）
@@ -2382,7 +2398,7 @@ _ENGLISH_STOP_CONTINUATION_RE = re.compile(
 #: 换用其它药（amlodipine/aspirin/methotrexate/泼尼松）不能复活
 #: 本药（第九十轮 [3][17]）
 _ENGLISH_STILL_RE = re.compile(
-    r"\bstill\s+(?:take|taking|on)\s+"
+    r"\bstill\s+(?:take|taking|use|using|on)\s+"
     r"(?:(it|the\s+same|this)\b|"
     r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
     re.IGNORECASE,
@@ -2794,7 +2810,8 @@ _RESTART_TEXT_RE = re.compile(
     r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
-    r"|仍在吃|仍在服用|仍然服用"
+    r"|仍在吃|仍在服用|仍然服用|还在用|仍在用|继续用|还用|仍用"
+    r"|仍然用|一直在用|仍在使用|继续使用|还在使用"
     r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
@@ -2809,7 +2826,8 @@ _RESTART_OBJECT_RE = re.compile(
     r"恢复吃药|恢复服药|接着吃|接着服|接着用|又吃起来了|又用起来了|"
     r"重新吃|重新服用|重新用|恢复服用|恢复吃"
     r"|又开始吃|又开始服|再次服用|继续服用|继续吃|还在吃|还在服用"
-    r"|仍在吃|仍在服用|仍然服用"
+    r"|仍在吃|仍在服用|仍然服用|还在用|仍在用|继续用|还用|仍用"
+    r"|仍然用|一直在用|仍在使用|继续使用|还在使用"
     r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
@@ -2963,6 +2981,36 @@ _CONTINUATION_AFTER_PAST = re.compile(
     r"(?:[0-9一二两三四五六七八九十半]+(?:\.[0-9]+)?"
     r"\s*(?:mg|毫克|g|克|片|粒|单位|iu|ug)|一片半?|半片|一片)"
 )
+
+def _chinese_restart_known_drug_fragment(text: str) -> str:
+    """提取续用分句里点名的已知药名（还在用华法林）。
+
+    远期停药短语只否定被停的药；同一分句里「还在用/继续吃 <另一种
+    已知药>」时，该药名要保留为当前用药（第九十二轮 [3]）。
+    """
+    text = str(text or "")
+    parts = []
+    for match in _RESTART_OBJECT_RE.finditer(text):
+        obj = re.split(
+            r"[，。；,.!?！？\n和及与、]", match.group(1) or ""
+        )[0].strip()
+        obj = re.sub(
+            r"^[0-9一二两三四五六七八九十半几]+\s*"
+            r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)\s*",
+            "",
+            obj,
+        )
+        obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
+        if not obj:
+            continue
+        tail_terms = [
+            term for term in _OTHER_STOP_DRUG_TAILS if term in obj
+        ]
+        generic = _GENERIC_DRUG_NAME_RE.search(obj)
+        if tail_terms or generic is not None:
+            parts.append(obj)
+    return "；".join(parts)
+
 
 def _continuation_names_other_drug(
     text: str, current_clause: str
@@ -3451,7 +3499,20 @@ def _active_medical_text(
                 or _CHEMO_RECENT_END_LEAD_RE.search(clause)
             ):
                 # 「停了半年，最近又吃上了」：跨分句续用线索；
-                # 「化疗结束后一周」：结束后仍处免疫抑制窗口
+                # 「化疗结束后一周」：结束后仍处免疫抑制窗口。
+                # 续用指向另一种已知药时只保留该药名，不能把整个
+                # 停药分句（含被停药）当成当前用药（第九十二轮 [3]）
+                if _restart_names_other_medication(
+                    clause, clause
+                ) or _restart_names_other_medication(
+                    restart_window, clause
+                ):
+                    fragment = _chinese_restart_known_drug_fragment(
+                        clause + "；" + restart_window
+                    )
+                    if fragment:
+                        kept.append(fragment)
+                    continue
                 kept.append(clause)
                 continue
             if (
