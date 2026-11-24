@@ -6289,7 +6289,7 @@ class SessionStore:
             wanted = _normalize_profile_name(candidate_profile)
             created_key = str(created_at_value or "")
             for other_id, other_profile in backup_profiles.items():
-                if other_id == raw_id:
+                if other_id == raw_id or other_id <= 0:
                     continue
                 if backup_created.get(other_id) != created_key:
                     continue
@@ -6550,7 +6550,9 @@ class SessionStore:
             wanted = _normalize_profile_name(candidate_profile)
             created_key = str(created_at_value or "")
             for other_id, other_profile in backup_profiles.items():
-                if other_id == raw_id:
+                if other_id == raw_id or other_id <= 0:
+                    # 合成负键只用于尾字段/内容比较，不代表可推断
+                    # 归属的真实备份主键（第九十七轮 [9]）
                     continue
                 if backup_created.get(other_id) != created_key:
                     continue
@@ -6569,7 +6571,7 @@ class SessionStore:
                         rows = []
                     sibling_count = 1
                     for other2, other2_profile in backup_profiles.items():
-                        if other2 in (raw_id, other_id):
+                        if other2 in (raw_id, other_id) or other2 <= 0:
                             continue
                         if backup_created.get(other2) != created_key:
                             continue
@@ -7881,7 +7883,7 @@ class SessionStore:
                 if _content_owned_by_other(candidate):
                     continue
                 if (
-                    not backup_tails
+                    (raw_id <= 0 or not backup_tails)
                     and tail_where is not None
                     and not _tail_matches(candidate)
                     and _candidate_content_matches_backup(candidate)
@@ -8062,6 +8064,10 @@ class SessionStore:
                     and (
                         tail_where is None
                         or _tail_matches(deferred_candidate)
+                        # 单行组（组内没有其它同秒备份行）尾字段被本地
+                        # 编辑只是正常状态变化，不能因此补插旧副本
+                        # （第九十七轮 [4]）
+                        or backup_group_size <= 1
                     )
                 )
             ):
@@ -8890,6 +8896,7 @@ class SessionStore:
             return _ambiguous()
         if (
             raw_id <= 0
+            and backup_group_size > 1
             and tail_where is not None
             and not _tail_matches(sole)
         ):
@@ -9014,6 +9021,11 @@ class SessionStore:
                         text = f"{float(text):.10g}"
                     except ValueError:
                         pass
+                canonical = _canonical_local_time(text)
+                if canonical:
+                    # 纯日期/时间串与入库规范化口径统一：否则同源
+                    # 判定会被日期格式差异误伤（第九十七轮 [10]）
+                    text = canonical
                 values.append(text)
         return tuple(values)
 
@@ -9032,7 +9044,11 @@ class SessionStore:
             ):
                 values.append(f"{float(value):.10g}")
             else:
-                values.append(" ".join(str(value).split()))
+                text = " ".join(str(value).split())
+                canonical = _canonical_local_time(text)
+                if canonical:
+                    text = canonical
+                values.append(text)
         return tuple(values)
 
     @staticmethod
@@ -9044,7 +9060,13 @@ class SessionStore:
             return "1" if value else "0"
         if isinstance(value, (int, float)):
             return f"{float(value):.10g}"
-        return " ".join(str(value).split())
+        key = " ".join(str(value).split())
+        canonical = _canonical_local_time(key)
+        if canonical:
+            # 与 DB 侧内容指纹的日期规范化口径一致：否则纯日期
+            # 尾字段会让同源/尾字段比较误判（第九十七轮 [10]）
+            return canonical
+        return key
 
     @classmethod
     def _import_backup_meta(
@@ -16179,7 +16201,8 @@ class SessionStore:
                     )[:10]
                     completed_link = self._conn.execute(
                         "SELECT next_followup_date,"
-                        " followup_appointment_id FROM visit_records"
+                        " followup_appointment_id,"
+                        " followup_reminder_id FROM visit_records"
                         " WHERE id = ?",
                         (completed_visit,),
                     ).fetchone()
@@ -16202,6 +16225,16 @@ class SessionStore:
                         and completed_linked in (0, int(appointment_id))
                         and other_link is None
                     ):
+                        # 回挂会清零提醒链接：就诊原先链接的脱钩提醒
+                        # 若再无其它引用，必须一并清理，否则成为永久
+                        # 幽灵待办（第九十七轮 [11]）
+                        stale_reminder = int(
+                            completed_link["followup_reminder_id"] or 0
+                        )
+                        if stale_reminder:
+                            self._clean_unlinked_detached_reminder(
+                                stale_reminder, completed_visit
+                            )
                         self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_appointment_id = ?,"

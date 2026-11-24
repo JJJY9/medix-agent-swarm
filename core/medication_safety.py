@@ -597,6 +597,62 @@ _DOSE_MISSED_OBJECT_FIRST = re.compile(
 )
 
 
+_DOSE_MISSED_TIME_OBJ_AFTER = re.compile(
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|"
+    r"昨夜|前天|前晚|刚才|这次|这一顿|这顿|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?|几天|数天|两三天|几周)"
+    r"[^，。；,.!?！？\n]{0,8}?"
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|"
+    r"没服|未服|漏服用?)"
+    r"\s*([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})"
+)
+_DOSE_MISSED_TIME_OBJ_BEFORE = re.compile(
+    r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|都|还|仍)?\s*"
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|"
+    r"昨晚|昨夜|前天|前晚|刚才|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?)"
+    r"[^，。；,.!?！？\n]{0,4}?"
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
+)
+
+
+def _clean_missed_dose_obj(raw: str) -> str:
+    raw = str(raw or "").strip()
+    if any(word in raw for word in ("但", "而", "和", "及", "与", "或")):
+        raw = re.split(r"[但而和及与或]", raw)[-1]
+    obj = re.sub(
+        r"^[了啦啊呀但而和及与或的着]+|[了啦啊呀但而和及与或的着]+$",
+        "",
+        raw.strip(),
+    )
+    if len(obj) < 2:
+        return ""
+    if any(
+        word in obj
+        for word in ("停用", "停药", "停了", "停的", "没吃", "未吃", "漏服")
+    ):
+        return ""
+    return obj
+
+
+def _missed_dose_time_names_term(text: str, alias_lower: str) -> bool:
+    """时间前置漏服的对象是否本药（今天没吃华法林/华法林今天没吃）。"""
+    text = str(text or "")
+    # 宾语在时间词之前（华法林今天没吃）：直接定位本药
+    for match in _DOSE_MISSED_TIME_OBJ_BEFORE.finditer(text):
+        obj = _clean_missed_dose_obj(match.group(1)).lower()
+        if obj and (alias_lower in obj or obj in alias_lower):
+            return True
+    # 宾语在动词之后（今天没吃华法林）
+    for match in _DOSE_MISSED_TIME_OBJ_AFTER.finditer(text):
+        obj = _clean_missed_dose_obj(match.group(1)).lower()
+        if obj and (alias_lower in obj or obj in alias_lower):
+            return True
+    return False
+
+
 def _missed_dose_names_term(text: str, alias_lower: str) -> bool:
     """宾语前置漏服的对象是否就是本药（阿司匹林没吃三天了→否）。"""
     text = str(text or "")
@@ -630,7 +686,7 @@ def _missed_dose_names_term(text: str, alias_lower: str) -> bool:
         ).strip().lower()
         if obj and (alias_lower in obj or obj in alias_lower):
             return True
-    return False
+    return _missed_dose_time_names_term(text, alias_lower)
 #: 依从性限定词：「没有按时吃/未规律服用」仍是当前用药，不是未用药
 _ADHERENCE_USE_PREFIX = re.compile(
     r"(?:按时|规律|按医嘱|遵医嘱|每天|天天|坚持|准时|定点|按顿|按需)"
@@ -1334,7 +1390,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _DOSE_MISSED_PREFIX_EN.search(prefix + suffix)
                 # 中文时间/停药表述作用于整段文本，与药名语言无关：
                 # 「我今天没吃 warfarin」「下周就不吃 warfarin 了」
-                or _DOSE_MISSED_PREFIX.search(prefix + suffix)
+                or (
+                    _DOSE_MISSED_PREFIX.search(prefix + suffix)
+                    and _missed_dose_names_term(
+                        text[left:right], alias_lower
+                    )
+                )
                 # 「没吃 warfarin 三天了」：时长在药名之后同样是漏服
                 # （第九十四轮 [7]）；漏服宾语必须是本药
                 # （第九十五轮 [16]）
@@ -1411,7 +1472,12 @@ def _alias_matches(text: str, alias: str) -> bool:
         long_suffix = text[end:right + 25]
         if (
             _USE_DOUBLE_NEGATION.search(prefix)
-            or _DOSE_MISSED_PREFIX.search(prefix + suffix)
+            or (
+                _DOSE_MISSED_PREFIX.search(prefix + suffix)
+                and _missed_dose_names_term(
+                    text[left:right], alias_lower
+                )
+            )
             # 「没吃华法林三天了」：时长在药名之后同样是漏服
             # （第九十四轮 [7]）；漏服宾语必须是本药
             # （第九十五轮 [16]）

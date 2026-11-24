@@ -681,7 +681,15 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
         # 「不知道是不是胸痛」「有没有胸痛」「是否呼吸困难」是疑似，
         # 与妊娠不确定的既有口径一致：按阳性处理，不能漏报
         return False
-    if _DOUBLE_NEGATION_SUFFIX_PATTERN.search(stripped):
+    double_negation = _DOUBLE_NEGATION_SUFFIX_PATTERN.search(stripped)
+    if double_negation is not None:
+        # 转述否定「你不是说没有胸痛吗」：不是+说+没有+疑问语气
+        # 是引用他人的否认，不是阳性（第九十七轮 [17]）
+        if re.search(
+            r"(?:不是|并非|并不是)说",
+            double_negation.group(0),
+        ) and re.match(r"[吗么嘛]", suffix.lstrip()):
+            return True
         # 「不是没有胸痛」「并非没有呼吸困难」实际是阳性
         return False
     if any(
@@ -1424,6 +1432,18 @@ def _clean_complaint_clause(
                 and _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
                 and _FEVER_TOPIC_RE.search(clause) is None
             )
+            # 「网上查了胸痛怎么办」：检索词之后是患者本人的红旗
+            # 症状（胸痛/阴道出血/头外伤），不能当科普丢弃；引述
+            # 引导词（网上说/文章讲）仍按科普处理（第九十七轮 [2]）
+            or (
+                _EDUCATION_QUOTE_LEAD_RE.search(clause) is None
+                and _EDUCATION_TOPIC_REFERENCE_RE.search(clause) is None
+                and (
+                    _is_red_flag_text(clause)
+                    or _has_pregnancy_bleeding(clause)
+                    or _has_head_trauma(clause)
+                )
+            )
         )
         family_redflag = any(
             marker in clause for marker in _FAMILY_HISTORY_MARKERS
@@ -1676,6 +1696,15 @@ _EDUCATION_CURRENT_CUES = (
 )
 #: 引述引导词：其后的动作词属于被引用的科普内容，不是本人行为
 #: （「网上说吃完药后胸痛要马上就医」「文章讲运动后胸痛」）
+#: 「关于胸痛的文章/讲抽搐的视频」：主题引用不是患者主诉
+_EDUCATION_TOPIC_REFERENCE_RE = re.compile(
+    r"(?:关于|有关|讲|介绍|题为|名为)"
+    r"[^，。；,.!?！？\n]{0,12}"
+    r"(?:文章|视频|新闻|帖子|百科|科普|教程)"
+    r"|(?:文章|视频|新闻|帖子|百科|科普|教程)"
+    r"[^，。；,.!?！？\n]{0,6}"
+    r"(?:里|上|中)?(?:说|讲|写|介绍|提到|看到)"
+)
 _EDUCATION_QUOTE_LEAD_RE = re.compile(
     r"(?:网上|文章|视频|新闻|帖子|百科|教程|科普|讲座|报道|书上|"
     r"电视|广播|收音机|报纸|听说|据说)"
@@ -1882,7 +1911,9 @@ def patient_complaint_text(text: str) -> str:
             hard_sign = any(
                 sign in text_follow
                 for sign in (
-                    "冷汗", "冒冷汗", "大汗", "虚汗", "出汗",
+                    # 泛词「出汗」不作为患者证据：天气热容易出汗/
+                    # 没有出汗都不是病程（第九十七轮 [14]）
+                    "冷汗", "冒冷汗", "大汗", "虚汗",
                     "放射", "不缓解", "不能缓解", "持续不缓解",
                     "难忍", "剧痛", "濒死", "躺不平", "端坐呼吸",
                 )
@@ -2442,22 +2473,96 @@ def _missed_dose_names_term(text: str, term: str) -> bool:
         return False
     return term in obj or obj in term
 
+#: 时间前置漏服、宾語在动词之后（今天没吃华法林）
+_DOSE_MISSED_TIME_OBJ_AFTER_RE = re.compile(
+    r"(?P<time>今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|"
+    r"前天|前晚|刚才|这次|这一顿|这顿|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?|几天|数天|两三天|几周)"
+    r"[^，。；,.!?！？\n]{0,8}?"
+    r"(?P<verb>没吃|未吃|没有吃|没服用|未服用|没有服用|没服|未服|漏服用?)"
+    r"\s*(?P<obj>[一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})"
+)
+#: 时间前置漏服、宾語在时间词之前（华法林今天没吃）
+_DOSE_MISSED_TIME_OBJ_BEFORE_RE = re.compile(
+    r"(?P<obj>[一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|都|还|仍)?\s*"
+    r"(?P<time>今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|"
+    r"前天|前晚|刚才|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?)"
+    r"[^，。；,.!?！？\n]{0,4}?"
+    r"(?P<verb>没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
+)
+
+
+#: 漏服宾语的首尾语气/连接词：宾语两侧的词不是药名
+_DOSE_OBJ_EDGE_RE = re.compile(r"^[了啦啊呀但而和及与或的着\s]+|[了啦啊呀但而和及与或的着\s]+$")
+
+
+def _clean_missed_dose_obj(raw: str) -> str:
+    raw = str(raw or "").strip()
+    if any(word in raw for word in ("但", "而", "和", "及", "与", "或")):
+        # 「停用两年了但利伐沙班」：取连接词之后的真正宾语
+        raw = re.split(r"[但而和及与或]", raw)[-1]
+    obj = _DOSE_OBJ_EDGE_RE.sub("", raw.strip())
+    if len(obj) < 2:
+        return ""
+    if any(
+        word in obj
+        for word in ("停用", "停药", "停了", "停的", "没吃", "未吃", "漏服")
+    ):
+        return ""
+    return obj
+
+
+def _missed_dose_time_first_fragment(text: str) -> str:
+    """时间前置漏服的高风险药片段（华法林今天没吃→华法林今天没吃）。
+
+    宾语在时间词之前的形态优先（「二甲双胍今天没吃」指向二甲双胍）；
+    该形态指向非高风险药时整句不保留，避免把句尾他药误绑给漏服。
+    """
+    text = str(text or "")
+    for match in _DOSE_MISSED_TIME_OBJ_BEFORE_RE.finditer(text):
+        obj = _clean_missed_dose_obj(match.group("obj"))
+        if not obj:
+            continue
+        if not (
+            any(term in obj for term in ANTICOAGULANT_TERMS)
+            or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
+        ):
+            return ""
+        return f"{obj}{match.group('time')}{match.group('verb')}"
+    for match in _DOSE_MISSED_TIME_OBJ_AFTER_RE.finditer(text):
+        obj = _clean_missed_dose_obj(match.group("obj"))
+        if not obj:
+            continue
+        if not (
+            any(term in obj for term in ANTICOAGULANT_TERMS)
+            or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
+        ):
+            return ""
+        return f"{obj}{match.group('time')}{match.group('verb')}"
+    return ""
+
+
 def _missed_dose_high_risk_fragment(text: str) -> str:
     """同分句有远期停药时，只保留漏服高风险药的片段。
 
     「甲氨蝶呤停用两年了但华法林没吃三天了」→「华法林没吃三天」：
     漏服对象是高风险药时保留其用药状态，同时剔除同句远期停药的
-    他药；漏服对象不是高风险药时返回空串（整句丢弃）。
+    他药；漏服对象不是高风险药时返回空串（整句丢弃）。时间前置
+    形态（今天没吃华法林/华法林今天没吃）同样按对象归属
+    （第九十七轮 [1][7]）。
     """
     text = str(text or "")
     match = _DOSE_MISSED_OBJECT_FIRST_RE.search(text)
     if match is None:
-        return ""
+        return _missed_dose_time_first_fragment(text)
     obj = (match.group(1) or "").strip()
     if not obj:
         obj = _dose_missed_object_before(text)
     if not obj:
-        return ""
+        return _missed_dose_time_first_fragment(text)
     if not (
         any(term in obj for term in ANTICOAGULANT_TERMS)
         or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
@@ -3193,6 +3298,19 @@ _CHEMO_RECENT_END_RE = re.compile(
     r"(?:来|多)?\s*(?:天|日|周|星期|个?月)"
 )
 #: 时间词写在完成动词之前（上周化疗结束/昨天化疗结束/两周前化疗结束）
+#: 英文近期结束：finished/completed + yesterday/last week/N days ago
+#: 仍按近期处理（免疫抑制窗口内），不能剥离化疗词
+#: （第九十七轮 [3]）
+_CHEMO_RECENT_END_EN_RE = re.compile(
+    r"\b(?:just|recently)\s+(?:finished|completed)\b"
+    r"|\b(?:finished|completed|done\s+with)\s+(?:the\s+)?"
+    r"(?:chemo(?:therapy)?|radiotherapy|radiation)\b"
+    r"[^,.;!?\n]{0,20}?"
+    r"\b(?:today|yesterday|last\s+(?:night|week|month)|this\s+week|"
+    r"(?:[0-9]+|one|two|three|four|five|six|several)\s+"
+    r"(?:days?|weeks?|months?)\s+ago)\b",
+    re.IGNORECASE,
+)
 _CHEMO_RECENT_END_LEAD_RE = re.compile(
     r"(?:今天|昨天|前天|上周|本周|这周|最近|前几天|刚|刚刚"
     r"|[一二两三四五六1-6]\s*(?:天|周|个月)\s*前)"
@@ -3621,7 +3739,7 @@ def _active_medical_text(
             r"(?:刚|刚刚|最近|这两天|这几天)\s*(?:结束|完成|做完)", clause
         ) and not _CHEMO_RECENT_END_RE.search(clause) and not (
             _CHEMO_RECENT_END_LEAD_RE.search(clause)
-        ):
+        ) and not _CHEMO_RECENT_END_EN_RE.search(clause):
             # 「化疗结束5年了/化疗已经结束了」不是当前免疫抑制；
             # 只剥离结束短语，同分句的其它当前状态（每天吃华法林/
             # 怀孕/长期激素）继续参与判断
@@ -4076,7 +4194,8 @@ def _has_patient_subject(clause: str) -> bool:
 
 
 def _patient_pattern_mention(
-    text: str, pattern, child_patient: bool = False
+    text: str, pattern, child_patient: bool = False,
+    negate_almost: bool = False,
 ) -> bool:
     """正则版本的患者本人匹配：分句过滤家属叙述后按正则判断。"""
     for clause in re.split(r"[，。；;,.!?！？\n]", text):
@@ -4102,9 +4221,19 @@ def _patient_pattern_mention(
         for match in pattern.finditer(clause):
             prefix = _clause_prefix(clause, match.start())
             suffix = _clause_suffix(clause, match.end())
+            if negate_almost and _ALMOST_PATTERN.search(prefix):
+                # 「差点撞到头」= 撞击未发生（第九十七轮 [8]）
+                continue
             if not _is_negated(prefix, suffix):
                 return True
     return False
+
+
+def _head_trauma_negated(prefix: str, suffix: str = "") -> bool:
+    """头部外伤否定：差点/险些/几乎撞到头=撞击未发生（第九十七轮 [8]）。"""
+    if _ALMOST_PATTERN.search(prefix):
+        return True
+    return _is_negated(prefix, suffix)
 
 
 def _patient_head_trauma_mention(
@@ -4134,7 +4263,7 @@ def _patient_head_trauma_mention(
         if swell is not None:
             prefix = _clause_prefix(clause, swell.start())
             suffix = _clause_suffix(clause, swell.end())
-            if not _is_negated(prefix, suffix):
+            if not _head_trauma_negated(prefix, suffix):
                 return True
         for term in HEAD_TRAUMA_TERMS:
             start = clause.find(term)
@@ -4148,11 +4277,11 @@ def _patient_head_trauma_mention(
                     suffix = _clause_suffix(
                         clause, start + len(term)
                     )
-                    if not _is_negated(prefix, suffix):
+                    if not _head_trauma_negated(prefix, suffix):
                         return True
                 start = clause.find(term, start + len(term))
     return _patient_pattern_mention(
-        text, _HEAD_TRAUMA_RE, child_patient
+        text, _HEAD_TRAUMA_RE, child_patient, True
     )
 
 

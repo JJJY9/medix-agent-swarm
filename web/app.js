@@ -789,6 +789,8 @@ const INFLIGHT_QUESTION_OTHER_KEY = 'medix.inflightQuestionOther';
 //: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
 let inflightRestoredText = '';
 let inflightRestoredOwnerSession = '';
+//: 恢复文本来自哪个槽位：删除恢复文本时按来源清除（第九十七轮 [16]）
+let inflightRestoredKeyName = '';
 let inflightReconciledThisRestore = false;
 //: 在途记录的发送前最后消息 id：只有比它更新的问答才算本轮落库
 let inflightRestoredBaseline = 0;
@@ -20965,6 +20967,7 @@ async function restoreCurrentSession(
     inflightRestoredText = '';
     inflightRestoredOwnerSession = '';
     inflightRestoredBaseline = 0;
+    inflightRestoredKeyName = '';
     if (
       !expectedQuestion
       && !pendingReset
@@ -21037,9 +21040,11 @@ async function restoreCurrentSession(
       }
     }
     inflightReconciledThisRestore = inflightReconciled;
-    if (restorePending && expectedSession) {
+    if (restorePending && expectedSession && !sendInFlight) {
       // 深链/刷新打开会话时同样恢复备份槽里属于本会话的未落库
-      // 主诉，与 openSession 口径一致（第九十六轮 [10]）
+      // 主诉，与 openSession 口径一致（第九十六轮 [10]）；
+      // send 排队等待恢复时主槽是它刚写入的本轮问题，不能当成
+      // 「上次中断的主诉」再注入输入框（第九十七轮 [6]）
       restoreInflightForOpenSession(expectedSession, messages);
     }
     if (deepLinkedSession) consumeDeepLink();
@@ -23259,6 +23264,18 @@ function removeInflightRecord(record) {
   writeOtherInflightRecords(records);
 }
 
+function removeOtherInflightRecord(owner, question) {
+  // 用户删除从备份槽恢复出的主诉：按会话+文本清除备份记录，
+  // 不再每次刷新重新注入（第九十七轮 [16]）
+  const records = readOtherInflightRecords().filter(
+    (item) => !(
+      String(item.sessionId || '') === String(owner || '')
+      && String(item.question || '') === String(question || '')
+    )
+  );
+  writeOtherInflightRecords(records);
+}
+
 function preserveOtherSessionInflight(targetOwner) {
   // 现有记录若属于另一个会话（停止/中断未落库）：追加到备份槽，
   // 否则本次发送会把它永久覆盖（那个会话的草稿已被切换清空）。
@@ -23404,6 +23421,12 @@ function restoreInflightForOpenSession(targetId, messages) {
   }
   restoreComposer(question);
   preserveDraftProfile(profile, question);
+  // 记录恢复来源：用户删除该文本时按记录所属槽位清除
+  // （第九十七轮 [16]）
+  inflightRestoredText = question;
+  inflightRestoredOwnerSession = owner;
+  inflightRestoredBaseline = baseline;
+  inflightRestoredKeyName = recordKey;
   setVitals('warn', '上次中断的主诉已放回输入框，请确认后发送');
 }
 
@@ -23457,6 +23480,7 @@ function restoreInflightQuestion() {
     inflightRestoredOwnerSession = String(
       (data && data.sessionId) || ''
     );
+    inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
     inflightRestoredBaseline = Number((data && data.baseline) || 0) || 0;
     if (els.input.value.includes(question)) {
       // 主诉已在草稿里：不重复合并，但保留在途记录到对账确认
@@ -23692,19 +23716,23 @@ els.input.addEventListener('input', () => {
     // 唯一副本（打开历史会话后首次按键会误删），流式进行中也
     // 不能清掉本轮在途记录（第九十五轮 [13]）
     const restoredOwner = inflightRestoredOwnerSession || '';
-    if (
-      (!restoredOwner || restoredOwner === (sessionId || ''))
-      && !busy
-      && !sendInFlight
-    ) {
-      // 以主槽记录自身的会话归属为准：内存归属可能已过期，
-      // 主槽也可能已被后续发送改写成另一会话的在途记录
-      // （第九十六轮 [14]）
-      clearInflightForCurrentSession();
+    if (!busy && !sendInFlight) {
+      if (inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY) {
+        // 备份槽记录按会话+文本清除（第九十七轮 [16]）
+        removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+      } else if (
+        !restoredOwner || restoredOwner === (sessionId || '')
+      ) {
+        // 以主槽记录自身的会话归属为准：内存归属可能已过期，
+        // 主槽也可能已被后续发送改写成另一会话的在途记录
+        // （第九十六轮 [14]）
+        clearInflightForCurrentSession();
+      }
     }
     inflightRestoredText = '';
     inflightRestoredOwnerSession = '';
     inflightRestoredBaseline = 0;
+    inflightRestoredKeyName = '';
   }
   saveDraft();
 });

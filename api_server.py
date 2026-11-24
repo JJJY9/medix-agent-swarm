@@ -5557,10 +5557,12 @@ def _context_medication_names(context: Any) -> List[str]:
                 ):
                     names.append(switched)
                 continue
+            # 语气词后的余文可能是药名（停用了阿司匹林）：不能按
+            # 纯标注剔除前一条在用药物（第九十七轮 [5]）
+            annotation_tail = remainder.lstrip("了啦啊呀").strip()
             if (
-                not remainder
-                or remainder[0] in "了啦啊呀"
-                or _STOP_REMAINDER_TIME_RE.match(remainder)
+                not annotation_tail
+                or _STOP_REMAINDER_TIME_RE.match(annotation_tail)
             ):
                 # 「已停药两个月/（2025年10月）」：标注带时长，
                 # 剔除前一条药名（pop 会跳过剂量/频次片段）
@@ -5582,6 +5584,12 @@ def _context_medication_names(context: Any) -> List[str]:
                 for piece in re.split(r"[\s和与及]+", head)
                 if piece.strip()
             ]
+            # 药名与标注之间可能隔着剂量/频次（阿司匹林 100mg 已停用）：
+            # 先跳过非药名片段再剔除被标注的药名（第九十七轮 [12]）
+            while head_pieces and _NON_DRUG_SEGMENT_RE.match(
+                head_pieces[-1]
+            ):
+                head_pieces.pop()
             if head_pieces:
                 head_pieces.pop()
             for piece in head_pieces:
@@ -13541,19 +13549,20 @@ def _family_attention(
             "label": f"化验异常 {labs['abnormal']} 项",
             "detail": "、".join(labs.get("items") or [])[:120],
         }
+    if bp_alert and bp_alert.get("level") == "warning":
+        # 无目标设置的 2 级高血压：与健康提示血压分级同口径；
+        # 更重的血压 warning 不能被血糖提示遮蔽（第九十七轮 [15]）
+        return {
+            "level": "warning",
+            "label": "血压偏高",
+            "detail": str(bp_alert.get("detail") or "")[:120],
+        }
     if glucose_alert:
         # 无目标设置的偏高血糖：与健康提示 member_glucose_alerts 同口径
         return {
             "level": "warning",
             "label": "血糖偏高",
             "detail": glucose_alert[:120],
-        }
-    if bp_alert and bp_alert.get("level") == "warning":
-        # 无目标设置的 2 级高血压：与健康提示血压分级同口径
-        return {
-            "level": "warning",
-            "label": "血压偏高",
-            "detail": str(bp_alert.get("detail") or "")[:120],
         }
     over_target = [
         item for item in (metrics or [])
