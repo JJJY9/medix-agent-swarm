@@ -346,7 +346,10 @@ def test_frontend_abort_restores_composer_snapshot():
     marker = "announceChat('已停止生成')"
     start = source.index(marker)
     body = source[start:start + 1200]
-    assert "lastRestoredComposerText = els.input.value" in body
+    assert (
+        "lastRestoredComposerText = restoredNow ? els.input.value "
+        ": ''"
+    ) in body
 
 
 # ---------------------------------------------------------------- [14]

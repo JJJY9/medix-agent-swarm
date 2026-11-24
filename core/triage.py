@@ -11,7 +11,10 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.context import medication_context_text
-from core.medication_safety import DRUG_GROUPS as _DRUG_GROUPS
+from core.medication_safety import (
+    DRUG_GROUPS as _DRUG_GROUPS,
+    _AMBIGUOUS_SHORT_ALIASES,
+)
 from core.medication_text import (
     BRAND_DRUG_NAME_RE as _BRAND_DRUG_NAME_RE,
     GENERIC_DRUG_NAME_RE as _GENERIC_DRUG_NAME_RE,
@@ -190,7 +193,8 @@ PREGNANCY_TERMS = (
 #: 状态；「剖宫产5年了/剖宫产术后5年」是既往史，不算当前妊娠
 _CAESAREAN_RECENT_RE = re.compile(
     r"(?:剖宫产|剖腹产)(?:术后)?\s*"
-    r"(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周|个?月)"
+    r"(?:(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周)|"
+    r"(?:[1-9]|1[01]|[一二两三四五六七八九十])\s*个?月)"
     r"|(?:剖宫产|剖腹产)\s*(?:手术)?\s*"
     r"(?:之后|以后|术后|后|刚做完|做完|刚手术)"
     r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
@@ -206,13 +210,14 @@ _POSTPARTUM_TRIGGER_RE = re.compile(
     r"(?:生产|分娩)(?:的)?(?:时候|时(?!间)|完|了|后)|"
     r"(?:剖宫产|剖腹产)(?:手术)?(?:时|的时候)|"
     r"生(?:孩子|宝宝|娃)(?:的)?(?:时候|时(?!间))|"
-    r"(?<![花陌医卫学究发])生(?:的)?(?:时候|时(?!间))|"
+    r"(?<![花陌医卫学究发出产人女男再养])生(?:的)?(?:时候|时(?!间))|"
     r"生下(?:孩子|宝宝|娃)?|"
     r"坐月子|月子里|月子中|产褥期)"
 )
 _POSTPARTUM_YEARS_AFTER_RE = re.compile(
     r"^\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
 )
 
 
@@ -581,7 +586,8 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
     # 「三年前流产过」「两年前胎停过一次」「N年前人流」
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
@@ -605,12 +611,15 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     # 与主诉路径的 _PAST_OBSTETRIC_YEARS 同口径
     r"(?:产后|流产后|顺产后|引产后|胎停后)\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)|"
     r"产后抑郁|"
     r"剖宫产(?:手术)?(?:术后|之后|以后|后)?\s*"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)|"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)|"
     r"剖腹产(?:手术)?(?:术后|之后|以后|后)?\s*"
-    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
+    r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年|"
+    r"(?:1[2-9]|[2-9][0-9])\s*个?月|十[一二]\s*个?月)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
     r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
@@ -1819,11 +1828,21 @@ IMMUNOSUPPRESSION_TERMS = (
     "化疗", "放疗", "免疫抑制", "器官移植", "骨髓移植", "造血干细胞移植",
     "艾滋病", "hiv", "长期激素", "长期使用激素", "甲氨蝶呤", "环孢素",
     "他克莫司", "吗替麦考酚酯", "生物制剂",
+    # 常见免疫抑制/长期激素药名（结构化用药清单里写的是药名而不是
+    # 「激素」二字时同样要触发免疫抑制伴发热规则，第八十六轮）
+    "硫唑嘌呤", "环磷酰胺", "来氟米特", "阿达木单抗", "英夫利西单抗",
+    "依那西普", "托法替布",
     # 英文表述（输入在 _active_medical_text 中已转小写）
     "chemotherapy", "chemo", "immunosuppression",
     "immunosuppressed", "organ transplant", "stem cell transplant",
     "methotrexate", "cyclosporine", "tacrolimus", "mycophenolate",
+    "azathioprine", "cyclophosphamide", "leflunomide", "adalimumab",
     "biologic",
+) + tuple(
+    str(alias).lower()
+    for _group in ("corticosteroids", "azathioprine")
+    for _canonical, _aliases in _DRUG_GROUPS.get(_group, ())
+    for alias in _aliases
 )
 ANTICOAGULANT_TERMS = (
     "华法林", "利伐沙班", "阿哌沙班", "达比加群", "艾多沙班",
@@ -1831,6 +1850,8 @@ ANTICOAGULANT_TERMS = (
     # 英文药名（输入在 _active_medical_text 中已转小写）
     "warfarin", "rivaroxaban", "apixaban", "dabigatran",
     "edoxaban", "heparin", "enoxaparin", "anticoagulant",
+    # 国内常用 DOAC 商品名（拜瑞妥/泰毕全/艾乐妥/里先安）
+    "拜瑞妥", "泰毕全", "艾乐妥", "里先安",
 )
 #: 纯跌倒本身不等于头部外伤；只有确实撞到/碰到头才按头部外伤处理
 HEAD_TRAUMA_TERMS = (
@@ -2138,6 +2159,24 @@ _LONG_STOP_PATTERN = re.compile(
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年)"
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
     r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用)"
+    # 英文停药表述（warfarin was stopped 2 years ago / no longer
+    # taking / discontinued ... for years）
+    r"|(?:stopped|discontinued|ceased|quit)\s+(?:taking\s+|using\s+)?"
+    r"[^,.;!?\n]{0,24}?"
+    r"(?:[0-9]+\s*(?:years?|months?)|a\s+year|one\s+year)\s*"
+    r"(?:ago)?"
+    r"|(?:not\s+(?:on|taking)|no\s+longer\s+(?:taking|on))"
+)
+#: 英文远期停药分句（warfarin was stopped 2 years ago）与重启线索
+_ENGLISH_STOP_RE = re.compile(
+    r"\b(?:stopped|discontinued|ceased|quit|"
+    r"no\s+longer\s+(?:taking|on)|not\s+(?:on|taking))\b",
+    re.IGNORECASE,
+)
+_ENGLISH_RESTART_RE = re.compile(
+    r"\b(?:restarted|restarting|started\s+again|back\s+on|"
+    r"resumed|currently\s+taking)\b",
+    re.IGNORECASE,
 )
 #: 明确结束的长期治疗时间线（化疗结束五年/放疗完成多年）：与远期
 #: 停药一样，可以否定同段消息里的「没吃完」
@@ -2146,6 +2185,8 @@ _LONG_ENDED_TREATMENT_RE = re.compile(
     # 三个月」与当前抗凝/免疫抑制语境无关，不能据此丢弃「没吃完」
     r"(?:(?:化疗|放疗|靶向治疗|免疫治疗|抗肿瘤治疗)"
     r"[^，。；]{0,8}?(?:结束|完成|做完|停止)|"
+    r"(?:finished|completed|done\s+with)\s+(?:the\s+)?"
+    r"(?:chemo|chemotherapy|radiotherapy)[^,.;!?\n]{0,16}?|"
     r"(?:结束|完成|做完|停止)[^，。；]{0,8}?"
     r"(?:化疗|放疗|靶向治疗|免疫治疗|抗肿瘤治疗))"
     r"[^，。；]{0,6}?"
@@ -2299,6 +2340,7 @@ _DRUG_GROUP_ALIASES = tuple(sorted(
         for _canonical, aliases in items
         for alias in aliases
         if len(str(alias)) >= 2
+        and str(alias).lower() not in _AMBIGUOUS_SHORT_ALIASES
     },
     key=len,
     reverse=True,
@@ -2545,6 +2587,8 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
 #: 第二分支必须带完成体（过/了），且间隔里不能出现「开始/至今/一直」：
 #: 「3个月前开始化疗」是进行中的治疗，不能按已结束处理
 _CHEMO_ENDED_RE = re.compile(
+    r"(?:finished|completed|done\s+with)\s+(?:the\s+)?"
+    r"(?:chemo|chemotherapy|radiotherapy|radiation)[^,.;!?\n]{0,12}|"
     r"(?:化疗|放疗|靶向治疗|免疫治疗)(?:已经?|已)?\s*"
     r"(?:结束|完成|做完|停止)(?:了|后)?"
     r"|[0-9一二两三四五六七八九十半几]+\s*(?:年|个月)\s*前"
@@ -2944,6 +2988,15 @@ def _active_medical_text(
                 continue
             restart_parts.append(follow)
         restart_window = "；".join(restart_parts)[:40]
+        if (
+            _ENGLISH_STOP_RE.search(clause)
+            and _LONG_STOP_PATTERN.search(clause)
+            and not _ENGLISH_RESTART_RE.search(clause)
+            and not _ENGLISH_RESTART_RE.search(restart_window)
+        ):
+            # 英文远期停药（warfarin was stopped 2 years ago）与
+            # 中文口径一致：不算当前用药（第八十六轮）
+            continue
         if (
             _NEGATED_STOP_PATTERN.search(clause)
             or _STOP_INTENT_PATTERN.search(clause)

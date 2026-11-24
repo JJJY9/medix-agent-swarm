@@ -789,6 +789,7 @@ const INFLIGHT_QUESTION_OTHER_KEY = 'medix.inflightQuestionOther';
 //: 确实来自该记录时才清空（用户自己保存的同题草稿不能被误删）
 let inflightRestoredText = '';
 let inflightRestoredOwnerSession = '';
+let inflightReconciledThisRestore = false;
 //: 在途记录的发送前最后消息 id：只有比它更新的问答才算本轮落库
 let inflightRestoredBaseline = 0;
 //: 启动对账刚确认已落库的在途主诉：提交入口在首屏恢复完成后据此
@@ -20706,6 +20707,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
   // 重连重试仍能回填快照；草稿冲突标志在响应返回后再读取，
   // 覆盖等待期间用户新填写的补充信息
   sessionRestoreInFlight = true;
+  inflightReconciledThisRestore = false;
 
   try {
     const res = await fetch(
@@ -20920,8 +20922,8 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
     // 只清理确实来自在途记录的文本：用户自己重写的同题草稿不能
     // 因为「等于上一条提问」就被当成重复提交删掉
     const inflightText = (
-      !inflightRestoredOwnerSession
-      || inflightRestoredOwnerSession === expectedSession
+      inflightRestoredOwnerSession
+      && inflightRestoredOwnerSession === expectedSession
     ) ? String(inflightRestoredText || '').trim() : '';
     const inflightBaseline = Number(inflightRestoredBaseline || 0);
     inflightRestoredText = '';
@@ -20998,6 +21000,7 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
         inflightReconciled = true;
       }
     }
+    inflightReconciledThisRestore = inflightReconciled;
     if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
@@ -21019,13 +21022,23 @@ async function restoreCurrentSession(expectedQuestion = '', baselineMessageId = 
 function scheduleAbortReconcile(session, question, baselineMessageId) {
   // 停止接收不等于服务端没有保存结果；稍后拉取一次会话，
   // 仅当本轮问答已落库时恢复，避免清掉停止提示并重复会诊
-  [1200, 3500].forEach((delay) => {
-    setTimeout(() => {
-      if (!busy && sessionId === session) {
-        restoreCurrentSession(question, baselineMessageId);
+  let secondTimer = 0;
+  setTimeout(async () => {
+    if (!busy && sessionId === session) {
+      await restoreCurrentSession(question, baselineMessageId);
+      if (inflightReconciledThisRestore) {
+        // 首次对账已确认落库并剥离输入框：用户在 1.2s~3.5s 之间
+        // 重新输入同一问题准备重问，第二次对账不能再次剥离
+        // （第八十六轮）
+        clearTimeout(secondTimer);
       }
-    }, delay);
-  });
+    }
+  }, 1200);
+  secondTimer = setTimeout(() => {
+    if (!busy && sessionId === session) {
+      restoreCurrentSession(question, baselineMessageId);
+    }
+  }, 3500);
 }
 
 /* ---------- 提交主诉 ---------- */
@@ -21140,11 +21153,15 @@ async function send(question, composerSubmit = false) {
         // 否则另一位患者的会话会带着前一位病情的草稿被提交；
         // 等待期间的新草稿合并保留（第八十五轮）
         const pendingDraft = String(els.input.value || '');
-        const restoredText = (
-          pendingDraft.trim()
-          && pendingDraft !== question
-          && !pendingDraft.includes(question)
-        ) ? `${question}\n\n${pendingDraft}` : question;
+        let restoredText = question;
+        if (pendingDraft.trim() && pendingDraft !== question) {
+          restoredText = pendingDraft.includes(question)
+            ? pendingDraft
+            : `${question}\n\n${pendingDraft}`;
+        }
+        if (restoredText.length > 2000) {
+          restoredText = restoredText.slice(0, 2000);
+        }
         els.input.value = restoredText;
         detachedComposerText = restoredText;
         autoGrow();
@@ -21187,11 +21204,15 @@ async function send(question, composerSubmit = false) {
       // 等待期间继续输入的新草稿也不能被它覆盖（第八十五轮）
       safeSessionRemove(INFLIGHT_QUESTION_KEY);
       const pendingDraft = String(els.input.value || '');
-      const restoredText = (
-        pendingDraft.trim()
-        && pendingDraft !== question
-        && !pendingDraft.includes(question)
-      ) ? `${question}\n\n${pendingDraft}` : question;
+      let restoredText = question;
+      if (pendingDraft.trim() && pendingDraft !== question) {
+        restoredText = pendingDraft.includes(question)
+          ? pendingDraft
+          : `${question}\n\n${pendingDraft}`;
+      }
+      if (restoredText.length > 2000) {
+        restoredText = restoredText.slice(0, 2000);
+      }
       els.input.value = restoredText;
       detachedComposerText = restoredText;
       preserveDraftProfile(sendProfile, restoredText);
@@ -21616,8 +21637,8 @@ async function send(question, composerSubmit = false) {
       } catch {
         // 忽略
       }
-      restoreComposer(question);
-      lastRestoredComposerText = els.input.value;
+      const restoredNow = restoreComposer(question);
+      lastRestoredComposerText = restoredNow ? els.input.value : '';
       preserveDraftProfile(sendProfile, question);
       renderError('档案已切换，本轮会诊未提交，主诉已放回输入框。');
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
@@ -21628,11 +21649,13 @@ async function send(question, composerSubmit = false) {
       announceChat('已停止生成');
       // 本轮未落库时主诉不能只留在卡片闭包里：刷新/新建会诊后
       // 那份描述将无法恢复
-      restoreComposer(question);
+      const restoredNow = restoreComposer(question);
       // 与通用错误分支一致地记录恢复快照：之后「继续本次会诊」
       // 成功落库时才能剥离输入框/草稿里的同一主诉，避免回车
-      // 重复提交、重复计费（第七十三轮审查）
-      lastRestoredComposerText = els.input.value;
+      // 重复提交、重复计费（第七十三轮审查）；restoreComposer
+      // 因草稿已含主诉而未写入时不记录，避免剥离用户草稿中间
+      // 的子串（第八十六轮）
+      lastRestoredComposerText = restoredNow ? els.input.value : '';
       preserveDraftProfile(sendProfile, question);
       renderStopped({
         question, askTurn, baselineMessageId, profile: sendProfile,
@@ -21667,8 +21690,8 @@ async function send(question, composerSubmit = false) {
       // 传输错误也可能发生在服务端已保存之后：稍后核对并恢复，避免重试重复落库
       announceChat('会诊中断');
       // 失败轮次可能从未落库：把主诉放回输入框与草稿
-      restoreComposer(question);
-      lastRestoredComposerText = els.input.value;
+      const restoredNow = restoreComposer(question);
+      lastRestoredComposerText = restoredNow ? els.input.value : '';
       preserveDraftProfile(sendProfile, question);
       renderError(
         err.message || String(err),
@@ -22864,11 +22887,11 @@ function restoreComposer(question) {
   // 不能让 submit 的预清空静默丢掉用户文本。输入框已有内容时
   // 追加保留而不是直接丢弃（两段文本用户都可再编辑）
   const text = String(question || '');
-  if (!text) return;
+  if (!text) return false;
   const current = els.input.value;
   let merged = text;
   if (current.trim()) {
-    if (current.includes(text)) return;
+    if (current.includes(text)) return false;
     merged = `${text}
 
 ${current}`;
@@ -22883,6 +22906,7 @@ ${current}`;
   els.input.value = merged;
   autoGrow();
   saveDraft();
+  return true;
 }
 
 function preserveDraftProfile(profile, text) {
