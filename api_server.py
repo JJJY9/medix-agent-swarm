@@ -7391,8 +7391,11 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             != int(orphan_reminder["id"])
         ):
             # 预约已有自己的待办：合并重复的脱钩旧提醒，避免两条
-            # 同日 pending 与删除就诊后的幽灵
-            store.delete_reminder(int(orphan_reminder["id"]))
+            # 同日 pending 与删除就诊后的幽灵。系统合并不是用户
+            # opt-out，不能写「不再提醒」墓碑（第八十九轮 [9]）
+            store.delete_reminder(
+                int(orphan_reminder["id"]), record_tombstone=False
+            )
             orphan_reminder = None
         if reminder is None:
             deleted_marker = ""
@@ -7411,7 +7414,9 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             and deleted_marker
         ):
             # 用户删除过该预约的提醒：匿名脱钩待办同样不能继续触发
-            store.delete_reminder(int(orphan_reminder["id"]))
+            store.delete_reminder(
+                int(orphan_reminder["id"]), record_tombstone=False
+            )
             orphan_reminder = None
         if reminder is None and not deleted_marker:
             # 导入恢复的「仅提醒链接」待办（appointment_id=0）：接管它，
@@ -7477,7 +7482,10 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             # 就诊在安排期间被删除：回滚本次新建的预约/提醒，
             # 避免留下无主预约与待办提醒
             if reminder_created:
-                store.delete_reminder(reminder["id"])
+                # 回滚本次新建提醒：系统清理不能写成用户 opt-out
+                store.delete_reminder(
+                    reminder["id"], record_tombstone=False
+                )
             if appointment_created:
                 store.delete_appointment(appointment["id"])
             raise HTTPException(status_code=404, detail="记录不存在")
@@ -13542,6 +13550,11 @@ async def family_overview(days: int = 7):
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     cutoff = (now - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    #: 目标分级窗口：与健康提示一致的近 max(days, 30) 天；窗口外的
+    #: 旧读数只在卡片展示数值，不再标「超标/未达标」（第八十九轮 [12]）
+    grade_cutoff = (
+        now - timedelta(days=max(days, 30) - 1)
+    ).strftime("%Y-%m-%d")
 
     saved_profiles = await asyncio.to_thread(store.list_profiles)
     used_names = await asyncio.to_thread(store.list_used_profile_names)
@@ -13730,7 +13743,9 @@ async def family_overview(days: int = 7):
                 # （第八十六轮）
                 if day_total is not None:
                     over_target = day_total < float(target["value1"])
-            else:
+            elif str(item.get("measured_at") or "")[:10] >= grade_cutoff:
+                # 窗口外的旧读数不能作为当前「超标/未达标」：与
+                # grade_metrics 目标计数及健康提示窗口一致
                 over_target = metric_over_target(
                     metric, item.get("value1"), item.get("value2"), target
                 )
