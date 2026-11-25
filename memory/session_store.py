@@ -5495,6 +5495,10 @@ class SessionStore:
         moved_key = (table, "__moved__")
         moved = state.setdefault(moved_key, set())
         matched = state.setdefault((table, "__matched__"), set())
+        #: 本次导入每个本地候选被哪条备份原始主键认领：兄弟行自己
+        #: 认领的恢复副本仍是那条备份记录的存活证据，不能被当成
+        #: 「本轮已消化的行」跳过（第一百零三轮 [13]）
+        claim_owner = state.setdefault((table, "__claim_owner__"), {})
         #: 本次导入已处理过的备份原始主键：同名同秒的另一条备份记录
         #: 若已处理完，其本地存活行不再被它占用
         seen_raw_ids = state.setdefault((table, "__seen_raw__"), set())
@@ -5504,6 +5508,8 @@ class SessionStore:
 
         def _claim(candidate: int, mark_moved: bool = False) -> int:
             """认领一行：从所有身份组与漂移候选中排除，避免二次认领。"""
+            if raw_id > 0:
+                claim_owner[candidate] = raw_id
             if mark_moved:
                 moved.add(candidate)
             matched.add(candidate)
@@ -6516,6 +6522,43 @@ class SessionStore:
                 for other_id in tied
             )
 
+        def _tied_sibling_survives(sole: int) -> bool:
+            """被持平的同内容兄弟备份行是否都另有导入前已存在的存活行。
+
+            与 _tail_tied_survive 的差别：这里用「本次导入前已存在且
+            内容等于兄弟备份」的口径，排除本轮刚补插出来的旧副本，
+            避免链式删除后的补插被误当兄弟行的独立存活证据
+            （第一百零三轮 [7]）。
+            """
+            if not backup_tails or not backup_contents or tail_where is None:
+                return False
+            expected_content = backup_contents.get(raw_id)
+            if expected_content is None:
+                return False
+            own_score = _tail_match_score(sole, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            tied = []
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if backup_contents.get(other_id) != expected_content:
+                    continue
+                if _tail_match_score(sole, other_id) == own_score:
+                    tied.append(other_id)
+            if not tied:
+                return False
+            return all(
+                _backup_row_present_for(other_id, sole)
+                for other_id in tied
+            )
+
         def _candidate_same_profile(candidate: int) -> bool:
             """候选是否仍属于当前备份行的档案。"""
             if not row_profile:
@@ -7510,7 +7553,9 @@ class SessionStore:
                     best_other = other_score
             return best_other > own_score
 
-        def _other_backup_row_survives(candidate: int) -> bool:
+        def _other_backup_row_survives(
+            candidate: int, count_own_claims: bool = False
+        ) -> bool:
             """备份中 raw id == candidate 的那条记录是否另有本地存活行。
 
             本地自增 id 与备份原始主键数值相等可能只是巧合（恢复后
@@ -7536,10 +7581,15 @@ class SessionStore:
             for other in rows:
                 other_id = int(other["id"])
                 if other_id in moved or other_id in matched:
-                    # 本轮已被其它备份行认领/改挂的行不算本记录的
-                    # 存活证据：同内容孪生记录的恢复副本会被误当
-                    # 成本记录仍存在（第九十四轮 [9]）
-                    continue
+                    # 默认口径：本轮已被任何备份行认领/改挂的行不算
+                    # 存活证据（第九十四轮 [9]）。主键撞号检查需要
+                    # 认领者口径：被检查记录自己认领的恢复副本仍是
+                    # 它的存活行（第一百零三轮 [13]）
+                    if not (
+                        count_own_claims
+                        and claim_owner.get(other_id) == candidate
+                    ):
+                        continue
                 if backup_ids and other_id in backup_ids:
                     # 只有该兄弟行确实对应备份里另一条「同档案同秒」
                     # 记录时才不能当作本备份记录的存活行证据；
@@ -7928,7 +7978,9 @@ class SessionStore:
                             and _normalize_profile_name(
                                 str(row["profile"] or "")
                             ) == candidate_profile_key
-                            and not _other_backup_row_survives(candidate)
+                            and not _other_backup_row_survives(
+                                candidate, count_own_claims=True
+                            )
                         ):
                             # 主键撞号只说明数字巧合：还要核对候选内容
                             # 是否真是那条备份记录的版本；内容其实是
@@ -8323,11 +8375,15 @@ class SessionStore:
                                 sole, cross_profile=True
                             )
                             and not _raw_signature_present(sole)
+                            and not _tied_sibling_survives(sole)
                         ):
                             # 同档案同内容孪生尾字段打平，且本行原签名
                             # （内容+尾字段）在本地已完全缺失：候选只是
                             # 兄弟行的编辑版本，本行必须按被删记录补插，
-                            # 否则尾字段永久丢失（第一百零二轮 [8]）
+                            # 否则尾字段永久丢失（第一百零二轮 [8]）。
+                            # 被持平的兄弟备份行若已另有存活行，候选
+                            # 只能是本行被编辑的存活版本，不能补插
+                            # （第一百零三轮 [7]）
                             return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
@@ -18687,6 +18743,85 @@ class SessionStore:
                     )
         return False
 
+    def _adopt_followup_reminder_for_kept_appointment(
+        self,
+        visit_id: int,
+        reminder_id: Any,
+        appointment_id: int,
+        normalized: Dict[str, Any],
+    ) -> None:
+        """把就诊仍链接的脱钩待办提醒接管到被保留的自动预约上。
+
+        复诊日期改到与该预约同日时预约被保留，但主
+        `_drop_visit_followup_locked` 仍会把就诊链接的脱钩提醒当旧
+        复诊安排删除，回写又只能取预约自带的提醒，导致
+        「已安排复诊」却没有待办提醒（第一百零三轮 [8]）。
+        调用方须已持有写锁与事务（update_visit_record 内）。
+        """
+        reminder = _safe_db_id(reminder_id)
+        appointment = _safe_db_id(appointment_id)
+        if not reminder or not appointment:
+            return
+        reminder_row = self._conn.execute(
+            "SELECT done, appointment_id FROM reminders WHERE id = ?",
+            (int(reminder),),
+        ).fetchone()
+        if (
+            reminder_row is None
+            or int(reminder_row["done"] or 0)
+            or int(reminder_row["appointment_id"] or 0) != 0
+        ):
+            return
+        existing_pending = self._conn.execute(
+            "SELECT 1 FROM reminders WHERE done = 0 AND appointment_id = ?"
+            " LIMIT 1",
+            (int(appointment),),
+        ).fetchone()
+        if existing_pending is not None:
+            # 预约本身已有待办提醒：回写会用它，不能再接管一条
+            # 造成同一预约两条 pending（第一百零三轮 [8]）
+            return
+        appointment_row = self._conn.execute(
+            "SELECT scheduled_at FROM appointments WHERE id = ?",
+            (int(appointment),),
+        ).fetchone()
+        if appointment_row is None:
+            return
+        adopt_day = str(appointment_row["scheduled_at"] or "")[:10]
+        adopt_due = ""
+        try:
+            adopt_date = datetime.strptime(adopt_day, "%Y-%m-%d").date()
+        except ValueError:
+            adopt_date = None
+        if adopt_date is not None:
+            try:
+                adopt_due = max(
+                    adopt_date - timedelta(days=1),
+                    datetime.now().date(),
+                ).strftime("%Y-%m-%d")
+            except OverflowError:
+                adopt_due = ""
+        if not adopt_due:
+            return
+        adopt_note = " ".join(
+            part for part in (
+                f"复诊 {adopt_day}",
+                normalized.get("department") or "",
+                normalized.get("doctor") or "",
+            ) if part
+        )[:MAX_REMINDER_NOTE_LENGTH]
+        if not adopt_note:
+            return
+        self.adopt_orphan_followup_reminder(
+            reminder,
+            int(appointment),
+            adopt_due,
+            adopt_note,
+            str(normalized.get("profile") or ""),
+            _in_transaction=True,
+            owner_visit_id=int(visit_id),
+        )
+
     def update_visit_record(
         self,
         visit_id: int,
@@ -18864,9 +18999,13 @@ class SessionStore:
                         (linked_reminder, int(visit_id)),
                     ).fetchone() is not None
                     if reminder_owner_ok and not shared_linked:
+                        # 已完成提醒只迁档案不刷新 updated_at：否则会
+                        # 晚于删除墓碑、改期重建复活已删提醒
+                        # （第一百零轮 [8]、第一百零三轮 [9]）
                         self._conn.execute(
                             "UPDATE reminders SET profile = ?,"
-                            " updated_at = ? WHERE id = ?",
+                            " updated_at = CASE WHEN done = 0 THEN ?"
+                            " ELSE updated_at END WHERE id = ?",
                             (normalized["profile"], now, linked_reminder),
                         )
                     else:
@@ -18974,6 +19113,18 @@ class SessionStore:
                         keep_date=normalized["next_followup_date"],
                     ):
                         kept_extra_ids.append(extra_id)
+                if kept_extra_ids:
+                    # 与新复诊日期同日的遗留自动预约被保留时，就诊仍
+                    # 链接的脱钩待办提醒必须接管到该预约：主 _drop 会
+                    # 把它当旧复诊安排删除，而回写只能取预约自带的
+                    # 提醒，最终「已安排复诊」却没有待办提醒
+                    # （第一百零三轮 [8]）
+                    self._adopt_followup_reminder_for_kept_appointment(
+                        int(visit_id),
+                        old_row["followup_reminder_id"],
+                        kept_extra_ids[0],
+                        normalized,
+                    )
                 kept = self._drop_visit_followup_locked(
                     int(visit_id),
                     old_row["followup_appointment_id"],
