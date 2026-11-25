@@ -2606,6 +2606,14 @@ def _forwarded_client_address(request: Request) -> str:
         return ""
     if use_forwarded and _proxy_header_unprovable(request, "forwarded"):
         return ""
+    if use_real:
+        raw_real = _proxy_header_raw_values(request, "x-real-ip")
+        if raw_real:
+            last_real = str(raw_real[-1]).strip()
+            if last_real and not _normalize_forwarded_address(last_real):
+                # 追加行不可解析（unknown/unix:）：代理地址不可证明，
+                # 不能回退到客户端自带的更早行（第一百零七轮 [11]）
+                return ""
     forwarded_for = (
         ",".join(_proxy_header_values(request, "x-forwarded-for")).strip()
         if use_xff else ""
@@ -5466,6 +5474,13 @@ def _evaluate_medication_safety(
     return safety
 
 
+#: 群标记停药片段：「华法林、阿司匹林，都停了」：作用于本段
+#: 已枚举的全部药名（第一百零七轮 [13]）
+_STOP_ALL_ANNOTATION_RE = re.compile(
+    r"^(?:都|也|均|全都|都已|均已|也都|都已经?)\s*"
+    r"(?:停用了|停用|停药|停服|停止了|停掉了|停了|不吃了|不再吃了|"
+    r"不再服用了?|停止服用了?|停止使用了?)(?:了)?$"
+)
 #: 纯停药标注片段：「华法林，已停用」的「已停用」不是独立药名
 _STOP_ANNOTATION_ONLY_RE = re.compile(
     r"^(?:已停用|已停药|已停服|停用中|已停了|已停|停药中|"
@@ -5594,6 +5609,11 @@ def _context_medication_names(context: Any) -> List[str]:
             and text[match.start() - 1] != chr(10)
         ):
             return match.group(0)
+        first_item = segment.split("、")[0].strip()
+        if _STOP_REMAINDER_TIME_RE.match(first_item):
+            # 「，已停用两个月、布洛芬」：时长余文说明布洛芬不是共享
+            # 停药的并列（round98/99 契约、第一百零七轮 [12]）
+            return match.group(0)
         if re.search(
             r"(?:后(?:服用|吃|服|用|加用|改用|换用)|改用|换用|"
             r"换成|改吃|换吃|继续|现在|目前|一直|长期|"
@@ -5635,6 +5655,33 @@ def _context_medication_names(context: Any) -> List[str]:
             items,
         ):
             return match.group(0)
+        stripped_items = items.rstrip()
+        if stripped_items.endswith(("、", "，", ",", "（", "(")):
+            # 停药动词挂在最后一项自己的标注上（「A、停了两个月的B」
+            # 「A、B（停用两个月）」），不是并列共享停药
+            # （round101/102/103/104 契约）
+            return match.group(0)
+        tail_after = text[match.end(): match.end() + 30]
+        tail_lead = tail_after.lstrip(" \t")[:1]
+        if tail_lead and tail_lead not in "；;，,。！？/\n":
+            # 动词后直接跟时长：只有群标记（都/也/均/均已/都已/也都）
+            # 才把停药分发到全部并列项；「A、B停用半年多」只停最后
+            # 一项（round103 契约），保留「都停了两年」共享
+            # （第一百零七轮 [17]）
+            marker = match.group(0)[
+                len(items): len(match.group(0)) - len(verb)
+            ].strip()
+            if not (
+                "都" in marker or "均" in marker
+                or marker in ("也", "也已", "也已经")
+            ):
+                return match.group(0)
+        if re.search(
+            r"(?:还在|仍在|又在|现在又|继续吃|继续服用|仍吃)", tail_after
+        ):
+            # 「都停了两年但现在又在吃」：共享停药被续用覆盖，
+            # 不能把列表项按已停用抹掉（第一百零七轮 [17]）
+            return match.group(0)
         return "，".join(
             item.strip() + verb
             for item in items.split("、")
@@ -5645,13 +5692,20 @@ def _context_medication_names(context: Any) -> List[str]:
         r"([^；;，,。！？/\n]+?)(?:都|也|均|全都|已经?|早已|已都)*\s*"
         r"(停用了|停用|停药|停服|停止服用了|停止服用|停止了|停掉了|"
         r"停了|不吃了|不再吃了|不再服用了|不再服用)"
-        r"(?=\s*(?:[；;，,。！？/\n]|$))",
+        r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?\s*"
+        r"(?:多|半|来)?\s*(?:天|日|周|星期|个月|月|年)"
+        r"|[；;，,。！？/\n]|$))",
         _expand_shared_stop_suffix,
         text,
     )
     for part in re.split(r"[；;，,、。！？/\n]+", text):
         part = part.strip()
         if not part:
+            continue
+        if _STOP_ALL_ANNOTATION_RE.match(part):
+            # 「华法林、阿司匹林，都停了」：群标记作用于本段已枚举的
+            # 全部药名，不能只 pop 最后一条（第一百零七轮 [13]）
+            names.clear()
             continue
         if _STOP_ANNOTATION_ONLY_RE.match(part):
             # 紧跟药名的纯停药标注：剔除最近的药名（跳过剂量片段）

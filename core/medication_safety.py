@@ -998,6 +998,29 @@ def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
     return False
 
 
+#: 顿号列表共享停药：「华法林、阿司匹林都停了两年」：群标记动词
+#: 作用于整个列表，列表中的每种药都按已停用（第一百零七轮 [17]）
+_LIST_SHARED_STOP_RE = re.compile(
+    r"^[^，。；,.!?！？\n]{0,24}?"
+    r"(?:都|也|均|全都|都已|均已|也都)(?:已经)?\s*"
+    r"(?:停用了|停用|停药|停服|停止了|停掉了|停了|"
+    r"不吃了|不再吃了|不再服用了?|停止服用了?|停止使用了?)"
+)
+
+
+def _list_shared_stop_matches(suffix: str, prefix: str = "") -> bool:
+    """药名后的顿号列表（或列表末项）是否以共享停药动词收尾。"""
+    text = str(suffix or "")
+    list_prefix = bool(
+        re.search(r"[、,，/＋和与及跟]$", str(prefix or "").rstrip())
+    )
+    if not list_prefix and not re.match(r"^[、,，/＋和与及跟]", text):
+        return False
+    if re.search(r"(?:还在|仍在|没停|未停|尚未|不能停)", text):
+        return False
+    return _LIST_SHARED_STOP_RE.match(text) is not None
+
+
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     """长窗口里的远期停药是否指向当前药（而不是另一种药）。
 
@@ -1007,7 +1030,9 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     window = window or ""
     alias_lower = str(alias_lower or "").lower()
     for match in _LONG_STOP_CONTEXT.finditer(window):
-        after_span = window[match.start(): match.end()]
+        # 停药动词后可能紧跟药名宾语（去年停的阿司匹林）：
+        # 宾语归属窗口向动词后多取 8 字（第一百零七轮 [1]）
+        after_span = window[match.start(): match.end() + 8]
         after = _STOP_VERB_AFTER_OBJECT_RE.search(after_span)
         if after is not None:
             after_raw = after.group(1).strip()
@@ -1117,7 +1142,8 @@ _NEGATED_STOP_SUFFIX = re.compile(
 #: 裸「停」同样提取宾语（停华法林两年了），「停下来」等非药物
 #: 宾语由随后的 token 校验排除（第一百零五轮 [8]）
 _STOP_VERB_AFTER_OBJECT_RE = re.compile(
-    r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|停止|"
+    r"(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|"
+    r"停掉了|停服|停止服用|停止|"
     r"停(?!(?:经|机|工|课|业|车|电|水|职|赛|战|学|产|航|手|留|靠|放|歇))"
     r"|不吃了?)"
     r"\s*(?:了)?\s*"
@@ -1755,6 +1781,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # （第一百零五轮 [8]）
                 prefix + text[end:right + 120], alias_lower
             )
+            or _list_shared_stop_matches(suffix, prefix)
             or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)
