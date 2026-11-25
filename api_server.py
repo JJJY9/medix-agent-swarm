@@ -5418,14 +5418,16 @@ def _evaluate_medication_safety(
 #: 纯停药标注片段：「华法林，已停用」的「已停用」不是独立药名
 _STOP_ANNOTATION_ONLY_RE = re.compile(
     r"^(?:已停用|已停药|已停服|停用中|已停了|已停|停药中|"
-    r"已停止使用|已停止|已停用中|停了|停用了|停掉)$"
+    r"已停止使用|已停止|已停用中|停掉了|已停掉了|停止了|已停止了|"
+    r"停了|停用了|停掉)$"
 )
 #: 括号形式的停药标注：「X（已停用）」
 _STOP_ANNOTATION_INLINE_RE = re.compile(
     # 裸「停用/停药/停服」与英文 stopped/discontinued 同样是停药
     # 标注（第九十五轮 [18]）
     r"[（(]\s*(?:已停用|已停药|已停服|停用中|已停了|已停止使用|"
-    r"已停止|已停|停药|停服|停用|stopped|discontinued|stopping|"
+    r"已停止|已停|停掉了|已停掉了|停止了|停药|停服|停用|stopped|"
+    r"discontinued|stopping|"
     r"no longer (?:taking|on))\s*[）)]",
     re.IGNORECASE,
 )
@@ -5532,7 +5534,8 @@ def _context_medication_names(context: Any) -> List[str]:
                     names.append(piece)
             continue
         prefix_match = re.match(
-            r"^(?:已停用|已停药|已停服|停用中|停药|停服|停用)(.*)$",
+            r"^(?:已停用|已停药|已停服|已停|停用中|停药|停服|停用|"
+            r"停了|停掉|停掉了|停止了)(.*)$",
             part,
         )
         if prefix_match:
@@ -5573,10 +5576,13 @@ def _context_medication_names(context: Any) -> List[str]:
             continue
         suffix_stop = re.search(
             # 「已停用两个月」「停了」「停用了」同样是后缀停药标注
-            # （第九十八轮 [12]）
-            r"(?:已停用|已停药|已停服|停药|停用|停服|停了|停用了|停掉|已停)"
+            # （第九十八轮 [12]）；「停掉了/停止了」与尾部「了」
+            # （停了两个月了）同样是停药标注（第九十九轮 [11]）
+            r"(?:已停用|已停药|已停服|停药|停用|停服|停了|停掉了|"
+            r"停用了|停止了|停掉|已停|已停掉了|已停止了)"
             r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
-            r"(?:天|日|周|星期|个月|月|年)|大半年|半年|好几年|好久|很久)?$",
+            r"(?:天|日|周|星期|个月|月|年)|大半年|半年|好几年|好久|很久)?"
+            r"了?$",
             part,
         )
         if suffix_stop is not None:
@@ -7409,6 +7415,11 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     visit.get("followup_reminder_id") or 0
                 )
                 if linked_reminder_id:
+                    # 复诊已完成：仍挂在本就诊的脱钩待办提醒不再有
+                    # 意义，无其它引用时清理（第九十九轮 [15]）
+                    store.release_completed_followup_reminder(
+                        visit.get("id"), linked_reminder_id
+                    )
                     existing_reminder = store.get_reminder(
                         linked_reminder_id
                     )

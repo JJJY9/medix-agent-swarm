@@ -5448,6 +5448,19 @@ class SessionStore:
                 )
                 if tail_where is not None else None
             )
+            #: 本行内容按内容指纹口径归一化：同秒同尾孪生（内容不同、
+            #: 尾字段相同）不能都锚到同一个合成行（第九十九轮 [8]）
+            wanted_content = None
+            if backup_contents and content_values:
+                wanted_content = tuple(
+                    _canonical_local_time(
+                        " ".join(str(value).split())
+                    )
+                    or " ".join(str(value).split())
+                    for value in content_values
+                )
+            synth_match = None
+            synth_fallback = None
             for synth_id in backup_tails:
                 if str(backup_created.get(synth_id) or "") != created_key:
                     continue
@@ -5467,8 +5480,18 @@ class SessionStore:
                     )
                     if mismatch:
                         continue
-                raw_id = synth_id
-                break
+                if synth_fallback is None:
+                    synth_fallback = synth_id
+                if (
+                    wanted_content is not None
+                    and backup_contents.get(synth_id) == wanted_content
+                ):
+                    synth_match = synth_id
+                    break
+            if synth_match is not None:
+                raw_id = synth_match
+            elif synth_fallback is not None:
+                raw_id = synth_fallback
         moved_key = (table, "__moved__")
         moved = state.setdefault(moved_key, set())
         matched = state.setdefault((table, "__matched__"), set())
@@ -5945,7 +5968,10 @@ class SessionStore:
             另一条记录时，该候选是那条记录的存活行，不能认领给本行，
             否则被删记录无法补回、另一条记录会被复制。
             """
-            if not backup_contents or raw_id <= 0:
+            if not backup_contents or raw_id == 0:
+                # 合成负键（无 id 备份行）同样有真实备份身份：
+                # 不能按 raw_id<0 一刀切关掉内容归属判断
+                # （第九十九轮 [8]）
                 return False
             current = backup_contents.get(raw_id)
             if current is None:
@@ -6198,6 +6224,46 @@ class SessionStore:
                 if other_score > best_other:
                     best_other = other_score
             return best_other >= 0 and best_other == own_score
+
+        def _tail_uniquely_matches(candidate: int) -> bool:
+            """候选尾字段精确命中本行，且严格优于所有同秒兄弟行。
+
+            内容列被编辑后（如剂量 50mg→75mg），尾字段（备注等）
+            仍是归属证据：只有全部尾字段命中本行、且兄弟备份行的
+            匹配数都更低时，才能确认候选是本行的存活版本；与兄弟
+            打平则按被删记录补插（第九十九轮 [4]）。
+            """
+            if tail_where is None or not backup_tails:
+                return False
+            if not _tail_matches(candidate):
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if _tail_match_score(candidate, other_id) >= own_score:
+                    return False
+            return True
 
         def _soft_matches(candidate: int) -> bool:
             if soft_where is None:
@@ -8566,6 +8632,16 @@ class SessionStore:
                             )
                         )
                     )
+                    # 无 id 备份行：候选内容与本行完全一致且该内容
+                    # 不与兄弟备份行共享时，它就是本行的存活行；
+                    # 组内缺行是被删/被改挂的其它记录，不该阻止
+                    # 按内容配对（第九十九轮 [8]）
+                    or (
+                        raw_id <= 0
+                        and len(soft) == 1
+                        and not _backup_content_shared_with_sibling()
+                        and _candidate_content_matches_backup(min(soft))
+                    )
                 ):
                     candidates = soft
                 elif (
@@ -8947,6 +9023,25 @@ class SessionStore:
             # 漂移库中本地编号恰等于备份主键只是巧合：尾字段对不上
             # 时按被删记录补插（第八十七轮）
             return _ambiguous()
+        if (
+            backup_group_size > 1
+            and content_where
+            and not _candidate_content_matches_backup(sole)
+            and _candidate_edited(sole)
+            and _content_rows_missing_for_orphan()
+            and not _tail_uniquely_matches(sole)
+            # 改名/改标题（身份列）按软字段归属认领；时间/数值列
+            # 是同一记录的常规编辑（改期/改剂量后补正）——两类都
+            # 不按被删记录补插
+            and not _candidate_diff_hits_identity(sole)
+            and not _candidate_diff_claimable(sole)
+        ):
+            # 候选内容与本行备份内容不同且被编辑过、组内仍有备份
+            # 内容在本地缺失，尾字段也无法唯一归属本行：候选更可能
+            # 是被删孪生兄弟的存活版本，本行必须按被删记录补插
+            # （宁重复勿丢）；尾字段精确且唯一命中本行时仍按本行
+            # 存活版本认领（第九十九轮 [4]）
+            return _ambiguous()
         return _claim(sole)
 
     @staticmethod
@@ -8995,7 +9090,7 @@ class SessionStore:
 
     @staticmethod
     def _backup_content_fingerprint(
-        item: Dict[str, Any], columns: tuple
+        item: Dict[str, Any], columns: tuple, table: str = ""
     ) -> tuple:
         """按内容列生成备份行指纹（与 DB 读出值同样的字符串化口径）。"""
         values = []
@@ -9020,6 +9115,15 @@ class SessionStore:
                 values.append(f"{float(value):.10g}")
             else:
                 text = " ".join(str(value).split())
+                if table == "health_metrics" and name == "context":
+                    # 与入库 _normalize_metric 的 context 归一化口径
+                    # 一致（小写、无允许情境的指标置空），否则同一份
+                    # 外部备份重复导入会复制读数（第九十九轮 [14]）
+                    text = text.strip().lower()
+                    metric_name = str(item.get("metric") or "").strip()
+                    allowed = METRIC_CONTEXTS.get(metric_name, ())
+                    if not allowed or (text and text not in allowed):
+                        text = ""
                 if from_null_default:
                     # IFNULL 默认值是字符串形式的数字（如 -1e308）：
                     # 只有它需要与 DB 侧 float 格式化口径统一；
@@ -9114,7 +9218,7 @@ class SessionStore:
             ).strip()[:40]
             if columns:
                 contents[raw_id] = cls._backup_content_fingerprint(
-                    item, columns
+                    item, columns, table
                 )
             if tail_columns:
                 tails[raw_id] = tuple(
@@ -9123,7 +9227,7 @@ class SessionStore:
                 )
             if soft_columns:
                 softs[raw_id] = cls._backup_content_fingerprint(
-                    item, soft_columns
+                    item, soft_columns, table
                 )
         return {
             "ids": ids, "profiles": profiles, "created": created,
@@ -15319,6 +15423,33 @@ class SessionStore:
                                 "该就诊已有另一条待就诊复诊预约，"
                                 "不能恢复旧预约"
                             )
+                        # 导入恢复常留下「owner/备注指向本就诊、但链接
+                        # 未写回」的待就诊自动预约：只校验链接会漏掉
+                        # 它们，恢复后同一就诊出现两条复诊预约与两条
+                        # 待办提醒（第九十九轮 [9]）
+                        marker = (
+                            f"由就诊记录 #{int(restore_visit_id)}"
+                            " 自动创建"
+                        )
+                        owned_upcoming = self._conn.execute(
+                            "SELECT 1 FROM appointments"
+                            " WHERE status = 'upcoming' AND id != ?"
+                            "   AND profile = ?"
+                            "   AND (owner_visit_id = ?"
+                            "        OR (owner_visit_id = 0 AND note LIKE ?))"
+                            " LIMIT 1",
+                            (
+                                int(appointment_id),
+                                linked_visit["profile"],
+                                int(restore_visit_id),
+                                f"%{marker}%",
+                            ),
+                        ).fetchone()
+                        if owned_upcoming is not None:
+                            raise ValueError(
+                                "该就诊已有另一条待就诊复诊预约，"
+                                "不能恢复旧预约"
+                            )
                         visit_date = str(
                             linked_visit["next_followup_date"] or ""
                         )[:10]
@@ -17843,6 +17974,10 @@ class SessionStore:
                             or still_linked
                         )
                     )
+                    # 遗留共享链接下，本就诊仍是这条脱钩待办提醒的
+                    # 唯一引用：预约归属不影响提醒清理，否则解除
+                    # 链接后它会变成无引用的幽灵提醒（第九十九轮 [10]）
+                    or (reminder_appointment == 0 and still_linked)
                 )
             ):
                 # 已完成的提醒是历史记录，不能随复诊改期删除；
@@ -18260,6 +18395,35 @@ class SessionStore:
             visit_profile = _normalize_profile_name(
                 str(visit_row["profile"] or "")
             )
+
+            def _release_other_links(owner_id: int) -> None:
+                """解除其它就诊指向该预约的悬空链接并清理脱钩提醒。
+
+                只清链接会让对方仍挂着的 pending 脱钩提醒失去全部
+                引用，按旧日期继续触发（第九十九轮 [10]）。
+                """
+                cleared_rows = self._conn.execute(
+                    "SELECT id, followup_reminder_id FROM visit_records"
+                    " WHERE followup_appointment_id = ? AND id != ?",
+                    (appointment, owner_id),
+                ).fetchall()
+                for cleared_row in cleared_rows:
+                    other_reminder = int(
+                        cleared_row["followup_reminder_id"] or 0
+                    )
+                    if other_reminder:
+                        self._clean_unlinked_detached_reminder(
+                            other_reminder, int(cleared_row["id"])
+                        )
+                self._conn.execute(
+                    "UPDATE visit_records"
+                    " SET followup_appointment_id = 0,"
+                    " followup_reminder_id = 0"
+                    " WHERE followup_appointment_id = ?"
+                    " AND id != ?",
+                    (appointment, owner_id),
+                )
+
             if appointment:
                 appointment_row = self._conn.execute(
                     "SELECT profile, status, scheduled_at, owner_visit_id"
@@ -18290,17 +18454,10 @@ class SessionStore:
                 if other_link is not None:
                     if owner_visit == int(visit_id):
                         # 旧版本遗留的共享链接：预约归本就诊所有时，
-                        # 解除其他就诊指向它的悬空链接（只清链接，
-                        # 不动对方的预约与提醒），否则「安排复诊」
+                        # 解除其他就诊指向它的悬空链接（预约归本就诊，
+                        # 对方仍挂的脱钩提醒一并清理），否则「安排复诊」
                         # 每次都会因共享校验失败误报 404
-                        self._conn.execute(
-                            "UPDATE visit_records"
-                            " SET followup_appointment_id = 0,"
-                            " followup_reminder_id = 0"
-                            " WHERE followup_appointment_id = ?"
-                            " AND id != ?",
-                            (appointment, int(visit_id)),
-                        )
+                        _release_other_links(int(visit_id))
                     elif owner_visit == 0:
                         # 旧版无归属共享预约：本就诊已链接它时按归属
                         # 就诊处理（幂等），并解除其它就诊的悬空链接
@@ -18311,14 +18468,7 @@ class SessionStore:
                         ).fetchone()
                         if current_link is None:
                             return False
-                        self._conn.execute(
-                            "UPDATE visit_records"
-                            " SET followup_appointment_id = 0,"
-                            " followup_reminder_id = 0"
-                            " WHERE followup_appointment_id = ?"
-                            " AND id != ?",
-                            (appointment, int(visit_id)),
-                        )
+                        _release_other_links(int(visit_id))
                         self._conn.execute(
                             "UPDATE appointments SET owner_visit_id = ?"
                             " WHERE id = ?",
@@ -21227,6 +21377,37 @@ class SessionStore:
             " WHERE followup_reminder_id = ?",
             (int(reminder),),
         )
+
+    def release_completed_followup_reminder(
+        self, visit_id: Any, reminder_id: Any
+    ) -> None:
+        """复诊已完成：本就诊的脱钩待办提醒不再触发（第九十九轮 [15]）。
+
+        只处理仍挂在本就诊链接上、done=0 且 appointment_id=0 的
+        提醒：无其它就诊引用时删除，共享时保留并解除本就诊链接。
+        已完成的提醒是历史记录，保持不动。
+        """
+        visit = int(_safe_db_id(visit_id) or 0)
+        reminder = _safe_db_id(reminder_id)
+        if not visit or not reminder:
+            return
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT done, appointment_id FROM reminders WHERE id = ?",
+                (int(reminder),),
+            ).fetchone()
+            if (
+                row is None
+                or int(row["done"] or 0)
+                or int(row["appointment_id"] or 0) != 0
+            ):
+                return
+            self._clean_unlinked_detached_reminder(reminder, visit)
+            self._conn.execute(
+                "UPDATE visit_records SET followup_reminder_id = 0"
+                " WHERE id = ? AND followup_reminder_id = ?",
+                (visit, int(reminder)),
+            )
 
     def reminder_shared_by_other_visit(
         self, reminder_id: Any, visit_id: Any

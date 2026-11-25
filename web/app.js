@@ -20874,12 +20874,16 @@ async function restoreCurrentSession(
       || safeSessionGet(ADOPTED_SESSION_KEY) === sessionId
     );
     const adoptedStoredProfile = readStoredProfile();
+    // 采纳会话的档案为空（未绑定档案）同样不能吞掉本页已保存的
+    // 档案：否则档案被静默清空而补充信息留在表单里，下一问会把
+    // 旧患者的上下文写进未绑定会话（第九十九轮 [12]）
+    const adoptedSessionProfile = String(data.profile || '').trim();
     const adoptedProfileConflict = Boolean(
       adoptedSession
       && !deepLinkedSession
-      && data.profile
       && (!adoptedStoredProfile
-        || adoptedStoredProfile !== data.profile)
+        ? Boolean(adoptedSessionProfile)
+        : adoptedStoredProfile !== adoptedSessionProfile)
       && safeSessionGet(CONTEXT_STORAGE_KEY)
     );
     if (adoptedProfileConflict) {
@@ -23385,7 +23389,10 @@ function restoreInflightForOpenSession(targetId, messages) {
   // 只恢复明确属于本会话的在途主诉（第九十三轮 [12]）
   if (owner !== targetId) return;
   const currentProfile = activeProfileName || readStoredProfile();
-  if (profile && currentProfile && profile !== currentProfile) return;
+  // 记录带档案而当前没有档案（流式中清空补充信息后刷新）同样按
+  // 不一致处理：上一位患者的主诉不能进无归属输入框，否则恢复后
+  // 会被跨档案发送守卫永久拦截（第九十九轮 [16]）
+  if (profile && profile !== currentProfile) return;
   const list = Array.isArray(messages) ? messages : [];
   const hasIds = list.some(
     (message) => (Number(message.id) || 0) > 0

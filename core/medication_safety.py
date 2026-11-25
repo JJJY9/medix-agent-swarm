@@ -617,12 +617,22 @@ _DOSE_MISSED_TIME_OBJ_BEFORE = re.compile(
     r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
 )
 
+#: 纯代词/副词宾语（「我已经」「都」）：整项只是主语或助词而不是
+#: 药名；不能对整项做裸子串过滤，否则他汀/他克莫司/他达拉非会被
+#: 「他」误删（第九十九轮 [2][5]）
+_DOSE_OBJ_PURE_STOP_RE = re.compile(
+    r"^(?:(?:我们|我|你|他|她|本人|已经|已|还|也|都|仍|刚|才|就|又|再)"
+    r"\s*)+$"
+)
+
 
 def _missed_dose_obj_items(raw: str) -> list:
     """漏服宾语的药名项：转折词取末项，并列词逐项拆分。
 
     「华法林和二甲双胍」→[华法林, 二甲双胍]：任一命中本药都算
-    本药漏服（第九十八轮 [4]）。
+    本药漏服（第九十八轮 [4]）。只有整项都是代词/副词（「我已经」）
+    才丢弃；不能做裸子串过滤，否则含「他」的药名（他汀/他克莫司/
+    他达拉非）会被整项误删（第九十九轮 [2][5]）。
     """
     raw = str(raw or "").strip()
     if any(word in raw for word in ("但", "而")):
@@ -636,12 +646,12 @@ def _missed_dose_obj_items(raw: str) -> list:
         )
         if len(obj) < 2:
             continue
+        if _DOSE_OBJ_PURE_STOP_RE.match(obj):
+            continue
         if any(
             word in obj
             for word in (
                 "停用", "停药", "停了", "停的", "没吃", "未吃", "漏服",
-                "我", "你", "他", "她", "已经", "已", "还", "也",
-                "都", "仍", "刚", "才", "就",
             )
         ):
             continue
@@ -970,6 +980,26 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     window = window or ""
     alias_lower = str(alias_lower or "").lower()
     for match in _LONG_STOP_CONTEXT.finditer(window):
+        after_span = window[match.start(): match.end()]
+        after = _STOP_VERB_AFTER_OBJECT_RE.search(after_span)
+        if after is not None:
+            after_raw = after.group(1).strip()
+            if not _long_stop_token_is_determiner(after_raw):
+                after_token = _normalize_long_stop_token(after_raw)
+                if (
+                    len(after_token) >= 2
+                    and not _STOP_TIME_OBJECT_RE.match(after_token)
+                    and after_token not in _LONG_STOP_SELF_REFERENCES
+                ):
+                    if (
+                        after_token in alias_lower
+                        or alias_lower in after_token
+                    ):
+                        # 「停用华法林一年了」：停药宾语就是本药
+                        return True
+                    # 「停用阿司匹林一年了」：停药属于宾语点名的
+                    # 另一种药，不能把当前药判为已停用（第九十九轮 [1]）
+                    continue
         segments = re.split(
             r"[，。；;,.!?！？\n]", window[: match.start()]
         )
@@ -1049,6 +1079,25 @@ _LONG_STOP_CONTEXT = re.compile(
 _NEGATED_STOP_SUFFIX = re.compile(
     r"^[^，。；,.!?！？\n]{0,4}(?:不能|不可|不宜|不让|不应|不要|别|"
     r"未|没有|没)\s*(?:停用|停药|停服|停止服用)"
+)
+#: 停药动词后直接跟药名的语序（停用阿司匹林一年了/停掉了布洛芬）：
+#: 宾语是另一种药时，这次停药不能归因到当前药（第九十九轮 [1]）
+_STOP_VERB_AFTER_OBJECT_RE = re.compile(
+    r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|不吃了?)"
+    r"\s*(?:了)?\s*"
+    r"([一-龥A-Za-z]{2,8}?)"
+    r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    r"(?:年|月|天|周|日|星期)|半年|大半年|多月|多年|很久|好久|"
+    r"了|，|。|；|$))"
+)
+#: 停药动词后的纯时长宾语（停用一年了/停了两个月了）：不是药名
+_STOP_TIME_OBJECT_RE = re.compile(
+    r"^(?:"
+    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    r"(?:年|月|天|周|日|星期)"
+    r"|半年|大半年|多月|多年|很久|好久"
+    r")(?:多|了|左右)?$"
+    r"|^[了前以来]$"
 )
 #: 既往用药：「我以前吃阿司匹林」「以前吃过华法林」「十年前用过」。
 #: 数字时长分支必须带完成体（过/了），「两年前开始吃」仍是当前用药
