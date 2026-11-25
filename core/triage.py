@@ -25,6 +25,7 @@ from core.medication_text import (
 #: (匹配短语, 展示标签)。同一个标签只保留一次。
 RED_FLAG_PHRASES = (
     ("胸痛", "胸痛"),
+    ("胸疼", "胸痛"),
     ("胸口痛", "胸痛"),
     ("胸口疼", "胸痛"),
     ("心口痛", "胸痛"),
@@ -186,7 +187,7 @@ _RULED_OUT_TAIL = re.compile(
 #: 否定词在短语之后同样覆盖前面的枚举症状（第九十九轮 [7]）；
 #: 「不是没有了/并非没有」是双重否定，按阳性处理
 _TRAILING_NEGATION_RE = re.compile(
-    r"^[、，]?(?P<pre>[^，。；！？,.!?;\n]{0,8}?)?"
+    r"^[、，]?(?P<pre>[^，。；！？,.!?;\n]{0,40}?)?"
     r"(?P<group>都|也|全都|全|均)?"
     r"(?:已经|早已)?"
     r"(?:没有|没了|不(?:再)?有|没|无)"
@@ -200,17 +201,25 @@ def _trailing_negation_covers(tail: str) -> bool:
     短语与否定词之间还有其它内容时，必须带群否定标记（都/也/
     全/均）才算整组否定，且中间不能有阳性修饰：「胸痛很厉害、
     呼吸困难没有」是胸痛阳性+否认呼吸困难（第一百轮 [5]）。
+    短语后紧跟顿号时分隔的是其它枚举项，其中的修饰词不否决本
+    短语的否定（「胸痛、出汗都没有」）（第一百零一轮 [5]）。
     """
-    trailing = _TRAILING_NEGATION_RE.match(str(tail or ""))
+    raw = str(tail or "")
+    enum_tail = raw.lstrip().startswith(("、", "，"))
+    trailing = _TRAILING_NEGATION_RE.match(raw)
     if trailing is None:
         return False
     pre = (trailing.group("pre") or "").rstrip()
     if re.search(r"(?:不是|并非|并不|不)$", pre):
         return False
     if pre:
+        # 群否定标记（都/也/全/均）是整组否定的必要条件：
+        # 「说话不清、手脚麻木没有」只否认手脚麻木
         if not trailing.group("group"):
             return False
-        if any(
+        # 短语后紧跟顿号时分隔的是其它枚举项，其中的修饰词不否决
+        # 本短语的否定（「胸痛、出汗都没有」）（第一百零一轮 [5]）
+        if not enum_tail and any(
             cue in pre for cue in _TRAILING_NEGATION_POSITIVE_CUES
         ):
             return False
@@ -223,19 +232,48 @@ def _trailing_negation_in_clause(
     """短语之后、同一分句（顿号不截断）是否以整组后置否定收尾。
 
     「发烧、咳嗽、胸痛都没有」的最后一项才带否定后缀，前面的枚举
-    症状同样按整组否定处理（第九十九轮 [7]）。短语自身带阳性
-    修饰（持续胸痛、呼吸困难都没有）时不按否定处理（第一百轮 [5]）。
+    症状同样按整组否定处理（第九十九轮 [7]）。阳性修饰只看短语
+    自己的修饰窗口（最后一个顿号之后）：短语自身带阳性修饰
+    （持续胸痛、呼吸困难都没有）时不按否定处理（第一百轮 [5]）；
+    其它枚举项里的出汗/厉害不否决本短语（第一百零一轮 [5]）。
     """
-    if prefix and any(
-        cue in prefix for cue in _TRAILING_NEGATION_POSITIVE_CUES
-    ):
-        return False
+    if prefix:
+        own_prefix = re.split(r"[、，,]", prefix)[-1]
+        if any(
+            cue in own_prefix for cue in _TRAILING_NEGATION_POSITIVE_CUES
+        ):
+            return False
     boundary = end
     limit = len(text)
     while boundary < limit and text[boundary] not in "，。；！？,.!?;\n":
         boundary += 1
     return _trailing_negation_covers(text[end:boundary])
 
+
+def _is_negated_with_trailing(prefix: str, suffix: str) -> bool:
+    """_is_negated 加后置「（已经）没有了/没了」否定（发热词专用）。
+
+    孕产期出血路径不能用后置否定（出血已停仍需排查宫外孕），但
+    「发烧没有了」是明确的当前无发热（第一百轮 [1] 的取舍只应
+    作用于出血路径，第一百零一轮 [6]）。
+    """
+    if _trailing_negation_covers(suffix):
+        return True
+    return _is_negated(prefix, suffix)
+
+#: 胸痛族的插入修饰变体：胸口有点疼/胸前区隐隐作痛/心口一阵一阵疼。
+#: 精确子串表无法覆盖部位词与疼/痛之间的副词，单独用受控正则兜底
+#: （第一百零一轮 [1]）
+_CHEST_PAIN_VARIANT_RE = re.compile(
+    r"(?:胸腔|胸口|胸前区|心前区|心口|胸部|胸)"
+    r"(?:有点|有些|一阵一阵|一阵|隐隐|特别|明显|一直|持续|总是?|"
+    r"老是|经常|突然|剧烈|很|好|较|稍微|略|发|胀|闷|钝|刺|绞|"
+    r"压榨|针扎|揪着|作|地|得)*"
+    r"(?:疼|痛)"
+)
+
+#: 胸部压榨感/闷痛的修饰变体（胸口像压了块石头）不在此处理：
+#: 只兜底「部位+修饰+疼/痛」，避免与其它规则混淆
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = (
     "怀孕", "孕期", "妊娠", "产妇", "产后", "孕妇", "孕产妇",
@@ -2296,6 +2334,9 @@ HEAD_TRAUMA_TERMS = (
     "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
     "头上磕了个包", "头皮血肿", "头部血肿", "头皮下血肿",
     "头流血", "头上流血", "头出血", "头上出血",
+    # 头皮破裂/流血同样是头部外伤（第一百零一轮 [3]）
+    "头皮破", "头皮流血", "头皮出血", "头皮裂", "头皮擦破",
+    "头皮摔破", "头皮摔裂",
     "撞了一下头", "撞了下头", "撞到了头", "磕到了头", "碰了一下头",
     "磕了下头", "头部撞了一下", "头部被撞", "撞了一下脑袋",
     "脑袋被撞", "脑袋被磕", "脑袋被碰",
@@ -2330,7 +2371,7 @@ HEAD_TRAUMA_TERMS = (
 _HEAD_NON_HEAD_PREFIX = "趾指骨枕馒拳舌木砖石车脚"
 _HEAD_TRAUMA_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|头顶|"
-    r"后脑勺|枕部)"
+    r"后脑勺|枕部|脑门|脑壳|太阳穴)"
     # 口语方位/副词：后脑勺上磕了个包、头不小心撞到墙、
     # 头一下子撞到门框（部位与撞击动词之间可插入修饰）。
     # 揣测词（好像/可能/似乎/估计/多半/应该是）按阳性处理：
@@ -2343,13 +2384,13 @@ _HEAD_TRAUMA_RE = re.compile(
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
     r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
-    r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰)"
+    r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰|破|流血|出血|裂|擦破)"
     r"|(?:撞|磕|碰|砸|打|摔)(?:在|到)(?:了)?"
     r"(?:我|他|她|患者|宝宝|孩子|本人)?(?:的)?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
-    r"头顶|后脑勺|枕部)"
+    r"头顶|后脑勺|枕部|脑门|脑壳|太阳穴)"
     r"|(?<![趾指骨枕馒拳舌木砖石车脚])"
-    r"(?:头(?:部)?|脑袋|额头|前额|头顶|后脑勺|枕部)"
+    r"(?:头(?:部)?|脑袋|额头|前额|头顶|后脑勺|枕部|脑门|脑壳|太阳穴)"
     r"在[^，。；,.!?！？\n]{0,6}上?(?:撞|磕|碰|砸)"
     r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|"
@@ -3042,12 +3083,15 @@ _LONG_STOP_AUX_PREFIXES = (
 _STOP_SELF_REFERENCES = (
     "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
 )
-#: 停药动词后的纯时长宾语（停用一年了/停了两个月）：不是药名
+#: 停药动词后的纯时长/时间宾语（停用一年了/去年停了/上个月停了）：
+#: 不是药名，也不能判成「另一种药」（第一百零一轮 [7]）
 _STOP_TIME_OBJECT_RE = re.compile(
     r"^(?:"
     r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
     r"(?:年|月|天|周|日|星期)"
     r"|半年|大半年|多月|多年|很久|好久"
+    r"|去年|前年|上年|上一年|上个月|上月|上周|上上个月|"
+    r"前几个月|前几年|近几年|近年|年初|年底"
     r")(?:多|了|左右)?$"
     r"|^[了前以来]$"
 )
@@ -3176,6 +3220,10 @@ def _stop_clause_names_other_drug(
             # 「已经停药半年」「医生让我停药半年」：没有点名其他药
             return False
         token = _normalize_stop_token(raw_token)
+        if _STOP_TIME_OBJECT_RE.match(token or raw_token):
+            # 「去年停了/上个月停了」：时间词不是药名宾语，按本药
+            # 远期停药归因（第一百零一轮 [7]）
+            return False
     if len(token) < 2:
         return False
     if token in _STOP_SELF_REFERENCES:
@@ -3384,6 +3432,15 @@ _RESTART_TEXT_RE = re.compile(
     r"|仍然用|一直在用|仍在使用|继续使用|还在使用"
     r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
+    # 进行式续用：「停了半年，现在在吃/目前在用/正在服用」（第一百
+    # 零一轮 [2]）；必须带「在/正在」，避免「现在吃5mg阿司匹林」
+    # 这类换药后的剂量延续被当成原药续用（round88）；排除吃饭/菜
+    r"|(?:现在|目前|当前)在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    r"|正在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -3823,7 +3880,7 @@ def _has_fever(text: str) -> bool:
                     # 「不到一天/48小时」是病程时长（第八十三轮）
                     start = text.find(term, start + len(term))
                     continue
-            if not _is_negated(
+            if not _is_negated_with_trailing(
                 prefix, _clause_suffix(text, start + len(term))
             ):
                 return True
@@ -3867,7 +3924,9 @@ def _has_fever(text: str) -> bool:
                 if not bridge_values or float(bridge_values[0]) <= 38:
                     continue
         prefix = _clause_prefix(text, match.start(), lookback=8)
-        if not _is_negated(prefix, _clause_suffix(text, match.end())):
+        if not _is_negated_with_trailing(
+            prefix, _clause_suffix(text, match.end())
+        ):
             return True
     return False
 
@@ -4621,6 +4680,22 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                     matches.append(label)
                 break
             start = text.find(phrase, start + len(phrase))
+
+    # 胸痛族的插入修饰变体：「胸疼」「胸口有点疼」「胸前区隐隐作痛」
+    # 「心口一阵一阵疼」：部位词与疼/痛之间的副词让精确子串失配，
+    # 用受控正则兜底并复用同一套否定判定（第一百零一轮 [1]）
+    if "胸痛" not in matches:
+        for variant in _CHEST_PAIN_VARIANT_RE.finditer(text):
+            prefix = _clause_prefix(text, variant.start())
+            variant_end = variant.end()
+            suffix = _clause_suffix(text, variant_end)
+            if not _is_negated(
+                prefix, suffix
+            ) and not _trailing_negation_in_clause(
+                text, variant_end, prefix
+            ):
+                matches.append("胸痛")
+                break
 
     # 孕期状态可能只写在档案病史里（本次主诉只描述出血）：
     # 复用 _active_medical_text 的分句过滤把患者本人的现症/妊娠

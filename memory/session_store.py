@@ -6303,6 +6303,180 @@ class SessionStore:
                     best_other = other_score
             return best_other < 0 or own_score > best_other
 
+        def _backup_row_present_for(
+            other_id: int, candidate: int
+        ) -> bool:
+            """备份行是否已有自己的本地存货行（不含给定候选）。
+
+            与 _other_backup_row_survives 的区别：本轮已被其它备份
+            行认领的行同样算数（它仍是那条备份记录的存活行），
+            只用「本次导入前已存在」排除补插出来的旧副本
+            （第一百零一轮 [4]）。
+            """
+            expected = (backup_contents or {}).get(other_id)
+            if expected is None or not content_columns:
+                return False
+            created_key = str(created_at_value or "")
+            profile_key = (
+                backup_profiles.get(other_id)
+                if backup_profiles else None
+            )
+            try:
+                rows = self._conn.execute(
+                    f"SELECT id, profile, {', '.join(content_columns)}"
+                    f" FROM {table} WHERE created_at = ? AND id != ?",
+                    (created_key, candidate),
+                ).fetchall()
+            except sqlite3.Error:
+                return False
+            for row in rows:
+                other_local = int(row["id"])
+                if (
+                    pre_existing_ids is not None
+                    and other_local not in pre_existing_ids
+                ):
+                    continue
+                if (
+                    profile_key is not None
+                    and _normalize_profile_name(
+                        str(row["profile"] or "")
+                    ) != _normalize_profile_name(profile_key)
+                ):
+                    continue
+                if self._db_content_fingerprint(
+                    row, content_columns
+                ) == expected:
+                    return True
+            return False
+
+        def _tail_preferred_survive(candidate: int) -> bool:
+            """尾字段严格偏向的同内容兄弟备份行是否都另有本地存活行。
+
+            打平/偏向本身不足以证明候选属于兄弟行：兄弟备份行若都
+            另有自己的本地存活行，候选就是本行被编辑的存活版本，
+            不能按被删记录补插（第一百零一轮 [4]）。
+            """
+            if not backup_tails or not backup_contents:
+                return False
+            expected_content = backup_contents.get(raw_id)
+            if expected_content is None:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            preferred = []
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if backup_contents.get(other_id) != expected_content:
+                    continue
+                if _tail_match_score(candidate, other_id) > own_score:
+                    preferred.append(other_id)
+            if not preferred:
+                return False
+            return all(
+                _backup_row_present_for(other_id, candidate)
+                for other_id in preferred
+            )
+
+        def _tail_preferred_any_survive(
+            candidate: int, cross_profile: bool = False
+        ) -> bool:
+            """尾字段严格偏向的同秒任一兄弟备份行是否都另有本地存活行。"""
+            if not backup_tails:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            preferred = []
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    not cross_profile
+                    and wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if _tail_match_score(candidate, other_id) > own_score:
+                    preferred.append(other_id)
+            if not preferred:
+                return False
+            return all(
+                _backup_row_present_for(other_id, candidate)
+                for other_id in preferred
+            )
+
+        def _tail_tied_survive(
+            candidate: int, cross_profile: bool = False
+        ) -> bool:
+            """尾字段得分持平的兄弟备份行是否都另有本地存活行。
+
+            打平本身不足以判歧义：被持平的兄弟备份行若都另有自己
+            的本地存活行，候选就是本行被编辑的存活版本，不能按
+            被删记录补插（第一百零一轮 [9]）。
+            """
+            if not backup_tails or not backup_contents or tail_where is None:
+                return False
+            expected_content = backup_contents.get(raw_id)
+            if expected_content is None:
+                return False
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return False
+            created_key = str(created_at_value or "")
+            wanted_profile = (
+                _normalize_profile_name(row_profile)
+                if row_profile else None
+            )
+            tied = []
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if (
+                    not cross_profile
+                    and wanted_profile is not None
+                    and backup_profiles
+                    and _normalize_profile_name(
+                        backup_profiles.get(other_id) or ""
+                    ) != wanted_profile
+                ):
+                    continue
+                if backup_contents.get(other_id) != expected_content:
+                    continue
+                if _tail_match_score(candidate, other_id) == own_score:
+                    tied.append(other_id)
+            if not tied:
+                return False
+            return all(
+                _backup_row_present_for(other_id, candidate)
+                for other_id in tied
+            )
+
         def _soft_matches(candidate: int) -> bool:
             if soft_where is None:
                 return True
@@ -7473,6 +7647,13 @@ class SessionStore:
                     # 那条记录改挂后的存活版本，本行必须按被删记录补插
                     # （与 step1 同口径，第八十轮）
                     claimable = False
+                if claimable and (
+                    _same_profile_exact_candidate(candidate) is not None
+                ):
+                    # 本档案已有软/内容/尾字段全部命中本行的存活行：
+                    # 跨档案候选属于另一成员的兄弟记录（被改名/改挂），
+                    # 不能抢先把它认领给本行（第一百零一轮 [8]）
+                    claimable = False
                 if (
                     claimable
                     and candidate == raw_id
@@ -7810,12 +7991,14 @@ class SessionStore:
                         and _backup_soft_shared_with_sibling()
                         and _tail_prefers_sibling(sole, cross_profile=True)
                         and not _tail_prefers_sibling(sole)
+                        and not _tail_preferred_survive(sole)
                     ):
                         # 同名孪生（软字段相同）时软字段命中不能证明
                         # 候选属于本行：尾字段精确命中另一档案的备份
                         # 记录时它是那条记录改挂后的存活版本，本行按
-                        # 被删记录补回（第八十一轮）。软字段不同时命中
-                        # 本行软字段的候选仍是本行被编辑的存活版本
+                        # 被删记录补回（第八十一轮）。被偏向的兄弟
+                        # 备份行若都另有本地存活行，候选仍是本行编辑
+                        # 版本，不能按被删记录补插（第一百零一轮 [4]）
                         return _ambiguous()
                     if not _tail_matches(sole) and _tail_prefers_sibling(
                         sole
@@ -7946,12 +8129,17 @@ class SessionStore:
                                         sole == raw_id
                                         and _same_backup_origin()
                                     )
+                                    and not _tail_tied_survive(
+                                        sole, cross_profile=True
+                                    )
                                 )
                             ):
                                 # 尾字段与兄弟行打平（备注被编辑得都
                                 # 不像）：无法归属时宁重复勿丢；但本行
                                 # 自身主键、同源的存活行就是本行被编辑
-                                # 的版本，照常认领（第八十四轮）
+                                # 的版本，照常认领（第八十四轮）；被
+                                # 持平的兄弟备份行都另有存活行时候选
+                                # 仍属本行（第一百零一轮 [9]）
                                 return _ambiguous()
                         if (
                             is_group_last
@@ -7994,9 +8182,12 @@ class SessionStore:
                         if (
                             not _tail_matches(sole)
                             and _tail_prefers_sibling_any_content(sole)
+                            and not _tail_preferred_any_survive(sole)
                         ):
                             # 候选内容是本行的，但尾字段明确属于同秒
-                            # 另一条记录：按被删记录补回
+                            # 另一条记录：按被删记录补回。被偏向的
+                            # 兄弟备份行都另有本地存活行时不能据此
+                            # 判歧义（第一百零一轮 [4]）
                             return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
@@ -9099,6 +9290,13 @@ class SessionStore:
                 or _tail_prefers_sibling_any_content(
                     sole, cross_profile=True
                 )
+            )
+            # 被偏向的兄弟备份行都另有本地存活行时，候选是本行
+            # 被编辑（停药/完成状态改成与兄弟相同）的存活版本，
+            # 不能按被删记录补插（第一百零一轮 [4]）
+            and not _tail_preferred_survive(sole)
+            and not _tail_preferred_any_survive(
+                sole, cross_profile=True
             )
         ):
             # 候选软字段命中同秒另一条备份行、尾字段也更像那条行
@@ -16167,11 +16365,15 @@ class SessionStore:
                 )
             if (
                 normalized["status"] == "completed"
-                and str(previous["status"] or "") == "cancelled"
+                and str(previous["status"] or "") in (
+                    "cancelled", "upcoming"
+                )
             ):
-                # 取消后再标记「已完成」：该预约仍是这次复诊的实际
-                # 就诊记录，日期与就诊一致且就诊无其它待就诊链接时
-                # 重新回挂，避免逾期复诊提示与重复安排
+                # 取消/待就诊标记「已完成」：该预约仍是这次复诊的
+                # 实际就诊记录，日期与就诊一致且就诊无其它待就诊
+                # 链接时重新回挂，避免逾期复诊提示与重复安排
+                # （upcoming→completed 的导入遗留半挂接见第一百零
+                # 一轮 [10]）
                 owner_visit_id = self._appointment_owner_visit(
                     previous["note"],
                     previous["owner_visit_id"],
@@ -16751,18 +16953,85 @@ class SessionStore:
                     # owner/备注归属但链接未写回的遗留自动预约：改期
                     # 同步时一并回写链接，否则就诊卡一直显示「未安排
                     # 复诊」、健康提示重复提醒（第一百轮 [9]）
+                    pending_reminder_id = (
+                        int(pending_row["id"]) if pending_row else 0
+                    )
+                    old_link_row = self._conn.execute(
+                        "SELECT followup_reminder_id FROM visit_records"
+                        " WHERE id = ? AND followup_appointment_id = 0",
+                        (shared_visit,),
+                    ).fetchone()
+                    stale_link = (
+                        int(old_link_row["followup_reminder_id"] or 0)
+                        if old_link_row is not None else 0
+                    )
+                    target_reminder = pending_reminder_id
+                    if stale_link and stale_link != pending_reminder_id:
+                        stale_meta = self._conn.execute(
+                            "SELECT done, appointment_id, note"
+                            " FROM reminders WHERE id = ?",
+                            (stale_link,),
+                        ).fetchone()
+                        stale_shared = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_reminder_id = ? AND id != ?"
+                            " LIMIT 1",
+                            (stale_link, shared_visit),
+                        ).fetchone()
+                        if (
+                            stale_meta is not None
+                            and not int(stale_meta["done"] or 0)
+                            and int(stale_meta["appointment_id"] or 0) == 0
+                            and stale_shared is None
+                        ):
+                            if pending_reminder_id:
+                                # 预约已有自己的待办：合并删除旧的
+                                # 脱钩提醒，避免同一次复诊两条
+                                # pending 且就诊挂旧日期那条
+                                # （第一百零一轮 [12]）
+                                self._conn.execute(
+                                    "DELETE FROM reminders WHERE id = ?"
+                                    " AND done = 0 AND appointment_id = 0",
+                                    (stale_link,),
+                                )
+                            else:
+                                refreshed_note = re.sub(
+                                    r"^复诊\s*\d{4}-\d{2}-\d{2}",
+                                    f"复诊 {shared_day}",
+                                    str(stale_meta["note"] or ""),
+                                )
+                                try:
+                                    stale_due = (
+                                        datetime.fromisoformat(shared_day)
+                                        .date()
+                                        - timedelta(days=1)
+                                    ).strftime("%Y-%m-%d")
+                                except (ValueError, OverflowError):
+                                    stale_due = ""
+                                self._conn.execute(
+                                    "UPDATE reminders SET due_at = ?,"
+                                    " note = ?, updated_at = ?"
+                                    " WHERE id = ? AND done = 0"
+                                    " AND appointment_id = 0",
+                                    (
+                                        stale_due or shared_day,
+                                        refreshed_note,
+                                        now,
+                                        stale_link,
+                                    ),
+                                )
+                                target_reminder = stale_link
+                        else:
+                            target_reminder = stale_link
                     self._conn.execute(
                         "UPDATE visit_records"
                         " SET followup_appointment_id = ?,"
-                        " followup_reminder_id = CASE"
-                        "   WHEN followup_reminder_id = 0 THEN ?"
-                        "   ELSE followup_reminder_id END,"
-                        " updated_at = ?"
+                        " followup_reminder_id = ?, updated_at = ?"
                         " WHERE id = ? AND profile = ?"
                         " AND followup_appointment_id = 0",
                         (
                             int(appointment_id),
-                            int(pending_row["id"]) if pending_row else 0,
+                            target_reminder,
                             now,
                             shared_visit,
                             normalized["profile"],

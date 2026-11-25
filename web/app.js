@@ -21733,6 +21733,15 @@ async function send(question, composerSubmit = false) {
       lastRestoredComposerQuestion = lastRestoredComposerText
         ? questionText : '';
       preserveDraftProfile(sendProfile, question);
+      if (lastRestoredComposerText) {
+        // 失败恢复同样登记在途恢复来源：用户整体替换文本后输入
+        // 监听器按会话归属清除 INFLIGHT 记录，刷新时不再把已被
+        // 放弃的旧主诉拼回草稿（第一百零一轮 [14]）
+        inflightRestoredText = question;
+        inflightRestoredOwnerSession = String(sessionId || '');
+        inflightRestoredBaseline = Number(baselineMessageId) || 0;
+        inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+      }
       renderStopped({
         question, askTurn, baselineMessageId, profile: sendProfile,
       });
@@ -21784,6 +21793,15 @@ async function send(question, composerSubmit = false) {
         err.message || String(err),
         { question, askTurn, baselineMessageId, profile: sendProfile }
       );
+      if (lastRestoredComposerText) {
+        // 失败恢复同样登记在途恢复来源：用户整体替换文本后输入
+        // 监听器按会话归属清除 INFLIGHT 记录，刷新时不再把已被
+        // 放弃的旧主诉拼回草稿（第一百零一轮 [14]）
+        inflightRestoredText = question;
+        inflightRestoredOwnerSession = String(sessionId || '');
+        inflightRestoredBaseline = Number(baselineMessageId) || 0;
+        inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+      }
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
       els.readout.mode.textContent = '中断';

@@ -792,6 +792,12 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?![完够满])"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
 )
+#: 药名之后的疑问尾：「停用华法林可以吗/行吗/好吗」是意向询问，
+#: 当前仍在用药（第一百零一轮 [11]）。只在药名前已有停药动词时
+#: 参与判断，避免把「吃华法林吗」这类普通问句误当意向
+_STOP_QUESTION_SUFFIX = re.compile(
+    r"^\s*(?:可以吗|行吗|好吗|行不行|可以么|能行吗|能不能|是否|吗|么)"
+)
 #: 药名之后的既往用药：「阿司匹林以前吃过」「阿司匹林之前用过」。
 #: 必须带明确的既往时间词：裸「吃过了」是今天已服药（依从），不是停药
 _PAST_USE_SUFFIX = re.compile(
@@ -1310,6 +1316,15 @@ _RESTART_USE_SUFFIX = re.compile(
     r"|一直在用|仍在使用|继续使用|还在使用"
     r"|还吃|还服用|仍吃|没停过|没间断过|未停过|从未停过|从没停过"
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
+    # 进行式续用：「停了半年，现在在吃/目前在用/正在服用」（第一百
+    # 零一轮 [2]）；必须带「在/正在」，避免「现在吃5mg阿司匹林」
+    # 这类换药后的剂量延续被当成原药续用；排除吃饭/菜等食物宾语
+    r"|(?:现在|目前|当前)在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    r"|正在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西（含量词）
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -1392,6 +1407,10 @@ _RESTART_USE_SUFFIX_EN = re.compile(
     # （第九十八轮 [2]）
     r"|back on (?:it )?(?:again)?|still\s+(?:taking|on|take|use|using)"
     r"|continuing (?:it|to take)"
+    # now I am on it again / now taking it again：进行式续用
+    # （第一百零一轮 [2]）
+    r"|now\s+(?:i\s*(?:'m|am)\s+)?(?:back\s+)?(?:on|taking|using)"
+    r"\s+(?:it\s+)?(?:again)?"
     # kept/continued/continue (to) take/use it：代词宾语续用
     # （第九十四轮 [2]）
     r"|(?:kept|keeps?|continued|continues?|have continued"
@@ -1506,6 +1525,12 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _NEGATED_STOP_PREFIX_EN.search(prefix)
                 or _INTENT_STOP_PREFIX.search(prefix)
                 or _INTENT_STOP_SUFFIX.search(suffix)
+                # 停用X可以吗：宾语后置的情态疑问仍是询问，按仍在
+                # 用药处理（第一百零一轮 [11]）
+                or (
+                    _STOPPED_USE_PREFIX.search(prefix)
+                    and _STOP_QUESTION_SUFFIX.search(suffix)
+                )
                 or _NEGATED_STOP_SUFFIX.search(suffix)
                 or _CONTINUOUS_USE_PREFIX.search(prefix)
                 or (
@@ -1588,6 +1613,12 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _NEGATED_STOP_PREFIX.search(prefix)
             or _NEGATED_STOP_SUFFIX.search(suffix)
             or _INTENT_STOP_SUFFIX.search(suffix)
+            # 停用X可以吗：宾语后置的情态疑问仍是询问，按仍在用药
+            # 处理（第一百零一轮 [11]）
+            or (
+                _STOPPED_USE_PREFIX.search(prefix)
+                and _STOP_QUESTION_SUFFIX.search(suffix)
+            )
             or _INTENT_STOP_PREFIX.search(prefix)
             or _CONTINUOUS_USE_PREFIX.search(prefix)
             or (
