@@ -23263,16 +23263,6 @@ function clearOtherSessionInflight(sessionId, question) {
     const sameSession = Boolean(
       sessionId && itemOwner && itemOwner === String(sessionId || '')
     );
-    const textMatch = Boolean(
-      recordQuestion
-      && (
-        recordQuestion === wantedQuestion
-        || (wantedQuestion
-          && wantedQuestion.startsWith(recordQuestion))
-        || (wantedQuestion
-          && recordQuestion.startsWith(wantedQuestion))
-      )
-    );
     // 只有本页确实恢复过（放回输入框并被发送）或本次发送文本就是
     // 这条记录时才能删除同会话记录：restoreInflightForOpenSession
     // 在输入框已被其它草稿占用时会跳过恢复，从未展示过的停诊主诉
@@ -23283,6 +23273,21 @@ function clearOtherSessionInflight(sessionId, question) {
       && inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY
       && String(inflightRestoredOwnerSession || '') === itemOwner
       && String(inflightRestoredText || '').trim() === recordQuestion
+    );
+    const textMatch = Boolean(
+      recordQuestion
+      && (
+        recordQuestion === wantedQuestion
+        // 发送文本包含整条记录：记录内容已进入新落库消息
+        || (wantedQuestion
+          && wantedQuestion.startsWith(recordQuestion))
+        // 记录以发送文本为前缀（发送「发烧」、隐藏记录「发烧三天了，
+        // 需要去医院吗」）：只有记录确实恢复展示过才能按前缀清理，
+        // 否则会删掉从未展示过的停诊主诉唯一副本（第一百零五轮 [15]）
+        || (restoredHere
+          && wantedQuestion
+          && recordQuestion.startsWith(wantedQuestion))
+      )
     );
     return !(textMatch || restoredHere);
   });

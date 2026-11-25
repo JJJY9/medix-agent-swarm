@@ -5382,10 +5382,15 @@ def _evaluate_medication_safety(
     from core.medication_lab_safety import check_medication_lab_safety
     from core.condition_drug_safety import check_condition_drug_safety
 
+    # 与 family_overview 同口径把药名文本作为 question 传入：
+    # 「正在使用的药物」里写的过敏陈述（对青霉素过敏）也要参与
+    # 过敏检查，否则家庭总览与健康提示结论互相矛盾
+    # （第一百零五轮 [12]）
+    drug_text = "、".join(names)
     safety = check_medication_safety(
-        "",
+        drug_text,
         {
-            "medications": "、".join(names),
+            "medications": drug_text,
             "allergies": "；".join(allergy_parts),
         },
     )
@@ -5421,7 +5426,8 @@ _STOP_ANNOTATION_ONLY_RE = re.compile(
     r"已停止使用|已停止|已停用中|停掉了|已停掉了|停止了|已停止了|"
     r"停了|停用了|停掉|"
     # 裸「不吃了/停止服用」与括号版同义（第一百零四轮 [17]）
-    r"不吃了|不再吃了|停止服用|停止使用了|停止使用)$"
+    r"不吃了|不再吃了|停止服用|停止服用了|停止使用了|停止使用|"
+    r"不再服用|不再服用了)$"
 )
 #: 括号形式的停药标注：「X（已停用）」
 _STOP_ANNOTATION_INLINE_RE = re.compile(
@@ -5430,7 +5436,7 @@ _STOP_ANNOTATION_INLINE_RE = re.compile(
     # （停了两个月/已停用两个月）同样让该药退出名单（第一百轮 [14][15]）
     r"[（(]\s*(?:已停用|已停药|已停服|停用中|已停了|已停止使用|"
     r"已停止|已停|停掉了|已停掉了|停止了|停药|停服|停用|停了|不吃了|"
-    r"不再吃了|停止服用|stopped|discontinued|stopping|"
+    r"不再吃了|停止服用|不再服用|stopped|discontinued|stopping|"
     r"no longer (?:taking|on))了?"
     # 时长允许空白（「停用 2 个月」「停了 2 个月」）（第一百零一轮 [13]）；
     # 复合时长（半年多/两年半/两周半/两年左右）同样是停药标注
@@ -5526,7 +5532,37 @@ def _context_medication_names(context: Any) -> List[str]:
     names: List[str] = []
     # 分数剂量（1/2片、3/4粒）不是药名分隔：先整体保护再切分
     text = re.sub(r"(?<=[0-9])\s*/\s*(?=[0-9])", "／", text)
-    for part in re.split(r"[；;，,、/\n]+", text):
+    # 「已停用阿司匹林、氯吡格雷」的顿号并列共享停药动词：
+    # 展开为「已停用阿司匹林，已停用氯吡格雷」再切分，否则
+    # 后一个药被当成在用药物（第一百零五轮 [14]）；余文含
+    # 换药/继续用药语序时不展开（停用A后吃B、C）
+    def _expand_shared_stop(match: "re.Match[str]") -> str:
+        verb, segment = match.group(1), match.group(2)
+        if "、" not in segment:
+            return match.group(0)
+        # 共享停药动词必须是本段开头（或紧跟分隔符）：括号内标注
+        # 「阿司匹林（已停用）、二甲双胍」与「已停用两个月、布洛芬」
+        # 的顿号不是共享停药的并列
+        if match.start() > 0 and (
+            text[match.start() - 1] not in "；;，,。！？"
+            and text[match.start() - 1] != chr(10)
+        ):
+            return match.group(0)
+        if re.search(
+            r"(?:后(?:服用|吃|服|用|加用|改用|换用)|改用|换用|"
+            r"换成|改吃|换吃|继续|现在|目前|一直|长期)",
+            segment,
+        ):
+            return match.group(0)
+        return verb + segment.replace("、", "，" + verb)
+
+    text = re.sub(
+        r"(已停用|已停药|已停服|停掉了|停止了|停用|停药|停服)"
+        r"([^；;，,。！？/\n]+)",
+        _expand_shared_stop,
+        text,
+    )
+    for part in re.split(r"[；;，,、。！？/\n]+", text):
         part = part.strip()
         if not part:
             continue
@@ -5584,8 +5620,11 @@ def _context_medication_names(context: Any) -> List[str]:
             switch = re.search(
                 r"(?:改用|换用|换成|改吃|换吃|换服|改为|"
                 r"现在在?(?:吃|用|服用)|目前在?(?:吃|用|服用)|"
-                # 「停用X后吃Y」是最常见的换药语序（第一百零四轮 [11]）
-                r"后(?:服用|加用|改用|换用|换吃|改吃|吃|服|用)(?:了)?)",
+                # 「停用X后吃Y」是最常见的换药语序（第一百零四轮 [11]）；
+                # 「后继续/一直/长期/开始服用」同样是换药
+                # （第一百零五轮 [11]）
+                r"后(?:又|仍|继续|一直|长期|开始|恢复|坚持)?"
+                r"(?:服用|加用|改用|换用|换吃|改吃|吃|服|用)(?:了)?)",
                 remainder,
             )
             if switch is not None:
