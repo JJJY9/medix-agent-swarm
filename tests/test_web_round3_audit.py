@@ -116,8 +116,9 @@ def test_terminal_cards_are_announced(client):
     assert re.search(
         r"announceChat\('已停止生成'\);"
         # 第七十三轮在恢复输入框时插入了快照记录与注释，
-        # 200 字窗口不再够用；只约束顺序不变
-        r"(?:(?!renderStopped)[\s\S]){0,1400}"
+        # 200 字窗口不再够用；第一百零六轮在失败分支补来源保留注释，
+        # 1400 字窗口同样不够；只约束顺序不变
+        r"(?:(?!renderStopped)[\s\S]){0,1700}"
         r"renderStopped\(",
         app_js,
     )

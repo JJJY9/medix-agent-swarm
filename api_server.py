@@ -2295,6 +2295,30 @@ def _proxy_header_values(request: Request, name: str) -> List[str]:
     return [str(value) for value in values if str(value).strip()]
 
 
+def _proxy_header_raw_values(request: Request, name: str) -> List[str]:
+    """返回同名代理头的原始字段（不过滤空白行）。"""
+    try:
+        values = list(request.headers.getlist(name))
+    except AttributeError:
+        value = request.headers.get(name)
+        values = [value] if value is not None else []
+    return [str(value) for value in values]
+
+
+def _proxy_header_unprovable(request: Request, name: str) -> bool:
+    """最后一跳代理追加的地址行是否为空白（无法证明来源）。
+
+    追加式代理保留客户端自带的地址行、在其后追加自己的地址行：
+    末尾原始行为空/纯空白说明该跳地址不可得，必须 fail closed，
+    不能把客户端更早的行当成代理写入（第一百零六轮 [10]）。
+    """
+    raw = _proxy_header_raw_values(request, name)
+    if not raw:
+        return False
+    joined = ",".join(raw)
+    return not joined.rsplit(",", 1)[-1].strip()
+
+
 def _has_forwarded_address_header(request: Request) -> bool:
     """请求是否带了部署声明的客户端地址类代理头。
 
@@ -2574,6 +2598,14 @@ def _forwarded_client_address(request: Request) -> str:
     use_forwarded = allowed_source in ("", "forwarded")
     if not (use_xff or use_real or use_forwarded):
         return ""
+    # 代理追加的地址行为空白时无法证明来源：不能回退到客户端
+    # 更早的地址行（第一百零六轮 [10]）
+    if use_xff and _proxy_header_unprovable(request, "x-forwarded-for"):
+        return ""
+    if use_real and _proxy_header_unprovable(request, "x-real-ip"):
+        return ""
+    if use_forwarded and _proxy_header_unprovable(request, "forwarded"):
+        return ""
     forwarded_for = (
         ",".join(_proxy_header_values(request, "x-forwarded-for")).strip()
         if use_xff else ""
@@ -2651,6 +2683,20 @@ def _forwarded_appended_address(request: Request) -> str:
     """
     allowed_source = _allowed_proxy_address_source()
     if allowed_source == "none":
+        return ""
+    # 末尾追加行为空白：代理地址不可证明，不能把客户端自带的更早
+    # 行当成「代理追加地址」用于预锁定（第一百零六轮 [10]）
+    if allowed_source in ("", "x-forwarded-for") and (
+        _proxy_header_unprovable(request, "x-forwarded-for")
+    ):
+        return ""
+    if allowed_source in ("", "x-real-ip") and (
+        _proxy_header_unprovable(request, "x-real-ip")
+    ):
+        return ""
+    if allowed_source in ("", "forwarded") and (
+        _proxy_header_unprovable(request, "forwarded")
+    ):
         return ""
     trusted_peers = _trusted_proxy_peers()
 
@@ -5550,16 +5596,57 @@ def _context_medication_names(context: Any) -> List[str]:
             return match.group(0)
         if re.search(
             r"(?:后(?:服用|吃|服|用|加用|改用|换用)|改用|换用|"
-            r"换成|改吃|换吃|继续|现在|目前|一直|长期)",
+            r"换成|改吃|换吃|继续|现在|目前|一直|长期|"
+            # 「A、B还在吃/仍在服用」说明 B 仍在用：不能把停药
+            # 动词分发到 B（第一百零六轮 [4][14]）
+            r"还在|仍在|仍吃|仍用|仍服|没停|未停|尚未|不能停|照旧)",
             segment,
         ):
             return match.group(0)
         return verb + segment.replace("、", "，" + verb)
 
     text = re.sub(
-        r"(已停用|已停药|已停服|停掉了|停止了|停用|停药|停服)"
+        r"(已停用|已停药|已停服|已停止使用|已停止了|已停止|已停|"
+        r"停掉了|停止了|停止服用了|停止服用|停止使用|停用中|停用|"
+        r"停药|停服|停了)"
         r"([^；;，,。！？/\n]+)",
         _expand_shared_stop,
+        text,
+    )
+    # 后缀共享停药：「阿司匹林、布洛芬都停了」「A、B已经停用」：
+    # 把停药词分发到每个顿号项，否则前一个药仍留在在用名单
+    # （第一百零六轮 [11]）
+    def _expand_shared_stop_suffix(match: "re.Match[str]") -> str:
+        items = match.group(1)
+        verb = match.group(2)
+        if "、" not in items:
+            return match.group(0)
+        if match.start() > 0 and (
+            text[match.start() - 1] not in "；;，,。！？"
+            and text[match.start() - 1] != chr(10)
+        ):
+            return match.group(0)
+        if re.search(
+            r"(?:还在|仍在|仍吃|仍用|仍服|没停|未停|尚未|不能停|照旧|"
+            r"停用|停药|停了|停服|停止服用|前|以来|"
+            # 「阿司匹林 1 片已停用」是单药+剂量+停药，不是顿号
+            # 并列共享停药（round97/102 契约）
+            r"[0-9]|片|粒|丸|袋|包|滴|mg|毫克)",
+            items,
+        ):
+            return match.group(0)
+        return "，".join(
+            item.strip() + verb
+            for item in items.split("、")
+            if item.strip()
+        )
+
+    text = re.sub(
+        r"([^；;，,。！？/\n]+?)(?:都|也|均|全都|已经?|早已|已都)*\s*"
+        r"(停用了|停用|停药|停服|停止服用了|停止服用|停止了|停掉了|"
+        r"停了|不吃了|不再吃了|不再服用了|不再服用)"
+        r"(?=\s*(?:[；;，,。！？/\n]|$))",
+        _expand_shared_stop_suffix,
         text,
     )
     for part in re.split(r"[；;，,、。！？/\n]+", text):
@@ -5608,7 +5695,8 @@ def _context_medication_names(context: Any) -> List[str]:
                     names.append(piece)
             continue
         prefix_match = re.match(
-            r"^(?:已停用|已停药|已停服|已停|停用中|停药|停服|停用|"
+            r"^(?:已停用|已停药|已停服|已停止使用|已停止了|已停止|"
+            r"停止服用了|停止服用|停止使用|已停|停用中|停药|停服|停用|"
             r"停了|停掉|停掉了|停止了)(.*)$",
             part,
         )
@@ -5691,8 +5779,22 @@ def _context_medication_names(context: Any) -> List[str]:
                 head_pieces[-1]
             ):
                 head_pieces.pop()
-            if head_pieces:
+            # 「氯吡格雷尚未停用/华法林没有停用」：否定式停药标注
+            # 说明仍在用药，不能按已停用剔除（第一百零六轮 [4]）
+            negated_stop = re.search(
+                r"(?:尚未|暂未|还未|还没有|还没|没有|未|没|不)$", head
+            ) is not None
+            if head_pieces and not negated_stop:
                 head_pieces.pop()
+            elif negated_stop:
+                head_pieces = [
+                    re.sub(
+                        r"(?:尚未|暂未|还未|还没有|还没|没有|未|没|不)$",
+                        "", piece,
+                    ).strip()
+                    for piece in head_pieces
+                ]
+                head_pieces = [piece for piece in head_pieces if piece]
             for piece in head_pieces:
                 if not piece or _STOP_ANNOTATION_ONLY_RE.match(piece):
                     continue
