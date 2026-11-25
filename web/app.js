@@ -21752,7 +21752,11 @@ async function send(question, composerSubmit = false) {
         inflightRestoredText = question;
         inflightRestoredOwnerSession = String(sessionId || '');
         inflightRestoredBaseline = Number(baselineMessageId) || 0;
-        inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+        // 恢复来源是备份槽时保持 OTHER：删除恢复文本时才能按槽位
+        // 一并清除，否则刷新后复活已删除的主诉（第一百零六轮 [12]）
+        if (inflightRestoredKeyName !== INFLIGHT_QUESTION_OTHER_KEY) {
+          inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+        }
       }
       renderStopped({
         question, askTurn, baselineMessageId, profile: sendProfile,
@@ -21812,7 +21816,11 @@ async function send(question, composerSubmit = false) {
         inflightRestoredText = question;
         inflightRestoredOwnerSession = String(sessionId || '');
         inflightRestoredBaseline = Number(baselineMessageId) || 0;
-        inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+        // 同中止分支：备份槽来源不能被改写为主槽
+        // （第一百零六轮 [12]）
+        if (inflightRestoredKeyName !== INFLIGHT_QUESTION_OTHER_KEY) {
+          inflightRestoredKeyName = INFLIGHT_QUESTION_KEY;
+        }
       }
       scheduleAbortReconcile(sessionId, question, baselineMessageId);
       AGENT_IDS.forEach((id) => setAgentState(id, 'idle', '待命'));
@@ -23335,6 +23343,11 @@ function clearRestoredInflightIfOwned() {
       }
     } else {
       clearInflightForCurrentSession();
+      // 同一文本可能仍在备份槽（失败分支曾把来源改写为主槽）：
+      // 删除后一并清除，避免刷新/重开会话时复活（第一百零六轮 [12]）
+      if (restoredOwner && restoredOwner === (sessionId || '')) {
+        removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+      }
     }
   }
   inflightRestoredText = '';
@@ -23851,6 +23864,10 @@ els.input.addEventListener('input', () => {
         // 主槽也可能已被后续发送改写成另一会话的在途记录
         // （第九十六轮 [14]）
         clearInflightForCurrentSession();
+        // 同文本在备份槽也可能存在（第一百零六轮 [12]）
+        if (restoredOwner && restoredOwner === (sessionId || '')) {
+          removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+        }
       }
     }
     inflightRestoredText = '';

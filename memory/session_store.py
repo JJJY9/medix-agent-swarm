@@ -8360,6 +8360,15 @@ class SessionStore:
                                     and _tail_tied_with_sibling(
                                         sole, cross_profile=True
                                     )
+                                    # 被持平的同内容兄弟备份行都另有
+                                    # 存活行时，候选是本行删除后恢复并
+                                    # 编辑的版本，不能补插编辑前旧副本
+                                    # （第一百零六轮 [8]）
+                                    and not (
+                                        local_group_size
+                                        >= backup_group_size
+                                        and _tied_sibling_survives(sole)
+                                    )
                                 )
                             )
                         ):
@@ -9467,6 +9476,14 @@ class SessionStore:
                     if candidate not in moved
                     and candidate not in matched
                     and _soft_matches(candidate)
+                    # 内容与备份不符且无编辑证据的行是另一条记录/
+                    # 上一份备份的存活版本，兜底认领同样要排除
+                    # （第一百零六轮 [3]，否则备份行被静默吞掉）
+                    and (
+                        not content_columns
+                        or _candidate_content_matches_backup(candidate)
+                        or _candidate_edited(candidate)
+                    )
                 ]
                 if pool:
                     return _claim(min(pool), mark_moved=True)
@@ -16684,7 +16701,7 @@ class SessionStore:
                 if owner_visit:
                     owner_row = self._conn.execute(
                         "SELECT followup_reminder_id, profile,"
-                        " followup_appointment_id"
+                        " followup_appointment_id, next_followup_date"
                         " FROM visit_records WHERE id = ?",
                         (int(owner_visit),),
                     ).fetchone()
@@ -16702,10 +16719,25 @@ class SessionStore:
                         owner_linked = int(
                             owner_row["followup_appointment_id"] or 0
                         )
+                        owner_due = str(
+                            owner_row["next_followup_date"] or ""
+                        )[:10]
+                        appt_day = str(
+                            normalized["scheduled_at"] or ""
+                        )[:10]
                         # 就诊已链接另一条待就诊预约时，取消/完成无关
-                        # 旧预约不能删掉它的复诊提醒（第一百零五轮 [10]）
-                        if owner_reminder and owner_linked in (
-                            0, int(appointment_id)
+                        # 旧预约不能删掉它的复诊提醒（第一百零五轮 [10]）；
+                        # fa=0 时还要求预约日期就是就诊当前复诊日期，
+                        # 日期不一致的遗留旧预约不是「当前计划」
+                        # （第一百零六轮 [9]）
+                        if owner_reminder and (
+                            owner_linked == int(appointment_id)
+                            or (
+                                owner_linked == 0
+                                and owner_due
+                                and appt_day
+                                and owner_due == appt_day
+                            )
                         ):
                             self._clean_unlinked_detached_reminder(
                                 owner_reminder, int(owner_visit)
@@ -17642,7 +17674,7 @@ class SessionStore:
                 if owner_visit:
                     owner_row = self._conn.execute(
                         "SELECT followup_reminder_id, profile,"
-                        " followup_appointment_id"
+                        " followup_appointment_id, next_followup_date"
                         " FROM visit_records WHERE id = ?",
                         (int(owner_visit),),
                     ).fetchone()
@@ -17660,11 +17692,25 @@ class SessionStore:
                         owner_linked = int(
                             owner_row["followup_appointment_id"] or 0
                         )
+                        owner_due = str(
+                            owner_row["next_followup_date"] or ""
+                        )[:10]
+                        appt_day = str(
+                            appt_row["scheduled_at"] or ""
+                        )[:10]
                         # 就诊已链接另一条待就诊预约（fa 非 0 且不是本
                         # 预约）时，其复诊提醒属于那条计划：删除无关
-                        # 旧预约不能把它一起清理（第一百零五轮 [10]）
-                        if owner_reminder and owner_linked in (
-                            0, int(appointment_id)
+                        # 旧预约不能把它一起清理（第一百零五轮 [10]）；
+                        # fa=0 时还要求预约日期与就诊当前复诊日期一致
+                        # （第一百零六轮 [9]）
+                        if owner_reminder and (
+                            owner_linked == int(appointment_id)
+                            or (
+                                owner_linked == 0
+                                and owner_due
+                                and appt_day
+                                and owner_due == appt_day
+                            )
                         ):
                             self._clean_unlinked_detached_reminder(
                                 owner_reminder, int(owner_visit)

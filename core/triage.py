@@ -381,7 +381,11 @@ def _postpartum_recent_positive(text: str) -> bool:
 #: 妊娠/先兆流产的典型组合）；绝经/停经多年不是妊娠（第八十四轮）
 _AMENORRHEA_BASE_RE = re.compile(
     r"停经|闭经|月经推迟|月经推后|月经没来|月经未至|没来月经|"
-    r"大姨妈推迟|大姨妈没来|例假推迟|例假没来"
+    r"大姨妈推迟|大姨妈没来|例假推迟|例假没来|"
+    # 数量词插入的语序：月经两个月没来/例假迟了十天/月经晚了十天
+    # （第一百零六轮 [2]）
+    r"(?:月经|例假|大姨妈)[^，。；;,.!?！？\n]{0,6}?"
+    r"(?:没(?:有)?来|未至|推迟|推后|晚了|迟了)"
 )
 _AMENORRHEA_YEARS_RE = re.compile(
     r"^\s*(?:已|已经|都|快|近|将近|有|已有|长达)?\s*"
@@ -1262,12 +1266,18 @@ _DEFINITION_SUFFIX_RE = re.compile(
     r"\s*[呢呀啊吧嘛吗]?\s*[？?]?$"
 )
 #: 疑问词前置的定义问句：「什么病会引起胸痛」「哪些疾病会导致咯血」
-#: 是在问科普，不是患者主诉（第八十九轮）
+#: 是在问科普，不是患者主诉（第八十九轮）；「什么病会胸痛/什么情况
+#: 下会咯血」情态词直接接红旗症状同样是科普提问（第一百零六轮 [7]）
 _DEFINITION_LEAD_Q_RE = re.compile(
     r"^(?:请问)?(?:什么病|哪些病|哪些疾病|何种疾病|什么原因|什么情况|"
     r"哪些原因|哪类疾病)"
     r"[^，。；]{0,10}?(?:会|能|可以|可能|容易)?\s*"
     r"(?:引起|导致|造成|诱发|出现)"
+    r"|^(?:请问)?(?:什么病|哪些病|哪些疾病|何种疾病|什么原因|什么情况|"
+    r"哪些原因|哪类疾病)"
+    r"[^，。；]{0,10}?(?:会|能|可以|可能|容易)\s*"
+    r"(?=(?:胸痛|胸疼|胸口|心口|心前区|胸部|胸骨|咯血|咳血|抽搐|惊厥|"
+    r"呼吸困难|喘不上气|晕厥|昏迷|呕血|吐血|黑便|血便|剧烈头痛))"
 )
 #: 症状在前的科普问句：「X见于什么病」「X的原因有哪些」
 _DEFINITION_MID_RE = re.compile(
@@ -1480,11 +1490,17 @@ def _clean_complaint_clause(
             or _third_person_symptom_subject(rest)
             # 孕产期出血无论是否有主语都是真实急症描述
             or any(term in rest for term in PREGNANCY_BLEEDING_TERMS)
-            # 家属语境 + 红旗（请解释一下我爸胸痛是什么原因）
+            # 家属语境 + 红旗（请解释一下我爸胸痛是什么原因）；
+            # 称谓表与 keep_context 同源：外甥/孙子/叔叔/老爷子等
+            # 同样按真实患者语境保留（第一百零六轮 [15]）
             or (
                 any(
                     marker in rest
-                    for marker in _FAMILY_HISTORY_MARKERS
+                    for marker in (
+                        *_FAMILY_HISTORY_MARKERS,
+                        *_PATIENT_SUBJECT_MARKERS,
+                        "老爷子", "老太太", "闺女", "娃", "老人",
+                    )
                 )
                 and _is_red_flag_text(rest)
             )
@@ -3575,6 +3591,12 @@ _RESTART_OBJECT_IGNORE = (
     "这个", "那个", "这种", "那种", "这些", "那些", "同样", "原来",
     "之前", "它", "药",
 )
+#: 剥掉尾部「药/药物/药片」后的代词宾语：这药/该药/此药/一样的药
+#: 同样指本药（第一百零六轮 [13]，与 medication_safety 口径一致）
+_RESTART_SELF_PRONOUNS = (
+    "这", "该", "此", "一样", "相同", "同一种", "同样", "原来", "之前",
+    "它", "药",
+)
 #: 宾语前置的续用：「阿司匹林还在吃」
 _RESTART_OBJECT_BEFORE_RE = re.compile(
     r"([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*(?:也|还|仍|都)?\s*"
@@ -3644,6 +3666,11 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
         return False
+    # 剥掉尾部「药/药物/药片」后仍为代词：这药/该药/此药/一样的药
+    # 指的还是本药（第一百零六轮 [13]）
+    pronoun = re.sub(r"(?:的?药[物片品剂]?)+$", "", obj).strip()
+    if pronoun in _RESTART_SELF_PRONOUNS:
+        return False
     past = _MED_OBJECT_IN_CLAUSE.search(clause)
     past_obj = past.group(1) if past else ""
     if past_obj and (past_obj in obj or obj in past_obj):
@@ -3672,6 +3699,10 @@ def _restart_object_non_medication(follow: str, clause: str) -> bool:
     if not obj or len(obj) < 2:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
+        return False
+    # 这药/该药/此药/一样的药是自指代词，不是非药物对象（第一百零六轮 [13]）
+    pronoun = re.sub(r"(?:的?药[物片品剂]?)+$", "", obj).strip()
+    if pronoun in _RESTART_SELF_PRONOUNS:
         return False
     past = _MED_OBJECT_IN_CLAUSE.search(clause)
     past_obj = past.group(1) if past else ""
@@ -4093,6 +4124,9 @@ def _active_medical_text(
             medication_context_text(context).lower(),
         ) if part
     )
+    # 「大姨妈」含家属称谓子串「妈」，会被家属分支整句丢弃；它是
+    # 月经的口语说法，归一后再做停经/孕产判断（第一百零六轮 [2]）
+    raw = raw.replace("大姨妈", "月经")
     # 小数剂量（2.5mg）里的句点不是分句边界：切断后剂量续用
     # 识别不到单位，会把当前用药误判为既往（第八十九轮）
     clauses = re.split(r"[，。；;,!?！？\n]|(?<!\d)\.|\.(?!\d)", raw)
@@ -4121,6 +4155,7 @@ def _active_medical_text(
             elif child_patient and any(
                 term in clause for term in (
                     "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                    "闺女",
                 )
             ):
                 # 患儿档案下家长口述「我儿子正在化疗/在吃华法林」：
@@ -4369,12 +4404,45 @@ def _active_medical_text(
                     continue
                 kept.append(clause)
                 continue
+            # 数字与单位之间可能有空格（已停用 2 个月）：比对前去掉，
+            # 避免同一语义因空格写法不同而整句丢弃（第一百零六轮 [1]）
+            stop_clause_text = re.sub(
+                r"(?<=[0-9])\s+(?=[个年月天周日])", "", clause
+            )
             if (
                 _STOP_VERB_PATTERN.search(clause)
-                and not _LONG_STOP_PATTERN.search(clause)
+                and not _LONG_STOP_PATTERN.search(stop_clause_text)
             ):
                 # 没有明确远期时长的停药保守按仍有抗凝作用处理
                 kept.append(clause)
+            elif _LONG_STOP_PATTERN.search(stop_clause_text):
+                # 同一分句里既有在用药物又有远期停药标注
+                # （华法林 3mg 每日一次、阿司匹林（已停用两年））：
+                # 只剔除被标注停药的分项，保留其余在用药物
+                # （第一百零六轮 [1]）
+                residual_parts = []
+                for item in re.split(r"[、,]", clause):
+                    item = item.strip()
+                    if not item:
+                        continue
+                    if (
+                        _STOP_VERB_PATTERN.search(item)
+                        or _LONG_STOP_PATTERN.search(item)
+                    ):
+                        continue
+                    residual_parts.append(item)
+                residual = "、".join(residual_parts).strip(" ，,、")
+                if residual and (
+                    any(
+                        term in residual
+                        for term in _OTHER_STOP_DRUG_TAILS
+                    )
+                    or _GENERIC_DRUG_NAME_RE.search(residual)
+                    or _MED_CATEGORY_RE.search(residual)
+                    or _BRAND_DRUG_NAME_RE.search(residual)
+                    or _names_known_group_drug(residual)
+                ):
+                    kept.append(residual)
             continue
         if (
             _PAST_MEDICATION_PATTERN.search(clause)
@@ -4574,6 +4642,7 @@ def _patient_only_text(
             elif child_patient and any(
                 term in clause for term in (
                     "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                    "闺女",
                 )
             ):
                 # 患儿档案下家长口述「我儿子今天发烧」：儿子/女儿
@@ -4651,6 +4720,7 @@ def _patient_pattern_mention(
             elif child_patient and any(
                 term in clause for term in (
                     "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                    "闺女",
                 )
             ):
                 # 患儿档案下家长口述「我儿子头被门撞了」指患者本人
@@ -4693,6 +4763,7 @@ def _patient_head_trauma_mention(
             elif child_patient and any(
                 term in clause for term in (
                     "儿子", "女儿", "我儿", "我女", "孩子", "宝宝", "娃",
+                    "闺女",
                 )
             ):
                 pass
