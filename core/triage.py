@@ -136,9 +136,12 @@ _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
     r"(?:没有|没|无)"
     rf"(?:{_NEGATION_FILLERS})*\s*$"
 )
-#: 「差点没昏倒」是“几乎发生”，不是否定
+#: 「差点没昏倒」是“几乎发生”，不是否定。
+#: 近失词与句尾之间允许口语副词（差点就/险些都/几乎要），
+#: 否则「差点就撞到头」会被当作真实撞击（第九十九轮 [17]）
 _ALMOST_PATTERN = re.compile(
-    r"(?:差点|险些|几乎|差一点|差些)\s*(?:没有|没)?\s*$"
+    r"(?:差点|险些|几乎|差一点|差些)\s*(?:就|都|要|快|点)?\s*"
+    r"(?:没有|没)?\s*$"
 )
 #: 「从未有过的胸痛」「前所未有的呼吸困难」是“从未如此”的最高级
 #: 描述，实际为阳性，不能被否定填充词误判
@@ -178,6 +181,38 @@ _RULED_OUT_TAIL = re.compile(
     rf"(?:(?:{_NEGATION_FILLERS})\s*)*"
     r"(?:的)?\s*$"
 )
+#: 短语之后的分句末否定：「胸痛没有了」「发烧、咳嗽、胸痛都没有」。
+#: 否定词在短语之后同样覆盖前面的枚举症状（第九十九轮 [7]）；
+#: 「不是没有了/并非没有」是双重否定，按阳性处理
+_TRAILING_NEGATION_RE = re.compile(
+    r"^[、，]?(?P<pre>[^，。；！？,.!?;\n]{0,8}?)?"
+    r"(?:都|也|全都|全|均)?"
+    r"(?:已经|早已)?"
+    r"(?:没有|没了|不(?:再)?有|没|无)"
+    r"(?:了)?\s*$"
+)
+
+
+def _trailing_negation_covers(tail: str) -> bool:
+    """tail 是否以「（都）没有/没了」收尾（短语后的后置否定）。"""
+    trailing = _TRAILING_NEGATION_RE.match(str(tail or ""))
+    if trailing is None:
+        return False
+    pre = (trailing.group("pre") or "").rstrip()
+    return not re.search(r"(?:不是|并非|并不|不)$", pre)
+
+
+def _trailing_negation_in_clause(text: str, end: int) -> bool:
+    """短语之后、同一分句（顿号不截断）是否以整组后置否定收尾。
+
+    「发烧、咳嗽、胸痛都没有」的最后一项才带否定后缀，前面的枚举
+    症状同样按整组否定处理（第九十九轮 [7]）。
+    """
+    boundary = end
+    limit = len(text)
+    while boundary < limit and text[boundary] not in "，。；！？,.!?;\n":
+        boundary += 1
+    return _trailing_negation_covers(text[end:boundary])
 
 #: 出现这些词时，同一句里的「出血」按孕产期出血处理
 PREGNANCY_TERMS = (
@@ -727,6 +762,10 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
             stripped[: rhetorical.start()],
         ) is None:
             return False
+    # 后置否定：「胸痛没有了」「发烧、咳嗽、胸痛都没有」的否定词在
+    # 短语之后、分句末尾，同样是否认而不是症状（第九十九轮 [7]）
+    if _trailing_negation_covers(suffix):
+        return True
     if _NEGATION_PATTERN.search(prefix):
         return True
     enum_negated = _enum_negated(prefix)
@@ -797,6 +836,19 @@ _CURRENT_COURSE_CUES = (
     "冷汗", "冒冷汗", "虚汗",
     "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
     "剧烈", "明显", "严重", "厉害", "得很", "得厉害",
+)
+#: 强度出汗的常见语序：出汗得厉害（补语）/汗出得厉害（倒装）/
+#: 出了好多汗、浑身是汗、汗很多（量化）。紧贴形态由第九十八轮
+#: [1] 引入，补语与量化形态是同一语义的漏改（第九十九轮 [3][13]）
+_SWEAT_INTENSITY_RE = re.compile(
+    r"出汗\s*(?:得|的|到)?\s*"
+    r"(?:特别|很|非常|明显|厉害|严重|不止|大量|较多|好多|很多|挺多)"
+    r"|汗\s*(?:出|流|冒)?\s*(?:得|的)?\s*"
+    r"(?:特别|很|非常|明显|厉害|严重|多)"
+    r"|(?:出了?|流了?|冒了?)\s*"
+    r"(?:好多|很多|大量|不少|一身|满头|满身)(?:的)?汗"
+    r"|(?:浑身|全身|满头|一身)(?:都|全)?(?:是|的)?汗"
+    r"|汗如雨下|大汗淋漓"
 )
 _POST_DURATION_RE = re.compile(
     r"(?:已|已经|有)?\s*(?:持续|发作|反复)?\s*"
@@ -1932,12 +1984,7 @@ def patient_complaint_text(text: str) -> str:
                 # 「出汗特别厉害」这类强度形态是真实病程；裸「出汗」
                 # （天气热容易出汗/没有出汗）仍不作证据
                 # （第九十七轮 [14]、第九十八轮 [1]）
-                re.search(
-                    r"出汗(?:特别|很|非常|明显|厉害|严重|不止|大量|"
-                    r"较多|好多|不止)",
-                    text_follow,
-                )
-                is not None
+                _SWEAT_INTENSITY_RE.search(text_follow) is not None
             )
             severity_follows = bool(
                 (
@@ -1946,6 +1993,9 @@ def patient_complaint_text(text: str) -> str:
                         cue in text_follow
                         for cue in _CURRENT_COURSE_CUES
                     )
+                    # 「出了好多汗/浑身是汗」不含字面「出汗」cue，
+                    # 但强度出汗本身就是患者证据（第九十九轮 [3]）
+                    or _SWEAT_INTENSITY_RE.search(text_follow) is not None
                 )
                 and not any(
                     word in text_follow
@@ -2518,6 +2568,13 @@ _DOSE_MISSED_TIME_OBJ_BEFORE_RE = re.compile(
 
 #: 漏服宾语的首尾语气/连接词：宾语两侧的词不是药名
 _DOSE_OBJ_EDGE_RE = re.compile(r"^[了啦啊呀但而和及与或的着\s]+|[了啦啊呀但而和及与或的着\s]+$")
+#: 纯代词/副词宾语（「我已经」「都」）：整项只是主语或助词
+#: 而不是药名。不能做裸子串过滤：他汀/他克莫司/他达拉非等药名
+#: 本身含「他」（第九十九轮 [2][5]）
+_DOSE_OBJ_PURE_STOP_RE = re.compile(
+    r"^(?:(?:我们|我|你|他|她|本人|已经|已|还|也|都|仍|刚|才|就|又|再)"
+    r"\s*)+$"
+)
 
 
 def _clean_missed_dose_obj(raw: str) -> str:
@@ -2539,12 +2596,12 @@ def _missed_dose_obj_items(raw: str) -> list:
         obj = _DOSE_OBJ_EDGE_RE.sub("", piece.strip())
         if len(obj) < 2:
             continue
+        if _DOSE_OBJ_PURE_STOP_RE.match(obj):
+            continue
         if any(
             word in obj
             for word in (
                 "停用", "停药", "停了", "停的", "没吃", "未吃", "漏服",
-                "我", "你", "他", "她", "已经", "已", "还", "也",
-                "都", "仍", "刚", "才", "就",
             )
         ):
             continue
@@ -2561,6 +2618,17 @@ _DOSE_MISSED_TIME_LEAD_RE = re.compile(
     r"\s*(?P<obj>[一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*"
     r"(?:也|都|还|仍)?\s*"
     r"(?P<verb>没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
+)
+
+
+#: 纯时间词宾语：「今天早上/昨天晚上」被拆分出的「今天」不是药名，
+#: 也不是低风险药，不能据此把整句按低风险漏服丢弃（第九十九轮 [6]）
+_MISSED_DOSE_TIME_TOKEN_RE = re.compile(
+    r"^(?:今天|今早|今晨|今日|昨天|昨晚|昨夜|前天|前晚|刚才|刚刚|"
+    r"现在|最近|这几天|这两天|那天|这天|早上|上午|中午|下午|晚上|"
+    r"今晚|晚|早|这次|这一顿|这顿|"
+    r"[0-9一二两三四五六七八九十]+天来?|几天|数天|两三天|"
+    r"[0-9一二两三四五六七八九十]+周来?|几周)$"
 )
 
 
@@ -2584,6 +2652,10 @@ def _missed_dose_time_first_fragment(text: str) -> str:
         for obj in items:
             if high_risk(obj):
                 return f"{obj}{match.group('time')}{match.group('verb')}"
+        if all(_MISSED_DOSE_TIME_TOKEN_RE.match(obj) for obj in items):
+            # 宾语只是时间词拆分（「今天早上」→今天+早上）：继续
+            # 尝试宾语在动词后的形态，不能整句丢弃（第九十九轮 [6]）
+            continue
         # 宾语在时间词之前且全是非高风险药：不保留本句，
         # 避免把句尾他药误绑给漏服（第九十八轮 [5]）
         return ""
@@ -2915,6 +2987,15 @@ _LONG_STOP_AUX_PREFIXES = (
 _STOP_SELF_REFERENCES = (
     "这个药", "该药", "此药", "这种药", "那种药", "它", "这个", "该",
 )
+#: 停药动词后的纯时长宾语（停用一年了/停了两个月）：不是药名
+_STOP_TIME_OBJECT_RE = re.compile(
+    r"^(?:"
+    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    r"(?:年|月|天|周|日|星期)"
+    r"|半年|大半年|多月|多年|很久|好久"
+    r")(?:多|了|左右)?$"
+    r"|^[了前以来]$"
+)
 #: 药物类别词 → 当前语境中的同类药名线索（类别一致才算自指）
 _STOP_CATEGORY_HINTS = {
     "抗凝药": (
@@ -3014,12 +3095,32 @@ def _stop_clause_names_other_drug(
         clause,
     )
     if match is None:
-        return False
-    raw_token = match.group(1).strip()
-    if _stop_token_is_determiner(raw_token):
-        # 「已经停药半年」「医生让我停药半年」：没有点名其他药
-        return False
-    token = _normalize_stop_token(raw_token)
+        # 「停用阿司匹林一年了」：药名在停药动词之后的语序同样
+        # 点名了另一种药，不能归因到前一分句的药（第九十九轮 [1]）
+        after = re.search(
+            r"(?:已经?|已|早就|早|都|快)?\s*"
+            r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|不吃了?)"
+            r"\s*(?:了)?\s*"
+            r"([一-龥A-Za-z]{2,8}?)"
+            r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?"
+            r"(?:多)?(?:年|月|天|周|日|星期)|半年(?:多)?|大半年|多月|"
+            r"多年|很久|好久|了|，|。|；|$))",
+            clause,
+        )
+        if after is None:
+            return False
+        raw_token = after.group(1).strip()
+        if _stop_token_is_determiner(raw_token):
+            return False
+        token = _normalize_stop_token(raw_token)
+        if _STOP_TIME_OBJECT_RE.match(token or raw_token):
+            return False
+    else:
+        raw_token = match.group(1).strip()
+        if _stop_token_is_determiner(raw_token):
+            # 「已经停药半年」「医生让我停药半年」：没有点名其他药
+            return False
+        token = _normalize_stop_token(raw_token)
     if len(token) < 2:
         return False
     if token in _STOP_SELF_REFERENCES:
@@ -4454,8 +4555,11 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
                 start = text.find(phrase, start + len(phrase))
                 continue
             prefix = _clause_prefix(text, start)
-            suffix = _clause_suffix(text, start + len(phrase))
-            if not _is_negated(prefix, suffix):
+            phrase_end = start + len(phrase)
+            suffix = _clause_suffix(text, phrase_end)
+            if not _is_negated(
+                prefix, suffix
+            ) and not _trailing_negation_in_clause(text, phrase_end):
                 if label not in matches:
                     matches.append(label)
                 break
