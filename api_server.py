@@ -5486,9 +5486,11 @@ _STOP_ALL_ANNOTATION_RE = re.compile(
     r"(?:停用了|停用|停药|停服|停止了|停掉了|停了|不吃了|不再吃了|"
     r"不再服用了?|停止服用了?|停止使用了?)"
     # 时长尾缀：「，都停了两年」「，都已经停了两年」「，都停药很
-    # 久了」同样作用于本句枚举（第一百零八轮 [14][16]）
+    # 久了」同样作用于本句枚举（第一百零八轮 [14][16]）。只认远期
+    # 时长：天/周级近期停药仍按在用处理，与 check_medication_safety
+    # 的 _RECENT_STOP_* 口径一致（第一百零九轮 [13]）
     r"(?:\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多|半|来)?"
-    r"(?:天|日|周|星期|个月|月|年)(?:半|多|来)?"
+    r"(?:个月|月|年)(?:半|多|来)?"
     r"(?:\s*(?:左右|前后|以上|以内))?"
     r"|大半年|半年(?:多)?|好几年|好久|很久|多年|数月|几个月|"
     r"一段时间))?"
@@ -5606,6 +5608,30 @@ def _context_medication_names(context: Any) -> List[str]:
     names: List[str] = []
     # 分数剂量（1/2片、3/4粒）不是药名分隔：先整体保护再切分
     text = re.sub(r"(?<=[0-9])\s*/\s*(?=[0-9])", "／", text)
+
+    def _rewrite_drug_switch(match: "re.Match[str]") -> str:
+        source, target = match.group(1), match.group(2)
+        # 只认两侧都像药名的换药；「把华法林改为5mg」「改为饭后吃」
+        # 「换成原来的药」是剂量/服法/同药复述，保持原样
+        if not (
+            re.fullmatch(r"[一-龥A-Za-z][一-龥A-Za-z0-9\-]{0,15}", source)
+            and re.fullmatch(
+                r"[一-龥A-Za-z][一-龥A-Za-z0-9\-]{0,15}", target
+            )
+        ):
+            return match.group(0)
+        if source == target:
+            return match.group(0)
+        return f"，已停用{source}，改用{target}"
+
+    # 「两年前把华法林改为氯吡格雷」：源药已停用（第一百零九轮 [16]）
+    text = re.sub(
+        r"(?:把|将)\s*([^\s，。；、]{2,16}?)\s*"
+        r"(?:改为|改成|换成|换为|换成了|改成了)\s*"
+        r"([^\s，。；、]{1,16})",
+        _rewrite_drug_switch,
+        text,
+    )
     # 「已停用阿司匹林、氯吡格雷」的顿号并列共享停药动词：
     # 展开为「已停用阿司匹林，已停用氯吡格雷」再切分，否则
     # 后一个药被当成在用药物（第一百零五轮 [14]）；余文含
@@ -5712,19 +5738,22 @@ def _context_medication_names(context: Any) -> List[str]:
         r"(停用了|停用|停药|停服|停止服用了|停止服用|停止了|停掉了|"
         r"停了|不吃了|不再吃了|不再服用了|不再服用)"
         r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?\s*"
-        r"(?:多|半|来)?\s*(?:天|日|周|星期|个月|月|年)"
+        # 只把远期时长当作共享停药的时距（第一百零九轮 [13]）
+        r"(?:多|半|来)?\s*(?:个月|月|年)"
         r"|[；;，,。！？/\n]|$))",
         _expand_shared_stop_suffix,
         text,
     )
     tokens = re.split(r"([；;，,、。！？/\n]+)", text)
     clause_names_start = 0
+    prev_clause_start = 0
     for token in tokens:
         if token and re.fullmatch(r"[；;，,、。！？/\n]+", token):
             if any(ch in token for ch in "。；;！？\n"):
                 # 强分句边界：群标记停药只作用于本句枚举的药名，
                 # 前面句子/另一个键里仍在用的药物不能被一起清掉
                 # （第一百零八轮 [12]）
+                prev_clause_start = clause_names_start
                 clause_names_start = len(names)
             continue
         part = token.strip()
@@ -5733,8 +5762,13 @@ def _context_medication_names(context: Any) -> List[str]:
         if _STOP_ALL_ANNOTATION_RE.match(part):
             # 「华法林、阿司匹林，都停了」：群标记作用于本句已枚举
             # 的全部药名，不能只 pop 最后一条（第一百零七轮 [13]）；
-            # 只删除本句起点之后加入的药名（第一百零八轮 [12]）
-            del names[clause_names_start:]
+            # 只删除本句起点之后加入的药名（第一百零八轮 [12]）。
+            # 句号把枚举与「都停了」隔开时本句没有药名，标记指向前
+            # 一句的枚举（第一百零九轮 [11]）
+            stop_start = clause_names_start
+            if stop_start == len(names) and names:
+                stop_start = prev_clause_start
+            del names[stop_start:]
             continue
         if _STOP_ANNOTATION_ONLY_RE.match(part):
             # 紧跟药名的纯停药标注：剔除最近的药名（跳过剂量片段）

@@ -52,7 +52,8 @@ def test_clearing_context_clears_active_profile(client):
     app_js = _app_js(client)
 
     start = app_js.index("els.contextClear.addEventListener")
-    body = app_js[start:start + 300]
+    # 处理器前部增加了会诊进行中的守卫（第一百零九轮 [17]）：窗口放宽
+    body = app_js[start:start + 600]
     assert "setActiveProfile('');" in body
 
 

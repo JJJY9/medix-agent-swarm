@@ -6796,9 +6796,11 @@ async function detachSessionForProfileChange() {
   const beforeSession = sessionId;
   const ok = await startNewSession();
   if (!ok) {
-    // startNewSession 自己递增 openSessionSeq，不能作为接管依据
+    // startNewSession 自己递增 openSessionSeq，不能作为接管依据；
+    // 排队中的 send 同样会按 pendingSessionReset 新建会话并发送，
+    // 不能再把 pending 挂回旧会话（第一百零九轮 [12]）
     const takenOver = Boolean(
-      busy || sessionId !== beforeSession
+      busy || sendInFlight || sessionId !== beforeSession
     );
     if (!takenOver) {
       // 新建失败（网络/会话并发）：下一轮提问前强制丢弃旧会话绑定；
@@ -22660,9 +22662,13 @@ async function applySelectedProfile() {
     }
     if (!created) {
       // startNewSession 自己会递增 openSessionSeq：不能用它判断
-      // 是否被 send/openSession 接管，否则创建失败时永远不回滚
+      // 是否被 send/openSession 接管，否则创建失败时永远不回滚。
+      // 排队中的 send（sendInFlight）同样会接管：它在等待同一个
+      // creatingSessionPromise，回滚会清掉 pendingSessionReset 并把
+      // 已确认的换档还原，排队主诉随后以「档案已切换」中止
+      // （第一百零九轮 [12]）
       const takenOver = Boolean(
-        busy || sessionId !== attemptSession
+        busy || sendInFlight || sessionId !== attemptSession
       );
       if (takenOver) {
         // send/openSession 已接管：保留用户选择的新档案与当前会话，
@@ -25188,6 +25194,12 @@ els.contextPanel.addEventListener('input', onContextPanelEdit);
 els.contextPanel.addEventListener('change', onContextPanelEdit);
 
 els.contextClear.addEventListener('click', () => {
+  if (busy || sendInFlight) {
+    // 提交组装期间清空补充信息/档案会让本轮提交以「档案已切换」中止，
+    // 主诉被标成旧档案后持续被跨档案守卫拦截（第一百零九轮 [17]）
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
   applyPatientContext({});
   markContextCleared();
   // 同时清除 activeProfileName 与 sessionStorage，避免刷新后旧档案被重新选中
