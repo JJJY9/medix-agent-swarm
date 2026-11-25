@@ -618,37 +618,81 @@ _DOSE_MISSED_TIME_OBJ_BEFORE = re.compile(
 )
 
 
-def _clean_missed_dose_obj(raw: str) -> str:
+def _missed_dose_obj_items(raw: str) -> list:
+    """漏服宾语的药名项：转折词取末项，并列词逐项拆分。
+
+    「华法林和二甲双胍」→[华法林, 二甲双胍]：任一命中本药都算
+    本药漏服（第九十八轮 [4]）。
+    """
     raw = str(raw or "").strip()
-    if any(word in raw for word in ("但", "而", "和", "及", "与", "或")):
-        raw = re.split(r"[但而和及与或]", raw)[-1]
-    obj = re.sub(
-        r"^[了啦啊呀但而和及与或的着]+|[了啦啊呀但而和及与或的着]+$",
-        "",
-        raw.strip(),
-    )
-    if len(obj) < 2:
-        return ""
-    if any(
-        word in obj
-        for word in ("停用", "停药", "停了", "停的", "没吃", "未吃", "漏服")
-    ):
-        return ""
-    return obj
+    if any(word in raw for word in ("但", "而")):
+        raw = re.split(r"[但而]", raw)[-1]
+    items = []
+    for piece in re.split(r"[和及与或]", raw):
+        obj = re.sub(
+            r"^[了啦啊呀但而和及与或的着]+|[了啦啊呀但而和及与或的着]+$",
+            "",
+            piece.strip(),
+        )
+        if len(obj) < 2:
+            continue
+        if any(
+            word in obj
+            for word in (
+                "停用", "停药", "停了", "停的", "没吃", "未吃", "漏服",
+                "我", "你", "他", "她", "已经", "已", "还", "也",
+                "都", "仍", "刚", "才", "就",
+            )
+        ):
+            continue
+        items.append(obj)
+    return items
+
+
+def _clean_missed_dose_obj(raw: str) -> str:
+    items = _missed_dose_obj_items(raw)
+    return items[0] if items else ""
+
+
+#: 时间词在主语之前的漏服（今天华法林没吃）
+_DOSE_MISSED_TIME_LEAD = re.compile(
+    r"(?:今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|前天|前晚|"
+    r"刚才|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?)"
+    r"\s*([一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*"
+    r"(?:也|都|还|仍)?\s*"
+    r"(?:没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
+)
 
 
 def _missed_dose_time_names_term(text: str, alias_lower: str) -> bool:
     """时间前置漏服的对象是否本药（今天没吃华法林/华法林今天没吃）。"""
     text = str(text or "")
-    # 宾语在时间词之前（华法林今天没吃）：直接定位本药
+
+    def names(alias: str, items) -> bool:
+        return any(
+            alias in item.lower() or item.lower() in alias
+            for item in items
+        )
+
+    # 宾语在时间词之前（华法林今天没吃）：该形态独占判定，
+    # 非本药时不回退去绑定句尾他药（第九十八轮 [4]）
     for match in _DOSE_MISSED_TIME_OBJ_BEFORE.finditer(text):
-        obj = _clean_missed_dose_obj(match.group(1)).lower()
-        if obj and (alias_lower in obj or obj in alias_lower):
-            return True
-    # 宾语在动词之后（今天没吃华法林）
+        items = _missed_dose_obj_items(match.group(1))
+        if not items:
+            continue
+        return names(alias_lower, items)
+    # 宾语在动词之后（今天没吃华法林和二甲双胍）
     for match in _DOSE_MISSED_TIME_OBJ_AFTER.finditer(text):
-        obj = _clean_missed_dose_obj(match.group(1)).lower()
-        if obj and (alias_lower in obj or obj in alias_lower):
+        items = _missed_dose_obj_items(match.group(1))
+        if not items:
+            continue
+        return names(alias_lower, items)
+    # 时间词在主语之前（今天华法林没吃）
+    for match in _DOSE_MISSED_TIME_LEAD.finditer(text):
+        items = _missed_dose_obj_items(match.group(1))
+        if items and names(alias_lower, items):
             return True
     return False
 
@@ -710,6 +754,7 @@ _STOPPED_USE_PREFIX = re.compile(
 #: 只允许时间表达式出现在药名与停药动词之间，避免「准备停药/头痛停了」
 _STOPPED_USE_SUFFIX = re.compile(
     r"^(?:前段时间|前阵子|前一阵|上个月|上周|上上个月|昨天|前天|"
+    r"去年|前年|上年|"
     r"前几天|前几周|前几个月|前几年|最近|目前|现在|"
     r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|天|周|年)"
     r"(?:多)?(?:前|以来)?)?"
@@ -993,8 +1038,10 @@ _LONG_STOP_CONTEXT = re.compile(
     r"停(?=\s*[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?(?:年|月))"
     r"|不吃了?)"
     r"[^，。；,.!?！？\n]{0,6}?"
-    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
-    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年)"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年|"
+    r"去年|前年|上年|很久|好久)"
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年|"
+    r"去年|前年|上年|很久|好久)"
     r"\s*(?:前|以来)?[^，。；,.!?！？\n]{0,4}"
     r"(?:停用|停药|停了|停的|停服|停止服用)"
 )
@@ -1264,7 +1311,7 @@ def _restart_names_other_medication(
 
 #: 英文续用宾语：「still on aspirin」点名他药时不算本药重启
 _ENGLISH_STILL_OBJ_RE = re.compile(
-    r"\bstill\s+(?:take|taking|on)\s+"
+    r"\bstill\s+(?:take|taking|use|using|on)\s+"
     r"(?:(it|the\s+same|this)\b|"
     r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
     re.IGNORECASE,
@@ -1289,7 +1336,9 @@ def _english_restart_names_other(
 
 _RESTART_USE_SUFFIX_EN = re.compile(
     r"\b(?:restarted|started (?:it )?again|taking (?:it )?again"
-    r"|back on (?:it )?(?:again)?|still taking|still on"
+    # still take/use/using it 与 still taking/on 同为续用
+    # （第九十八轮 [2]）
+    r"|back on (?:it )?(?:again)?|still\s+(?:taking|on|take|use|using)"
     r"|continuing (?:it|to take)"
     # kept/continued/continue (to) take/use it：代词宾语续用
     # （第九十四轮 [2]）

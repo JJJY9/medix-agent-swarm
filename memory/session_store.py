@@ -7883,7 +7883,10 @@ class SessionStore:
                 if _content_owned_by_other(candidate):
                     continue
                 if (
-                    (raw_id <= 0 or not backup_tails)
+                    (
+                        (raw_id <= 0 and backup_group_size > 1)
+                        or not backup_tails
+                    )
                     and tail_where is not None
                     and not _tail_matches(candidate)
                     and _candidate_content_matches_backup(candidate)
@@ -8065,9 +8068,13 @@ class SessionStore:
                         tail_where is None
                         or _tail_matches(deferred_candidate)
                         # 单行组（组内没有其它同秒备份行）尾字段被本地
-                        # 编辑只是正常状态变化，不能因此补插旧副本
-                        # （第九十七轮 [4]）
-                        or backup_group_size <= 1
+                        # 编辑只是正常状态变化，不能因此补插旧副本；
+                        # 未编辑的异尾行仍按被删记录补插
+                        # （第九十七轮 [4]、第九十八轮 [9]）
+                        or (
+                            backup_group_size <= 1
+                            and _candidate_edited(deferred_candidate)
+                        )
                     )
                 )
             ):
@@ -8896,7 +8903,7 @@ class SessionStore:
             return _ambiguous()
         if (
             raw_id <= 0
-            and backup_group_size > 1
+            and (backup_group_size > 1 or not _candidate_edited(sole))
             and tail_where is not None
             and not _tail_matches(sole)
         ):
@@ -12175,6 +12182,19 @@ class SessionStore:
                             raw_visit_days[raw_visit_key] = str(
                                 raw_visit.get("next_followup_date") or ""
                             )[:10]
+                #: 同一备份就诊的多条待就诊自动预约：只恢复一条归属，
+                #: 优先备份链接指向的那条（第九十八轮 [10]）
+                preferred_owner_appointment: Dict[int, int] = {}
+                for (
+                    _link_visit, _link_appt, _link_rem,
+                    _link_raw_visit, _link_new,
+                ) in visit_link_updates:
+                    raw_key = _safe_db_id(_link_raw_visit)
+                    if raw_key and _link_appt:
+                        preferred_owner_appointment.setdefault(
+                            raw_key, int(_link_appt)
+                        )
+                claimed_owner_upcoming: Dict[int, set] = {}
                 for appointment_key, raw_owner in (
                     appointment_owner_raw.items()
                 ):
@@ -12205,6 +12225,59 @@ class SessionStore:
                         # 同一就诊已有另一条待就诊复诊预约：恢复旧备份
                         # 不能把这条预存预约再挂回去
                         local_owner = 0
+                    if (
+                        local_owner
+                        and appointment_row is not None
+                        and appointment_raw_status.get(
+                            appointment_key, "upcoming"
+                        ) == "upcoming"
+                    ):
+                        raw_owner_key = _safe_db_id(raw_owner)
+                        claimed = claimed_owner_upcoming.setdefault(
+                            raw_owner_key, set()
+                        )
+                        preferred = preferred_owner_appointment.get(
+                            raw_owner_key
+                        )
+                        if claimed or (
+                            preferred
+                            and int(appointment_key) != preferred
+                        ):
+                            # 同一就诊的第二条待就诊自动预约：不恢复
+                            # 归属并剥掉备注标记，避免复诊完成后的
+                            # 幽灵预约与到期待办（第九十八轮 [10]）
+                            if appointment_key in imported_appointment_ids:
+                                def _strip_this_owner(match):
+                                    marker_id = _safe_db_id(match.group(1))
+                                    if marker_id == int(local_owner) or (
+                                        visit_raw_local_map.get(marker_id)
+                                        == int(local_owner)
+                                    ):
+                                        # 备注标记可能已被重映射成本地
+                                        # 就诊号，两种形态都要剥掉
+                                        return ""
+                                    return match.group(0)
+
+                                note_row = self._conn.execute(
+                                    "SELECT note FROM appointments"
+                                    " WHERE id = ?",
+                                    (int(appointment_key),),
+                                ).fetchone()
+                                cleaned = re.sub(
+                                    r"由就诊记录 #(\d+) 自动创建",
+                                    _strip_this_owner,
+                                    str(note_row["note"] or "")
+                                    if note_row is not None else "",
+                                ).strip()[:300]
+                                self._conn.execute(
+                                    "UPDATE appointments SET"
+                                    " owner_visit_id = 0, note = ?,"
+                                    " updated_at = ? WHERE id = ?",
+                                    (cleaned, now, int(appointment_key)),
+                                )
+                            local_owner = 0
+                            continue
+                        claimed.add(int(appointment_key))
                     existing_owner = (
                         int(appointment_row["owner_visit_id"] or 0)
                         if appointment_row is not None else 0
@@ -13625,6 +13698,30 @@ class SessionStore:
                 " OR followup_appointment_id IN ("
                 "SELECT id FROM appointments WHERE status = 'cancelled'))"
             )
+
+            # 就诊仍链接已完成预约时：脱钩 pending 提醒失去意义，
+            # 不复诊就不该再提醒；保留预约链接作为历史，只清提醒
+            # 链接并按需删除无引用提醒（第九十八轮 [11]）
+            completed_linked_rows = self._conn.execute(
+                "SELECT v.id, v.followup_reminder_id FROM visit_records v"
+                " WHERE v.followup_appointment_id != 0 AND EXISTS ("
+                "SELECT 1 FROM appointments a WHERE a.id ="
+                " v.followup_appointment_id AND a.status = 'completed')"
+            ).fetchall()
+            for linked_row in completed_linked_rows:
+                linked_reminder = int(
+                    linked_row["followup_reminder_id"] or 0
+                )
+                if not linked_reminder:
+                    continue
+                self._clean_unlinked_detached_reminder(
+                    linked_reminder, int(linked_row["id"])
+                )
+                self._conn.execute(
+                    "UPDATE visit_records SET followup_reminder_id = 0"
+                    " WHERE id = ?",
+                    (int(linked_row["id"]),),
+                )
 
             audit_imported = 0
             # 同一分钟内的相同审计事件是正常数据，按数量判重：
@@ -17625,6 +17722,27 @@ class SessionStore:
             ):
                 # 日期与新复诊日期一致：无论待就诊还是已完成都保留，
                 # completed 是按时复诊的历史，清链接会重新报逾期
+                if str(row["status"] or "") == "completed":
+                    visit_link = self._conn.execute(
+                        "SELECT followup_reminder_id FROM visit_records"
+                        " WHERE id = ? AND followup_appointment_id = ?",
+                        (int(visit_id), appointment),
+                    ).fetchone()
+                    if visit_link is not None:
+                        linked_reminder = int(
+                            visit_link["followup_reminder_id"] or 0
+                        )
+                        if linked_reminder:
+                            # 复诊已完成：旧日期脱钩提醒不再提醒，
+                            # 无其它引用时删除（第九十八轮 [11]）
+                            self._clean_unlinked_detached_reminder(
+                                linked_reminder, int(visit_id)
+                            )
+                            self._conn.execute(
+                                "UPDATE visit_records SET"
+                                " followup_reminder_id = 0 WHERE id = ?",
+                                (int(visit_id),),
+                            )
                 return True
             if auto_created and str(row["status"] or "") == "upcoming":
                 doomed_reminders = [
@@ -17983,6 +18101,7 @@ class SessionStore:
                     old_row["followup_appointment_id"]
                 )
                 marker_text = f"由就诊记录 #{int(visit_id)} 自动创建"
+                kept_extra_ids: List[int] = []
                 for extra in self._conn.execute(
                     "SELECT id FROM appointments"
                     " WHERE status = 'upcoming' AND (owner_visit_id = ?"
@@ -17992,12 +18111,13 @@ class SessionStore:
                     extra_id = int(extra["id"])
                     if extra_id == linked_id:
                         continue
-                    self._drop_visit_followup_locked(
+                    if self._drop_visit_followup_locked(
                         int(visit_id),
                         extra_id,
                         0,
                         keep_date=normalized["next_followup_date"],
-                    )
+                    ):
+                        kept_extra_ids.append(extra_id)
                 kept = self._drop_visit_followup_locked(
                     int(visit_id),
                     old_row["followup_appointment_id"],
@@ -18014,6 +18134,35 @@ class SessionStore:
                         """,
                         (int(visit_id),),
                     )
+                if kept_extra_ids:
+                    # 被保留下来的同日期自动预约回写为就诊链接：否则
+                    # followup_scheduled 误报「未安排复诊」
+                    # （第九十八轮 [15]）
+                    extra_row = self._conn.execute(
+                        "SELECT id FROM appointments WHERE id = ?"
+                        " AND status = 'upcoming' AND profile = ?",
+                        (
+                            int(kept_extra_ids[0]),
+                            normalized["profile"],
+                        ),
+                    ).fetchone()
+                    if extra_row is not None:
+                        extra_reminder = self._conn.execute(
+                            "SELECT id FROM reminders WHERE done = 0"
+                            " AND appointment_id = ? ORDER BY id LIMIT 1",
+                            (int(extra_row["id"]),),
+                        ).fetchone()
+                        self._conn.execute(
+                            "UPDATE visit_records SET"
+                            " followup_appointment_id = ?,"
+                            " followup_reminder_id = ? WHERE id = ?",
+                            (
+                                int(extra_row["id"]),
+                                int(extra_reminder["id"])
+                                if extra_reminder is not None else 0,
+                                int(visit_id),
+                            ),
+                        )
                 # 已完成（completed）自动预约是就诊历史：改回复诊日期
                 # 或把日期更正为已完成预约的计划日时链接同样回挂，
                 # 否则 followup_scheduled 永久为假、逾期提示无法自愈
