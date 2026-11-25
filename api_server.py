@@ -5418,7 +5418,7 @@ def _evaluate_medication_safety(
 #: 纯停药标注片段：「华法林，已停用」的「已停用」不是独立药名
 _STOP_ANNOTATION_ONLY_RE = re.compile(
     r"^(?:已停用|已停药|已停服|停用中|已停了|已停|停药中|"
-    r"已停止使用|已停止|已停用中)$"
+    r"已停止使用|已停止|已停用中|停了|停用了|停掉)$"
 )
 #: 括号形式的停药标注：「X（已停用）」
 _STOP_ANNOTATION_INLINE_RE = re.compile(
@@ -5572,7 +5572,12 @@ def _context_medication_names(context: Any) -> List[str]:
             # （第九十四轮 [5][13]）
             continue
         suffix_stop = re.search(
-            r"(?:已停用|已停药|已停服|停药|停用|停服)$", part
+            # 「已停用两个月」「停了」「停用了」同样是后缀停药标注
+            # （第九十八轮 [12]）
+            r"(?:已停用|已停药|已停服|停药|停用|停服|停了|停用了|停掉|已停)"
+            r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+            r"(?:天|日|周|星期|个月|月|年)|大半年|半年|好几年|好久|很久)?$",
+            part,
         )
         if suffix_stop is not None:
             # 「阿司匹林已停用」：后缀标注同样让该药退出名单；

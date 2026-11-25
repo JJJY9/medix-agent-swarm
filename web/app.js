@@ -22828,6 +22828,7 @@ function saveDraft() {
           // 用户已主动清空主诉：只丢弃属于当前会话的在途记录，
           // 其它会话的停止/中断主诉保留待恢复
           clearInflightForCurrentSession();
+          clearRestoredInflightIfOwned();
         }
       }
     } catch {
@@ -22892,6 +22893,7 @@ function flushDraftNow() {
       if (!busy && !sendInFlight) {
         // 与 saveDraft 一致：只丢弃属于当前会话的在途记录
         clearInflightForCurrentSession();
+        clearRestoredInflightIfOwned();
       }
     }
   } catch {
@@ -23274,6 +23276,27 @@ function removeOtherInflightRecord(owner, question) {
     )
   );
   writeOtherInflightRecords(records);
+}
+
+function clearRestoredInflightIfOwned() {
+  // 输入被一次清空（全选删除/剪切）时补做恢复来源清理：备份槽
+  // 记录按会话+文本删除，主槽走归属校验；随后重置跟踪
+  // （第九十八轮 [16]）
+  if (!inflightRestoredText) return;
+  const restoredOwner = inflightRestoredOwnerSession || '';
+  if (!busy && !sendInFlight) {
+    if (inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY) {
+      if (restoredOwner && restoredOwner === (sessionId || '')) {
+        removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+      }
+    } else {
+      clearInflightForCurrentSession();
+    }
+  }
+  inflightRestoredText = '';
+  inflightRestoredOwnerSession = '';
+  inflightRestoredBaseline = 0;
+  inflightRestoredKeyName = '';
 }
 
 function preserveOtherSessionInflight(targetOwner) {
@@ -23718,8 +23741,12 @@ els.input.addEventListener('input', () => {
     const restoredOwner = inflightRestoredOwnerSession || '';
     if (!busy && !sendInFlight) {
       if (inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY) {
-        // 备份槽记录按会话+文本清除（第九十七轮 [16]）
-        removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+        // 备份槽记录按会话+文本清除（第九十七轮 [16]）；只有仍停留
+        // 在所属会话时才删，切到别的会话后键入不能误删另一会话的
+        // 唯一副本（第九十八轮 [13]）
+        if (restoredOwner && restoredOwner === (sessionId || '')) {
+          removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+        }
       } else if (
         !restoredOwner || restoredOwner === (sessionId || '')
       ) {

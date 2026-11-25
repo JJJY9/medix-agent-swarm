@@ -1704,6 +1704,19 @@ _EDUCATION_TOPIC_REFERENCE_RE = re.compile(
     r"|(?:文章|视频|新闻|帖子|百科|科普|教程)"
     r"[^，。；,.!?！？\n]{0,6}"
     r"(?:里|上|中)?(?:说|讲|写|介绍|提到|看到)"
+    # 「胸痛的文章/孕期出血的视频」：所有格主题引用
+    # （第九十八轮 [14]）
+    r"|[^，。；,.!?！？\n]{0,12}的(?:相关|有关)?"
+    r"(?:文章|视频|新闻|帖子|百科|科普|教程)"
+    # 「看到新闻里胸痛猝死的案例」「刷到电视上胸痛急救的科普」：
+    # 引用动词在前、媒体词后接案例/科普（第九十八轮 [7]）
+    r"|(?:看到|看了|刷到|刷了|读了|读到|听说|发现)"
+    r"[^，。；,.!?！？\n]{0,12}"
+    r"(?:新闻|电视|报道|报纸|广播|文章|视频|帖子|科普|百科)"
+    r"[^，。；,.!?！？\n]{0,20}"
+    r"(?:案例|科普|急救|报道|说法|研究|事故|新闻|文章|视频)"
+    r"|(?:新闻|电视|报道|报纸|广播|文章|视频|帖子|科普|百科)"
+    r"[^，。；,.!?！？\n]{0,20}的?案例"
 )
 _EDUCATION_QUOTE_LEAD_RE = re.compile(
     r"(?:网上|文章|视频|新闻|帖子|百科|教程|科普|讲座|报道|书上|"
@@ -1911,12 +1924,20 @@ def patient_complaint_text(text: str) -> str:
             hard_sign = any(
                 sign in text_follow
                 for sign in (
-                    # 泛词「出汗」不作为患者证据：天气热容易出汗/
-                    # 没有出汗都不是病程（第九十七轮 [14]）
                     "冷汗", "冒冷汗", "大汗", "虚汗",
                     "放射", "不缓解", "不能缓解", "持续不缓解",
                     "难忍", "剧痛", "濒死", "躺不平", "端坐呼吸",
                 )
+            ) or (
+                # 「出汗特别厉害」这类强度形态是真实病程；裸「出汗」
+                # （天气热容易出汗/没有出汗）仍不作证据
+                # （第九十七轮 [14]、第九十八轮 [1]）
+                re.search(
+                    r"出汗(?:特别|很|非常|明显|厉害|严重|不止|大量|"
+                    r"较多|好多|不止)",
+                    text_follow,
+                )
+                is not None
             )
             severity_follows = bool(
                 (
@@ -2500,19 +2521,47 @@ _DOSE_OBJ_EDGE_RE = re.compile(r"^[了啦啊呀但而和及与或的着\s]+|[了
 
 
 def _clean_missed_dose_obj(raw: str) -> str:
+    items = _missed_dose_obj_items(raw)
+    return items[0] if items else ""
+
+
+def _missed_dose_obj_items(raw: str) -> list:
+    """漏服宾语的药名项：转折词取末项，并列词逐项拆分。
+
+    「停用两年了但利伐沙班」→[利伐沙班]；「华法林和二甲双胍」
+    →[华法林, 二甲双胍]（第九十八轮 [5]）。
+    """
     raw = str(raw or "").strip()
-    if any(word in raw for word in ("但", "而", "和", "及", "与", "或")):
-        # 「停用两年了但利伐沙班」：取连接词之后的真正宾语
-        raw = re.split(r"[但而和及与或]", raw)[-1]
-    obj = _DOSE_OBJ_EDGE_RE.sub("", raw.strip())
-    if len(obj) < 2:
-        return ""
-    if any(
-        word in obj
-        for word in ("停用", "停药", "停了", "停的", "没吃", "未吃", "漏服")
-    ):
-        return ""
-    return obj
+    if any(word in raw for word in ("但", "而")):
+        raw = re.split(r"[但而]", raw)[-1]
+    items = []
+    for piece in re.split(r"[和及与或]", raw):
+        obj = _DOSE_OBJ_EDGE_RE.sub("", piece.strip())
+        if len(obj) < 2:
+            continue
+        if any(
+            word in obj
+            for word in (
+                "停用", "停药", "停了", "停的", "没吃", "未吃", "漏服",
+                "我", "你", "他", "她", "已经", "已", "还", "也",
+                "都", "仍", "刚", "才", "就",
+            )
+        ):
+            continue
+        items.append(obj)
+    return items
+
+
+#: 时间词在主语之前的漏服（今天华法林没吃）
+_DOSE_MISSED_TIME_LEAD_RE = re.compile(
+    r"(?P<time>今天|今早|今晨|早上|中午|晚上|今晚|昨天|昨晚|昨夜|"
+    r"前天|前晚|刚才|"
+    r"[0-9一二两三四五六七八九十]+天来?|"
+    r"[0-9一二两三四五六七八九十]+周来?)"
+    r"\s*(?P<obj>[一-龥A-Za-z][一-龥A-Za-z0-9]{1,9})\s*"
+    r"(?:也|都|还|仍)?\s*"
+    r"(?P<verb>没吃|未吃|没有吃|没服用|未服用|没有服用|漏服用?)"
+)
 
 
 def _missed_dose_time_first_fragment(text: str) -> str:
@@ -2522,26 +2571,35 @@ def _missed_dose_time_first_fragment(text: str) -> str:
     该形态指向非高风险药时整句不保留，避免把句尾他药误绑给漏服。
     """
     text = str(text or "")
+
+    def high_risk(obj: str) -> bool:
+        return any(
+            term in obj for term in ANTICOAGULANT_TERMS
+        ) or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
+
     for match in _DOSE_MISSED_TIME_OBJ_BEFORE_RE.finditer(text):
-        obj = _clean_missed_dose_obj(match.group("obj"))
-        if not obj:
+        items = _missed_dose_obj_items(match.group("obj"))
+        if not items:
             continue
-        if not (
-            any(term in obj for term in ANTICOAGULANT_TERMS)
-            or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
-        ):
-            return ""
-        return f"{obj}{match.group('time')}{match.group('verb')}"
+        for obj in items:
+            if high_risk(obj):
+                return f"{obj}{match.group('time')}{match.group('verb')}"
+        # 宾语在时间词之前且全是非高风险药：不保留本句，
+        # 避免把句尾他药误绑给漏服（第九十八轮 [5]）
+        return ""
     for match in _DOSE_MISSED_TIME_OBJ_AFTER_RE.finditer(text):
-        obj = _clean_missed_dose_obj(match.group("obj"))
-        if not obj:
+        items = _missed_dose_obj_items(match.group("obj"))
+        if not items:
             continue
-        if not (
-            any(term in obj for term in ANTICOAGULANT_TERMS)
-            or any(term in obj for term in IMMUNOSUPPRESSION_TERMS)
-        ):
-            return ""
-        return f"{obj}{match.group('time')}{match.group('verb')}"
+        for obj in items:
+            if high_risk(obj):
+                return f"{obj}{match.group('time')}{match.group('verb')}"
+        return ""
+    for match in _DOSE_MISSED_TIME_LEAD_RE.finditer(text):
+        items = _missed_dose_obj_items(match.group("obj"))
+        for obj in items:
+            if high_risk(obj):
+                return f"{obj}{match.group('time')}{match.group('verb')}"
     return ""
 
 
@@ -2635,8 +2693,10 @@ _LONG_STOP_PATTERN = re.compile(
     # 「停经两个月」是月经史，不是停药（第九十四轮 [6]）
     r"停(?=\s*[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?(?:年|月)))"
     r"[^，。；;,.!?！？\n]{0,6}"
-    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|半年)"
-    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年)"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|"
+    r"半年|去年|前年|上年|上个月|上月|很久|好久)"
+    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年|"
+    r"去年|前年|上年|上个月|上月|很久|好久)"
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
     r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用)"
     # 英文停药表述（warfarin was stopped 2 years ago / no longer
@@ -3291,9 +3351,10 @@ _CHEMO_ENDED_RE = re.compile(
 )
 #: 刚结束不久的化疗（结束才一周/结束后一个月）：免疫抑制仍可能存在
 _CHEMO_RECENT_END_RE = re.compile(
-    r"(?:结束|完成|做完)(?:才|刚|不到|后|已经?有?)?\s*"
-    # 「结束后第5天」「结束后5-14天」「结束后十来天」：出院宣教常用
-    r"(?:第\s*)?(?:[0-9一二两三四五六七八九十半几]+"
+    r"(?:结束|完成|做完)(?:才|刚|不到|后|已经?有?|快|将近|差不多|约|大概)?\s*"
+    # 「结束后第5天」「结束后5-14天」「结束后十来天」「快两周」
+    # 「好几周」：出院宣教常用（第九十八轮 [6]）
+    r"(?:第\s*)?(?:好几|[0-9一二两三四五六七八九十半几]+"
     r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+)?|几)\s*"
     r"(?:来|多)?\s*(?:天|日|周|星期|个?月)"
 )
@@ -3307,7 +3368,8 @@ _CHEMO_RECENT_END_EN_RE = re.compile(
     r"(?:chemo(?:therapy)?|radiotherapy|radiation)\b"
     r"[^,.;!?\n]{0,20}?"
     r"\b(?:today|yesterday|last\s+(?:night|week|month)|this\s+week|"
-    r"(?:[0-9]+|one|two|three|four|five|six|several)\s+"
+    r"(?:[0-9]+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|several|many|a\s+few|a\s+couple(?:\s+of)?)\s+"
     r"(?:days?|weeks?|months?)\s+ago)\b",
     re.IGNORECASE,
 )
