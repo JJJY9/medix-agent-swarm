@@ -546,7 +546,9 @@ def _web_source():
 def test_open_session_keeps_pending_new_draft():
     source = _web_source()
     assert "const pendingNewDraft = Boolean(" in source
-    assert "safeSessionGet(DRAFT_OWNER_KEY) === ''" in source
+    # 待新建会话草稿的归属允许「空」或「尚未落盘（null）」
+    # （第一百零二轮 [17]）
+    assert "pendingDraftOwner === ''" in source
     assert "keepPendingReset || draftConflict || pendingNewDraft" in source
     # 待重置标记不能在结算草稿前被无条件清除
     assert "} else if (!keepPendingReset && !pendingNewDraft) {" in source

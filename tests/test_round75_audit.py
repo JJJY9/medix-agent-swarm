@@ -314,13 +314,14 @@ def test_reschedule_updates_detached_visit_reminder(tmp_path):
     )
     first_row = store.get_reminder(first["id"])
     second_row = store.get_reminder(second["id"])
+    visit_now = store.get_visit_record(visit["id"])
     store.close()
-    assert first_row["appointment_id"] == 0
-    # 脱钩提醒随改期同步到与挂预约提醒相同的日期
-    assert first_row["due_at"] == second_row["due_at"], (
-        first_row, second_row
-    )
-    assert first_row["due_at"][:10] < new_day
+    # 预约已有自己的待办：脱钩提醒合并删除，就诊链接改指预约待办，
+    # 不再出现两条同标题同到期日的 pending（第一百零二轮 [15]）
+    assert first_row is None
+    assert second_row is not None
+    assert int(visit_now["followup_reminder_id"] or 0) == second["id"]
+    assert second_row["due_at"][:10] < new_day
 
 
 def test_cancel_removes_detached_visit_reminder(tmp_path):

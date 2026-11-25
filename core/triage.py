@@ -130,6 +130,11 @@ _NEGATION_PATTERN = re.compile(
 _UNCERTAIN_QUESTION_RE = re.compile(
     r"(?:是不是|有没有|要不要|会不会|能不能|可不可以|是否|有无)"
 )
+#: A 不 A 疑问（撞没撞到头/碰没碰到）：同属不确定，按阳性处理，
+#: 不能被前缀末尾的裸「没」判成否认（第一百零二轮 [2]）
+_A_NOT_A_PREFIX_RE = re.compile(
+    r"(?:撞|磕|碰|砸|摔|打|吃|服|用|喝|吸|停)(?:没|不)$"
+)
 #: 「不是没有/并非没有」是双重否定，实际为阳性
 _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
     r"(?:不是|并非|并非说|并不是说?|不能说|不代表|又不是)"
@@ -265,10 +270,12 @@ def _is_negated_with_trailing(prefix: str, suffix: str) -> bool:
 #: 精确子串表无法覆盖部位词与疼/痛之间的副词，单独用受控正则兜底
 #: （第一百零一轮 [1]）
 _CHEST_PAIN_VARIANT_RE = re.compile(
-    r"(?:胸腔|胸口|胸前区|心前区|心口|胸部|胸)"
-    r"(?:有点|有些|一阵一阵|一阵|隐隐|特别|明显|一直|持续|总是?|"
-    r"老是|经常|突然|剧烈|很|好|较|稍微|略|发|胀|闷|钝|刺|绞|"
-    r"压榨|针扎|揪着|作|地|得)*"
+    r"(?:胸腔|胸口|胸前区|心前区|心口|胸部|胸骨后|胸)"
+    r"(?:有点|有些|有一点|一点点|一丝|轻微|隐隐|隐|中间|中部|"
+    r"一阵一阵|一阵阵|一阵|持续性|阵发性|针刺样|针刺|针扎|"
+    r"刀割样|刀割|撕裂样|撕裂|绞着|扯着|放射|特别|明显|一直|"
+    r"持续|总是?|老是|经常|突然|剧烈|剧|很|好|较|稍微|略|发|"
+    r"胀|闷|钝|刺|绞|压榨|揪着|作|地|得)*"
     r"(?:疼|痛)"
 )
 
@@ -775,6 +782,10 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
     if _UNCERTAIN_QUESTION_RE.search(stripped):
         # 「不知道是不是胸痛」「有没有胸痛」「是否呼吸困难」是疑似，
         # 与妊娠不确定的既有口径一致：按阳性处理，不能漏报
+        return False
+    if _A_NOT_A_PREFIX_RE.search(stripped):
+        # 「不确定撞没撞到头」：A 不 A 疑问同样按不确定阳性处理
+        # （第一百零二轮 [2]）
         return False
     double_negation = _DOUBLE_NEGATION_SUFFIX_PATTERN.search(stripped)
     if double_negation is not None:
@@ -1906,6 +1917,15 @@ def _patient_course_before_quote(clause: str) -> bool:
         )
     ):
         return True
+    # 引述词之前已有实测体温（发烧38.5度看了文章说要去医院）：读数
+    # 是患者本人的客观病程，引述动词只是补充说明，不能整句丢弃
+    # （第一百零二轮 [3]）
+    if re.search(
+        r"[0-9]+(?:\.[0-9]+)?\s*(?:度|°C|℃)", prefix
+    ) and any(
+        word in prefix for word in ("发烧", "发热", "低烧", "高烧", "体温")
+    ):
+        return True
     topic_quote = re.search(r"关于|有关|一篇|讲|写|主题", prefix)
     topic_is_about_symptom = bool(
         topic_quote
@@ -2949,7 +2969,11 @@ def _english_stop_names_drug(text: str) -> bool:
 _ENGLISH_RESTART_RE = re.compile(
     r"\b(?:restarted|restarting|started\s+again|back\s+on|"
     r"resumed|currently\s+taking|"
-    r"(?:take|taking|started)\s+it\s+again|on\s+it\s+again|"
+    r"(?:take|taking|started|using)\s+it\s+again|on\s+it\s+again|"
+    # now I am using it again / currently using：进行式续用
+    # （第一百零二轮 [13]）
+    r"now\s+(?:i\s*(?:'m|am)\s+)?(?:using|taking)\b|"
+    r"currently\s+using|"
     # kept/continued/continue (to) take/use it：代词宾语续用
     # （第九十四轮 [2]）
     r"(?:kept|keeps?|kept\s+on|continued|continues?|continuing|"
@@ -3434,13 +3458,15 @@ _RESTART_TEXT_RE = re.compile(
     r"|一直没停|吃到现在|用到现在|吃到今天|用到今天"
     # 进行式续用：「停了半年，现在在吃/目前在用/正在服用」（第一百
     # 零一轮 [2]）；必须带「在/正在」，避免「现在吃5mg阿司匹林」
-    # 这类换药后的剂量延续被当成原药续用（round88）；排除吃饭/菜
+    # 这类换药后的剂量延续被当成原药续用（round88）；排除吃饭/菜。
+    # 「现在吃着/目前用着」持续体同样是续用（第一百零二轮 [7][13]）
     r"|(?:现在|目前|当前)在(?:"
     r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
     r"|正在(?:"
     r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    r"|(?:现在|目前|当前)(?:吃着|用着|服用着|口服着)"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -3460,6 +3486,15 @@ _RESTART_OBJECT_RE = re.compile(
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
     r"|又服用了|又用了(?!别)"
+    # 进行式续用：「现在在吃阿司匹林」「目前在用中药调理」：宾语
+    # 用于他药归属，换药后不能复活既往药（第一百零二轮 [7][13]）
+    r"|(?:现在|目前|当前)在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    r"|正在(?:"
+    r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    r"|(?:现在|目前|当前)(?:吃着|用着|服用着|口服着)"
     r"|(?:每天|每日|天天|一直|持续|规律|长期|常年)"
     r"(?:都|也|还|在|坚持)?"
     r"(?:吃|服用|口服|服|用)"
@@ -3545,6 +3580,50 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
     if past_obj and (past_obj in obj or obj in past_obj):
         return False
     return True
+
+
+def _restart_object_non_medication(follow: str, clause: str) -> bool:
+    """续用线索的显式宾语是否明显不是药物（在吃电脑/火锅/中药调理）。
+
+    这种句子不是本药续用：被停药仍是停用，不能因为「在用X」而
+    把已停用药物复活（第一百零二轮 [7][13]）。
+    """
+    match = _RESTART_OBJECT_RE.search(str(follow or ""))
+    if match is None:
+        return False
+    obj = re.split(r"[，。；,.!?！？\n和及与、]", match.group(1))[0]
+    obj = re.sub(
+        r"^[0-9一二两三四五六七八九十半几]+\s*"
+        r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)\s*",
+        "",
+        obj,
+        flags=re.IGNORECASE,
+    )
+    obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
+    if not obj or len(obj) < 2:
+        return False
+    if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
+        return False
+    past = _MED_OBJECT_IN_CLAUSE.search(clause)
+    past_obj = past.group(1) if past else ""
+    if past_obj and (past_obj in obj or obj in past_obj):
+        return False
+    if any(term in obj for term in _OTHER_STOP_DRUG_TAILS):
+        return False
+    if _GENERIC_DRUG_NAME_RE.search(obj) is not None:
+        return False
+    if re.fullmatch(
+        r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*"
+        r"(?:多)?\s*(?:天|日|周|星期|个月|月|年)"
+        r"|半年|几天|一段时间|一阵子|长期|好久|很久)"
+        r"(?:的疗程|疗程|左右)?",
+        obj,
+    ):
+        # 疗程/时长不是另一种药（继续吃两周）
+        return False
+    return True
+
+
 #: 已结束的肿瘤治疗（化疗/放疗）：结束多年不再是当前免疫抑制。
 #: 第二分支必须带完成体（过/了），且间隔里不能出现「开始/至今/一直」：
 #: 「3个月前开始化疗」是进行中的治疗，不能按已结束处理
@@ -4178,6 +4257,15 @@ def _active_medical_text(
                 ) or _restart_names_other_medication(
                     restart_window, clause
                 ):
+                    if _restart_object_non_medication(
+                        clause, clause
+                    ) or _restart_object_non_medication(
+                        restart_window, clause
+                    ):
+                        # 明确在吃非药物对象（电脑/火锅/中药调理）：
+                        # 不是本药续用，被停药仍是停用
+                        # （第一百零二轮 [7][13]）
+                        continue
                     fragment = _chinese_restart_known_drug_fragment(
                         clause + "；" + restart_window
                     )

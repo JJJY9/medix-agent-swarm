@@ -316,10 +316,13 @@ def test_reschedule_updates_detached_reminder_note(tmp_path):
     store.update_appointment_partial(
         appointment["id"], scheduled_at=f"{new_day}T09:00"
     )
-    row = store.get_reminder(first["id"])
+    row = store.get_reminder(second["id"])
+    first_row = store.get_reminder(first["id"])
     store.close()
     # 备注里的复诊日期是预约日（提醒到期日仍提前一天，第八十轮修正
-    # 与创建/安排路径同口径）
+    # 与创建/安排路径同口径）；脱钩提醒并入预约待办
+    # （第一百零二轮 [15]）
+    assert first_row is None
     assert row["note"].startswith("复诊 " + str(new_day)), row
     assert str(row["due_at"])[:10] != new_day, row
     assert row["note"] != "复诊 2026-11-28 心内科 王医生", row
