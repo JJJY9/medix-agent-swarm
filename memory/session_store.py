@@ -6660,20 +6660,22 @@ class SessionStore:
             # 真正被本地编辑过的存活行看不到软字段，改用编辑证据
             return _soft_matches(candidate) or _candidate_edited(candidate)
 
-        def _edited_after_export() -> bool:
-            """本行是否在备份导出之后被编辑过。
+        def _edited_after_export(row_id: int = 0) -> bool:
+            """指定行（默认本备份原始主键行）是否在备份导出之后被编辑过。
 
             updated_at 只有秒级精度：导出与编辑落在同一秒时两者相等，
             仍视为在快照之后编辑。备份缺少导出时间（旧版或手工构造）
             时不采信，避免把另一个库中同主键同秒的无关记录认领为
-            本备份行的旧版本。
+            本备份行的旧版本。row_id 参数用于按候选行取自身的编辑
+            证据（同秒改名等场景），不得拿撞号行的时间冒充。
             """
-            if not backup_exported_at or raw_id <= 0:
+            target = int(row_id or raw_id)
+            if not backup_exported_at or target <= 0:
                 return False
             try:
                 row = self._conn.execute(
                     f"SELECT updated_at FROM {table} WHERE id = ?",
-                    (raw_id,),
+                    (target,),
                 ).fetchone()
             except sqlite3.Error:
                 return False
@@ -6681,6 +6683,23 @@ class SessionStore:
                 return False
             updated = str(row["updated_at"] or "")
             return bool(updated) and updated >= backup_exported_at
+
+        def _identity_owned_candidate(candidate: int) -> bool:
+            """候选是否就是本备份行被改挂/编辑后的存活版本。
+
+            同源库中本地主键等于备份主键、内容命中、确有编辑痕迹且
+            尾字段精确命中本行时，它就是本行：同秒孪生的归属守卫
+            不能再把它让给兄弟记录，否则本行会去抢兄弟补回的副本、
+            对方下次导入再插一条重复行（第一百零八轮 [7]）。
+            未编辑（无改挂/编辑证据）的同号行不受影响，仍由各守卫
+            按撞号孪生处理。
+            """
+            return bool(
+                candidate == raw_id
+                and _same_backup_origin()
+                and _candidate_edited(candidate)
+                and _tail_matches(candidate)
+            )
 
         def _candidate_owned_by_profile_sibling(
             candidate: int, candidate_profile: str
@@ -6969,6 +6988,11 @@ class SessionStore:
             """
             if not (backup_profiles and backup_created) or not candidate_profile:
                 return False
+            if _identity_owned_candidate(candidate):
+                # 候选就是本备份行被改挂/编辑后的存活版本（同源主键 +
+                # 编辑痕迹 + 尾字段命中）：不能归因给同秒兄弟
+                # （第一百零八轮 [7]）
+                return False
             wanted = _normalize_profile_name(candidate_profile)
             created_key = str(created_at_value or "")
             for other_id, other_profile in backup_profiles.items():
@@ -7028,9 +7052,16 @@ class SessionStore:
                     try:
                         rows = self._conn.execute(
                             f"SELECT id, {', '.join(content_columns)}"
-                            f" FROM {table} WHERE profile = ?"
-                            " AND created_at = ? AND id != ?",
-                            (candidate_profile, created_key, candidate),
+                            f" FROM {table} WHERE (profile = ?"
+                            " AND created_at = ? AND id != ?)"
+                            # 兄弟备份行可能被改挂到第三个档案：同主键
+                            # 且内容一致的存活行同样是它在世证据
+                            # （第一百零八轮 [7]）
+                            " OR id = ?",
+                            (
+                                candidate_profile, created_key, candidate,
+                                other_id,
+                            ),
                         ).fetchall()
                     except sqlite3.Error:
                         rows = []
@@ -7789,6 +7820,10 @@ class SessionStore:
                     claimable = False
                 if claimable and (candidate in moved or candidate in matched):
                     claimable = False
+                #: 主键与本备份行相同（同源库）：同秒孪生的归属守卫
+                #: 不能把它让给兄弟记录，但尾字段/编辑证据等其余守卫
+                #: 仍然生效（第一百零八轮 [7]）
+                identity_owned = _identity_owned_candidate(candidate)
                 expected_row_profile = (
                     str(values[0])
                     if columns and columns[0] == "profile" else ""
@@ -7838,6 +7873,7 @@ class SessionStore:
                     claimable = False
                 if (
                     claimable
+                    and not identity_owned
                     and not _soft_matches(candidate)
                     and _candidate_soft_owned_by_other(
                         candidate, cross_profile=True,
@@ -7852,19 +7888,27 @@ class SessionStore:
                     # 孪生不能靠尾字段区分），本行按被删记录补回
                     # （第八十三轮 [4]）
                     claimable = False
-                if claimable and _tail_prefers_sibling(
-                    candidate, cross_profile=True
+                if (
+                    claimable
+                    and not identity_owned
+                    and _tail_prefers_sibling(
+                        candidate, cross_profile=True
+                    )
                 ):
                     # 候选尾字段精确命中同秒同内容另一条备份行：它是
                     # 那条记录改挂后的存活版本，本行必须按被删记录补插
                     # （与 step1 同口径，第八十轮）
                     claimable = False
-                if claimable and (
-                    _same_profile_exact_candidate(candidate) is not None
+                if (
+                    claimable
+                    and not identity_owned
+                    and _same_profile_exact_candidate(candidate) is not None
                 ):
                     # 本档案已有软/内容/尾字段全部命中本行的存活行：
                     # 跨档案候选属于另一成员的兄弟记录（被改名/改挂），
-                    # 不能抢先把它认领给本行（第一百零一轮 [8]）
+                    # 不能抢先把它认领给本行（第一百零一轮 [8]）。
+                    # 同源主键行是例外：同秒孪生的「精确候选」可能是
+                    # 兄弟补回的副本（第一百零八轮 [7]）
                     claimable = False
                 if (
                     claimable
@@ -8087,8 +8131,11 @@ class SessionStore:
                         # 不能当作本行改挂，否则被删记录丢失、对方记录
                         # 被复制。这里只看跨档案候选，对方备份行必然会
                         # 被自己的原始记录认领，本行组内是否最后一条无关
-                        if _candidate_attributable_to_profile_sibling(
-                            candidate, candidate_profile
+                        if (
+                            not _identity_owned_candidate(candidate)
+                            and _candidate_attributable_to_profile_sibling(
+                                candidate, candidate_profile
+                            )
                         ):
                             continue
                     candidates.append(candidate)
@@ -8124,11 +8171,13 @@ class SessionStore:
                             # 软字段不命中又没有编辑证据的行不是本行的
                             # 存活版本（同函数 9437 口径）：异标题同秒
                             # 未编辑提醒不能吞掉备份行，按被删记录补插
-                            # （第一百零七轮 [3]）。同秒改名场景由
-                            # _edited_after_export 兜住（round57 契约）
+                            # （第一百零七轮 [3]）。同秒改名场景用候选
+                            # 行自身的导出后编辑证据兜住（round57
+                            # 契约）；不能借用撞号无关行的时间
+                            # （第一百零八轮 [3]）
                             and (
                                 _candidate_edited(candidate)
-                                or _edited_after_export()
+                                or _edited_after_export(candidate)
                             )
                         ]
                         placeholders = ",".join(
@@ -8506,10 +8555,13 @@ class SessionStore:
                     # （第九十五轮 [9]、第九十六轮 [2]）
                     continue
                 if (
-                    _candidate_owns_unprocessed_backup_row(candidate)
-                    or _other_backup_row_survives(candidate)
-                    or _tail_prefers_sibling(
-                        candidate, cross_profile=True
+                    not _identity_owned_candidate(candidate)
+                    and (
+                        _candidate_owns_unprocessed_backup_row(candidate)
+                        or _other_backup_row_survives(candidate)
+                        or _tail_prefers_sibling(
+                            candidate, cross_profile=True
+                        )
                     )
                 ) and not (
                     soft_where is not None
@@ -8524,8 +8576,11 @@ class SessionStore:
                     # 候选属于那条记录，本行按被删记录补插
                     # （第八十七轮）
                     continue
-                if _candidate_attributable_to_profile_sibling(
-                    candidate, candidate_profile
+                if (
+                    not _identity_owned_candidate(candidate)
+                    and _candidate_attributable_to_profile_sibling(
+                        candidate, candidate_profile
+                    )
                 ) and not (
                     (
                         soft_where is not None
@@ -8576,7 +8631,8 @@ class SessionStore:
                     continue
                 moved_candidates.append(candidate)
             if len(moved_candidates) == 1 and (
-                _same_profile_exact_candidate(moved_candidates[0])
+                _identity_owned_candidate(moved_candidates[0])
+                or _same_profile_exact_candidate(moved_candidates[0])
                 is None
             ):
                 # 同档案里若已有软/内容/尾字段全部命中的存活行，它
@@ -16794,8 +16850,12 @@ class SessionStore:
                         owner_due = str(
                             owner_row["next_followup_date"] or ""
                         )[:10]
+                        # 同一次 PATCH 里同时改期时，判断「当前计划」
+                        # 必须用取消前的预约日期：改期后的新日期与
+                        # 就诊复诊日不等，清理会被误跳过
+                        # （第一百零八轮 [8]）
                         appt_day = str(
-                            normalized["scheduled_at"] or ""
+                            previous["scheduled_at"] or ""
                         )[:10]
                         # 就诊已链接另一条待就诊预约时，取消/完成无关
                         # 旧预约不能删掉它的复诊提醒（第一百零五轮 [10]）；
@@ -17172,6 +17232,17 @@ class SessionStore:
                                     now,
                                     int(appointment_id),
                                 ),
+                            )
+                            # 就诊上可能残留指向本预约的旧链接（仅链接
+                            # 态）：日期已经错配，必须一起切断，否则
+                            # 「已安排复诊」抑制逾期提示，再次安排复诊
+                            # 还会新建第二条预约（第一百零八轮 [9]）
+                            self._conn.execute(
+                                "UPDATE visit_records"
+                                " SET followup_appointment_id = 0"
+                                " WHERE id = ?"
+                                " AND followup_appointment_id = ?",
+                                (int(visit_target), int(appointment_id)),
                             )
             # 已完成预约改期（就诊日期先改、再更正预约日期的顺序）：
             # 新日期与归属就诊的复诊日期一致时把链接回挂，否则
