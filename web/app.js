@@ -23527,10 +23527,15 @@ function restoreInflightForOpenSession(targetId, messages) {
     // 从未展示过的主诉不能充当后续新提问的前缀过滤器
     // （第一百零七轮 [15]）
     if (
-      inflightRestoredOwnerSession
-      && inflightRestoredOwnerSession === targetId
+      (
+        inflightRestoredOwnerSession === targetId
+        || owner === targetId
+      )
       && inflightInputMatchesRestored(question)
     ) {
+      // 启动恢复 restoreCurrentSession 会先清空 inflightRestored*：
+      // 记录自身的 owner 同样证明主诉属于本会话，只要输入框确实
+      // 还显示该主诉就武装已落库标记（第一百零八轮 [11]）
       notePersistedInflight(question, targetId);
       const remaining = stripInflightQuestion(els.input.value, question);
       if (remaining !== null) {

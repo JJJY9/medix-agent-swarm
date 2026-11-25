@@ -787,7 +787,7 @@ _STOPPED_USE_SUFFIX = re.compile(
     # 药名后置的否定：「阿司匹林我没在吃/我没有在吃/没吃过」
     r"|没在吃|没在服用|没在吃药|不在吃|未在服用|未服用"
     r"|没有在吃|没有在服用|没有吃|没有服用|没吃过(?!量)"
-    r"|没有用过|没用过|未服用过)"
+    r"|没有用过|没用过|未服用过|没吃了?)"
     # 「还没吃完/没吃够」表示仍在服用，不是停药
     r"(?![完够满])"
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|可不可以|好不好|"
@@ -999,9 +999,11 @@ def _window_mentions_other_drug(prefix: str, alias_lower: str) -> bool:
 
 
 #: 顿号列表共享停药：「华法林、阿司匹林都停了两年」：群标记动词
-#: 作用于整个列表，列表中的每种药都按已停用（第一百零七轮 [17]）
+#: 作用于整个列表，列表中的每种药都按已停用（第一百零七轮 [17]）。
+#: 允许列表与群标记之间隔一个逗号（「A、B，都停了两年」，
+#: 第一百零八轮 [16]）
 _LIST_SHARED_STOP_RE = re.compile(
-    r"^[^，。；,.!?！？\n]{0,24}?"
+    r"^[^。；.!?！？\n]{0,24}?"
     r"(?:都|也|均|全都|都已|均已|也都)(?:已经)?\s*"
     r"(?:停用了|停用|停药|停服|停止了|停掉了|停了|"
     r"不吃了|不再吃了|不再服用了?|停止服用了?|停止使用了?)"
@@ -1016,9 +1018,25 @@ def _list_shared_stop_matches(suffix: str, prefix: str = "") -> bool:
     )
     if not list_prefix and not re.match(r"^[、,，/＋和与及跟]", text):
         return False
-    if re.search(r"(?:还在|仍在|没停|未停|尚未|不能停)", text):
+    if re.search(
+        r"(?:还在|仍在|在用|在吃|在服用|没停|未停|尚未|不能停)", text
+    ):
         return False
-    return _LIST_SHARED_STOP_RE.match(text) is not None
+    match = _LIST_SHARED_STOP_RE.match(text)
+    if match is None:
+        return False
+    span = match.group(0)
+    if ("，" in span or "," in span) and "、" not in span and not list_prefix:
+        # 跨逗号形式必须有顿号列表证据：否则「吃了华法林，阿司匹林
+        # 都停了」会把前一句的在用药也当共享停药
+        return False
+    tail = text[match.end():]
+    if _STOP_QUESTION_SUFFIX.match(tail) is not None:
+        # 「都停用吗/都停了可以吗/都停了是否安全」是意向询问，仍在
+        # 用药（与单药 _STOPPED_USE_SUFFIX 的疑问尾同口径）
+        # （第一百零八轮 [5][13]）
+        return False
+    return True
 
 
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
@@ -1782,6 +1800,9 @@ def _alias_matches(text: str, alias: str) -> bool:
                 prefix + text[end:right + 120], alias_lower
             )
             or _list_shared_stop_matches(suffix, prefix)
+            # 「A、B，都停了两年」：群标记可能在逗号之后（跨一个
+            # 分句边界），用更长的窗口（第一百零八轮 [16]）
+            or _list_shared_stop_matches(long_suffix, prefix)
             or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)

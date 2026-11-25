@@ -950,6 +950,11 @@ _CURRENT_COURSE_CUES = (
     "冷汗", "冒冷汗", "虚汗",
     "放射", "越来越", "不缓解", "不能缓解", "持续不缓解",
     "剧烈", "明显", "严重", "厉害", "得很", "得厉害",
+    # 「现在还疼/还在痛/仍然疼/还喘」是当前持续病程而非定义
+    # （第一百零八轮 [2]）
+    "还疼", "还在疼", "还在痛", "还痛", "仍然疼", "仍然痛", "仍疼",
+    "一直疼", "一直痛", "还喘", "还在喘", "还在发烧", "还发烧",
+    "还烧", "还在出血",
 )
 #: 强度出汗的常见语序：出汗得厉害（补语）/汗出得厉害（倒装）/
 #: 出了好多汗、浑身是汗、汗很多（量化）。紧贴形态由第九十八轮
@@ -2095,6 +2100,72 @@ def _course_context_clause(clause: str) -> bool:
     )
 
 
+#: 「还疼/还在痛/还喘」这类当前持续描述本身就是患者证据
+_CONTINUOUS_SYMPTOM_CUES = (
+    "还疼", "还在疼", "还在痛", "还痛", "仍然疼", "仍然痛", "仍疼",
+    "一直疼", "一直痛", "还喘", "还在喘", "还在发烧", "还发烧",
+    "还烧", "还在出血",
+)
+
+
+def _severity_follow_clause(text_follow: str) -> bool:
+    """后续分句是否带患者本人当前病程/严重度证据。
+
+    引述（网上说很严重/朋友说很厉害）与疑问句（会恶化吗）不升级
+    定义问句；客观体征（冷汗/大汗/放射/不缓解）与生活叙述里的
+    具体症状（工作的时候疼得厉害）仍是患者证据
+    （第九十五轮 [6][8]、第九十六轮 [1]）。
+    """
+    hard_sign = any(
+        sign in text_follow
+        for sign in (
+            "冷汗", "冒冷汗", "大汗", "虚汗",
+            "放射", "不缓解", "不能缓解", "持续不缓解",
+            "难忍", "剧痛", "濒死", "躺不平", "端坐呼吸",
+        )
+    ) or (
+        # 「出汗特别厉害」这类强度形态是真实病程；裸「出汗」
+        # （天气热容易出汗/没有出汗）仍不作证据
+        # （第九十七轮 [14]、第九十八轮 [1]）；否定式强度
+        # 出汗（没有出很多汗）同样不升级（第一百轮 [12]）
+        _sweat_intensity_positive(text_follow)
+    )
+    return bool(
+        (
+            any(cue in text_follow for cue in _POST_POSITIVE_CUES)
+            or any(
+                cue in text_follow
+                for cue in _CURRENT_COURSE_CUES
+            )
+            # 「出了好多汗/浑身是汗」不含字面「出汗」cue，
+            # 但强度出汗本身就是患者证据（第九十九轮 [3]）
+            or _sweat_intensity_positive(text_follow)
+        )
+        and not any(
+            word in text_follow
+            for word in _EDUCATION_BLOCKERS_STRONG
+        )
+        and _EDUCATION_QUOTE_LEAD_RE.search(text_follow) is None
+        and re.search(r"[吗么嘛]\s*[？?]?\s*$", text_follow)
+        is None
+        and (
+            hard_sign
+            or "我" in text_follow
+            or _is_red_flag_text(text_follow)
+            or any(
+                term in text_follow
+                for term in _COLLOQUIAL_SYMPTOM_WORDS
+            )
+            # 「现在还疼/还喘」这类持续描述不需要额外症状词
+            # （第一百零八轮 [2]）
+            or any(
+                cue in text_follow
+                for cue in _CONTINUOUS_SYMPTOM_CUES
+            )
+        )
+    )
+
+
 def patient_complaint_text(text: str) -> str:
     """提取「患者主诉」部分：去掉定义/科普型问句，保留症状描述。
 
@@ -2114,81 +2185,28 @@ def patient_complaint_text(text: str) -> str:
     context_seen = False
     symptom_context_seen = False
     for position, clause in enumerate(clauses):
-        help_follows = False
-        for follow in clauses[position + 1:]:
-            text_follow = follow.strip()
-            if not text_follow:
-                continue
-            help_follows = (
-                _URGENT_HELP_RE.search(text_follow) is not None
-            )
-            break
-        course_follows = False
-        for follow in clauses[position + 1:]:
-            text_follow = follow.strip()
-            if not text_follow:
-                continue
-            course_follows = bool(
-                _URGENT_HELP_RE.search(text_follow) is not None
-                or _course_context_clause(text_follow)
-            )
-            break
-        # 「胸痛是什么病啊，痛得我直冒冷汗」：紧随其后带严重度/当前
+        # 求助/病程线索可能隔着一两个中间分句（「胸痛是什么病，
+        # 现在还疼，需要去医院吗」）：扫描全部后续分句而不是只看
+        # 紧邻一句（第一百零八轮 [2]）
+        help_follows = any(
+            _URGENT_HELP_RE.search(follow.strip()) is not None
+            for follow in clauses[position + 1:]
+            if follow.strip()
+        )
+        course_follows = any(
+            _URGENT_HELP_RE.search(follow.strip()) is not None
+            or _course_context_clause(follow.strip())
+            for follow in clauses[position + 1:]
+            if follow.strip()
+        )
+        # 「胸痛是什么病啊，痛得我直冒冷汗」：后续带严重度/当前
         # 病程线索的分句说明前一句是真实主诉而非纯定义问句
         # （第九十四轮 [1]）
-        severity_follows = False
-        for follow in clauses[position + 1:]:
-            text_follow = follow.strip()
-            if not text_follow:
-                continue
-            # 严重度必须落在患者症状叙述上：引述（网上说很严重/
-            # 朋友说很厉害）与疑问句（会恶化吗）不升级定义问句；
-            # 客观体征（冷汗/大汗/放射/不缓解）与生活叙述里的
-            # 具体症状（工作的时候疼得厉害）仍是患者证据
-            # （第九十五轮 [6][8]、第九十六轮 [1]）
-            hard_sign = any(
-                sign in text_follow
-                for sign in (
-                    "冷汗", "冒冷汗", "大汗", "虚汗",
-                    "放射", "不缓解", "不能缓解", "持续不缓解",
-                    "难忍", "剧痛", "濒死", "躺不平", "端坐呼吸",
-                )
-            ) or (
-                # 「出汗特别厉害」这类强度形态是真实病程；裸「出汗」
-                # （天气热容易出汗/没有出汗）仍不作证据
-                # （第九十七轮 [14]、第九十八轮 [1]）；否定式强度
-                # 出汗（没有出很多汗）同样不升级（第一百轮 [12]）
-                _sweat_intensity_positive(text_follow)
-            )
-            severity_follows = bool(
-                (
-                    any(cue in text_follow for cue in _POST_POSITIVE_CUES)
-                    or any(
-                        cue in text_follow
-                        for cue in _CURRENT_COURSE_CUES
-                    )
-                    # 「出了好多汗/浑身是汗」不含字面「出汗」cue，
-                    # 但强度出汗本身就是患者证据（第九十九轮 [3]）
-                    or _sweat_intensity_positive(text_follow)
-                )
-                and not any(
-                    word in text_follow
-                    for word in _EDUCATION_BLOCKERS_STRONG
-                )
-                and _EDUCATION_QUOTE_LEAD_RE.search(text_follow) is None
-                and re.search(r"[吗么嘛]\s*[？?]?\s*$", text_follow)
-                is None
-                and (
-                    hard_sign
-                    or "我" in text_follow
-                    or _is_red_flag_text(text_follow)
-                    or any(
-                        term in text_follow
-                        for term in _COLLOQUIAL_SYMPTOM_WORDS
-                    )
-                )
-            )
-            break
+        severity_follows = any(
+            _severity_follow_clause(follow.strip())
+            for follow in clauses[position + 1:]
+            if follow.strip()
+        )
         cleaned = _clean_complaint_clause(
             clause.strip(), context_seen, help_follows,
             course_follows or severity_follows,
@@ -2419,6 +2437,13 @@ HEAD_TRAUMA_TERMS = (
     "头上撞", "头上磕", "头上碰", "头撞了个包", "头上撞了个包",
     "头上磕了个包", "头皮血肿", "头部血肿", "头皮下血肿",
     "头流血", "头上流血", "头出血", "头上出血",
+    # 部位词+出血/缝针同样是头部外伤证据（第一百零八轮 [1]）
+    "后脑勺流血", "后脑勺出血", "后脑勺渗血", "后脑勺缝",
+    "头顶流血", "头顶出血", "头顶渗血", "头顶缝",
+    "太阳穴流血", "太阳穴出血", "太阳穴缝",
+    "脑门流血", "脑门出血", "额头流血", "额头出血", "额头缝",
+    "前额流血", "前额出血", "枕部流血", "枕部出血",
+    "脑袋流血", "脑袋出血",
     # 头皮破裂/流血同样是头部外伤（第一百零一轮 [3]）
     "头皮破", "头皮流血", "头皮出血", "头皮裂", "头皮擦破",
     "头皮摔破", "头皮摔裂",
@@ -2467,7 +2492,12 @@ _HEAD_TRAUMA_RE = re.compile(
     r"当时|今天|昨天|前几天|好像|似乎|可能|估计|多半|应该是?|怕是|"
     r"疑似|不确定|不知道)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
-    r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
+    r"伤|着地|破|"
+    # 部位词直接跟伤口/出血动词同样是头部外伤：后脑勺流血了/
+    # 头顶出血/后脑勺缝了三针（第一百零八轮 [1]）
+    r"流血(?:不止)?|出血(?:不止)?|渗血|"
+    r"缝(?:了)?\s*[0-9一二两三四五六七八九十]{0,3}\s*针|缝针|缝了?几针|"
+    r"(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
     r"|头皮(?:上)?(?:磕破|碰破|撞破|磕|撞|碰|破|流血|出血|裂|擦破)"
     r"|(?:撞|磕|碰|砸|打|摔)(?:在|到)(?:了)?"
@@ -4097,6 +4127,11 @@ def _has_fever(text: str) -> bool:
                     continue
             if not _is_negated_with_trailing(
                 prefix, _clause_suffix(text, start + len(term))
+            ) and not _trailing_negation_in_clause(
+                # 「发烧、咳嗽、胸痛都没有」：顿号枚举的整组后置否定
+                # 同样覆盖发热词，与红旗短语路径同口径
+                # （第一百零八轮 [6]）
+                text, start + len(term), prefix,
             ):
                 return True
             start = text.find(term, start + len(term))
