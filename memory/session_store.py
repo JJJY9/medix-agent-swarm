@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import time as _time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -3159,6 +3160,58 @@ class SessionStore:
             ).fetchone()
         return str(row["value"]) if row is not None else default
 
+    def _backup_source_id(self) -> str:
+        """本安装稳定的备份来源标识（首次导出时生成并持久化）。
+
+        同一安装的所有导出共享该标识；不同安装/合并进同一库的多份
+        备份来源不同，导入时用来判定某行由哪份备份创建
+        （第一百零九轮 [3][8]）。"""
+        try:
+            value = self.get_app_state("backup_source_id")
+        except sqlite3.Error:
+            value = ""
+        if value:
+            return value
+        value = uuid.uuid4().hex
+        try:
+            self.set_app_state("backup_source_id", value)
+        except sqlite3.Error:
+            return ""
+        return value
+
+    def _get_import_origin_map(self, table: str) -> Dict[str, str]:
+        """读取某表「行 id → 创建该行的备份来源」映射。"""
+        raw = self.get_app_state(f"import_origin:{table}")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in data.items()
+            if str(key).isdigit() and value
+        }
+
+    def _set_import_origin_map(
+        self, table: str, mapping: Dict[str, str]
+    ) -> None:
+        name = f"import_origin:{table}"[:80]
+        payload = json.dumps(mapping, ensure_ascii=False)[:200000]
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "INSERT INTO app_state(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (name, payload),
+                )
+        except sqlite3.Error:
+            # 来源记录失败只影响合并备份的归属判断，不能阻断导入
+            pass
+
     def queue_memory_cleanup(self, entries: Any) -> None:
         """登记待清理的长期记忆作用域，供启动/后台任务重试。"""
         now = self._now()
@@ -5352,6 +5405,10 @@ class SessionStore:
         payload = {
             "version": 1,
             "exported_at": self._now(),
+            # 本安装稳定的来源标识：合并多份备份进同一库后，导入端
+            # 据此区分「本行被本地编辑过」与「该行来自另一份备份」
+            # （第一百零九轮 [3][8]）
+            "source_id": self._backup_source_id(),
             "session_count": len(exported),
             "sessions": exported,
             "audit_log": self.list_audit_log(limit=100000),
@@ -6701,6 +6758,22 @@ class SessionStore:
                 and _tail_matches(candidate)
             )
 
+        def _candidate_from_other_backup(candidate: int) -> bool:
+            """候选行是否由另一份备份创建（合并库的归属判定）。
+
+            同一安装的导出共享 backup_source_id：本行被本地编辑后
+            重导入仍可认领；合并进同一库的其它备份创建的行则带着
+            别的来源标识，不能顶替本备份行（第一百零九轮 [3][8]）。
+            """
+            provenance = getattr(self, "_import_provenance", None)
+            if not provenance:
+                return False
+            origin_map = (provenance.get("origins") or {}).get(table)
+            if not origin_map:
+                return False
+            origin = origin_map.get(str(candidate))
+            return bool(origin) and origin != provenance.get("source")
+
         def _candidate_owned_by_profile_sibling(
             candidate: int, candidate_profile: str
         ) -> bool:
@@ -7468,6 +7541,10 @@ class SessionStore:
             orphan = []
             for candidate in pool:
                 if not _candidate_edited(candidate):
+                    continue
+                if _candidate_from_other_backup(candidate):
+                    # 候选由另一份备份创建（合并库）：不能顶替本备份
+                    # 被删的记录（第一百零九轮 [3]）
                     continue
                 if soft_where is not None and _soft_matches(candidate):
                     continue
@@ -8533,6 +8610,11 @@ class SessionStore:
                     continue
                 if not _candidate_edited(candidate):
                     continue
+                if _candidate_from_other_backup(candidate):
+                    # 候选由另一份备份创建：它是那份备份记录的存活
+                    # 版本，不能被本行当作跨档案改挂版本认领
+                    # （第一百零九轮 [8]）
+                    continue
                 if _auto_followup_moved_copy(candidate):
                     # 自动复诊预约的跨档案副本：原档案应补回自己的
                     # 恢复副本，不能把改挂行吞成本行版本
@@ -9450,6 +9532,10 @@ class SessionStore:
                 )
             ):
                 return _ambiguous()
+            if _candidate_from_other_backup(candidate):
+                # 候选由另一份备份创建：编辑证据属于那份备份的记录，
+                # 本行按被删记录补插（第一百零九轮 [3][8]）
+                return _ambiguous()
             if _content_owned_by_other(candidate):
                 # 候选内容精确对应备份里的另一条记录：按被删记录补回
                 return _ambiguous()
@@ -10087,6 +10173,34 @@ class SessionStore:
         # 历史，并且只跟随快照导出之后发生的改名（第八十轮）。
         backup_exported_at = str(data.get("exported_at") or "").strip()[:40]
         data = self._remap_import_aliases(data, backup_exported_at)
+
+        #: 导入来源：合并多份备份进同一库时，按「该行由哪份备份创建」
+        #: 阻断跨备份的编辑行认领（第一百零九轮 [3][8]）
+        backup_source = str(data.get("source_id") or "").strip()[:64]
+        import_tables = (
+            "health_metrics", "symptoms", "medications", "vaccinations",
+            "appointments", "lab_results", "allergies", "care_items",
+            "visit_records", "conditions", "reminders",
+        )
+        pre_import_ids: Dict[str, set] = {}
+        import_origins: Dict[str, Dict[str, str]] = {}
+        if backup_source:
+            for import_table in import_tables:
+                try:
+                    pre_import_ids[import_table] = {
+                        int(row["id"]) for row in self._conn.execute(
+                            f"SELECT id FROM {import_table}"
+                        ).fetchall()
+                    }
+                except sqlite3.Error:
+                    pre_import_ids[import_table] = set()
+                import_origins[import_table] = (
+                    self._get_import_origin_map(import_table)
+                )
+        self._import_provenance = (
+            {"source": backup_source, "origins": import_origins}
+            if backup_source else None
+        )
 
         raw_sessions = data.get("sessions")
         raw_profiles = data.get("profiles")
@@ -12890,6 +13004,14 @@ class SessionStore:
                                 # 备注已被剥空：悬空标记不能复活
                                 return ""
                             return match.group(0)
+                        if _visit_linked_to_other(
+                            int(local_visit), int(appt_key)
+                        ):
+                            # 本地就诊已链接另一条待就诊复诊预约：本次
+                            # 新插入的自动预约不能再挂同一就诊标记，
+                            # 否则同一就诊出现两条自动预约与两条待办
+                            # （第九十八轮 [10]、第一百零九轮 [15]）
+                            return ""
                         owner_row = self._conn.execute(
                             "SELECT owner_visit_id FROM appointments"
                             " WHERE id = ?",
@@ -14589,6 +14711,31 @@ class SessionStore:
             with self._lock:
                 for session_id in revived_sessions:
                     self._deleted_sessions.pop(session_id, None)
+
+        if backup_source:
+            for import_table in import_tables:
+                try:
+                    current_ids = {
+                        int(row["id"]) for row in self._conn.execute(
+                            f"SELECT id FROM {import_table}"
+                        ).fetchall()
+                    }
+                except sqlite3.Error:
+                    continue
+                origin_map = {
+                    str(row_id): origin
+                    for row_id, origin in import_origins.get(
+                        import_table, {}
+                    ).items()
+                    if str(row_id).isdigit()
+                    and int(row_id) in current_ids
+                }
+                for row_id in current_ids - pre_import_ids.get(
+                    import_table, set()
+                ):
+                    origin_map[str(row_id)] = backup_source
+                self._set_import_origin_map(import_table, origin_map)
+        self._import_provenance = None
 
         return {
             "imported": imported,
@@ -17194,6 +17341,15 @@ class SessionStore:
                     if visit_target:
                         # 复诊日期在取消期间被改过时不能把链接挂回旧日期
                         # 的预约，否则后续“安排复诊”会误报已安排
+                        prior_link_row = self._conn.execute(
+                            "SELECT followup_reminder_id FROM visit_records"
+                            " WHERE id = ?",
+                            (int(visit_target),),
+                        ).fetchone()
+                        prior_reminder_id = (
+                            int(prior_link_row["followup_reminder_id"] or 0)
+                            if prior_link_row is not None else 0
+                        )
                         link_cursor = self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_appointment_id = ?,"
@@ -17243,6 +17399,32 @@ class SessionStore:
                                 " WHERE id = ?"
                                 " AND followup_appointment_id = ?",
                                 (int(visit_target), int(appointment_id)),
+                            )
+                            if restored_reminder_id:
+                                # 恢复出的提醒已接管到本预约：就诊上指向
+                                # 它的链接同样清掉，否则取消/删除这条独立
+                                # 预约时提醒被误判仍被就诊共享，留下幽灵
+                                # 待办（第一百零九轮 [10]）
+                                self._conn.execute(
+                                    "UPDATE visit_records"
+                                    " SET followup_reminder_id = 0"
+                                    " WHERE id = ?"
+                                    " AND followup_reminder_id = ?",
+                                    (
+                                        int(visit_target),
+                                        int(restored_reminder_id),
+                                    ),
+                                )
+                        elif (
+                            prior_reminder_id
+                            and prior_reminder_id
+                            != int(restored_reminder_id or 0)
+                        ):
+                            # 就诊原先链接的脱钩提醒被本次恢复的新提醒
+                            # 顶替：无其它引用时清理，避免「恢复+改期」
+                            # 后留下零引用幽灵待办（第一百零九轮 [9]）
+                            self._clean_unlinked_detached_reminder(
+                                prior_reminder_id, int(visit_target)
                             )
             # 已完成预约改期（就诊日期先改、再更正预约日期的顺序）：
             # 新日期与归属就诊的复诊日期一致时把链接回挂，否则

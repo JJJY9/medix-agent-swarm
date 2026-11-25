@@ -455,10 +455,15 @@ _PREGNANCY_EVIDENCE_RE = re.compile(
 #: 「孕12周」「孕 28 周」「孕4个月」等写法（排除避孕/备孕等）
 PREGNANCY_WEEK_PATTERN = re.compile(
     r"(?<![避备不待])(?:怀)?孕\s*[0-9一二两三四五六七八九十]+\s*"
-    # 「孕12+周」（12 周多）、「孕12-14周」（筛查孕周范围）、「孕20w」
-    r"(?:[+＋]\s*\d*)?"
-    r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
+    r"(?:"
+    # 产检简写「孕12+3」（=孕12周+3天）：+N 后天数可省略单位
+    # （第一百零九轮 [2]）
+    r"[+＋]\s*[0-9]+\s*(?:周|[wW])?"
+    # 「孕12+周」（12 周多）、「孕12-14周」（筛查孕周范围）、
+    # 「孕20w」「孕4个月」
+    r"|[+＋]?\s*(?:[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
     r"\s*(?:周|[wW]|个[来多]?月|个半月|月|天)"
+    r")"
 )
 
 #: 询问/怀疑怀孕时同样属于需要按孕产期评估的情况
@@ -492,9 +497,11 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
     r"|胎停育?|稽留流产"
     r"|孕\s*[0-9一二两三四五六七八九十]+"
-    r"\s*(?:[+＋]\s*\d*)?"
-    r"(?:\s*[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
-    r"\s*(?:周|[wW]|个[来多]?月|个半月|月|天))"
+    # 简写「孕12+3，出血」与「孕12+周」「孕12-14周」同口径
+    # （第一百零九轮 [2]）
+    r"\s*(?:[+＋]\s*[0-9]+\s*(?:周|[wW])?"
+    r"|[+＋]?\s*(?:[-~～—至到]\s*[0-9一二两三四五六七八九十]+\s*)?"
+    r"\s*(?:周|[wW]|个[来多]?月|个半月|月|天)))"
     r"[^。；;！!？?\n]{0,8}(?:出血|流血|见红)"
     r"|(?:出血|流血)[^，。；,;！!？?\n]{0,2}(?:阴道|产道)"
     r"|见红"
@@ -955,6 +962,11 @@ _CURRENT_COURSE_CUES = (
     "还疼", "还在疼", "还在痛", "还痛", "仍然疼", "仍然痛", "仍疼",
     "一直疼", "一直痛", "还喘", "还在喘", "还在发烧", "还发烧",
     "还烧", "还在出血",
+    # 未带固定严重度词的口语当前症状（我有点疼/现在还在抽/还有血）
+    # （第一百零九轮 [6]）
+    "有点疼", "有点痛", "还有点疼", "还有点痛", "还是疼", "还是痛",
+    "现在疼", "现在痛", "还在抽", "现在还在抽", "还有血", "有点血",
+    "还有点血",
 )
 #: 强度出汗的常见语序：出汗得厉害（补语）/汗出得厉害（倒装）/
 #: 出了好多汗、浑身是汗、汗很多（量化）。紧贴形态由第九十八轮
@@ -1298,8 +1310,15 @@ _DEFINITION_MID_RE = re.compile(
 #: 口语化「提问前缀」：去掉后按剩余内容重新判断，避免「我想知道什么是
 #: 咯血」因含「我」被当成患者主诉而触发急症横幅
 _EDUCATIONAL_PREFIX_RE = re.compile(
-    r"^(?:请问(?:一下)?|我想知道|我想问下|我想问(?:一下)?|想问(?:一下)?|"
-    r"问下|咨询(?:一下)?|想咨询(?:一下)?|"
+    r"^(?:请问(?:一下)?|我想知道|我想问下|我想问问|我想问个问题|"
+    # 「问个问题：什么是咯血」「我想问个问题」：长框架必须先匹配，
+    # 否则被「我想问」截断留下「个问题」（第一百零九轮 [7]）
+    r"问个问题|有个问题|我想问(?:一下)?|"
+    r"想问(?:问|一下|个问题)?|问下|"
+    # 「帮我查一下什么是咯血」：帮查类框架同样是科普提问
+    # （第一百零九轮 [7]）
+    r"帮我(?:查|看|搜|找)(?:一下|下)?|"
+    r"咨询(?:一下)?|想咨询(?:一下)?|"
     r"我想了解(?:一下|下)?|想了解(?:一下)?|了解一下|听说|我听说|据说)"
 )
 #: 媒体词作为症状发生的时间语境（看视频时胸痛/看了个视频后胸痛）：
@@ -1463,7 +1482,9 @@ def _clean_complaint_clause(
     """
     educational = _EDUCATIONAL_PREFIX_RE.match(clause)
     if educational:
-        rest = clause[educational.end():].strip(" ，,、")
+        # 前缀后的冒号/逗号一并剥掉：「问个问题：什么是咯血」
+        # （第一百零九轮 [7]）
+        rest = clause[educational.end():].strip(" ，,、：:")
         if not rest:
             return ""
         if _HEARSAY_PREFIX_RE.match(clause):
@@ -2105,6 +2126,9 @@ _CONTINUOUS_SYMPTOM_CUES = (
     "还疼", "还在疼", "还在痛", "还痛", "仍然疼", "仍然痛", "仍疼",
     "一直疼", "一直痛", "还喘", "还在喘", "还在发烧", "还发烧",
     "还烧", "还在出血",
+    "有点疼", "有点痛", "还有点疼", "还有点痛", "还是疼", "还是痛",
+    "现在疼", "现在痛", "还在抽", "现在还在抽", "还有血", "有点血",
+    "还有点血",
 )
 
 
@@ -2187,25 +2211,41 @@ def patient_complaint_text(text: str) -> str:
     for position, clause in enumerate(clauses):
         # 求助/病程线索可能隔着一两个中间分句（「胸痛是什么病，
         # 现在还疼，需要去医院吗」）：扫描全部后续分句而不是只看
-        # 紧邻一句（第一百零八轮 [2]）
-        help_follows = any(
-            _URGENT_HELP_RE.search(follow.strip()) is not None
-            for follow in clauses[position + 1:]
+        # 紧邻一句（第一百零八轮 [2]）。家属主语分句与其紧接的
+        # 无主语句（我爸咳嗽，需要去医院吗）不算患者证据
+        # （第一百零九轮 [14]）
+        follow_clauses = [
+            follow.strip() for follow in clauses[position + 1:]
             if follow.strip()
+        ]
+        patient_follows = []
+        for idx, text_follow in enumerate(follow_clauses):
+            if _PATIENT_FAMILY_SUBJECT_RE.search(text_follow):
+                continue
+            if idx > 0 and (
+                _PATIENT_FAMILY_SUBJECT_RE.search(
+                    follow_clauses[idx - 1]
+                )
+                and "我" not in text_follow
+                and "本人" not in text_follow
+            ):
+                continue
+            patient_follows.append(text_follow)
+        help_follows = any(
+            _URGENT_HELP_RE.search(text_follow) is not None
+            for text_follow in patient_follows
         )
         course_follows = any(
-            _URGENT_HELP_RE.search(follow.strip()) is not None
-            or _course_context_clause(follow.strip())
-            for follow in clauses[position + 1:]
-            if follow.strip()
+            _URGENT_HELP_RE.search(text_follow) is not None
+            or _course_context_clause(text_follow)
+            for text_follow in patient_follows
         )
         # 「胸痛是什么病啊，痛得我直冒冷汗」：后续带严重度/当前
         # 病程线索的分句说明前一句是真实主诉而非纯定义问句
         # （第九十四轮 [1]）
         severity_follows = any(
-            _severity_follow_clause(follow.strip())
-            for follow in clauses[position + 1:]
-            if follow.strip()
+            _severity_follow_clause(text_follow)
+            for text_follow in patient_follows
         )
         cleaned = _clean_complaint_clause(
             clause.strip(), context_seen, help_follows,
@@ -2490,12 +2530,18 @@ _HEAD_TRAUMA_RE = re.compile(
     r"(?:上|部|后面|后面上)?"
     r"(?:一不小心|不小心|一下子|突然|直接|先|重重地?|猛地|猛一?下|"
     r"当时|今天|昨天|前几天|好像|似乎|可能|估计|多半|应该是?|怕是|"
+    # 常见副词/系词插入：头也撞到了/头都撞出血/头真的撞到/还在流血
+    # （第一百零九轮 [1][4]）
+    r"还在|一直在|一直|不停地|不停|仍然|仍|也|都|真的|确实|是|"
+    r"一下|又|还|在|"
     r"疑似|不确定|不知道)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
     r"伤|着地|破|"
     # 部位词直接跟伤口/出血动词同样是头部外伤：后脑勺流血了/
-    # 头顶出血/后脑勺缝了三针（第一百零八轮 [1]）
-    r"流血(?:不止)?|出血(?:不止)?|渗血|"
+    # 头顶出血/后脑勺缝了三针（第一百零八轮 [1]）；持续出血与
+    # 量化出血（还在流血/流了点血）同口径（第一百零九轮 [4]）
+    r"流了?(?:点|些|不少|很多|好多)?\s*血(?:不止)?|"
+    r"出血(?:不止)?|渗血|"
     r"缝(?:了)?\s*[0-9一二两三四五六七八九十]{0,3}\s*针|缝针|缝了?几针|"
     r"(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
