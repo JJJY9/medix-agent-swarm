@@ -5424,11 +5424,15 @@ _STOP_ANNOTATION_ONLY_RE = re.compile(
 #: 括号形式的停药标注：「X（已停用）」
 _STOP_ANNOTATION_INLINE_RE = re.compile(
     # 裸「停用/停药/停服」与英文 stopped/discontinued 同样是停药
-    # 标注（第九十五轮 [18]）
+    # 标注（第九十五轮 [18]）；裸「停了/不吃了」与括号内时长
+    # （停了两个月/已停用两个月）同样让该药退出名单（第一百轮 [14][15]）
     r"[（(]\s*(?:已停用|已停药|已停服|停用中|已停了|已停止使用|"
-    r"已停止|已停|停掉了|已停掉了|停止了|停药|停服|停用|stopped|"
-    r"discontinued|stopping|"
-    r"no longer (?:taking|on))\s*[）)]",
+    r"已停止|已停|停掉了|已停掉了|停止了|停药|停服|停用|停了|不吃了|"
+    r"stopped|discontinued|stopping|"
+    r"no longer (?:taking|on))"
+    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+    r"(?:天|日|周|星期|个月|月|年)|大半年|半年|好几年|好久|很久)?"
+    r"了?\s*[）)]",
     re.IGNORECASE,
 )
 #: 剂量/频次/时间等非药名片段（pop 前跳过）

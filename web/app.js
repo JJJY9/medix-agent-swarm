@@ -20823,20 +20823,17 @@ async function restoreCurrentSession(
           );
         if (!persisted) return false;
       } else if (freshStart) {
-        // 本标签页新建且创建时为空：只认「最后一条用户消息就是本次
-        // 主诉且其后已有回答」，同会话内重复提问同文本时不误判
-        let lastUserIndex = -1;
-        for (let i = messages.length - 1; i >= 0; i -= 1) {
-          if (messages[i].role === 'user') {
-            lastUserIndex = i;
-            break;
-          }
-        }
-        const persisted = lastUserIndex >= 0
-          && messages[lastUserIndex].content === expectedQuestion
-          && messages.slice(lastUserIndex + 1).some(
-            (message) => message.role === 'assistant'
-          );
+        // 本标签页新建且创建时为空：任何同文本用户消息之后已有回答
+        // 都说明本轮已落库；会话此后的追问不会让「最后一条用户消息」
+        // 不再等于该主诉而误判未落库（第一百轮 [10]，与在途恢复
+        // baseline=0 分支口径一致）
+        const persisted = messages.some(
+          (message, index) => message.role === 'user'
+            && message.content === expectedQuestion
+            && messages.slice(index + 1).some(
+              (inner) => inner.role === 'assistant'
+            )
+        );
         if (!persisted) return false;
       } else {
         // 本轮提问和回答都必须比中止前的最大消息 ID 更新；否则只是同文本的
@@ -20999,21 +20996,15 @@ async function restoreCurrentSession(
               && (Number(message.id) || 0) > inflightBaseline
           );
       } else {
-        // 本标签页新建的空会话首轮：最后一条用户消息就是该主诉且
-        // 已有回答时才算本轮落库，早先的同文本问答不误判
-        let lastUserIndex = -1;
-        for (let i = messages.length - 1; i >= 0; i -= 1) {
-          if (messages[i].role === 'user') {
-            lastUserIndex = i;
-            break;
-          }
-        }
-        persistedThisRound = lastUserIndex >= 0
-          && String(messages[lastUserIndex].content || '').trim()
-            === inflightQuestionText
-          && messages.slice(lastUserIndex + 1).some(
-            (message) => message.role === 'assistant'
-          );
+        // 本标签页新建的空会话首轮：任何同文本用户消息之后已有
+        // 回答都说明本轮已落库；后续追问不影响判定（第一百轮 [10]）
+        persistedThisRound = messages.some(
+          (message, index) => message.role === 'user'
+            && String(message.content || '').trim() === inflightQuestionText
+            && messages.slice(index + 1).some(
+              (inner) => inner.role === 'assistant'
+            )
+        );
       }
       if (persistedThisRound) {
         notePersistedInflight(inflightQuestionText, sessionId);
