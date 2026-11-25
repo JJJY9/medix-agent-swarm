@@ -23340,6 +23340,10 @@ function clearRestoredInflightIfOwned() {
     if (inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY) {
       if (restoredOwner && restoredOwner === (sessionId || '')) {
         removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+        // 本轮重发失败时主槽可能残留同一主诉（失败分支保留备份槽
+        // 来源），删除恢复文本时一并清除，避免刷新复活
+        // （第一百零七轮 [14]）
+        clearInflightForCurrentSession();
       }
     } else {
       clearInflightForCurrentSession();
@@ -23519,13 +23523,15 @@ function restoreInflightForOpenSession(targetId, messages) {
   if (persisted) {
     // 已落库：不仅删记录，还要把系统放回输入框的同一主诉剥离并
     // 登记已落库标记，否则回车会再次提交已答复的问题、重复计费
-    // （第一百零四轮 [13]）
-    notePersistedInflight(question, targetId);
+    // （第一百零四轮 [13]）。只有确从输入框剥离时才武装标记：
+    // 从未展示过的主诉不能充当后续新提问的前缀过滤器
+    // （第一百零七轮 [15]）
     if (
       inflightRestoredOwnerSession
       && inflightRestoredOwnerSession === targetId
       && inflightInputMatchesRestored(question)
     ) {
+      notePersistedInflight(question, targetId);
       const remaining = stripInflightQuestion(els.input.value, question);
       if (remaining !== null) {
         els.input.value = remaining;
@@ -23856,6 +23862,9 @@ els.input.addEventListener('input', () => {
         // 唯一副本（第九十八轮 [13]）
         if (restoredOwner && restoredOwner === (sessionId || '')) {
           removeOtherInflightRecord(restoredOwner, inflightRestoredText);
+          // 主槽可能残留本轮重发失败写入的同一主诉
+          // （第一百零七轮 [14]）
+          clearInflightForCurrentSession();
         }
       } else if (
         !restoredOwner || restoredOwner === (sessionId || '')

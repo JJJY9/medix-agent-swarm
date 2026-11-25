@@ -5983,6 +5983,11 @@ class SessionStore:
                 return False
             if not _same_backup_origin():
                 return False
+            if not _candidate_edited(candidate):
+                # 改挂必经本地编辑（updated_at 变化）：未编辑的同秒行
+                # 不是改挂存活版本，应交给正常配对
+                # （第一百零七轮 [10]）
+                return False
             return (
                 _normalize_profile_name(other_profile)
                 != _normalize_profile_name(current_profile)
@@ -7572,10 +7577,13 @@ class SessionStore:
             created_key = backup_created.get(candidate)
             if profile_key is None or not created_key:
                 return False
+            select_columns = "id, profile"
+            if backup_contents and content_columns:
+                select_columns += ", " + ", ".join(content_columns)
             try:
                 rows = self._conn.execute(
-                    f"SELECT id, profile FROM {table} WHERE created_at = ?"
-                    " AND id != ?",
+                    f"SELECT {select_columns} FROM {table}"
+                    " WHERE created_at = ? AND id != ?",
                     (created_key, candidate),
                 ).fetchall()
             except sqlite3.Error:
@@ -7610,6 +7618,17 @@ class SessionStore:
                         and _normalize_profile_name(
                             str(other["profile"] or "")
                         ) == other_profile
+                        # 数值撞号还要内容确实属于那条备份记录：本行的
+                        # 存活行可能恰好 id 等于兄弟备份主键，不能因此
+                        # 被排除出本记录的存活证据（第一百零七轮 [10]）
+                        and (
+                            not backup_contents
+                            or not content_columns
+                            or backup_contents.get(other_id) is None
+                            or self._db_content_fingerprint(
+                                other, content_columns
+                            ) == backup_contents.get(other_id)
+                        )
                     ):
                         continue
                 if pre_existing_ids is not None and (
@@ -8101,6 +8120,15 @@ class SessionStore:
                             if not _candidate_soft_owned_by_other(
                                 candidate, cross_profile=True,
                                 require_content=True,
+                            )
+                            # 软字段不命中又没有编辑证据的行不是本行的
+                            # 存活版本（同函数 9437 口径）：异标题同秒
+                            # 未编辑提醒不能吞掉备份行，按被删记录补插
+                            # （第一百零七轮 [3]）。同秒改名场景由
+                            # _edited_after_export 兜住（round57 契约）
+                            and (
+                                _candidate_edited(candidate)
+                                or _edited_after_export()
                             )
                         ]
                         placeholders = ",".join(
@@ -8649,6 +8677,18 @@ class SessionStore:
                     if deferred_candidate is None:
                         deferred_candidate = candidate
                     continue
+            if (
+                deferred_candidate is not None
+                and raw_id > 0
+                and local_group_size < backup_group_size
+                and tail_where is not None
+                and not _tail_matches(deferred_candidate)
+                and not _candidate_edited(deferred_candidate)
+            ):
+                # 组内缺行且候选未编辑、尾字段不符：候选属于组内另一条
+                # 记录，本行按被删记录补插（第一百零七轮 [9]；与
+                # 8419 的 sole 分支同口径）
+                return _ambiguous()
             if deferred_candidate is not None and (
                 raw_id > 0
                 or (
@@ -16597,7 +16637,8 @@ class SessionStore:
                             if adopt_visit:
                                 adopt_row = self._conn.execute(
                                     "SELECT followup_reminder_id,"
-                                    " followup_appointment_id"
+                                    " followup_appointment_id,"
+                                    " next_followup_date"
                                     " FROM visit_records WHERE id = ?",
                                     (int(adopt_visit),),
                                 ).fetchone()
@@ -16613,12 +16654,43 @@ class SessionStore:
                                     int(adopt_row["followup_appointment_id"] or 0)
                                     if adopt_row is not None else 0
                                 )
+                                adopt_due = (
+                                    str(
+                                        adopt_row["next_followup_date"] or ""
+                                    )[:10]
+                                    if adopt_row is not None else ""
+                                )
+                                prev_day = str(
+                                    previous["scheduled_at"] or ""
+                                )[:10]
+                                prev_owner = int(
+                                    previous["owner_visit_id"] or 0
+                                )
                                 if (
                                     adopt_reminder
                                     and reminder_due
-                                    and adopt_linked
-                                    in (0, int(appointment_id))
+                                    and (
+                                        adopt_linked
+                                        == int(appointment_id)
+                                        or (
+                                            adopt_linked == 0
+                                            and prev_owner == int(adopt_visit)
+                                        )
+                                        or (
+                                            adopt_linked == 0
+                                            and adopt_due
+                                            and prev_day
+                                            and adopt_due == prev_day
+                                        )
+                                    )
                                 ):
+                                    # 遗留预约（fa=0）改期前日期与就诊
+                                    # 当前复诊日不一致时不是「当前计划」：
+                                    # 不能接管就诊的脱钩提醒。持久
+                                    # owner_visit_id 已指向该就诊是
+                                    # 导入映射写回的强归属证据，不要求
+                                    # 日期对齐（round42/43/58 契约）
+                                    # （第一百零七轮 [4][5]）
                                     adopt_day = str(
                                         normalized["scheduled_at"] or ""
                                     )[:10]
@@ -17208,10 +17280,31 @@ class SessionStore:
                     visit_day = str(
                         link_row["visit_date"] or ""
                     )[:10] if link_row is not None else ""
+                    visit_due = str(
+                        link_row["next_followup_date"] or ""
+                    )[:10] if link_row is not None else ""
                     scheduled_day = str(
                         normalized["scheduled_at"] or ""
                     )[:10]
+                    previous_day = str(
+                        previous["scheduled_at"] or ""
+                    )[:10]
                     if linked_existing not in (0, int(appointment_id)):
+                        visit_target = 0
+                    elif (
+                        linked_existing == 0
+                        and int(previous["owner_visit_id"] or 0) == 0
+                        and visit_due
+                        and previous_day
+                        and visit_due != previous_day
+                    ):
+                        # 遗留预约（仅备注标记归属）改期前日期与就诊
+                        # 当前复诊日不一致：按独立预约处理，不能借此
+                        # 改写就诊复诊日期与提醒链接。持久
+                        # owner_visit_id 已指向该就诊时是导入映射写回
+                        # 的强归属证据，仍需同步（round42/43/58 契约）
+                        # （第一百零七轮 [4][5]，与第一百零六轮 [9] 的
+                        # 取消/删除口径一致）
                         visit_target = 0
                     elif (
                         visit_day and scheduled_day

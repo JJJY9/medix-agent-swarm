@@ -287,8 +287,10 @@ _CHEST_PAIN_VARIANT_RE = re.compile(
     r"一阵一阵|一阵阵|一阵|持续性|阵发性|针刺样|针刺|针扎|"
     r"刀割样|刀割|撕裂样|撕裂|绞着|扯着|放射|特别|明显|一直|"
     r"持续|总是?|老是|经常|突然|剧烈|剧|很|好|较|稍微|略|发|"
-    r"胀|闷|钝|刺|绞|压榨|揪着|作|地|得|性|样)*"
-    # 压迫感/压榨感/紧缩感等无「疼/痛」的缺血等价主诉
+    r"胀|闷|钝|刺|绞|压榨|揪着|作|地|得|一样|似的|性|样|的)*"
+    # 压迫感/压榨感/紧缩感等无「疼/痛」的缺血等价主诉；
+    # 「的/一样」修饰（胸口一阵阵的疼/撕裂样的疼痛）同样命中
+    # （第一百零七轮 [2]）
     r"(?:疼|痛|压迫感|压榨感|紧缩感)"
 )
 
@@ -382,9 +384,12 @@ def _postpartum_recent_positive(text: str) -> bool:
 _AMENORRHEA_BASE_RE = re.compile(
     r"停经|闭经|月经推迟|月经推后|月经没来|月经未至|没来月经|"
     r"大姨妈推迟|大姨妈没来|例假推迟|例假没来|"
-    # 数量词插入的语序：月经两个月没来/例假迟了十天/月经晚了十天
-    # （第一百零六轮 [2]）
-    r"(?:月经|例假|大姨妈)[^，。；;,.!?！？\n]{0,6}?"
+    r"经期推迟|经期推后|经期没来|经期未至|"
+    r"生理期推迟|生理期推后|生理期没来|生理期未至|"
+    # 数量词插入的语序：月经两个月没来/例假迟了十天/月经晚了十天；
+    # 经期/生理期是同一停经语义的标准说法（第一百零六轮 [2]、
+    # 第一百零七轮 [7]）
+    r"(?:月经|例假|大姨妈|经期|生理期)[^，。；;,.!?！？\n]{0,6}?"
     r"(?:没(?:有)?来|未至|推迟|推后|晚了|迟了)"
 )
 _AMENORRHEA_YEARS_RE = re.compile(
@@ -1269,12 +1274,12 @@ _DEFINITION_SUFFIX_RE = re.compile(
 #: 是在问科普，不是患者主诉（第八十九轮）；「什么病会胸痛/什么情况
 #: 下会咯血」情态词直接接红旗症状同样是科普提问（第一百零六轮 [7]）
 _DEFINITION_LEAD_Q_RE = re.compile(
-    r"^(?:请问)?(?:什么病|哪些病|哪些疾病|何种疾病|什么原因|什么情况|"
-    r"哪些原因|哪类疾病)"
+    r"^(?:请问)?(?:什么病|什么疾病|哪些病|哪些疾病|何种疾病|什么原因|"
+    r"什么情况|哪些原因|哪类疾病|哪类病)"
     r"[^，。；]{0,10}?(?:会|能|可以|可能|容易)?\s*"
-    r"(?:引起|导致|造成|诱发|出现)"
-    r"|^(?:请问)?(?:什么病|哪些病|哪些疾病|何种疾病|什么原因|什么情况|"
-    r"哪些原因|哪类疾病)"
+    r"(?:引起|引发|导致|造成|诱发|出现)"
+    r"|^(?:请问)?(?:什么病|什么疾病|哪些病|哪些疾病|何种疾病|"
+    r"什么原因|什么情况|哪些原因|哪类疾病|哪类病)"
     r"[^，。；]{0,10}?(?:会|能|可以|可能|容易)\s*"
     r"(?=(?:胸痛|胸疼|胸口|心口|心前区|胸部|胸骨|咯血|咳血|抽搐|惊厥|"
     r"呼吸困难|喘不上气|晕厥|昏迷|呕血|吐血|黑便|血便|剧烈头痛))"
@@ -3271,7 +3276,7 @@ def _stop_clause_names_other_drug(
     """远期停药分句是否点名了另一种药（而非当前分句的药）。"""
     clause = re.sub(
         r"[，,](?=\s*(?:已经?|已|早就)?\s*"
-        r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|不吃了?))",
+        r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|不吃了?))",
         "",
         str(clause or ""),
     )
@@ -3279,15 +3284,24 @@ def _stop_clause_names_other_drug(
         r"([一-龥A-Za-z0-9]{2,10})\s*"
         r"(?:[（(【「『][^）)】」』]{0,20}[）)】」』]\s*)?"
         r"(?:已经?|已)?\s*"
-        r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|不吃了?)",
+        r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|不吃了?)",
         clause,
     )
+    if match is None:
+        # 「阿司匹林（已停用两年）」：停药动词在括号内，宾语在括号前
+        # （第一百零七轮 [1][6]）
+        match = re.search(
+            r"([一-龥A-Za-z0-9]{2,10})\s*[（(][^）)]{0,20}"
+            r"(?:已停用|已停药|已停服|停用|停药|停了|停的|停服|"
+            r"停止服用|不吃了)[^）)]{0,20}[）)]",
+            clause,
+        )
     if match is None:
         # 「停用阿司匹林一年了」：药名在停药动词之后的语序同样
         # 点名了另一种药，不能归因到前一分句的药（第九十九轮 [1]）
         after = re.search(
             r"(?:已经?|已|早就|早|都|快)?\s*"
-            r"(?:停用|停药|停了|停掉|停掉了|停服|停止服用|不吃了?)"
+            r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|不吃了?)"
             r"\s*(?:了)?\s*"
             r"([一-龥A-Za-z]{2,8}?)"
             r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?"
@@ -3305,14 +3319,36 @@ def _stop_clause_names_other_drug(
             return False
     else:
         raw_token = match.group(1).strip()
-        if _stop_token_is_determiner(raw_token):
-            # 「已经停药半年」「医生让我停药半年」：没有点名其他药
-            return False
-        token = _normalize_stop_token(raw_token)
-        if _STOP_TIME_OBJECT_RE.match(token or raw_token):
-            # 「去年停了/上个月停了」：时间词不是药名宾语，按本药
-            # 远期停药归因（第一百零一轮 [7]）
-            return False
+        token = ""
+        if not _stop_token_is_determiner(raw_token):
+            token = _normalize_stop_token(raw_token)
+            if _STOP_TIME_OBJECT_RE.match(token or raw_token):
+                # 「去年停了/上个月停了」：时间词不是药名宾语
+                token = ""
+        if not token:
+            # 前置词只是时间/辅助词（去年停的阿司匹林）：真正的药名
+            # 宾语在停药动词之后（第一百零七轮 [1]）
+            after = re.search(
+                r"(?:已经?|已|早就|早|都|快)?\s*"
+                r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|"
+                r"不吃了?)"
+                r"\s*(?:了)?\s*"
+                r"([一-龥A-Za-z]{2,8}?)"
+                r"(?=\s*(?:[0-9一二两三四五六七八九十半几]+(?:个)?"
+                r"(?:多)?(?:年|月|天|周|日|星期)|半年(?:多)?|大半年|"
+                r"多月|多年|很久|好久|了|，|。|；|$))",
+                clause,
+            )
+            if after is not None:
+                after_raw = after.group(1).strip()
+                if not _stop_token_is_determiner(after_raw):
+                    after_token = _normalize_stop_token(after_raw)
+                    if len(after_token) >= 2 and not (
+                        _STOP_TIME_OBJECT_RE.match(
+                            after_token or after_raw
+                        )
+                    ):
+                        token = after_token
     if len(token) < 2:
         return False
     if token in _STOP_SELF_REFERENCES:
@@ -4125,8 +4161,15 @@ def _active_medical_text(
         ) if part
     )
     # 「大姨妈」含家属称谓子串「妈」，会被家属分支整句丢弃；它是
-    # 月经的口语说法，归一后再做停经/孕产判断（第一百零六轮 [2]）
-    raw = raw.replace("大姨妈", "月经")
+    # 月经的口语说法，归一后再做停经/孕产判断（第一百零六轮 [2]）。
+    # 只在后接月经线索时归一：「大姨妈在化疗/在吃华法林」是家属，
+    # 必须保留原词让家属分句过滤生效（第一百零七轮 [16]）
+    raw = re.sub(
+        r"大姨妈(?=[^，。；;,.!?！？\n]{0,8}?"
+        r"(?:没(?:有)?来|未至|推迟|推后|晚了|迟了|来了))",
+        "月经",
+        raw,
+    )
     # 小数剂量（2.5mg）里的句点不是分句边界：切断后剂量续用
     # 识别不到单位，会把当前用药误判为既往（第八十九轮）
     clauses = re.split(r"[，。；;,!?！？\n]|(?<!\d)\.|\.(?!\d)", raw)
@@ -4419,30 +4462,73 @@ def _active_medical_text(
                 # 同一分句里既有在用药物又有远期停药标注
                 # （华法林 3mg 每日一次、阿司匹林（已停用两年））：
                 # 只剔除被标注停药的分项，保留其余在用药物
-                # （第一百零六轮 [1]）
-                residual_parts = []
-                for item in re.split(r"[、,]", clause):
-                    item = item.strip()
-                    if not item:
-                        continue
-                    if (
-                        _STOP_VERB_PATTERN.search(item)
-                        or _LONG_STOP_PATTERN.search(item)
-                    ):
-                        continue
-                    residual_parts.append(item)
-                residual = "、".join(residual_parts).strip(" ，,、")
-                if residual and (
-                    any(
-                        term in residual
-                        for term in _OTHER_STOP_DRUG_TAILS
-                    )
-                    or _GENERIC_DRUG_NAME_RE.search(residual)
-                    or _MED_CATEGORY_RE.search(residual)
-                    or _BRAND_DRUG_NAME_RE.search(residual)
-                    or _names_known_group_drug(residual)
+                # （第一百零六轮 [1]）。
+                # 「A、B都停了两年」是共享停药：动词作用于整个列表，
+                # 首个药名不能按在用保留（第一百零七轮 [17]）
+                shared_stop = re.search(
+                    # 群标记必须带枚举/总括词（都/也/均/全都/都已…）：
+                    # 裸「已停用」只是括号内单药标注，不是列表共享
+                    r"(?:都|也|均|全都|都已|均已|也都)(?:已经)?\s*"
+                    r"(?:停用了|停用|停药|停服|停止了|停掉了|停了|"
+                    r"不吃了|不再吃了|不再服用了?|停止服用了?|"
+                    r"停止使用了?)",
+                    clause,
+                )
+                if shared_stop and re.search(
+                    r"(?:还在|仍在|没停|未停|尚未|不能停)", clause
                 ):
-                    kept.append(residual)
+                    shared_stop = None
+                if shared_stop is None:
+                    residual_parts = []
+                    pieces = [
+                        piece.strip()
+                        for piece in re.split(
+                            r"[、,，和与及跟/＋]|\s+", clause
+                        )
+                    ]
+                    bare_time_stop = re.compile(
+                        r"^(?:[0-9一二两三四五六七八九十半几]+\s*"
+                        r"(?:个)?\s*(?:多|半|来)?\s*"
+                        r"(?:天|日|周|星期|个月|月|年)|半年|大半年|"
+                        r"多年|好几年|好久|很久|数月|几个?月|"
+                        r"一段时间|去年|前年|上个月|上周|最近)"
+                        r"\s*(?:前|以来)?\s*(?:已|已经|都|早就)?\s*"
+                        r"(?:停用了|停用|停药|停的|停了|停服|"
+                        r"停止服用|不吃了)"
+                    )
+                    for piece_index, item in enumerate(pieces):
+                        if not item:
+                            continue
+                        if (
+                            _STOP_VERB_PATTERN.search(item)
+                            or _LONG_STOP_PATTERN.search(item)
+                        ):
+                            continue
+                        following = (
+                            pieces[piece_index + 1]
+                            if piece_index + 1 < len(pieces) else ""
+                        )
+                        if following and bare_time_stop.match(following):
+                            # 「阿司匹林 两个月前已停用」：空格后的
+                            # 时长+停药归属于前一项药名，一起剔除
+                            continue
+                        # 只有确含药名证据的分项才保留
+                        # （「和/与/空格」连接与剂量片段拆分后的
+                        # 碎词不进入在用药物文本）（第一百零七轮 [6]）
+                        if not (
+                            any(
+                                term in item
+                                for term in _OTHER_STOP_DRUG_TAILS
+                            )
+                            or _GENERIC_DRUG_NAME_RE.search(item)
+                            or _MED_CATEGORY_RE.search(item)
+                            or _BRAND_DRUG_NAME_RE.search(item)
+                            or _names_known_group_drug(item)
+                        ):
+                            continue
+                        residual_parts.append(item)
+                    if residual_parts:
+                        kept.append("、".join(residual_parts))
             continue
         if (
             _PAST_MEDICATION_PATTERN.search(clause)
