@@ -21151,7 +21151,8 @@ async function send(question, composerSubmit = false) {
   // 极早持久化已提交主诉：深链预恢复/建会话等待期间刷新/关页也不会
   // 丢失（ensureSession 之后会用真实会话 ID 覆盖同一条记录）
   preserveOtherSessionInflight(
-    pendingSessionReset ? '' : (sessionId || '')
+    pendingSessionReset ? '' : (sessionId || ''),
+    question
   );
   try {
     safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
@@ -23255,19 +23256,28 @@ function clearOtherSessionInflight(sessionId, question) {
     const sameSession = Boolean(
       sessionId && itemOwner && itemOwner === String(sessionId || '')
     );
-    return !(
-      sameSession
-      || (
-        recordQuestion
-        && (
-          recordQuestion === wantedQuestion
-          || (wantedQuestion
-            && wantedQuestion.startsWith(recordQuestion))
-          || (wantedQuestion
-            && recordQuestion.startsWith(wantedQuestion))
-        )
+    const textMatch = Boolean(
+      recordQuestion
+      && (
+        recordQuestion === wantedQuestion
+        || (wantedQuestion
+          && wantedQuestion.startsWith(recordQuestion))
+        || (wantedQuestion
+          && recordQuestion.startsWith(wantedQuestion))
       )
     );
+    // 只有本页确实恢复过（放回输入框并被发送）或本次发送文本就是
+    // 这条记录时才能删除同会话记录：restoreInflightForOpenSession
+    // 在输入框已被其它草稿占用时会跳过恢复，从未展示过的停诊主诉
+    // 是唯一副本，不能被下一次成功发送静默删除（第一百零三轮 [11]）
+    const restoredHere = Boolean(
+      sameSession
+      && inflightRestoredText
+      && inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY
+      && String(inflightRestoredOwnerSession || '') === itemOwner
+      && String(inflightRestoredText || '').trim() === recordQuestion
+    );
+    return !(textMatch || restoredHere);
   });
   writeOtherInflightRecords(records);
 }
@@ -23321,10 +23331,13 @@ function clearRestoredInflightIfOwned() {
   inflightRestoredKeyName = '';
 }
 
-function preserveOtherSessionInflight(targetOwner) {
+function preserveOtherSessionInflight(targetOwner, nextQuestion) {
   // 现有记录若属于另一个会话（停止/中断未落库）：追加到备份槽，
   // 否则本次发送会把它永久覆盖（那个会话的草稿已被切换清空）。
-  // 备份槽保存多条：第三个会话的发送不能把更早的记录顶掉
+  // 备份槽保存多条：第三个会话的发送不能把更早的记录顶掉。
+  // 同一会话里没被恢复展示过的旧主诉同样是唯一副本：带着其它
+  // 草稿打开会话时恢复会被跳过，直接发送会覆盖主槽
+  // （第一百零三轮 [11]）
   try {
     const existingRaw = safeSessionGet(INFLIGHT_QUESTION_KEY);
     if (!existingRaw) return;
@@ -23335,11 +23348,33 @@ function preserveOtherSessionInflight(targetOwner) {
       !existingAt
       || Date.now() - existingAt <= 6 * 60 * 60 * 1000
     );
+    const existingQuestion = String(
+      (existing && existing.question) || ''
+    ).trim();
+    const targetKey = String(targetOwner || '');
+    const sameSession = Boolean(
+      existingOwner && existingOwner === targetKey
+    );
+    const restoredHere = Boolean(
+      sameSession
+      && inflightRestoredText
+      && inflightRestoredKeyName === INFLIGHT_QUESTION_KEY
+      && String(inflightRestoredOwnerSession || '') === existingOwner
+      && String(inflightRestoredText || '').trim() === existingQuestion
+    );
+    const hiddenSameSession = Boolean(
+      sameSession
+      && existingQuestion
+      && existingQuestion !== String(nextQuestion || '').trim()
+      && !restoredHere
+    );
     if (
-      existingOwner
-      && existingOwner !== String(targetOwner || '')
-      && String((existing && existing.question) || '').trim()
+      existingQuestion
       && existingFresh
+      && (
+        (existingOwner && existingOwner !== targetKey)
+        || hiddenSameSession
+      )
     ) {
       const records = readOtherInflightRecords().filter(
         (item) => !(

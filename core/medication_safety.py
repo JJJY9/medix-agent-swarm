@@ -1384,9 +1384,16 @@ def _restart_names_other_medication(
         tail = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", tail).strip()
         if tail:
             lowered = tail.lower()
+            # 代词宾语仍指本药；剥掉尾部「药」后与代词词表比对，
+            # 覆盖这个药/那种药/这种药/这药/该药/此药等常见形式
+            # （第一百零三轮 [3]，与 triage 的宾语归一化对齐）
+            pronoun = re.sub(r"药+$", "", lowered).strip()
             if lowered in (
                 "这个", "那个", "它", "这种", "那种", "这些", "那些", "药",
                 "同样的药", "一样的药",
+            ) or pronoun in (
+                "这个", "那个", "它", "这种", "那种", "这些", "那些",
+                "同样的", "一样的", "同样", "一样", "这", "该", "此",
             ):
                 # 代词宾语仍指本药
                 pass
