@@ -5343,9 +5343,13 @@ async function openSession(id) {
     // 待重置期间输入的草稿属于即将新建的会话（owner 为空）：打开
     // 历史会话前不能先把待重置标记抹掉，否则 settleDraftForSession
     // 会把它当成其它会话的草稿静默清空（第八十九轮 [13]）
+    const pendingDraftOwner = safeSessionGet(DRAFT_OWNER_KEY);
+    // 首次输入后草稿归属要 200ms 防抖才落盘：未落盘（null）与
+    // 空归属同样属于「待新建会话」草稿，不能被打开历史会话清掉
+    // （第一百零二轮 [17]）
     const pendingNewDraft = Boolean(
       pendingSessionReset
-      && safeSessionGet(DRAFT_OWNER_KEY) === ''
+      && (pendingDraftOwner === '' || pendingDraftOwner === null)
       && els.input.value.trim()
     );
     // 用户显式打开历史会话：服务端绑定档案与快照优先，待重置标记
@@ -22858,7 +22862,10 @@ function clearInflightForCurrentSession() {
     if (raw) {
       const data = JSON.parse(raw);
       const owner = String((data && data.sessionId) || '');
-      if (owner && sessionId && owner !== sessionId) return;
+      // 没有当前会话（删除会话后 sessionId 为 null）同样不能删除
+      // 有归属的记录：其它会话的未落库主诉可能只剩这一份副本
+      // （第一百零二轮 [16]）
+      if (owner && owner !== (sessionId || '')) return;
     }
   } catch {
     // 解析失败按无归属处理
@@ -22970,7 +22977,9 @@ function settleDraftForSession(targetId) {
   const owner = safeSessionGet(DRAFT_OWNER_KEY);
   // 待重置期间草稿属于即将新建的会话（owner 为空），不是上一位
   // 患者残留：刷新/中止对账经过这里时不能把用户正在写的草稿清掉
-  if (owner === '' && pendingSessionReset) return;
+  if ((owner === '' || owner === null) && pendingSessionReset) {
+    return;
+  }
   if (
     owner === ''
     && target

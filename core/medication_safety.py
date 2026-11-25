@@ -766,8 +766,8 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"^(?:前段时间|前阵子|前一阵|上个月|上周|上上个月|昨天|前天|"
     r"去年|前年|上年|"
     r"前几天|前几周|前几个月|前几年|最近|目前|现在|"
-    r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|天|周|年)"
-    r"(?:多)?(?:前|以来)?)?"
+    r"[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:月|天|周|年)"
+    r"\s*(?:多)?(?:前|以来)?)?"
     r"\s*(?:我|本人|现在|目前)?\s*"
     r"(?:已经|已|刚刚|刚|早就|就|才|后来|之后)*\s*"
     r"(?:停用了|停用(?!时间|时候|日子|那天|没|不)"
@@ -790,13 +790,26 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"|没有用过|没用过|未服用过)"
     # 「还没吃完/没吃够」表示仍在服用，不是停药
     r"(?![完够满])"
-    r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|是否|吗|不行|会怎样))"
+    r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|可不可以|好不好|"
+    r"能停吗|可以吧|是否|吗|不行|会怎样))"
 )
 #: 药名之后的疑问尾：「停用华法林可以吗/行吗/好吗」是意向询问，
 #: 当前仍在用药（第一百零一轮 [11]）。只在药名前已有停药动词时
 #: 参与判断，避免把「吃华法林吗」这类普通问句误当意向
 _STOP_QUESTION_SUFFIX = re.compile(
-    r"^\s*(?:可以吗|行吗|好吗|行不行|可以么|能行吗|能不能|是否|吗|么)"
+    r"^\s*(?:可以吗|行吗|好吗|行不行|可以么|能行吗|能不能|可不可以|"
+    r"好不好|能停吗|可以吧|可以停药吗|是否|吗|么)"
+)
+#: 药名后的括号停药标注：「阿司匹林（已停用）」「（停用 2 个月）」：
+#: 括号内容只说明停药，药名退出在用名单（第一百零二轮 [18]）
+_BRACKET_STOP_SUFFIX = re.compile(
+    r"^\s*[（(]\s*(?:已停用|已停药|已停服|停用中|已停了|已停止使用|"
+    r"已停止|已停|停掉了|已停掉了|停止了|停药|停服|停用|停了|不吃了|"
+    r"stopped|discontinued)"
+    r"(?:\s*[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:多)?\s*"
+    r"(?:天|日|周|星期|个月|月|年)|大半年|半年|好几年|好久|很久)?"
+    r"\s*[）)]",
+    re.IGNORECASE,
 )
 #: 药名之后的既往用药：「阿司匹林以前吃过」「阿司匹林之前用过」。
 #: 必须带明确的既往时间词：裸「吃过了」是今天已服药（依从），不是停药
@@ -1068,18 +1081,22 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     return False
 
 
-#: 明确远期停药（月/年）：即使同句还提到「没吃完」也按已停用
+#: 明确远期停药（月/年）：即使同句还提到「没吃完」也按已停用。
+#: 时长允许空白（停用 2 个月/（停了 2 个月））（第一百零二轮 [18]）
 _LONG_STOP_CONTEXT = re.compile(
     r"(?:已经|已|早就|早|都|快)?\s*"
     r"(?:停用|停药|停了|停的|停服|停止服用|"
     # 裸「停」只认紧跟时长的形态（停三年了/停两个多月）：
     # 「停经两个月」是月经史，不是停药（第九十四轮 [6]）
-    r"停(?=\s*[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?(?:年|月))"
+    r"停(?=\s*[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:多)?"
+    r"(?:年|月))"
     r"|不吃了?)"
     r"[^，。；,.!?！？\n]{0,6}?"
-    r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年|"
+    r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:多)?\s*"
+    r"(?:年|月)|半年|多月|多年|"
     r"去年|前年|上年|很久|好久)"
-    r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:年|月)|半年|多月|多年|"
+    r"|(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:多)?\s*"
+    r"(?:年|月)|半年|多月|多年|"
     r"去年|前年|上年|很久|好久)"
     r"\s*(?:前|以来)?[^，。；,.!?！？\n]{0,4}"
     r"(?:停用|停药|停了|停的|停服|停止服用)"
@@ -1325,6 +1342,8 @@ _RESTART_USE_SUFFIX = re.compile(
     r"|正在(?:"
     r"吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服|用)"
+    # 持续体「现在吃着/目前用着」（第一百零二轮 [13]）
+    r"|(?:现在|目前|当前)(?:吃着|用着|服用着|口服着)"
     # 口语「又吃了/又服用了」同样是重启；排除吃饭/吃东西（含量词）
     r"|又吃了(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
     r"零|点|些|口|(?:两|几|一|半)[口块碗])"
@@ -1363,8 +1382,31 @@ def _restart_names_other_medication(
             flags=re.IGNORECASE,
         )
         tail = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", tail).strip()
-        if tail and _mentions_other_drug_alias(tail, alias_lower):
-            return True
+        if tail:
+            lowered = tail.lower()
+            if lowered in (
+                "这个", "那个", "它", "这种", "那种", "这些", "那些", "药",
+                "同样的药", "一样的药",
+            ):
+                # 代词宾语仍指本药
+                pass
+            elif alias_lower in lowered or lowered in alias_lower:
+                # 宾语就是本药：正常续用
+                pass
+            elif re.fullmatch(
+                r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*"
+                r"(?:多)?\s*(?:天|日|周|星期|个月|月|年)"
+                r"|半年|几天|一段时间|一阵子|长期|好久|很久)"
+                r"(?:的疗程|疗程|左右)?",
+                lowered,
+            ):
+                # 疗程/时长不是另一种药（继续吃两周）
+                pass
+            else:
+                # 宾语是另一种药（含未登记药名）或明显非药物对象
+                # （电脑/火锅/中药调理）：都不是本药续用
+                # （第一百零二轮 [7][13]）
+                return True
     for before in _RESTART_OBJECT_BEFORE_RE.finditer(text):
         obj = re.sub(
             r"(?:这|那|个|种|些|药)+$", "", before.group(1)
@@ -1385,6 +1427,15 @@ _ENGLISH_STILL_OBJ_RE = re.compile(
 )
 
 
+#: 英文进行式续用宾语：「now I am on aspirin」（第一百零二轮 [7]）
+_ENGLISH_NOW_OBJ_RE = re.compile(
+    r"\bnow\s+(?:i\s*(?:'m|am)\s+)?(?:back\s+)?(?:on|taking|using)\s+"
+    r"(?:(it|the\s+same|this)\b|"
+    r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
+    re.IGNORECASE,
+)
+
+
 def _english_restart_names_other(
     follow: str, alias_lower: str
 ) -> bool:
@@ -1398,6 +1449,18 @@ def _english_restart_names_other(
             continue
         if _mentions_other_drug_alias(obj, alias_lower):
             return True
+    for match in _ENGLISH_NOW_OBJ_RE.finditer(text):
+        if (match.group(1) or "").strip():
+            # 代词宾语仍指本药
+            continue
+        obj = (match.group(2) or "").strip()
+        if not obj:
+            continue
+        lowered = obj.lower()
+        if alias_lower.lower() in lowered or lowered in alias_lower.lower():
+            continue
+        # 显式宾语不是本药（now I am on aspirin/vitamins）：不是本药续用
+        return True
     return False
 
 
@@ -1575,8 +1638,10 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
                 or _STOPPED_USE_SUFFIX.search(suffix)
+                or _BRACKET_STOP_SUFFIX.search(suffix)
                 or _PAST_USE_SUFFIX.search(suffix)
                 or _STOPPED_USE_SUFFIX_EN.search(suffix)
+                or _BRACKET_STOP_SUFFIX.search(suffix)
                 or _STOPPED_USE_PREFIX_EN.search(prefix)
                 or _NEGATED_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX.search(prefix)
@@ -1657,6 +1722,7 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)
+            or _BRACKET_STOP_SUFFIX.search(suffix)
             or _PAST_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
             or (

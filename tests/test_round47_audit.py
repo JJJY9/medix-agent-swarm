@@ -592,6 +592,6 @@ def test_frontend_deep_link_open_session_keeps_snapshot():
 
 def test_frontend_pending_draft_survives_reload_and_reconcile():
     app_js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-    assert "owner === '' && pendingSessionReset" in app_js
+    assert "(owner === '' || owner === null) && pendingSessionReset" in app_js
     assert "const pendingNewSession = owner === '' && (" in app_js
     assert "name.textContent = row.name || '未指定档案';" in app_js

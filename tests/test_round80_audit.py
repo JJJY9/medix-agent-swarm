@@ -500,8 +500,12 @@ def test_reschedule_note_uses_appointment_day(tmp_path):
         new_day + "T09:00", "upcoming",
         f"由就诊记录 #{visit['id']} 自动创建",
     )
-    refreshed = store.get_reminder(reminder["id"])
+    pending = store.list_reminders(False, "妈妈")
     store.close()
+    # 脱钩提醒并入预约自带待办后只留一条 pending，备注用预约日、
+    # 到期日提前一天（第一百零二轮 [15]）
+    assert len(pending) == 1, pending
+    refreshed = pending[0]
     assert new_day in str(refreshed.get("note") or ""), refreshed
     assert str(refreshed.get("due_at") or "")[:10] == str(
         today + timedelta(days=11)
