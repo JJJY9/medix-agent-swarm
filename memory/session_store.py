@@ -6265,6 +6265,44 @@ class SessionStore:
                     return False
             return True
 
+        def _moved_tail_beats_sibling(
+            candidate: int, candidate_profile: str
+        ) -> bool:
+            """候选尾字段对当前行的匹配数是否严格高于同秒同档案兄弟。
+
+            跨档案改挂行的尾字段（备注/完成状态等）常与本行相同；
+            若候选新档案里还有一条同秒未处理的备份行，打平时候选
+            也可能是那条被删记录的存活版本：宁可补插本行，不能吞掉
+            被删成员记录（第一百轮 [4]）。
+            """
+            if tail_where is None or not backup_tails:
+                return True
+            own_score = _tail_match_score(candidate, raw_id)
+            if own_score < 0:
+                return True
+            created_key = str(created_at_value or "")
+            wanted = _normalize_profile_name(candidate_profile)
+            best_other = -1
+            for other_id in backup_tails:
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if backup_profiles and _normalize_profile_name(
+                    backup_profiles.get(other_id) or ""
+                ) != wanted:
+                    continue
+                if other_id in seen_raw_ids:
+                    # 已处理的兄弟行不能构成归属歧义
+                    continue
+                other_score = _tail_match_score(candidate, other_id)
+                if other_score > best_other:
+                    best_other = other_score
+            return best_other < 0 or own_score > best_other
+
         def _soft_matches(candidate: int) -> bool:
             if soft_where is None:
                 return True
@@ -6616,14 +6654,25 @@ class SessionStore:
             wanted = _normalize_profile_name(candidate_profile)
             created_key = str(created_at_value or "")
             for other_id, other_profile in backup_profiles.items():
-                if other_id == raw_id or other_id <= 0:
-                    # 合成负键只用于尾字段/内容比较，不代表可推断
-                    # 归属的真实备份主键（第九十七轮 [9]）
+                if other_id == raw_id or other_id == 0:
                     continue
                 if backup_created.get(other_id) != created_key:
                     continue
                 if _normalize_profile_name(other_profile) != wanted:
                     continue
+                if other_id <= 0:
+                    # 无 id 备份的兄弟行没有可靠内容身份：该档案下
+                    # 若另有存活行（不等于候选），兄弟记录就是那条
+                    # 行，候选仍属本行改挂/编辑版本；否则候选可能是
+                    # 被删兄弟的存活版本（第一百轮 [4]）
+                    other_rows = self._conn.execute(
+                        f"SELECT id FROM {table} WHERE profile = ?"
+                        " AND created_at = ? AND id != ?",
+                        (candidate_profile, created_key, candidate),
+                    ).fetchall()
+                    if other_rows:
+                        continue
+                    return True
                 expected = (backup_contents or {}).get(other_id)
                 if expected is not None and content_columns:
                     try:
@@ -6969,6 +7018,42 @@ class SessionStore:
                         explained = True
                         break
                 if not explained:
+                    return True
+            return False
+
+        def _sibling_content_missing_for_orphan() -> bool:
+            """本行以外的同秒备份行内容是否在本地缺失。
+
+            与 _content_rows_missing_for_orphan 的区别：本行自己的
+            旧内容因编辑而缺失不算——那正是被编辑存活行的正常现象
+            （第一百轮 [7]）；只有兄弟备份行的内容也缺失时，候选才
+            可能是被删兄弟的存活版本，本行需按被删记录补插
+            （第一百轮 [4]）。
+            """
+            if not backup_contents or not content_columns:
+                return False
+            created_key = str(created_at_value or "")
+            try:
+                rows = self._conn.execute(
+                    f"SELECT id, {', '.join(content_columns)} FROM {table}"
+                    " WHERE created_at = ?",
+                    (created_key,),
+                ).fetchall()
+            except sqlite3.Error:
+                return True
+            fingerprints = {
+                self._db_content_fingerprint(row, content_columns)
+                for row in rows
+            }
+            for other_id, expected in backup_contents.items():
+                if other_id == raw_id:
+                    continue
+                if (
+                    backup_created
+                    and backup_created.get(other_id) != created_key
+                ):
+                    continue
+                if expected not in fingerprints:
                     return True
             return False
 
@@ -8004,6 +8089,12 @@ class SessionStore:
                         and not _tail_prefers_sibling(
                             candidate, cross_profile=True
                         )
+                        # 尾字段打平不足以证明候选属于本行：同秒同档案
+                        # 兄弟备份行仍未处理时，候选可能是被删兄弟的
+                        # 存活版本，本行按被删记录补插（第一百轮 [4]）
+                        and _moved_tail_beats_sibling(
+                            candidate, candidate_profile
+                        )
                     )
                     # 无 id 备份的改挂行内容+尾字段同时被编辑：尾
                     # 字段不偏向任何兄弟行时按本行存活版本认领，
@@ -9028,7 +9119,7 @@ class SessionStore:
             and content_where
             and not _candidate_content_matches_backup(sole)
             and _candidate_edited(sole)
-            and _content_rows_missing_for_orphan()
+            and _sibling_content_missing_for_orphan()
             and not _tail_uniquely_matches(sole)
             # 改名/改标题（身份列）按软字段归属认领；时间/数值列
             # 是同一记录的常规编辑（改期/改剂量后补正）——两类都
@@ -15479,12 +15570,21 @@ class SessionStore:
                 return None
             # 预约改档案时提醒跟随；档案未变时不刷新 updated_at，
             # 否则已完成提醒的时间戳会晚于删除墓碑，改期重建会把
-            # 用户已删除的提醒复活
+            # 用户已删除的提醒复活。已完成提醒是历史：只迁移档案，
+            # 不刷新 updated_at（第一百轮 [8]）
             self._conn.execute(
                 "UPDATE reminders SET profile = ?, updated_at = ?"
-                " WHERE appointment_id = ? AND profile != ?",
+                " WHERE appointment_id = ? AND profile != ? AND done = 0",
                 (
                     normalized["profile"], now, int(appointment_id),
+                    normalized["profile"],
+                ),
+            )
+            self._conn.execute(
+                "UPDATE reminders SET profile = ?"
+                " WHERE appointment_id = ? AND profile != ? AND done = 1",
+                (
+                    normalized["profile"], int(appointment_id),
                     normalized["profile"],
                 ),
             )
@@ -16640,6 +16740,32 @@ class SessionStore:
                             shared_visit,
                             normalized["profile"],
                             shared_day,
+                        ),
+                    )
+                    pending_row = self._conn.execute(
+                        "SELECT id FROM reminders"
+                        " WHERE appointment_id = ? AND done = 0"
+                        " ORDER BY due_at ASC, id ASC LIMIT 1",
+                        (int(appointment_id),),
+                    ).fetchone()
+                    # owner/备注归属但链接未写回的遗留自动预约：改期
+                    # 同步时一并回写链接，否则就诊卡一直显示「未安排
+                    # 复诊」、健康提示重复提醒（第一百轮 [9]）
+                    self._conn.execute(
+                        "UPDATE visit_records"
+                        " SET followup_appointment_id = ?,"
+                        " followup_reminder_id = CASE"
+                        "   WHEN followup_reminder_id = 0 THEN ?"
+                        "   ELSE followup_reminder_id END,"
+                        " updated_at = ?"
+                        " WHERE id = ? AND profile = ?"
+                        " AND followup_appointment_id = 0",
+                        (
+                            int(appointment_id),
+                            int(pending_row["id"]) if pending_row else 0,
+                            now,
+                            shared_visit,
+                            normalized["profile"],
                         ),
                     )
                     synced_visits += 1
@@ -18094,7 +18220,24 @@ class SessionStore:
                     if owner_visit in (0, int(visit_id)):
                         # 旧版本可能有多条就诊共享该复诊预约：迁移前
                         # 先解除其它就诊的链接，避免它们继续指向新
-                        # 档案的预约、抑制逾期复诊提示
+                        # 档案的预约、抑制逾期复诊提示；对方独占的
+                        # 脱钩待办提醒同时清理（第一百轮 [13]）
+                        cleared_links = self._conn.execute(
+                            "SELECT id, followup_reminder_id"
+                            " FROM visit_records"
+                            " WHERE followup_appointment_id = ?"
+                            " AND id != ?",
+                            (linked_appointment, int(visit_id)),
+                        ).fetchall()
+                        for cleared_link in cleared_links:
+                            cleared_reminder = int(
+                                cleared_link["followup_reminder_id"] or 0
+                            )
+                            if cleared_reminder:
+                                self._clean_unlinked_detached_reminder(
+                                    cleared_reminder,
+                                    int(cleared_link["id"]),
+                                )
                         self._conn.execute(
                             "UPDATE visit_records"
                             " SET followup_appointment_id = 0,"
@@ -18113,9 +18256,20 @@ class SessionStore:
                         )
                         self._conn.execute(
                             "UPDATE reminders SET profile = ?,"
-                            " updated_at = ? WHERE appointment_id = ?",
+                            " updated_at = ? WHERE appointment_id = ?"
+                            " AND done = 0",
                             (
                                 normalized["profile"], now,
+                                linked_appointment,
+                            ),
+                        )
+                        # 已完成提醒只迁档案不刷新 updated_at：否则会
+                        # 晚于删除墓碑、改期重建复活已删提醒（第一百轮 [8]）
+                        self._conn.execute(
+                            "UPDATE reminders SET profile = ?"
+                            " WHERE appointment_id = ? AND done = 1",
+                            (
+                                normalized["profile"],
                                 linked_appointment,
                             ),
                         )
@@ -18196,15 +18350,30 @@ class SessionStore:
                 )
                 # 提醒子查询与预约迁移保持同一集合：导入恢复留下的
                 # 「只有备注标记、owner=0」的自动预约及其待办提醒
-                # 一起跟随改档案，避免旧成员名下残留别人的复诊待办
+                # 一起跟随改档案，避免旧成员名下残留别人的复诊待办。
+                # 已完成提醒只迁档案不刷新 updated_at，避免击穿删除
+                # 墓碑（第一百轮 [8]）
                 self._conn.execute(
                     "UPDATE reminders SET profile = ?, updated_at = ?"
                     " WHERE appointment_id IN (SELECT id FROM appointments"
                     "   WHERE status = 'upcoming' AND profile = ?"
                     "     AND (owner_visit_id = ?"
-                    "          OR (owner_visit_id = 0 AND note LIKE ?)))",
+                    "          OR (owner_visit_id = 0 AND note LIKE ?)))"
+                    " AND done = 0",
                     (
                         normalized["profile"], now, normalized["profile"],
+                        int(visit_id), f"%{marker_text}%",
+                    ),
+                )
+                self._conn.execute(
+                    "UPDATE reminders SET profile = ?"
+                    " WHERE appointment_id IN (SELECT id FROM appointments"
+                    "   WHERE status = 'upcoming' AND profile = ?"
+                    "     AND (owner_visit_id = ?"
+                    "          OR (owner_visit_id = 0 AND note LIKE ?)))"
+                    " AND done = 1",
+                    (
+                        normalized["profile"], normalized["profile"],
                         int(visit_id), f"%{marker_text}%",
                     ),
                 )

@@ -137,10 +137,11 @@ _DOUBLE_NEGATION_SUFFIX_PATTERN = re.compile(
     rf"(?:{_NEGATION_FILLERS})*\s*$"
 )
 #: 「差点没昏倒」是“几乎发生”，不是否定。
-#: 近失词与句尾之间允许口语副词（差点就/险些都/几乎要），
-#: 否则「差点就撞到头」会被当作真实撞击（第九十九轮 [17]）
+#: 近失词与句尾之间允许口语副词串（差点就/差点就要/差一点点就/
+#: 几乎快要），否则「差点就要撞到头」会被当作真实撞击（第九十九
+#: 轮 [17]、第一百轮 [11]）
 _ALMOST_PATTERN = re.compile(
-    r"(?:差点|险些|几乎|差一点|差些)\s*(?:就|都|要|快|点)?\s*"
+    r"(?:差点|险些|几乎|差一点|差些)\s*(?:就|都|要|快|点){0,3}\s*"
     r"(?:没有|没)?\s*$"
 )
 #: 「从未有过的胸痛」「前所未有的呼吸困难」是“从未如此”的最高级
@@ -186,7 +187,7 @@ _RULED_OUT_TAIL = re.compile(
 #: 「不是没有了/并非没有」是双重否定，按阳性处理
 _TRAILING_NEGATION_RE = re.compile(
     r"^[、，]?(?P<pre>[^，。；！？,.!?;\n]{0,8}?)?"
-    r"(?:都|也|全都|全|均)?"
+    r"(?P<group>都|也|全都|全|均)?"
     r"(?:已经|早已)?"
     r"(?:没有|没了|不(?:再)?有|没|无)"
     r"(?:了)?\s*$"
@@ -194,20 +195,41 @@ _TRAILING_NEGATION_RE = re.compile(
 
 
 def _trailing_negation_covers(tail: str) -> bool:
-    """tail 是否以「（都）没有/没了」收尾（短语后的后置否定）。"""
+    """tail 是否以「（都）没有/没了」收尾（短语后的后置否定）。
+
+    短语与否定词之间还有其它内容时，必须带群否定标记（都/也/
+    全/均）才算整组否定，且中间不能有阳性修饰：「胸痛很厉害、
+    呼吸困难没有」是胸痛阳性+否认呼吸困难（第一百轮 [5]）。
+    """
     trailing = _TRAILING_NEGATION_RE.match(str(tail or ""))
     if trailing is None:
         return False
     pre = (trailing.group("pre") or "").rstrip()
-    return not re.search(r"(?:不是|并非|并不|不)$", pre)
+    if re.search(r"(?:不是|并非|并不|不)$", pre):
+        return False
+    if pre:
+        if not trailing.group("group"):
+            return False
+        if any(
+            cue in pre for cue in _TRAILING_NEGATION_POSITIVE_CUES
+        ):
+            return False
+    return True
 
 
-def _trailing_negation_in_clause(text: str, end: int) -> bool:
+def _trailing_negation_in_clause(
+    text: str, end: int, prefix: str = ""
+) -> bool:
     """短语之后、同一分句（顿号不截断）是否以整组后置否定收尾。
 
     「发烧、咳嗽、胸痛都没有」的最后一项才带否定后缀，前面的枚举
-    症状同样按整组否定处理（第九十九轮 [7]）。
+    症状同样按整组否定处理（第九十九轮 [7]）。短语自身带阳性
+    修饰（持续胸痛、呼吸困难都没有）时不按否定处理（第一百轮 [5]）。
     """
+    if prefix and any(
+        cue in prefix for cue in _TRAILING_NEGATION_POSITIVE_CUES
+    ):
+        return False
     boundary = end
     limit = len(text)
     while boundary < limit and text[boundary] not in "，。；！？,.!?;\n":
@@ -762,10 +784,10 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
             stripped[: rhetorical.start()],
         ) is None:
             return False
-    # 后置否定：「胸痛没有了」「发烧、咳嗽、胸痛都没有」的否定词在
-    # 短语之后、分句末尾，同样是否认而不是症状（第九十九轮 [7]）
-    if _trailing_negation_covers(suffix):
-        return True
+    # 后置否定（「胸痛没有了」「发烧、咳嗽、胸痛都没有」）只作用于
+    # 红旗症状主循环（_trailing_negation_in_clause）：孕产期出血等
+    # 独立路径不能用「出血已经没有了」当作否认——早期妊娠出血已停
+    # 仍需排查宫外孕/先兆流产（第一百轮 [1]）
     if _NEGATION_PATTERN.search(prefix):
         return True
     enum_negated = _enum_negated(prefix)
@@ -829,6 +851,11 @@ _POST_POSITIVE_CUES = (
     "偶发", "偶尔", "偶感", "偶见", "间或", "间发", "阵发",
     "好几次", "多次", "反复",
 )
+#: 后置否定旁若出现这些持续/程度修饰，说明前面的症状是阳性主诉
+#: （「持续胸痛、呼吸困难都没有」）（第一百轮 [5]）
+_TRAILING_NEGATION_POSITIVE_CUES = tuple(_POST_POSITIVE_CUES) + (
+    "持续", "一直", "反复", "频繁", "经常", "总是", "老是", "越来越",
+)
 #: 患者本人当前病程线索：科普引用分支专用，不复用为枚举否定服务的
 #: 偶发/冷汗等阳性词（「文章说偶尔胸痛没事」不是本人病程）
 _CURRENT_COURSE_CUES = (
@@ -850,6 +877,25 @@ _SWEAT_INTENSITY_RE = re.compile(
     r"|(?:浑身|全身|满头|一身)(?:都|全)?(?:是|的)?汗"
     r"|汗如雨下|大汗淋漓"
 )
+
+
+def _sweat_intensity_positive(text: str) -> bool:
+    """文本是否含未被否定的强度出汗（「没有出很多汗」不算）。
+
+    匹配位置前同一分句若紧邻否定词（没有/没/未/无/不再），该次
+    匹配是患者的否认表述，不能当作阳性证据（第一百轮 [12]）。
+    """
+    text = str(text or "")
+    for match in _SWEAT_INTENSITY_RE.finditer(text):
+        before = text[max(0, match.start() - 8):match.start()]
+        clause_tail = re.split(r"[，。；！？,.!?;\n]", before)[-1]
+        if re.search(
+            r"(?:没有|没|未|无|不再|不)[^，。；！？,.!?;\n]{0,3}$",
+            clause_tail,
+        ):
+            continue
+        return True
+    return False
 _POST_DURATION_RE = re.compile(
     r"(?:已|已经|有)?\s*(?:持续|发作|反复)?\s*"
     r"[0-9一二两三四五六七八九十半几]+\s*"
@@ -1211,6 +1257,10 @@ _COURSE_MARKER_RE = re.compile(
 #: 无力是什么病」都在描述患者的当前症状组合，不是纯术语询问）
 _DEFINITION_KEEP_CUES = (
     "活动后", "活动时", "活动", "劳累", "走路", "行走", "爬楼",
+    # 运动/搬抬等劳力场景同样是真实主诉（运动后胸痛是什么病，
+    # 第一百轮 [6]）
+    "运动", "跑步", "打球", "健身", "游泳", "锻炼", "上楼", "爬坡",
+    "搬东西", "搬重物", "干活", "体力活动", "劳作",
     "夜间", "夜里", "半夜", "睡前", "晨起", "早上",
     "深呼吸", "呼吸时", "按压", "触碰",
     "一侧", "单侧", "半边", "偏侧", "肢体",
@@ -1983,8 +2033,9 @@ def patient_complaint_text(text: str) -> str:
             ) or (
                 # 「出汗特别厉害」这类强度形态是真实病程；裸「出汗」
                 # （天气热容易出汗/没有出汗）仍不作证据
-                # （第九十七轮 [14]、第九十八轮 [1]）
-                _SWEAT_INTENSITY_RE.search(text_follow) is not None
+                # （第九十七轮 [14]、第九十八轮 [1]）；否定式强度
+                # 出汗（没有出很多汗）同样不升级（第一百轮 [12]）
+                _sweat_intensity_positive(text_follow)
             )
             severity_follows = bool(
                 (
@@ -1995,7 +2046,7 @@ def patient_complaint_text(text: str) -> str:
                     )
                     # 「出了好多汗/浑身是汗」不含字面「出汗」cue，
                     # 但强度出汗本身就是患者证据（第九十九轮 [3]）
-                    or _SWEAT_INTENSITY_RE.search(text_follow) is not None
+                    or _sweat_intensity_positive(text_follow)
                 )
                 and not any(
                     word in text_follow
@@ -2281,10 +2332,14 @@ _HEAD_TRAUMA_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚])头(?:部)?|脑袋|额头|前额|头顶|"
     r"后脑勺|枕部)"
     # 口语方位/副词：后脑勺上磕了个包、头不小心撞到墙、
-    # 头一下子撞到门框（部位与撞击动词之间可插入修饰）
+    # 头一下子撞到门框（部位与撞击动词之间可插入修饰）。
+    # 揣测词（好像/可能/似乎/估计/多半/应该是）按阳性处理：
+    # 「头好像撞到了」是可能的头部撞击，抗凝状态需急诊评估
+    # （第一百轮 [2]）
     r"(?:上|部|后面|后面上)?"
     r"(?:一不小心|不小心|一下子|突然|直接|先|重重地?|猛地|猛一?下|"
-    r"当时|今天|昨天|前几天)?"
+    r"当时|今天|昨天|前几天|好像|似乎|可能|估计|多半|应该是?|怕是|"
+    r"疑似|不确定|不知道)?"
     r"(?:外伤|受伤|撞伤|砸伤|磕伤|摔伤|摔破|撞|磕|碰|砸|摔|"
     r"伤|着地|破|(?:受到?|遭到?)[^，。；,.!?！？\n]{0,4}撞击|"
     r"被[^，。；,.!?！？\n]{0,6}(?:撞|磕|碰|砸|打|夹))"
@@ -4559,7 +4614,9 @@ def detect_red_flags(text: str, context: Any = None) -> Dict[str, Any]:
             suffix = _clause_suffix(text, phrase_end)
             if not _is_negated(
                 prefix, suffix
-            ) and not _trailing_negation_in_clause(text, phrase_end):
+            ) and not _trailing_negation_in_clause(
+                text, phrase_end, prefix
+            ):
                 if label not in matches:
                     matches.append(label)
                 break
