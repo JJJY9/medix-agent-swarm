@@ -8407,6 +8407,17 @@ class SessionStore:
                             # 兄弟的存活行不能证明候选属于本行，仍按
                             # 被删记录补插（第一百零四轮 [3]）
                             return _ambiguous()
+                        if (
+                            tail_where is not None
+                            and not _tail_matches(sole)
+                            and not _candidate_edited(sole)
+                        ):
+                            # 候选未编辑且尾字段与本行完全不符（完成
+                            # 状态/备注/提前天数不同）：它不是本行的
+                            # 编辑版本，按被删记录补回；否则备份行的
+                            # done/note 被静默丢弃，且重复导入会因
+                            # 排序变化补插重复行（第一百零五轮 [9]）
+                            return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
             # 改挂到其他成员并编辑内容列、且主键漂移时，身份组里
@@ -9104,6 +9115,17 @@ class SessionStore:
                     # 改变本次导入的分支（第八十三轮幂等）
                     soft = tail_exact
             if soft:
+                stale_unedited = {
+                    candidate for candidate in soft
+                    if content_columns
+                    and not _candidate_content_matches_backup(candidate)
+                    and not _candidate_edited(candidate)
+                }
+                if stale_unedited:
+                    # 内容（到期日/时间等）与本行备份不符且无编辑证据的
+                    # 同秒行属于另一条记录：不能凭 min() 被本行认领，
+                    # 本行按被删记录补插（第一百零五轮 [3]）
+                    soft = soft - stale_unedited
                 # 软字段命中：备份组只有一行，或该软字段在备份组内
                 # 唯一时才能认领；同秒同名孪生仍不可区分。本地存活
                 # 行数已不少于备份行数时，说明每条备份行都有存活版本
@@ -16661,7 +16683,8 @@ class SessionStore:
                 )
                 if owner_visit:
                     owner_row = self._conn.execute(
-                        "SELECT followup_reminder_id, profile"
+                        "SELECT followup_reminder_id, profile,"
+                        " followup_appointment_id"
                         " FROM visit_records WHERE id = ?",
                         (int(owner_visit),),
                     ).fetchone()
@@ -16676,7 +16699,14 @@ class SessionStore:
                         owner_reminder = int(
                             owner_row["followup_reminder_id"] or 0
                         )
-                        if owner_reminder:
+                        owner_linked = int(
+                            owner_row["followup_appointment_id"] or 0
+                        )
+                        # 就诊已链接另一条待就诊预约时，取消/完成无关
+                        # 旧预约不能删掉它的复诊提醒（第一百零五轮 [10]）
+                        if owner_reminder and owner_linked in (
+                            0, int(appointment_id)
+                        ):
                             self._clean_unlinked_detached_reminder(
                                 owner_reminder, int(owner_visit)
                             )
@@ -17611,7 +17641,8 @@ class SessionStore:
                 )
                 if owner_visit:
                     owner_row = self._conn.execute(
-                        "SELECT followup_reminder_id, profile"
+                        "SELECT followup_reminder_id, profile,"
+                        " followup_appointment_id"
                         " FROM visit_records WHERE id = ?",
                         (int(owner_visit),),
                     ).fetchone()
@@ -17626,7 +17657,15 @@ class SessionStore:
                         owner_reminder = int(
                             owner_row["followup_reminder_id"] or 0
                         )
-                        if owner_reminder:
+                        owner_linked = int(
+                            owner_row["followup_appointment_id"] or 0
+                        )
+                        # 就诊已链接另一条待就诊预约（fa 非 0 且不是本
+                        # 预约）时，其复诊提醒属于那条计划：删除无关
+                        # 旧预约不能把它一起清理（第一百零五轮 [10]）
+                        if owner_reminder and owner_linked in (
+                            0, int(appointment_id)
+                        ):
                             self._clean_unlinked_detached_reminder(
                                 owner_reminder, int(owner_visit)
                             )
