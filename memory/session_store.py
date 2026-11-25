@@ -5969,10 +5969,12 @@ class SessionStore:
             other_profile = backup_profiles.get(candidate)
             if other_profile is None:
                 return False
-            if _other_backup_row_survives(candidate):
+            if _other_backup_row_survives(candidate, count_own_claims=True):
                 # 主键对应的备份记录已在本地另有存活行：候选是当前
                 # 行的改挂/漂移版本，可以认领；否则互换档案的两条
-                # 同秒读数会被反复补插（第八十五轮）
+                # 同秒读数会被反复补插（第八十五轮）。认领者口径与
+                # 主键撞号检查一致：被该备份记录本轮自己认领的恢复
+                # 副本仍是它的存活行（第一百零四轮 [8]）
                 return False
             current_profile = str(row_profile or "")
             if not current_profile and columns and columns[0] == "profile":
@@ -7699,7 +7701,22 @@ class SessionStore:
                 # 等于 raw_id 的行可能是另一成员改挂进本档案的存活行
                 # （第七十八轮）
                 claim_row = int(row["id"])
-                if claim_row == raw_id and _same_backup_origin():
+                if (
+                    claim_row == raw_id
+                    and _same_backup_origin()
+                    # 同秒同内容孪生尾字段不命中本行时，主键相等只是
+                    # 撞号：未编辑的同号行是兄弟备份记录的存活行，
+                    # 不能凭同源自认领（第一百零四轮 [4]）；导出后
+                    # 编辑过的同号行仍是本行被编辑的存活版本
+                    and not (
+                        backup_contents
+                        and backup_tails
+                        and tail_where is not None
+                        and _backup_content_shared_with_sibling()
+                        and not _candidate_edited(claim_row)
+                        and not _tail_matches(claim_row)
+                    )
+                ):
                     claimable_row = True
                 elif claim_row == raw_id:
                     # 漂移库里本地编号恰等于备份主键只是巧合：必须
@@ -8375,7 +8392,10 @@ class SessionStore:
                                 sole, cross_profile=True
                             )
                             and not _raw_signature_present(sole)
-                            and not _tied_sibling_survives(sole)
+                            and not (
+                                local_group_size >= backup_group_size
+                                and _tied_sibling_survives(sole)
+                            )
                         ):
                             # 同档案同内容孪生尾字段打平，且本行原签名
                             # （内容+尾字段）在本地已完全缺失：候选只是
@@ -8383,7 +8403,9 @@ class SessionStore:
                             # 否则尾字段永久丢失（第一百零二轮 [8]）。
                             # 被持平的兄弟备份行若已另有存活行，候选
                             # 只能是本行被编辑的存活版本，不能补插
-                            # （第一百零三轮 [7]）
+                            # （第一百零三轮 [7]）；但组内确有缺行时
+                            # 兄弟的存活行不能证明候选属于本行，仍按
+                            # 被删记录补插（第一百零四轮 [3]）
                             return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
@@ -16535,7 +16557,8 @@ class SessionStore:
                             )
                             if adopt_visit:
                                 adopt_row = self._conn.execute(
-                                    "SELECT followup_reminder_id"
+                                    "SELECT followup_reminder_id,"
+                                    " followup_appointment_id"
                                     " FROM visit_records WHERE id = ?",
                                     (int(adopt_visit),),
                                 ).fetchone()
@@ -16543,7 +16566,20 @@ class SessionStore:
                                     int(adopt_row["followup_reminder_id"] or 0)
                                     if adopt_row is not None else 0
                                 )
-                                if adopt_reminder and reminder_due:
+                                # 就诊已链接另一条待就诊预约时，这条
+                                # 提醒属于那条复诊计划：本预约改期不能
+                                # 把它劫持过来（否则取消原预约后幽灵
+                                # 提醒继续触发，第一百零四轮 [10]）
+                                adopt_linked = (
+                                    int(adopt_row["followup_appointment_id"] or 0)
+                                    if adopt_row is not None else 0
+                                )
+                                if (
+                                    adopt_reminder
+                                    and reminder_due
+                                    and adopt_linked
+                                    in (0, int(appointment_id))
+                                ):
                                     adopt_day = str(
                                         normalized["scheduled_at"] or ""
                                     )[:10]
@@ -18749,13 +18785,17 @@ class SessionStore:
         reminder_id: Any,
         appointment_id: int,
         normalized: Dict[str, Any],
+        old_appointment_id: Any = 0,
     ) -> None:
-        """把就诊仍链接的脱钩待办提醒接管到被保留的自动预约上。
+        """把就诊仍链接的待办提醒接管到被保留的自动预约上。
 
         复诊日期改到与该预约同日时预约被保留，但主
         `_drop_visit_followup_locked` 仍会把就诊链接的脱钩提醒当旧
         复诊安排删除，回写又只能取预约自带的提醒，导致
         「已安排复诊」却没有待办提醒（第一百零三轮 [8]）。
+        提醒仍挂在就诊旧链接预约上时（正常排程状态），该预约会被
+        主 _drop 连同 pending 提醒一起删除：先脱钩再接管
+        （第一百零四轮 [9]）。
         调用方须已持有写锁与事务（update_visit_record 内）。
         """
         reminder = _safe_db_id(reminder_id)
@@ -18766,12 +18806,37 @@ class SessionStore:
             "SELECT done, appointment_id FROM reminders WHERE id = ?",
             (int(reminder),),
         ).fetchone()
-        if (
-            reminder_row is None
-            or int(reminder_row["done"] or 0)
-            or int(reminder_row["appointment_id"] or 0) != 0
-        ):
+        if reminder_row is None or int(reminder_row["done"] or 0):
             return
+        attached = int(reminder_row["appointment_id"] or 0)
+        if attached:
+            # 只处理仍挂在「就诊旧链接预约」上的提醒，且该预约确实
+            # 会被主 _drop 删除（upcoming、归属本就诊、日期不是
+            # 保留日期）；其它情况提醒保持原样，不能挪走别人的待办
+            old_appointment = _safe_db_id(old_appointment_id)
+            keep_day = str(
+                normalized.get("next_followup_date") or ""
+            )[:10]
+            if not old_appointment or attached != int(old_appointment):
+                return
+            old_row = self._conn.execute(
+                "SELECT status, scheduled_at, owner_visit_id"
+                " FROM appointments WHERE id = ?",
+                (int(old_appointment),),
+            ).fetchone()
+            if (
+                old_row is None
+                or str(old_row["status"] or "") != "upcoming"
+                or int(old_row["owner_visit_id"] or 0)
+                not in (0, int(visit_id))
+                or str(old_row["scheduled_at"] or "")[:10] == keep_day
+            ):
+                return
+            self._conn.execute(
+                "UPDATE reminders SET appointment_id = 0, updated_at = ?"
+                " WHERE id = ? AND done = 0 AND appointment_id = ?",
+                (self._now(), int(reminder), int(attached)),
+            )
         existing_pending = self._conn.execute(
             "SELECT 1 FROM reminders WHERE done = 0 AND appointment_id = ?"
             " LIMIT 1",
@@ -19124,6 +19189,7 @@ class SessionStore:
                         old_row["followup_reminder_id"],
                         kept_extra_ids[0],
                         normalized,
+                        old_appointment_id=old_row["followup_appointment_id"],
                     )
                 kept = self._drop_visit_followup_locked(
                     int(visit_id),

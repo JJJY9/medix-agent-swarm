@@ -5398,12 +5398,14 @@ async function openSession(id) {
           restoreContext: deepLinkOpen || !sameSession,
         }
     );
-    restoreInflightForOpenSession(id, data.messages || []);
+    const inflightRestored = restoreInflightForOpenSession(id, data.messages || []);
     if (deepLinkOpen) {
       consumeDeepLink();
       contextUserEdited = false;
     }
-    setVitals('idle', '历史会诊');
+    // 放回输入框的在途主诉提示不能被「历史会诊」覆盖
+    // （第一百零四轮 [18]）
+    if (!inflightRestored) setVitals('idle', '历史会诊');
     els.input.focus();
     return true;
   } catch (err) {
@@ -21039,17 +21041,22 @@ async function restoreCurrentSession(
       }
     }
     inflightReconciledThisRestore = inflightReconciled;
+    let inflightRestored = false;
     if (restorePending && expectedSession && !sendInFlight) {
       // 深链/刷新打开会话时同样恢复备份槽里属于本会话的未落库
       // 主诉，与 openSession 口径一致（第九十六轮 [10]）；
       // send 排队等待恢复时主槽是它刚写入的本轮问题，不能当成
       // 「上次中断的主诉」再注入输入框（第九十七轮 [6]）
-      restoreInflightForOpenSession(expectedSession, messages);
+      const restoredInflight = restoreInflightForOpenSession(expectedSession, messages);
+      inflightRestored = Boolean(restoredInflight);
     }
     if (deepLinkedSession) consumeDeepLink();
     contextUserEdited = false;
     if (pendingReset) {
       setVitals('warn', '原会诊已停止，下一轮提问将开启新会话');
+    } else if (inflightRestored) {
+      // 注入提示不能被「已恢复上次会诊」覆盖（第一百零四轮 [18]）
+      setVitals('warn', '上次中断的主诉已放回输入框，请确认后发送');
     } else if (inflightReconciled) {
       setVitals('idle', '上次会诊已完成，答复已载入');
     } else {
@@ -23492,6 +23499,30 @@ function restoreInflightForOpenSession(targetId, messages) {
     }
   }
   if (persisted) {
+    // 已落库：不仅删记录，还要把系统放回输入框的同一主诉剥离并
+    // 登记已落库标记，否则回车会再次提交已答复的问题、重复计费
+    // （第一百零四轮 [13]）
+    notePersistedInflight(question, targetId);
+    if (
+      inflightRestoredOwnerSession
+      && inflightRestoredOwnerSession === targetId
+      && inflightInputMatchesRestored(question)
+    ) {
+      const remaining = stripInflightQuestion(els.input.value, question);
+      if (remaining !== null) {
+        els.input.value = remaining;
+        autoGrow();
+        if (remaining.trim()) {
+          try {
+            safeSessionSet(DRAFT_KEY, remaining);
+          } catch {
+            // 隐私模式忽略
+          }
+        } else {
+          clearDraft();
+        }
+      }
+    }
     removeInflightRecord(record);
     return;
   }
@@ -23511,6 +23542,7 @@ function restoreInflightForOpenSession(targetId, messages) {
   inflightRestoredBaseline = baseline;
   inflightRestoredKeyName = recordKey;
   setVitals('warn', '上次中断的主诉已放回输入框，请确认后发送');
+  return true;
 }
 
 function restoreInflightQuestion() {
