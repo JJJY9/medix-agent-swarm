@@ -1356,7 +1356,7 @@ _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
     r"(?:stopped|discontinued|quit|ceased)\s+"
     r"(?:(?:\d+\s*)?days?\s+ago"
-    r"|(?:1|a|an|one)\s*weeks?\s+ago"
+    r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago"
     r"|yesterday|today)",
     re.IGNORECASE,
 )
@@ -1381,8 +1381,9 @@ _STOPPED_USE_PREFIX_EN = re.compile(
 #: 英文近期停药（天/周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_CONTEXT_EN = re.compile(
     r"(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
-    r"(?:(?:\d+|a|an|one|two|few)\s+days?\s+ago"
-    r"|(?:1|a|an|one)\s*weeks?\s+ago)"
+    r"(?:(?:\d+|a|an|one|two|three|four|five|six|seven|"
+    r"few|several|many|a\s+few)\s+days?\s+ago"
+    r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today)",
     re.IGNORECASE,
@@ -1560,6 +1561,33 @@ _ENGLISH_NOW_OBJ_RE = re.compile(
     r"(?:(?:my|his|her|their|the)\s+)?([A-Za-z][A-Za-z\-]{2,})\b)",
     re.IGNORECASE,
 )
+
+
+def _english_resumed_false_positive(
+    text: str, alias_lower: str
+) -> bool:
+    """resumed 用法是否其实不是本药续用。
+
+    「never resumed it」是否定；「resumed aspirin instead」宾语是另一种
+    药（第一百一十二轮 [11]）。
+    """
+    raw = str(text or "")
+    if re.search(
+        r"(?:never|not|n't)\s+(?:\w+\s+){0,3}resumed\b",
+        raw,
+        re.IGNORECASE,
+    ):
+        return True
+    for match in re.finditer(
+        r"resumed\s+([A-Za-z][A-Za-z-]*)", raw, re.IGNORECASE
+    ):
+        obj = match.group(1).strip().lower()
+        if obj in ("it", "taking", "using", "the", "this", "again"):
+            continue
+        if alias_lower.lower() in obj or obj in alias_lower.lower():
+            continue
+        return True
+    return False
 
 
 def _english_restart_names_other(
@@ -1742,6 +1770,9 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or (
                     _RESTART_USE_SUFFIX_EN.search(en_suffix)
                     and not _english_restart_names_other(
+                        en_suffix, alias_lower
+                    )
+                    and not _english_resumed_false_positive(
                         en_suffix, alias_lower
                     )
                 )

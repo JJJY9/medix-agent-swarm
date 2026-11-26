@@ -9169,6 +9169,42 @@ class SessionStore:
                             return _claim(
                                 edited_soft[0], mark_moved=True
                             )
+                    if candidates:
+                        early_sole = min(candidates)
+                        if (
+                            soft_where is not None
+                            and _soft_matches(early_sole)
+                            and int(backup_soft_size or 0) <= 1
+                            and _candidate_diff_claimable(early_sole)
+                            and not _content_owned_by_other(early_sole)
+                            and not _content_prefers_sibling(early_sole)
+                            and not (
+                                not _tail_matches(early_sole)
+                                and _tail_prefers_sibling(early_sole)
+                            )
+                            and not (
+                                not _tail_matches(early_sole)
+                                and _tail_prefers_sibling(
+                                    early_sole, cross_profile=True
+                                )
+                            )
+                        ):
+                            # 可识别归属的改期行先于补插预算认领：否则
+                            # 原始主键较小时会先补插一份编辑前副本
+                            # （第一百一十二轮 [6]）
+                            return _claim(early_sole, mark_moved=True)
+                        if (
+                            table == "symptoms"
+                            and _candidate_edited(early_sole)
+                            and _candidate_content_matches_backup(early_sole)
+                            and _tail_match_score(early_sole, raw_id) >= 1
+                            and not _content_owned_by_other(early_sole)
+                            and not _content_prefers_sibling(early_sole)
+                        ):
+                            # 无 id 症状行：同秒同内容只有 severity/note
+                            # 区分，编辑 severity 的存活行同样先于补插
+                            # 预算认领（第一百一十二轮 [13]）
+                            return _claim(early_sole, mark_moved=True)
                     if inserted < missing and not anchor_full:
                         # 该锚点本地行数已够：预算不能被同组另一锚点
                         # 的缺行消耗后为已齐全的锚点再插一条重复读数
@@ -9753,6 +9789,29 @@ class SessionStore:
             # 备份记录：它是那条记录改名/改挂后的存活版本，本行按
             # 被删记录补插，不能抢走兄弟行（第八十三轮 [4]）
             return _ambiguous()
+        if (
+            raw_id <= 0
+            and _candidate_edited(sole)
+            and _candidate_content_matches_backup(sole)
+            and (
+                (
+                    (tail_where is None or _tail_matches(sole))
+                    and int(local_group_size or 0)
+                    >= int(backup_group_size or 0)
+                )
+                # 症状表同秒同内容行只有 severity/note 区分：仍有尾
+                # 字段命中本行时，被编辑的另一尾字段不说明候选是
+                # 兄弟记录（第一百一十二轮 [13]）
+                or (
+                    table == "symptoms"
+                    and _tail_match_score(sole, raw_id) >= 1
+                )
+            )
+        ):
+            # 无 id 行在组内无缺行、候选被编辑且内容仍属本行：
+            # 是改尾字段后的存活版本，重复导入保持幂等
+            # （第一百一十二轮 [13]）
+            return _claim(sole)
         if (
             raw_id <= 0
             and (backup_group_size > 1 or not _candidate_edited(sole))
@@ -14471,7 +14530,7 @@ class SessionStore:
                         old_linked = int(
                             visit_row["followup_appointment_id"] or 0
                         )
-                        dup_owned = self._conn.execute(
+                        dup_rows = self._conn.execute(
                             "SELECT id, note FROM appointments"
                             " WHERE id != ? AND status = 'upcoming'"
                             "   AND profile = ?"
@@ -14483,21 +14542,40 @@ class SessionStore:
                                 int(visit_id),
                                 f"%由就诊记录 #{int(visit_id)} 自动创建%",
                             ),
-                        ).fetchone()
-                        if (
-                            dup_owned is not None
-                            and int(dup_owned["id"]) != old_linked
-                        ):
+                        ).fetchall()
+                        for dup_owned in dup_rows:
+                            if int(dup_owned["id"]) == old_linked:
+                                continue
                             # 先恢复旧备份留下的半挂接自动预约：与本次
                             # 写入的复诊计划重复，剥掉归属并解除其待办
                             # 提醒，保证同一就诊最多一条自动预约
-                            # （第一百一十一轮 [10]）
+                            # （第一百一十一轮 [10]）；备份里可能残留
+                            # 多条标记型遗留预约，需全部清理
+                            # （第一百一十二轮 [14]）
                             dup_id = int(dup_owned["id"])
+                            doomed = [
+                                int(row["id"])
+                                for row in self._conn.execute(
+                                    "SELECT id FROM reminders"
+                                    " WHERE done = 0 AND appointment_id = ?",
+                                    (dup_id,),
+                                ).fetchall()
+                            ]
                             self._conn.execute(
                                 "DELETE FROM reminders"
                                 " WHERE done = 0 AND appointment_id = ?",
                                 (dup_id,),
                             )
+                            for doomed_id in doomed:
+                                # 被删提醒若仍被其它就诊引用（遗留共享
+                                # 链接），同步清空引用避免悬空
+                                # （第一百一十二轮 [12]）
+                                self._conn.execute(
+                                    "UPDATE visit_records"
+                                    " SET followup_reminder_id = 0"
+                                    " WHERE followup_reminder_id = ?",
+                                    (doomed_id,),
+                                )
                             self._conn.execute(
                                 "UPDATE appointments SET owner_visit_id = 0,"
                                 " note = ?, updated_at = ? WHERE id = ?",
