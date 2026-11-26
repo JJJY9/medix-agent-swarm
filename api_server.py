@@ -5636,7 +5636,11 @@ _STOP_REMAINDER_TIME_RE = re.compile(
 _STOP_RECENT_DURATION_RE = re.compile(
     r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:天|日)"
     r"|几天|几日|几周|"
-    r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?)"
+    r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?"
+    # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
+    r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
+    r"上周|上星期|上周末|"
+    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
 )
 #: 停药标注里的远期时长（月/年级）：药物已停用，退出检查名单
 _STOP_LONG_DURATION_RE = re.compile(
@@ -5878,7 +5882,12 @@ def _context_medication_names(context: Any) -> List[str]:
                 head_pieces[-1]
             ):
                 head_pieces.pop()
-            if head_pieces:
+            # 「华法林（停用三天）」是天/周级近期停药：保留药名，
+            # 与聊天预检同口径（第一百一十六轮 [11]）
+            inline_recent = _stop_annotation_is_recent(
+                inline.group(0)
+            )
+            if head_pieces and not inline_recent:
                 head_pieces.pop()
             keep_pieces = head_pieces
             keep_pieces += [

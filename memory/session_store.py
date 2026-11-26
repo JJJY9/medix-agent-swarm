@@ -8722,6 +8722,21 @@ class SessionStore:
                             # done/note 被静默丢弃，且重复导入会因
                             # 排序变化补插重复行（第一百零五轮 [9]）
                             return _ambiguous()
+                        if _candidate_from_other_backup(sole) and not (
+                            # 继承备份：同一记录在另一台设备导入后再导出，
+                            # 软字段命中且（确有本地编辑 或 内容与尾字段
+                            # 全同）时仍是本行；真正的另一来源记录软字段
+                            # 不符（第一百一十六轮 [3] 与 round110/111）
+                            _soft_matches(sole)
+                            and (
+                                _candidate_edited(sole)
+                                or (
+                                    _candidate_content_matches_backup(sole)
+                                    and _tail_matches(sole)
+                                )
+                            )
+                        ):
+                            return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
             # 改挂到其他成员并编辑内容列、且主键漂移时，身份组里
@@ -9552,7 +9567,7 @@ class SessionStore:
                 # 唯一时才能认领；同秒同名孪生仍不可区分。本地存活
                 # 行数已不少于备份行数时，说明每条备份行都有存活版本
                 # （只是被编辑过），应继续认领而不是补回旧版本
-                if (
+                if soft and (
                     backup_group_size <= 1
                     or backup_soft_size == 1
                     or local_group_size >= backup_group_size
@@ -9796,10 +9811,19 @@ class SessionStore:
                 and soft_where is not None
             ):
                 soft_fragment, soft_extra = soft_where
+                soft_count_clause = (
+                    f" WHERE {where} AND {soft_fragment}"
+                )
+                soft_count_params = [*values, *soft_extra]
+                if scope_profile:
+                    # 跨成员同秒同标题行不能把本档案孪生组误判为
+                    # 已满（第一百一十六轮 [9]）
+                    soft_count_clause += " AND profile = ?"
+                    soft_count_params.append(scope_profile)
                 soft_count_row = self._conn.execute(
                     f"SELECT COUNT(*) AS n FROM {table}"
-                    f" WHERE {where} AND {soft_fragment}",
-                    (*values, *soft_extra),
+                    f"{soft_count_clause}",
+                    tuple(soft_count_params),
                 ).fetchone()
                 soft_full = int(
                     soft_count_row["n"] if soft_count_row else 0
@@ -9893,6 +9917,7 @@ class SessionStore:
                     if candidate not in moved
                     and candidate not in matched
                     and _soft_matches(candidate)
+                    and _candidate_same_profile(candidate)
                     # 内容与备份不符且无编辑证据的行是另一条记录/
                     # 上一份备份的存活版本，兜底认领同样要排除
                     # （第一百零六轮 [3]，否则备份行被静默吞掉）；
@@ -12028,13 +12053,14 @@ class SessionStore:
                             if appointment_id is not None else None
                         )
                     else:
-                        duplicate = self._conn.execute(
+                        duplicate = None
+                        duplicate_rows = self._conn.execute(
                             """
-                            SELECT id FROM appointments
+                            SELECT id, note FROM appointments
                              WHERE profile = ? AND title = ?
                                AND scheduled_at = ? AND department = ?
                                AND doctor = ? AND location = ?
-                               AND status = ? AND note = ?
+                               AND status = ?
                             """,
                             (
                                 normalized["profile"],
@@ -12044,9 +12070,28 @@ class SessionStore:
                                 normalized["doctor"],
                                 normalized["location"],
                                 normalized["status"],
-                                normalized["note"],
                             ),
-                        ).fetchone()
+                        ).fetchall()
+
+                        def _marker_normalized_note(value: Any) -> str:
+                            # 自动归属标记里的就诊号会被导入改写成本地
+                            # id：判重前归一为固定占位符
+                            # （第一百一十六轮 [10]）
+                            return re.sub(
+                                r"由就诊记录 #\d+ 自动创建",
+                                "由就诊记录 #自动创建",
+                                str(value or ""),
+                            )
+
+                        wanted_note = _marker_normalized_note(
+                            normalized["note"]
+                        )
+                        for dup_row in duplicate_rows:
+                            if _marker_normalized_note(
+                                dup_row["note"]
+                            ) == wanted_note:
+                                duplicate = {"id": int(dup_row["id"])}
+                                break
                     if duplicate is not None:
                         appointment_id = int(duplicate["id"])
                     else:
@@ -15085,6 +15130,11 @@ class SessionStore:
             for appt_id in raw_appointment_id_map.values()
             if int(appt_id) > 0
         }
+        imported_reminder_ids = {
+            int(reminder_row_id)
+            for reminder_row_id in raw_reminder_id_map.values()
+            if int(reminder_row_id) > 0
+        }
         if target_appointment_ids:
             with self._lock, self._conn:
                 marker_ids = sorted(target_appointment_ids)
@@ -15113,6 +15163,11 @@ class SessionStore:
                     if marker_match is None:
                         continue
                     marker_raw_vid = int(marker_match.group(1))
+                    if marker_raw_vid not in visit_raw_local_map:
+                        # 备份没有带来这条就诊记录：标记可能来自更早
+                        # 恢复的旧计划，不能由伪造/陈旧标记驱动删除
+                        # （第一百一十六轮 [13]）
+                        continue
                     if marker_raw_vid not in marker_vid_cache:
                         marker_vid_cache[marker_raw_vid] = int(
                             visit_raw_local_map.get(
@@ -15198,19 +15253,28 @@ class SessionStore:
                                     " AND appointment_id = ?",
                                     (dup_id,),
                                 ).fetchall()
+                                # 只删除本次导入带来的待办：导入前既有
+                                # 的本地提醒不能被备份删掉
+                                # （第一百一十六轮 [13]）
+                                if int(row["id"]) in imported_reminder_ids
                             ]
-                            self._conn.execute(
-                                "DELETE FROM reminders"
-                                " WHERE done = 0 AND appointment_id = ?",
-                                (dup_id,),
-                            )
-                            for doomed_id in doomed:
-                                self._conn.execute(
-                                    "UPDATE visit_records"
-                                    " SET followup_reminder_id = 0"
-                                    " WHERE followup_reminder_id = ?",
-                                    (doomed_id,),
+                            if doomed:
+                                doomed_places = ",".join(
+                                    "?" for _ in doomed
                                 )
+                                self._conn.execute(
+                                    f"DELETE FROM reminders"
+                                    f" WHERE done = 0"
+                                    f" AND id IN ({doomed_places})",
+                                    tuple(doomed),
+                                )
+                                for doomed_id in doomed:
+                                    self._conn.execute(
+                                        "UPDATE visit_records"
+                                        " SET followup_reminder_id = 0"
+                                        " WHERE followup_reminder_id = ?",
+                                        (doomed_id,),
+                                    )
                         self._conn.execute(
                             "UPDATE appointments SET owner_visit_id = 0,"
                             " note = ?, updated_at = ? WHERE id = ?",
