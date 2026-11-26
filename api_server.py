@@ -73,6 +73,7 @@ from core.auth import get_access_token, is_authorized, request_token
 from core.retention import get_auto_archive_days
 from core.triage import detect_red_flags
 from core.medication_safety import (
+    _strip_allergy_statements,
     _switch_target_is_known_drug,
     check_medication_safety,
 )
@@ -5466,19 +5467,32 @@ def _evaluate_medication_safety(
     # 「正在使用的药物」里写的过敏陈述（对青霉素过敏）也要参与
     # 过敏检查，否则家庭总览与健康提示结论互相矛盾
     # （第一百零五轮 [12]）
-    drug_text = "、".join(names)
+    # 用「；」保留档案分句边界：家属分句（我爸对青霉素过敏）不能
+    # 与本人分句合并而吞掉过敏陈述（第一百一十一轮 [11]）。
+    # 年龄/性别影响患儿语义：成年档案的「我女儿…」不再当本人
+    # （第一百一十一轮 [16]）
+    drug_text = "；".join(names)
     safety = check_medication_safety(
         drug_text,
         {
             "medications": drug_text,
             "allergies": "；".join(allergy_parts),
+            "age": context_age,
+            "sex": context_sex,
         },
     )
+    # 纯过敏陈述（对阿司匹林过敏）不是在用药物：化验/慢病通道
+    # 用过滤后的药名，避免「在用药物包含 X」的虚假提示
+    # （第一百一十一轮 [15]）
+    channel_names = [
+        name for name in names
+        if _strip_allergy_statements(str(name or "")).strip()
+    ]
     lab_alerts = check_medication_lab_safety(
-        names, lab_rows, {"age": context_age, "sex": context_sex}
+        channel_names, lab_rows, {"age": context_age, "sex": context_sex}
     ).get("alerts") or []
     condition_alerts = check_condition_drug_safety(
-        names, condition_rows
+        channel_names, condition_rows
     ).get("alerts") or []
     if lab_alerts or condition_alerts:
         # 化验与慢病提示在前，既有过敏/相互作用提示全部保留
@@ -14875,10 +14889,11 @@ async def family_overview(days: int = 7):
                 bucket.append(medication_name)
     medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
     for profile, med_names in safety_names_by_profile.items():
+        # 「；」保留档案分句边界（第一百一十一轮 [11]）
         base_safety = check_medication_safety(
-            "、".join(med_names),
+            "；".join(med_names),
             {
-                "medications": "、".join(med_names),
+                "medications": "；".join(med_names),
                 # 与 _evaluate_medication_safety/健康提示同口径用「；」：
                 # 补充过敏史里的「无药物过敏/否认X过敏」只能否定它自己
                 # 那一句，不能吞掉前面的结构化过敏原（第七十八轮）
@@ -14890,13 +14905,19 @@ async def family_overview(days: int = 7):
             },
         )
         base_alerts = base_safety.get("alerts") or []
+        # 纯过敏陈述不是在用药物，化验/慢病通道剔除
+        # （第一百一十一轮 [15]）
+        channel_names = [
+            name for name in med_names
+            if _strip_allergy_statements(str(name or "")).strip()
+        ]
         lab_safety_alerts = check_medication_lab_safety(
-            med_names,
+            channel_names,
             labs_history_by_profile.get(profile, []),
             contexts.get(profile) or {},
         ).get("alerts") or []
         condition_safety_alerts = check_condition_drug_safety(
-            med_names,
+            channel_names,
             condition_names_by_profile.get(profile, []),
         ).get("alerts") or []
         combined = base_alerts + lab_safety_alerts + condition_safety_alerts

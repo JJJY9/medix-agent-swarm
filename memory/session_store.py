@@ -185,6 +185,13 @@ IMPORT_CONTENT_COLUMNS = {
     "reminders": ("due_at",),
 }
 
+#: 内容列中属于「同一记录的常规编辑」的数值/文本列：改剂量/频次/
+#: 剂次不说明候选是被删兄弟行的存活版本（第一百一十一轮 [3]）
+_EDITABLE_CONTENT_COLUMNS = {
+    "medications": {"dose", "frequency"},
+    "vaccinations": {"dose_number"},
+    "care_items": {"interval_days"},
+}
 #: 各表参与孪生归属判断的「尾字段」：内容列相同、仅这些字段不同的
 #: 同秒记录（如一条在用/一条停药）恢复时要按尾字段区分归属
 IMPORT_TAIL_COLUMNS = {
@@ -3190,11 +3197,19 @@ class SessionStore:
             return {}
         if not isinstance(data, dict):
             return {}
-        return {
-            str(key): str(value)
-            for key, value in data.items()
-            if str(key).isdigit() and value
-        }
+        result: Dict[str, List[str]] = {}
+        for key, value in data.items():
+            if not str(key).isdigit() or not value:
+                continue
+            if isinstance(value, (list, tuple)):
+                origins = [
+                    str(part) for part in value if part
+                ]
+            else:
+                origins = [str(value)]
+            if origins:
+                result[str(key)] = origins
+        return result
 
     def _set_import_origin_map(
         self, table: str, mapping: Dict[str, str]
@@ -6785,7 +6800,11 @@ class SessionStore:
             if not origin_map:
                 return False
             origin = origin_map.get(str(candidate))
-            return bool(origin) and origin != provenance.get("source")
+            if not origin:
+                return False
+            if isinstance(origin, str):
+                return origin != provenance.get("source")
+            return provenance.get("source") not in origin
 
         def _candidate_owned_by_profile_sibling(
             candidate: int, candidate_profile: str
@@ -6912,8 +6931,15 @@ class SessionStore:
                     kinds.add("temporal")
                 elif name.startswith("value"):
                     kinds.add("value")
+                elif name in _EDITABLE_CONTENT_COLUMNS.get(table, ()):
+                    # 剂量/频次/剂次的常规编辑（第一百一十一轮 [3]）
+                    kinds.add("editable")
                 else:
                     return False
+            if "editable" in kinds and int(backup_soft_size or 0) > 1:
+                # 同秒同软字段（同名不同剂量）的孪生：剂量编辑同样
+                # 无法区分归属，按被删记录补插（round37 契约）
+                return False
             return len(kinds) <= 1
 
         def _candidate_diff_claimable_for_sibling(
@@ -9150,7 +9176,20 @@ class SessionStore:
                         return _ambiguous()
                     sole = min(candidates)
                     if (
-                        _candidate_content_matches_backup(sole)
+                        (
+                            _candidate_content_matches_backup(sole)
+                            # 改期后的存活行差异只在可编辑列且软字段
+                            # 能区分孪生时，补足缺行后应认领而不是补插
+                            # 旧副本（第一百一十一轮 [8]）；同软字段
+                            # 孪生无法区分归属，保持宁重复勿丢
+                            # （round48/53/102 契约）
+                            or (
+                                soft_where is not None
+                                and _soft_matches(sole)
+                                and int(backup_soft_size or 0) <= 1
+                                and _candidate_diff_claimable(sole)
+                            )
+                        )
                         and not _content_owned_by_other(sole)
                         and not _content_prefers_sibling(sole)
                         and not (
@@ -14240,8 +14279,12 @@ class SessionStore:
                             local_pending = self._conn.execute(
                                 "SELECT id FROM reminders"
                                 " WHERE appointment_id = ? AND done = 0"
+                                " AND id != ?"
                                 " ORDER BY id LIMIT 1",
-                                (int(local_link),),
+                                (
+                                    int(local_link),
+                                    int(followup_reminder_id),
+                                ),
                             ).fetchone()
                             if local_pending is not None or not appt_usable:
                                 # 本地已有该预约的待办，或预约已取消/
@@ -14424,6 +14467,50 @@ class SessionStore:
                                 restored_reminder = old_reminder
                     elif not restored_reminder and old_usable:
                         restored_reminder = old_reminder
+                    if followup_appointment_id and visit_row is not None:
+                        old_linked = int(
+                            visit_row["followup_appointment_id"] or 0
+                        )
+                        dup_owned = self._conn.execute(
+                            "SELECT id, note FROM appointments"
+                            " WHERE id != ? AND status = 'upcoming'"
+                            "   AND profile = ?"
+                            "   AND (owner_visit_id = ?"
+                            "     OR (owner_visit_id = 0 AND note LIKE ?))",
+                            (
+                                int(followup_appointment_id),
+                                visit_row["profile"],
+                                int(visit_id),
+                                f"%由就诊记录 #{int(visit_id)} 自动创建%",
+                            ),
+                        ).fetchone()
+                        if (
+                            dup_owned is not None
+                            and int(dup_owned["id"]) != old_linked
+                        ):
+                            # 先恢复旧备份留下的半挂接自动预约：与本次
+                            # 写入的复诊计划重复，剥掉归属并解除其待办
+                            # 提醒，保证同一就诊最多一条自动预约
+                            # （第一百一十一轮 [10]）
+                            dup_id = int(dup_owned["id"])
+                            self._conn.execute(
+                                "DELETE FROM reminders"
+                                " WHERE done = 0 AND appointment_id = ?",
+                                (dup_id,),
+                            )
+                            self._conn.execute(
+                                "UPDATE appointments SET owner_visit_id = 0,"
+                                " note = ?, updated_at = ? WHERE id = ?",
+                                (
+                                    re.sub(
+                                        r"由就诊记录 #\d+ 自动创建",
+                                        "",
+                                        str(dup_owned["note"] or ""),
+                                    ).strip()[:300],
+                                    now,
+                                    dup_id,
+                                ),
+                            )
                     self._conn.execute(
                         """
                         UPDATE visit_records
@@ -14742,24 +14829,38 @@ class SessionStore:
                     }
                 except sqlite3.Error:
                     continue
-                origin_map = {
-                    str(row_id): origin
-                    for row_id, origin in import_origins.get(
-                        import_table, {}
-                    ).items()
-                    if str(row_id).isdigit()
-                    and int(row_id) in current_ids
-                }
+                origin_map: Dict[str, List[str]] = {}
+                for row_id, origin_list in import_origins.get(
+                    import_table, {}
+                ).items():
+                    if not str(row_id).isdigit():
+                        continue
+                    if int(row_id) not in current_ids:
+                        continue
+                    if isinstance(origin_list, str):
+                        origin_list = [origin_list]
+                    cleaned = [
+                        str(origin) for origin in origin_list if origin
+                    ]
+                    if cleaned:
+                        origin_map[str(row_id)] = cleaned
                 claimed_here = (
                     (self._import_provenance or {}).get("claimed") or {}
                 )
                 for claimed_id in claimed_here.get(import_table, set()):
                     if int(claimed_id) in current_ids:
-                        origin_map[str(claimed_id)] = backup_source
+                        # 一行可同时属于多份备份：认领只追加来源，
+                        # 不替换原创建来源，任一包含该记录的备份恢复
+                        # 时都能正常认领（第一百一十一轮 [4][13]）
+                        merged = origin_map.setdefault(
+                            str(claimed_id), []
+                        )
+                        if backup_source not in merged:
+                            merged.append(backup_source)
                 for row_id in current_ids - pre_import_ids.get(
                     import_table, set()
                 ):
-                    origin_map[str(row_id)] = backup_source
+                    origin_map[str(row_id)] = [backup_source]
                 self._set_import_origin_map(import_table, origin_map)
         self._import_provenance = None
 
@@ -19682,6 +19783,57 @@ class SessionStore:
                             " AND appointment_id = ? ORDER BY id LIMIT 1",
                             (int(extra_row["id"]),),
                         ).fetchone()
+                        if extra_reminder is None:
+                            # 接管因提醒被其它就诊共享而失败：保留的
+                            # 自动预约不能「已安排复诊却没有待办」，
+                            # 新建一条预约专用复诊提醒
+                            # （第一百一十一轮 [9]）
+                            appt_day = str(
+                                normalized["next_followup_date"] or ""
+                            )[:10]
+                            due_day = appt_day
+                            try:
+                                due_day = (
+                                    datetime.strptime(
+                                        appt_day, "%Y-%m-%d"
+                                    ).date() - timedelta(days=1)
+                                ).strftime("%Y-%m-%d")
+                            except ValueError:
+                                due_day = appt_day
+                            if due_day and str(now)[:10] > due_day:
+                                due_day = str(now)[:10]
+                            reminder_title = (
+                                "复诊："
+                                + str(
+                                    normalized.get("diagnosis")
+                                    or normalized.get("department")
+                                    or "复诊"
+                                )
+                            )[:120]
+                            inserted = self._conn.execute(
+                                "INSERT INTO reminders(title, note,"
+                                " due_at, session_id, profile,"
+                                " advance_days, repeat_days, repeat_until,"
+                                " repeats_from, medication_id,"
+                                " vaccination_id, appointment_id, done,"
+                                " created_at, updated_at)"
+                                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                                " ?, ?, ?, ?)",
+                                (
+                                    reminder_title,
+                                    f"复诊 {appt_day}"[:300],
+                                    due_day or appt_day,
+                                    "",
+                                    normalized["profile"],
+                                    0, 0, "", 0, 0, 0,
+                                    int(extra_row["id"]), 0,
+                                    now, now,
+                                ),
+                            )
+                            if inserted.lastrowid:
+                                extra_reminder = {
+                                    "id": int(inserted.lastrowid)
+                                }
                         self._conn.execute(
                             "UPDATE visit_records SET"
                             " followup_appointment_id = ?,"

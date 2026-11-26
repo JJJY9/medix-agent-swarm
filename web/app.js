@@ -5271,6 +5271,10 @@ function renderStoredMessages(messages, activeSessionId = sessionId, profile = '
   }
   if (!options.skipProfile) {
     setActiveProfile(profile || '');
+  } else if (activeProfileName) {
+    // 跳过档案应用（短期记忆回退的档案未知）：空快照可能已把
+    // 下拉重置为空，与内存中的选择保持同步（第一百一十一轮 [12]）
+    els.profileSelect.value = activeProfileName;
   }
 
   scrollThreadToBottom(true);
@@ -20909,10 +20913,10 @@ async function restoreCurrentSession(
       messages, expectedSession, data.profile || '',
       {
         restoreContext: useDeepLinkContext ? true : false,
-        skipContext: pendingReset,
-        // 短期记忆回退（消息尚未落库）的 profile 恒为空：那是
-        // 「档案未知」，不能当作「会话未绑定」清空用户已选档案
-        // （第一百一十轮 [14]）
+        // 短期记忆回退的 profile 与 metadata 都是空（消息尚未落库）：
+        // 那是「档案未知」，不能当作「会话档案为空」清空用户档案
+        // 与补充信息（第一百一十轮 [14]、第一百一十一轮 [12]）
+        skipContext: pendingReset || data.source === 'memory',
         skipProfile: pendingReset || data.source === 'memory',
       }
     );
@@ -22500,7 +22504,7 @@ async function savePatientProfile() {
   if (readProfiles()[name] && !window.confirm(`档案「${name}」已存在，是否覆盖？`)) {
     return;
   }
-
+  const opSeq = profileSelectionSeq;
   try {
     const res = await fetch('/api/profiles', {
       method: 'POST',
@@ -22512,6 +22516,13 @@ async function savePatientProfile() {
       throw new Error(data.detail || `服务返回 ${res.status}`);
     }
     if (data.profile) profilesCache[data.profile.name] = data.profile;
+    if (profileSelectionSeq !== opSeq) {
+      // 请求期间用户已切换档案：完成回调不能覆盖新选择
+      // （第一百一十一轮 [17]）
+      loadFamilyOverview();
+      loadHomeGlance();
+      return;
+    }
     refreshProfileOptions(name);
     // 「保存当前」会切换当前档案：旧会话仍绑定原档案，必须换新会话
     void detachSessionForProfileChange();
@@ -22537,6 +22548,7 @@ async function renamePatientProfile() {
     .replace(/\s+/g, ' ')
     .trim();
   if (!nextName || nextName === name) return;
+  const opSeq = profileSelectionSeq;
 
   try {
     const res = await fetch(
@@ -22557,6 +22569,11 @@ async function renamePatientProfile() {
     updateInflightQuestionProfile(name, data.name);
     updateDraftProfile(name, data.name);
     await initProfiles();
+    if (profileSelectionSeq !== opSeq) {
+      // 请求期间用户已切换档案：不能用旧操作的完成回调覆盖
+      // （第一百一十一轮 [17]）
+      return;
+    }
     setActiveProfile(data.name);
     // 家庭概览缓存仍保留旧档案名，重命名后立即刷新
     await loadFamilyOverview();
@@ -22578,6 +22595,7 @@ async function deletePatientProfile() {
     return;
   }
   if (!window.confirm(`删除常用档案「${name}」？`)) return;
+  const opSeq = profileSelectionSeq;
 
   try {
     const res = await fetch(`/api/profiles/${encodeURIComponent(name)}`, {
@@ -22602,6 +22620,14 @@ async function deletePatientProfile() {
     // 删除档案后旧主诉不再属于任何患者：清理在途记录
     updateInflightQuestionProfile(name, '');
     updateDraftProfile(name, '');
+    if (profileSelectionSeq !== opSeq) {
+      // 请求期间用户已切换档案：只刷新列表，保留新选择
+      // （第一百一十一轮 [17]）
+      refreshProfileOptions(els.profileSelect.value || activeProfileName);
+      loadFamilyOverview();
+      loadHomeGlance();
+      return;
+    }
     refreshProfileOptions('');
     loadFamilyOverview();
     loadHomeGlance();

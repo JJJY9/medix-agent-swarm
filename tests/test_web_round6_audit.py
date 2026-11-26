@@ -92,5 +92,6 @@ def test_rename_profile_refreshes_family_overview(client):
     app_js = _app_js(client)
 
     start = app_js.index("async function renamePatientProfile()")
-    body = app_js[start:start + 1200]
+    # 处理器增加会诊中守卫与换档序号保护（第一百一十/一百一十一轮）
+    body = app_js[start:start + 2000]
     assert "await loadFamilyOverview();" in body

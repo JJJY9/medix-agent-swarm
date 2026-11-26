@@ -1604,7 +1604,12 @@ _RESTART_USE_SUFFIX_EN = re.compile(
     # （第九十四轮 [2]）
     r"|(?:kept|keeps?|continued|continues?|have continued"
     r"|has continued|have kept|has kept)\s+(?:on\s+)?"
-    r"(?:taking|to take|using|to use)?\s*(?:it|the same|this))\b",
+    r"(?:taking|to take|using|to use)?\s*(?:it|the same|this)"
+    # resumed (it) / now I take it again / started taking it again：
+    # 明确恢复用药（第一百一十一轮 [7]）
+    r"|resumed(?:\s+it)?"
+    r"|now\s+(?:i\s+)?(?:take|use)\s+(?:it\s+)?again"
+    r"|started\s+(?:taking|using)\s+(?:it\s+)?again)\b",
     re.IGNORECASE,
 )
 #: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；
