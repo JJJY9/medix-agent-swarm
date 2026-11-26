@@ -565,6 +565,11 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         if (
             _uncertain_bleeding_window(uncertainty_window)
             and "不再" not in internal_body
+            and not _non_pregnancy_bleeding_site(span, prefix)
+            and not any(
+                word in span or word in prefix[-6:]
+                for word in _GUM_BLEEDING_WORDS
+            )
         ):
             # 「不确定/不知道有没有出血」「不确定下面有没有出血」
             # 「下面有没有出血不确定」都是待排查的出血主诉
@@ -732,7 +737,8 @@ def _uncertain_bleeding_window(window: str) -> bool:
     if tokens is None:
         return False
     bleeding_re = re.compile(
-        r"出血|流血|见红|见(?:到)?血|(?<![贫缺])血"
+        r"出血|流血|见红|见(?:到)?血"
+        r"|(?<![贫缺抽验查化测尿])血"
         r"(?!(?:常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿"
         r"|红蛋白|红素|细胞|尿))"
     )
@@ -838,10 +844,17 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             # （第一百一十五轮 [17]）
             continue
         prefix = _clause_prefix(text, match.start())
-        if _uncertain_bleeding_window(
-            prefix[-10:]
-            + span
-            + text[match.end(): match.end() + 6]
+        if (
+            _uncertain_bleeding_window(
+                prefix[-10:]
+                + span
+                + text[match.end(): match.end() + 6]
+            )
+            and not _non_pregnancy_bleeding_site(span, prefix)
+            and not any(
+                word in span or word in prefix[-6:]
+                for word in _GUM_BLEEDING_WORDS
+            )
         ):
             # 「不确定内裤上有没有血」（第一百一十八轮 [1]）
             return True
@@ -1905,6 +1918,12 @@ def _clean_complaint_clause(
             _COURSE_MARKER_RE.search(stripped) is not None
             or any(marker in stripped for marker in _COURSE_MARKERS)
             or _POST_DURATION_RE.search(stripped) is not None
+            # 「咯血了一口见于什么病」「抽搐了一会儿的原因有哪些」
+            # （第一百二十一轮 [3]）
+            or _POST_QUANTITY_RE.search(stripped) is not None
+            or re.search(
+                r"(?:一下|一会儿|好一会儿|一阵子)", stripped
+            ) is not None
             or any(cue in stripped for cue in _POST_POSITIVE_CUES)
         )
         # 「什么病会引起胸痛」「胸痛见于什么病」等科普提问默认整句
@@ -3346,8 +3365,10 @@ _LONG_STOP_PATTERN = re.compile(
     r"半年|去年|前年|上年|上个月|上月|很久|好久|"
     # 明确的 3 周以上同样是远期停药（12 周≈3 个月）
     # （第一百二十轮 [16]）
-    r"(?<![0-9一二两三四五六七八九十])(?:[3-9三四五六七八九十]|"
-    r"[1-9][0-9]+)\s*(?:个)?\s*(?:周|星期)(?!半))"
+    r"(?<![0-9一二两三四五六七八九十])"
+    r"(?:[3-9三四五六七八九十]|十[一二三四五六七八九]?|"
+    r"[1-9][0-9]+)\s*(?:个)?\s*(?:周|星期)(?:半)?"
+    r"(?![0-9一二三四五六七八九十]))"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年|"
     r"去年|前年|上年|上个月|上月|很久|好久)"
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
@@ -5048,6 +5069,38 @@ def _active_medical_text(
                         residual_parts.append(item)
                     if residual_parts:
                         kept.append("、".join(residual_parts))
+                    tail_after_stop = re.search(
+                        r"(?:周|星期)[^，。；]{0,6}?(?:后|以后|之后)"
+                        r"(.+)$",
+                        clause,
+                    )
+                    if tail_after_stop is not None:
+                        tail_text = tail_after_stop.group(1).strip(
+                            " ，,、"
+                        )
+                        if (
+                            tail_text
+                            and not _STOP_VERB_PATTERN.search(tail_text)
+                            and (
+                                any(
+                                    term in tail_text
+                                    for term in PREGNANCY_TERMS
+                                )
+                                or "怀孕" in tail_text
+                                or any(
+                                    term in tail_text
+                                    for term in IMMUNOSUPPRESSION_TERMS
+                                )
+                                or re.search(
+                                    r"(?:改成|改为|换成|换用|换吃|改用|"
+                                    r"开始吃|开始服|加用)",
+                                    tail_text,
+                                ) is not None
+                            )
+                        ):
+                            # 停药标注只移除被停药名：同句的现孕/换用新药
+                            # 仍是当前状态（第一百二十一轮 [1]）
+                            kept.append(tail_text)
             continue
         if (
             _PAST_MEDICATION_PATTERN.search(clause)

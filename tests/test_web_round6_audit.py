@@ -66,8 +66,12 @@ def test_client_risk_detection_respects_negation(client):
     assert "ruleOutAt" in body
     assert "不排除高危" in body
     assert "不属于|不是|并非" in body
-    assert "高风险(?!人群|因素)" in body
-    assert "低风险(?!人群|因素)" in body
+    # 宾语后缀列表统一收敛，含 HPV/症状等科普宾语
+    # （第一百二十一轮 [17]）
+    assert "objSuffix" in body
+    assert "高风险(?!${objSuffix})" in body
+    assert "低风险(?!${objSuffix})" in body
+    assert "HPV" in body
 
 
 def test_bp_extremes_are_not_paired_from_different_records(client):

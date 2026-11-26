@@ -1503,20 +1503,36 @@ function detectRisk(text) {
     low: '风险等级 · 低，可先自我观察',
   };
 
+  // 去掉 CJK 与拉丁字母之间的空白：「低危 HPV」→「低危HPV」
+  const compact = text.replace(
+    /(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z])|(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])/g,
+    ''
+  );
+  // 「风险等级：不确定」先于标签解析（第一百二十一轮 [17]）
+  if (/风险等级\s*[：:]\s*不确定/.test(compact)) {
+    return null;
+  }
   // 形如「综合风险：中危」「风险等级：高危」
-  const tagged = text.match(/(?:综合)?风险(?:等级|程度|评级)?\s*[：:]\s*(紧急|高危|中危|低危)/);
-  if (tagged) {
-    const level = { 紧急: 'emergency', 高危: 'high', 中危: 'medium', 低危: 'low' }[tagged[1]];
+  const tagged = compact.match(
+    /(?:风险等级|风险程度|风险评级|综合风险|整体风险)\s*[：:]\s*(紧急|高危|中危|低危)/
+  );
+  const weakTagged = tagged || compact.match(
+    /(?<![一-龥])风险\s*[：:]\s*(紧急|高危|中危|低危)/
+  );
+  if (weakTagged) {
+    const level = { 紧急: 'emergency', 高危: 'high', 中危: 'medium', 低危: 'low' }[weakTagged[1]];
     return { level, label: levelLabels[level] };
   }
 
   // 形如「**中风险**」「**高危**」
   // 注意「高危人群」「高风险人群」是在描述人群，不是风险等级
+  const objSuffix = '人群|因素|型|HPV|hpv|症状|信号|表现|征象|指征|行为'
+    + '|食物|饮食|结节|病灶|病变|操作|手术|药物|药品|用药';
   const plain = [
     { level: 'emergency', re: /紧急状态/ },
-    { level: 'high', re: /高风险(?!人群|因素)|高度风险|高危(?!人群|因素)/ },
-    { level: 'medium', re: /中风险(?!人群|因素)|中等风险|中危(?!人群|因素)/ },
-    { level: 'low', re: /低风险(?!人群|因素)|风险较低|风险不高|低危(?!人群|因素)/ },
+    { level: 'high', re: new RegExp(`高风险(?!${objSuffix})|高度风险|高危(?!${objSuffix})`) },
+    { level: 'medium', re: new RegExp(`中风险(?!${objSuffix})|中等风险|中危(?!${objSuffix})`) },
+    { level: 'low', re: new RegExp(`低风险(?!${objSuffix})|风险较低|风险不高|低危(?!${objSuffix})`) },
   ];
   const prefixAt = (value, index) => value.slice(
     Math.max(0, index - 12), index
@@ -1543,12 +1559,12 @@ function detectRisk(text) {
     return false;
   };
   for (const row of plain) {
-    if (hasPositiveMatch(text, row.re)) {
+    if (hasPositiveMatch(compact, row.re)) {
       return { level: row.level, label: levelLabels[row.level] };
     }
   }
 
-  if (/立即就医|急救|拨打\s*120|危及生命/.test(text)) {
+  if (/立即就医|急救|拨打\s*120|危及生命/.test(compact)) {
     return { level: 'high', label: '答复含紧急征象提示，请注意' };
   }
   return null;
@@ -21171,6 +21187,9 @@ async function restoreCurrentSession(
     return false;
   } finally {
     sessionRestoreInFlight = false;
+    if (sessionId) {
+      consumeDeferredDraftForSession(sessionId);
+    }
   }
 }
 
@@ -21217,17 +21236,21 @@ async function send(question, composerSubmit = false) {
     const launchSessionSnapshot = sessionId;
     const launchOpenSeq = openSessionSeq;
     launchSendQueued = true;
+    let launchedNewSession = false;
     try {
-      await Promise.race([
+      launchedNewSession = Boolean(await Promise.race([
         pendingLaunchNewSession,
         new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
-      ]);
+      ]));
     } finally {
       launchSendQueued = false;
     }
     if (
-      sessionId !== launchSessionSnapshot
-      || openSessionSeq !== launchOpenSeq
+      !launchedNewSession
+      && (
+        sessionId !== launchSessionSnapshot
+        || openSessionSeq !== launchOpenSeq
+      )
     ) {
       // 等待期间用户打开了其它会话：主诉不能落进别人的会话
       // （第一百二十轮 [13]）
@@ -23947,58 +23970,20 @@ function restoreDeferredCrossOwnerDraft() {
     deferredCrossOwnerDraft = null;
     return;
   }
-  if (sessionId && sessionId !== deferred.owner) {
-    // 目标会话已换成别的会话（如 404 后新建）：只有草稿槽仍属于
-    // 原属主（未被失败期间的新输入占用）时才写回存储，否则保留
-    // 在内存等切回原会话（第一百一十七轮 [11][14]、第一百一十
-    // 八轮 [14]）
-    const currentOwner = safeSessionGet(DRAFT_OWNER_KEY);
-    if (currentOwner === null || currentOwner === deferred.owner) {
-      try {
-        safeSessionSet(DRAFT_KEY, deferred.text);
-        safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
-        if (deferred.profile !== null && deferred.profile !== undefined) {
-          safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
-        }
-      } catch {
-        // 忽略
-      }
-      deferredCrossOwnerDraft = null;
-    } else {
-      // 草稿槽被失败期间的新输入占用：写入按属主的备份槽，
-      // 回到原会话时再注入（第一百一十九轮 [14]）
-      try {
-        safeSessionSet(
-          'medix.deferredDraft.' + deferred.owner,
-          JSON.stringify({
-            text: deferred.text,
-            profile: deferred.profile ?? null,
-          })
-        );
-      } catch {
-        // 隐私模式忽略
-      }
-      deferredCrossOwnerDraft = null;
-    }
-    return;
+  // 按属主存放：任何其它会话的恢复/打开都不能静默删除它
+  // （第一百一十九轮 [14]、第一百二十一轮 [13]）
+  try {
+    safeSessionSet(
+      'medix.deferredDraft.' + deferred.owner,
+      JSON.stringify({
+        text: deferred.text,
+        profile: deferred.profile ?? null,
+      })
+    );
+  } catch {
+    // 隐私模式忽略
   }
   deferredCrossOwnerDraft = null;
-  sessionId = deferred.owner;
-  persistSessionId(deferred.owner);
-  try {
-    safeSessionSet(DRAFT_KEY, deferred.text);
-    safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
-    if (deferred.profile !== null && deferred.profile !== undefined) {
-      safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
-    }
-  } catch {
-    // 忽略
-  }
-  if (!els.input.value.trim()) {
-    els.input.value = deferred.text;
-    draftProfileMemory = deferred.profile;
-    autoGrow();
-  }
 }
 
 //: 回到原会话时注入此前暂存的跨会话草稿（第一百一十九轮 [14]）

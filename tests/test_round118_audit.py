@@ -418,5 +418,8 @@ def test_web_draft_writeback_guarded_by_owner():
     source = _app_js()
     start = source.index("function restoreDeferredCrossOwnerDraft()")
     block = source[start:start + 1800]
-    assert "currentOwner" in block
-    assert block.count("safeSessionSet(DRAFT_KEY, deferred.text);") >= 2
+    # 按属主备份槽暂存：其它会话的恢复/打开不能覆盖或删除
+    # （第一百一十八轮 [14]、第一百二十一轮 [13]）
+    assert "deferred.owner" in block
+    assert "medix.deferredDraft." in block
+    assert "safeSessionSet(DRAFT_KEY, deferred.text);" not in block

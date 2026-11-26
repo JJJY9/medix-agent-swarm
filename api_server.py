@@ -1504,8 +1504,19 @@ def _risk_at_least(level: str, threshold: str) -> bool:
     return RISK_LEVEL_ORDER.get(level, 0) >= RISK_LEVEL_ORDER[threshold]
 
 
+def _normalize_risk_text(content: str) -> str:
+    """去掉 CJK 与拉丁字母之间的空白：「低危 HPV」→「低危HPV」。"""
+    return re.sub(
+        r"(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z])"
+        r"|(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])",
+        "",
+        str(content or ""),
+    )
+
+
 def _risk_tag_level(content: str) -> str:
     """带「风险等级：X」标签的显式分级；无标签返回空字符串。"""
+    content = _normalize_risk_text(content)
     if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
         return ""
     tagged = _RISK_TAG_PATTERN.search(content)
@@ -1519,7 +1530,7 @@ def _risk_tag_level(content: str) -> str:
 
 def parse_risk_level(text: str) -> str:
     """从会诊意见中提取风险等级；无法判断时返回空字符串。"""
-    content = str(text or "")
+    content = _normalize_risk_text(text)
     if not content:
         return ""
     # 「风险等级：**不确定**」先于标签解析：不能把后面的具体风险
@@ -5624,8 +5635,12 @@ _STOP_ANNOTATION_INLINE_RE = re.compile(
 #: 剂量/频次/时间等非药名片段（pop 前跳过）
 _NON_DRUG_SEGMENT_RE = re.compile(
     r"^(?:"
+    # 「3mg/日」「10毫升/次」：带斜杠的剂量/频次片段不是药名
+    # （第一百二十一轮 [16]）
+    r"[0-9]+(?:\.[0-9]+)?\s*(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|"
+    r"mg|毫克|克|g|单位|iu)\s*[／/]\s*(?:日|天|次)"
     # 小数/分数剂量（0.5g/1／2片）与裸单位同样不是药名
-    r"[0-9一二两三四五六七八九十半几]+(?:\.[0-9]+)?"
+    r"|[0-9一二两三四五六七八九十半几]+(?:\.[0-9]+)?"
     r"(?:[／/][0-9]+)?\s*"
     r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)?"
     r"|(?:mg|毫克|g|克|ml|毫升|单位|iu)"
@@ -5736,6 +5751,12 @@ def _context_medication_names(context: Any) -> List[str]:
     if not text:
         return []
     names: List[str] = []
+    # 「3mg/日」「10毫升/次」的剂量/频次斜杠不是分隔符：先保护
+    # 为全角，避免停药标注与药名被切到不同片段
+    # （第一百二十一轮 [16]）
+    text = re.sub(
+        r"(?<=[0-9A-Za-z])[ \t]*/[ \t]*(?=(?:日|天|次))", "／", text
+    )
     # 分数剂量（1/2片、3/4粒）不是药名分隔：先整体保护再切分
     text = re.sub(r"(?<=[0-9])\s*/\s*(?=[0-9])", "／", text)
 
@@ -10907,6 +10928,8 @@ def _build_health_insights(
     # 合并依从率会把一种从未打卡的药稀释到 60% 以上：家庭与单档案
     # 都按「每种药单独判断」取最差打卡率
     worst = None
+    exempt_expected = 0
+    exempt_doses = 0
     for row in (report.get("medications") or {}).get(
         "by_medication"
     ) or []:
@@ -10920,6 +10943,8 @@ def _build_health_insights(
                 == datetime.now().strftime("%Y-%m-%d")
                 and int(expected) < 7
             ):
+                exempt_expected += int(expected)
+                exempt_doses += int(row.get("doses") or 0)
                 continue
             # 每周一次的低频药完全没打卡同样是 0%，不能被 >=3 阈值
             # 过滤后返回 all_clear
@@ -10950,10 +10975,19 @@ def _build_health_insights(
         ))
     elif (
         not family_scope
-        and adherence.get("expected", 0) > 0
-        and adherence.get("rate", 100) < 60
+        and (
+            remaining_expected := int(adherence.get("expected") or 0)
+            - exempt_expected
+        ) > 0
+        and (
+            remaining_rate := adherence_rate(
+                int(adherence.get("taken") or 0) - exempt_doses,
+                remaining_expected,
+            )
+        ) is not None
+        and remaining_rate < 60
     ):
-        rate = int(adherence.get("rate") or 0)
+        rate = int(remaining_rate)
         insights.append(_health_insight(
             "adherence",
             "warning" if rate < 40 else "info",
@@ -15030,7 +15064,11 @@ async def family_overview(days: int = 7):
             week_rate = adherence_rate(
                 int(item.get("week_count") or 0), expected_week
             )
-            if week_rate is not None and (
+            skip_worst_sample = (
+                started_text[:10] == datetime.now().strftime("%Y-%m-%d")
+                and expected_week < 7
+            )
+            if week_rate is not None and not skip_worst_sample and (
                 entry["worst_rate"] is None
                 or week_rate < entry["worst_rate"]
             ):
