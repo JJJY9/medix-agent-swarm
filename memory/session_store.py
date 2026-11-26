@@ -6902,6 +6902,28 @@ class SessionStore:
                 return origin != provenance.get("source")
             return provenance.get("source") not in origin
 
+        def _candidate_origin_includes_source(candidate: int) -> bool:
+            """候选的来源集合是否包含本次备份（同一记录的本备份谱系）。
+
+            另一份备份创建的行即使被本地编辑过，也不能凭可编辑列
+            差异顶替被删记录（第一百二十一轮 [8]）。
+            """
+            provenance = getattr(self, "_import_provenance", None)
+            if not provenance:
+                return True
+            source = provenance.get("source")
+            if not source:
+                return True
+            origin_map = (
+                provenance.get("origins") or {}
+            ).get(table) or {}
+            origin = origin_map.get(str(candidate))
+            if not origin:
+                return False
+            if isinstance(origin, str):
+                return origin == source
+            return source in origin
+
         _TERMINAL_TAIL_COLUMNS = {
             "reminders": {"done"},
             "medications": {"active", "stopped_at", "stop_reason"},
@@ -7001,6 +7023,11 @@ class SessionStore:
                                 candidate
                             )
                             and _candidate_diff_claimable(candidate)
+                            # 跨来源可编辑列差异还必须是本备份谱系
+                            # 里的同一记录（第一百二十一轮 [8]）
+                            and _candidate_origin_includes_source(
+                                candidate
+                            )
                         )
                     )
                 )
@@ -10067,6 +10094,20 @@ class SessionStore:
                 if pool:
                     return _claim(min(pool), mark_moved=True)
             return _ambiguous()
+        if tail_where is not None and len(candidates) > 1:
+            preferred_sole = [
+                candidate for candidate in candidates
+                if not _candidate_from_other_backup(candidate)
+                and (
+                    _tail_matches(candidate)
+                    or _candidate_edited(candidate)
+                )
+            ]
+            if preferred_sole:
+                # 优先本来源且尾字段命中/确有编辑的候选，避免把外来
+                # 未编辑行当成唯一候选按被删补插（第一百二十一轮
+                # [2][7][8]）
+                candidates = set(preferred_sole)
         sole = min(candidates)
         if _candidate_foreign_backup_row(sole):
             return _ambiguous()
@@ -10230,6 +10271,10 @@ class SessionStore:
         ):
             # 合并备份：另一来源的不同药名/标题行不能靠身份列差异
             # 被认领（第一百二十轮 [3]）
+            return _ambiguous()
+        if _foreign_claim_blocked(sole):
+            # 末位兜底同样不能吞掉另一来源的继承记录
+            # （第一百二十一轮 [2][8]）
             return _ambiguous()
         return _claim(sole)
 
@@ -19964,12 +20009,29 @@ class SessionStore:
                 f"由就诊记录 #{int(visit_id)} 自动创建"
                 in str(row["note"] or "")
             )
-            if (
-                same_profile
-                and not auto_created
-                and int(row["owner_visit_id"] or 0) == int(visit_id)
+            if same_profile and (
+                auto_created
+                or int(row["owner_visit_id"] or 0) == int(visit_id)
             ):
-                auto_created = True
+                other_link = self._conn.execute(
+                    "SELECT 1 FROM visit_records"
+                    " WHERE followup_appointment_id = ? AND id != ?"
+                    " LIMIT 1",
+                    (appointment, int(visit_id)),
+                ).fetchone()
+                if other_link is not None:
+                    # 其它就诊仍在链接使用这条预约：这是共享的复诊
+                    # 计划，只解除本就诊链接，不能随本就诊删除/改期
+                    # 级联删除（第一百二十一轮 [9]）
+                    self._conn.execute(
+                        "UPDATE visit_records"
+                        " SET followup_appointment_id = 0"
+                        " WHERE id = ? AND followup_appointment_id = ?",
+                        (int(visit_id), appointment),
+                    )
+                    auto_created = False
+                elif not auto_created:
+                    auto_created = True
             if row is not None and not auto_created:
                 # 备注可被用户编辑：就诊记录自己的复诊链接同样是归属
                 # 证据，不能因为改备注就留下无法级联清理的旧预约
@@ -19980,7 +20042,25 @@ class SessionStore:
                 ).fetchone()
                 if linked is not None:
                     if marker_owner == int(visit_id):
-                        auto_created = True
+                        other_link = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_appointment_id = ? AND id != ?"
+                            " LIMIT 1",
+                            (appointment, int(visit_id)),
+                        ).fetchone()
+                        if other_link is None:
+                            auto_created = True
+                        else:
+                            # 预约 owner 属于本就诊，但其它就诊仍在
+                            # 链接使用：只解除本就诊链接
+                            # （第一百二十一轮 [9]）
+                            self._conn.execute(
+                                "UPDATE visit_records"
+                                " SET followup_appointment_id = 0"
+                                " WHERE id = ?"
+                                " AND followup_appointment_id = ?",
+                                (int(visit_id), appointment),
+                            )
                     elif marker_owner == 0:
                         # 旧版无归属预约：没有其它就诊链接时才把本就诊
                         # 的链接当作自动创建证据；多条就诊共享时只
@@ -20087,10 +20167,12 @@ class SessionStore:
                 # 清理悬空链接）时才清链接：标记指向本就诊但 owner
                 # 属于另一条就诊时，不能把真正归属者的「已安排复诊」
                 # 一起清掉
+                # 只清本就诊自己的链接：其它就诊共享同一预约时不能
+                # 被一起解绑（第一百二十一轮 [9]）
                 self._conn.execute(
                     "UPDATE visit_records SET followup_appointment_id = 0"
-                    " WHERE followup_appointment_id = ?",
-                    (appointment,),
+                    " WHERE followup_appointment_id = ? AND id = ?",
+                    (appointment, int(visit_id)),
                 )
         reminder = _safe_db_id(reminder_id)
         if reminder:
@@ -23698,7 +23780,8 @@ class SessionStore:
         """
         with self._write_and_checkpoint():
             doomed_row = self._conn.execute(
-                "SELECT appointment_id, done FROM reminders WHERE id = ?",
+                "SELECT appointment_id, done, note, due_at"
+                " FROM reminders WHERE id = ?",
                 (int(reminder_id),),
             ).fetchone()
             cursor = self._conn.execute(
@@ -23717,6 +23800,22 @@ class SessionStore:
                 # （第八十二轮）。脱钩待办（appointment_id=0）按其
                 # 仍被哪些就诊链接，为对应预约写墓碑（第八十八轮）
                 marker_targets = set()
+                plan_day = ""
+                note_text = str(doomed_row["note"] or "")
+                note_day = re.search(
+                    r"(\d{4}-\d{2}-\d{2})", note_text
+                )
+                if note_day is not None:
+                    plan_day = note_day.group(1)
+                elif "复诊" in note_text:
+                    due_text = str(doomed_row["due_at"] or "")[:10]
+                    try:
+                        plan_day = (
+                            datetime.strptime(due_text, "%Y-%m-%d")
+                            + timedelta(days=1)
+                        ).strftime("%Y-%m-%d")
+                    except (ValueError, TypeError):
+                        plan_day = ""
                 doomed_appointment = int(
                     doomed_row["appointment_id"] or 0
                 )
@@ -23763,6 +23862,26 @@ class SessionStore:
                         marker_targets.update(
                             int(row["id"]) for row in owned
                         )
+                if plan_day:
+                    day_targets = set()
+                    for target_id in marker_targets:
+                        appt_row = self._conn.execute(
+                            "SELECT scheduled_at, status FROM appointments"
+                            " WHERE id = ?",
+                            (int(target_id),),
+                        ).fetchone()
+                        if appt_row is None:
+                            continue
+                        if str(appt_row["status"] or "") != "upcoming":
+                            continue
+                        if (
+                            str(appt_row["scheduled_at"] or "")[:10]
+                            == plan_day
+                        ):
+                            day_targets.add(int(target_id))
+                    # 计划日期不一致的遗留旧提醒删除时不为当前预约
+                    # 写墓碑（第一百二十一轮 [10]）
+                    marker_targets = day_targets
                 try:
                     for target_id in marker_targets:
                         self.set_app_state(

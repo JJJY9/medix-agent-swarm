@@ -484,8 +484,11 @@ def test_web_deferred_draft_writeback():
     source = _app_js()
     start = source.index("function restoreDeferredCrossOwnerDraft()")
     block = source[start:start + 1600]
-    # 目标会话不匹配时也要写回存储（第一百一十七轮 [11][14]）
-    assert block.count("safeSessionSet(DRAFT_KEY, deferred.text);") >= 2
+    # 跨会话草稿一律写入按属主的备份槽，切回原会话时注入；
+    # 不能再写当前会话的 DRAFT_KEY，否则会被目标会话的恢复
+    # 静默清除（第一百一十七轮 [11][14]、第一百二十一轮 [13]）
+    assert "medix.deferredDraft." in block
+    assert "safeSessionSet(DRAFT_KEY, deferred.text);" not in block
     assert "initialSessionFromUrl && deferredCrossOwnerDraft" in source
 
 
