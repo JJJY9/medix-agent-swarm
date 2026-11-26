@@ -394,7 +394,8 @@ def test_restored_snapshot_bound_to_question():
     # 同一主诉的重试保留快照，只有换问题发送时才清空旧快照
     # （第八十八轮起）
     start = source.index("async function send(question")
-    head = source[start:start + 800]
+    # send 前部新增启动等待持久化（第一百一十九轮 [9]）：窗口放宽
+    head = source[start:start + 1600]
     assert (
         "String(question || '').trim() !== lastRestoredComposerQuestion"
         in head

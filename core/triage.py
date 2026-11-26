@@ -563,15 +563,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             + text[match.end(): match.end() + 6]
         )
         if (
-            re.search(
-                r"(?:不确定|不知道|不清楚|没法确定|无法确定|说不好)"
-                r"[^。；;！!？?\n]{0,10}(?:有没有|是否|会不会|是不是)"
-                r"|(?:有没有|是不是|会不会|是否)"
-                r"[^。；;！!？?\n]{0,6}"
-                r"(?:不确定|不知道|说不好)",
-                uncertainty_window,
-            )
-            is not None
+            _uncertain_bleeding_window(uncertainty_window)
             and "不再" not in internal_body
         ):
             # 「不确定/不知道有没有出血」「不确定下面有没有出血」
@@ -724,6 +716,34 @@ _GUM_BLEEDING_WORDS = (
 )
 
 
+def _uncertain_bleeding_window(window: str) -> bool:
+    """窗口内的不确定问句是否真的指向出血。
+
+    「不确定有没有出血」是待排查；「不知道有没有怀孕，现在没有
+    出血」里不确定的是怀孕，出血被明确否认；「不确定是不是羊水
+    阴道没有出血」同理（第一百一十九轮 [5][11]）。
+    """
+    sample = str(window or "")
+    tokens = re.search(
+        r"不确定|不知道|不清楚|没法确定|无法确定|说不好|有没有|是不是|"
+        r"会不会|是否",
+        sample,
+    )
+    if tokens is None:
+        return False
+    blood = re.search(r"出血|流血|见红|血", sample)
+    if blood is None:
+        return False
+    before_blood = sample[: blood.start()][-6:]
+    before_blood = re.sub(
+        r"(?:见|见到|出现|发现)\s*$", "", before_blood
+    )
+    return re.search(
+        # 「有没有」里的「没有」不是否定
+        r"(?<!有)(?:没有|没|无|未|不|否认|非)\s*$", before_blood
+    ) is None
+
+
 def _bleeding_jianxue_idiom(text: str, start: int, term: str) -> bool:
     """「一针见血/见血封喉/见血就晕」不是出血描述。
 
@@ -811,15 +831,11 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             # （第一百一十五轮 [17]）
             continue
         prefix = _clause_prefix(text, match.start())
-        if re.search(
-            r"(?:不确定|不知道|不清楚|没法确定|无法确定|说不好)"
-            r"[^。；;！!？?\n]{0,10}(?:有没有|是否|会不会|是不是)"
-            r"|(?:有没有|是不是|会不会|是否)"
-            r"[^。；;！!？?\n]{0,6}(?:不确定|不知道|说不好)",
+        if _uncertain_bleeding_window(
             prefix[-10:]
             + span
-            + text[match.end(): match.end() + 6],
-        ) is not None:
+            + text[match.end(): match.end() + 6]
+        ):
             # 「不确定内裤上有没有血」（第一百一十八轮 [1]）
             return True
         body = re.sub(r"血丝?$", "", span)
@@ -1792,6 +1808,9 @@ def _clean_complaint_clause(
             # 「网上看到胸痛要重视我现在胸痛」：引用之后同分句仍在
             # 描述本人当前症状
             or _EDUCATION_CURRENT_RE.search(clause) is not None
+            # 「网上说胸痛要重视我胸口痛」：引述词后出现患者主语
+            # 与红旗症状（第一百一十九轮 [1]）
+            or _patient_course_after_quote(clause)
             # 「看视频时/看了个视频后胸痛」：媒体词只是症状发生的
             # 时间语境，不是科普引用（第八十三轮）
             or (
@@ -2158,6 +2177,38 @@ _EDUCATION_SYMPTOM_WORDS = (
     "胸痛", "胸疼", "头晕", "头痛", "呼吸困难", "发热", "发烧",
     "咳嗽", "咯血", "恶心", "呕吐", "心慌", "胸闷", "抽搐", "疼", "痛",
 )
+
+
+_PATIENT_SELF_TOKEN_RE = re.compile(
+    r"我(?!的?(?:爸|妈|父母|父|母|爷|奶|外公|外婆|姥姥|姥爷|哥|姐|弟|妹|"
+    r"儿|女|爱人|对象|丈夫|妻子|配偶|老公|老婆|家人|亲|"
+    r"家|孩|宝|娃|岳父|岳母|公公|婆婆|女婿|儿媳|孙子|孙女|"
+    r"外孙|外甥|侄|叔|伯|姑|姨|舅|婶|嫂|闺女|老爷子|老太太|"
+    r"爹|娘|丈母娘|老丈人|岳丈|公婆|媳妇|病人|家属))"
+    r"|本人"
+)
+
+
+def _patient_course_after_quote(clause: str) -> bool:
+    """引述词之后是否出现患者本人的红旗症状描述。
+
+    「网上说胸痛要重视我胸口痛」：引述词后紧跟患者主语和红旗
+    症状时，同句是在描述本人当前情况，不能按科普引用整句丢弃
+    （第一百一十九轮 [1]）。
+    """
+    match = _EDUCATION_QUOTE_LEAD_RE.search(clause)
+    if match is None:
+        return False
+    tail = clause[match.end():]
+    self_match = _PATIENT_SELF_TOKEN_RE.search(tail)
+    if self_match is None:
+        return False
+    after = tail[self_match.end():]
+    return (
+        _is_red_flag_text(after)
+        or _has_pregnancy_bleeding(after)
+        or _has_head_trauma(after)
+    )
 
 
 def _patient_course_before_quote(clause: str) -> bool:
@@ -3916,8 +3967,11 @@ _RESTART_TEXT_RE = re.compile(
     r"|服用|口服|用)(?:着|呢)?"
     # 「孩子出生后吃上了」「生完孩子后又吃上了」：产后时间从句后
     # 省略主语的续用（第一百一十八轮 [5]）
-    r"|(?:出生后|出生以后|生完|生了|生下|满月|产后)[^，。；]{0,6}"
-    r"(?:又|也|才|就)?(?:吃|服用|口服|用)(?:上|着)?(?:了)?)"
+    r"|(?:出生后|出生以后|生完|生了|生下|满月|产后)"
+    r"[^，。；不没未别]{0,6}"
+    r"(?:又|也|才|就)?"
+    r"(?:吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"奶|粉)|服用|口服|用)(?:上|着)?(?:了)?)"
 )
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
 _RESTART_OBJECT_RE = re.compile(
@@ -3952,6 +4006,10 @@ _RESTART_OBJECT_RE = re.compile(
     r"|(?:现在|目前|当前|如今)(?:也|都|又)?(?:在|还)?"
     r"(?:吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面)"
     r"|服用|口服|用)(?:着|呢)?"
+    r"|(?:出生后|出生以后|生完|生了|生下|满月|产后)"
+    r"[^，。；不没未别]{0,6}(?:又|也|才|就)?"
+    r"(?:吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"奶|粉)|服用|口服|用)(?:上|着)?(?:了)?"
     r"|(?:每天|每日|天天|一直|持续|规律|长期|常年)"
     r"(?:都|也|还|在|坚持)?"
     r"(?:吃|服用|口服|服|用)"
@@ -4893,6 +4951,26 @@ def _active_medical_text(
                     for piece_index, item in enumerate(pieces):
                         if not item:
                             continue
+                        piece_stop = re.search(
+                            r"[（(][^）)]{0,24}(?:已停用|已停药|已停服|"
+                            r"停用|停药|停了|停的|停服|停止服用|不吃了)",
+                            item,
+                        )
+                        if piece_stop is not None:
+                            leading = item[: piece_stop.start()].strip()
+                            if not leading or re.match(
+                                r"^[0-9一二两三四五六七八九十半几]+"
+                                r"(?:\.[0-9]+)?\s*(?:片|粒|丸|袋|包|支|"
+                                r"瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)?$",
+                                leading,
+                                re.IGNORECASE,
+                            ):
+                                # 「华法林 3mg（已停用两年）」：标注挂在
+                                # 剂量片段上，剔除前一药名
+                                # （第一百一十九轮 [4]）
+                                if residual_parts:
+                                    residual_parts.pop()
+                                continue
                         if (
                             _STOP_VERB_PATTERN.search(item)
                             or _LONG_STOP_PATTERN.search(item)

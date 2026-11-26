@@ -5395,6 +5395,7 @@ async function openSession(id) {
     // 是否属于另一个会话
     settleDraftForSession(id);
     sessionId = id;
+    consumeDeferredDraftForSession(id);
     safeStorageRemove(pendingResetStorageKey(id));
     if (keepPendingReset || draftConflict || pendingNewDraft) {
       // 待重置仍要生效：只固定本标签页，不能重新写回共享 localStorage
@@ -21173,7 +21174,19 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 async function send(question, composerSubmit = false) {
   if (pendingLaunchNewSession) {
     // 「新建会诊」快捷方式还没建好会话：等它完成再发送，主诉不会
-    // 落进恢复出来的上一会话（第一百一十六轮 [17]）
+    // 落进恢复出来的上一会话（第一百一十六轮 [17]）。等待期间
+    // 先落一份在途记录：submit 已清空输入框，刷新/关页不能丢
+    // （第一百一十九轮 [9]）
+    try {
+      safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
+        sessionId: '',
+        profile: activeProfileName || readStoredProfile() || '',
+        question,
+        at: Date.now(),
+      }));
+    } catch {
+      // 隐私模式忽略
+    }
     await Promise.race([
       pendingLaunchNewSession,
       new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
@@ -23904,6 +23917,21 @@ function restoreDeferredCrossOwnerDraft() {
         // 忽略
       }
       deferredCrossOwnerDraft = null;
+    } else {
+      // 草稿槽被失败期间的新输入占用：写入按属主的备份槽，
+      // 回到原会话时再注入（第一百一十九轮 [14]）
+      try {
+        safeSessionSet(
+          'medix.deferredDraft.' + deferred.owner,
+          JSON.stringify({
+            text: deferred.text,
+            profile: deferred.profile ?? null,
+          })
+        );
+      } catch {
+        // 隐私模式忽略
+      }
+      deferredCrossOwnerDraft = null;
     }
     return;
   }
@@ -23923,6 +23951,30 @@ function restoreDeferredCrossOwnerDraft() {
     els.input.value = deferred.text;
     draftProfileMemory = deferred.profile;
     autoGrow();
+  }
+}
+
+//: 回到原会话时注入此前暂存的跨会话草稿（第一百一十九轮 [14]）
+function consumeDeferredDraftForSession(targetId) {
+  if (!targetId) return;
+  let raw = null;
+  try {
+    raw = safeSessionGet('medix.deferredDraft.' + targetId);
+  } catch {
+    return;
+  }
+  if (!raw) return;
+  safeSessionRemove('medix.deferredDraft.' + targetId);
+  if (els.input.value.trim()) return;
+  try {
+    const payload = JSON.parse(raw);
+    if (!payload || typeof payload.text !== 'string') return;
+    if (!payload.text.trim()) return;
+    els.input.value = payload.text;
+    draftProfileMemory = payload.profile || null;
+    autoGrow();
+  } catch {
+    // 忽略
   }
 }
 

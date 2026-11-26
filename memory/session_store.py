@@ -6898,6 +6898,35 @@ class SessionStore:
                 return origin != provenance.get("source")
             return provenance.get("source") not in origin
 
+        def _candidate_local_terminal(candidate: int) -> bool:
+            """候选行是否被本地编辑成了终态（停药/完成/取消）。
+
+            这种尾字段差异是本地操作留下的存活状态，不说明候选是
+            另一来源的独立记录（第一百一十八轮 [2]）；普通文本编辑
+            的同秒孪生仍按外来处理（第一百一十九轮 [2]）。
+            """
+            try:
+                row = self._conn.execute(
+                    f"SELECT * FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            try:
+                if table == "medications":
+                    return int(row["active"] or 0) == 0
+                if table == "reminders":
+                    return int(row["done"] or 0) == 1
+                if table == "appointments":
+                    return str(row["status"] or "") in (
+                        "completed", "cancelled"
+                    )
+            except (KeyError, IndexError, TypeError):
+                return False
+            return False
+
         def _foreign_claim_blocked(candidate: int) -> bool:
             """跨来源候选是否应拒绝认领（继承备份的同一记录除外）。
 
@@ -6910,14 +6939,27 @@ class SessionStore:
                 return False
             if not _soft_matches(candidate):
                 return True
-            # 软字段命中的继承记录：本地编辑证据（停药/完成/改期）
-            # 或内容与尾字段全同都放行；无尾字段的表（指标/化验）
-            # 以内容一致为准（round110/111、第一百一十八轮 [2][9]）
+            # 软字段命中的继承记录：内容与尾字段全同（无尾字段的表
+            # 按内容）、或本地编辑证据确实可归属本行（可编辑列差异
+            # 或本地终态）才放行；普通文本编辑的同秒孪生仍按外来
+            # 处理（round110/111、第一百一十八轮 [2][9]、第一百一十
+            # 九轮 [2]）
             return not (
-                _candidate_edited(candidate)
-                or (
+                (
                     _candidate_content_matches_backup(candidate)
                     and (tail_where is None or _tail_matches(candidate))
+                )
+                or (
+                    _candidate_edited(candidate)
+                    and (
+                        _candidate_local_terminal(candidate)
+                        or (
+                            not _candidate_content_matches_backup(
+                                candidate
+                            )
+                            and _candidate_diff_claimable(candidate)
+                        )
+                    )
                 )
             )
 
@@ -11945,13 +11987,17 @@ class SessionStore:
                         raw_visit_by_id[visit_key] = raw_visit
 
             def _visit_identity(record: Dict[str, Any]) -> tuple:
+                def _day_text(value: Any) -> str:
+                    text = " ".join(str(value or "").split())
+                    text = text[:10].replace("/", "-").replace(".", "-")
+                    return text
+
                 return tuple(
                     " ".join(str(record.get(field) or "").split())
                     for field in (
-                        "visit_date", "diagnosis", "department",
-                        "doctor", "facility",
+                        "diagnosis", "department", "doctor", "facility",
                     )
-                )
+                ) + (_day_text(record.get("visit_date")),)
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
                 appointment_pre_ids = self._existing_ids_locked(
@@ -12132,11 +12178,23 @@ class SessionStore:
                             raw.get("owner_visit_id")
                         )
                         for dup_row in duplicate_rows:
+                            dup_id = int(dup_row["id"])
+                            if (
+                                not str(dup_row["note"] or "").strip()
+                                and wanted_marker_vids
+                                and raw_visit_by_id.get(
+                                    next(iter(wanted_marker_vids))
+                                ) is None
+                            ):
+                                # 上次导入剥空的标记 + 备份标记无法映射
+                                # 到本次就诊：同一条旧预约，按重复处理
+                                # （第一百一十九轮 [7]）
+                                duplicate = {"id": dup_id}
+                                break
                             if _marker_normalized_note(
                                 dup_row["note"]
                             ) != wanted_note:
                                 continue
-                            dup_id = int(dup_row["id"])
                             if dup_id in imported_appointment_raw_notes:
                                 # 同一备份里另一条刚插入的自动预约：
                                 # 标记指向的就诊/归属不同就是两条记录
