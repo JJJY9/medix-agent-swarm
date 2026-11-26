@@ -557,17 +557,26 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         internal_body = re.sub(
             r"(?:阴道|产道|下体|下面|下身)\s*$", "", bleed_body
         )
+        uncertainty_window = (
+            prefix[-10:]
+            + span
+            + text[match.end(): match.end() + 6]
+        )
         if (
             re.search(
                 r"(?:不确定|不知道|不清楚|没法确定|无法确定|说不好)"
-                r"[^。；;！!？?\n]{0,8}(?:有没有|是否|会不会|是不是)",
-                internal_body,
+                r"[^。；;！!？?\n]{0,10}(?:有没有|是否|会不会|是不是)"
+                r"|(?:有没有|是不是|会不会|是否)"
+                r"[^。；;！!？?\n]{0,6}"
+                r"(?:不确定|不知道|说不好)",
+                uncertainty_window,
             )
             is not None
             and "不再" not in internal_body
         ):
-            # 「不确定/不知道有没有出血」是待排查的出血主诉，不能
-            # 按否认放过（第一百一十七轮 [3]）
+            # 「不确定/不知道有没有出血」「不确定下面有没有出血」
+            # 「下面有没有出血不确定」都是待排查的出血主诉
+            # （第一百一十七轮 [3]、第一百一十八轮 [1]）
             return True
         if (
             re.search(
@@ -802,6 +811,17 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             # （第一百一十五轮 [17]）
             continue
         prefix = _clause_prefix(text, match.start())
+        if re.search(
+            r"(?:不确定|不知道|不清楚|没法确定|无法确定|说不好)"
+            r"[^。；;！!？?\n]{0,10}(?:有没有|是否|会不会|是不是)"
+            r"|(?:有没有|是不是|会不会|是否)"
+            r"[^。；;！!？?\n]{0,6}(?:不确定|不知道|说不好)",
+            prefix[-10:]
+            + span
+            + text[match.end(): match.end() + 6],
+        ) is not None:
+            # 「不确定内裤上有没有血」（第一百一十八轮 [1]）
+            return True
         body = re.sub(r"血丝?$", "", span)
         # 模式只在「血」前停住：先剥离残留的出血动词（出/流/见/了），
         # 才能看见紧贴其前的否定（阴道没有出血/阴道没有流血）
@@ -845,7 +865,7 @@ _PAST_OBSTETRIC_YEARS = re.compile(
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
     # 「人流后一年」「药流后两年」
-    r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
+    r"|(?:流产|人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年)"
     # 「去年/前年/以前/曾经流产过」
@@ -875,7 +895,7 @@ _HISTORY_PAST_OBSTETRIC = re.compile(
     r"(?:1[2-9]|[2-9][0-9])\s*个?月|十二\s*个?月)"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:多|几)?|好?多)"
     r"\s*年前[^，。；]{0,6}?(?:流产|胎停|人流|药流|引产)(?:过|了)?"
-    r"|(?:人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
+    r"|(?:流产|人流|药流|引产|胎停)(?:后|完|了|过)?\s*"
     r"(?:(?:已|已经|都|快|近|将近|差不多|已?满(?:了)?)\s*)?"
     r"(?:[0-9一二两三四五六七八九十]+(?:多|几)?\s*年|好?多年))"
 )
@@ -3893,7 +3913,11 @@ _RESTART_TEXT_RE = re.compile(
     # 轮 [1]）：宾语归属仍由 _restart_names_other_medication 校验
     r"|(?:现在|目前|当前|如今)(?:也|都|又)?(?:在|还)?"
     r"(?:吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面)"
-    r"|服用|口服|用)(?:着|呢)?)"
+    r"|服用|口服|用)(?:着|呢)?"
+    # 「孩子出生后吃上了」「生完孩子后又吃上了」：产后时间从句后
+    # 省略主语的续用（第一百一十八轮 [5]）
+    r"|(?:出生后|出生以后|生完|生了|生下|满月|产后)[^，。；]{0,6}"
+    r"(?:又|也|才|就)?(?:吃|服用|口服|用)(?:上|着)?(?:了)?)"
 )
 #: 续用线索的宾语（还在吃阿司匹林）：换药后不能复活既往药
 _RESTART_OBJECT_RE = re.compile(
@@ -4044,6 +4068,17 @@ def _restart_object_non_medication(follow: str, clause: str) -> bool:
         flags=re.IGNORECASE,
     )
     obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
+    if obj in ("素", "斋") or obj.startswith(
+        ("药膳", "素食", "食疗", "素菜")
+    ):
+        # 「现在用药膳调理/现在也吃素」不是药物续用
+        # （第一百一十八轮 [15]）
+        return True
+    if obj in (
+        "到现在", "到今天", "至今", "到现在为止", "以来", "为止", "一直"
+    ) or obj.endswith(("到现在", "到今天", "至今", "以来", "为止")):
+        # 时间补语不是药物宾语（一直吃到现在）
+        return False
     if not obj or len(obj) < 2:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
@@ -4600,21 +4635,29 @@ def _active_medical_text(
                 marker in follow
                 for marker in _FAMILY_HISTORY_MARKERS
             ):
-                family_intake = re.search(
-                    r"(?:爸|妈|爹|娘|孩子|小孩|宝宝|娃|大宝|二宝|叔|姨|"
-                    r"舅|姑|公婆|丈母娘|老丈人|岳父|岳母|孙|外甥|侄|"
-                    r"媳|哥|姐|弟|妹|夫|妻|爱人|老伴|家人|家里人)"
-                    r"[^，。；]{0,3}(?:吃|服用|口服|用)",
+                explicit_family = re.search(
+                    r"我(?:的)?(?:家(?:里)?(?:的)?)?(?:"
+                    + _FAMILY_SUBJECT_NAMES
+                    + r")",
                     follow,
                 ) is not None
-                if family_intake or not re.search(
-                    r"我|本人|患者|患儿", follow
+                postpartum_clause = re.search(
+                    r"(?:生完|生了|生下|出生以后|出生后|满月|产后)",
+                    follow,
+                ) is not None
+                if explicit_family or not (
+                    postpartum_clause
+                    or re.search(r"我|本人|患者|患儿", follow)
                 ):
-                    # 纯家属分句不能复活本药；「孩子出生后我又吃上了」
-                    # 含患者本人主语，照常参与续用扫描
-                    # （第一百一十七轮 [6]）
+                    # 显式家属主语（我妈目前还在吃）跳过；「孩子出生后
+                    # 吃上了」「生完孩子后又吃上了」是患者产后续用
+                    # （第一百一十七轮 [6]、第一百一十八轮 [5][7]）
                     continue
             if _restart_names_other_medication(follow, clause):
+                continue
+            if _restart_object_non_medication(follow, clause):
+                # 「现在用药膳调理」「现在也吃素」不是本药续用
+                # （第一百一十八轮 [15]）
                 continue
             restart_parts.append(follow)
         restart_window = "；".join(restart_parts)[:40]

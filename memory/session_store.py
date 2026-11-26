@@ -6908,13 +6908,16 @@ class SessionStore:
             """
             if not _candidate_from_other_backup(candidate):
                 return False
-            if not (_soft_matches(candidate) and _tail_matches(candidate)):
+            if not _soft_matches(candidate):
                 return True
+            # 软字段命中的继承记录：本地编辑证据（停药/完成/改期）
+            # 或内容与尾字段全同都放行；无尾字段的表（指标/化验）
+            # 以内容一致为准（round110/111、第一百一十八轮 [2][9]）
             return not (
-                _candidate_content_matches_backup(candidate)
+                _candidate_edited(candidate)
                 or (
-                    _candidate_edited(candidate)
-                    and _candidate_diff_claimable(candidate)
+                    _candidate_content_matches_backup(candidate)
+                    and (tail_where is None or _tail_matches(candidate))
                 )
             )
 
@@ -11932,6 +11935,23 @@ class SessionStore:
             appointment_raw_scheduled: Dict[int, str] = {}
             #: 本次导入插入的预约 → 备份原始备注（标记严格比较用）
             imported_appointment_raw_notes: Dict[int, str] = {}
+            raw_visit_by_id: Dict[int, Dict[str, Any]] = {}
+            if isinstance(raw_visit_records, list):
+                for raw_visit in raw_visit_records:
+                    if not isinstance(raw_visit, dict):
+                        continue
+                    visit_key = _safe_db_id(raw_visit.get("id"))
+                    if visit_key > 0:
+                        raw_visit_by_id[visit_key] = raw_visit
+
+            def _visit_identity(record: Dict[str, Any]) -> tuple:
+                return tuple(
+                    " ".join(str(record.get(field) or "").split())
+                    for field in (
+                        "visit_date", "diagnosis", "department",
+                        "doctor", "facility",
+                    )
+                )
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
                 appointment_pre_ids = self._existing_ids_locked(
@@ -12145,6 +12165,44 @@ class SessionStore:
                                     != wanted_owner
                                 ):
                                     continue
+                            else:
+                                other_marker = re.search(
+                                    r"由就诊记录 #(\d+) 自动创建",
+                                    str(dup_row["note"] or ""),
+                                )
+                                if (
+                                    wanted_marker_vids
+                                    and other_marker is not None
+                                ):
+                                    backup_visit = raw_visit_by_id.get(
+                                        next(iter(wanted_marker_vids))
+                                    )
+                                    local_visit_row = (
+                                        self._conn.execute(
+                                            "SELECT visit_date,"
+                                            " diagnosis, department,"
+                                            " doctor, facility"
+                                            " FROM visit_records"
+                                            " WHERE id = ?",
+                                            (
+                                                int(
+                                                    other_marker.group(1)
+                                                ),
+                                            ),
+                                        ).fetchone()
+                                    )
+                                    if (
+                                        backup_visit is not None
+                                        and local_visit_row is not None
+                                        and _visit_identity(backup_visit)
+                                        != _visit_identity(
+                                            dict(local_visit_row)
+                                        )
+                                    ):
+                                        # 标记指向另一条就诊：是不同
+                                        # 记录，不能合并
+                                        # （第一百一十八轮 [3][8][11]）
+                                        continue
                             duplicate = {"id": dup_id}
                             break
                     if duplicate is not None:
@@ -15193,17 +15251,16 @@ class SessionStore:
             for reminder_row_id in raw_reminder_id_map.values()
             if int(reminder_row_id) > 0
         }
-        if target_appointment_ids and visit_raw_local_map:
+        local_backup_visit_ids = {
+            int(local_vid)
+            for local_vid in visit_raw_local_map.values()
+            if local_vid
+        }
+        if target_appointment_ids and local_backup_visit_ids:
             # 合并两份备份后同一就诊可能已有本机标记预约：一并纳入
-            # 去重，避免两条自动复诊预约与重复待办
-            # （第一百一十七轮 [15]）
-            local_marker_vids = {
-                int(raw_vid) for raw_vid in visit_raw_local_map
-            } | {
-                int(local_vid)
-                for local_vid in visit_raw_local_map.values()
-                if local_vid
-            }
+            # 去重，避免两条自动复诊预约与重复待办。只认映射后的
+            # 本地就诊 id：原始 id 撞号不能牵连既有计划
+            # （第一百一十七轮 [15]、第一百一十八轮 [4][10]）
             for local_marker_row in self._conn.execute(
                 "SELECT id, note FROM appointments"
                 " WHERE status = 'upcoming'"
@@ -15215,7 +15272,7 @@ class SessionStore:
                 )
                 if local_match is None:
                     continue
-                if int(local_match.group(1)) in local_marker_vids:
+                if int(local_match.group(1)) in local_backup_visit_ids:
                     target_appointment_ids.add(
                         int(local_marker_row["id"])
                     )
@@ -15247,18 +15304,25 @@ class SessionStore:
                     if marker_match is None:
                         continue
                     marker_raw_vid = int(marker_match.group(1))
-                    if marker_raw_vid not in visit_raw_local_map:
-                        # 备份没有带来这条就诊记录：标记可能来自更早
-                        # 恢复的旧计划，不能由伪造/陈旧标记驱动删除
-                        # （第一百一十六轮 [13]）
-                        continue
-                    if marker_raw_vid not in marker_vid_cache:
-                        marker_vid_cache[marker_raw_vid] = int(
-                            visit_raw_local_map.get(
-                                marker_raw_vid, marker_raw_vid
+                    if raw_note is not None:
+                        # 本次导入的预约：标记是备份原始就诊 id
+                        if marker_raw_vid not in visit_raw_local_map:
+                            # 备份没有带来这条就诊记录：不能由伪造/
+                            # 陈旧标记驱动删除（第一百一十六轮 [13]）
+                            continue
+                        if marker_raw_vid not in marker_vid_cache:
+                            marker_vid_cache[marker_raw_vid] = int(
+                                visit_raw_local_map.get(
+                                    marker_raw_vid, marker_raw_vid
+                                )
                             )
-                        )
-                    marker_vid = marker_vid_cache[marker_raw_vid]
+                        marker_vid = marker_vid_cache[marker_raw_vid]
+                    else:
+                        # 本地既有预约：标记号就是本地就诊 id，不能再
+                        # 经 raw→local 映射（第一百一十八轮 [4][10]）
+                        marker_vid = marker_raw_vid
+                        if marker_vid not in local_backup_visit_ids:
+                            continue
                     if marker_vid not in visit_profile_cache:
                         visit_profile_row = self._conn.execute(
                             "SELECT profile FROM visit_records"
