@@ -802,16 +802,45 @@ _STOP_QUESTION_SUFFIX = re.compile(
 )
 #: 药名之后的换药语序：「华法林两年前就改成氯吡格雷了」：本药已被
 #: 换掉，不应按在用药物参与相互作用检查（第一百零九轮 [16]）。
-#: 换药目标必须像另一种药：剂量（改为5mg）、服法（改为饭后吃）、
-#: 同药复述（换成原来的药）不算停用。
-_SWITCH_AWAY_SUFFIX = re.compile(
+#: 只有换药目标确实是另一种已知药物时才算换药：剂量/频次/剂型/
+#: 服法变化（改成吃半片、改为隔天一次、换成肠溶片）仍在服用
+#: （第一百一十轮 [1][7][11]）。
+_SWITCH_VERB_SUFFIX_RE = re.compile(
     r"^[^，。；,.!?！？\n]{0,12}?(?:改为|改成|换成|换为|换成了|改成了)"
-    r"\s*(?!(?:饭后|饭前|空腹|睡前|早上|晚上|下午|中午|每天|每日|"
-    r"一天|一日|一次|两次|半|剂量|同样?|原来?|旧|[0-9０-９]|"
-    r"[0-9一二三四五六七八九十半]+\s*"
-    r"(?:mg|毫克|片|粒|g|克|ml|毫升)))"
-    r"[一-龥A-Za-z]"
+    r"\s*(.{1,20})"
 )
+#: 换药目标里可先剥掉的口语服法/程度前缀
+_SWITCH_TARGET_PREFIX_RE = re.compile(
+    r"^(?:吃了?|服用|口服|含服|嚼服|继续|仍|还|只|每次|每天|改吃)\s*"
+)
+
+
+def _switch_target_is_known_drug(target: str) -> bool:
+    """换药目标是否以已知药物别名开头（剥掉口语服法前缀后）。"""
+    text = str(target or "").strip()
+    for _ in range(3):
+        stripped = _SWITCH_TARGET_PREFIX_RE.sub("", text)
+        if stripped == text:
+            break
+        text = stripped
+    text = text[:16].lower()
+    if len(text) < 2:
+        return False
+    for group_items in DRUG_GROUPS.values():
+        for _canonical, aliases in group_items:
+            for alias in aliases:
+                lowered = alias.lower()
+                if len(lowered) >= 2 and text.startswith(lowered):
+                    return True
+    return False
+
+
+def _switched_away_to_drug(suffix: str) -> bool:
+    """suffix 是否以「改为/换成 <另一已知药物>」表示已换药。"""
+    match = _SWITCH_VERB_SUFFIX_RE.match(str(suffix or ""))
+    if match is None:
+        return False
+    return _switch_target_is_known_drug(match.group(1))
 #: 药名后的括号停药标注：「阿司匹林（已停用）」「（停用 2 个月）」：
 #: 括号内容只说明停药，药名退出在用名单（第一百零二轮 [18]）。
 #: 时长与 api_server 的停药时长同口径：复合时长（两周半/半年多/
@@ -1826,9 +1855,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             or _STOPPED_USE_PREFIX.search(prefix)
             or _STOPPED_USE_PREFIX_LONG.search(prefix)
             or _STOPPED_USE_SUFFIX.search(suffix)
-            # 「华法林两年前就改成氯吡格雷了」：本药已被换掉
-            # （第一百零九轮 [16]）
-            or _SWITCH_AWAY_SUFFIX.search(suffix)
+            # 「华法林两年前就改成氯吡格雷了」：本药已被换掉；剂量/
+            # 频次/服法变化（改成吃半片/隔天一次）不算换药
+            # （第一百零九轮 [16]、第一百一十轮 [1][7]）
+            or _switched_away_to_drug(suffix)
             or _BRACKET_STOP_SUFFIX.search(suffix)
             or _PAST_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)

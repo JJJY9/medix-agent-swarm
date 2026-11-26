@@ -4817,6 +4817,7 @@ async function importHistoryBackup() {
           version: data.version,
           exported_at: data.exported_at,
           session_count: data.session_count,
+          source_id: data.source_id,
           profile_renames: data.profile_renames,
           sessions: data.sessions,
           profiles: data.profiles,
@@ -20909,7 +20910,10 @@ async function restoreCurrentSession(
       {
         restoreContext: useDeepLinkContext ? true : false,
         skipContext: pendingReset,
-        skipProfile: pendingReset,
+        // 短期记忆回退（消息尚未落库）的 profile 恒为空：那是
+        // 「档案未知」，不能当作「会话未绑定」清空用户已选档案
+        // （第一百一十轮 [14]）
+        skipProfile: pendingReset || data.source === 'memory',
       }
     );
     let inflightReconciled = false;
@@ -22475,6 +22479,12 @@ function refreshProfileOptions(selected = undefined) {
 }
 
 async function savePatientProfile() {
+  if (busy || sendInFlight) {
+    // 提交组装期间改档会让本轮以「档案已切换」中止，并把草稿
+    // 钉在已不存在的旧档案上（第一百一十轮 [13]）
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
   const context = readPatientContext();
   if (!Object.keys(context).length) {
     window.alert('请先填写补充信息，再保存为常用档案。');
@@ -22513,6 +22523,10 @@ async function savePatientProfile() {
 }
 
 async function renamePatientProfile() {
+  if (busy || sendInFlight) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
   const name = els.profileSelect.value;
   if (!name) {
     window.alert('请先选择一个常用档案。');
@@ -22554,6 +22568,10 @@ async function renamePatientProfile() {
 }
 
 async function deletePatientProfile() {
+  if (busy || sendInFlight) {
+    window.alert('会诊进行中，请先停止当前会诊。');
+    return;
+  }
   const name = els.profileSelect.value;
   if (!name) {
     window.alert('请先选择一个常用档案。');

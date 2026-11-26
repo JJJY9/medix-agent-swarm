@@ -3200,7 +3200,13 @@ class SessionStore:
         self, table: str, mapping: Dict[str, str]
     ) -> None:
         name = f"import_origin:{table}"[:80]
-        payload = json.dumps(mapping, ensure_ascii=False)[:200000]
+        # 按条目数裁剪而不是字符级截断：JSON 必须始终可解析，
+        # 否则整表来源会被静默清空（第一百一十轮 [16]）
+        items = list(mapping.items())
+        payload = json.dumps(dict(items), ensure_ascii=False)
+        while len(payload) > 190000 and len(items) > 1:
+            items = items[len(items) // 10:]
+            payload = json.dumps(dict(items), ensure_ascii=False)
         try:
             with self._lock, self._conn:
                 self._conn.execute(
@@ -5570,6 +5576,13 @@ class SessionStore:
             if mark_moved:
                 moved.add(candidate)
             matched.add(candidate)
+            provenance = getattr(self, "_import_provenance", None)
+            if provenance:
+                # 本备份认领该行后，它的归属转移到当前来源：之后
+                # 恢复本安装的备份（含从更早备份继承的记录）仍可
+                # 正常认领（第一百一十轮 [9]）
+                claimed_marks = provenance.setdefault("claimed", {})
+                claimed_marks.setdefault(table, set()).add(candidate)
             claimed.discard(candidate)
             for cached in list(state.values()):
                 if (
@@ -14233,11 +14246,18 @@ class SessionStore:
                             if local_pending is not None or not appt_usable:
                                 # 本地已有该预约的待办，或预约已取消/
                                 # 已完成/被用户墓碑 opt-out：备份里的
-                                # 旧日期提醒按重复项清理，不能复活
+                                # 旧日期提醒按重复项清理，不能复活。
+                                # 映射到本地预约的提醒（appointment_id=
+                                # local_link）同样要删：墓碑必须拦住
+                                # 挂接形态的复诊提醒（第一百一十轮 [10]）
                                 self._conn.execute(
                                     "DELETE FROM reminders WHERE id = ?"
-                                    " AND done = 0 AND appointment_id = 0",
-                                    (int(followup_reminder_id),),
+                                    " AND done = 0"
+                                    " AND appointment_id IN (0, ?)",
+                                    (
+                                        int(followup_reminder_id),
+                                        int(local_link),
+                                    ),
                                 )
                             else:
                                 # 按本地预约的新日期重算提醒日期与
@@ -14730,6 +14750,12 @@ class SessionStore:
                     if str(row_id).isdigit()
                     and int(row_id) in current_ids
                 }
+                claimed_here = (
+                    (self._import_provenance or {}).get("claimed") or {}
+                )
+                for claimed_id in claimed_here.get(import_table, set()):
+                    if int(claimed_id) in current_ids:
+                        origin_map[str(claimed_id)] = backup_source
                 for row_id in current_ids - pre_import_ids.get(
                     import_table, set()
                 ):
