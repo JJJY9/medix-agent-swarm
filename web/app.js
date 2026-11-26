@@ -845,6 +845,9 @@ let contextUserEdited = false;
 //: 启动快捷方式 action=new：首屏期间提交的主诉必须等新会话建好再
 //: 发送，否则会落进恢复出来的上一会话（第一百一十六轮 [17]）
 let launchNewSessionWaiters = [];
+//: 启动快捷方式等待窗口内已有排队发送：pagehide 不能清掉在途记录
+//: （第一百二十轮 [12]）
+let launchSendQueued = false;
 const pendingLaunchNewSession = (
   new URLSearchParams(window.location.search).get('action') === 'new'
 )
@@ -5393,8 +5396,32 @@ async function openSession(id) {
     if (!deepLinkOpen) consumeDeepLink();
     // 在切换 sessionId 之前处理草稿归属：旧版无归属草稿据此判断
     // 是否属于另一个会话
+    const incomingDraftOwner = safeSessionGet(DRAFT_OWNER_KEY);
+    const incomingDraftText = safeSessionGet(DRAFT_KEY) || '';
+    const incomingDraftProfile = safeSessionGet(DRAFT_PROFILE_KEY);
     settleDraftForSession(id);
     sessionId = id;
+    if (
+      incomingDraftText
+      && incomingDraftText.trim()
+      && incomingDraftOwner === id
+      && !els.input.value.trim()
+    ) {
+      // 恢复失败的深链把草稿写回给原会话：从历史打开它时注入
+      // （第一百二十轮 [14]）
+      els.input.value = incomingDraftText;
+      draftProfileMemory = incomingDraftProfile || null;
+      try {
+        safeSessionSet(DRAFT_KEY, incomingDraftText);
+        safeSessionSet(DRAFT_OWNER_KEY, incomingDraftOwner);
+        if (incomingDraftProfile) {
+          safeSessionSet(DRAFT_PROFILE_KEY, incomingDraftProfile);
+        }
+      } catch {
+        // 隐私模式忽略
+      }
+      autoGrow();
+    }
     consumeDeferredDraftForSession(id);
     safeStorageRemove(pendingResetStorageKey(id));
     if (keepPendingReset || draftConflict || pendingNewDraft) {
@@ -21187,10 +21214,27 @@ async function send(question, composerSubmit = false) {
     } catch {
       // 隐私模式忽略
     }
-    await Promise.race([
-      pendingLaunchNewSession,
-      new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
-    ]);
+    const launchSessionSnapshot = sessionId;
+    const launchOpenSeq = openSessionSeq;
+    launchSendQueued = true;
+    try {
+      await Promise.race([
+        pendingLaunchNewSession,
+        new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+      ]);
+    } finally {
+      launchSendQueued = false;
+    }
+    if (
+      sessionId !== launchSessionSnapshot
+      || openSessionSeq !== launchOpenSeq
+    ) {
+      // 等待期间用户打开了其它会话：主诉不能落进别人的会话
+      // （第一百二十轮 [13]）
+      restoreComposer(question);
+      window.alert('会话已切换，刚才的主诉未提交。');
+      return;
+    }
   }
   if (busy || sendInFlight) {
     restoreComposer(question);
@@ -21383,6 +21427,7 @@ async function send(question, composerSubmit = false) {
     if (
       !initialRestoreOk
       && sessionId
+      && !isFreshPageSession(sessionId)
       && renderedSessionId !== sessionId
     ) {
       // 旧会话从未在本页展示且恢复失败：不能把问题写进未知会话，
@@ -23081,8 +23126,10 @@ function flushDraftNow() {
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
       safeSessionRemove(DRAFT_PROFILE_KEY);
-      if (!busy && !sendInFlight) {
-        // 与 saveDraft 一致：只丢弃属于当前会话的在途记录
+      if (!busy && !sendInFlight && !launchSendQueued) {
+        // 与 saveDraft 一致：只丢弃属于当前会话的在途记录；
+        // 启动等待窗口内刚写入的在途主诉必须保留
+        // （第一百二十轮 [12]）
         clearInflightForCurrentSession();
         clearRestoredInflightIfOwned();
       }

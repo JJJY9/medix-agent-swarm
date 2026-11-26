@@ -6174,6 +6174,10 @@ class SessionStore:
             )
             if fingerprint == current:
                 return False
+            if tail_where is not None and _tail_matches(candidate):
+                # 尾字段精确命中本行：候选是本行存活版本，不把它
+                # 算作兄弟记录的占用（第一百二十轮 [9]）
+                return False
             current_created = str(created_at_value or "")
             # 只把「尚无本地存活行」的另一条备份记录视为占用了该
             # 内容：若那条记录已另有存活行，候选更可能是本行被编辑
@@ -6898,6 +6902,39 @@ class SessionStore:
                 return origin != provenance.get("source")
             return provenance.get("source") not in origin
 
+        _TERMINAL_TAIL_COLUMNS = {
+            "reminders": {"done"},
+            "medications": {"active", "stopped_at", "stop_reason"},
+            "appointments": {"status"},
+        }
+
+        def _tail_matches_except_terminal(candidate: int) -> bool:
+            """除终态列外，候选的尾字段是否与当前备份行一致。"""
+            if tail_where is None or not backup_tails:
+                return True
+            expected = backup_tails.get(raw_id)
+            if expected is None:
+                return True
+            tail_columns = IMPORT_TAIL_COLUMNS.get(table) or ()
+            skip = _TERMINAL_TAIL_COLUMNS.get(table, set())
+            try:
+                row = self._conn.execute(
+                    f"SELECT * FROM {table} WHERE id = ?",
+                    (candidate,),
+                ).fetchone()
+            except sqlite3.Error:
+                return False
+            if row is None:
+                return False
+            for index, column in enumerate(tail_columns):
+                expr = re.match(r"IFNULL\(\s*(\w+)", column)
+                name = expr.group(1) if expr else column
+                if name in skip:
+                    continue
+                if self._tail_value_key(row[name]) != expected[index]:
+                    return False
+            return True
+
         def _candidate_local_terminal(candidate: int) -> bool:
             """候选行是否被本地编辑成了终态（停药/完成/取消）。
 
@@ -6952,7 +6989,13 @@ class SessionStore:
                 or (
                     _candidate_edited(candidate)
                     and (
-                        _candidate_local_terminal(candidate)
+                        (
+                            _candidate_local_terminal(candidate)
+                            # 终态列以外（备注/提前/重复等）仍须与
+                            # 本备份行一致，独立来源的终态孪生不能
+                            # 被当成继承记录（第一百二十轮 [4]）
+                            and _tail_matches_except_terminal(candidate)
+                        )
                         or (
                             not _candidate_content_matches_backup(
                                 candidate
@@ -8063,8 +8106,15 @@ class SessionStore:
                             )
                         )
                     )
-                if claimable_row and not _candidate_from_other_backup(
-                    claim_row
+                if (
+                    claimable_row
+                    and (
+                        table != "reminders"
+                        or tail_where is None
+                        or _tail_matches(claim_row)
+                        or _candidate_edited(claim_row)
+                    )
+                    and not _candidate_from_other_backup(claim_row)
                 ):
                     # 尾字段平局时，软字段对不上本行、却命中同秒另一条
                     # 备份行（且内容也相同）的候选属于那条记录：本行按
@@ -9075,6 +9125,16 @@ class SessionStore:
             # 改挂到其它档案的记录仍可参与漂移配对
             filtered_candidates = set()
             for candidate_idx in candidates:
+                if (
+                    table == "reminders"
+                    and tail_where is not None
+                    and _tail_matches(candidate_idx)
+                ):
+                    # 尾字段精确命中本行：即使该行主键被预留给另一条
+                    # 同秒孪生，它仍是本行的存活版本
+                    # （第一百二十轮 [9]）
+                    filtered_candidates.add(candidate_idx)
+                    continue
                 if candidate_idx == raw_id:
                     # 漂移库里本地行 id 恰等于本行原始主键只是巧合：
                     # 若可证明非同源、且软字段/内容都不命中本行，它是
@@ -9197,9 +9257,17 @@ class SessionStore:
                 # 仍是本行存活版本（第八十五轮）；本地确有缺行时
                 # 仍走插入，优先补回被删记录
                 if (
-                    not (raw_id > 0 and _same_backup_origin())
-                    and _tail_prefers_sibling(raw_id)
-                    and not _tail_matches(raw_id)
+                    (
+                        not (raw_id > 0 and _same_backup_origin())
+                        and _tail_prefers_sibling(raw_id)
+                        and not _tail_matches(raw_id)
+                    )
+                    or (
+                        table == "reminders"
+                        and _tail_prefers_sibling(raw_id)
+                        and not _tail_matches(raw_id)
+                        and not _candidate_edited(raw_id)
+                    )
                 ):
                     # 本主键上的行其实是同组另一条孪生备份记录的
                     # 存活行：交给那条记录认领，本行按被删补插
@@ -9277,6 +9345,15 @@ class SessionStore:
                         )
                     ):
                         sole = min(candidates)
+                        if (
+                            table == "reminders"
+                            and tail_where is not None
+                            and not _tail_matches(sole)
+                            and not _candidate_edited(sole)
+                        ):
+                            # 尾字段对不上且无编辑证据：同秒孪生兄弟，
+                            # 本行按被删记录补插（第一百二十轮 [9]）
+                            return _ambiguous()
                         if (
                             not _foreign_claim_blocked(sole)
                             and not _content_owned_by_other(sole)
@@ -10127,12 +10204,32 @@ class SessionStore:
             # 不按被删记录补插
             and not _candidate_diff_hits_identity(sole)
             and not _candidate_diff_claimable(sole)
+            and not (
+                _candidate_from_other_backup(sole)
+                and _candidate_diff_hits_identity(sole)
+                and not _soft_matches(sole)
+            )
         ):
             # 候选内容与本行备份内容不同且被编辑过、组内仍有备份
             # 内容在本地缺失，尾字段也无法唯一归属本行：候选更可能
             # 是被删孪生兄弟的存活版本，本行必须按被删记录补插
             # （宁重复勿丢）；尾字段精确且唯一命中本行时仍按本行
             # 存活版本认领（第九十九轮 [4]）
+            return _ambiguous()
+        if (
+            table == "reminders"
+            and tail_where is not None
+            and not _tail_matches(sole)
+            and not _candidate_edited(sole)
+        ):
+            # 尾字段对不上且无编辑证据：候选是同秒孪生兄弟，本行
+            # 按被删记录补插（第一百二十轮 [9]）
+            return _ambiguous()
+        if _candidate_from_other_backup(sole) and not _soft_matches(
+            sole
+        ):
+            # 合并备份：另一来源的不同药名/标题行不能靠身份列差异
+            # 被认领（第一百二十轮 [3]）
             return _ambiguous()
         return _claim(sole)
 
@@ -15045,11 +15142,30 @@ class SessionStore:
                     if apply_links:
                         # 链接写回成功才宣称归属：拒绝链接时改写
                         # owner_visit_id 会让改期静默覆盖就诊复诊日期
-                        self._conn.execute(
-                            "UPDATE appointments SET owner_visit_id = ?"
+                        existing_owner_row = self._conn.execute(
+                            "SELECT owner_visit_id FROM appointments"
                             " WHERE id = ?",
-                            (int(visit_id), int(followup_appointment_id)),
+                            (int(followup_appointment_id),),
+                        ).fetchone()
+                        existing_owner = (
+                            int(existing_owner_row["owner_visit_id"] or 0)
+                            if existing_owner_row is not None else 0
                         )
+                        if not (
+                            existing_owner
+                            and existing_owner != int(visit_id)
+                        ):
+                            # 预约已有其它就诊的明确归属时不改挂
+                            # （第一百二十轮 [18]）
+                            self._conn.execute(
+                                "UPDATE appointments"
+                                " SET owner_visit_id = ?"
+                                " WHERE id = ?",
+                                (
+                                    int(visit_id),
+                                    int(followup_appointment_id),
+                                ),
+                            )
 
             for stale_id in set(stale_appointment_ids):
                 if stale_id not in imported_appointment_ids:
@@ -15360,6 +15476,45 @@ class SessionStore:
                         ),
                     )
                     if marker_match is None:
+                        owner_vid = int(
+                            marker_row["owner_visit_id"] or 0
+                        )
+                        if not (
+                            owner_vid
+                            and owner_vid in local_backup_visit_ids
+                        ):
+                            continue
+                        # owner 型自动预约与备注标记型同组去重
+                        # （第一百二十轮 [10]）
+                        marker_vid = owner_vid
+                        if marker_vid not in visit_profile_cache:
+                            visit_profile_row = self._conn.execute(
+                                "SELECT profile FROM visit_records"
+                                " WHERE id = ?",
+                                (marker_vid,),
+                            ).fetchone()
+                            visit_profile_cache[marker_vid] = (
+                                _normalize_profile_name(
+                                    str(
+                                        visit_profile_row["profile"]
+                                        or ""
+                                    )
+                                )
+                                if visit_profile_row is not None else ""
+                            )
+                        marker_visit_profile = visit_profile_cache[
+                            marker_vid
+                        ]
+                        if marker_visit_profile and (
+                            _normalize_profile_name(
+                                str(marker_row["profile"] or "")
+                            )
+                            != marker_visit_profile
+                        ):
+                            continue
+                        marker_appointments.setdefault(
+                            (marker_vid, marker_visit_profile), []
+                        ).append(marker_row)
                         continue
                     marker_raw_vid = int(marker_match.group(1))
                     if raw_note is not None:

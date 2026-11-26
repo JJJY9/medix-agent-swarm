@@ -1405,10 +1405,18 @@ def _convert_import_metric(
     return None
 
 
-_RISK_TAG_PATTERN = re.compile(
-    r"(?:综合)?风险(?:等级|程度|评级)?\s*[：:为是]\s*[\*「【\s]*"
+_RISK_LEVEL_WORD = (
     r"(中等风险|中等|中风险|紧急|高危|中危|低危"
     r"|高(?!血压|风险|危)|中(?!等|风险|危)|低(?!危|风险))"
+)
+_RISK_TAG_PATTERN = re.compile(
+    r"(?:风险等级|风险程度|风险评级|综合风险|综合评估?风险|整体风险)"
+    r"\s*[：:为是]\s*[\*「【\s]*" + _RISK_LEVEL_WORD
+)
+#: 无标签的「风险：X」只在句首/标点后成立，不能命中「出血风险：低」
+_RISK_TAG_PATTERN_WEAK = re.compile(
+    r"(?<![\u4e00-\u9fa5])风险\s*[：:]\s*[\*「【\s]*"
+    + _RISK_LEVEL_WORD
 )
 _RISK_KEYWORD_PATTERNS = (
     (
@@ -1440,9 +1448,11 @@ _RISK_KEYWORD_PATTERNS = (
     (
         "low",
         re.compile(
-            r"低风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"低风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变|型"
+            r"|HPV|hpv)"
             r"|风险较低|风险不高"
             r"|低危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|操作"
+            r"|型|HPV|hpv"
             r"|症状|信号|表现|征象|指征)"
         ),
     ),
@@ -1496,9 +1506,14 @@ def _risk_at_least(level: str, threshold: str) -> bool:
 
 def _risk_tag_level(content: str) -> str:
     """带「风险等级：X」标签的显式分级；无标签返回空字符串。"""
+    if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
+        return ""
     tagged = _RISK_TAG_PATTERN.search(content)
     if tagged:
         return _RISK_TAG_LEVELS.get(tagged.group(1), "")
+    weak = _RISK_TAG_PATTERN_WEAK.search(content)
+    if weak:
+        return _RISK_TAG_LEVELS.get(weak.group(1), "")
     return ""
 
 
@@ -1507,12 +1522,13 @@ def parse_risk_level(text: str) -> str:
     content = str(text or "")
     if not content:
         return ""
+    # 「风险等级：**不确定**」先于标签解析：不能把后面的具体风险
+    # （低血糖风险：低）当成整体分级（第一百二十轮 [5]）
+    if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
+        return ""
     tagged = _risk_tag_level(content)
     if tagged:
         return tagged
-    # 「风险等级：**不确定**」：markdown 粗体不能绕过不确定判定
-    if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
-        return ""
     for level, pattern in _RISK_KEYWORD_PATTERNS:
         for match in pattern.finditer(content):
             prefix = content[max(0, match.start() - 12):match.start()]
@@ -14202,14 +14218,26 @@ def _family_attention(
     adherence_preview = medications.get("adherence") or {}
     preview_rate = medications.get("worst_rate")
     preview_expected = int(adherence_preview.get("expected") or 0)
-    preview_started = str(medications.get("oldest_started_at") or "")
-    preview_started_before_today = (
-        bool(preview_started)
-        and preview_started[:10] < datetime.now().strftime("%Y-%m-%d")
+    preview_worst_started = str(
+        medications.get("worst_started_at") or ""
     )
-    preview_sample_ok = (
-        preview_started_before_today or preview_expected >= 7
+    preview_started = str(
+        preview_worst_started
+        or medications.get("oldest_started_at") or ""
     )
+    preview_today = datetime.now().strftime("%Y-%m-%d")
+    if preview_worst_started:
+        # 产生最差打卡率的药当天新开：样本不足
+        # （第一百二十轮 [19]）
+        preview_sample_ok = preview_worst_started[:10] < preview_today
+    else:
+        preview_sample_ok = (
+            (
+                bool(preview_started)
+                and preview_started[:10] < preview_today
+            )
+            or preview_expected >= 7
+        )
     preview_shown = None
     if preview_sample_ok and preview_rate is not None:
         if preview_rate < 40:
@@ -14268,15 +14296,24 @@ def _family_attention(
             worst_rate if worst_rate is not None
             else adherence.get("rate", 0)
         )
-        sample_started = str(medications.get("oldest_started_at") or "")
-        sample_ok = (
-            (
-                bool(sample_started)
-                and sample_started[:10]
-                < datetime.now().strftime("%Y-%m-%d")
-            )
-            or int(adherence.get("expected") or 0) >= 7
+        sample_worst = str(
+            medications.get("worst_started_at") or ""
         )
+        sample_started = str(
+            sample_worst
+            or medications.get("oldest_started_at") or ""
+        )
+        sample_today = datetime.now().strftime("%Y-%m-%d")
+        if sample_worst:
+            sample_ok = sample_worst[:10] < sample_today
+        else:
+            sample_ok = (
+                (
+                    bool(sample_started)
+                    and sample_started[:10] < sample_today
+                )
+                or int(adherence.get("expected") or 0) >= 7
+            )
         return {
             # 与 _build_health_insights 的 <40 阈值一致（第一百一十七
             # 轮 [17]）；当天新开的药不给 warning
@@ -14930,6 +14967,7 @@ async def family_overview(days: int = 7):
             "taken_today_active": 0,
             "skipped_today_active": 0,
             "oldest_started_at": "",
+            "worst_started_at": "",
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
@@ -14999,6 +15037,7 @@ async def family_overview(days: int = 7):
                 # 家庭/单成员卡片都用单药最差打卡率：一种药完全
                 # 没吃不能被其它药的高打卡率稀释成「正常」
                 entry["worst_rate"] = week_rate
+                entry["worst_started_at"] = started_text
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
 

@@ -731,17 +731,24 @@ def _uncertain_bleeding_window(window: str) -> bool:
     )
     if tokens is None:
         return False
-    blood = re.search(r"出血|流血|见红|血", sample)
-    if blood is None:
-        return False
-    before_blood = sample[: blood.start()][-6:]
-    before_blood = re.sub(
-        r"(?:见|见到|出现|发现)\s*$", "", before_blood
+    bleeding_re = re.compile(
+        r"出血|流血|见红|见(?:到)?血|(?<![贫缺])血"
+        r"(?!(?:常规|压|糖|脂|型|沉|氧|液|管|检|培养|友|蛋白|小板|栓|肿"
+        r"|红蛋白|红素|细胞|尿))"
     )
-    return re.search(
-        # 「有没有」里的「没有」不是否定
-        r"(?<!有)(?:没有|没|无|未|不|否认|非)\s*$", before_blood
-    ) is None
+    for blood in bleeding_re.finditer(sample):
+        before_blood = sample[: blood.start()][-6:]
+        before_blood = re.sub(
+            r"(?:见|见到|出现|发现)\s*$", "", before_blood
+        )
+        if re.search(
+            # 「有没有」里的「没有」不是否定
+            r"(?<!有)(?:没有|没|无|未|不|否认|非)\s*$", before_blood
+        ) is None:
+            # 存在未被否认的出血词：按待排查处理
+            # （第一百一十九轮 [5][11]、第一百二十轮 [6]）
+            return True
+    return False
 
 
 def _bleeding_jianxue_idiom(text: str, start: int, term: str) -> bool:
@@ -970,6 +977,13 @@ def _is_negated(prefix: str, suffix: str = "") -> bool:
         ) and re.match(r"[吗么嘛]", suffix.lstrip()):
             return True
         # 「不是没有胸痛」「并非没有呼吸困难」实际是阳性
+        return False
+    if re.search(
+        r"(?:不|不能|无法|没有|未|难以)\s*(?:否认|隐瞒)(?:有)?\s*$",
+        stripped,
+    ):
+        # 「不否认胸痛/不能否认有胸痛」是阳性描述
+        # （第一百二十轮 [7]）
         return False
     if any(
         stripped.endswith(term) for term in _DOUBLE_NEGATION_SUFFIXES
@@ -1787,7 +1801,8 @@ def _clean_complaint_clause(
             # 省略主语的「这几天胸痛在网上查了」同样是患者主诉
             and not _patient_course_before_quote(clause)
         )
-        current_course = (not quote_only) and (
+        current_course = _patient_course_after_quote(clause) or (
+            (not quote_only) and (
             # 「网上说胸痛持续十分钟」里的时长属于引用内容；只有
             # 明确「我今天/我现在胸痛」才是本人当前病程
             any(word in clause for word in _CURRENT_COURSE_CUES)
@@ -1810,7 +1825,6 @@ def _clean_complaint_clause(
             or _EDUCATION_CURRENT_RE.search(clause) is not None
             # 「网上说胸痛要重视我胸口痛」：引述词后出现患者主语
             # 与红旗症状（第一百一十九轮 [1]）
-            or _patient_course_after_quote(clause)
             # 「看视频时/看了个视频后胸痛」：媒体词只是症状发生的
             # 时间语境，不是科普引用（第八十三轮）
             or (
@@ -1856,6 +1870,7 @@ def _clean_complaint_clause(
                     or _has_pregnancy_bleeding(clause)
                     or _has_head_trauma(clause)
                 )
+            )
             )
         )
         family_redflag = any(
@@ -2003,6 +2018,12 @@ def _clean_complaint_clause(
                 r"[、和及与]|伴|合并|并发", prefix
             ) is not None
             or re.search(r"\d", prefix) is not None
+            # 「咯血了一口」「抽搐了一会儿」：量词/短时程同样是
+            # 真实病程而非术语解释（第一百二十轮 [1]）
+            or _POST_QUANTITY_RE.search(prefix) is not None
+            or re.search(
+                r"(?:一下|一会儿|好一会儿|一阵子)", prefix
+            ) is not None
             # 发作频次（抽搐了两次/咳嗽好几回）是真实病程而非术语解释
             or re.search(
                 r"(?:[0-9一二两三四五六七八九十半几]+|好|多|数)"
@@ -2202,12 +2223,26 @@ def _patient_course_after_quote(clause: str) -> bool:
     tail = clause[match.end():]
     self_match = _PATIENT_SELF_TOKEN_RE.search(tail)
     if self_match is None:
-        return False
+        baby_match = re.search(r"我(?:家)?(?:宝宝|孩子|娃|小孩)", tail)
+        if baby_match is None:
+            return False
+        # 患儿主语的引述后发热（婴儿/免疫抑制规则依赖）
+        # （第一百二十轮 [17]）；发热词可能出现在「我宝宝」之前
+        return (
+            _has_fever(tail)
+            and _FEVER_TOPIC_RE.search(tail) is None
+        )
     after = tail[self_match.end():]
     return (
         _is_red_flag_text(after)
         or _has_pregnancy_bleeding(after)
         or _has_head_trauma(after)
+        # 发热不在红旗表，但婴儿/免疫抑制伴发热规则依赖它
+        # （第一百二十轮 [17]）
+        or (
+            _has_fever(after)
+            and _FEVER_TOPIC_RE.search(after) is None
+        )
     )
 
 
@@ -2733,6 +2768,9 @@ HEAD_TRAUMA_TERMS = (
     "磕到头部", "磕到头", "头碰到", "头撞到", "头磕到", "头着地",
     "摔到头", "后脑勺着地", "后脑着地", "后脑勺撞", "后脑勺磕",
     "后脑勺碰", "磕破头", "磕破了头", "撞破头", "撞破了头",
+    # 裸「后脑」+撞/磕/摔/碰同样是头部外伤（第一百二十轮 [2]）
+    "后脑撞", "后脑磕", "后脑碰", "后脑摔", "后脑被撞", "后脑被磕",
+    "后脑被碰", "后脑流血", "后脑出血", "后脑渗血",
     "脑袋磕", "脑袋撞", "脑袋碰", "头磕破", "头撞破",
     # 反向语序：磕了头 / 头上撞了个包 / 头被撞了一下
     "磕了头", "撞了头", "碰了头", "磕了脑袋", "撞了脑袋", "碰了脑袋",
@@ -2787,7 +2825,7 @@ _HEAD_NON_HEAD_PREFIX = (
 )
 _HEAD_TRAUMA_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚乳鼻龟眉肩膝腕踝奶榔斧锄镐])头(?:部)?|脑袋|额头|前额|头顶|"
-    r"后脑勺|枕部|脑门|脑壳|太阳穴)"
+    r"后脑(?:勺)?|枕部|脑门|脑壳|太阳穴)"
     # 口语方位/副词：后脑勺上磕了个包、头不小心撞到墙、
     # 头一下子撞到门框（部位与撞击动词之间可插入修饰）。
     # 揣测词（好像/可能/似乎/估计/多半/应该是）按阳性处理：
@@ -2818,13 +2856,13 @@ _HEAD_TRAUMA_RE = re.compile(
     r"|(?:撞|磕|碰|砸|打|摔)(?:在|到)(?:了)?"
     r"(?:我|他|她|患者|宝宝|孩子|本人)?(?:的)?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚乳鼻龟眉肩膝腕踝奶榔斧锄镐])头(?:部)?|脑袋|额头|前额|"
-    r"头顶|后脑勺|枕部|脑门|脑壳|太阳穴)"
+    r"头顶|后脑(?:勺)?|枕部|脑门|脑壳|太阳穴)"
     r"|(?<![趾指骨枕馒拳舌木砖石车脚乳鼻龟眉肩膝腕踝奶榔斧锄镐])"
-    r"(?:头(?:部)?|脑袋|额头|前额|头顶|后脑勺|枕部|脑门|脑壳|太阳穴)"
+    r"(?:头(?:部)?|脑袋|额头|前额|头顶|后脑(?:勺)?|枕部|脑门|脑壳|太阳穴)"
     r"在[^，。；,.!?！？\n]{0,6}上?(?:撞|磕|碰|砸)"
     r"|(?:撞|磕|碰|砸|摔)(?:到|了|着|伤|破)?了?"
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚乳鼻龟眉肩膝腕踝奶榔斧锄镐])头(?:部)?|脑袋|额头|前额|"
-    r"头顶|后脑勺|枕部)"
+    r"头顶|后脑(?:勺)?|枕部)"
 )
 
 
@@ -2834,7 +2872,7 @@ _HEAD_TRAUMA_RE = re.compile(
 #: 等非头部名词（第一百一十二轮 [15]）
 _HEAD_SWELLING_RE = re.compile(
     r"(?:(?<![趾指骨枕馒拳舌木砖石车脚乳鼻龟眉肩膝腕踝奶榔斧锄镐])头(?:上|部)?|"
-    r"头皮|脑袋上?|额头|头顶|后脑勺)"
+    r"头皮|脑袋上?|额头|头顶|后脑(?:勺)?)"
     r"(?:(?:起了?|肿了?|鼓了?)(?:个|一个)?(?:大)?(?:包|肿包|血肿)"
     r"|有(?:个|一个)?(?:包|肿包|血肿))"
     r"|(?:头皮|头部|头皮下)血肿"
@@ -3305,7 +3343,11 @@ _LONG_STOP_PATTERN = re.compile(
     r"停(?!(?:经|机|工|课|业|车|电|水|职|赛|战|学|产|航|手|留|靠|放|歇)))"
     r"[^，。；;,.!?！？\n]{0,6}"
     r"(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|多月|多年|"
-    r"半年|去年|前年|上年|上个月|上月|很久|好久)"
+    r"半年|去年|前年|上年|上个月|上月|很久|好久|"
+    # 明确的 3 周以上同样是远期停药（12 周≈3 个月）
+    # （第一百二十轮 [16]）
+    r"(?<![0-9一二两三四五六七八九十])(?:[3-9三四五六七八九十]|"
+    r"[1-9][0-9]+)\s*(?:个)?\s*(?:周|星期)(?!半))"
     r"|(?:[0-9一二两三四五六七八九十半几]+(?:个)?(?:月|年)|半年|多年|"
     r"去年|前年|上年|上个月|上月|很久|好久)"
     r"\s*(?:前|以来)?[^，。；;,.!?！？\n]{0,4}"
@@ -4959,9 +5001,14 @@ def _active_medical_text(
                         if piece_stop is not None:
                             leading = item[: piece_stop.start()].strip()
                             if not leading or re.match(
-                                r"^[0-9一二两三四五六七八九十半几]+"
-                                r"(?:\.[0-9]+)?\s*(?:片|粒|丸|袋|包|支|"
-                                r"瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)?$",
+                                r"^[0-9一二两三四五六七八九十半几./]*"
+                                r"\s*(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|"
+                                r"mg|毫克|克|g|单位|iu|日|天|次|晚)?"
+                                r"\s*(?:/\s*(?:日|天|次))?"
+                                r"\s*(?:(?:每晚|每日|每天|一天|一日|每早|"
+                                r"睡前|饭前|饭后|早上|晚上)"
+                                r"(?:一次|两次|三次|1次|2次|3次)?|"
+                                r"(?:qd|bid|tid|qn))?$",
                                 leading,
                                 re.IGNORECASE,
                             ):
