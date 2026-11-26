@@ -420,7 +420,8 @@ def test_web_inflight_fresh_session_gate():
 def test_web_send_profile_snapshot():
     source = _app_js()
     start = source.index("async function send(")
-    block = source[start:start + 12000]
+    # send 前部新增启动快捷方式等待（第一百一十六轮 [17]）：窗口放宽
+    block = source[start:start + 14000]
     # 档案守卫比较发送时刻的下拉快照（第一百一十二轮 [10]）
     assert "const selectProfileAtSend = els.profileSelect.value || '';" in block
     assert "!== selectProfileAtSend" in block

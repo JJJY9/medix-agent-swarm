@@ -1667,7 +1667,13 @@ _RESTART_USE_SUFFIX_EN = re.compile(
     # 明确恢复用药（第一百一十一轮 [7]）
     r"|resumed(?:\s+it)?"
     r"|now\s+(?:i\s+)?(?:take|use)\s+(?:it\s+)?again"
-    r"|started\s+(?:taking|using)\s+(?:it\s+)?again)\b",
+    r"|started\s+(?:taking|using)\s+(?:it\s+)?again"
+    # I am taking it now / now I take it daily / started taking it
+    # last month：代词宾语的一般现在时/后进行式续用
+    # （第一百一十六轮 [7][15]）
+    r"|i\s*(?:'m|am)\s+(?:taking|using)\s+it\s+now"
+    r"|now\s+(?:i\s+)?(?:take|use)\s+it\b"
+    r"|started\s+(?:taking|using)\s+it\s+(?:last|this|in|at|on|since))\b",
     re.IGNORECASE,
 )
 #: 持续用药形态：「以前吃过，现在每天吃一片」仍是当前用药；

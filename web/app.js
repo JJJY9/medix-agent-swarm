@@ -842,6 +842,21 @@ let deepLinkedSession = false;
 // 深链恢复失败重试期间，用户是否手动编辑过补充信息：
 // 编辑过就不能再用深链快照覆盖草稿
 let contextUserEdited = false;
+//: 启动快捷方式 action=new：首屏期间提交的主诉必须等新会话建好再
+//: 发送，否则会落进恢复出来的上一会话（第一百一十六轮 [17]）
+let launchNewSessionWaiters = [];
+const pendingLaunchNewSession = (
+  new URLSearchParams(window.location.search).get('action') === 'new'
+)
+  ? new Promise((resolve) => {
+    launchNewSessionWaiters.push(resolve);
+  })
+  : null;
+function resolveLaunchNewSession(created) {
+  const waiters = launchNewSessionWaiters;
+  launchNewSessionWaiters = [];
+  waiters.forEach((resolve) => resolve(created));
+}
 //: 用户最近一次手动切换档案的序号：恢复会话的晚到响应据此放弃
 let profileSelectionSeq = 0;
 //: 当前是否正在恢复会话（用于切换档案时按“已有会话”处理）
@@ -10194,9 +10209,21 @@ function renderFamilyOverview(data) {
       chips.appendChild(familyChip(`连续 ${streakDays} 天`));
     }
     if (!chips.children.length) {
-      chips.appendChild(familyChip(
-        `近 ${days} 天暂无健康记录`, 'family-chip-muted'
-      ));
+      // 复查计划当日完成/停用后 care_plan 计数为空，但当天确有
+      // 健康活动：不能与「最近活动 今天」自相矛盾
+      // （第一百一十六轮 [16]）
+      const activityAt = String(profile.last_activity || '');
+      const activityRecent = Boolean(activityAt) && (
+        Date.now() - new Date(activityAt).getTime()
+          <= Math.max(1, Number(days) || 7) * 86400000
+      );
+      if (profile.recorded_today === true) {
+        chips.appendChild(familyChip('今日已记录', 'family-chip-muted'));
+      } else if (!activityRecent) {
+        chips.appendChild(familyChip(
+          `近 ${days} 天暂无健康记录`, 'family-chip-muted'
+        ));
+      }
     } else if (profile.recorded_today === false) {
       chips.appendChild(familyChip('今日未记录', 'family-chip-muted'));
     }
@@ -20709,17 +20736,27 @@ async function handleLaunchAction() {
   const action = params.get('action');
   if (!action) return;
 
-  const url = new URL(window.location.href);
-  url.searchParams.delete('action');
-  window.history.replaceState(
-    {},
-    '',
-    `${url.pathname}${url.search}${url.hash}`
-  );
+  const clearActionParam = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('action');
+    window.history.replaceState(
+      {},
+      '',
+      `${url.pathname}${url.search}${url.hash}`
+    );
+  };
 
   if (action === 'new') {
-    await startNewSession();
-  } else if (action === 'reminders') {
+    const created = await startNewSession();
+    resolveLaunchNewSession(Boolean(created));
+    // 动作成功前保留 URL 参数：刷新/恢复时可以重试；排队中的主诉
+    // 已由 pendingLaunchNewSession 等待本次建会话（第一百一十六轮
+    // [17]）
+    if (created !== false) clearActionParam();
+    return;
+  }
+  clearActionParam();
+  if (action === 'reminders') {
     openReminders();
     const reminderQuery = params.get('q');
     if (reminderQuery && els.remindersSearch) {
@@ -21123,6 +21160,14 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 /* ---------- 提交主诉 ---------- */
 
 async function send(question, composerSubmit = false) {
+  if (pendingLaunchNewSession) {
+    // 「新建会诊」快捷方式还没建好会话：等它完成再发送，主诉不会
+    // 落进恢复出来的上一会话（第一百一十六轮 [17]）
+    await Promise.race([
+      pendingLaunchNewSession,
+      new Promise((resolve) => setTimeout(() => resolve(false), 8000)),
+    ]);
+  }
   if (busy || sendInFlight) {
     restoreComposer(question);
     window.alert(concurrencyBlockedHint());
@@ -23771,6 +23816,8 @@ function draftTextSimilarity(original, current) {
   return (prefix + suffix) / Math.min(a.length, b.length);
 }
 
+let deferredCrossOwnerDraft = null;
+
 function loadDraft() {
   try {
     const draft = safeSessionGet(DRAFT_KEY);
@@ -23789,10 +23836,17 @@ function loadDraft() {
     ) {
       // owner 为空表示「输入时本页还没有会话」：多标签页里另一标签
       // 建立共享会话后刷新，这段未发送的草稿仍属于本页用户，
-      // 不能静默删除（第八十三轮）；只清理明确属于其它会话的草稿。
-      // 陈旧档案归属必须一并清掉：否则 saveDraft 会把它写回新草稿，
-      // preserveDraftProfile 的早退又让它无法被纠正，合法重发被
-      // 跨档案守卫永久拦截（第九十一轮 [14]）
+      // 不能静默删除（第八十三轮）。深链/跨会话打开时先暂存不显示：
+      // 目标会话恢复失败（404/网络错误）时草稿要还给原会话
+      // （第一百一十六轮 [12]）
+      deferredCrossOwnerDraft = {
+        text: draft,
+        owner,
+        profile: safeSessionGet(DRAFT_PROFILE_KEY),
+      };
+      // 存储键照旧清掉：陈旧档案归属不能回流到新草稿
+      // （第九十一轮 [14]）；暂存副本在目标会话恢复失败时回还
+      // （第一百一十六轮 [12]）
       safeSessionRemove(DRAFT_KEY);
       safeSessionRemove(DRAFT_OWNER_KEY);
       safeSessionRemove(DRAFT_PROFILE_KEY);
@@ -23813,6 +23867,35 @@ let voiceRecognition = null;
 let voiceListening = false;
 let voicePrefix = '';
 let voiceFinal = '';
+
+//: 深链打开的目标会话恢复失败：把暂存的旧会话草稿还给原会话
+//: （第一百一十六轮 [12]）
+function restoreDeferredCrossOwnerDraft() {
+  const deferred = deferredCrossOwnerDraft;
+  deferredCrossOwnerDraft = null;
+  if (!deferred || !deferred.owner) return;
+  if (sessionId && sessionId !== deferred.owner) {
+    // 目标会话已换成别的会话（如 404 后新建）：草稿仍归原会话，
+    // 保留存储供用户回到原会话时恢复
+    return;
+  }
+  sessionId = deferred.owner;
+  persistSessionId(deferred.owner);
+  try {
+    safeSessionSet(DRAFT_KEY, deferred.text);
+    safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
+    if (deferred.profile !== null && deferred.profile !== undefined) {
+      safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
+    }
+  } catch {
+    // 忽略
+  }
+  if (!els.input.value.trim()) {
+    els.input.value = deferred.text;
+    draftProfileMemory = deferred.profile;
+    autoGrow();
+  }
+}
 
 function setVoiceListening(state) {
   voiceListening = state;
@@ -25674,7 +25757,15 @@ loadDraft();
 restoreInflightQuestion();
 initProfiles().finally(() => {
   Promise.resolve(restoreCurrentSession('', 0, true))
-    .then((ok) => resolveInitialSessionRestore(Boolean(ok)))
+    .then((ok) => {
+      resolveInitialSessionRestore(Boolean(ok));
+      const restored = Boolean(ok);
+      if (restored) {
+        deferredCrossOwnerDraft = null;
+      } else if (deepLinkedSession && previousTabSession) {
+        restoreDeferredCrossOwnerDraft();
+      }
+    })
     .catch(() => resolveInitialSessionRestore(false));
   handleLaunchAction();
 });

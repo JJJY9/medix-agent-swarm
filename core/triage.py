@@ -557,13 +557,19 @@ def _has_pregnancy_bleeding(text: str) -> bool:
         internal_body = re.sub(
             r"(?:阴道|产道|下体|下面|下身)\s*$", "", bleed_body
         )
-        if re.search(
-            # 「不是/并不是阴道出血」：否认以「是」收尾，单独的「不」
-            # 匹配不完整，必须显式包含（第九十四轮 [8]）
-            r"(?:没有|没|无|未|不是|不|否认|非)"
-            r"(?:(?:再|再次|明显|任何|见|见到|出现|发现)\s*)*$",
-            internal_body,
-        ) is not None:
+        if (
+            re.search(
+                # 「不是/并不是阴道出血」：否认以「是」收尾，单独的
+                # 「不」匹配不完整，必须显式包含（第九十四轮 [8]）
+                r"(?:没有|没|无|未|不是|不|否认|非)"
+                r"(?:(?:再|再次|明显|任何|见|见到|出现|发现)\s*)*$",
+                internal_body,
+            )
+            is not None
+            # 「否认腹痛及阴道出血/无腹痛、阴道出血」：枚举否定覆盖
+            # 到出血部位（第一百一十六轮 [6]）
+            or _enum_negated(internal_body)
+        ):
             # 出血词后紧贴的「了」说明曾经出血、现已停止（妊娠
             # 语境仍需排查宫外孕/先兆流产，第一百轮 [1] 口径、
             # 第一百一十二轮 [2]）；后续分句的「了」（做了B超/
@@ -598,7 +604,10 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             continue
         if _non_pregnancy_bleeding_site(span, prefix):
             continue
-        if not _is_negated(prefix, _clause_suffix(text, match.end())):
+        if not (
+            _is_negated(prefix, _clause_suffix(text, match.end()))
+            or _enum_negated(prefix)
+        ):
             return True
     location_terms = (
         "阴道出血", "阴道流血", "阴道大量出血", "产道出血", "下体出血",
@@ -697,19 +706,35 @@ _GUM_BLEEDING_WORDS = (
 def _bleeding_jianxue_idiom(text: str, start: int, term: str) -> bool:
     """「一针见血/见血封喉/见血就晕」不是出血描述。
 
-    只在「见血/见到血」这类无部位、无出血谓语的形态上判定
-    （第一百一十五轮 [17]）。
+    只在无出血部位、且后接晕血类反应时判定（第一百一十五轮 [17]、
+    第一百一十六轮 [4]）：「下面/内裤上见血」「见血我就赶紧去了
+    医院」「见血都两天了」都是真实出血。
     """
     if "见" not in term or "血" not in term:
         return False
     if "出血" in term or "流血" in term or "见红" in term:
         return False
+    if any(
+        location in term
+        for location in (
+            "阴道", "产道", "下体", "下面", "下身", "内裤", "护垫",
+            "卫生巾", "上厕所", "擦拭", "擦到",
+        )
+    ):
+        return False
     prefix = text[max(0, start - 4): start]
-    suffix = text[start + len(term): start + len(term) + 4]
-    return prefix.endswith("一针") or suffix.startswith(
-        ("封喉", "就", "便", "我", "他", "她", "它", "都", "也", "会",
-         "还", "又")
-    )
+    suffix = text[start + len(term): start + len(term) + 10]
+    if prefix.endswith("一针"):
+        return True
+    if suffix.startswith("封喉"):
+        return True
+    return re.match(
+        r"\s*(?:我|他|她|人|都|也|会|就|便){0,2}\s*"
+        r"(?:就|便)?\s*(?:会|我|他|她|有点|有些)?\s*"
+        r"(?:头晕|头昏|晕倒|晕血|晕|害怕|紧张|心慌|发慌|恶心|想吐|"
+        r"吐|发抖|发软|腿软|眼花|冒冷汗|出汗)",
+        suffix,
+    ) is not None
 
 
 def _generic_bleeding_positive(text: str) -> bool:
@@ -3284,7 +3309,13 @@ _ENGLISH_RESTART_RE = re.compile(
     r"(?:kept|keeps?|kept\s+on|continued|continues?|continuing|"
     r"have\s+continued|has\s+continued|have\s+kept|has\s+kept)\s+"
     r"(?:on\s+)?(?:taking|to\s+take|using|to\s+use)?\s*"
-    r"(?:it|the\s+same|this)\b)\b",
+    r"(?:it|the\s+same|this)\b"
+    # I am taking it now / now I take it daily / started taking it
+    # last month：代词宾语的一般现在时/进行式续用
+    # （第一百一十六轮 [7][15]）
+    r"|i\s*(?:'m|am)\s+(?:taking|using)\s+it\s+now"
+    r"|now\s+(?:i\s+)?(?:take|use)\s+it\b"
+    r"|started\s+(?:taking|using)\s+it\s+(?:last|this|in|at|on|since))\b",
     re.IGNORECASE,
 )
 #: 英文停药必须有明确时长才算远期停药（not on/not taking 裸分支不算）
@@ -4451,6 +4482,7 @@ def _active_medical_text(
                         "孩子", "小孩", "宝宝", "娃", "大宝", "二宝",
                     )
                 )
+                and "我" not in clause
                 and not any(
                     term in clause
                     for term in ("本人", "患者", "患儿")
@@ -4520,7 +4552,9 @@ def _active_medical_text(
         # 家属用药或换用其它药物的分句不能复活本句的既往药：
         # 「以前吃华法林，我爸还在吃华法林」「…现在还在吃阿司匹林」
         restart_parts = []
-        for follow in clauses[index + 1:index + 3]:
+        # 「停了一年多，后来医生说可以吃，现在又吃上了」：续用
+        # 可能隔着一两个原因/事件分句（第一百一十六轮 [2]）
+        for follow in clauses[index + 1:index + 5]:
             follow = follow.strip()
             if not follow:
                 continue
