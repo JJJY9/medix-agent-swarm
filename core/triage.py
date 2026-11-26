@@ -612,7 +612,7 @@ def _has_pregnancy_bleeding(text: str) -> bool:
             # 非部位匹配只看顿号/逗号后的最后一个枚举项：前面的
             # 「牙龈出血、」不能吞掉后面的孕产期「见红」
             prefix_tail = re.split(
-                r"[，。；;,.!?！？、\n]", prefix
+                r"[，。；;,.!?！？、\n]|和|及|与", prefix
             )[-1]
             gum_hit = any(
                 word in span or word in prefix_tail[-6:]
@@ -640,16 +640,18 @@ def _has_pregnancy_bleeding(text: str) -> bool:
                 )
             else:
                 prefix_tail = re.split(
-                    r"[，。；;,.!?！？、\n]", prefix
+                    r"[，。；;,.!?！？、\n]|和|及|与", prefix
                 )[-1]
                 gum_hit = any(
                     word in prefix_tail[-6:]
-                    for word in (
-                        "牙龈", "鼻腔", "鼻子", "鼻", "耳", "皮肤", "痔",
-                    )
+                    for word in _GUM_BLEEDING_WORDS
                 )
-            if not gum_hit and not _is_negated(
-                prefix, _clause_suffix(text, start + len(term))
+            if (
+                not gum_hit
+                and not _non_pregnancy_bleeding_site(term, prefix)
+                and not _is_negated(
+                    prefix, _clause_suffix(text, start + len(term))
+                )
             ):
                 return True
             start = text.find(term, start + len(term))
@@ -672,10 +674,19 @@ _NON_PREG_BLEEDING_WORDS = (
 def _non_pregnancy_bleeding_site(span: str, prefix: str) -> bool:
     """匹配片段/前缀是否明确指向非妊娠部位。"""
     head = span[:4]
-    tail = prefix[-6:]
+    # 只看当前枚举项：前面的「牙龈出血和」/「牙龈出血、」不能把
+    # 后面的孕产期「见红」豁免掉（第一百二十二轮 [3][15]）
+    tail = re.split(
+        r"[，。；;,.!?！？、\n]|和|及|与", str(prefix or "")
+    )[-1][-6:]
     if any(
+        # 裸「见红」本身不代表阴道部位：大便见红/痰里见红等由
+        # 前缀的非妊娠部位词决定（第一百二十二轮 [15]）
         location in head or location in tail[-4:]
-        for location in ("阴道", "产道", "下体", "见红", "内裤", "护垫")
+        for location in (
+            "阴道", "产道", "下体", "下面", "下身", "内裤", "护垫",
+            "卫生巾", "纸巾", "擦拭",
+        )
     ):
         return False
     obstetric = any(
@@ -815,8 +826,20 @@ def _generic_bleeding_positive(text: str) -> bool:
             location_stripped = re.sub(
                 r"(?:阴道|产道|下体)\s*$", "", prefix
             )
+            prefix_item = re.split(
+                r"[，。；;,.!?！？、\n]|和|及|与", prefix
+            )[-1]
+            behind_vaginal = prefix.rstrip().endswith(
+                ("阴道", "产道", "下体", "下面", "下身")
+            )
             if (
-                any(word in prefix[-6:] for word in _GUM_BLEEDING_WORDS)
+                (
+                    not behind_vaginal
+                    and any(
+                        word in prefix_item[-6:]
+                        for word in _GUM_BLEEDING_WORDS
+                    )
+                )
                 or _non_pregnancy_bleeding_site(term, prefix)
                 or _bleeding_jianxue_idiom(text, start, term)
                 or _bleeding_negated(
@@ -844,6 +867,17 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             # （第一百一十五轮 [17]）
             continue
         prefix = _clause_prefix(text, match.start())
+        prefix_item = re.split(
+            r"[，。；;,.!?！？、\n]|和|及|与", prefix
+        )[-1]
+        behind_vaginal = span.startswith(
+            ("阴道", "产道", "下体", "下面", "下身", "内裤", "护垫",
+             "卫生巾", "纸巾", "擦拭")
+        )
+        gum_hit = (not behind_vaginal) and any(
+            word in span or word in prefix_item[-6:]
+            for word in _GUM_BLEEDING_WORDS
+        )
         if (
             _uncertain_bleeding_window(
                 prefix[-10:]
@@ -851,10 +885,7 @@ def _colloquial_bleeding_positive(text: str) -> bool:
                 + text[match.end(): match.end() + 6]
             )
             and not _non_pregnancy_bleeding_site(span, prefix)
-            and not any(
-                word in span or word in prefix[-6:]
-                for word in _GUM_BLEEDING_WORDS
-            )
+            and not gum_hit
         ):
             # 「不确定内裤上有没有血」（第一百一十八轮 [1]）
             return True
@@ -874,10 +905,7 @@ def _colloquial_bleeding_positive(text: str) -> bool:
             body,
         ) is not None:
             continue
-        if any(
-            word in span or word in prefix[-6:]
-            for word in _GUM_BLEEDING_WORDS
-        ):
+        if gum_hit:
             continue
         if _non_pregnancy_bleeding_site(span, prefix):
             continue
@@ -2753,6 +2781,9 @@ _NEGATED_SYMPTOM_TERMS = tuple(
 )
 IMMUNOSUPPRESSION_TERMS = (
     "化疗", "放疗", "免疫抑制", "器官移植", "骨髓移植", "造血干细胞移植",
+    # 实体器官移植的常见写法（第一百二十二轮 [4]）
+    "肾移植", "肝移植", "肝脏移植", "心脏移植", "肺移植",
+    "胰腺移植", "小肠移植", "实体器官移植", "抗排异药", "抗排斥药",
     "艾滋病", "hiv", "长期激素", "长期使用激素", "甲氨蝶呤", "环孢素",
     "他克莫司", "吗替麦考酚酯", "生物制剂",
     # 常见免疫抑制/长期激素药名（结构化用药清单里写的是药名而不是
@@ -3701,6 +3732,26 @@ def _stop_clause_names_other_drug(
     clause: str, current_clause: str
 ) -> bool:
     """远期停药分句是否点名了另一种药（而非当前分句的药）。"""
+    if (
+        re.match(
+            r"^(?:他们|她们|他|她|ta|TA)\s*"
+            r"(?:已经|已|早就|早|都|快|目前|现在|之前|以前)?\s*"
+            r"(?:去年|前年|上年|上个月|上月|上周|上上个月|前几年|"
+            r"近几年|近年|"
+            r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+            r"(?:年|月|天|周|日|星期))?",
+            str(clause or "").strip(),
+        )
+        is not None
+        and not any(
+            marker in current_clause
+            for marker in _FAMILY_HISTORY_MARKERS
+        )
+    ):
+        # 第三人称停药说的是家属：患者本人第一人称在用的药不能
+        # 因此被判停药（第一百二十二轮 [2]）；当前分句本身就是
+        # 家属用药时仍按家属停药处理
+        return True
     clause = re.sub(
         r"[，,](?=\s*(?:已经?|已|早就)?\s*"
         r"(?:停用|停药|停了|停的|停掉|停掉了|停服|停止服用|不吃了?))",
@@ -5070,8 +5121,8 @@ def _active_medical_text(
                     if residual_parts:
                         kept.append("、".join(residual_parts))
                     tail_after_stop = re.search(
-                        r"(?:周|星期)[^，。；]{0,6}?(?:后|以后|之后)"
-                        r"(.+)$",
+                        r"(?:周|星期|个月|月|年)"
+                        r"[^，。；]{0,6}?(?:后|以后|之后)(.+)$",
                         clause,
                     )
                     if tail_after_stop is not None:

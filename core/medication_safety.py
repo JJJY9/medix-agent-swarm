@@ -1122,6 +1122,23 @@ def _list_shared_stop_matches(suffix: str, prefix: str = "") -> bool:
     return True
 
 
+def _third_person_stop_subject(text: str) -> bool:
+    """停药分句前最后一段是否只是第三人称主语（他/她去年…）。"""
+    tail = str(text or "")
+    if any(marker in tail[-16:] for marker in _FAMILY_MEDICATION_MARKERS):
+        # 「我儿子在吃华法林，他上个月停了」：第三人称指代前文的
+        # 家属主语，停药属于该家属的药（第一百二十二轮 [2]）
+        return False
+    return re.search(
+        r"(?:^|[，。；;,.!?！？\n])\s*(?:他们|她们|他|她|ta|TA)\s*"
+        r"(?:已经|已|早就|都|快|目前|现在|之前|以前)?\s*"
+        r"(?:去年|前年|上年|上个月|上月|上周|上上个月|前几年|近几年|近年|"
+        r"[0-9一二两三四五六七八九十半几]+(?:个)?(?:多)?"
+        r"(?:年|月|天|周|日|星期))?\s*$",
+        tail,
+    ) is not None
+
+
 def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     """长窗口里的远期停药是否指向当前药（而不是另一种药）。
 
@@ -1131,6 +1148,10 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
     window = window or ""
     alias_lower = str(alias_lower or "").lower()
     for match in _LONG_STOP_CONTEXT.finditer(window):
+        if _third_person_stop_subject(window[: match.start()]):
+            # 「我在吃华法林，他去年停了」：家属的停药不适用于患者
+            # 本人在用药物（第一百二十二轮 [2]）
+            continue
         # 停药动词后可能紧跟药名宾语（去年停的阿司匹林）：
         # 宾语归属窗口向动词后多取 8 字（第一百零七轮 [1]）
         after_span = window[match.start(): match.end() + 8]
@@ -1210,6 +1231,8 @@ def _long_stop_applies_to_alias(window: str, alias_lower: str) -> bool:
             return True
         continue
     for match in _LONG_STOP_DAYS_WEEKS.finditer(window):
+        if _third_person_stop_subject(window[: match.start()]):
+            continue
         if _window_mentions_other_drug(
             window[: match.start()], alias_lower
         ):
@@ -1396,8 +1419,8 @@ _RECENT_STOP_PREFIX = re.compile(
     # （第一百二十一轮 [6]）
     r"(?<![零半0-9一二三四五六七八九十])(?:"
     r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])\s*天"
-    r"|(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?"
-    r"|(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半))\s*前)"
+    r"|(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?"
+    r"|(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半))\s*前)"
     r"[^，。；,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
     r"(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)\s*$"
 )
@@ -1411,11 +1434,11 @@ _RECENT_STOP_SUFFIX = re.compile(
     # 两周写法带「了」才算近期停药，「停用华法林两周」是已停；
     # 左边界防 12/22 周被当成 2 周（第一百一十九轮 [12]）
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:1|2|一|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)|"
+    r"(?:1|2|一|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)|"
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)了|"
+    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)了|"
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:1|一)\s*(?:个)?\s*(?:周|星期)半)"
+    r"(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?(?:了)?)"
 )
 #: 近期「开始不吃…了」仍按当前用药保守处理（停药 1–2 天内 INR 偏高）
 _RECENT_NO_EAT_CONTEXT = re.compile(
@@ -1432,20 +1455,20 @@ _RECENT_STOP_CONTEXT = re.compile(
     r"晚上|前几天|几天|几周|上周|上星期|上周末|"
     r"(?<![零半0-9一二三四五六七八九十])(?:"
     r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])\s*天"
-    r"|(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?"
-    r"|(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半))\s*前?)"
+    r"|(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?"
+    r"|(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半))\s*前?)"
     r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
     r"|(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
     r"(?:今天|今早|今晨|昨天|昨晚|昨夜|前晚|前天|几天|一周|上周|"
     r"上星期|上周末|"
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)了|"
+    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)了|"
     # 「两个月零五天」中的「五天」是复合时长的一部分，不是近期停药
     # （第一百零四轮 [15]）
     r"(?<![零半0-9一二三四五六七八九十])"
     r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])\s*天|"
-    r"(?:1|[一])\s*周(?:半)?)"
+    r"(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?(?:了)?)"
 )
 _RECENT_STOP_PREFIX_EN = re.compile(
     # 「Last night I stopped taking warfarin」：时间词在前、中间可带
@@ -1459,8 +1482,8 @@ _RECENT_STOP_PREFIX_EN = re.compile(
 _RECENT_STOP_SUFFIX_EN = re.compile(
     r"^\s*(?:was\s+|has\s+been\s+|had\s+been\s+)?"
     r"(?:stopped|discontinued|quit|ceased)\s+"
-    r"(?:(?:\d+\s*)?days?\s+ago"
-    r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago"
+    r"(?:(?:(?:[1-9]|1[0-4])\s+)?days?\s+ago"
+    r"|(?:1|2|a|an|one|two)\s*weeks?\s+ago"
     r"|yesterday|today|last night|last week)",
     re.IGNORECASE,
 )
@@ -1485,9 +1508,10 @@ _STOPPED_USE_PREFIX_EN = re.compile(
 #: 英文近期停药（天/周内）仍有抗凝作用：按当前用药处理
 _RECENT_STOP_CONTEXT_EN = re.compile(
     r"(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
-    r"(?:(?:\d+|a|an|one|two|three|four|five|six|seven|"
+    r"(?:(?:[1-9]|1[0-4]|a|an|one|two|three|four|five|six|seven|"
+    r"eight|nine|ten|eleven|twelve|fourteen|"
     r"few|several|many|a\s+few)\s+days?\s+ago"
-    r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago)"
+    r"|(?:1|2|a|an|one|two)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today|last night|last week|this morning|tonight|"
     r"the day before yesterday|a couple of days ago)",
@@ -1496,8 +1520,27 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
 #: 英文「off X for N days/until yesterday」：近期停药仍有抗凝作用
 _RECENT_STOP_OFF_EN = re.compile(
     r"\boff\s+(?:of\s+)?(?:[\w'-]+\s+){0,3}(?:for\s+)?"
-    r"(?:(?:\d+|one|two|three|four|five|a\s+few|several)"
-    r"\s+(?:days?|weeks?)|yesterday|today)",
+    r"(?:(?:[1-9]|1[0-4]|one|two|three|four|five|six|seven|eight|"
+    r"nine|ten|eleven|twelve|fourteen|a\s+few|several)"
+    r"\s+days?|(?:1|2|one|two)\s+weeks?"
+    r"|yesterday|today|last\s+week)",
+    re.IGNORECASE,
+)
+#: 英文 since/ago 语序的近期停药（第一百二十二轮 [9]）：
+#: It's been 3 days since I stopped / A week ago I stopped /
+#: I've been off warfarin since last week
+_RECENT_SINCE_EN = re.compile(
+    r"(?:it'?s|it\s+has)\s+been\s+"
+    r"(?:[1-9]|1[0-4])\s+days?\s+since\s+(?:i\s+|he\s+|she\s+)?"
+    r"(?:stopped|discontinued|quit|ceased)"
+    r"|(?:it'?s|it\s+has)\s+been\s+(?:1|2|one|two)\s+weeks?\s+"
+    r"since\s+(?:i\s+|he\s+|she\s+)?"
+    r"(?:stopped|discontinued|quit|ceased)"
+    r"|(?:a|one|two)\s+weeks?\s+ago\s+(?:i\s+)?"
+    r"(?:stopped|discontinued|quit|ceased)"
+    r"|(?:i'?ve\s+been|i\s+have\s+been|i\s+was|i\s+came)\s+off\s+"
+    r"(?:of\s+)?(?:\w+[-']?\w*\s+){0,3}"
+    r"(?:since\s+)?(?:last\s+week|last\s+night|yesterday|today)",
     re.IGNORECASE,
 )
 #: 英文单次漏服（today/yesterday + didn't take）仍属当前用药
@@ -1934,6 +1977,7 @@ def _alias_matches(text: str, alias: str) -> bool:
                 # stopped yesterday 与中文「之前吃…昨天停药」同义
                 or _RECENT_STOP_CONTEXT_EN.search(far_suffix)
                 or _RECENT_STOP_OFF_EN.search(far_suffix)
+                or _RECENT_SINCE_EN.search(prefix + far_suffix)
             ):
                 return True
             if (

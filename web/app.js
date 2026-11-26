@@ -848,6 +848,9 @@ let launchNewSessionWaiters = [];
 //: 启动快捷方式等待窗口内已有排队发送：pagehide 不能清掉在途记录
 //: （第一百二十轮 [12]）
 let launchSendQueued = false;
+//: 新建会诊动作已经结束（成功或失败）：之后的发送不再走等待窗口
+//: 的提前落盘（第一百二十二轮 [19]）
+let launchNewSessionSettled = false;
 const pendingLaunchNewSession = (
   new URLSearchParams(window.location.search).get('action') === 'new'
 )
@@ -856,6 +859,7 @@ const pendingLaunchNewSession = (
   })
   : null;
 function resolveLaunchNewSession(created) {
+  launchNewSessionSettled = true;
   const waiters = launchNewSessionWaiters;
   launchNewSessionWaiters = [];
   waiters.forEach((resolve) => resolve(created));
@@ -21218,11 +21222,13 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 /* ---------- 提交主诉 ---------- */
 
 async function send(question, composerSubmit = false) {
-  if (pendingLaunchNewSession) {
+  if (pendingLaunchNewSession && !launchNewSessionSettled) {
     // 「新建会诊」快捷方式还没建好会话：等它完成再发送，主诉不会
     // 落进恢复出来的上一会话（第一百一十六轮 [17]）。等待期间
     // 先落一份在途记录：submit 已清空输入框，刷新/关页不能丢
-    // （第一百一十九轮 [9]）
+    // （第一百一十九轮 [9]）；落盘前先备份主槽里属于其它会话的
+    // 未落库主诉（第一百二十二轮 [19]）
+    preserveOtherSessionInflight('', question);
     try {
       safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
         sessionId: '',
@@ -23996,18 +24002,29 @@ function consumeDeferredDraftForSession(targetId) {
     return;
   }
   if (!raw) return;
-  safeSessionRemove('medix.deferredDraft.' + targetId);
-  if (els.input.value.trim()) return;
+  let payload = null;
   try {
-    const payload = JSON.parse(raw);
-    if (!payload || typeof payload.text !== 'string') return;
-    if (!payload.text.trim()) return;
-    els.input.value = payload.text;
-    draftProfileMemory = payload.profile || null;
-    autoGrow();
+    payload = JSON.parse(raw);
   } catch {
-    // 忽略
+    payload = null;
   }
+  if (
+    !payload
+    || typeof payload.text !== 'string'
+    || !payload.text.trim()
+  ) {
+    safeSessionRemove('medix.deferredDraft.' + targetId);
+    return;
+  }
+  if (els.input.value.trim()) {
+    // 输入框已有内容：保留暂存槽，等下次空输入时再注入，
+    // 不能把唯一副本直接删掉（第一百二十二轮 [20]）
+    return;
+  }
+  safeSessionRemove('medix.deferredDraft.' + targetId);
+  els.input.value = payload.text;
+  draftProfileMemory = payload.profile || null;
+  autoGrow();
 }
 
 function setVoiceListening(state) {
@@ -25874,7 +25891,11 @@ initProfiles().finally(() => {
       resolveInitialSessionRestore(Boolean(ok));
       const restored = Boolean(ok);
       if (restored) {
-        deferredCrossOwnerDraft = null;
+        if (deferredCrossOwnerDraft) {
+          // 恢复成功的会话不是草稿属主：按属主备份槽保存，
+          // 切回原会话时注入（第一百二十二轮 [14]）
+          restoreDeferredCrossOwnerDraft();
+        }
       } else if (initialSessionFromUrl && deferredCrossOwnerDraft) {
         restoreDeferredCrossOwnerDraft();
       }

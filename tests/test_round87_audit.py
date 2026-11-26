@@ -395,7 +395,7 @@ def test_restored_snapshot_bound_to_question():
     # （第八十八轮起）
     start = source.index("async function send(question")
     # send 前部新增启动等待持久化（第一百一十九轮 [9]）：窗口放宽
-    head = source[start:start + 1600]
+    head = source[start:start + 2200]
     assert (
         "String(question || '').trim() !== lastRestoredComposerQuestion"
         in head
