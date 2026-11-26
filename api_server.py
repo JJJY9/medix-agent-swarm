@@ -1414,19 +1414,31 @@ _RISK_KEYWORD_PATTERNS = (
     (
         "high",
         re.compile(
-            r"高风险(?!人群|因素)"
-            r"|高度风险(?!人群|因素)"
+            r"高风险(?!人群|因素|行为|职业|活动|运动|食物|饮食|地区"
+            r"|场所|场景|暴露|接触|结节|病灶|病变)"
+            r"|高度风险(?!人群|因素|行为|职业|活动|食物|饮食)"
             r"|高危(?!人群|因素|型|妊娠|儿|药品|操作|筛查|病变|HPV|hpv"
-            r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿)"
+            r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿"
+            # 对象名词后缀不是等级判定（第一百一十七轮 [5]）
+            r"|行为|职业|活动|运动|食物|饮食|地区|场所|场景|暴露|接触"
+            r"|结节|病灶)"
         ),
     ),
     (
         "medium",
-        re.compile(r"中风险(?!人群|因素)|中等风险(?!人群|因素)|中危(?!人群|因素)"),
+        re.compile(
+            r"中风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"|中等风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"|中危(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+        ),
     ),
     (
         "low",
-        re.compile(r"低风险(?!人群|因素)|风险较低|风险不高|低危(?!人群|因素)"),
+        re.compile(
+            r"低风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"|风险较低|风险不高"
+            r"|低危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|操作)"
+        ),
     ),
 )
 _RISK_NEGATION_PATTERN = re.compile(
@@ -1476,14 +1488,22 @@ def _risk_at_least(level: str, threshold: str) -> bool:
     return RISK_LEVEL_ORDER.get(level, 0) >= RISK_LEVEL_ORDER[threshold]
 
 
-def parse_risk_level(text: Any) -> str:
+def _risk_tag_level(content: str) -> str:
+    """带「风险等级：X」标签的显式分级；无标签返回空字符串。"""
+    tagged = _RISK_TAG_PATTERN.search(content)
+    if tagged:
+        return _RISK_TAG_LEVELS.get(tagged.group(1), "")
+    return ""
+
+
+def parse_risk_level(text: str) -> str:
     """从会诊意见中提取风险等级；无法判断时返回空字符串。"""
     content = str(text or "")
     if not content:
         return ""
-    tagged = _RISK_TAG_PATTERN.search(content)
+    tagged = _risk_tag_level(content)
     if tagged:
-        return _RISK_TAG_LEVELS.get(tagged.group(1), "")
+        return tagged
     # 「风险等级：**不确定**」：markdown 粗体不能绕过不确定判定
     if re.search(r"风险等级\s*[：:]\s*[\s*「【]*不确定", content):
         return ""
@@ -1517,13 +1537,18 @@ def _latest_parseable_risk(
         day = str(item.get("answered_at") or "")[:10]
         if not day or (start and day < start) or (end and day > end):
             continue
-        level = parse_risk_level(item.get("content"))
+        content = str(item.get("content") or "")
+        level = parse_risk_level(content)
         if not level:
             continue
+        # 良性/科普答复里的「低危结节/高危行为」已被关键词守卫
+        # 解析为空，不会参与比较；仍按最新一条可解析答复取级
+        # （第一百一十七轮 [5]）
         message_id = int(item.get("message_id") or 0)
         best = result.get(profile_key)
         if best is None or (day, message_id) > (
-            best["answered_at"], best["message_id"]
+            best["answered_at"],
+            best["message_id"],
         ):
             result[profile_key] = {
                 "risk": level,
@@ -5640,6 +5665,7 @@ _STOP_RECENT_DURATION_RE = re.compile(
     # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
     r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
     r"上周|上星期|上周末|"
+    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
 )
 #: 停药标注里的远期时长（月/年级）：药物已停用，退出检查名单
@@ -14191,7 +14217,10 @@ def _family_attention(
             else adherence.get("rate", 0)
         )
         return {
-            "level": "info",
+            # 与 _build_health_insights 的 <40 阈值一致（第一百一十七
+            # 轮 [17]）：0% 依从在家庭总览与健康提示不能一个 info
+            # 一个 warning
+            "level": "warning" if shown_rate < 40 else "info",
             "label": f"用药打卡 {int(shown_rate)}%",
             "detail": "",
         }
