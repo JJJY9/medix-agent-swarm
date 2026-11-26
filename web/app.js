@@ -10360,10 +10360,17 @@ function familyOverviewText(data) {
       parts.push(`疫苗 累计 ${Number(vaccination.count) || 0} 剂`);
     }
     const care = profile.care_plan || {};
+    const nextCare = care.next || {};
     if (care.overdue) {
       parts.push(`复查逾期 ${care.overdue} 项`);
     } else if (care.due_soon) {
       parts.push(`复查近 7 天 ${care.due_soon} 项`);
+    } else if (nextCare.title) {
+      // 只有未来复查计划的成员同样不是「暂无健康记录」
+      // （第一百一十七轮 [16]）
+      parts.push(
+        `复查 · ${nextCare.title} ${nextCare.next_due_at || ''}`
+      );
     }
     const visits = profile.visits || {};
     const latestVisit = visits.latest || {};
@@ -10399,9 +10406,13 @@ function familyOverviewText(data) {
     }
     const context = familyContextText(profile.context);
     const name = profile.name || '未指定档案';
+    const partsText = parts.length
+      ? parts.join('；')
+      : (profile.recorded_today === true
+        ? '今日已记录'
+        : '暂无健康记录');
     lines.push(
-      `${name}${context ? `（${context}）` : ''}：`
-      + (parts.length ? parts.join('；') : '暂无健康记录')
+      `${name}${context ? `（${context}）` : ''}：${partsText}`
     );
   }
   return lines.join('\n');
@@ -23875,8 +23886,18 @@ function restoreDeferredCrossOwnerDraft() {
   deferredCrossOwnerDraft = null;
   if (!deferred || !deferred.owner) return;
   if (sessionId && sessionId !== deferred.owner) {
-    // 目标会话已换成别的会话（如 404 后新建）：草稿仍归原会话，
-    // 保留存储供用户回到原会话时恢复
+    // 目标会话已换成别的会话（如 404 后新建）：把草稿写回存储
+    // （仍带原属主），用户回到原会话或刷新后还能恢复
+    // （第一百一十七轮 [11][14]）
+    try {
+      safeSessionSet(DRAFT_KEY, deferred.text);
+      safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
+      if (deferred.profile !== null && deferred.profile !== undefined) {
+        safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
+      }
+    } catch {
+      // 忽略
+    }
     return;
   }
   sessionId = deferred.owner;
@@ -25762,7 +25783,7 @@ initProfiles().finally(() => {
       const restored = Boolean(ok);
       if (restored) {
         deferredCrossOwnerDraft = null;
-      } else if (deepLinkedSession && previousTabSession) {
+      } else if (initialSessionFromUrl && deferredCrossOwnerDraft) {
         restoreDeferredCrossOwnerDraft();
       }
     })

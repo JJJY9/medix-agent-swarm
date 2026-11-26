@@ -6898,6 +6898,26 @@ class SessionStore:
                 return origin != provenance.get("source")
             return provenance.get("source") not in origin
 
+        def _foreign_claim_blocked(candidate: int) -> bool:
+            """跨来源候选是否应拒绝认领（继承备份的同一记录除外）。
+
+            合并库中另一来源创建的行不能顶替被删记录（第一百一十六轮
+            [3]）；但同一记录经另一台设备导入后再导出（继承备份）仍
+            是本行：软字段与尾字段都命中，且内容一致或差异仅在可编辑
+            列时放行（round110/111、第一百一十七轮 [4][9]）。
+            """
+            if not _candidate_from_other_backup(candidate):
+                return False
+            if not (_soft_matches(candidate) and _tail_matches(candidate)):
+                return True
+            return not (
+                _candidate_content_matches_backup(candidate)
+                or (
+                    _candidate_edited(candidate)
+                    and _candidate_diff_claimable(candidate)
+                )
+            )
+
         def _candidate_owned_by_profile_sibling(
             candidate: int, candidate_profile: str
         ) -> bool:
@@ -8722,20 +8742,10 @@ class SessionStore:
                             # done/note 被静默丢弃，且重复导入会因
                             # 排序变化补插重复行（第一百零五轮 [9]）
                             return _ambiguous()
-                        if _candidate_from_other_backup(sole) and not (
-                            # 继承备份：同一记录在另一台设备导入后再导出，
-                            # 软字段命中且（确有本地编辑 或 内容与尾字段
-                            # 全同）时仍是本行；真正的另一来源记录软字段
-                            # 不符（第一百一十六轮 [3] 与 round110/111）
-                            _soft_matches(sole)
-                            and (
-                                _candidate_edited(sole)
-                                or (
-                                    _candidate_content_matches_backup(sole)
-                                    and _tail_matches(sole)
-                                )
-                            )
-                        ):
+                        if _foreign_claim_blocked(sole):
+                            # 合并备份：另一来源创建的记录不能兜底吞掉；
+                            # 继承备份的同一记录仍可认领
+                            # （第一百一十六轮 [3]、第一百一十七轮 [4][9]）
                             return _ambiguous()
                         return _claim(sole, mark_moved=True)
         if soft_where is not None and created_at_value and pre_existing_ids:
@@ -9223,7 +9233,8 @@ class SessionStore:
                     ):
                         sole = min(candidates)
                         if (
-                            not _content_owned_by_other(sole)
+                            not _foreign_claim_blocked(sole)
+                            and not _content_owned_by_other(sole)
                             and not _candidate_foreign_backup_row(sole)
                             and not (
                                 _tail_prefers_sibling(sole)
@@ -9362,7 +9373,8 @@ class SessionStore:
                         return _ambiguous()
                     sole = min(candidates)
                     if (
-                        (
+                        not _foreign_claim_blocked(sole)
+                        and (
                             _candidate_content_matches_backup(sole)
                             # 改期后的存活行差异只在可编辑列且软字段
                             # 能区分孪生时，补足缺行后应认领而不是补插
@@ -11918,6 +11930,8 @@ class SessionStore:
             appointment_raw_notes: Dict[int, str] = {}
             appointment_raw_status: Dict[int, str] = {}
             appointment_raw_scheduled: Dict[int, str] = {}
+            #: 本次导入插入的预约 → 备份原始备注（标记严格比较用）
+            imported_appointment_raw_notes: Dict[int, str] = {}
             appointment_identity_claims: Dict[tuple, set] = {}
             if isinstance(raw_appointments, list):
                 appointment_pre_ids = self._existing_ids_locked(
@@ -12056,7 +12070,8 @@ class SessionStore:
                         duplicate = None
                         duplicate_rows = self._conn.execute(
                             """
-                            SELECT id, note FROM appointments
+                            SELECT id, note, owner_visit_id
+                            FROM appointments
                              WHERE profile = ? AND title = ?
                                AND scheduled_at = ? AND department = ?
                                AND doctor = ? AND location = ?
@@ -12086,12 +12101,52 @@ class SessionStore:
                         wanted_note = _marker_normalized_note(
                             normalized["note"]
                         )
+                        wanted_marker_vids = {
+                            int(part)
+                            for part in re.findall(
+                                r"由就诊记录 #(\d+) 自动创建",
+                                str(normalized["note"] or ""),
+                            )
+                        }
+                        wanted_owner = _safe_db_id(
+                            raw.get("owner_visit_id")
+                        )
                         for dup_row in duplicate_rows:
                             if _marker_normalized_note(
                                 dup_row["note"]
-                            ) == wanted_note:
-                                duplicate = {"id": int(dup_row["id"])}
-                                break
+                            ) != wanted_note:
+                                continue
+                            dup_id = int(dup_row["id"])
+                            if dup_id in imported_appointment_raw_notes:
+                                # 同一备份里另一条刚插入的自动预约：
+                                # 标记指向的就诊/归属不同就是两条记录
+                                # （第一百一十七轮 [8]）
+                                other_vids = {
+                                    int(part)
+                                    for part in re.findall(
+                                        r"由就诊记录 #(\d+) 自动创建",
+                                        imported_appointment_raw_notes[
+                                            dup_id
+                                        ],
+                                    )
+                                }
+                                if (
+                                    wanted_marker_vids
+                                    and other_vids
+                                    and wanted_marker_vids != other_vids
+                                ):
+                                    continue
+                                if (
+                                    wanted_owner
+                                    and int(
+                                        dup_row["owner_visit_id"] or 0
+                                    )
+                                    and int(dup_row["owner_visit_id"])
+                                    != wanted_owner
+                                ):
+                                    continue
+                            duplicate = {"id": dup_id}
+                            break
                     if duplicate is not None:
                         appointment_id = int(duplicate["id"])
                     else:
@@ -12116,6 +12171,9 @@ class SessionStore:
                         )
                         appointment_id = int(cursor.lastrowid)
                         imported_appointment_ids.add(appointment_id)
+                        imported_appointment_raw_notes[appointment_id] = (
+                            str(normalized["note"] or "")
+                        )
                         appointments_imported += 1
                     if raw_id > 0 and appointment_id > 0:
                         raw_appointment_id_map[raw_id] = appointment_id
@@ -15135,6 +15193,32 @@ class SessionStore:
             for reminder_row_id in raw_reminder_id_map.values()
             if int(reminder_row_id) > 0
         }
+        if target_appointment_ids and visit_raw_local_map:
+            # 合并两份备份后同一就诊可能已有本机标记预约：一并纳入
+            # 去重，避免两条自动复诊预约与重复待办
+            # （第一百一十七轮 [15]）
+            local_marker_vids = {
+                int(raw_vid) for raw_vid in visit_raw_local_map
+            } | {
+                int(local_vid)
+                for local_vid in visit_raw_local_map.values()
+                if local_vid
+            }
+            for local_marker_row in self._conn.execute(
+                "SELECT id, note FROM appointments"
+                " WHERE status = 'upcoming'"
+                " AND note LIKE '%由就诊记录 #%'",
+            ).fetchall():
+                local_match = re.search(
+                    r"由就诊记录 #(\d+) 自动创建",
+                    str(local_marker_row["note"] or ""),
+                )
+                if local_match is None:
+                    continue
+                if int(local_match.group(1)) in local_marker_vids:
+                    target_appointment_ids.add(
+                        int(local_marker_row["id"])
+                    )
         if target_appointment_ids:
             with self._lock, self._conn:
                 marker_ids = sorted(target_appointment_ids)
@@ -20285,30 +20369,61 @@ class SessionStore:
                                     or "复诊"
                                 )
                             )[:120]
-                            inserted = self._conn.execute(
-                                "INSERT INTO reminders(title, note,"
-                                " due_at, session_id, profile,"
-                                " advance_days, repeat_days, repeat_until,"
-                                " repeats_from, medication_id,"
-                                " vaccination_id, appointment_id, done,"
-                                " created_at, updated_at)"
-                                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                                " ?, ?, ?, ?)",
-                                (
-                                    reminder_title,
-                                    f"复诊 {appt_day}"[:300],
-                                    due_day or appt_day,
-                                    "",
-                                    normalized["profile"],
-                                    0, 0, "", 0, 0, 0,
-                                    int(extra_row["id"]), 0,
-                                    now, now,
-                                ),
-                            )
-                            if inserted.lastrowid:
-                                extra_reminder = {
-                                    "id": int(inserted.lastrowid)
-                                }
+                            try:
+                                deleted_marker = self.get_app_state(
+                                    "reminder_deleted_"
+                                    f"{int(extra_row['id'])}"
+                                )
+                            except sqlite3.Error:
+                                deleted_marker = ""
+                            tombstone_blocked = False
+                            if deleted_marker:
+                                latest_done = self._conn.execute(
+                                    "SELECT MAX(updated_at) AS latest"
+                                    " FROM reminders"
+                                    " WHERE appointment_id = ?"
+                                    " AND done = 1",
+                                    (int(extra_row["id"]),),
+                                ).fetchone()
+                                latest_text = (
+                                    str(latest_done["latest"] or "")
+                                    if latest_done is not None else ""
+                                )
+                                if (
+                                    not latest_text
+                                    or latest_text <= deleted_marker
+                                ):
+                                    # 用户主动删除过该预约的提醒：改复诊
+                                    # 日期不能复活（与提醒重建同口径，
+                                    # 第一百一十七轮 [10]）
+                                    tombstone_blocked = True
+                                    extra_reminder = None
+                            if not tombstone_blocked:
+                                inserted = self._conn.execute(
+                                    "INSERT INTO reminders(title, note,"
+                                    " due_at, session_id, profile,"
+                                    " advance_days, repeat_days,"
+                                    " repeat_until, repeats_from,"
+                                    " medication_id, vaccination_id,"
+                                    " appointment_id, done,"
+                                    " created_at, updated_at)"
+                                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                                    " ?, ?, ?, ?, ?, ?)",
+                                    (
+                                        reminder_title,
+                                        f"复诊 {appt_day}"[:300],
+                                        due_day or appt_day,
+                                        "",
+                                        normalized["profile"],
+                                        0, 0, "", 0, 0, 0,
+                                        int(extra_row["id"]), 0,
+                                        now, now,
+                                    ),
+                                )
+                                if inserted.lastrowid:
+                                    extra_reminder = {
+                                        "id": int(inserted.lastrowid)
+                                    }
                         self._conn.execute(
                             "UPDATE visit_records SET"
                             " followup_appointment_id = ?,"
