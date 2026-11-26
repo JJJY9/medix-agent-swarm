@@ -1415,8 +1415,11 @@ _RISK_KEYWORD_PATTERNS = (
         "high",
         re.compile(
             r"高风险(?!人群|因素|行为|职业|活动|运动|食物|饮食|地区"
-            r"|场所|场景|暴露|接触|结节|病灶|病变)"
-            r"|高度风险(?!人群|因素|行为|职业|活动|食物|饮食)"
+            r"|场所|场景|暴露|接触|结节|病灶|病变|药物|药品|用药|操作"
+            r"|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查|新生儿)"
+            r"|高度风险(?!人群|因素|行为|职业|活动|食物|饮食|药物|药品"
+            r"|用药|操作|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查"
+            r"|新生儿)"
             r"|高危(?!人群|因素|型|妊娠|儿|药品|操作|筛查|病变|HPV|hpv"
             r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿"
             # 对象名词后缀不是等级判定（第一百一十七轮 [5]）
@@ -14174,6 +14177,29 @@ def _family_attention(
         return {
             "level": "warning",
             "label": f"近 7 天漏服 {skipped_week} 次",
+            "detail": "",
+        }
+    adherence_preview = medications.get("adherence") or {}
+    preview_rate = medications.get("worst_rate")
+    preview_expected = int(adherence_preview.get("expected") or 0)
+    preview_shown = None
+    # 至少约 3 天用药才谈依从率：当天新开的药 0% 不算警告
+    # （round80/81 契约、第一百一十八轮 [12]）
+    if preview_expected >= 7 and preview_rate is not None:
+        if preview_rate < 40:
+            preview_shown = preview_rate
+    elif (
+        preview_expected >= 7
+        and preview_rate is None
+        and adherence_preview.get("rate", 100) < 40
+    ):
+        preview_shown = adherence_preview.get("rate", 0)
+    if preview_shown is not None:
+        # <40% 依从是 warning：不能被后面的 info 级用药安全/目标
+        # 提示降级（第一百一十八轮 [12]）
+        return {
+            "level": "warning",
+            "label": f"用药打卡 {int(preview_shown)}%",
             "detail": "",
         }
     if target_alert:

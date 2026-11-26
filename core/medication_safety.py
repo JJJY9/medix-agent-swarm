@@ -863,6 +863,32 @@ _BRACKET_STOP_SUFFIX = re.compile(
     r"\s*[）)]",
     re.IGNORECASE,
 )
+def _bracket_stop_is_recent(suffix: str) -> bool:
+    """括号式停药是否只是 ≤2 周/时间点近期停药（仍按当前用药）。
+
+    与 api_server._context_medication_names 的近期口径一致：
+    「华法林（停药2周）」仍参与相互作用检查，「（停药两个月）」
+    才退出在用名单（第一百一十八轮 [6]）。
+    """
+    import re as _re
+
+    for bracket in _re.finditer(
+        r"[（(]([^）)]{0,60})[）)]", str(suffix or "")
+    ):
+        content = bracket.group(1)
+        if _re.search(
+            r"(?:今天|今早|今晨|昨晚|昨天|前天|上周|上星期|上周末|几天|"
+            r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?|"
+            r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)|"
+            r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)",
+            content,
+        ) and not _re.search(
+            r"(?:个月|月|年|半年|大半年|好久|很久)", content
+        ):
+            return True
+    return False
+
+
 #: 药名之后的既往用药：「阿司匹林以前吃过」「阿司匹林之前用过」。
 #: 必须带明确的既往时间词：裸「吃过了」是今天已服药（依从），不是停药
 _PAST_USE_SUFFIX = re.compile(
@@ -1319,8 +1345,8 @@ _FUTURE_STOP_CONTEXT = re.compile(
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理；
 #: 「昨天停的」与「昨天停了」同口径（第一百零六轮 [6]）
 _RECENT_STOP_PREFIX = re.compile(
-    r"(?:刚刚?|今天|今早|今晨|昨天|昨晚|昨夜|前晚|前天|前几天|几天|"
-    r"几周|上周|上星期|上周末|"
+    r"(?:刚刚?|今天|今早|今晨|今晚|今夜|昨天|昨天晚上|昨晚|昨夜|前晚|"
+    r"前天|晚上|前几天|几天|几周|上周|上星期|上周末|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
     r"[^，。；,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
     r"(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)\s*$"
@@ -1347,8 +1373,8 @@ _RECENT_NO_EAT_CONTEXT = re.compile(
 #: 近期停药的任意语序（药名前/后的文本拼接后判断）：
 #: 「停了华法林三天了」「华法林昨天停了」「刚把华法林停了」
 _RECENT_STOP_CONTEXT = re.compile(
-    r"(?:刚刚?|今天|今早|今晨|昨天|昨晚|昨夜|前晚|前天|前几天|几天|"
-    r"几周|上周|上星期|上周末|"
+    r"(?:刚刚?|今天|今早|今晨|今晚|今夜|昨天|昨晚|昨夜|前晚|前天|"
+    r"晚上|前几天|几天|几周|上周|上星期|上周末|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前?)"
     r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
     r"|(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
@@ -1403,7 +1429,8 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
     r"few|several|many|a\s+few)\s+days?\s+ago"
     r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
-    r"(?:yesterday|today|last night|last week)",
+    r"(?:yesterday|today|last night|last week|this morning|tonight|"
+    r"the day before yesterday|a couple of days ago)",
     re.IGNORECASE,
 )
 #: 英文「off X for N days/until yesterday」：近期停药仍有抗凝作用
@@ -1851,10 +1878,16 @@ def _alias_matches(text: str, alias: str) -> bool:
                 or _STOPPED_USE_PREFIX.search(prefix)
                 or _STOPPED_USE_PREFIX_LONG.search(prefix)
                 or _STOPPED_USE_SUFFIX.search(suffix)
-                or _BRACKET_STOP_SUFFIX.search(suffix)
+                or (
+                    _BRACKET_STOP_SUFFIX.search(suffix)
+                    and not _bracket_stop_is_recent(suffix)
+                )
                 or _PAST_USE_SUFFIX.search(suffix)
                 or _STOPPED_USE_SUFFIX_EN.search(suffix)
-                or _BRACKET_STOP_SUFFIX.search(suffix)
+                or (
+                    _BRACKET_STOP_SUFFIX.search(suffix)
+                    and not _bracket_stop_is_recent(suffix)
+                )
                 or _STOPPED_USE_PREFIX_EN.search(prefix)
                 or _NEGATED_USE_PREFIX.search(prefix)
                 or _PAST_USE_PREFIX.search(prefix)
@@ -1950,7 +1983,10 @@ def _alias_matches(text: str, alias: str) -> bool:
             # 频次/服法变化（改成吃半片/隔天一次）不算换药
             # （第一百零九轮 [16]、第一百一十轮 [1][7]）
             or _switched_away_to_drug(suffix)
-            or _BRACKET_STOP_SUFFIX.search(suffix)
+            or (
+                _BRACKET_STOP_SUFFIX.search(suffix)
+                and not _bracket_stop_is_recent(suffix)
+            )
             or _PAST_USE_SUFFIX.search(suffix)
             or _NEGATED_USE_PREFIX.search(prefix)
             or (

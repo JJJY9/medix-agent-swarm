@@ -23883,23 +23883,31 @@ let voiceFinal = '';
 //: （第一百一十六轮 [12]）
 function restoreDeferredCrossOwnerDraft() {
   const deferred = deferredCrossOwnerDraft;
-  deferredCrossOwnerDraft = null;
-  if (!deferred || !deferred.owner) return;
+  if (!deferred || !deferred.owner) {
+    deferredCrossOwnerDraft = null;
+    return;
+  }
   if (sessionId && sessionId !== deferred.owner) {
-    // 目标会话已换成别的会话（如 404 后新建）：把草稿写回存储
-    // （仍带原属主），用户回到原会话或刷新后还能恢复
-    // （第一百一十七轮 [11][14]）
-    try {
-      safeSessionSet(DRAFT_KEY, deferred.text);
-      safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
-      if (deferred.profile !== null && deferred.profile !== undefined) {
-        safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
+    // 目标会话已换成别的会话（如 404 后新建）：只有草稿槽仍属于
+    // 原属主（未被失败期间的新输入占用）时才写回存储，否则保留
+    // 在内存等切回原会话（第一百一十七轮 [11][14]、第一百一十
+    // 八轮 [14]）
+    const currentOwner = safeSessionGet(DRAFT_OWNER_KEY);
+    if (currentOwner === null || currentOwner === deferred.owner) {
+      try {
+        safeSessionSet(DRAFT_KEY, deferred.text);
+        safeSessionSet(DRAFT_OWNER_KEY, deferred.owner);
+        if (deferred.profile !== null && deferred.profile !== undefined) {
+          safeSessionSet(DRAFT_PROFILE_KEY, deferred.profile);
+        }
+      } catch {
+        // 忽略
       }
-    } catch {
-      // 忽略
+      deferredCrossOwnerDraft = null;
     }
     return;
   }
+  deferredCrossOwnerDraft = null;
   sessionId = deferred.owner;
   persistSessionId(deferred.owner);
   try {
