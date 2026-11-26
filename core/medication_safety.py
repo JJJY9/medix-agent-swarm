@@ -1579,13 +1579,19 @@ def _english_resumed_false_positive(
     ):
         return True
     for match in re.finditer(
-        r"resumed\s+([A-Za-z][A-Za-z-]*)", raw, re.IGNORECASE
+        r"resumed\s+(?:(?:taking|using)\s+)?([A-Za-z][A-Za-z-]*)",
+        raw,
+        re.IGNORECASE,
     ):
         obj = match.group(1).strip().lower()
-        if obj in ("it", "taking", "using", "the", "this", "again"):
+        if obj in (
+            "it", "the", "this", "again", "my", "some", "a", "an",
+        ):
             continue
         if alias_lower.lower() in obj or obj in alias_lower.lower():
             continue
+        # 「resumed taking aspirin」的宾语是 aspirin：另一药续用
+        # （第一百一十三轮 [17]）
         return True
     return False
 
@@ -2333,7 +2339,16 @@ def _patient_medication_text(text: str, context: Any = None) -> str:
     的用药；「我和我爸都吃华法林」与患儿档案下的「我儿子在吃」同样
     算患者本人。
     """
-    clauses = re.split(r"[，,。；;！!？?\n]", str(text or ""))
+    # 「大姨妈期间/前后/刚走」里的「妈」是月经线索而不是家属称谓：
+    # 只在明确月经语境下归一为「月经」，避免整句被家属过滤丢弃
+    # （第一百一十三轮 [2]）
+    source_text = re.sub(
+        r"大姨妈(?=[^，。；;,.!?！？\n]{0,8}?(?:期间|前后|那几天|"
+        r"刚走|刚完|这几天|没(?:有)?来|未至|推迟|推后|晚了|迟了|来了))",
+        "月经",
+        str(text or ""),
+    )
+    clauses = re.split(r"[，,。；;！!？?\n]", source_text)
     child_patient = _child_patient_context(context)
     kept: List[str] = []
     drop_next = False
@@ -2409,9 +2424,14 @@ def check_medication_safety(
     )
 
     # 药物相互作用的判断只使用主诉与当前用药，避免把过敏史里的药名当成正在服用。
-    drug_text = " ".join(
+    # 「；」分隔主诉与用药上下文：空格拼接会让「没吃X」的否定前缀
+    # 跨越空格把上下文药名当成同一否定覆盖（第一百一十三轮 [1]）；
+    # 上下文里的过敏陈述同样剔除，聊天预检与报告通道同口径
+    # （第一百一十三轮 [13]）
+    drug_text = "；".join(
         part for part in (
-            _strip_allergy_statements(question), medications
+            _strip_allergy_statements(question),
+            _strip_allergy_statements(medications),
         ) if part
     )
 

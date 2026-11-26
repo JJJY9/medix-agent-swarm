@@ -21489,9 +21489,15 @@ async function send(question, composerSubmit = false) {
     // 的档案快照（sendProfile），否则 A 的主诉+上下文会被挂到
     // B 档案名下落库；组装后档案已变化则中止本轮
     const consultContext = await buildConsultContext(controller.signal);
+    // 组装期间档案列表被程序化加载并回填下拉（重连重试/备份导入）
+    // 不是用户换档：新值等于发送档案时不中止（第一百一十三轮 [15]）
+    const selectNow = els.profileSelect.value || '';
     if (
       profileSelectionSeq !== sendProfileSeq
-      || (els.profileSelect.value || '') !== selectProfileAtSend
+      || (
+        selectNow !== selectProfileAtSend
+        && selectNow !== (sendProfile || '')
+      )
     ) {
       throw Object.assign(
         new Error('档案已切换，本轮会诊未提交'),
@@ -22526,8 +22532,10 @@ async function savePatientProfile() {
     }
     if (data.profile) profilesCache[data.profile.name] = data.profile;
     if (profileSelectionSeq !== opSeq) {
-      // 请求期间用户已切换档案：完成回调不能覆盖新选择
-      // （第一百一十一轮 [17]）
+      // 请求期间用户已切换档案：完成回调不能覆盖新选择，但要按
+      // 当前选择重建下拉，让新保存的档案立即可选
+      // （第一百一十一轮 [17]、第一百一十三轮 [16]）
+      refreshProfileOptions(els.profileSelect.value || activeProfileName);
       loadFamilyOverview();
       loadHomeGlance();
       return;
@@ -22769,9 +22777,11 @@ async function applySelectedProfile() {
       return;
     }
     // 成功断开旧会话本身会换新 sessionId，这不是「被 send/openSession
-    // 接管」：只有失败时 sessionId 变化才说明别的流程改写了当前会话
+    // 接管」：只有失败时 sessionId 变化才说明别的流程改写了当前会话；
+    // 排队中的 send（sendInFlight）同样会按 pendingSessionReset
+    // 新建会话发送，不能被回滚（第一百一十三轮 [11]）
     const takenOver = Boolean(
-      busy || (!ok && sessionId !== attemptSession)
+      busy || sendInFlight || (!ok && sessionId !== attemptSession)
     );
     if (takenOver) {
       // send/openSession 已接管：保留新档案与当前会话，不能回滚

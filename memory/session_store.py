@@ -9025,7 +9025,9 @@ class SessionStore:
                     # 本主键上的行其实是同组另一条孪生备份记录的
                     # 存活行：交给那条记录认领，本行按被删补插
                     pass
-                else:
+                elif not _candidate_from_other_backup(raw_id):
+                    # 合并备份：raw 主键上的本地行若由另一份备份
+                    # 创建，不能当作本行旧版本认领（第一百一十三轮 [3]）
                     return _claim(raw_id)
         if not candidates:
             twin = _cross_profile_twin_candidate()
@@ -9176,6 +9178,15 @@ class SessionStore:
                             and _soft_matches(early_sole)
                             and int(backup_soft_size or 0) <= 1
                             and _candidate_diff_claimable(early_sole)
+                            # 合并备份：另一份备份创建的行不能靠
+                            # 可编辑差异被吞掉（第一百一十三轮 [3]）
+                            and not _candidate_from_other_backup(
+                                early_sole
+                            )
+                            and (
+                                _candidate_edited(early_sole)
+                                or _edited_after_export(early_sole)
+                            )
                             and not _content_owned_by_other(early_sole)
                             and not _content_prefers_sibling(early_sole)
                             and not (
@@ -9194,16 +9205,28 @@ class SessionStore:
                             # （第一百一十二轮 [6]）
                             return _claim(early_sole, mark_moved=True)
                         if (
-                            table == "symptoms"
-                            and _candidate_edited(early_sole)
+                            _candidate_edited(early_sole)
                             and _candidate_content_matches_backup(early_sole)
-                            and _tail_match_score(early_sole, raw_id) >= 1
+                            and (
+                                _tail_match_score(early_sole, raw_id) >= 1
+                                or (
+                                    soft_where is not None
+                                    and _soft_matches(early_sole)
+                                    and int(backup_soft_size or 0) <= 1
+                                )
+                            )
+                            and (
+                                table == "symptoms"
+                                or int(local_group_size or 0)
+                                >= int(backup_group_size or 0)
+                            )
                             and not _content_owned_by_other(early_sole)
                             and not _content_prefers_sibling(early_sole)
+                            and not _candidate_from_other_backup(early_sole)
                         ):
-                            # 无 id 症状行：同秒同内容只有 severity/note
-                            # 区分，编辑 severity 的存活行同样先于补插
-                            # 预算认领（第一百一十二轮 [13]）
+                            # 无 id 行：尾字段部分命中本行或软字段唯一
+                            # 时，被编辑的存活行先于补插预算认领
+                            # （第一百一十二轮 [13]、第一百一十三轮 [7]）
                             return _claim(early_sole, mark_moved=True)
                     if inserted < missing and not anchor_full:
                         # 该锚点本地行数已够：预算不能被同组另一锚点
@@ -9224,6 +9247,13 @@ class SessionStore:
                                 and _soft_matches(sole)
                                 and int(backup_soft_size or 0) <= 1
                                 and _candidate_diff_claimable(sole)
+                                # 另一份备份创建的行不能靠可编辑差异
+                                # 被吞掉（第一百一十三轮 [3]）
+                                and not _candidate_from_other_backup(sole)
+                                and (
+                                    _candidate_edited(sole)
+                                    or _edited_after_export(sole)
+                                )
                             )
                         )
                         and not _content_owned_by_other(sole)
@@ -9748,7 +9778,10 @@ class SessionStore:
                     and _soft_matches(candidate)
                     # 内容与备份不符且无编辑证据的行是另一条记录/
                     # 上一份备份的存活版本，兜底认领同样要排除
-                    # （第一百零六轮 [3]，否则备份行被静默吞掉）
+                    # （第一百零六轮 [3]，否则备份行被静默吞掉）；
+                    # 合并备份时另一份备份创建的行同样不能认领
+                    # （第一百一十三轮 [3]）
+                    and not _candidate_from_other_backup(candidate)
                     and (
                         not content_columns
                         or _candidate_content_matches_backup(candidate)
@@ -9805,6 +9838,24 @@ class SessionStore:
                 or (
                     table == "symptoms"
                     and _tail_match_score(sole, raw_id) >= 1
+                )
+                # 组内无缺行时，尾字段部分命中或软字段唯一即可区分
+                # 归属：重复导入认领编辑行，不补插编辑前副本
+                # （第一百一十三轮 [7]）
+                or (
+                    int(local_group_size or 0)
+                    >= int(backup_group_size or 0)
+                    and (
+                        (
+                            soft_where is None
+                            and _tail_match_score(sole, raw_id) >= 1
+                        )
+                        or (
+                            soft_where is not None
+                            and int(backup_soft_size or 0) <= 1
+                        )
+                    )
+                    and not _candidate_from_other_backup(sole)
                 )
             )
         ):
@@ -14553,29 +14604,41 @@ class SessionStore:
                             # 多条标记型遗留预约，需全部清理
                             # （第一百一十二轮 [14]）
                             dup_id = int(dup_owned["id"])
-                            doomed = [
-                                int(row["id"])
-                                for row in self._conn.execute(
-                                    "SELECT id FROM reminders"
-                                    " WHERE done = 0 AND appointment_id = ?",
-                                    (dup_id,),
-                                ).fetchall()
-                            ]
-                            self._conn.execute(
-                                "DELETE FROM reminders"
-                                " WHERE done = 0 AND appointment_id = ?",
-                                (dup_id,),
-                            )
-                            for doomed_id in doomed:
-                                # 被删提醒若仍被其它就诊引用（遗留共享
-                                # 链接），同步清空引用避免悬空
-                                # （第一百一十二轮 [12]）
+                            other_link = self._conn.execute(
+                                "SELECT 1 FROM visit_records"
+                                " WHERE followup_appointment_id = ?"
+                                " AND id != ? LIMIT 1",
+                                (dup_id, int(visit_id)),
+                            ).fetchone()
+                            if other_link is None:
+                                doomed = [
+                                    int(row["id"])
+                                    for row in self._conn.execute(
+                                        "SELECT id FROM reminders"
+                                        " WHERE done = 0"
+                                        " AND appointment_id = ?",
+                                        (dup_id,),
+                                    ).fetchall()
+                                ]
                                 self._conn.execute(
-                                    "UPDATE visit_records"
-                                    " SET followup_reminder_id = 0"
-                                    " WHERE followup_reminder_id = ?",
-                                    (doomed_id,),
+                                    "DELETE FROM reminders"
+                                    " WHERE done = 0"
+                                    " AND appointment_id = ?",
+                                    (dup_id,),
                                 )
+                                for doomed_id in doomed:
+                                    # 被删提醒若仍被其它就诊引用（遗留
+                                    # 共享链接），同步清空引用避免悬空
+                                    # （第一百一十二轮 [12]）
+                                    self._conn.execute(
+                                        "UPDATE visit_records"
+                                        " SET followup_reminder_id = 0"
+                                        " WHERE followup_reminder_id = ?",
+                                        (doomed_id,),
+                                    )
+                            # 仍被其它就诊链接的预约是它的复诊计划：
+                            # 保留提醒与引用，只剥离本就诊的归属标记
+                            # （第一百一十三轮 [14]）
                             self._conn.execute(
                                 "UPDATE appointments SET owner_visit_id = 0,"
                                 " note = ?, updated_at = ? WHERE id = ?",
@@ -14891,6 +14954,96 @@ class SessionStore:
                         ),
                     )
                     usage_events_imported += 1
+
+        # 同一就诊的标记型遗留自动预约去重（旧版备份 fa=0 的常态）：
+        # 每个就诊最多保留一条（优先就诊链接的、其次最早的），其余
+        # 剥掉归属并清理其待办提醒（第一百一十三轮 [8][14]）
+        marker_appointments: Dict[int, List[Any]] = {}
+        for marker_row in self._conn.execute(
+            "SELECT id, note, scheduled_at FROM appointments"
+            " WHERE status = 'upcoming'"
+            " AND note LIKE '%由就诊记录 #%'"
+        ).fetchall():
+            marker_match = re.search(
+                r"由就诊记录 #(\d+) 自动创建",
+                str(marker_row["note"] or ""),
+            )
+            if marker_match is None:
+                continue
+            marker_vid = int(marker_match.group(1))
+            marker_appointments.setdefault(marker_vid, []).append(
+                marker_row
+            )
+        for marker_vid, marker_rows in marker_appointments.items():
+            if len(marker_rows) <= 1:
+                continue
+            marker_link_row = self._conn.execute(
+                "SELECT followup_appointment_id FROM visit_records"
+                " WHERE id = ?",
+                (int(marker_vid),),
+            ).fetchone()
+            marker_linked = (
+                int(marker_link_row["followup_appointment_id"] or 0)
+                if marker_link_row is not None else 0
+            )
+            keeper = None
+            for marker_row in marker_rows:
+                if int(marker_row["id"]) == marker_linked:
+                    keeper = marker_row
+                    break
+            if keeper is None:
+                keeper = sorted(
+                    marker_rows,
+                    key=lambda row_: (
+                        str(row_["scheduled_at"] or ""),
+                        int(row_["id"]),
+                    ),
+                )[0]
+            keeper_id = int(keeper["id"])
+            for marker_row in marker_rows:
+                dup_id = int(marker_row["id"])
+                if dup_id == keeper_id:
+                    continue
+                other_link = self._conn.execute(
+                    "SELECT 1 FROM visit_records"
+                    " WHERE followup_appointment_id = ?"
+                    " AND id != ? LIMIT 1",
+                    (dup_id, int(marker_vid)),
+                ).fetchone()
+                if other_link is None:
+                    doomed = [
+                        int(row["id"])
+                        for row in self._conn.execute(
+                            "SELECT id FROM reminders"
+                            " WHERE done = 0 AND appointment_id = ?",
+                            (dup_id,),
+                        ).fetchall()
+                    ]
+                    self._conn.execute(
+                        "DELETE FROM reminders"
+                        " WHERE done = 0 AND appointment_id = ?",
+                        (dup_id,),
+                    )
+                    for doomed_id in doomed:
+                        self._conn.execute(
+                            "UPDATE visit_records"
+                            " SET followup_reminder_id = 0"
+                            " WHERE followup_reminder_id = ?",
+                            (doomed_id,),
+                        )
+                self._conn.execute(
+                    "UPDATE appointments SET owner_visit_id = 0,"
+                    " note = ?, updated_at = ? WHERE id = ?",
+                    (
+                        re.sub(
+                            r"由就诊记录 #\d+ 自动创建",
+                            "",
+                            str(marker_row["note"] or ""),
+                        ).strip()[:300],
+                        now,
+                        dup_id,
+                    ),
+                )
 
         if revived_sessions:
             with self._lock:

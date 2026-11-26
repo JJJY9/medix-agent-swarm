@@ -321,5 +321,9 @@ def test_frontend_round67_guards():
     assert "els.input.value.includes(String(text || '').trim())" in source
     # 深链恢复失败放回主诉时同样保留提交档案
     assert source.count("preserveDraftProfile(sendProfile, question);") >= 4
-    # 空白会话换档成功不再被「接管」误判（成功会换 sessionId）
-    assert "busy || (!ok && sessionId !== attemptSession)" in source
+    # 空白会话换档成功不再被「接管」误判（成功会换 sessionId）；
+    # 排队中的 send 同样视为接管（第一百一十三轮 [11]）
+    assert (
+        "busy || sendInFlight || (!ok && sessionId !== attemptSession)"
+        in source
+    )

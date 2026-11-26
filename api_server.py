@@ -73,6 +73,7 @@ from core.auth import get_access_token, is_authorized, request_token
 from core.retention import get_auto_archive_days
 from core.triage import detect_red_flags
 from core.medication_safety import (
+    _patient_medication_text,
     _strip_allergy_statements,
     _switch_target_is_known_drug,
     check_medication_safety,
@@ -5472,28 +5473,35 @@ def _evaluate_medication_safety(
     # 年龄/性别影响患儿语义：成年档案的「我女儿…」不再当本人
     # （第一百一十一轮 [16]）
     drug_text = "；".join(names)
+    # 家属用药分句（我爸吃布洛芬）不能算患者在用：与 question 通道
+    # 同口径过滤后再进入上下文与化验/慢病通道
+    # （第一百一十三轮 [10]）；纯过敏陈述同样剔除
+    # （第一百一十二轮 [8]）
+    patient_names = [
+        filtered_name
+        for name in names
+        for filtered_name in [
+            _patient_medication_text(
+                str(name or ""),
+                {"age": context_age, "sex": context_sex},
+            ).strip()
+        ]
+        if filtered_name
+    ]
+    channel_names = [
+        name for name in patient_names
+        if _strip_allergy_statements(name).strip()
+    ]
     safety = check_medication_safety(
         drug_text,
         {
-            # 过敏陈述保留在 question 里参与过敏规则，但作为「在用
-            # 药物」上下文时剔除：否则「对阿司匹林过敏」会被当成
-            # 正在服用并误报相互作用（第一百一十二轮 [8]）
-            "medications": "；".join(
-                name for name in names
-                if _strip_allergy_statements(str(name or "")).strip()
-            ),
+            "medications": "；".join(channel_names),
             "allergies": "；".join(allergy_parts),
             "age": context_age,
             "sex": context_sex,
         },
     )
-    # 纯过敏陈述（对阿司匹林过敏）不是在用药物：化验/慢病通道
-    # 用过滤后的药名，避免「在用药物包含 X」的虚假提示
-    # （第一百一十一轮 [15]）
-    channel_names = [
-        name for name in names
-        if _strip_allergy_statements(str(name or "")).strip()
-    ]
+    # 化验/慢病通道使用过滤后的药名（家属分句与过敏陈述剔除）
     lab_alerts = check_medication_lab_safety(
         channel_names, lab_rows, {"age": context_age, "sex": context_sex}
     ).get("alerts") or []
@@ -7807,66 +7815,6 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
             ownership = (
                 f"由就诊记录 #{int(visit.get('id') or 0)} 自动创建"
             )
-            completed_owned = None
-            for candidate in store.list_appointments(
-                profile, None, False, 100000, 0
-            ):
-                if candidate.get("status") != "completed":
-                    continue
-                if str(
-                    candidate.get("scheduled_at") or ""
-                )[:10] != followup_date:
-                    continue
-                candidate_owner = int(
-                    candidate.get("owner_visit_id") or 0
-                )
-                if candidate_owner not in (0, int(visit.get("id") or 0)):
-                    continue
-                if not (
-                    ownership in str(candidate.get("note") or "")
-                    or candidate_owner == int(visit.get("id") or 0)
-                ):
-                    continue
-                if candidate_owner == 0:
-                    linked_elsewhere = any(
-                        int(other.get("followup_appointment_id") or 0)
-                        == int(candidate.get("id") or 0)
-                        and int(other.get("id") or 0)
-                        != int(visit.get("id") or 0)
-                        for other in store.list_visit_records(
-                            profile, 0, "", 100000
-                        )
-                    )
-                    if linked_elsewhere:
-                        continue
-                completed_owned = candidate
-                break
-            if completed_owned is not None:
-                # 导入遗留的同日已完成预约（owner/备注归属但链接未
-                # 写回）就是这次复诊的历史：回挂并清理脱钩待办，
-                # 不能再建同日第二条预约（第一百一十二轮 [7]）
-                existing_reminder = None
-                completed_reminder_id = int(
-                    visit.get("followup_reminder_id") or 0
-                )
-                if completed_reminder_id:
-                    store.release_completed_followup_reminder(
-                        visit.get("id"), completed_reminder_id
-                    )
-                    existing_reminder = store.get_reminder(
-                        completed_reminder_id
-                    )
-                store.set_visit_followup_links(
-                    int(visit.get("id") or 0),
-                    int(completed_owned["id"]),
-                    0,
-                )
-                return {
-                    "appointment": completed_owned,
-                    "appointment_created": False,
-                    "reminder": existing_reminder,
-                    "reminder_created": False,
-                }
             owned_upcoming = []
             for candidate in store.list_appointments(
                 profile, None, False, 100000, 0
@@ -7904,6 +7852,74 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                     )
                     if updated:
                         appointment = updated
+            if appointment is None:
+                # 没有可复用的归属待就诊预约时才回挂同日已完成遗留
+                # 预约（第一百一十三轮 [9]）：先处理可复用预约，
+                # 避免跳过往返处理其预约与提醒
+                completed_owned = None
+                for candidate in store.list_appointments(
+                    profile, None, False, 100000, 0
+                ):
+                    if candidate.get("status") != "completed":
+                        continue
+                    if str(
+                        candidate.get("scheduled_at") or ""
+                    )[:10] != followup_date:
+                        continue
+                    candidate_owner = int(
+                        candidate.get("owner_visit_id") or 0
+                    )
+                    if candidate_owner not in (
+                        0, int(visit.get("id") or 0)
+                    ):
+                        continue
+                    if not (
+                        ownership in str(candidate.get("note") or "")
+                        or candidate_owner == int(visit.get("id") or 0)
+                    ):
+                        continue
+                    if candidate_owner == 0:
+                        linked_elsewhere = any(
+                            int(
+                                other.get("followup_appointment_id") or 0
+                            )
+                            == int(candidate.get("id") or 0)
+                            and int(other.get("id") or 0)
+                            != int(visit.get("id") or 0)
+                            for other in store.list_visit_records(
+                                profile, 0, "", 100000
+                            )
+                        )
+                        if linked_elsewhere:
+                            continue
+                    completed_owned = candidate
+                    break
+                if completed_owned is not None:
+                    # 导入遗留的同日已完成预约（owner/备注归属但链接
+                    # 未写回）就是这次复诊的历史：回挂并清理脱钩待办，
+                    # 不能再建同日第二条预约（第一百一十二轮 [7]）
+                    existing_reminder = None
+                    completed_reminder_id = int(
+                        visit.get("followup_reminder_id") or 0
+                    )
+                    if completed_reminder_id:
+                        store.release_completed_followup_reminder(
+                            visit.get("id"), completed_reminder_id
+                        )
+                        existing_reminder = store.get_reminder(
+                            completed_reminder_id
+                        )
+                    store.set_visit_followup_links(
+                        int(visit.get("id") or 0),
+                        int(completed_owned["id"]),
+                        0,
+                    )
+                    return {
+                        "appointment": completed_owned,
+                        "appointment_created": False,
+                        "reminder": existing_reminder,
+                        "reminder_created": False,
+                    }
         if appointment is None:
             # 并发重试时复用同一就诊已创建的同名预约：必须校验归属
             # 标记，避免另一条同诊断同日期的就诊共享并连带删除预约
@@ -14955,11 +14971,27 @@ async def family_overview(days: int = 7):
                 bucket.append(medication_name)
     medication_lab_by_profile: Dict[str, Dict[str, Any]] = {}
     for profile, med_names in safety_names_by_profile.items():
-        # 「；」保留档案分句边界（第一百一十一轮 [11]）；过敏陈述
-        # 不能作为在用药物参与相互作用（第一百一十二轮 [8]）
+        # 「；」保留档案分句边界（第一百一十一轮 [11]）；家属用药
+        # 分句与过敏陈述不能作为在用药物参与相互作用
+        # （第一百一十二轮 [8]、第一百一十三轮 [10]）
+        patient_ctx = contexts.get(profile) or {}
+        patient_names = [
+            filtered_name
+            for name in med_names
+            for filtered_name in [
+                _patient_medication_text(
+                    str(name or ""),
+                    {
+                        "age": str(patient_ctx.get("age") or ""),
+                        "sex": str(patient_ctx.get("sex") or ""),
+                    },
+                ).strip()
+            ]
+            if filtered_name
+        ]
         channel_names = [
-            name for name in med_names
-            if _strip_allergy_statements(str(name or "")).strip()
+            name for name in patient_names
+            if _strip_allergy_statements(name).strip()
         ]
         base_safety = check_medication_safety(
             "；".join(med_names),
