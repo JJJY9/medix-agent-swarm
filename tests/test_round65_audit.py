@@ -540,9 +540,10 @@ def test_undeclared_proxy_peer_uses_shared_bucket(monkeypatch, tmp_path):
             )
             assert response.status_code == 401
         keys = _bucket_keys()
-        # 未声明的代理对端不能把整个对端地址硬预锁定
-        assert "ip:172.18.0.2" not in keys, keys
-        assert "ip:untrusted-proxy" in keys
+        # 未声明代理的失败按真实 TCP 对端聚合：10 次失败远低于对端
+        # 100 次高阈值，不会硬预锁定整个对端；全局哨兵桶不再累计，
+        # 其它未声明代理对端不会被连带锁死（第一百一十轮 [17]）
+        assert "ip:untrusted-proxy" not in keys, keys
         victim = client.get(
             "/api/sessions",
             headers={

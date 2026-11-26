@@ -72,7 +72,10 @@ configure_server_logging()
 from core.auth import get_access_token, is_authorized, request_token
 from core.retention import get_auto_archive_days
 from core.triage import detect_red_flags
-from core.medication_safety import check_medication_safety
+from core.medication_safety import (
+    _switch_target_is_known_drug,
+    check_medication_safety,
+)
 from core.llm_client import LLMError
 from core.ratelimit import SlidingWindowLimiter, get_rate_limit
 from core.fs_permissions import restrict_permissions
@@ -235,6 +238,9 @@ class RenameSessionRequest(StrictRequestModel):
 class ImportSessionsRequest(StrictRequestModel):
     version: Optional[int] = None
     exported_at: Optional[str] = None
+    #: 备份来源标识（第一百零九轮新增的合并备份归属保护依赖它；
+    #: 缺省时按无来源的旧备份处理，第一百一十轮 [4]）
+    source_id: Optional[str] = None
     session_count: Optional[int] = None
     profile_renames: Optional[List[Dict[str, Any]]] = None
     sessions: List[Dict[str, Any]] = Field(default_factory=list)
@@ -2928,6 +2934,21 @@ def _client_ip_key(request: Request) -> str:
     return f"ip:{_bucket_address(peer or 'unknown')}"
 
 
+def _shared_failure_auth_key(request: Request, peer_host: str) -> str:
+    """共享鉴权桶的失败计数键：未声明代理由真实 TCP 对端聚合。
+
+    `_client_ip_key` 对「未受信代理 + 带地址头」返回全局哨兵
+    ip:untrusted-proxy：作为失败计数键时，任一未声明代理的错误尝试
+    会把同一份配额填满，连带锁死其它代理后的正确令牌用户
+    （第一百一十轮 [17]）。单源封顶仍由全局 shared-src 键承担，
+    攻击者换 peer 值也不能扩大总配额。
+    """
+    key = _client_ip_key(request)
+    if key == "ip:untrusted-proxy":
+        return f"ip:{_bucket_address(peer_host or 'unknown')}"
+    return key
+
+
 @app.exception_handler(StarletteHTTPException)
 async def redacting_http_exception_handler(
     request: Request, exc: StarletteHTTPException
@@ -3583,7 +3604,7 @@ async def require_access_token(request: Request, call_next):
                 pre_key = (
                     loopback_bucket_key
                     if pre_loopback and pre_trusted_proxy
-                    else _client_ip_key(request)
+                    else _shared_failure_auth_key(request, peer_host)
                 )
                 if gate_unprovable:
                     pre_key = f"spoof:{loopback_bucket_key}"
@@ -3741,7 +3762,7 @@ async def require_access_token(request: Request, call_next):
                     limiter_key = (
                         loopback_bucket_key
                         if loopback_source
-                        else _client_ip_key(request)
+                        else _shared_failure_auth_key(request, peer_host)
                     )
                     # 共享桶同样需要单源贡献上限：受信代理无可用地址
                     # 头时一个客户端 100 次错误令牌即可填满整桶并
@@ -5622,6 +5643,10 @@ def _context_medication_names(context: Any) -> List[str]:
             return match.group(0)
         if source == target:
             return match.group(0)
+        if not _switch_target_is_known_drug(target):
+            # 目标是剂量/服法/剂型描述（吃半片/隔天一次/肠溶片）：
+            # 仍在服用，不能改写为已停用（第一百一十轮 [1][7][11]）
+            return match.group(0)
         return f"，已停用{source}，改用{target}"
 
     # 「两年前把华法林改为氯吡格雷」：源药已停用（第一百零九轮 [16]）
@@ -5657,8 +5682,11 @@ def _context_medication_names(context: Any) -> List[str]:
             r"(?:后(?:服用|吃|服|用|加用|改用|换用)|改用|换用|"
             r"换成|改吃|换吃|继续|现在|目前|一直|长期|"
             # 「华法林每天吃、阿司匹林停了」里前一项带服药频率，
-            # 是在用药而非共享停药（第一百零八轮 [4]）
-            r"每天|每日|天天|按时|规律|照常|常规|"
+            # 是在用药而非共享停药（第一百零八轮 [4]）；每晚/隔天/
+            # 一天三次 等频次表达同口径（第一百一十轮 [12]）
+            r"每天|每日|天天|每晚|每早|睡前|早上|晚上|下午|"
+            r"饭前|饭后|随餐|空腹|一天|一日|隔日|隔天|按时|规律|"
+            r"照常|常规|持续|常年|"
             # 「A、B还在吃/仍在服用」说明 B 仍在用：不能把停药
             # 动词分发到 B（第一百零六轮 [4][14]）
             r"还在|仍在|仍吃|仍用|仍服|没停|未停|尚未|不能停|照旧)",
@@ -5691,7 +5719,9 @@ def _context_medication_names(context: Any) -> List[str]:
         if re.search(
             # 「华法林每天吃、阿司匹林停了」：日常服药频率说明前一
             # 项仍在用，不能共享停药（第一百零八轮 [4]）
-            r"(?:每天|每日|天天|按时|规律|照常|常规|"
+            r"(?:每天|每日|天天|每晚|每早|睡前|早上|晚上|下午|"
+            r"饭前|饭后|随餐|空腹|一天|一日|隔日|隔天|按时|规律|"
+            r"照常|常规|持续|常年|"
             r"还在|仍在|仍吃|仍用|仍服|没停|未停|尚未|不能停|照旧|"
             r"停用|停药|停了|停服|停止服用|前|以来|"
             # 「阿司匹林 1 片已停用」是单药+剂量+停药，不是顿号
