@@ -3219,7 +3219,9 @@ class SessionStore:
         # 否则整表来源会被静默清空（第一百一十轮 [16]）
         items = list(mapping.items())
         payload = json.dumps(dict(items), ensure_ascii=False)
+        truncated = False
         while len(payload) > 190000 and len(items) > 1:
+            truncated = True
             items = items[len(items) // 10:]
             payload = json.dumps(dict(items), ensure_ascii=False)
         try:
@@ -3228,6 +3230,15 @@ class SessionStore:
                     "INSERT INTO app_state(key, value) VALUES (?, ?)"
                     " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (name, payload),
+                )
+                # 裁剪丢失了仍存活行的来源：之后缺 origin 的行必须按
+                # 外来行处理，不能在合并备份时被本地行顶替
+                # （第一百二十二轮 [5]）
+                flag = f"import_origin_truncated:{table}"[:80]
+                self._conn.execute(
+                    "INSERT INTO app_state(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (flag, "1" if truncated else "0"),
                 )
         except sqlite3.Error:
             # 来源记录失败只影响合并备份的归属判断，不能阻断导入
@@ -6897,7 +6908,16 @@ class SessionStore:
                 return False
             origin = origin_map.get(str(candidate))
             if not origin:
-                return False
+                try:
+                    truncated = self.get_app_state(
+                        f"import_origin_truncated:{table}"
+                    )
+                except sqlite3.Error:
+                    truncated = ""
+                # 映射被裁剪后缺失的 origin 不等于「本机创建」：
+                # 按外来行处理，避免恢复备份时吞掉旧行
+                # （第一百二十二轮 [5]）
+                return truncated == "1"
             if isinstance(origin, str):
                 return origin != provenance.get("source")
             return provenance.get("source") not in origin
@@ -7009,17 +7029,24 @@ class SessionStore:
                     and (tail_where is None or _tail_matches(candidate))
                 )
                 or (
-                    _candidate_edited(candidate)
+                    (
+                        _candidate_edited(candidate)
+                        or _candidate_local_terminal(candidate)
+                    )
                     and (
                         (
                             _candidate_local_terminal(candidate)
                             # 终态列以外（备注/提前/重复等）仍须与
                             # 本备份行一致，独立来源的终态孪生不能
-                            # 被当成继承记录（第一百二十轮 [4]）
+                            # 被当成继承记录（第一百二十轮 [4]）；
+                            # 本地完成/停药不一定刷新 updated_at，
+                            # 终态本身即可作为归属证据
+                            # （第一百二十二轮 [10]）
                             and _tail_matches_except_terminal(candidate)
                         )
                         or (
-                            not _candidate_content_matches_backup(
+                            _candidate_edited(candidate)
+                            and not _candidate_content_matches_backup(
                                 candidate
                             )
                             and _candidate_diff_claimable(candidate)
@@ -8136,8 +8163,7 @@ class SessionStore:
                 if (
                     claimable_row
                     and (
-                        table != "reminders"
-                        or tail_where is None
+                        tail_where is None
                         or _tail_matches(claim_row)
                         or _candidate_edited(claim_row)
                     )
@@ -8213,6 +8239,18 @@ class SessionStore:
                     # 候选由另一份备份创建：本备份行按被删记录补插，
                     # 不能把它当作改挂后的存活版本吞掉
                     # （第一百一十五轮 [4]）
+                    claimable = False
+                if (
+                    claimable
+                    and getattr(self, "_import_provenance", None)
+                    and tail_where is not None
+                    and not _tail_matches(candidate)
+                    and not _candidate_has_import_origin(candidate)
+                    and not _import_from_own_source()
+                ):
+                    # 本地新建（无来源）的行尾字段与本备份行不同：
+                    # 它是同秒撞号的另一条记录，本行必须补插
+                    # （第一百二十二轮 [6]）
                     claimable = False
                 if claimable and _candidate_owned_by_profile_sibling(
                     candidate, str(row["profile"] or "")
@@ -8857,6 +8895,10 @@ class SessionStore:
                             tail_where is not None
                             and not _tail_matches(sole)
                             and not _candidate_edited(sole)
+                            # 本地终态（完成/停药）不刷新 updated_at
+                            # 时仍是本行的完成版本：交给外来守卫按
+                            # 终态证据判定（第一百二十二轮 [10]）
+                            and not _candidate_local_terminal(sole)
                         ):
                             # 候选未编辑且尾字段与本行完全不符（完成
                             # 状态/备注/提前天数不同）：它不是本行的
@@ -9298,6 +9340,17 @@ class SessionStore:
                 ):
                     # 本主键上的行其实是同组另一条孪生备份记录的
                     # 存活行：交给那条记录认领，本行按被删补插
+                    pass
+                elif (
+                    getattr(self, "_import_provenance", None)
+                    and tail_where is not None
+                    and not _tail_matches(raw_id)
+                    and not _candidate_has_import_origin(raw_id)
+                    and not _import_from_own_source()
+                ):
+                    # 本地新建（无来源）且尾字段与本备份行不同：
+                    # 同秒撞号的另一条记录，本行补插
+                    # （第一百二十二轮 [6]）
                     pass
                 elif not _candidate_from_other_backup(raw_id):
                     # 合并备份：raw 主键上的本地行若由另一份备份
@@ -10262,6 +10315,10 @@ class SessionStore:
             and tail_where is not None
             and not _tail_matches(sole)
             and not _candidate_edited(sole)
+            # 本地终态（done=1）不刷新 updated_at 时同样可能是本行
+            # 的完成版本：交给外来守卫按终态证据判定
+            # （第一百二十二轮 [10]）
+            and not _candidate_local_terminal(sole)
         ):
             # 尾字段对不上且无编辑证据：候选是同秒孪生兄弟，本行
             # 按被删记录补插（第一百二十轮 [9]）
@@ -15495,6 +15552,18 @@ class SessionStore:
                     target_appointment_ids.add(
                         int(local_marker_row["id"])
                     )
+            owner_ids = sorted(local_backup_visit_ids)
+            owner_placeholders = ",".join("?" for _ in owner_ids)
+            for local_owner_row in self._conn.execute(
+                "SELECT id FROM appointments"
+                " WHERE status = 'upcoming'"
+                f" AND owner_visit_id IN ({owner_placeholders})",
+                tuple(owner_ids),
+            ).fetchall():
+                # 备注被清空/改写的本地自动预约靠 owner 归属纳入
+                # 去重，避免恢复归属后同一就诊两条待就诊预约
+                # （第一百二十二轮 [18]）
+                target_appointment_ids.add(int(local_owner_row["id"]))
         if target_appointment_ids:
             with self._lock, self._conn:
                 marker_ids = sorted(target_appointment_ids)
@@ -20029,6 +20098,16 @@ class SessionStore:
                         " WHERE id = ? AND followup_appointment_id = ?",
                         (int(visit_id), appointment),
                     )
+                    cleaned_note = re.sub(
+                        rf"由就诊记录 #{int(visit_id)} 自动创建",
+                        "",
+                        str(row["note"] or ""),
+                    ).strip(" ，,;；")
+                    self._conn.execute(
+                        "UPDATE appointments SET owner_visit_id = 0,"
+                        " note = ? WHERE id = ?",
+                        (cleaned_note, appointment),
+                    )
                     auto_created = False
                 elif not auto_created:
                     auto_created = True
@@ -20052,14 +20131,26 @@ class SessionStore:
                             auto_created = True
                         else:
                             # 预约 owner 属于本就诊，但其它就诊仍在
-                            # 链接使用：只解除本就诊链接
-                            # （第一百二十一轮 [9]）
+                            # 链接使用：只解除本就诊链接，并清理指向
+                            # 本就诊的 owner/备注标记（第一百二十一轮
+                            # [9]、第一百二十二轮 [11]）
                             self._conn.execute(
                                 "UPDATE visit_records"
                                 " SET followup_appointment_id = 0"
                                 " WHERE id = ?"
                                 " AND followup_appointment_id = ?",
                                 (int(visit_id), appointment),
+                            )
+                            cleaned_note = re.sub(
+                                rf"由就诊记录 #{int(visit_id)} 自动创建",
+                                "",
+                                str(row["note"] or ""),
+                            ).strip(" ，,;；")
+                            self._conn.execute(
+                                "UPDATE appointments"
+                                " SET owner_visit_id = 0, note = ?"
+                                " WHERE id = ?",
+                                (cleaned_note, appointment),
                             )
                     elif marker_owner == 0:
                         # 旧版无归属预约：没有其它就诊链接时才把本就诊

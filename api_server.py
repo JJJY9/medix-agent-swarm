@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import hashlib
 import hmac
 import secrets
@@ -1505,12 +1506,22 @@ def _risk_at_least(level: str, threshold: str) -> bool:
 
 
 def _normalize_risk_text(content: str) -> str:
-    """去掉 CJK 与拉丁字母之间的空白：「低危 HPV」→「低危HPV」。"""
-    return re.sub(
+    """归一风险文本：全角转半角，去掉等级词与对象词之间的空白。
+
+    「低危 HPV」「低危 结节」「高危ＨＰＶ」都要能命中对象名词
+    守卫（第一百二十一轮 [11]、第一百二十二轮 [12]）。
+    """
+    text = unicodedata.normalize("NFKC", str(content or ""))
+    text = re.sub(
         r"(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z])"
         r"|(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])",
         "",
-        str(content or ""),
+        text,
+    )
+    return re.sub(
+        r"(?<=[\u4e00-\u9fff])[ \t\u3000]+(?=[\u4e00-\u9fff])",
+        "",
+        text,
     )
 
 
@@ -1578,15 +1589,19 @@ def _latest_parseable_risk(
         # 解析为空，不会参与比较；仍按最新一条可解析答复取级
         # （第一百一十七轮 [5]）
         message_id = int(item.get("message_id") or 0)
+        stamp = str(item.get("answered_at") or "")
         best = result.get(profile_key)
-        if best is None or (day, message_id) > (
-            best["answered_at"],
+        if best is None or (stamp, message_id) > (
+            best.get("_stamp", ""),
             best["message_id"],
         ):
+            # 恢复备份后 message_id 与时间顺序可能相反：按完整时间
+            # 比较，id 只作同秒兜底（第一百二十二轮 [7]）
             result[profile_key] = {
                 "risk": level,
                 "answered_at": day,
                 "message_id": message_id,
+                "_stamp": stamp,
             }
     return result
 
@@ -5696,16 +5711,22 @@ _STOP_REMAINDER_TIME_RE = re.compile(
 
 #: 停药标注里的近期时长（天/周级）：抗凝作用仍在，按当前用药处理
 _STOP_RECENT_DURATION_RE = re.compile(
-    r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:天|日)"
+    # 只认 ≤14 天、≤2 周：更久按已停药处理（第一百二十二轮 [16]）
+    r"(?:(?<![零半0-9一二三四五六七八九十])"
+    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])"
+    r"\s*(?:个)?\s*(?:天|日)"
     r"|几天|几日|几周|"
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?"
+    r"(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?"
     # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
     r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
     r"上周|上星期|上周末|"
     r"(?<![0-9一二两三四五六七八九十])"
-    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)|"
-    r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
+    r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)|"
+    r"(?<![零半0-9一二三四五六七八九十])"
+    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])\s*天前"
+    r"|(?<![0-9一二两三四五六七八九十])"
+    r"(?:1|2|一|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)前)"
 )
 #: 停药标注里的远期时长（月/年级）：药物已停用，退出检查名单
 _STOP_LONG_DURATION_RE = re.compile(
@@ -5755,7 +5776,10 @@ def _context_medication_names(context: Any) -> List[str]:
     # 为全角，避免停药标注与药名被切到不同片段
     # （第一百二十一轮 [16]）
     text = re.sub(
-        r"(?<=[0-9A-Za-z])[ \t]*/[ \t]*(?=(?:日|天|次))", "／", text
+        r"(?<=[0-9A-Za-z毫克毫升克片粒丸袋包支瓶滴])"
+        r"[ \t]*/[ \t]*(?=(?:日|天|次))",
+        "／",
+        text,
     )
     # 分数剂量（1/2片、3/4粒）不是药名分隔：先整体保护再切分
     text = re.sub(r"(?<=[0-9])\s*/\s*(?=[0-9])", "／", text)
@@ -10362,6 +10386,7 @@ def _build_health_insights(
         DAILY_ACCUMULATING_METRICS,
         LOWER_BOUND_TARGET_METRICS,
         METRIC_TYPES,
+        adherence_rate,
     )
 
     days = int(report.get("days") or 7)
@@ -14315,6 +14340,21 @@ def _family_attention(
         }
     adherence = medications.get("adherence") or {}
     worst_rate = medications.get("worst_rate")
+    sample_worst = str(medications.get("worst_started_at") or "")
+    sample_started = str(
+        sample_worst or medications.get("oldest_started_at") or ""
+    )
+    sample_today = datetime.now().strftime("%Y-%m-%d")
+    if sample_worst:
+        sample_ok = sample_worst[:10] < sample_today
+    else:
+        sample_ok = (
+            (
+                bool(sample_started)
+                and sample_started[:10] < sample_today
+            )
+            or int(adherence.get("expected") or 0) >= 7
+        )
     if (
         (
             worst_rate is not None
@@ -14324,30 +14364,15 @@ def _family_attention(
             worst_rate is None
             and adherence.get("expected", 0) >= 3
             and adherence.get("rate", 100) < 60
+            # 仅由当天新开药贡献的打卡率没有样本，不再显示
+            # 用药打卡提示（第一百二十二轮 [13]）
+            and sample_ok
         )
     ):
         shown_rate = (
             worst_rate if worst_rate is not None
             else adherence.get("rate", 0)
         )
-        sample_worst = str(
-            medications.get("worst_started_at") or ""
-        )
-        sample_started = str(
-            sample_worst
-            or medications.get("oldest_started_at") or ""
-        )
-        sample_today = datetime.now().strftime("%Y-%m-%d")
-        if sample_worst:
-            sample_ok = sample_worst[:10] < sample_today
-        else:
-            sample_ok = (
-                (
-                    bool(sample_started)
-                    and sample_started[:10] < sample_today
-                )
-                or int(adherence.get("expected") or 0) >= 7
-            )
         return {
             # 与 _build_health_insights 的 <40 阈值一致（第一百一十七
             # 轮 [17]）；当天新开的药不给 warning
@@ -15053,10 +15078,12 @@ async def family_overview(days: int = 7):
         started_text = str(
             item.get("started_at") or item.get("created_at") or ""
         )
-        if started_text and (
+        if expected_week > 0 and started_text and (
             not entry["oldest_started_at"]
             or started_text < entry["oldest_started_at"]
         ):
+            # 「必要时」等无需计算依从的药不提供样本门槛：只有
+            # 真正贡献应服次数的药才开始计样本（第一百二十二轮 [13]）
             entry["oldest_started_at"] = started_text
         if expected_week > 0:
             # 每周一次的低频药完全没吃同样是 0%：不能因为

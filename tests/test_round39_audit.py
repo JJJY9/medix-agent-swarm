@@ -561,7 +561,7 @@ def test_send_has_pre_restore_lock_and_session_guard():
     # （第七十九轮），断言目标不变
     send = app_js[
         app_js.index("async function send(question, composerSubmit = false)"):
-        app_js.index("async function send(question, composerSubmit = false)") + 4200
+        app_js.index("async function send(question, composerSubmit = false)") + 5400
     ]
     assert "let sendInFlight = false;" in app_js
     assert "if (busy || sendInFlight)" in send
