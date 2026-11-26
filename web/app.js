@@ -21395,6 +21395,10 @@ async function send(question, composerSubmit = false) {
     els.profileSelect.value || activeProfileName
     || readStoredProfile() || ''
   );
+  // 守卫只能检测「组装期间用户真的切换了下拉」：档案列表加载失败
+  // 时下拉为空而 sendProfile 走存储回退，两者本就不等，不能当成
+  // 换档（第一百一十二轮 [10]）
+  const selectProfileAtSend = els.profileSelect.value || '';
   if (submitProfile && submitProfile !== sendProfile) {
     // 主诉是在另一患者档案下输入的，恢复出的会话绑定不同档案
     //（或未绑定档案、被清空）：不能静默改挂，按草稿冲突把主诉
@@ -21487,7 +21491,7 @@ async function send(question, composerSubmit = false) {
     const consultContext = await buildConsultContext(controller.signal);
     if (
       profileSelectionSeq !== sendProfileSeq
-      || (els.profileSelect.value || '') !== (sendProfile || '')
+      || (els.profileSelect.value || '') !== selectProfileAtSend
     ) {
       throw Object.assign(
         new Error('档案已切换，本轮会诊未提交'),
@@ -22399,7 +22403,12 @@ function readStoredProfile() {
 }
 
 function setActiveProfile(name) {
-  activeProfileName = profilesCache[name] ? name : '';
+  // 档案列表尚未加载（后端离线/请求失败）时保留已知档案名：
+  // 空缓存不代表档案已不存在（第一百一十二轮 [10]）
+  const cacheLoaded = Object.keys(profilesCache).length > 0;
+  activeProfileName = (
+    name && (profilesCache[name] || !cacheLoaded)
+  ) ? name : '';
   if (els.profileSelect) els.profileSelect.value = activeProfileName;
   try {
     if (activeProfileName) {
@@ -23536,7 +23545,11 @@ function restoreInflightForOpenSession(targetId, messages) {
   // 同文本问答误杀。已落库判定按 baseline 区分本轮问答与早先
   // 陈述，与整页刷新 restoreCurrentSession 的对账口径一致
   if (owner && owner === targetId) {
-    if (!hasIds) {
+    // 极早持久化的记录没有 baseline：只有本页新建的会话才可能
+    // 承载「本轮」问答，旧问答不能被判为本轮已落库
+    // （第一百一十二轮 [9]）
+    const freshSession = isFreshPageSession(targetId);
+    if (!hasIds && freshSession) {
       for (let i = 0; i < list.length; i += 1) {
         if (
           list[i].role === 'user'
@@ -23557,7 +23570,7 @@ function restoreInflightForOpenSession(targetId, messages) {
             (inner) => inner.role === 'assistant'
           )
       );
-    } else {
+    } else if (freshSession) {
       // 新建会话首轮：任何同文本用户消息之后已有回答都说明本轮
       // 已落库；会话此后的追问不会让「最后一条用户消息」不再等于
       // 该主诉而把它误判为未落库（第八十轮）
