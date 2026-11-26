@@ -6796,6 +6796,17 @@ class SessionStore:
             provenance = getattr(self, "_import_provenance", None)
             if not provenance:
                 return False
+            source = provenance.get("source")
+            if not source:
+                return False
+            try:
+                own_source = self.get_app_state("backup_source_id")
+            except sqlite3.Error:
+                own_source = ""
+            if own_source and source == own_source:
+                # 本机自己导出的快照：恢复它不涉及跨来源，不能按
+                # 外来备份处理（第一百一十四轮 [7]）
+                return False
             origin_map = (provenance.get("origins") or {}).get(table)
             if not origin_map:
                 return False
@@ -8074,6 +8085,9 @@ class SessionStore:
                         and candidate not in moved
                         and candidate not in matched
                         and _candidate_edited(candidate)
+                        # 合并备份：另一来源创建的行不能被自认领吞掉
+                        # （第一百一十四轮 [3]）
+                        and not _candidate_from_other_backup(candidate)
                         and not _candidate_owned_by_profile_sibling(
                             candidate, candidate_profile
                         )
@@ -9060,6 +9074,7 @@ class SessionStore:
                         raw_id in candidates
                         and _same_backup_origin()
                         and _candidate_edited(raw_id)
+                        and not _candidate_from_other_backup(raw_id)
                         and not _content_prefers_sibling(raw_id)
                     ):
                         return _claim(raw_id)
@@ -9324,6 +9339,9 @@ class SessionStore:
                     if (
                         len(candidates) == 1
                         and not _content_owned_by_other(sole)
+                        # 合并备份：另一来源创建的行不能被自认领吞掉
+                        # （第一百一十四轮 [3]）
+                        and not _candidate_from_other_backup(sole)
                         # 候选原始主键命中另一成员的备份行：这是改挂
                         # 过来的存活版本，本行按被删记录补插
                         and not _candidate_foreign_backup_row(sole)
@@ -14956,94 +14974,139 @@ class SessionStore:
                     usage_events_imported += 1
 
         # 同一就诊的标记型遗留自动预约去重（旧版备份 fa=0 的常态）：
-        # 每个就诊最多保留一条（优先就诊链接的、其次最早的），其余
-        # 剥掉归属并清理其待办提醒（第一百一十三轮 [8][14]）
-        marker_appointments: Dict[int, List[Any]] = {}
-        for marker_row in self._conn.execute(
-            "SELECT id, note, scheduled_at FROM appointments"
-            " WHERE status = 'upcoming'"
-            " AND note LIKE '%由就诊记录 #%'"
-        ).fetchall():
-            marker_match = re.search(
-                r"由就诊记录 #(\d+) 自动创建",
-                str(marker_row["note"] or ""),
-            )
-            if marker_match is None:
-                continue
-            marker_vid = int(marker_match.group(1))
-            marker_appointments.setdefault(marker_vid, []).append(
-                marker_row
-            )
-        for marker_vid, marker_rows in marker_appointments.items():
-            if len(marker_rows) <= 1:
-                continue
-            marker_link_row = self._conn.execute(
-                "SELECT followup_appointment_id FROM visit_records"
-                " WHERE id = ?",
-                (int(marker_vid),),
-            ).fetchone()
-            marker_linked = (
-                int(marker_link_row["followup_appointment_id"] or 0)
-                if marker_link_row is not None else 0
-            )
-            keeper = None
-            for marker_row in marker_rows:
-                if int(marker_row["id"]) == marker_linked:
-                    keeper = marker_row
-                    break
-            if keeper is None:
-                keeper = sorted(
-                    marker_rows,
-                    key=lambda row_: (
-                        str(row_["scheduled_at"] or ""),
-                        int(row_["id"]),
-                    ),
-                )[0]
-            keeper_id = int(keeper["id"])
-            for marker_row in marker_rows:
-                dup_id = int(marker_row["id"])
-                if dup_id == keeper_id:
-                    continue
-                other_link = self._conn.execute(
-                    "SELECT 1 FROM visit_records"
-                    " WHERE followup_appointment_id = ?"
-                    " AND id != ? LIMIT 1",
-                    (dup_id, int(marker_vid)),
-                ).fetchone()
-                if other_link is None:
-                    doomed = [
-                        int(row["id"])
-                        for row in self._conn.execute(
-                            "SELECT id FROM reminders"
-                            " WHERE done = 0 AND appointment_id = ?",
-                            (dup_id,),
-                        ).fetchall()
-                    ]
-                    self._conn.execute(
-                        "DELETE FROM reminders"
-                        " WHERE done = 0 AND appointment_id = ?",
-                        (dup_id,),
-                    )
-                    for doomed_id in doomed:
-                        self._conn.execute(
-                            "UPDATE visit_records"
-                            " SET followup_reminder_id = 0"
-                            " WHERE followup_reminder_id = ?",
-                            (doomed_id,),
-                        )
-                self._conn.execute(
-                    "UPDATE appointments SET owner_visit_id = 0,"
-                    " note = ?, updated_at = ? WHERE id = ?",
-                    (
-                        re.sub(
-                            r"由就诊记录 #\d+ 自动创建",
-                            "",
-                            str(marker_row["note"] or ""),
-                        ).strip()[:300],
-                        now,
-                        dup_id,
-                    ),
+        # 只处理本次导入创建/认领的预约，绝不改写导入前既有计划的
+        # 提醒与归属（第一百一十四轮 [11][15]）；整段持有锁与事务，
+        # 无 source_id 的旧备份也保证提交（第一百一十四轮 [14]）
+        if imported_appointment_ids:
+            with self._lock, self._conn:
+                marker_ids = sorted(
+                    int(appt_id)
+                    for appt_id in imported_appointment_ids
                 )
+                placeholders = ",".join("?" for _ in marker_ids)
+                marker_appointments: Dict[
+                    Tuple[int, str], List[Any]
+                ] = {}
+                visit_profile_cache: Dict[int, str] = {}
+                for marker_row in self._conn.execute(
+                    f"SELECT id, note, scheduled_at, profile,"
+                    f" owner_visit_id FROM appointments"
+                    f" WHERE status = 'upcoming'"
+                    f" AND note LIKE '%由就诊记录 #%'"
+                    f" AND id IN ({placeholders})",
+                    tuple(marker_ids),
+                ).fetchall():
+                    marker_match = re.search(
+                        r"由就诊记录 #(\d+) 自动创建",
+                        str(marker_row["note"] or ""),
+                    )
+                    if marker_match is None:
+                        continue
+                    marker_vid = int(marker_match.group(1))
+                    if marker_vid not in visit_profile_cache:
+                        visit_profile_row = self._conn.execute(
+                            "SELECT profile FROM visit_records"
+                            " WHERE id = ?",
+                            (marker_vid,),
+                        ).fetchone()
+                        visit_profile_cache[marker_vid] = (
+                            _normalize_profile_name(
+                                str(visit_profile_row["profile"] or "")
+                            )
+                            if visit_profile_row is not None else ""
+                        )
+                    marker_visit_profile = visit_profile_cache[marker_vid]
+                    if marker_visit_profile and (
+                        _normalize_profile_name(
+                            str(marker_row["profile"] or "")
+                        ) != marker_visit_profile
+                    ):
+                        # 跨成员标记不参与去重与 keeper 竞争
+                        # （第一百一十四轮 [15]）
+                        continue
+                    marker_appointments.setdefault(
+                        (marker_vid, marker_visit_profile), []
+                    ).append(marker_row)
+                for (marker_vid, _marker_prof), marker_rows in (
+                    marker_appointments.items()
+                ):
+                    if len(marker_rows) <= 1:
+                        continue
+                    marker_link_row = self._conn.execute(
+                        "SELECT followup_appointment_id FROM visit_records"
+                        " WHERE id = ?",
+                        (int(marker_vid),),
+                    ).fetchone()
+                    marker_linked = (
+                        int(marker_link_row["followup_appointment_id"] or 0)
+                        if marker_link_row is not None else 0
+                    )
+                    keeper = None
+                    for marker_row in marker_rows:
+                        if int(marker_row["id"]) == marker_linked:
+                            keeper = marker_row
+                            break
+                    if keeper is None:
+                        for marker_row in marker_rows:
+                            if int(marker_row["owner_visit_id"] or 0) == (
+                                int(marker_vid)
+                            ):
+                                keeper = marker_row
+                                break
+                    if keeper is None:
+                        keeper = sorted(
+                            marker_rows,
+                            key=lambda row_: (
+                                str(row_["scheduled_at"] or ""),
+                                int(row_["id"]),
+                            ),
+                        )[0]
+                    keeper_id = int(keeper["id"])
+                    for marker_row in marker_rows:
+                        dup_id = int(marker_row["id"])
+                        if dup_id == keeper_id:
+                            continue
+                        other_link = self._conn.execute(
+                            "SELECT 1 FROM visit_records"
+                            " WHERE followup_appointment_id = ?"
+                            " AND id != ? LIMIT 1",
+                            (dup_id, int(marker_vid)),
+                        ).fetchone()
+                        if other_link is None:
+                            doomed = [
+                                int(row["id"])
+                                for row in self._conn.execute(
+                                    "SELECT id FROM reminders"
+                                    " WHERE done = 0"
+                                    " AND appointment_id = ?",
+                                    (dup_id,),
+                                ).fetchall()
+                            ]
+                            self._conn.execute(
+                                "DELETE FROM reminders"
+                                " WHERE done = 0 AND appointment_id = ?",
+                                (dup_id,),
+                            )
+                            for doomed_id in doomed:
+                                self._conn.execute(
+                                    "UPDATE visit_records"
+                                    " SET followup_reminder_id = 0"
+                                    " WHERE followup_reminder_id = ?",
+                                    (doomed_id,),
+                                )
+                        self._conn.execute(
+                            "UPDATE appointments SET owner_visit_id = 0,"
+                            " note = ?, updated_at = ? WHERE id = ?",
+                            (
+                                re.sub(
+                                    r"由就诊记录 #\d+ 自动创建",
+                                    "",
+                                    str(marker_row["note"] or ""),
+                                ).strip()[:300],
+                                now,
+                                dup_id,
+                            ),
+                        )
 
         if revived_sessions:
             with self._lock:

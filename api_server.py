@@ -5961,6 +5961,11 @@ def _context_medication_names(context: Any) -> List[str]:
             ) is not None
             if head_pieces and not negated_stop:
                 head_pieces.pop()
+            elif not head_pieces and head.strip() and not negated_stop:
+                # 头部只剩相对时长（「布洛芬，两个月前停了」）：这是
+                # 前一个片段的停药标注，剔除最近药名
+                # （第一百一十四轮 [9]）
+                _pop_last_medication_name(names)
             elif negated_stop:
                 head_pieces = [
                     re.sub(
@@ -7958,12 +7963,26 @@ def _schedule_followup_sync(store, visit_id: int) -> Dict[str, Any]:
                 ):
                     unowned_candidates.append(candidate)
             if appointment is None and len(unowned_candidates) == 1:
-                # 恢复旧备份留下的无归属同日预约：唯一候选视为本
-                # 就诊的复诊安排，直接接管而不是再建一条
-                appointment = unowned_candidates[0]
-                store.adopt_visit_appointment(
-                    int(visit.get("id") or 0), int(appointment["id"])
+                candidate_row = unowned_candidates[0]
+                linked_elsewhere = any(
+                    int(other.get("followup_appointment_id") or 0)
+                    == int(candidate_row.get("id") or 0)
+                    and int(other.get("id") or 0)
+                    != int(visit.get("id") or 0)
+                    for other in store.list_visit_records(
+                        profile, 0, "", 100000
+                    )
                 )
+                if not linked_elsewhere:
+                    # 恢复旧备份留下的无归属同日预约：唯一候选视为本
+                    # 就诊的复诊安排，直接接管而不是再建一条；仍被
+                    # 其它就诊链接的预约是人家的计划，不能抢
+                    # （第一百一十四轮 [8]）
+                    appointment = candidate_row
+                    store.adopt_visit_appointment(
+                        int(visit.get("id") or 0),
+                        int(appointment["id"]),
+                    )
         if appointment is None:
             appointment = store.add_appointment(
                 profile,

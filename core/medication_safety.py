@@ -793,6 +793,12 @@ _STOPPED_USE_SUFFIX = re.compile(
     r"(?!\s*(?:可以吗|行吗|好吗|行不行|可以么|可不可以|好不好|"
     r"能停吗|可以吧|是否|吗|不行|会怎样))"
 )
+#: 药名前的意图/计划词（我想把华法林停掉）：药名后的停药动词
+#: 仍属意向，当前仍在用药（第一百一十四轮 [6]）
+_INTENT_BEFORE_OBJECT = re.compile(
+    r"(?:想|打算|准备|计划|考虑|要不要|是否|能|能否|能不能|可以|可否|"
+    r"该不该|需不需要|应不应该)\s*(?:把|将)?\s*$"
+)
 #: 药名之后的疑问尾：「停用华法林可以吗/行吗/好吗」是意向询问，
 #: 当前仍在用药（第一百零一轮 [11]）。只在药名前已有停药动词时
 #: 参与判断，避免把「吃华法林吗」这类普通问句误当意向
@@ -1313,7 +1319,7 @@ _FUTURE_STOP_CONTEXT = re.compile(
 #: 近期停药（1–2 周内）仍有抗凝作用：按当前用药处理；
 #: 「昨天停的」与「昨天停了」同口径（第一百零六轮 [6]）
 _RECENT_STOP_PREFIX = re.compile(
-    r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
+    r"(?:刚刚?|今天|昨天|昨晚|昨夜|前晚|前天|前几天|几天|几周|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
     r"[^，。；,.!?！？\n]{0,4}(?:已|刚|才)?\s*"
     r"(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)\s*$"
@@ -1336,12 +1342,12 @@ _RECENT_NO_EAT_CONTEXT = re.compile(
 #: 近期停药的任意语序（药名前/后的文本拼接后判断）：
 #: 「停了华法林三天了」「华法林昨天停了」「刚把华法林停了」
 _RECENT_STOP_CONTEXT = re.compile(
-    r"(?:刚刚?|今天|昨天|前天|前几天|几天|几周|"
+    r"(?:刚刚?|今天|昨天|昨晚|昨夜|前晚|前天|前几天|几天|几周|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前?)"
     r"[^，。；,.!?！？\n]{0,4}(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
     r"|(?:停用|停药|停了|停的(?!时间|时候|日子|那天|话)|停掉|停服|停止服用)"
     r"[^，。；,.!?！？\n]{0,4}"
-    r"(?:今天|昨天|前天|几天|一周|"
+    r"(?:今天|昨天|昨晚|昨夜|前晚|前天|几天|一周|"
     # 「两个月零五天」中的「五天」是复合时长的一部分，不是近期停药
     # （第一百零四轮 [15]）
     r"(?<![零半])[0-9一二两三四五六七八九十]+\s*天|"
@@ -1357,7 +1363,7 @@ _RECENT_STOP_SUFFIX_EN = re.compile(
     r"(?:stopped|discontinued|quit|ceased)\s+"
     r"(?:(?:\d+\s*)?days?\s+ago"
     r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago"
-    r"|yesterday|today)",
+    r"|yesterday|today|last night|last week)",
     re.IGNORECASE,
 )
 #: 英文否定停药：「I have not stopped warfarin」「never stopped」
@@ -1385,7 +1391,7 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
     r"few|several|many|a\s+few)\s+days?\s+ago"
     r"|(?:1|a|an|one|two|three)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
-    r"(?:yesterday|today)",
+    r"(?:yesterday|today|last night|last week)",
     re.IGNORECASE,
 )
 #: 英文「off X for N days/until yesterday」：近期停药仍有抗凝作用
@@ -1853,6 +1859,10 @@ def _alias_matches(text: str, alias: str) -> bool:
                 and _STOP_QUESTION_SUFFIX.search(suffix)
             )
             or _INTENT_STOP_PREFIX.search(prefix)
+            or (
+                _INTENT_BEFORE_OBJECT.search(prefix)
+                and _STOPPED_USE_SUFFIX.search(suffix)
+            )
             or _CONTINUOUS_USE_PREFIX.search(prefix)
             or (
                 _RESTART_USE_SUFFIX.search(long_suffix)
@@ -2130,7 +2140,13 @@ def _strip_allergy_statements(text: str) -> str:
 
 def _allergy_text(context: Dict[str, Any], question: str) -> str:
     parts = [
-        _positive_allergy_field(context.get("allergies")),
+        # 档案过敏史里的家属分句（我爸对青霉素过敏）不能算患者本人
+        # （第一百一十四轮 [16]）
+        _positive_allergy_field(
+            _patient_medication_text(
+                str(context.get("allergies") or ""), context
+            )
+        ),
         _allergy_mentions_in_question(question),
     ]
     return " ".join(part for part in parts if part).lower()
@@ -2163,8 +2179,14 @@ _FAMILY_MEDICATION_MARKERS = (
     "爸爸", "妈妈", "爸", "妈", "老公", "老婆", "爱人", "老伴",
     "岳父", "岳母", "公公", "婆婆", "女婿", "儿媳", "姥姥", "姥爷",
     # 主语位置的家属表述（成人档案下不把家属用药算到患者头上）
-    "家里人", "我家孩子", "我家宝宝", "我家娃", "我家老人",
+    "家里人", "家里老人", "家中老人", "家里长辈",
+    "我家孩子", "我家宝宝", "我家娃", "我家老人",
     "我孩子", "我宝宝", "我娃",
+    # 裸称谓同样按家属处理：孩子/小孩/娃 在成人档案是家人，
+    # 患儿档案由 _CHILD_SELF_MARKERS 保留为本人
+    # （第一百一十四轮 [10]）
+    "孩子", "小孩", "娃", "大宝", "二宝",
+    "爹", "娘", "丈母娘", "公婆", "舅舅", "姑姑", "叔叔", "阿姨",
     # 英文家属表述
     "my father", "my mother", "my dad", "my mom", "my mum",
     "my husband", "my wife", "my son", "my daughter", "my brother",

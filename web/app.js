@@ -6787,6 +6787,13 @@ function safeSessionSet(key, value) {
 async function detachSessionForProfileChange() {
   // 档案切换/清空后必须换新会话：旧会话在服务端仍绑定原档案，
   // 继续提问会按旧档案回答并把结果落库
+  if (sendInFlight) {
+    // 排队中的 send 会按 pendingSessionReset 自行新建会话发送：
+    // 不能进入 startNewSession 弹出误导性的「会诊进行中」提示
+    // （第一百一十四轮 [17]）
+    setPendingSessionReset(true);
+    return false;
+  }
   if (busy) {
     // 流式会诊进行中：不能立刻清空已生成的答案，标记在下一轮
     // 提问前开启新会话，避免把新患者的问题写进旧档案
