@@ -1416,15 +1416,16 @@ _RISK_KEYWORD_PATTERNS = (
         re.compile(
             r"高风险(?!人群|因素|行为|职业|活动|运动|食物|饮食|地区"
             r"|场所|场景|暴露|接触|结节|病灶|病变|药物|药品|用药|操作"
-            r"|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查|新生儿)"
+            r"|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查|新生儿|症状"
+            r"|信号|表现|征象|指征|因素)"
             r"|高度风险(?!人群|因素|行为|职业|活动|食物|饮食|药物|药品"
             r"|用药|操作|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查"
-            r"|新生儿)"
+            r"|新生儿|症状|信号|表现|征象|指征)"
             r"|高危(?!人群|因素|型|妊娠|儿|药品|操作|筛查|病变|HPV|hpv"
             r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿"
             # 对象名词后缀不是等级判定（第一百一十七轮 [5]）
             r"|行为|职业|活动|运动|食物|饮食|地区|场所|场景|暴露|接触"
-            r"|结节|病灶)"
+            r"|结节|病灶|症状|信号|征象|指征)"
         ),
     ),
     (
@@ -1432,7 +1433,8 @@ _RISK_KEYWORD_PATTERNS = (
         re.compile(
             r"中风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
             r"|中等风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
-            r"|中危(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"|中危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|症状"
+            r"|信号|表现|征象|指征)"
         ),
     ),
     (
@@ -1440,7 +1442,8 @@ _RISK_KEYWORD_PATTERNS = (
         re.compile(
             r"低风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
             r"|风险较低|风险不高"
-            r"|低危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|操作)"
+            r"|低危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|操作"
+            r"|症状|信号|表现|征象|指征)"
         ),
     ),
 )
@@ -5664,10 +5667,12 @@ _STOP_REMAINDER_TIME_RE = re.compile(
 _STOP_RECENT_DURATION_RE = re.compile(
     r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:天|日)"
     r"|几天|几日|几周|"
+    r"(?<![0-9一二两三四五六七八九十])"
     r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?"
     # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
     r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
     r"上周|上星期|上周末|"
+    r"(?<![0-9一二两三四五六七八九十])"
     r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期)(?!半)|"
     r"[0-9一二两三四五六七八九十]+\s*(?:天|周)前)"
 )
@@ -9778,6 +9783,13 @@ async def _weekly_report_impl(
         row["rate"] = (
             adherence_rate(row["doses"], expected) if expected else None
         )
+        row["started_at"] = (
+            str(
+                medication.get("started_at")
+                or medication.get("created_at") or ""
+            )
+            if medication is not None else ""
+        )
         row["profile"] = (
             medication.get("profile") or "" if medication else ""
         )
@@ -10885,6 +10897,14 @@ def _build_health_insights(
         expected = row.get("expected")
         rate = row.get("rate")
         if expected and expected > 0 and rate is not None:
+            # 当天新开的药当天未打卡不算依从问题
+            # （第一百一十九轮 [13]）
+            if (
+                str(row.get("started_at") or "")[:10]
+                == datetime.now().strftime("%Y-%m-%d")
+                and int(expected) < 7
+            ):
+                continue
             # 每周一次的低频药完全没打卡同样是 0%，不能被 >=3 阈值
             # 过滤后返回 all_clear
             if worst is None or rate < worst[0]:
@@ -14182,14 +14202,20 @@ def _family_attention(
     adherence_preview = medications.get("adherence") or {}
     preview_rate = medications.get("worst_rate")
     preview_expected = int(adherence_preview.get("expected") or 0)
+    preview_started = str(medications.get("oldest_started_at") or "")
+    preview_started_before_today = (
+        bool(preview_started)
+        and preview_started[:10] < datetime.now().strftime("%Y-%m-%d")
+    )
+    preview_sample_ok = (
+        preview_started_before_today or preview_expected >= 7
+    )
     preview_shown = None
-    # 至少约 3 天用药才谈依从率：当天新开的药 0% 不算警告
-    # （round80/81 契约、第一百一十八轮 [12]）
-    if preview_expected >= 7 and preview_rate is not None:
+    if preview_sample_ok and preview_rate is not None:
         if preview_rate < 40:
             preview_shown = preview_rate
     elif (
-        preview_expected >= 7
+        preview_sample_ok
         and preview_rate is None
         and adherence_preview.get("rate", 100) < 40
     ):
@@ -14242,11 +14268,23 @@ def _family_attention(
             worst_rate if worst_rate is not None
             else adherence.get("rate", 0)
         )
+        sample_started = str(medications.get("oldest_started_at") or "")
+        sample_ok = (
+            (
+                bool(sample_started)
+                and sample_started[:10]
+                < datetime.now().strftime("%Y-%m-%d")
+            )
+            or int(adherence.get("expected") or 0) >= 7
+        )
         return {
             # 与 _build_health_insights 的 <40 阈值一致（第一百一十七
-            # 轮 [17]）：0% 依从在家庭总览与健康提示不能一个 info
-            # 一个 warning
-            "level": "warning" if shown_rate < 40 else "info",
+            # 轮 [17]）；当天新开的药不给 warning
+            # （round80/81、第一百一十九轮 [13][15]）
+            "level": (
+                "warning"
+                if shown_rate < 40 and sample_ok else "info"
+            ),
             "label": f"用药打卡 {int(shown_rate)}%",
             "detail": "",
         }
@@ -14891,6 +14929,7 @@ async def family_overview(days: int = 7):
             "worst_rate": None,
             "taken_today_active": 0,
             "skipped_today_active": 0,
+            "oldest_started_at": "",
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
@@ -14939,6 +14978,14 @@ async def family_overview(days: int = 7):
         if expected_week > 0:
             entry["week_count"] += int(item.get("week_count") or 0)
         entry["expected_week_doses"] += expected_week
+        started_text = str(
+            item.get("started_at") or item.get("created_at") or ""
+        )
+        if started_text and (
+            not entry["oldest_started_at"]
+            or started_text < entry["oldest_started_at"]
+        ):
+            entry["oldest_started_at"] = started_text
         if expected_week > 0:
             # 每周一次的低频药完全没吃同样是 0%：不能因为
             # expected_week<3 就被其它药的高打卡率掩盖
