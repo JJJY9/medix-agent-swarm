@@ -5632,6 +5632,33 @@ _STOP_REMAINDER_TIME_RE = re.compile(
 )
 
 
+#: 停药标注里的近期时长（天/周级）：抗凝作用仍在，按当前用药处理
+_STOP_RECENT_DURATION_RE = re.compile(
+    r"(?:[0-9一二两三四五六七八九十半几]+\s*(?:个)?\s*(?:天|日)"
+    r"|几天|几日|几周|"
+    r"(?:1|一)\s*(?:个)?\s*(?:周|星期)(?:半)?)"
+)
+#: 停药标注里的远期时长（月/年级）：药物已停用，退出检查名单
+_STOP_LONG_DURATION_RE = re.compile(
+    r"(?:个月|月|年|半年|大半年|好几年|好久|很久|多年|数月)"
+)
+
+
+def _stop_annotation_is_recent(value: str) -> bool:
+    """停药标注是否只是天/周级近期停药（仍按当前用药处理）。
+
+    与 check_medication_safety 的 _RECENT_STOP_* 口径一致：停药
+    1–2 周内仍可能有抗凝作用，不能因为「停了三天」把药名剔出
+    家庭总览/健康提示的用药安全通道（第一百零九轮 [13]、
+    第一百一十五轮 [9]）。
+    """
+    sample = str(value or "")
+    return (
+        _STOP_RECENT_DURATION_RE.search(sample) is not None
+        and _STOP_LONG_DURATION_RE.search(sample) is None
+    )
+
+
 def _pop_last_medication_name(names: List[str]) -> None:
     """移除最近一个药名片段（跳过剂量/频次/时间等非药名说明）。"""
     while names:
@@ -5909,10 +5936,14 @@ def _context_medication_names(context: Any) -> List[str]:
             annotation_tail = remainder.lstrip("了啦啊呀").strip()
             if (
                 not annotation_tail
-                or _STOP_REMAINDER_TIME_RE.match(annotation_tail)
+                or (
+                    _STOP_REMAINDER_TIME_RE.match(annotation_tail)
+                    and not _stop_annotation_is_recent(annotation_tail)
+                )
             ):
-                # 「已停药两个月/（2025年10月）」：标注带时长，
-                # 剔除前一条药名（pop 会跳过剂量/频次片段）
+                # 「已停药两个月/（2025年10月）」：远期停药标注带时长，
+                # 剔除前一条药名（pop 会跳过剂量/频次片段）；天/周级
+                # 近期停药仍按当前用药处理（第一百一十五轮 [9]）
                 _pop_last_medication_name(names)
             # 余下内容本身是药名（已停用阿司匹林）：该药已停用，
             # 既不能 pop 上一条在用药物，也不能把它加入检查名单
@@ -5923,7 +5954,9 @@ def _context_medication_names(context: Any) -> List[str]:
             # （第九十八轮 [12]）；「停掉了/停止了」与尾部「了」
             # （停了两个月了）同样是停药标注（第九十九轮 [11]）
             r"(?:已停用|已停药|已停服|停药|停用|停服|停了|停掉了|"
-            r"停用了|停止了|停掉|已停|已停掉了|已停止了)"
+            r"停用了|停止了|停掉|已停|已停掉了|已停止了|"
+            # 「半年前停的」：停的（时间/时候/日子/那天/话 除外）
+            r"停的(?!时间|时候|日子|那天|话))"
             # 时长允许空白（「阿司匹林停用 2 个月」）（第一百零一轮 [13]）；
             # 复合时长与尾随括号日期同样让该药退出名单
             # （第一百零三轮 [10][12]）
@@ -5943,6 +5976,27 @@ def _context_medication_names(context: Any) -> List[str]:
             # 同段头部其它药名（华法林 阿司匹林已停用）继续解析
             # （第九十六轮 [16]）
             head = part[: suffix_stop.start()].strip(" ，,、")
+            head_original = head
+            # 停药修饰词/时间词不是药名（「已经停了两个月」「去年就
+            # 停了」）：先剥离再判断头部是否还有真实药名
+            # （第一百一十五轮 [14]）
+            head = re.sub(
+                r"(?:(?:已经|早就|早已|现已|目前|当前|就|才|刚|刚刚|"
+                r"之前|去年|前年|今年|上个月|上月|上周|上星期|上周末|"
+                r"底|初)\s*)+$",
+                "",
+                head,
+            ).strip(" ，,、")
+            stop_span_text = head_original + " " + part[
+                suffix_stop.start():
+            ]
+            group_marker = re.search(
+                r"(?:都|也|均|全都|均已|都已|也都)", head_original
+            ) is not None
+            recent_stop = (
+                _stop_annotation_is_recent(stop_span_text)
+                and not group_marker
+            )
             head_pieces = [
                 piece.strip()
                 for piece in re.split(r"[\s和与及]+", head)
@@ -5959,12 +6013,18 @@ def _context_medication_names(context: Any) -> List[str]:
             negated_stop = re.search(
                 r"(?:尚未|暂未|还未|还没有|还没|没有|未|没|不)$", head
             ) is not None
-            if head_pieces and not negated_stop:
+            if head_pieces and not negated_stop and not recent_stop:
                 head_pieces.pop()
-            elif not head_pieces and head.strip() and not negated_stop:
-                # 头部只剩相对时长（「布洛芬，两个月前停了」）：这是
-                # 前一个片段的停药标注，剔除最近药名
-                # （第一百一十四轮 [9]）
+            elif (
+                not head_pieces
+                and head_original
+                and not negated_stop
+                and not recent_stop
+            ):
+                # 头部只剩相对时长或停药修饰词（「布洛芬，两个月前
+                # 停了」「华法林，已经停了两个月」）：这是前一个片段
+                # 的停药标注，剔除最近药名；天/周级近期停药保留药名
+                # （第一百一十四轮 [9]、第一百一十五轮 [9][14]）
                 _pop_last_medication_name(names)
             elif negated_stop:
                 head_pieces = [

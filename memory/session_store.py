@@ -5673,6 +5673,11 @@ class SessionStore:
                     ) == twin_profile
                     and backup_contents.get(other_id) == wanted_content
                     and (
+                        not backup_softs
+                        or backup_softs.get(other_id)
+                        == backup_softs.get(raw_id)
+                    )
+                    and (
                         not backup_created
                         or backup_created.get(other_id)
                         == str(created_at_value)
@@ -5687,6 +5692,11 @@ class SessionStore:
                         backup_profiles.get(other_id) or ""
                     ) == twin_profile
                     and backup_contents.get(other_id) == wanted_content
+                    and (
+                        not backup_softs
+                        or backup_softs.get(other_id)
+                        == backup_softs.get(raw_id)
+                    )
                     and (
                         not backup_created
                         or backup_created.get(other_id)
@@ -6094,6 +6104,44 @@ class SessionStore:
                 or not _same_backup_origin()
             ):
                 return False
+            # 主键相等只说明编号空间重叠：候选内容必须对得上它撞号的
+            # 那条备份行，否则它可能只是本行自己的编辑存活版本
+            # （第一百一十五轮 [13]）
+            expected_other = (backup_contents or {}).get(candidate)
+            if expected_other is not None and content_columns:
+                try:
+                    row = self._conn.execute(
+                        f"SELECT {', '.join(content_columns)}"
+                        f" FROM {table} WHERE id = ?",
+                        (candidate,),
+                    ).fetchone()
+                except sqlite3.Error:
+                    return False
+                if row is None or self._db_content_fingerprint(
+                    row, content_columns
+                ) != expected_other:
+                    # 档案已被改挂（候选档案与那条备份行不同）时，
+                    # 内容差异来自改挂后的正常编辑，候选仍是它的
+                    # 存活版本（第一百一十五轮 [13] 与 round87 契约）
+                    try:
+                        profile_row = self._conn.execute(
+                            f"SELECT profile FROM {table} WHERE id = ?",
+                            (candidate,),
+                        ).fetchone()
+                    except sqlite3.Error:
+                        profile_row = None
+                    expected_profile = (backup_profiles or {}).get(
+                        candidate
+                    )
+                    if (
+                        profile_row is None
+                        or not expected_profile
+                        or _normalize_profile_name(
+                            str(profile_row["profile"] or "")
+                        )
+                        == _normalize_profile_name(expected_profile)
+                    ):
+                        return False
             return True
 
         def _content_owned_by_other(candidate: int) -> bool:
@@ -6786,6 +6834,32 @@ class SessionStore:
                 and _tail_matches(candidate)
             )
 
+        def _candidate_has_import_origin(candidate: int) -> bool:
+            """候选行是否由某次导入创建（带来源记录）。
+
+            本地新建、从未进过备份库的行不可能是一条备份记录被编辑
+            后的存活版本（第一百一十五轮 [7]）。
+            """
+            provenance = getattr(self, "_import_provenance", None)
+            if not provenance:
+                return False
+            origin_map = (provenance.get("origins") or {}).get(table) or {}
+            return bool(origin_map.get(str(candidate)))
+
+        def _import_from_own_source() -> bool:
+            """本次导入是否是本机自己导出的快照。"""
+            provenance = getattr(self, "_import_provenance", None)
+            if not provenance:
+                return False
+            source = provenance.get("source")
+            if not source:
+                return False
+            try:
+                own_source = self.get_app_state("backup_source_id")
+            except sqlite3.Error:
+                return False
+            return bool(own_source) and source == own_source
+
         def _candidate_from_other_backup(candidate: int) -> bool:
             """候选行是否由另一份备份创建（合并库的归属判定）。
 
@@ -6803,9 +6877,16 @@ class SessionStore:
                 own_source = self.get_app_state("backup_source_id")
             except sqlite3.Error:
                 own_source = ""
-            if own_source and source == own_source:
-                # 本机自己导出的快照：恢复它不涉及跨来源，不能按
-                # 外来备份处理（第一百一十四轮 [7]）
+            if (
+                own_source
+                and source == own_source
+                and candidate == raw_id
+            ):
+                # 本机自己导出的快照：导出保留主键，编号相同的行就是
+                # 本行自身，恢复它不涉及跨来源（第一百一十四轮 [7]）；
+                # 快照导出后才合并进来的其它来源行编号撞号时仍按
+                # 外来备份处理，否则被删记录会被编辑孪生顶替
+                # （第一百一十五轮 [3][10]）
                 return False
             origin_map = (provenance.get("origins") or {}).get(table)
             if not origin_map:
@@ -7917,7 +7998,9 @@ class SessionStore:
                             )
                         )
                     )
-                if claimable_row:
+                if claimable_row and not _candidate_from_other_backup(
+                    claim_row
+                ):
                     # 尾字段平局时，软字段对不上本行、却命中同秒另一条
                     # 备份行（且内容也相同）的候选属于那条记录：本行按
                     # 被删记录补插；软字段命中的合法存活行（同标题孪生）
@@ -7984,6 +8067,11 @@ class SessionStore:
                         == str(meta["created_at"] or "")
                     ):
                         claimable = False
+                if claimable and _candidate_from_other_backup(candidate):
+                    # 候选由另一份备份创建：本备份行按被删记录补插，
+                    # 不能把它当作改挂后的存活版本吞掉
+                    # （第一百一十五轮 [4]）
+                    claimable = False
                 if claimable and _candidate_owned_by_profile_sibling(
                     candidate, str(row["profile"] or "")
                 ):
@@ -8880,6 +8968,13 @@ class SessionStore:
                 # 记录，本行按被删记录补插（第一百零七轮 [9]；与
                 # 8419 的 sole 分支同口径）
                 return _ambiguous()
+            if (
+                deferred_candidate is not None
+                and _candidate_from_other_backup(deferred_candidate)
+            ):
+                # 合并备份：另一来源创建的行不能认领给本备份行
+                # （第一百一十五轮 [4]）
+                deferred_candidate = None
             if deferred_candidate is not None and (
                 raw_id > 0
                 or (
@@ -8991,14 +9086,14 @@ class SessionStore:
                 )
             )
             and (
-                _soft_or_edited(raw_id)
+                _soft_matches(raw_id)
+                or _candidate_edited(raw_id)
                 or (
                     _edited_after_export()
+                    and _candidate_content_matches_backup(raw_id)
                     and (
-                        _candidate_edited(raw_id)
-                        # 同一秒内的软/尾字段编辑：内容列仍与备份一致，
-                        # 同样能证明它就是这个备份行的本地版本
-                        or _candidate_content_matches_backup(raw_id)
+                        _candidate_has_import_origin(raw_id)
+                        or _import_from_own_source()
                     )
                 )
             )
@@ -9045,7 +9140,9 @@ class SessionStore:
                     return _claim(raw_id)
         if not candidates:
             twin = _cross_profile_twin_candidate()
-            if twin is not None:
+            if twin is not None and not _candidate_from_other_backup(
+                twin
+            ):
                 return _claim(twin, mark_moved=True)
             state[identity] = claimed
             return None
@@ -9411,7 +9508,9 @@ class SessionStore:
                     return _ambiguous()
         if not candidates:
             twin = _cross_profile_twin_candidate()
-            if twin is not None:
+            if twin is not None and not _candidate_from_other_backup(
+                twin
+            ):
                 return _claim(twin, mark_moved=True)
             state[identity] = claimed
             return None
@@ -14974,35 +15073,53 @@ class SessionStore:
                     usage_events_imported += 1
 
         # 同一就诊的标记型遗留自动预约去重（旧版备份 fa=0 的常态）：
-        # 只处理本次导入创建/认领的预约，绝不改写导入前既有计划的
-        # 提醒与归属（第一百一十四轮 [11][15]）；整段持有锁与事务，
-        # 无 source_id 的旧备份也保证提交（第一百一十四轮 [14]）
-        if imported_appointment_ids:
+        # 处理集合是本次导入新建或认领的预约（重复导入同一备份时预约
+        # 按身份被认领、备份里的 pending 复诊提醒会被重新挂回，必须
+        # 同样去重）；归属标记以备份原始备注为准，本地备注可能已被
+        # 上一轮导入剥空（第一百一十五轮 [8]）。只处理本备份带来的
+        # 预约，绝不改写导入前既有计划（第一百一十四轮 [11][15]）；
+        # 整段持有锁与事务，无 source_id 的旧备份也保证提交
+        # （第一百一十四轮 [14]）
+        target_appointment_ids = set(imported_appointment_ids) | {
+            int(appt_id)
+            for appt_id in raw_appointment_id_map.values()
+            if int(appt_id) > 0
+        }
+        if target_appointment_ids:
             with self._lock, self._conn:
-                marker_ids = sorted(
-                    int(appt_id)
-                    for appt_id in imported_appointment_ids
-                )
+                marker_ids = sorted(target_appointment_ids)
                 placeholders = ",".join("?" for _ in marker_ids)
                 marker_appointments: Dict[
                     Tuple[int, str], List[Any]
                 ] = {}
                 visit_profile_cache: Dict[int, str] = {}
+                marker_vid_cache: Dict[int, int] = {}
                 for marker_row in self._conn.execute(
                     f"SELECT id, note, scheduled_at, profile,"
                     f" owner_visit_id FROM appointments"
                     f" WHERE status = 'upcoming'"
-                    f" AND note LIKE '%由就诊记录 #%'"
                     f" AND id IN ({placeholders})",
                     tuple(marker_ids),
                 ).fetchall():
+                    marker_row_id = int(marker_row["id"])
+                    raw_note = appointment_raw_notes.get(marker_row_id)
                     marker_match = re.search(
                         r"由就诊记录 #(\d+) 自动创建",
-                        str(marker_row["note"] or ""),
+                        str(
+                            raw_note if raw_note is not None
+                            else marker_row["note"] or ""
+                        ),
                     )
                     if marker_match is None:
                         continue
-                    marker_vid = int(marker_match.group(1))
+                    marker_raw_vid = int(marker_match.group(1))
+                    if marker_raw_vid not in marker_vid_cache:
+                        marker_vid_cache[marker_raw_vid] = int(
+                            visit_raw_local_map.get(
+                                marker_raw_vid, marker_raw_vid
+                            )
+                        )
+                    marker_vid = marker_vid_cache[marker_raw_vid]
                     if marker_vid not in visit_profile_cache:
                         visit_profile_row = self._conn.execute(
                             "SELECT profile FROM visit_records"

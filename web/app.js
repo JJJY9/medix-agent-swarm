@@ -3388,11 +3388,21 @@ async function ensureSession(signal) {
   return sessionId;
 }
 
+//: 排队窗口（sendInFlight 且 busy 为假）并没有可停止的会诊：
+//: 提示「请先停止当前会诊」会让用户找不到停止对象
+//: （第一百一十五轮 [16]）
+function concurrencyBlockedHint() {
+  if (sendInFlight && !busy) {
+    return '主诉正在提交，请稍候再操作。';
+  }
+  return '会诊进行中，请先停止当前会诊。';
+}
+
 async function startNewSession() {
   if (busy || sendInFlight) {
     // sendInFlight：排队等待首屏/深链恢复的主诉还在路上，
     // 此时新建会话会把已提交的问题挤进新会话
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return false;
   }
   // 知识库编辑草稿未保存时先确认，取消则保留当前页面
@@ -21115,7 +21125,7 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 async function send(question, composerSubmit = false) {
   if (busy || sendInFlight) {
     restoreComposer(question);
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return;
   }
   if (!question.trim()) return;
@@ -22508,7 +22518,7 @@ async function savePatientProfile() {
   if (busy || sendInFlight) {
     // 提交组装期间改档会让本轮以「档案已切换」中止，并把草稿
     // 钉在已不存在的旧档案上（第一百一十轮 [13]）
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return;
   }
   const context = readPatientContext();
@@ -22559,7 +22569,7 @@ async function savePatientProfile() {
 
 async function renamePatientProfile() {
   if (busy || sendInFlight) {
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return;
   }
   const name = els.profileSelect.value;
@@ -22610,7 +22620,7 @@ async function renamePatientProfile() {
 
 async function deletePatientProfile() {
   if (busy || sendInFlight) {
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return;
   }
   const name = els.profileSelect.value;
@@ -22692,7 +22702,7 @@ async function applySelectedProfile() {
     if (busy || sendInFlight) {
       // 会诊/排队中的主诉尚未提交，换档根本不会开始：不弹确认、
       // 不递增 profileSelectionSeq，避免排队主诉被误判换档而丢失
-      window.alert('会诊进行中，请先停止当前会诊。');
+      window.alert(concurrencyBlockedHint());
       els.profileSelect.value = previous;
       return;
     }
@@ -22760,7 +22770,7 @@ async function applySelectedProfile() {
     // 线程为空但 sessionId 仍绑定服务端旧档案（恢复失败/尚未完成）：
     // 换档前必须断开旧会话，否则下一问会被服务端按旧档案回答并落库
     if (busy || sendInFlight) {
-      window.alert('会诊进行中，请先停止当前会诊。');
+      window.alert(concurrencyBlockedHint());
       els.profileSelect.value = previous;
       return;
     }
@@ -25271,7 +25281,7 @@ els.contextClear.addEventListener('click', () => {
   if (busy || sendInFlight) {
     // 提交组装期间清空补充信息/档案会让本轮提交以「档案已切换」中止，
     // 主诉被标成旧档案后持续被跨档案守卫拦截（第一百零九轮 [17]）
-    window.alert('会诊进行中，请先停止当前会诊。');
+    window.alert(concurrencyBlockedHint());
     return;
   }
   applyPatientContext({});
