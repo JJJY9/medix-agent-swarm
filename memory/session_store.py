@@ -10297,6 +10297,11 @@ class SessionStore:
             sole == raw_id
             and not _same_backup_origin()
             and not _tail_matches(sole)
+            and not (
+                content_where
+                and _candidate_content_matches_backup(sole)
+                and not _candidate_edited(sole)
+            )
         ):
             # 漂移库中本地编号恰等于备份主键只是巧合：尾字段对不上
             # 时按被删记录补插（第八十七轮）
@@ -15089,23 +15094,23 @@ class SessionStore:
                         # 不复活本次导入/映射到该预约的 pending 提醒
                         # （第一百二十四轮 [14]）
                         tombstone_link = True
-                        pending_targets = self._conn.execute(
-                            "SELECT id FROM reminders WHERE done = 0"
-                            " AND appointment_id = ?",
-                            (int(followup_appointment_id),),
-                        ).fetchall()
-                        for pending_row in pending_targets:
-                            pending_id = int(pending_row["id"])
-                            if pending_id in imported_reminder_ids:
-                                self._conn.execute(
-                                    "DELETE FROM reminders"
-                                    " WHERE id = ? AND done = 0"
-                                    " AND appointment_id = ?",
-                                    (
-                                        pending_id,
-                                        int(followup_appointment_id),
-                                    ),
-                                )
+                        # 只删除被墓碑抑制的复诊提醒本身：同一预约上
+                        # 用户另建的待办（就诊：…）不能连带删除
+                        # （第一百二十六轮 [7]）
+                        restored_target = int(followup_reminder_id or 0)
+                        if (
+                            restored_target
+                            and restored_target in imported_reminder_ids
+                        ):
+                            self._conn.execute(
+                                "DELETE FROM reminders"
+                                " WHERE id = ? AND done = 0"
+                                " AND appointment_id = ?",
+                                (
+                                    restored_target,
+                                    int(followup_appointment_id),
+                                ),
+                            )
                         followup_reminder_id = 0
                 if apply_links:
                     restored_reminder = followup_reminder_id

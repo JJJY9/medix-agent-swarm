@@ -5736,7 +5736,7 @@ _STOP_RECENT_DURATION_RE = re.compile(
     r"(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?"
     # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
     r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
-    r"上周|上星期|上周末|上礼拜|"
+    r"上周|上星期|上周末|上礼拜|最近|近来|近期|"
     r"(?<![0-9一二两三四五六七八九十])"
     r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)|"
     r"(?<![零半0-9一二三四五六七八九十])"
@@ -14428,6 +14428,7 @@ def _family_attention(
                 and (
                     sample_ok
                     or medications.get("resumed_today")
+                    or medications.get("worst_resumed")
                 )
                 else "info"
             ),
@@ -15080,6 +15081,7 @@ async def family_overview(days: int = 7):
             "oldest_started_at": "",
             "worst_started_at": "",
             "resumed_today": False,
+            "worst_resumed": False,
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
@@ -15171,6 +15173,9 @@ async def family_overview(days: int = 7):
                 # 没吃不能被其它药的高打卡率稀释成「正常」
                 entry["worst_rate"] = week_rate
                 entry["worst_started_at"] = started_text
+                entry["worst_resumed"] = bool(
+                    item.get("resumed_at")
+                )
         if len(entry["names"]) < 3:
             entry["names"].append(item.get("name") or "")
 
