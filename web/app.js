@@ -14779,7 +14779,18 @@ function renderMedications(items) {
     const rangeCount = Number(
       item.range_count ?? item.week_count ?? 0
     );
-    if (expectedDoses > 0) {
+    const nowDate = new Date();
+    const todayKey = [
+      nowDate.getFullYear(),
+      String(nowDate.getMonth() + 1).padStart(2, '0'),
+      String(nowDate.getDate()).padStart(2, '0'),
+    ].join('-');
+    const startedToday = (
+      String(item.started_at || item.created_at || '').slice(0, 10)
+      === todayKey
+      && !String(item.resumed_at || '')
+    );
+    if (expectedDoses > 0 && !startedToday) {
       const rate = Math.min(
         100, Math.round((rangeCount / expectedDoses) * 100)
       );
@@ -21192,6 +21203,11 @@ async function restoreCurrentSession(
     } else {
       setVitals('idle', '已恢复上次会诊');
     }
+    // 首次成功恢复后 fresh 标记失效：长存活标签页里的同文本旧问答
+    // 不能再被当成本轮已落库（第一百二十五轮 [16]）
+    if (expectedSession) {
+      safeSessionRemove(freshSessionMarkKey(expectedSession));
+    }
     return true;
   } catch {
     // 服务未启动或尚无记录时保持空状态
@@ -21229,6 +21245,12 @@ function scheduleAbortReconcile(session, question, baselineMessageId) {
 /* ---------- 提交主诉 ---------- */
 
 async function send(question, composerSubmit = false) {
+  // 提交瞬间的档案快照：启动等待/重试期间全局会被下一次提交覆盖，
+  // 只能在本次调用入口捕获（第一百二十五轮 [9]）
+  const submittedProfileSnapshot = composerSubmit
+    ? pendingComposerProfile
+    : null;
+  if (composerSubmit) pendingComposerProfile = null;
   if (pendingLaunchNewSession && !launchNewSessionSettled) {
     // 「新建会诊」快捷方式还没建好会话：等它完成再发送，主诉不会
     // 落进恢复出来的上一会话（第一百一十六轮 [17]）。等待期间
@@ -21305,8 +21327,7 @@ async function send(question, composerSubmit = false) {
   const sendProfileSeq = profileSelectionSeq;
   // 输入框草稿属于另一位档案（换档后未重新输入）：不能按新档案落库
   try {
-    const submittedProfile = pendingComposerProfile;
-    pendingComposerProfile = null;
+    const submittedProfile = submittedProfileSnapshot;
     const draftProfile = (
       submittedProfile || safeSessionGet(DRAFT_PROFILE_KEY) || ''
     );
@@ -22349,7 +22370,15 @@ async function buildConsultContext(signal) {
   const context = readPatientContext();
   // 紧急联系人只用于本机急救卡，不随会诊发送给模型
   delete context.emergency_contacts;
-  const profile = els.profileSelect.value || '';
+  // 档案列表加载失败时下拉为空：与发送时的 patient_profile 共用
+  // 同一回退链，避免按「未指定档案」取结构化数据
+  // （第一百二十五轮 [17]）
+  const profile = (
+    els.profileSelect.value
+    || activeProfileName
+    || readStoredProfile()
+    || ''
+  );
   try {
     const [
       metricsRes, remindersRes, symptomsRes, medicationsRes,
@@ -23342,6 +23371,14 @@ function preserveDraftProfile(profile, text) {
     && existingOwner !== profile
     && els.input.value.includes(String(text || '').trim())
   ) {
+    // 输入框里混有两位患者的文本：写混合哨兵（永不匹配任何档案），
+    // 让发送守卫一直拦截到用户整体替换文本
+    // （第一百二十五轮 [10]）
+    try {
+      safeSessionSet(DRAFT_PROFILE_KEY, '__mixed_draft__');
+    } catch {
+      // 隐私模式忽略
+    }
     return;
   }
   // 归属必须同步写回：提交入口的 clearDraft 已清空草稿归属，若

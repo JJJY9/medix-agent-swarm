@@ -409,7 +409,7 @@ def test_send_start_keeps_snapshot_for_same_question():
     source = _web_source()
     start = source.index("async function send(question")
     # send 前部新增启动等待持久化（第一百一十九轮 [9]）：窗口放宽
-    head = source[start:start + 2200]
+    head = source[start:start + 3000]
     assert (
         "if (String(question || '').trim() !== lastRestoredComposerQuestion)"
         in head

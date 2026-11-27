@@ -10109,10 +10109,14 @@ class SessionStore:
                 # 本行的存活版本：按被删记录补回，避免误认领后把
                 # owner/复诊链接写到另一条记录上
                 return _ambiguous()
-            if not _same_backup_origin() and not _candidate_edited(
-                candidate
+            if (
+                not _same_backup_origin()
+                and not _candidate_edited(candidate)
+                and not _candidate_content_matches_backup(candidate)
             ):
-                # 非同源且看不到任何编辑证据：不能凭撞号认领遗留行
+                # 非同源且看不到任何编辑证据：不能凭撞号认领遗留行；
+                # 内容指纹与本行完全一致时仍是同一记录（补洞后的
+                # 重复恢复不能补插重复读数，第一百二十五轮 [6]）
                 return _ambiguous()
         if len(candidates) > 1:
             filtered_multi = {
@@ -15085,11 +15089,6 @@ class SessionStore:
                         # 不复活本次导入/映射到该预约的 pending 提醒
                         # （第一百二十四轮 [14]）
                         tombstone_link = True
-                        imported_reminder_ids = {
-                            int(v)
-                            for v in raw_reminder_id_map.values()
-                            if int(v or 0) > 0
-                        }
                         pending_targets = self._conn.execute(
                             "SELECT id FROM reminders WHERE done = 0"
                             " AND appointment_id = ?",
@@ -15276,6 +15275,86 @@ class SessionStore:
                                     dup_id,
                                 ),
                             )
+                    if (
+                        not followup_appointment_id
+                        and restored_reminder
+                    ):
+                        # 仅提醒链接（预约链接未写回）的备份：按就诊
+                        # owner/备注归属解析其自动预约，删除过的提醒
+                        # 不再复活（第一百二十五轮 [13]）
+                        marker_text2 = (
+                            f"由就诊记录 #{int(visit_id)} 自动创建"
+                        )
+                        owned_appts = self._conn.execute(
+                            "SELECT id, scheduled_at FROM appointments"
+                            " WHERE status = 'upcoming' AND profile = ?"
+                            "   AND (owner_visit_id = ?"
+                            "        OR (owner_visit_id = 0"
+                            "            AND note LIKE ?))",
+                            (
+                                str(visit_row["profile"] or "")
+                                if visit_row is not None else "",
+                                int(visit_id),
+                                f"%{marker_text2}%",
+                            ),
+                        ).fetchall()
+                        rem_row2 = self._conn.execute(
+                            "SELECT note, due_at FROM reminders"
+                            " WHERE id = ?",
+                            (int(restored_reminder),),
+                        ).fetchone()
+                        plan2 = ""
+                        if rem_row2 is not None:
+                            note2 = str(rem_row2["note"] or "")
+                            day_match2 = re.search(
+                                r"(\d{4}-\d{2}-\d{2})", note2
+                            )
+                            if day_match2 is not None:
+                                plan2 = day_match2.group(1)
+                            elif "复诊" in note2:
+                                try:
+                                    plan2 = (
+                                        datetime.strptime(
+                                            str(rem_row2["due_at"] or "")[
+                                                :10
+                                            ],
+                                            "%Y-%m-%d",
+                                        )
+                                        + timedelta(days=1)
+                                    ).strftime("%Y-%m-%d")
+                                except (ValueError, TypeError):
+                                    plan2 = ""
+                        hit_tombstone = False
+                        for owned_appt in owned_appts:
+                            try:
+                                tomb2 = self.get_app_state(
+                                    "reminder_deleted_"
+                                    f"{int(owned_appt['id'])}"
+                                )
+                            except sqlite3.Error:
+                                tomb2 = ""
+                            if not tomb2:
+                                continue
+                            if (
+                                plan2
+                                and str(
+                                    owned_appt["scheduled_at"] or ""
+                                )[:10] != plan2
+                            ):
+                                continue
+                            hit_tombstone = True
+                            break
+                        if hit_tombstone:
+                            if (
+                                int(restored_reminder)
+                                in imported_reminder_ids
+                            ):
+                                self._conn.execute(
+                                    "DELETE FROM reminders"
+                                    " WHERE id = ? AND done = 0",
+                                    (int(restored_reminder),),
+                                )
+                            restored_reminder = 0
                     if tombstone_link:
                         restored_reminder = 0
                     self._conn.execute(
@@ -24068,7 +24147,10 @@ class SessionStore:
                         marker_targets.update(
                             int(row["id"]) for row in owned
                         )
-                if plan_day:
+                if plan_day and not doomed_appointment:
+                    # 日期过滤只用于脱钩的旧计划提醒；附着在预约上的
+                    # 提醒（appointment_id 命中的）已是当前预约的提醒，
+                    # 用户删除即 opt-out（第一百二十五轮 [7]）
                     day_targets = set()
                     for target_id in marker_targets:
                         appt_row = self._conn.execute(
