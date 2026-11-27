@@ -283,6 +283,7 @@ _CHEST_PAIN_VARIANT_RE = re.compile(
     # 方向限定：胸部正中偏左/胸骨中段偏右疼痛同样是中心性胸痛
     # （第一百零四轮 [5]）
     r"偏左|偏右|偏上|偏下|左侧|右侧|左边|右边|"
+    r"像被|跟被|像|跟|如|似|窝|压|了|块|石头|重物|大石|"
     r"压迫|压着|烧灼|绞窄|紧缩|"
     r"一阵一阵|一阵阵|一阵|持续性|阵发性|针刺样|针刺|针扎|"
     r"刀割样|刀割|撕裂样|撕裂|绞着|扯着|放射|特别|明显|一直|"
@@ -315,8 +316,10 @@ PREGNANCY_TERMS = (
 #: 状态；「剖宫产5年了/剖宫产术后5年」是既往史，不算当前妊娠
 _CAESAREAN_RECENT_RE = re.compile(
     r"(?:剖宫产|剖腹产)(?:术后)?\s*"
-    r"(?:(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:天|周)|"
-    r"(?:[1-9]|1[01]|[一二两三四五六七八九十])\s*个?月)"
+    r"(?:(?:第|已|已经|满|已满|刚|才|二胎|二宝|老二|双胞胎)\s*)*"
+    r"(?:(?:[0-9一二两三四五六七八九十半几]+|几)\s*(?:多|来)?\s*"
+    r"(?:天|周)|"
+    r"(?:[1-9]|1[01]|[一二两三四五六七八九十半])\s*(?:个|多)?\s*月)"
     r"|(?:剖宫产|剖腹产)\s*(?:手术)?\s*"
     r"(?:之后|以后|术后|后|刚做完|做完|刚手术)"
     r"(?!\s*(?:(?:已|已经|都|快|近|将近|已有?|已?满(?:了)?)\s*)?"
@@ -374,7 +377,14 @@ def _postpartum_recent_positive(text: str) -> bool:
         prefix = text[:match.start()]
         if _PAST_YEARS_BEFORE_TRIGGER_RE.search(prefix):
             continue
-        tail = text[match.end():match.end() + 12]
+        tail = text[match.end():match.end() + 14]
+        # 「生完二胎三年了/生了二宝三年」：序数/宝宝词插在触发词
+        # 与时长之间，先剥掉再判年数（第一百二十五轮 [1]）
+        tail = re.sub(
+            r"^\s*(?:二胎|二宝|老二|三胎|双胞胎|孩子|宝宝|娃)",
+            "",
+            tail,
+        )
         if _POSTPARTUM_YEARS_AFTER_RE.search(tail):
             continue
         return True
@@ -502,7 +512,7 @@ _PREGNANCY_BLEEDING_RE = re.compile(
     # 内裤/护垫/卫生巾上的血迹是明确的出血部位（第一百一十五轮 [17]）
     r"(?:阴道|产道|下体|下面|下身|内裤上?|护垫上?|卫生巾上?)"
     r"[^，。；,;！!？?\n]{0,4}(?:出血|流血|见红|见(?:到)?血)"
-    r"|(?:孕妇|产妇|孕产妇|怀孕|(?<![避备不待])孕期|产前|产后|"
+    r"|(?:孕妇|产妇|孕产妇|怀孕|(?<![避备不待易非])孕期|产前|产后|"
     r"早孕|孕[早中晚]期"
     r"|预产期|足月"
     r"|宫外孕|异位妊娠|孕吐|孕检|产检|葡萄胎|先兆流产|难免流产"
@@ -915,6 +925,19 @@ def _colloquial_bleeding_positive(text: str) -> bool:
     return False
 
 
+#: 无患者语境的科普问句形态（哪些人容易胸痛/胸痛会遗传吗/
+#: 感冒会引起胸痛吗/胸痛怎么预防/挂什么科）：不按主诉处理
+#: （第一百二十五轮 [5]）
+_EDUCATIONAL_NO_CONTEXT_RE = re.compile(
+    r"^(?:哪些人|什么人|哪类人|什么样的人)(?:容易|易患|易得|会|更易)"
+    r"|^[^，。；]{1,12}(?:会|容易)(?:遗传|传染)(?:吗|么)?[？?]?$"
+    r"|^[^，。；]{1,12}会(?:引起|导致|造成)[^，。；]{1,12}?(?:吗|么)"
+    r"[？?]?$"
+    r"|^[^，。；]{1,12}会不会[^，。；]{1,10}?[？?]?$"
+    r"|^[^，。；]{1,12}会[^，。；]{1,10}?(?:吗|么)[？?]?$"
+    r"|^[^，。；]{1,12}(?:怎么|如何)(?:预防|治疗|缓解|调理)"
+    r"|^[^，。；]{1,12}(?:挂|看)(?:什么|哪个)科"
+)
 #: 主诉中带明确年数的产后/流产后表述：已不是当前妊娠，不能据此
 #: 把阴道出血判为孕产期出血（「产后2年，阴道出血」）
 _PAST_OBSTETRIC_YEARS = re.compile(
@@ -1695,7 +1718,7 @@ def _pregnancy_term_positive(text: str, term: str) -> bool:
     if not _positive_mention(text, term):
         return False
     if term == "孕期" and re.search(
-        r"(?<![避备不待])孕期", str(text or "")
+        r"(?<![避备不待易非])孕期", str(text or "")
     ) is None:
         # 「备孕期」「避孕期间」里的孕期子串不是妊娠
         # （第一百二十四轮 [6]）
@@ -1708,6 +1731,15 @@ def _pregnancy_term_positive(text: str, term: str) -> bool:
         ):
             return False
     return True
+
+
+_VITALS_READING_RE = re.compile(
+    r"(?:体温|血压|收缩压|舒张压|高压|低压|血氧(?:饱和度)?|"
+    r"血糖|心率|脉搏|呼吸)"
+    r"\s*(?:高到|低到|只有|降到|升到|达到|测到|高达|飙到|"
+    r"掉到|冲到|窜到|烧到|都|也|已经|已)?\s*"
+    r"(?:[0-9]|[一二两三四五六七八九十百半点])"
+)
 
 
 def _clean_complaint_clause(
@@ -2021,6 +2053,14 @@ def _clean_complaint_clause(
                 stripped, patient_context_seen, help_follows,
                 course_follows,
             )
+        return ""
+    if (
+        not patient_context_seen
+        and not course_follows
+        and not help_follows
+        and not _has_patient_subject(clause)
+        and _EDUCATIONAL_NO_CONTEXT_RE.search(clause) is not None
+    ):
         return ""
     if any(marker in clause for marker in _PATIENT_CONTEXT_MARKERS):
         if not any(
@@ -2617,9 +2657,15 @@ def patient_complaint_text(text: str) -> str:
             _severity_follow_clause(text_follow)
             for text_follow in patient_follows
         )
+        # 「胸痛是什么病，血压200」：后置的生命体征读数同样是患者
+        # 语境，定义问句不能把胸痛整句丢掉（第一百二十五轮 [4]）
+        vitals_follows = any(
+            _VITALS_READING_RE.search(text_follow) is not None
+            for text_follow in patient_follows
+        )
         cleaned = _clean_complaint_clause(
             clause.strip(), context_seen, help_follows,
-            course_follows or severity_follows,
+            course_follows or severity_follows or vitals_follows,
             symptom_context_seen,
         )
         if cleaned:
@@ -2649,14 +2695,7 @@ def patient_complaint_text(text: str) -> str:
             # 纯生命体征读数（体温39度/血压200/血氧85）同样是患者
             # 语境：后置定义问句中的红旗按真实主诉保留
             # （第一百二十三轮 [2]）
-            vitals_seen = re.search(
-                r"(?:体温|血压|收缩压|舒张压|高压|低压|血氧(?:饱和度)?|"
-                r"血糖|心率|脉搏|呼吸)"
-                r"\s*(?:高到|低到|只有|降到|升到|达到|测到|高达|飙到|"
-                r"掉到|冲到|窜到|烧到)?\s*"
-                r"(?:[0-9]|[一二两三四五六七八九十百半点])",
-                clause,
-            ) is not None
+            vitals_seen = _VITALS_READING_RE.search(clause) is not None
             if vitals_seen:
                 # 见于什么病分支的保留条件读 symptom_context_seen：
                 # 生命体征读数同样建立症状语境（第一百二十四轮 [3]）
@@ -4179,7 +4218,14 @@ _RESTART_OBJECT_RE = re.compile(
     r"|(?:每天|每日|天天|一直|持续|规律|长期|常年)"
     r"(?:都|也|还|在|坚持)?"
     r"(?:吃|服用|口服|服|用)"
-    r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面))"
+    r"(?!饭|菜|水果|东西|零食|早餐|午餐|晚餐|汤|粥|面)"
+    # 近期时间词 + 开始吃/吃上了：宾语同样参与他药/非药物归属
+    # （第一百二十五轮 [3][12]）
+    r"|(?:昨天|前天|今早|昨天早上|上周|这周|本周|"
+    r"周[一二三四五六日天]|礼拜[一二三四五六日天]?|"
+    r"(?:[0-9一二两三四五六七八九十]+)\s*天前)(?:才|就)?(?:开始)?"
+    r"(?:吃(?!饭|菜|东西|水果|早餐|午餐|晚餐|零食|面包|鸡蛋|汤|粥|面|"
+    r"零|点|些|口|(?:两|几|一|半)[口块碗])|服用|口服)(?:上了|了)?)"
     r"(?:了)?\s*([一-龥A-Za-z0-9]{1,10})"
 )
 #: 代词/泛称宾语（还在吃这个/那种药）仍指同一药物

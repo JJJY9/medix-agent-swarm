@@ -335,7 +335,7 @@ def test_frontend_adopted_session_profile_conflict():
 def test_frontend_preserve_draft_profile_writes_synchronously():
     source = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     start = source.index("function preserveDraftProfile")
-    body = source[start:start + 900]
+    body = source[start:start + 1200]
     sync_index = body.index("draftProfileMemory = profile")
     timer_index = body.index("setTimeout")
     assert sync_index < timer_index

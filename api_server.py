@@ -5303,6 +5303,13 @@ async def export_medications_csv(
     for item in items:
         expected = int(item.get("expected_week_doses") or 0)
         taken = int(item.get("week_count") or 0)
+        skip_rate = bool(
+            str(
+                item.get("started_at") or item.get("created_at") or ""
+            )[:10]
+            == datetime.now().strftime("%Y-%m-%d")
+            and not str(item.get("resumed_at") or "")
+        )
         alerts = []
         if item.get("out_of_stock"):
             alerts.append("缺货")
@@ -5322,9 +5329,9 @@ async def export_medications_csv(
             str(int(item.get("today_count") or 0)),
             str(taken),
             csv_safe_cell(item.get("last_taken_at") or ""),
-            str(expected) if expected else "",
+            str(expected) if expected and not skip_rate else "",
             str(adherence_rate(taken, expected))
-            if expected else "",
+            if expected and not skip_rate else "",
             "" if item.get("stock") is None else csv_number(item["stock"]),
             csv_safe_cell(item.get("stock_unit", "")),
             csv_number(item.get("low_stock_threshold") or 0),
@@ -14417,7 +14424,12 @@ def _family_attention(
             # （round80/81、第一百一十九轮 [13][15]）
             "level": (
                 "warning"
-                if shown_rate < 40 and sample_ok else "info"
+                if shown_rate < 40
+                and (
+                    sample_ok
+                    or medications.get("resumed_today")
+                )
+                else "info"
             ),
             "label": f"用药打卡 {int(shown_rate)}%",
             "detail": "",
@@ -15067,6 +15079,7 @@ async def family_overview(days: int = 7):
             "skipped_today_active": 0,
             "oldest_started_at": "",
             "worst_started_at": "",
+            "resumed_today": False,
         })
         # 打卡/未服活动对已停用药物同样聚合：停药当天的打卡仍是
         # 今天的健康记录（与 recorded_today/streak 口径一致）
@@ -15118,6 +15131,10 @@ async def family_overview(days: int = 7):
         started_text = str(
             item.get("started_at") or item.get("created_at") or ""
         )
+        if str(item.get("resumed_at") or "")[:10] == datetime.now().strftime(
+            "%Y-%m-%d"
+        ):
+            entry["resumed_today"] = True
         skip_worst_sample = (
             started_text[:10] == datetime.now().strftime("%Y-%m-%d")
             # 当天重新启用的药不是「新开」：按治疗窗继续计入依从
@@ -18752,7 +18769,10 @@ async def export_health_dossier(
                     )
                 expected = item.get("expected_week_doses")
                 skip_rate = bool(
-                    str(item.get("started_at") or "")[:10]
+                    str(
+                        item.get("started_at")
+                        or item.get("created_at") or ""
+                    )[:10]
                     == datetime.now().strftime("%Y-%m-%d")
                     and not str(item.get("resumed_at") or "")
                 )

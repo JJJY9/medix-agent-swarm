@@ -68,7 +68,15 @@ def test_health_dossier_markdown(client_and_store):
     medication = client.post("/api/medications", json={
         "profile": "妈妈", "name": "氨氯地平", "dose": "5 mg",
         "frequency": "每日两次",
+        # 非当天开始：当天新开药按新口径不展示依从率
+        "started_at": (
+            now - timedelta(days=1)
+        ).strftime("%Y-%m-%d"),
     }).json()["medication"]
+    client.post(
+        f"/api/medications/{medication['id']}/logs",
+        json={"taken_at": taken_at},
+    )
     client.post(
         f"/api/medications/{medication['id']}/logs",
         json={"taken_at": taken_at},

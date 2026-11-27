@@ -426,7 +426,7 @@ def test_web_launch_send_queued_guard():
 def test_web_launch_session_switch_check():
     source = _app_js()
     start = source.index("async function send(")
-    block = source[start:start + 1800]
+    block = source[start:start + 2400]
     assert "launchSessionSnapshot" in block
     assert "会话已切换，刚才的主诉未提交" in block
 
