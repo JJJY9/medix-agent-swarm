@@ -9737,7 +9737,13 @@ class SessionStore:
                                 _candidate_edited(winner)
                                 and _candidate_diff_claimable(winner)
                                 and not _content_owned_by_other(winner)
+                                and not _candidate_from_other_backup(
+                                    winner
+                                )
+                                and not _foreign_claim_blocked(winner)
                             ):
+                                # 外来来源的「最相似」行不能顶替本行
+                                # （第一百二十四轮 [7]）
                                 return _claim(winner)
                     return _ambiguous()
         if not candidates:
@@ -10336,6 +10342,18 @@ class SessionStore:
         ):
             # 合并备份：另一来源的不同药名/标题行不能靠身份列差异
             # 被认领（第一百二十轮 [3]）
+            return _ambiguous()
+        if (
+            _candidate_from_other_backup(sole)
+            and not _candidate_content_matches_backup(sole)
+            and not (
+                _candidate_diff_claimable(sole)
+                and _candidate_origin_includes_source(sole)
+            )
+        ):
+            # 多候选兜底的最后一步：外来候选内容既不属于本行、
+            # 也非本备份谱系里的可编辑列差异，不能认领
+            # （第一百二十四轮 [4]）
             return _ambiguous()
         if _foreign_claim_blocked(sole):
             # 末位兜底同样不能吞掉另一来源的继承记录
@@ -13585,15 +13603,19 @@ class SessionStore:
                 # 没有任何就诊映射到本地，也要清掉新插入预约上的
                 # 悬空标记，避免之后误绑目标库同号就诊
                 ordered_ids = sorted(target_appointment_ids)
-                placeholders = ",".join("?" for _ in ordered_ids)
                 # 不能按本地备注 LIKE 过滤：被删除就诊剥空的备注
-                # 仍需要从备份原始 note 恢复标记
-                marker_rows = self._conn.execute(
-                    f"SELECT id, note, profile, status, scheduled_at,"
-                    f" owner_visit_id FROM appointments"
-                    f" WHERE id IN ({placeholders})",
-                    tuple(ordered_ids),
-                ).fetchall()
+                # 仍需要从备份原始 note 恢复标记。按批查询避免
+                # SQLite 变量上限（第一百二十四轮 [8][18]）
+                marker_rows = []
+                for id_start in range(0, len(ordered_ids), 500):
+                    id_batch = ordered_ids[id_start:id_start + 500]
+                    placeholders = ",".join("?" for _ in id_batch)
+                    marker_rows.extend(self._conn.execute(
+                        f"SELECT id, note, profile, status, scheduled_at,"
+                        f" owner_visit_id FROM appointments"
+                        f" WHERE id IN ({placeholders})",
+                        tuple(id_batch),
+                    ).fetchall())
                 marker_pattern = re.compile(
                     r"由就诊记录 #(\d+) 自动创建"
                 )
@@ -15049,6 +15071,43 @@ class SessionStore:
                                         int(visit_id),
                                     ),
                                 )
+                tombstone_link = False
+                if apply_links and followup_appointment_id:
+                    tombstone_row = self._conn.execute(
+                        "SELECT 1 FROM app_state WHERE key = ?",
+                        (
+                            "reminder_deleted_"
+                            f"{int(followup_appointment_id)}",
+                        ),
+                    ).fetchone()
+                    if tombstone_row is not None:
+                        # 用户已删除该预约的提醒：导入只恢复预约链接，
+                        # 不复活本次导入/映射到该预约的 pending 提醒
+                        # （第一百二十四轮 [14]）
+                        tombstone_link = True
+                        imported_reminder_ids = {
+                            int(v)
+                            for v in raw_reminder_id_map.values()
+                            if int(v or 0) > 0
+                        }
+                        pending_targets = self._conn.execute(
+                            "SELECT id FROM reminders WHERE done = 0"
+                            " AND appointment_id = ?",
+                            (int(followup_appointment_id),),
+                        ).fetchall()
+                        for pending_row in pending_targets:
+                            pending_id = int(pending_row["id"])
+                            if pending_id in imported_reminder_ids:
+                                self._conn.execute(
+                                    "DELETE FROM reminders"
+                                    " WHERE id = ? AND done = 0"
+                                    " AND appointment_id = ?",
+                                    (
+                                        pending_id,
+                                        int(followup_appointment_id),
+                                    ),
+                                )
+                        followup_reminder_id = 0
                 if apply_links:
                     restored_reminder = followup_reminder_id
                     old_reminder = 0
@@ -15074,7 +15133,11 @@ class SessionStore:
                             visit_row["profile"] or ""
                         )
                     )
-                    if old_usable and old_reminder != restored_reminder:
+                    if (
+                        old_usable
+                        and old_reminder != restored_reminder
+                        and not tombstone_link
+                    ):
                         if restored_reminder:
                             # 目标提醒已存在：合并删除旧脱钩待办
                             # （仍被其它就诊引用时保留）
@@ -15132,7 +15195,11 @@ class SessionStore:
                                         ),
                                     )
                                 restored_reminder = old_reminder
-                    elif not restored_reminder and old_usable:
+                    elif (
+                        not restored_reminder
+                        and old_usable
+                        and not tombstone_link
+                    ):
                         restored_reminder = old_reminder
                     if followup_appointment_id and visit_row is not None:
                         old_linked = int(
@@ -15209,6 +15276,8 @@ class SessionStore:
                                     dup_id,
                                 ),
                             )
+                    if tombstone_link:
+                        restored_reminder = 0
                     self._conn.execute(
                         """
                         UPDATE visit_records
@@ -15597,19 +15666,23 @@ class SessionStore:
         if target_appointment_ids:
             with self._lock, self._conn:
                 marker_ids = sorted(target_appointment_ids)
-                placeholders = ",".join("?" for _ in marker_ids)
                 marker_appointments: Dict[
                     Tuple[int, str], List[Any]
                 ] = {}
                 visit_profile_cache: Dict[int, str] = {}
                 marker_vid_cache: Dict[int, int] = {}
-                for marker_row in self._conn.execute(
-                    f"SELECT id, note, scheduled_at, profile,"
-                    f" owner_visit_id FROM appointments"
-                    f" WHERE status = 'upcoming'"
-                    f" AND id IN ({placeholders})",
-                    tuple(marker_ids),
-                ).fetchall():
+                marker_rows = []
+                for id_start in range(0, len(marker_ids), 500):
+                    id_batch = marker_ids[id_start:id_start + 500]
+                    placeholders = ",".join("?" for _ in id_batch)
+                    marker_rows.extend(self._conn.execute(
+                        f"SELECT id, note, scheduled_at, profile,"
+                        f" owner_visit_id FROM appointments"
+                        f" WHERE status = 'upcoming'"
+                        f" AND id IN ({placeholders})",
+                        tuple(id_batch),
+                    ).fetchall())
+                for marker_row in marker_rows:
                     marker_row_id = int(marker_row["id"])
                     raw_note = appointment_raw_notes.get(marker_row_id)
                     marker_match = re.search(
@@ -20398,6 +20471,18 @@ class SessionStore:
         reminder = _safe_db_id(reminder_id)
         appointment = _safe_db_id(appointment_id)
         if not reminder or not appointment:
+            return
+        try:
+            tombstone = str(
+                self.get_app_state(
+                    f"reminder_deleted_{int(appointment)}"
+                ) or ""
+            )
+        except sqlite3.Error:
+            tombstone = ""
+        if tombstone:
+            # 用户删除过该预约的提醒（opt-out）：不接管脱钩提醒，
+            # 由主 _drop 按旧安排清理（第一百二十四轮 [9]）
             return
         reminder_row = self._conn.execute(
             "SELECT done, appointment_id FROM reminders WHERE id = ?",

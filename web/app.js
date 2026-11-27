@@ -1537,6 +1537,7 @@ function detectRisk(text) {
   // 形如「**中风险**」「**高危**」
   // 注意「高危人群」「高风险人群」是在描述人群，不是风险等级
   const objSuffix = '人群|因素|型|HPV|hpv|症状|信号|表现|征象|指征|行为'
+    + '|性行为|性接触|性伴侣|性活动'
     + '|食物|饮食|结节|病灶|病变|操作|手术|药物|药品|用药';
   const plain = [
     { level: 'emergency', re: /紧急状态/ },
@@ -21247,6 +21248,12 @@ async function send(question, composerSubmit = false) {
     }
     const launchSessionSnapshot = sessionId;
     const launchOpenSeq = openSessionSeq;
+    // 主诉是在提交瞬间的档案下输入的：等待期间换档/打开其它档案
+    // 的会话不能改写它的归属（第一百二十四轮 [11][17]）
+    const launchDraftProfile = (
+      pendingComposerProfile
+      || activeProfileName || readStoredProfile() || ''
+    );
     launchSendQueued = true;
     let launchedNewSession = false;
     try {
@@ -21267,18 +21274,19 @@ async function send(question, composerSubmit = false) {
       // 等待期间用户打开了其它会话：主诉不能落进别人的会话
       // （第一百二十轮 [13]）。与其它接管分支一致保留提交时的
       // 档案归属，并标记脱离的输入框文本，避免 openSession 的
-      // 草稿结算把它清空或按新档案放行（第一百二十三轮 [11]）
-      const launchDraftProfile =
-        activeProfileName || readStoredProfile() || '';
+      // 草稿结算把它清空或按新档案放行（第一百二十三轮 [11]、
+      // 第一百二十四轮 [11]）
       restoreComposer(question);
       detachedComposerText = els.input.value || question;
       preserveDraftProfile(launchDraftProfile, question);
+      pendingComposerProfile = null;
       window.alert('会话已切换，刚才的主诉未提交。');
       return;
     }
   }
   if (busy || sendInFlight) {
     restoreComposer(question);
+    pendingComposerProfile = null;
     window.alert(concurrencyBlockedHint());
     return;
   }
@@ -21322,7 +21330,9 @@ async function send(question, composerSubmit = false) {
         + `当前档案为「${currentProfile || '未指定'}」，`
         + '请确认后再发送。'
       );
-      els.input.value = question;
+      if (!els.input.value.trim()) {
+        els.input.value = question;
+      }
       autoGrow();
       // 保留草稿及档案归属：再次回车仍要被拦截，直到用户重新输入
       try {

@@ -476,6 +476,6 @@ def test_web_launch_new_session_waits():
     assert "pendingLaunchNewSession" in source
     assert "resolveLaunchNewSession(Boolean(created));" in source
     start = source.index("async function send(")
-    block = source[start:start + 900]
+    block = source[start:start + 1400]
     assert "await Promise.race([" in block
     assert "pendingLaunchNewSession" in block

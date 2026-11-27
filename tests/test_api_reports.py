@@ -398,10 +398,10 @@ def test_weekly_report_lists_active_medication_without_logs(client_and_store):
 
     assert row["name"] == "维生素 D"
     assert row["doses"] == 0
-    assert row["expected"] == 1
-    assert medications["adherence"] == {
-        "expected": 1, "taken": 0, "rate": 0,
-    }
+    # 当天新开药未打卡不算漏服：逐药期望与依从率不展示
+    # （第一百二十四轮 [10]）
+    assert row["expected"] is None
+    assert medications["adherence"] is None
 
 
 def test_weekly_report_integrates_new_health_records(client_and_store):

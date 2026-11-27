@@ -1440,21 +1440,23 @@ _RISK_KEYWORD_PATTERNS = (
     (
         "medium",
         re.compile(
-            r"中风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
-            r"|中等风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变)"
+            r"中风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变"
+            r"|性?(?:行为|接触|伴侣|活动))"
+            r"|中等风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变"
+            r"|性?(?:行为|接触|伴侣|活动))"
             r"|中危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|症状"
-            r"|信号|表现|征象|指征)"
+            r"|信号|表现|征象|指征|性?(?:行为|接触|伴侣|活动))"
         ),
     ),
     (
         "low",
         re.compile(
             r"低风险(?!人群|因素|行为|食物|饮食|结节|病灶|病变|型"
-            r"|HPV|hpv)"
+            r"|HPV|hpv|性?(?:行为|接触|伴侣|活动))"
             r"|风险较低|风险不高"
             r"|低危(?!人群|因素|行为|食物|饮食|结节|病灶|病变|操作"
             r"|型|HPV|hpv"
-            r"|症状|信号|表现|征象|指征)"
+            r"|症状|信号|表现|征象|指征|性?(?:行为|接触|伴侣|活动))"
         ),
     ),
 )
@@ -9775,7 +9777,19 @@ async def _weekly_report_impl(
     adherence_expected = 0
     adherence_taken = 0
     adherence_med_ids = set()
+    today_stamp = now.strftime("%Y-%m-%d")
     for item in active_meds:
+        started_text = str(
+            item.get("started_at") or item.get("created_at") or ""
+        )
+        if (
+            started_text[:10] == today_stamp
+            and not str(item.get("resumed_at") or "")
+        ):
+            # 当天新开药不计入依从率与逐药期望：与家庭总览/健康提示
+            # 同口径；当天重新启用的药按治疗窗照常计入
+            # （第一百二十四轮 [10][15][16]）
+            continue
         expected = expected_doses_for_period(
             item.get("frequency", ""),
             item.get("started_at") or item.get("created_at", ""),
@@ -9839,7 +9853,26 @@ async def _weekly_report_impl(
     for row in doses_by_medication.values():
         medication = meds_by_id.get(row["medication_id"])
         expected = None
-        if medication is not None and medication.get("active"):
+        row_started = (
+            str(
+                medication.get("started_at")
+                or medication.get("created_at") or ""
+            )
+            if medication is not None else ""
+        )
+        row_resumed = (
+            str(medication.get("resumed_at") or "")
+            if medication is not None else ""
+        )
+        skip_sample = bool(
+            medication is not None
+            and medication.get("active")
+            and row_started[:10] == today_stamp
+            and not row_resumed
+        )
+        if medication is not None and medication.get("active") and (
+            not skip_sample
+        ):
             expected = expected_doses_for_period(
                 medication.get("frequency", ""),
                 medication.get("started_at")
@@ -9852,13 +9885,8 @@ async def _weekly_report_impl(
         row["rate"] = (
             adherence_rate(row["doses"], expected) if expected else None
         )
-        row["started_at"] = (
-            str(
-                medication.get("started_at")
-                or medication.get("created_at") or ""
-            )
-            if medication is not None else ""
-        )
+        row["started_at"] = row_started
+        row["resumed_at"] = row_resumed
         row["profile"] = (
             medication.get("profile") or "" if medication else ""
         )
@@ -10974,9 +11002,11 @@ def _build_health_insights(
             if (
                 str(row.get("started_at") or "")[:10]
                 == datetime.now().strftime("%Y-%m-%d")
-                and int(expected) < 7
+                and not str(row.get("resumed_at") or "")
             ):
-                exempt_expected += int(expected)
+                # 当天新开药（含高频）一律豁免；当天重新启用的药
+                # 照常按治疗窗评估（第一百二十四轮 [15][16]）
+                exempt_expected += int(expected or 0)
                 exempt_doses += int(row.get("doses") or 0)
                 continue
             # 每周一次的低频药完全没打卡同样是 0%，不能被 >=3 阈值
@@ -15090,9 +15120,9 @@ async def family_overview(days: int = 7):
         )
         skip_worst_sample = (
             started_text[:10] == datetime.now().strftime("%Y-%m-%d")
-            and expected_week < 7
             # 当天重新启用的药不是「新开」：按治疗窗继续计入依从
-            # （第一百二十三-轮 round77 口径）
+            # （第一百二十三-轮 round77 口径）；高频新药同样豁免
+            # （第一百二十四轮 [16]）
             and not item.get("resumed_at")
         )
         if expected_week > 0 and not skip_worst_sample:
@@ -18721,7 +18751,14 @@ async def export_health_dossier(
                         f"，未服 {int(item['skipped_range'])} 次"
                     )
                 expected = item.get("expected_week_doses")
-                if expected:
+                skip_rate = bool(
+                    str(item.get("started_at") or "")[:10]
+                    == datetime.now().strftime("%Y-%m-%d")
+                    and not str(item.get("resumed_at") or "")
+                )
+                if expected and not skip_rate:
+                    # 当天新开药未打卡不算漏服：与家庭总览/健康提示
+                    # 同口径（第一百二十四轮 [10]）
                     rate = adherence_rate(item.get("week_count"), expected)
                     detail += f"，依从率 {rate}%"
             if item.get("stock") is not None:
