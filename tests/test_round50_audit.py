@@ -450,7 +450,7 @@ def test_frontend_round50_guards():
         "restoreComposer(question);" + chr(10)
         + "      preserveDraftProfile(profile, question);"
     ) in app_js
-    assert "if (!busy && !sendInFlight) return;" in app_js
+    assert "if (!busy && !sendInFlight && !launchSendQueued) return;" in app_js
     assert "极早持久化已提交主诉" in app_js
     # 撤销待重置恢复共享指针
     assert "persistSessionId(sessionId);" in app_js[
