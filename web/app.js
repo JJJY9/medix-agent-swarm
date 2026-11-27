@@ -20913,6 +20913,11 @@ async function restoreCurrentSession(
 
     const messages = data.messages || [];
     if (!messages.length) {
+      if (restorePending && expectedSession && !sendInFlight) {
+        // 备份槽里属于本会话的未落库主诉在空会话里同样要放回
+        // 输入框，与 openSession 口径一致（第一百二十六轮 [14]）
+        restoreInflightForOpenSession(expectedSession, messages);
+      }
       if (deepLinkedSession) {
         if (
           contextUserEdited
@@ -21261,7 +21266,8 @@ async function send(question, composerSubmit = false) {
     try {
       safeSessionSet(INFLIGHT_QUESTION_KEY, JSON.stringify({
         sessionId: '',
-        profile: activeProfileName || readStoredProfile() || '',
+        profile: submittedProfileSnapshot
+          || activeProfileName || readStoredProfile() || '',
         question,
         at: Date.now(),
       }));
@@ -21273,7 +21279,8 @@ async function send(question, composerSubmit = false) {
     // 主诉是在提交瞬间的档案下输入的：等待期间换档/打开其它档案
     // 的会话不能改写它的归属（第一百二十四轮 [11][17]）
     const launchDraftProfile = (
-      pendingComposerProfile
+      submittedProfileSnapshot
+      || pendingComposerProfile
       || activeProfileName || readStoredProfile() || ''
     );
     launchSendQueued = true;
@@ -21329,7 +21336,9 @@ async function send(question, composerSubmit = false) {
   try {
     const submittedProfile = submittedProfileSnapshot;
     const draftProfile = (
-      submittedProfile || safeSessionGet(DRAFT_PROFILE_KEY) || ''
+      submittedProfile
+      || draftProfileSnapshot()
+      || safeSessionGet(DRAFT_PROFILE_KEY) || ''
     );
     const composerText = (els.input.value || '').trim();
     const draftText = (safeSessionGet(DRAFT_KEY) || '').trim();
@@ -23126,7 +23135,21 @@ function saveDraft() {
       if (composerIsDetached()) {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
-        safeSessionRemove(DRAFT_PROFILE_KEY);
+        if (
+          draftProfileMemory === '__mixed_draft__'
+          || safeSessionGet(DRAFT_PROFILE_KEY) === '__mixed_draft__'
+        ) {
+          // 混合草稿的哨兵不能在脱离清理时丢失，否则跨档案守卫失效
+          // （第一百二十六轮 [10]）
+          draftProfileMemory = '__mixed_draft__';
+          try {
+            safeSessionSet(DRAFT_PROFILE_KEY, '__mixed_draft__');
+          } catch {
+            // 隐私模式忽略
+          }
+        } else {
+          safeSessionRemove(DRAFT_PROFILE_KEY);
+        }
         return;
       }
       if (els.input.value.trim()) {
@@ -23372,8 +23395,10 @@ function preserveDraftProfile(profile, text) {
     && els.input.value.includes(String(text || '').trim())
   ) {
     // 输入框里混有两位患者的文本：写混合哨兵（永不匹配任何档案），
-    // 让发送守卫一直拦截到用户整体替换文本
-    // （第一百二十五轮 [10]）
+    // 让发送守卫一直拦截到用户整体替换文本；内存归属同步为哨兵，
+    // 防止 200ms 草稿防抖用当前档案覆盖（第一百二十五轮 [10]、
+    // 第一百二十六轮 [9][10]）
+    draftProfileMemory = '__mixed_draft__';
     try {
       safeSessionSet(DRAFT_PROFILE_KEY, '__mixed_draft__');
     } catch {
@@ -24278,7 +24303,9 @@ els.composer.addEventListener('submit', (e) => {
   const q = els.input.value.trim();
   if (!q) return;
   // 先记住草稿的档案归属：清空输入/草稿后 send 无法再判断来源
-  pendingComposerProfile = safeSessionGet(DRAFT_PROFILE_KEY) || '';
+  pendingComposerProfile = (
+    draftProfileSnapshot() || safeSessionGet(DRAFT_PROFILE_KEY) || ''
+  );
   els.input.value = '';
   autoGrow();
   clearDraft();

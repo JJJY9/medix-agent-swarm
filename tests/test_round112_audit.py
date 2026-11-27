@@ -421,7 +421,7 @@ def test_web_send_profile_snapshot():
     source = _app_js()
     start = source.index("async function send(")
     # send 前部新增启动快捷方式等待（第一百一十六轮 [17]）：窗口放宽
-    block = source[start:start + 14000]
+    block = source[start:start + 16000]
     # 档案守卫比较发送时刻的下拉快照（第一百一十二轮 [10]）
     assert "const selectProfileAtSend = els.profileSelect.value || '';" in block
     assert "!== selectProfileAtSend" in block
