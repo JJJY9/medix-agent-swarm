@@ -1507,13 +1507,19 @@ function detectRisk(text) {
     low: '风险等级 · 低，可先自我观察',
   };
 
-  // 去掉 CJK 与拉丁字母之间的空白：「低危 HPV」→「低危HPV」
-  const compact = text.replace(
+  // 与后端 _normalize_risk_text 一致：全角转半角，去掉等级词与
+  // 对象词之间的空白（低危 结节/高危ＨＰＶ）
+  // （第一百二十一轮 [17]、第一百二十三轮 [13]）
+  const normalized = text.normalize('NFKC');
+  const compact = normalized.replace(
     /(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z])|(?<=[A-Za-z])\s+(?=[\u4e00-\u9fff])/g,
+    ''
+  ).replace(
+    /(?<=[\u4e00-\u9fff])[ \t\u3000]+(?=[\u4e00-\u9fff])/g,
     ''
   );
   // 「风险等级：不确定」先于标签解析（第一百二十一轮 [17]）
-  if (/风险等级\s*[：:]\s*不确定/.test(compact)) {
+  if (/风险等级\s*[：:]\s*[\s*「【]*不确定/.test(compact)) {
     return null;
   }
   // 形如「综合风险：中危」「风险等级：高危」
@@ -21259,8 +21265,14 @@ async function send(question, composerSubmit = false) {
       )
     ) {
       // 等待期间用户打开了其它会话：主诉不能落进别人的会话
-      // （第一百二十轮 [13]）
+      // （第一百二十轮 [13]）。与其它接管分支一致保留提交时的
+      // 档案归属，并标记脱离的输入框文本，避免 openSession 的
+      // 草稿结算把它清空或按新档案放行（第一百二十三轮 [11]）
+      const launchDraftProfile =
+        activeProfileName || readStoredProfile() || '';
       restoreComposer(question);
+      detachedComposerText = els.input.value || question;
+      preserveDraftProfile(launchDraftProfile, question);
       window.alert('会话已切换，刚才的主诉未提交。');
       return;
     }
@@ -23086,9 +23098,10 @@ function saveDraft() {
         safeSessionRemove(DRAFT_KEY);
         safeSessionRemove(DRAFT_OWNER_KEY);
         safeSessionRemove(DRAFT_PROFILE_KEY);
-        if (!busy && !sendInFlight) {
+        if (!busy && !sendInFlight && !launchSendQueued) {
           // 用户已主动清空主诉：只丢弃属于当前会话的在途记录，
-          // 其它会话的停止/中断主诉保留待恢复
+          // 其它会话的停止/中断主诉保留待恢复；新建会诊等待窗口内
+          // 刚写入的在途主诉必须保留（第一百二十三轮 [15]）
           clearInflightForCurrentSession();
           clearRestoredInflightIfOwned();
         }
@@ -23886,7 +23899,7 @@ function restoreInflightQuestion() {
 }
 
 window.addEventListener('beforeunload', (event) => {
-  if (!busy && !sendInFlight) return;
+  if (!busy && !sendInFlight && !launchSendQueued) return;
   // 会诊进行中离开页面会中断生成：让浏览器弹出确认
   event.preventDefault();
   event.returnValue = '';
@@ -24163,7 +24176,7 @@ els.input.addEventListener('input', () => {
     // 唯一副本（打开历史会话后首次按键会误删），流式进行中也
     // 不能清掉本轮在途记录（第九十五轮 [13]）
     const restoredOwner = inflightRestoredOwnerSession || '';
-    if (!busy && !sendInFlight) {
+    if (!busy && !sendInFlight && !launchSendQueued) {
       if (inflightRestoredKeyName === INFLIGHT_QUESTION_OTHER_KEY) {
         // 备份槽记录按会话+文本清除（第九十七轮 [16]）；只有仍停留
         // 在所属会话时才删，切到别的会话后键入不能误删另一会话的

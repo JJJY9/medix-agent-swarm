@@ -1426,15 +1426,15 @@ _RISK_KEYWORD_PATTERNS = (
             r"高风险(?!人群|因素|行为|职业|活动|运动|食物|饮食|地区"
             r"|场所|场景|暴露|接触|结节|病灶|病变|药物|药品|用药|操作"
             r"|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查|新生儿|症状"
-            r"|信号|表现|征象|指征|因素)"
+            r"|信号|表现|征象|指征|因素|性?(?:行为|接触|伴侣|活动))"
             r"|高度风险(?!人群|因素|行为|职业|活动|食物|饮食|药物|药品"
             r"|用药|操作|手术|妊娠|孕|分级|治疗|科室|门诊|筛查|检查"
-            r"|新生儿|症状|信号|表现|征象|指征)"
+            r"|新生儿|症状|信号|表现|征象|指征|性?(?:行为|接触|伴侣|活动))"
             r"|高危(?!人群|因素|型|妊娠|儿|药品|操作|筛查|病变|HPV|hpv"
             r"|产科|孕|分级|药物|治疗|科室|门诊|新生儿"
             # 对象名词后缀不是等级判定（第一百一十七轮 [5]）
             r"|行为|职业|活动|运动|食物|饮食|地区|场所|场景|暴露|接触"
-            r"|结节|病灶|症状|信号|征象|指征)"
+            r"|结节|病灶|症状|信号|征象|指征|性?(?:行为|接触|伴侣|活动))"
         ),
     ),
     (
@@ -5652,8 +5652,15 @@ _NON_DRUG_SEGMENT_RE = re.compile(
     r"^(?:"
     # 「3mg/日」「10毫升/次」：带斜杠的剂量/频次片段不是药名
     # （第一百二十一轮 [16]）
-    r"[0-9]+(?:\.[0-9]+)?\s*(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|"
+    r"[0-9一二两三四五六七八九十半几]+(?:\.[0-9]+)?\s*"
+    r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|"
     r"mg|毫克|克|g|单位|iu)\s*[／/]\s*(?:日|天|次)"
+    # 「3片每日一次」「两粒每晚一次」：剂量与频次粘连同样
+    # 不是药名（第一百二十三轮 [17]）
+    r"|[0-9一二两三四五六七八九十半几]+\s*"
+    r"(?:片|粒|丸|袋|包|支|瓶|滴|毫升|ml|mg|毫克|克|g|单位|iu)"
+    r"\s*(?:每天|每日|一天|一日|每晚|每早|每周|隔日)"
+    r"\s*(?:一次|两次|三次|[0-9一二两三四五六七八九十]+\s*次)?"
     # 小数/分数剂量（0.5g/1／2片）与裸单位同样不是药名
     r"|[0-9一二两三四五六七八九十半几]+(?:\.[0-9]+)?"
     r"(?:[／/][0-9]+)?\s*"
@@ -5713,18 +5720,19 @@ _STOP_REMAINDER_TIME_RE = re.compile(
 _STOP_RECENT_DURATION_RE = re.compile(
     # 只认 ≤14 天、≤2 周：更久按已停药处理（第一百二十二轮 [16]）
     r"(?:(?<![零半0-9一二三四五六七八九十])"
-    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])"
+    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四]?|十\s*来)"
     r"\s*(?:个)?\s*(?:天|日)"
     r"|几天|几日|几周|"
     r"(?<![0-9一二两三四五六七八九十])"
     r"(?:1|一)\s*(?:个)?\s*(?:周|星期|礼拜)(?:半)?"
     # 时间点写法与 core _RECENT_STOP_* 对齐（第一百一十六轮 [11][14]）
     r"|今天|今早|今晨|昨天|昨晚|昨夜|前天|前晚|"
-    r"上周|上星期|上周末|"
+    r"上周|上星期|上周末|上礼拜|"
     r"(?<![0-9一二两三四五六七八九十])"
     r"(?:2|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)(?!半)|"
     r"(?<![零半0-9一二三四五六七八九十])"
-    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四])\s*天前"
+    r"(?:[1-9]|1[0-4]|[一二两三四五六七八九]|十[一二三四]?|十\s*来)"
+    r"\s*(?:天|日)前"
     r"|(?<![0-9一二两三四五六七八九十])"
     r"(?:1|2|一|两|二)\s*(?:个)?\s*(?:周|星期|礼拜)前)"
 )
@@ -6086,7 +6094,7 @@ def _context_medication_names(context: Any) -> List[str]:
             # （第一百一十五轮 [14]）
             head = re.sub(
                 r"(?:(?:已经|早就|早已|现已|目前|当前|就|才|刚|刚刚|"
-                r"之前|去年|前年|今年|上个月|上月|上周|上星期|上周末|"
+                r"之前|去年|前年|今年|上个月|上月|上周|上星期|上周末|上礼拜|"
                 r"底|初)\s*)+$",
                 "",
                 head,
@@ -15017,6 +15025,8 @@ async def family_overview(days: int = 7):
             "last_skip_at": "",
             "week_count": 0,
             "expected_week_doses": 0,
+            "assessable_expected": 0,
+            "assessable_taken": 0,
             "low_stock": 0,
             "expiring": 0,
             "expired": 0,
@@ -15078,6 +15088,21 @@ async def family_overview(days: int = 7):
         started_text = str(
             item.get("started_at") or item.get("created_at") or ""
         )
+        skip_worst_sample = (
+            started_text[:10] == datetime.now().strftime("%Y-%m-%d")
+            and expected_week < 7
+            # 当天重新启用的药不是「新开」：按治疗窗继续计入依从
+            # （第一百二十三-轮 round77 口径）
+            and not item.get("resumed_at")
+        )
+        if expected_week > 0 and not skip_worst_sample:
+            # 当天新开的药整周应服次数同样不计入家庭依从率：
+            # 「当天新开药不算依从问题」与健康提示同口径
+            # （第一百二十三轮 [10]）
+            entry["assessable_expected"] += expected_week
+            entry["assessable_taken"] += int(
+                item.get("week_count") or 0
+            )
         if expected_week > 0 and started_text and (
             not entry["oldest_started_at"]
             or started_text < entry["oldest_started_at"]
@@ -15091,10 +15116,6 @@ async def family_overview(days: int = 7):
             week_rate = adherence_rate(
                 int(item.get("week_count") or 0), expected_week
             )
-            skip_worst_sample = (
-                started_text[:10] == datetime.now().strftime("%Y-%m-%d")
-                and expected_week < 7
-            )
             if week_rate is not None and not skip_worst_sample and (
                 entry["worst_rate"] is None
                 or week_rate < entry["worst_rate"]
@@ -15107,8 +15128,10 @@ async def family_overview(days: int = 7):
             entry["names"].append(item.get("name") or "")
 
     for entry in medications_by_profile.values():
-        expected = entry.pop("expected_week_doses")
-        taken = entry.pop("week_count")
+        entry.pop("expected_week_doses")
+        entry.pop("week_count")
+        expected = entry.pop("assessable_expected")
+        taken = entry.pop("assessable_taken")
         entry["adherence"] = (
             {
                 "expected": expected,

@@ -500,7 +500,7 @@ def test_web_detect_risk_aligned():
     source = (
         ROOT / "web" / "app.js"
     ).read_text(encoding="utf-8").replace("\r\n", "\n")
-    assert "const compact = text.replace" in source
+    assert "const compact = normalized.replace" in source
     assert "风险等级|风险程度|风险评级|综合风险|整体风险" in source
     assert "objSuffix" in source
 

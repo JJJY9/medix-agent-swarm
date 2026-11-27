@@ -8896,9 +8896,14 @@ class SessionStore:
                             and not _tail_matches(sole)
                             and not _candidate_edited(sole)
                             # 本地终态（完成/停药）不刷新 updated_at
-                            # 时仍是本行的完成版本：交给外来守卫按
-                            # 终态证据判定（第一百二十二轮 [10]）
-                            and not _candidate_local_terminal(sole)
+                            # 时仍是本行的完成版本：仅当终态以外的尾
+                            # 字段全部命中本备份行时才放行，否则按
+                            # 被删记录补插（第一百二十二轮 [10]、
+                            # 第一百二十三轮 [4]）
+                            and not (
+                                _candidate_local_terminal(sole)
+                                and _tail_matches_except_terminal(sole)
+                            )
                         ):
                             # 候选未编辑且尾字段与本行完全不符（完成
                             # 状态/备注/提前天数不同）：它不是本行的
@@ -10316,9 +10321,12 @@ class SessionStore:
             and not _tail_matches(sole)
             and not _candidate_edited(sole)
             # 本地终态（done=1）不刷新 updated_at 时同样可能是本行
-            # 的完成版本：交给外来守卫按终态证据判定
-            # （第一百二十二轮 [10]）
-            and not _candidate_local_terminal(sole)
+            # 的完成版本：终态以外的尾字段须全部命中
+            # （第一百二十二轮 [10]、第一百二十三轮 [4]）
+            and not (
+                _candidate_local_terminal(sole)
+                and _tail_matches_except_terminal(sole)
+            )
         ):
             # 尾字段对不上且无编辑证据：候选是同秒孪生兄弟，本行
             # 按被删记录补插（第一百二十轮 [9]）
@@ -13701,13 +13709,27 @@ class SessionStore:
                                 # 备注已被剥空：悬空标记不能复活
                                 return ""
                             return match.group(0)
-                        if _visit_linked_to_other(
-                            int(local_visit), int(appt_key)
+                        status_row = self._conn.execute(
+                            "SELECT status FROM appointments WHERE id = ?",
+                            (int(appt_key),),
+                        ).fetchone()
+                        appt_status = (
+                            str(status_row["status"] or "")
+                            if status_row is not None else ""
+                        )
+                        if (
+                            int(appt_key) in imported_appointment_ids
+                            and appt_status == "upcoming"
+                            and _visit_linked_to_other(
+                                int(local_visit), int(appt_key)
+                            )
                         ):
-                            # 本地就诊已链接另一条待就诊复诊预约：本次
-                            # 新插入的自动预约不能再挂同一就诊标记，
-                            # 否则同一就诊出现两条自动预约与两条待办
-                            # （第九十八轮 [10]、第一百零九轮 [15]）
+                            # 本次新插入的待就诊自动预约不能再挂同一
+                            # 就诊标记，否则同一就诊出现两条自动预约
+                            # 与两条待办（第九十八轮 [10]、第一百零九
+                            # 轮 [15]）。已认领的本地行与已完成/已取消
+                            # 的历史预约不受影响，否则重复导入会永久
+                            # 剥离唯一的归属标记（第一百二十三轮 [8]）
                             return ""
                         owner_row = self._conn.execute(
                             "SELECT owner_visit_id FROM appointments"
@@ -15553,17 +15575,25 @@ class SessionStore:
                         int(local_marker_row["id"])
                     )
             owner_ids = sorted(local_backup_visit_ids)
-            owner_placeholders = ",".join("?" for _ in owner_ids)
-            for local_owner_row in self._conn.execute(
-                "SELECT id FROM appointments"
-                " WHERE status = 'upcoming'"
-                f" AND owner_visit_id IN ({owner_placeholders})",
-                tuple(owner_ids),
-            ).fetchall():
-                # 备注被清空/改写的本地自动预约靠 owner 归属纳入
-                # 去重，避免恢复归属后同一就诊两条待就诊预约
-                # （第一百二十二轮 [18]）
-                target_appointment_ids.add(int(local_owner_row["id"]))
+            # SQLite 默认变量上限 32766，就诊导入上限 100000：
+            # 分批查询避免大备份导入在提交后崩溃（第一百二十三轮 [7]）
+            for owner_start in range(0, len(owner_ids), 500):
+                owner_batch = owner_ids[owner_start:owner_start + 500]
+                owner_placeholders = ",".join(
+                    "?" for _ in owner_batch
+                )
+                for local_owner_row in self._conn.execute(
+                    "SELECT id FROM appointments"
+                    " WHERE status = 'upcoming'"
+                    f" AND owner_visit_id IN ({owner_placeholders})",
+                    tuple(owner_batch),
+                ).fetchall():
+                    # 备注被清空/改写的本地自动预约靠 owner 归属纳入
+                    # 去重，避免恢复归属后同一就诊两条待就诊预约
+                    # （第一百二十二轮 [18]）
+                    target_appointment_ids.add(
+                        int(local_owner_row["id"])
+                    )
         if target_appointment_ids:
             with self._lock, self._conn:
                 marker_ids = sorted(target_appointment_ids)

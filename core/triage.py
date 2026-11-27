@@ -1985,6 +1985,27 @@ def _clean_complaint_clause(
             # 语境，后置定义问句里的红旗是新症状；仅有主体/生活
             # 叙述（我正在准备考试）不算（第九十二/九十三轮 [14]）
             or (symptom_context_seen and _is_red_flag_text(clause))
+            # 孕产期出血：前文妊娠语境 + 出血性主诉
+            # （第一百二十三轮 [1]）
+            or (
+                patient_context_seen
+                and (
+                    any(
+                        term in stripped
+                        for term in PREGNANCY_BLEEDING_TERMS
+                    )
+                    or _PREGNANCY_BLEEDING_RE.search(stripped)
+                    is not None
+                    or _colloquial_bleeding_positive(stripped)
+                )
+            )
+            # 多症状并列与客观读数不是纯科普：与「是什么病」后缀
+            # 分支同口径（第一百二十三轮 [1]）
+            or _definition_multi_symptom(stripped)
+            or re.search(
+                r"[、和及与]|伴|合并|并发", stripped
+            ) is not None
+            or re.search(r"\d", stripped) is not None
         )
         if not keep_context:
             return ""
@@ -2618,9 +2639,17 @@ def patient_complaint_text(text: str) -> str:
                 any(term in clause for term in PREGNANCY_TERMS)
                 or PREGNANCY_WEEK_PATTERN.search(clause) is not None
             )
+            # 纯生命体征读数（体温39度/血压200/血氧85）同样是患者
+            # 语境：后置定义问句中的红旗按真实主诉保留
+            # （第一百二十三轮 [2]）
+            vitals_seen = re.search(
+                r"(?:体温|血压|高压|低压|血氧|血糖|心率|脉搏|呼吸)"
+                r"\s*(?:高到|低到|只有|降到|升到|达到|测到)?\s*[0-9]",
+                clause,
+            ) is not None
             if (
                 subject_seen or positive_flag or symptom_seen
-                or pregnancy_seen
+                or pregnancy_seen or vitals_seen
             ):
                 # 已有患者本人的症状/妊娠分句：后续定义问句按新症状
                 # 保留。「今天想问问」「没有胸痛」这类铺垫/否定分句
@@ -4206,6 +4235,9 @@ def _restart_names_other_medication(follow: str, clause: str) -> bool:
         r"(?:到现在|到今天|至今|到现在为止|以来|为止|一直)$", "", obj
     ).strip()
     obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
+    obj = re.sub(
+        r"(?:起来|下去|上来|下来|上去|上|下)$", "", obj
+    ).strip()
     if not obj or len(obj) < 2:
         return False
     if any(obj.startswith(word) for word in _RESTART_OBJECT_IGNORE):
@@ -4240,6 +4272,9 @@ def _restart_object_non_medication(follow: str, clause: str) -> bool:
         flags=re.IGNORECASE,
     )
     obj = re.sub(r"(?:着|呢|啊|呀|吧|了|啦)+$", "", obj).strip()
+    obj = re.sub(
+        r"(?:起来|下去|上来|下来|上去|上|下)$", "", obj
+    ).strip()
     if obj in ("素", "斋") or obj.startswith(
         ("药膳", "素食", "食疗", "素菜")
     ):
