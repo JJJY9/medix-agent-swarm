@@ -1515,7 +1515,20 @@ _RECENT_STOP_CONTEXT_EN = re.compile(
     r"|(?:1|2|a|an|one|two)\s*weeks?\s+ago)"
     r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
     r"(?:yesterday|today|last night|last week|this morning|tonight|"
-    r"the day before yesterday|a couple of days ago)",
+    r"the day before yesterday|a couple of days ago)"
+    # stopped X for N days/1-2 weeks、on (last) Monday、N days back
+    # 与中文「停了 N 天」同口径（第一百二十七轮 [3]）
+    r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
+    r"for\s+(?:[1-9]|1[0-4]|one|two|three|four|five|six|seven|eight|"
+    r"nine|ten|eleven|twelve|thirteen|fourteen)\s+days?"
+    r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
+    r"for\s+(?:1|2|a|an|one|two)\s*weeks?"
+    r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
+    r"on\s+(?:last\s+)?(?:monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday)"
+    r"|(?:stopped|discontinued|quit|ceased)\s+(?:\w+\s+){0,2}"
+    r"(?:[1-9]|1[0-4]|a|one|two|three|four|five|six|seven|eight|nine|"
+    r"ten|eleven|twelve|thirteen|fourteen)\s+days?\s+back",
     re.IGNORECASE,
 )
 #: 英文「off X for N days/until yesterday」：近期停药仍有抗凝作用
