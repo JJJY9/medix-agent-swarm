@@ -192,6 +192,8 @@ def test_owner_query_batched(tmp_path):
     try:
         target._now = lambda: CREATED
         target.save_profile("妈妈", {})
+        if not hasattr(target._conn, "setlimit"):
+            pytest.skip("sqlite3.Connection.setlimit 需要 Python 3.11+")
         target._conn.setlimit(
             sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500
         )
@@ -217,9 +219,10 @@ def test_owner_query_batched(tmp_path):
         assert result.get("visit_records") == 600
         assert result.get("appointments") == 1
     finally:
-        target._conn.setlimit(
-            sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766
-        )
+        if hasattr(target._conn, "setlimit"):
+            target._conn.setlimit(
+                sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 32766
+            )
         target.close()
 
 
