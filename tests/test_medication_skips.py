@@ -145,7 +145,13 @@ def test_api_rejects_invalid_reason_and_unknown_medication(client_and_store):
 
 def test_weekly_report_and_insights_include_skips(client_and_store):
     client, _store = client_and_store
-    item = _medication(client, name="氨氯地平", frequency="每日一次")
+    item = _medication(
+        client, name="氨氯地平", frequency="每日一次",
+        # 非当天开始：当天新开药按新口径不计依从率
+        started_at=(
+            datetime.now() - timedelta(days=2)
+        ).strftime("%Y-%m-%d"),
+    )
     client.post(f"/api/medications/{item['id']}/logs", json={})
     for reason, days in (("forget", 3), ("forget", 2), ("side_effect", 1)):
         client.post(
